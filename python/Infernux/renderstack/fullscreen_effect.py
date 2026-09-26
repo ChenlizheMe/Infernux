@@ -42,6 +42,7 @@ from Infernux.renderstack._pipeline_common import (
     MOTION_TEXTURE,
     NORMAL_TEXTURE,
     SHADOW_MAP_TEXTURE,
+    LIGHT_LIST_BUFFER,
 )
 from Infernux.renderstack.render_pass import RenderPass
 from Infernux.renderstack._serialized_field_mixin import SerializedFieldCollectorMixin
@@ -213,6 +214,7 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
             ("_InxPassNormal", NORMAL_TEXTURE),
             ("_InxPassMotion", MOTION_TEXTURE),
             ("shadowMap", SHADOW_MAP_TEXTURE),
+            ("lightList", LIGHT_LIST_BUFFER),
         )
         required = set(getattr(self, "requires", ())) | set(getattr(self, "modifies", ()))
         selected = tuple(

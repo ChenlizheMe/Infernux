@@ -249,6 +249,35 @@ def test_forward_pass_buffers_have_current_view_producers_and_resolved_inputs(pi
     }
 
 
+@pytest.mark.parametrize("pipeline_type", [DefaultForwardPipeline, DefaultForwardPlusPipeline, DefaultDeferredPipeline])
+def test_light_list_is_a_view_owned_read_only_buffer(pipeline_type):
+    graph = RenderGraph(f"{pipeline_type.__name__} light list")
+    graph.set_geometry_buffer_requirements({"light_list"})
+    pipeline_type().define_topology(graph)
+
+    source = "gbuffer" if pipeline_type is DefaultDeferredPipeline else "opaque"
+    result = graph.get_pass_result(source)
+    assert result is not None and result.has("light_list")
+    light_list = result.sample("light_list")
+    assert light_list is graph.get_buffer("light_list")
+    assert light_list.view_light_list is True
+    assert light_list.compute_buffer is None
+
+    class RecordingPass:
+        def set_textures(self, bindings):
+            self.bindings = bindings
+
+    class LightEffect(FullScreenEffect):
+        name = "light_list_effect"
+        injection_point = "after_opaque"
+        requires = {"light_list"}
+        modifies = set()
+
+    render_pass = RecordingPass()
+    LightEffect().bind_buffers(render_pass, ResourceBus(result.snapshot))
+    assert render_pass.bindings == {"lightList": light_list}
+
+
 @pytest.mark.parametrize(
     ("pipeline_type", "terminal_source", "samples"),
     [

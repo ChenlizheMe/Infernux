@@ -53,6 +53,7 @@ from Infernux.renderstack._platform_quality import effective_shadow_resolution
 from Infernux.components.fields import serialized_field
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
+    LIGHT_LIST_BUFFER,
     DEPTH_TEXTURE,
     DEFERRED_GBUFFER_CLEAR_COLOR,
     DEFERRED_LIGHTING_CLEAR_COLOR,
@@ -182,18 +183,21 @@ class DefaultDeferredPipeline(RenderPipeline):
                 material_filter="deferred_compatible",
             )
 
+        geometry_buffers = {
+            "color": graph.get_texture(COLOR_TEXTURE),
+            "base_color": graph.get_texture(GBUFFER_ALBEDO_TEXTURE),
+            "depth": graph.get_texture(DEPTH_TEXTURE),
+            "shadow_map": graph.get_texture(SHADOW_MAP_TEXTURE),
+            "material": graph.get_texture(GBUFFER_MATERIAL_TEXTURE),
+            "emission": graph.get_texture(GBUFFER_EMISSION_TEXTURE),
+            "object": graph.get_texture(GBUFFER_OBJECT_TEXTURE),
+        }
+        if graph.needs_geometry_buffer(LIGHT_LIST_BUFFER):
+            geometry_buffers[LIGHT_LIST_BUFFER] = graph.create_view_light_list()
         current = self.geometry_stage(
             graph,
             "gbuffer",
-            buffers={
-                "color": graph.get_texture(COLOR_TEXTURE),
-                "base_color": graph.get_texture(GBUFFER_ALBEDO_TEXTURE),
-                "depth": graph.get_texture(DEPTH_TEXTURE),
-                "shadow_map": graph.get_texture(SHADOW_MAP_TEXTURE),
-                "material": graph.get_texture(GBUFFER_MATERIAL_TEXTURE),
-                "emission": graph.get_texture(GBUFFER_EMISSION_TEXTURE),
-                "object": graph.get_texture(GBUFFER_OBJECT_TEXTURE),
-            },
+            buffers=geometry_buffers,
             queue_range=opaque_queue_range(),
             clear=True,
         )

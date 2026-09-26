@@ -163,7 +163,8 @@ void RegisterRenderGraphBindings(py::module_ &m)
         .def_readwrite("name", &GraphBufferDesc::name)
         .def_readwrite("byte_size", &GraphBufferDesc::byteSize)
         .def_readwrite("usage", &GraphBufferDesc::usage)
-        .def_readwrite("compute_buffer", &GraphBufferDesc::computeBuffer);
+        .def_readwrite("compute_buffer", &GraphBufferDesc::computeBuffer)
+        .def_readwrite("view_light_list", &GraphBufferDesc::viewLightList);
 
     py::class_<GraphBufferAccessDesc>(m, "GraphBufferAccessDesc", "Typed buffer access declared by a graph pass")
         .def(py::init<>())

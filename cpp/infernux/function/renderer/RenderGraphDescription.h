@@ -200,6 +200,10 @@ struct GraphBufferDesc
     uint64_t byteSize = 0;
     uint32_t usage = static_cast<uint32_t>(GraphBufferUsage::None);
     std::shared_ptr<rhi::ComputeBuffer> computeBuffer; ///< Live GPU owner for an imported buffer.
+    /// Bind the camera-local canonical light buffer for the active frame slot.
+    /// This resource is read-only and owned by SceneRenderGraph; it is not a
+    /// transient allocation or an imported author buffer.
+    bool viewLightList = false;
 };
 
 struct GraphBufferAccessDesc

@@ -23,7 +23,8 @@ BASE_COLOR = "base_color"
 DEPTH = "depth"
 NORMAL = "normal"
 MOTION = "motion"
-DEFAULT_GEOMETRY_BUFFERS = frozenset({BASE_COLOR, DEPTH, NORMAL, MOTION})
+LIGHT_LIST = "light_list"
+DEFAULT_GEOMETRY_BUFFERS = frozenset({BASE_COLOR, DEPTH, NORMAL, MOTION, LIGHT_LIST})
 
 
 class GeometryBufferTopologyError(RuntimeError):
@@ -228,6 +229,7 @@ __all__ = [
     "DEPTH",
     "NORMAL",
     "MOTION",
+    "LIGHT_LIST",
     "DEFAULT_GEOMETRY_BUFFERS",
     "GeometryBufferTopologyError",
     "GeometryStagePhase",

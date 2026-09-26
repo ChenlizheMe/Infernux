@@ -108,11 +108,12 @@ class TextureHandle:
 class BufferHandle:
     """Opaque handle to a graph buffer."""
 
-    def __init__(self, name: str, byte_size: int, usage: int):
+    def __init__(self, name: str, byte_size: int, usage: int, *, view_light_list: bool = False):
         self.name = name
         self.byte_size = byte_size
         self.usage = usage
         self.compute_buffer = None
+        self.view_light_list = bool(view_light_list)
 
     def __repr__(self) -> str:
         return f"<BufferHandle '{self.name}' {self.byte_size} bytes>"
@@ -1224,6 +1225,20 @@ class RenderGraph:
         self._buffers.append(handle)
         return handle
 
+    def create_view_light_list(self, name: str = "light_list") -> BufferHandle:
+        """Expose this View's camera-local canonical light storage buffer.
+
+        The handle is read-only and frame-slot backed by SceneRenderGraph. Its
+        owner and byte range are resolved natively for the active camera frame;
+        no transient or CPU mirror is allocated by the Python graph.
+        """
+        resource_name = self._scoped_name(name)
+        if self._find_texture_exact(resource_name) is not None or self._find_buffer_exact(resource_name) is not None:
+            raise ValueError(f"Resource '{resource_name}' already exists in graph '{self._name}'")
+        handle = BufferHandle(resource_name, 16, int(GraphBufferUsage.STORAGE), view_light_list=True)
+        self._buffers.append(handle)
+        return handle
+
     def import_buffer(self, name: str, buffer) -> BufferHandle:
         """Import an engine-owned uint32 GPU buffer into this view graph.
 
@@ -1978,6 +1993,7 @@ class RenderGraph:
             bd.byte_size = buffer.byte_size
             bd.usage = buffer.usage
             bd.compute_buffer = buffer.compute_buffer
+            bd.view_light_list = buffer.view_light_list
             buffer_list.append(bd)
         desc.buffers = buffer_list
 

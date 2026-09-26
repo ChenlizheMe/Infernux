@@ -35,6 +35,7 @@ from Infernux.renderstack._platform_quality import (
 from Infernux.components.fields import serialized_field
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
+    LIGHT_LIST_BUFFER,
     SHADOW_MAP_TEXTURE,
     add_forward_opaque_pass,
     add_shadow_caster_pass,
@@ -132,14 +133,17 @@ class DefaultForwardPipeline(RenderPipeline):
 
         # Pass 1: Opaque objects (front-to-back for early-z)
         add_forward_opaque_pass(graph, material_pass=self.material_pass)
+        geometry_buffers = {
+            "color": graph.get_texture("color"),
+            "depth": graph.get_texture("depth"),
+            "shadow_map": graph.get_texture(SHADOW_MAP_TEXTURE),
+        }
+        if graph.needs_geometry_buffer(LIGHT_LIST_BUFFER):
+            geometry_buffers[LIGHT_LIST_BUFFER] = graph.create_view_light_list()
         current = self.geometry_stage(
             graph,
             "opaque",
-            buffers={
-                "color": graph.get_texture("color"),
-                "depth": graph.get_texture("depth"),
-                "shadow_map": graph.get_texture(SHADOW_MAP_TEXTURE),
-            },
+            buffers=geometry_buffers,
             queue_range=opaque_queue_range(),
             msaa_samples=msaa_samples,
             clear=True,

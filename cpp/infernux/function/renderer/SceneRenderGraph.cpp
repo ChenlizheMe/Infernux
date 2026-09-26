@@ -138,7 +138,8 @@ bool PassWritesTexture(const GraphPassDesc &pass, const std::string &name)
 
 bool BufferDescEquals(const GraphBufferDesc &a, const GraphBufferDesc &b)
 {
-    return a.name == b.name && a.byteSize == b.byteSize && a.usage == b.usage && a.computeBuffer == b.computeBuffer;
+    return a.name == b.name && a.byteSize == b.byteSize && a.usage == b.usage && a.computeBuffer == b.computeBuffer &&
+           a.viewLightList == b.viewLightList;
 }
 
 bool BufferAccessEquals(const GraphBufferAccessDesc &a, const GraphBufferAccessDesc &b)
@@ -469,6 +470,7 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                                             static_cast<uint32_t>(GraphBufferUsage::TransferDestination);
     std::unordered_map<std::string, const GraphBufferDesc *> buffers;
     buffers.reserve(desc.buffers.size());
+    size_t viewLightListCount = 0;
     for (const auto &buffer : desc.buffers) {
         if (buffer.name.empty() || textures.find(buffer.name) != textures.end()) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: invalid or duplicate buffer name '", buffer.name, "'");
@@ -485,6 +487,19 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                          "' has no live allocation of the declared size");
             return false;
         }
+        if (buffer.viewLightList) {
+            ++viewLightListCount;
+            if (buffer.computeBuffer || buffer.byteSize < sizeof(uint32_t) * 4 ||
+                buffer.usage != static_cast<uint32_t>(GraphBufferUsage::Storage)) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: view light list '", buffer.name,
+                             "' must be a read-only storage resource with a 16-byte header");
+                return false;
+            }
+        }
+    }
+    if (viewLightListCount > 1) {
+        INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: only one view light list is allowed");
+        return false;
     }
 
     std::unordered_set<std::string> passNames;
@@ -612,6 +627,11 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
             if ((buffer->second->usage & requiredUsage) == 0) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' buffer '", access.resource,
                              "' does not declare the required usage");
+                return false;
+            }
+            if (buffer->second->viewLightList && access.type != GraphBufferAccessType::StorageRead) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: view light list '", access.resource,
+                             "' is read-only");
                 return false;
             }
             if (buffer->second->computeBuffer && (access.type == GraphBufferAccessType::StorageWrite ||
@@ -3621,11 +3641,45 @@ void SceneRenderGraph::BuildRenderGraph()
 
     std::unordered_map<std::string, vk::ResourceHandle> customRTHandles;
     std::unordered_map<std::string, vk::ResourceHandle> bufferHandles;
+    std::array<vk::ResourceHandle, kMaxFramesInFlight> viewLightListHandles{};
+    uint64_t viewLightListByteSize = 0;
+    const bool hasViewLightList = std::any_of(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
+                                              [](const GraphBufferDesc &buffer) { return buffer.viewLightList; });
+    if (hasViewLightList) {
+        for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+            const auto lights = m_cameraCanonicalLights.Frame(frameIndex);
+            if (!lights.buffer.IsValid() || lights.capacityBytes < sizeof(uint32_t) * 4) {
+                INXLOG_ERROR("SceneRenderGraph: view light list is unavailable for frame slot ", frameIndex);
+                return;
+            }
+            viewLightListByteSize = std::max(viewLightListByteSize, lights.capacityBytes);
+        }
+    }
     ImportTemporalHistoryResources(customRTHandles);
     if (!m_pythonGraphDesc.passes.empty()) {
         std::unordered_map<std::string, const GraphTextureDesc *> texDescMap;
         for (const auto &tex : m_pythonGraphDesc.textures) {
             texDescMap[tex.name] = &tex;
+        }
+
+        // Import the canonical camera light upload once per frame slot. A
+        // fullscreen consumer selects the active slot at execution time,
+        // so descriptor bindings never retain another View's or frame's
+        // light data.
+        if (hasViewLightList) {
+            for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+                const auto lights = m_cameraCanonicalLights.Frame(frameIndex);
+                const std::string prefix = "View/LightList/Frame" + std::to_string(frameIndex);
+                m_renderGraph->AddComputePass(prefix, [&, frameIndex, prefix, lights](vk::PassBuilder &builder) {
+                    viewLightListHandles[frameIndex] =
+                        builder.ImportBuffer(prefix, lights.buffer, lights.capacityBytes);
+                    m_renderGraph->SetResourceInitialState(viewLightListHandles[frameIndex],
+                                                           rhi::TextureLayout::Undefined, rhi::Access::HostWrite,
+                                                           rhi::PipelineStage::Host);
+                    builder.ReadStorageBuffer(viewLightListHandles[frameIndex], rhi::PipelineStage::FragmentShader);
+                    return [](vk::RenderContext &) {};
+                });
+            }
         }
 
         const auto &sortedPasses = m_pythonGraphDesc.passes;
@@ -3699,6 +3753,10 @@ void SceneRenderGraph::BuildRenderGraph()
         if (!RegisterTransientTextures(width, height, customRTHandles))
             return;
         for (const auto &buffer : m_pythonGraphDesc.buffers) {
+            if (buffer.viewLightList) {
+                bufferHandles[buffer.name] = viewLightListHandles[0];
+                continue;
+            }
             if (buffer.computeBuffer) {
                 const auto owner = buffer.computeBuffer;
                 m_renderGraph->AddPass("__ImportGraphBuffer/" + buffer.name, [&](vk::PassBuilder &builder) {
@@ -4555,9 +4613,11 @@ void SceneRenderGraph::BuildRenderGraph()
                 struct FullscreenReadResource
                 {
                     vk::ResourceHandle handle;
+                    std::array<vk::ResourceHandle, kMaxFramesInFlight> frameHandles{};
                     rhi::PixelFormat format = rhi::PixelFormat::Undefined;
                     bool depthRead = false;
                     bool storageBuffer = false;
+                    bool frameLocal = false;
                     uint64_t byteSize = 0;
                     rhi::SamplerHandle sampler;
                 };
@@ -4585,13 +4645,22 @@ void SceneRenderGraph::BuildRenderGraph()
                             return;
                         const auto maxRange =
                             m_vkCore->GetDeviceContext().GetDeviceProperties().limits.maxStorageBufferRange;
-                        if (description->byteSize > maxRange) {
+                        const uint64_t inputByteSize =
+                            description->viewLightList ? viewLightListByteSize : description->byteSize;
+                        if (inputByteSize > maxRange) {
                             INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name, "' size ",
-                                         description->byteSize, " exceeds Vulkan maxStorageBufferRange ", maxRange);
+                                         inputByteSize, " exceeds Vulkan maxStorageBufferRange ", maxRange);
                             return;
                         }
-                        fsReadInputs.push_back(
-                            {buffer->second, rhi::PixelFormat::Undefined, false, true, description->byteSize});
+                        FullscreenReadResource input{};
+                        input.handle = buffer->second;
+                        input.format = rhi::PixelFormat::Undefined;
+                        input.storageBuffer = true;
+                        input.byteSize = inputByteSize;
+                        input.frameLocal = description->viewLightList;
+                        if (input.frameLocal)
+                            input.frameHandles = viewLightListHandles;
+                        fsReadInputs.push_back(input);
                         continue;
                     }
                     const auto &texture = *texDescMap.at(name);
@@ -4628,7 +4697,12 @@ void SceneRenderGraph::BuildRenderGraph()
                         return;
                     }
                     if (rawSamples || samples == 1) {
-                        fsReadInputs.push_back({source, format, texture.isDepth, false, 0, sampler});
+                        FullscreenReadResource input{};
+                        input.handle = source;
+                        input.format = format;
+                        input.depthRead = texture.isDepth;
+                        input.sampler = sampler;
+                        fsReadInputs.push_back(input);
                         continue;
                     }
                     const uint32_t inputWidth =
@@ -4660,7 +4734,10 @@ void SceneRenderGraph::BuildRenderGraph()
                             });
                             resolvedParticleDepthSource = source;
                         }
-                        fsReadInputs.push_back({resolvedParticleSceneDepth, rhi::PixelFormat::R32SFloat, false});
+                        FullscreenReadResource input{};
+                        input.handle = resolvedParticleSceneDepth;
+                        input.format = rhi::PixelFormat::R32SFloat;
+                        fsReadInputs.push_back(input);
                         continue;
                     }
                     // Camera color shares its existing resolve; transient MSAA color
@@ -4688,7 +4765,10 @@ void SceneRenderGraph::BuildRenderGraph()
                             backbufferDirtySinceResolve = false;
                         }
                     }
-                    fsReadInputs.push_back({resolved, format, false});
+                    FullscreenReadResource input{};
+                    input.handle = resolved;
+                    input.format = format;
+                    fsReadInputs.push_back(input);
                 }
 
                 // Capture references for the execute lambda
@@ -4781,7 +4861,14 @@ void SceneRenderGraph::BuildRenderGraph()
                     // Declare read dependencies for DAG edges + barriers
                     for (const auto &input : fsReadInputs) {
                         if (input.storageBuffer) {
-                            builder.ReadStorageBuffer(input.handle, rhi::PipelineStage::FragmentShader);
+                            if (input.frameLocal) {
+                                for (const auto handle : input.frameHandles) {
+                                    if (handle.IsValid())
+                                        builder.ReadStorageBuffer(handle, rhi::PipelineStage::FragmentShader);
+                                }
+                            } else {
+                                builder.ReadStorageBuffer(input.handle, rhi::PipelineStage::FragmentShader);
+                            }
                         } else if (input.depthRead) {
                             builder.ReadSampledDepth(input.handle);
                         } else {
@@ -4822,7 +4909,12 @@ void SceneRenderGraph::BuildRenderGraph()
                         const uint32_t inputCount = static_cast<uint32_t>(fsReadInputs.size());
                         for (uint32_t i = 0; i < inputCount; ++i) {
                             if (fsReadInputs[i].storageBuffer) {
-                                inputs[i].buffer = ctx.GetBufferHandle(fsReadInputs[i].handle);
+                                const auto resource =
+                                    fsReadInputs[i].frameLocal
+                                        ? fsReadInputs[i]
+                                              .frameHandles[m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight]
+                                        : fsReadInputs[i].handle;
+                                inputs[i].buffer = ctx.GetBufferHandle(resource);
                                 inputs[i].byteSize = fsReadInputs[i].byteSize;
                                 if (!inputs[i].buffer.IsValid()) {
                                     INXLOG_ERROR("FullscreenQuad '", shaderName,

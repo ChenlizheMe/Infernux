@@ -154,6 +154,50 @@ void CheckGraphBufferValidation()
     assert(!valid(broken));
 }
 
+void CheckViewLightListValidation()
+{
+    RenderGraphDescription graph;
+    graph.textures.push_back({"color", rhi::PixelFormat::RGBA8UNorm});
+    GraphBufferDesc lightList;
+    lightList.name = "light_list";
+    lightList.byteSize = sizeof(uint32_t) * 4;
+    lightList.usage = static_cast<uint32_t>(GraphBufferUsage::Storage);
+    lightList.viewLightList = true;
+    graph.buffers.push_back(lightList);
+
+    GraphPassDesc pass;
+    pass.name = "light-consumer";
+    pass.writeColors = {{0, "color"}};
+    pass.clearColor = true;
+    pass.bufferAccesses.push_back({"light_list", GraphBufferAccessType::StorageRead});
+    GraphCommandDesc command;
+    command.type = GraphCommandType::FullscreenQuad;
+    command.shaderName = "light-consumer";
+    command.inputBindings = {{"lightList", "light_list"}};
+    pass.commands.push_back(command);
+    graph.passes.push_back(pass);
+    graph.outputTexture = "color";
+
+    const auto valid = [](const auto &desc) { return SceneRenderGraph::ValidateGraphDescription(desc, 1); };
+    assert(valid(graph));
+
+    auto writable = graph;
+    writable.passes.back().bufferAccesses[0].type = GraphBufferAccessType::StorageWrite;
+    assert(!valid(writable));
+
+    auto wrongUsage = graph;
+    wrongUsage.buffers[0].usage =
+        static_cast<uint32_t>(GraphBufferUsage::Storage) | static_cast<uint32_t>(GraphBufferUsage::TransferDestination);
+    assert(!valid(wrongUsage));
+
+    auto duplicate = graph;
+    auto second = lightList;
+    second.name = "second_light_list";
+    second.viewLightList = true;
+    duplicate.buffers.push_back(second);
+    assert(!valid(duplicate));
+}
+
 void CheckSampledAssetTextureValidation()
 {
     RenderGraphDescription graph;
@@ -516,6 +560,7 @@ int main(int argc, char **argv)
     CheckCameraHistoryResetIsolation();
     CheckFullscreenState();
     CheckGraphBufferValidation();
+    CheckViewLightListValidation();
     CheckSampledAssetTextureValidation();
     CheckWorldUIPassAttachments();
     CheckViewResourceSchedule();

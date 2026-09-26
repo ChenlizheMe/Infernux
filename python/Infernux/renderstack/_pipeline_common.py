@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 COLOR_TEXTURE = "color"
 DEPTH_TEXTURE = "depth"
 SHADOW_MAP_TEXTURE = "shadow_map"
+LIGHT_LIST_BUFFER = "light_list"
 MOTION_TEXTURE = "motion"
 MOTION_MSAA_TEXTURE = "_motion_msaa"
 NORMAL_TEXTURE = "normal"

@@ -194,10 +194,13 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeli
                     sort_mode="front_to_back",
                     material_pass="depth",
                 )
+        geometry_buffers = {"color": camera_color, "depth": depth}
+        if graph.needs_geometry_buffer("light_list"):
+            geometry_buffers["light_list"] = graph.create_view_light_list()
         geometry_result = pipeline.geometry_stage(
             graph,
             "geometry",
-            buffers={"color": camera_color, "depth": depth},
+            buffers=geometry_buffers,
             queue_range=(
                 opaque_domain.queue.as_tuple() if opaque_domain is not None
                 else (0, 2999)
