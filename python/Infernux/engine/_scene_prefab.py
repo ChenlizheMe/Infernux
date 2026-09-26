@@ -432,14 +432,21 @@ class ScenePrefabMixin:
         """Sync every prefab instance in *scene* to its latest on-disk data.
 
         Called after scene load and after exiting Prefab Mode so that all
-        prefab instances reflect the most recent prefab files.
+        prefab instances reflect the most recent prefab files.  When no
+        scene is supplied, refresh every resident world rather than silently
+        limiting source propagation to the active scene.  The explicit scene
+        form remains available for a scene-load transaction that is not yet
+        part of the resident-world list.
         """
-        if scene is None:
-            from Infernux.lib import SceneManager
-            scene = SceneManager.instance().get_active_scene()
-        if scene is None or not self._asset_database:
+        if not self._asset_database:
             return
-        self._sync_prefab_scenes((scene,))
+        if scene is None:
+            from Infernux.engine.prefab_overrides import _loaded_prefab_scenes
+            scenes = tuple(_loaded_prefab_scenes())
+        else:
+            scenes = (scene,)
+        if scenes:
+            self._sync_prefab_scenes(scenes)
 
     def sync_prefab_dependents(self, source_guid):
         """Publish an external source revision into affected open worlds only."""

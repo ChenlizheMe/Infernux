@@ -213,6 +213,23 @@ def test_scene_refresh_resolves_nested_source_introduced_by_outer_update(scene, 
     assert instance.get_child(0).get_child(0).name == "Newly Introduced Latest Inner"
 
 
+def test_prefab_refresh_without_scene_covers_all_resident_worlds(monkeypatch):
+    from types import SimpleNamespace
+    from Infernux.engine import prefab_overrides
+    from Infernux.engine.scene_manager import SceneFileManager
+
+    manager = SceneFileManager()
+    manager._asset_database = object()
+    worlds = (SimpleNamespace(world_id=11), SimpleNamespace(world_id=22))
+    received = []
+    monkeypatch.setattr(prefab_overrides, "_loaded_prefab_scenes", lambda: list(worlds))
+    monkeypatch.setattr(manager, "_sync_prefab_scenes", lambda scenes, **_kwargs: received.append(tuple(scenes)))
+
+    manager.sync_all_prefab_instances()
+
+    assert received == [worlds]
+
+
 def test_copy_nested_root_is_new_outer_instance_but_keeps_inner_identity(scene, tmp_path):
     from Infernux.engine.component_restore import clone_game_object_transactionally
 
