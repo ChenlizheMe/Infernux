@@ -346,7 +346,8 @@ function in <b>Infernux.jit</b>
 <p>description
 Compile and validate one runtime signature using isolated argument copies.
 Preparation failures propagate and never cause a second execution through a
-different backend.</p>
+different backend. A target without CPU JIT removes this call while cooking
+ordinary Python bytecode; the runtime API itself never becomes a no-op.</p>
 <!-- USER CONTENT END -->
 
 <h2 id="parameters">Parameters<a class="headerlink" href="#parameters" title="Permanent link">&para;</a></h2>

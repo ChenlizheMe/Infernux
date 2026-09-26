@@ -345,7 +345,8 @@
 <!-- USER CONTENT START -->
 <p>description
 使用隔离的参数副本编译并验证一种运行时签名。准备失败会直接抛出，
-不会改用另一个后端再次执行。</p>
+不会改用另一个后端再次执行。无 CPU JIT 的目标会在 Cook 普通 Python
+字节码时删除该调用；运行时 API 本身不会变成 no-op。</p>
 <!-- USER CONTENT END -->
 
 <h2 id="_2">参数<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>

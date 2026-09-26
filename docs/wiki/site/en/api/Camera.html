@@ -395,7 +395,7 @@ class in <b>Infernux.components.builtin</b>
 <tr>
 <td>projection_mode</td>
 <td><code>int</code></td>
-<td>The projection mode (Perspective, Orthographic, or Physical).</td>
+<td>The projection mode (Perspective or Orthographic).</td>
 </tr>
 <tr>
 <td>field_of_view</td>
@@ -403,9 +403,59 @@ class in <b>Infernux.components.builtin</b>
 <td>The vertical field of view in degrees.</td>
 </tr>
 <tr>
+<td>use_physical_properties</td>
+<td><code>bool</code></td>
+<td>Use physical lens and sensor properties for perspective projection.</td>
+</tr>
+<tr>
+<td>iso</td>
+<td><code>int</code></td>
+<td>Physical camera sensor sensitivity.</td>
+</tr>
+<tr>
+<td>shutter_speed</td>
+<td><code>float</code></td>
+<td>Physical camera exposure time in seconds.</td>
+</tr>
+<tr>
+<td>aperture</td>
+<td><code>float</code></td>
+<td>Physical camera aperture in f-stops.</td>
+</tr>
+<tr>
+<td>focus_distance</td>
+<td><code>float</code></td>
+<td>Physical camera focus-plane distance.</td>
+</tr>
+<tr>
+<td>blade_count</td>
+<td><code>int</code></td>
+<td>Physical camera diaphragm blade count.</td>
+</tr>
+<tr>
+<td>curvature</td>
+<td><code>Vector2</code></td>
+<td>Minimum and maximum aperture used for diaphragm curvature.</td>
+</tr>
+<tr>
+<td>barrel_clipping</td>
+<td><code>float</code></td>
+<td>Optical-vignetting cat-eye strength.</td>
+</tr>
+<tr>
+<td>anamorphism</td>
+<td><code>float</code></td>
+<td>Physical camera sensor stretch.</td>
+</tr>
+<tr>
 <td>focal_length</td>
 <td><code>float</code></td>
 <td>Physical camera focal length in millimetres.</td>
+</tr>
+<tr>
+<td>sensor_type</td>
+<td><code>CameraSensorType</code></td>
+<td>Derived sensor-size preset; Custom preserves the authored sensor size.</td>
 </tr>
 <tr>
 <td>sensor_size</td>

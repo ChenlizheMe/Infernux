@@ -339,7 +339,7 @@
 </div>
 
 <h2 id="_1">描述<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h2>
-<p>渲染图中的临时纹理句柄。</p>
+<p>渲染图中声明或导入的纹理资源句柄。</p>
 <!-- USER CONTENT START -->
 <p>description</p>
 <!-- USER CONTENT END -->
@@ -402,6 +402,21 @@
 <td>samples</td>
 <td><code>int</code></td>
 <td></td>
+</tr>
+<tr>
+<td>asset_guid</td>
+<td><code>str</code></td>
+<td>导入纹理资产的 GUID；渲染图临时纹理和 RenderTexture 附件为空字符串。</td>
+</tr>
+<tr>
+<td>depth</td>
+<td><code>int</code></td>
+<td>纹理深度；2D 纹理为 <code>1</code>。</td>
+</tr>
+<tr>
+<td>is_volume</td>
+<td><code>bool</code></td>
+<td>该句柄是否引用 3D 纹理。</td>
 </tr>
 <tr>
 <td>is_depth</td>

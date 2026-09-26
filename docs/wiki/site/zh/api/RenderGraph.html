@@ -465,8 +465,8 @@
 <td>Get a texture handle by name, or None if not found.</td>
 </tr>
 <tr>
-<td><code>import_texture(name: str, texture: RenderTexture, attachment: str = 'color') → TextureHandle</code></td>
-<td>导入外部纹理。</td>
+<td><code>import_texture(name: str, texture: RenderTexture | InxTexture, attachment: str = 'color') → TextureHandle</code></td>
+<td>导入持久 RenderTexture 附件或 GUID 管理的 2D/3D 纹理资产。资产纹理只读采样，重导入后无需重开场景即可更新。</td>
 </tr>
 <tr>
 <td><code>create_temporal_history(name: str, format: Format = Format.RGBA16_SFLOAT, size: Optional[Tuple[int, int]] = None, size_divisor: int = 0) → Tuple[TextureHandle, TextureHandle]</code></td>
@@ -604,6 +604,25 @@
 </table>
 <!-- USER CONTENT START -->
 <p>public_methods</p>
+<p>导入 <code>InxTexture</code> 时，资源必须具有已发布的 GUID 和明确的 <code>2d</code> 或 <code>3d</code>
+维度元数据，shader 资源维度必须与之匹配。资产纹理不能作为渲染图输出、
+Copy 目标、颜色/深度附件或 Resolve 目标。冷加载资产不会阻塞编辑器帧；资源
+准备完成后，渲染图会重新尝试发布。</p>
+<p>声明 <code>Requires [Lighting]</code> 的 fullscreen shader 会通过描述符 set 1 获得当前
+Camera/View 独立的 Lighting UBO、Forward+ 灯光列表、阴影图集和相机位置。
+阴影纹理仍必须作为显式 <code>shadow_map</code> Pass 依赖声明，保证调度关系可见。
+声明式 Deferred route 在开启阴影时，会在每个 GBuffer 几何 Pass 上声明
+<code>set_texture("shadowMap", shadow_map)</code>。这会将同一 View 的阴影图像发布给
+per-view 灯光描述符，并保证阴影投射 Pass 排在光照之前。未开启阴影时，
+route 不声明 <code>shadowMap</code> 绑定。</p>
+<p>默认 Deferred 管线的 <code>gbuffer_normal</code> 是私有纹理：RGB 存编码后的世界法线，
+alpha 存供延迟光照使用的 smoothness。仅当消费者请求公开 <code>normal</code> 时，
+GBuffer 结果才生成独立的全分辨率 RGBA16 纹理：RGB 存当前 View 的编码法线，
+可见 DeferredCompatible 几何处 alpha 为 1，其余清空区域为 0。Forward+ 不兼容
+材质补绘之后，<code>opaque_lighting</code> 结果先复制当前公开 normal（包括
+<code>after_gbuffer</code> 效果的改写），再依据最终只读深度覆盖可见的
+DeferredUnsupported 几何；后续阶段继承这一结果。替换 <code>normal</code> 的效果必须
+保持 alpha 的 coverage 约定。</p>
 <!-- USER CONTENT END -->
 
 <h2 id="_5">示例<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>

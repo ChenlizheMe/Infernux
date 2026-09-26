@@ -26,11 +26,11 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Official Infernux documentation for 编写编辑器工具.">
-
+    
     <meta name="theme-color" content="#0a0c11">
     <meta name="color-scheme" content="dark light">
     <title>编写编辑器工具 - Infernux Documentation</title>
-
+    
     <link rel="canonical" href="https://infernux-engine.com/wiki/site/zh/editor-authoring.html">
     <meta property="og:type" content="article">
     <meta property="og:site_name" content="Infernux Engine">
@@ -44,9 +44,9 @@
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
     <meta property="og:image:alt" content="Infernux NASA Punk 任务卡，包含编辑器、熔炉标志和技术预览状态。">
-
-
-
+    
+    
+    
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="编写编辑器工具 - Infernux Documentation">
     <meta name="twitter:description" content="Official Infernux documentation for 编写编辑器工具.">
@@ -105,25 +105,25 @@
               "name": "\u5f00\u59cb\u4f7f\u7528",
               "item": "https://infernux-engine.com/start.html"
             },
-
+            
             {
               "@type": "ListItem",
               "position": 2,
               "name": "\u7f16\u5199\u7f16\u8f91\u5668\u5de5\u5177",
               "item": "https://infernux-engine.com/wiki/site/zh/editor-authoring.html"
             }
-
+            
           ]
         }
       ]
     }
     </script>
-
-
+    
+    
     <link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/editor-authoring.html">
     <link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/editor-authoring.html">
     <link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/editor-authoring.html">
-
+    
     <link rel="alternate" type="application/json" title="Infernux API index" href="/api-index.json">
     <link rel="manifest" href="/site.webmanifest">
     <link rel="icon" type="image/png" href="/assets/logo.png">
@@ -136,10 +136,10 @@
     <link rel="stylesheet" href="/css/wiki-template.8274a64753b131d2.css">
 </head>
 <body class="guide-page">
-
-
-
-
+    
+    
+    
+    
     <a class="skip-link" href="#main-content">跳到正文</a>
     <!-- Top Navigation -->
     <nav class="navbar" aria-label="主导航">
@@ -176,21 +176,21 @@
         </div>
     </nav>
 
-
+    
     <!-- Article Layout (No Sidebar) -->
     <main class="page-shell article-page-shell" id="main-content">
         <div class="container article-page-container">
             <div class="api-main article-page-content">
-
+                
     <nav class="doc-breadcrumb" aria-label="面包屑">
         <a href="/start.html">开始使用</a>
         <span aria-hidden="true">/</span>
-
+        
         <span aria-current="page">编写编辑器工具</span>
     </nav>
-
-
-
+    
+                
+                
     <aside class="doc-outline" data-doc-outline hidden>
         <div class="doc-outline-head">
             <strong>本页目录</strong>
@@ -201,7 +201,7 @@
         </div>
         <nav class="doc-outline-links" id="doc-outline-links" aria-label="本页章节"></nav>
     </aside>
-
+    
                 <h1 id="_1">编写编辑器工具<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h1>
 <p><code>inx.editor</code> 是项目自定义编辑器工具的公开入口。创建物体、Prefab、保存和撤销都沿用编辑器现有服务，不需要脚本自行拼装 Scene JSON。它要求已打开的编辑器会话，Play 模式不可用；不要把这些调用放进游戏运行脚本。</p>
 <p>把下面的脚本保存为 <code>Assets/Editor/CreateObstacle.py</code>。加载后按 F9，或在命令面板中搜索“创建机关”，即可创建机关层级、保存为 Prefab 并放置一个实例。</p>
@@ -235,7 +235,7 @@
 <h2 id="transform">由组件驱动的 Transform 字段<a class="headerlink" href="#transform" title="Permanent link">&para;</a></h2>
 <p>当启用的组件负责其 GameObject 的部分 Transform 时，只需声明一次所有权，
 Inspector 与 Scene 工具会遵守同一规则：</p>
-<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="n">DrivenTransformProperties</span><span class="p">,</span>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">InxComponent</span><span class="p">,</span>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">drives_transform</span><span class="p">,</span>
@@ -334,7 +334,7 @@ Inspector 与 Scene 工具会遵守同一规则：</p>
 <p>作者工具添加组件时，使用 <code>inx.editor.add_component(obj, "MyComponent", configure=initialize)</code>。它与 Inspector 共用组件添加服务，解析已发布的脚本和资产身份，并把初始化值纳入撤销/重做。直接从旧的导入类构造实例再调用 <code>add_py_component</code>，会绕过这条作者工具链路。</p>
 <p>普通的 <code>obj.add_component(MyComponent)</code> 与 <code>obj.get_component(MyComponent)</code> 也会把保留的类句柄解析到当前已发布脚本类型，包括 preload 在首次资产 GUID 发布前导入的类。匹配按所属模块和限定类名，不会混淆不同脚本中的同名类。直接调用 <code>MyComponent()</code> 再传给低层 <code>add_py_component</code> 不执行这一步身份解析；编辑已有物体且需要撤销时，仍使用 <code>inx.editor.add_component</code>。</p>
 <p>工具需要加载已有材质时，直接调用 <code>inx.AssetManager.load("Assets/Materials/Example.mat")</code>。Editor 会立即把这条 <code>Assets</code> 相对作者路径转换为资产 GUID。Player 也接受相同的 path 表达式，但只能通过构建时冻结的查询索引得到 GUID，之后只按 GUID 继续；它不会扫描 <code>Assets</code>，也不把 path 当成运行时身份。<code>find_assets("Assets/Materials/*.mat")</code> 在两端都返回不可变的 <code>AssetFile</code> 文件对象；对象只用 <code>guid</code> 标识，并可调用 <code>load()</code> 加载，作者路径不会成为它的身份。直接传 <code>Assets/Materials</code> 会枚举该目录的直接子文件；递归查找应显式使用 <code>Assets/Materials/**/*.mat</code>，文件夹本身永远不会成为结果。</p>
-<p>真实文件和 Mod 目录使用显式的第二模式：给 <code>load</code> 传 <code>raw_filesystem=True</code> 可取得 <code>SandboxPath</code>，给 <code>find_assets</code> 传同一开关可列举沙箱文件。传入 <code>Mods</code> 这类目录时只枚举它的直接子文件，文件夹不会出现在查询结果里。Editor 的根是项目 <code>Assets</code>，Player 的根是可执行文件目录。句柄提供 <code>read_bytes</code>、<code>read_text</code>、<code>write_bytes</code>、<code>write_text</code> 和非递归 <code>delete</code>。绝对路径、父目录穿越，以及符号链接/junction 穿越都会被拒绝；不要把 <code>SandboxPath</code> 持久化成资产身份。</p>
+<p>真实文件和 Mod 目录使用显式的第二模式：给 <code>load</code> 传 <code>raw_filesystem=True</code> 可取得 <code>SandboxPath</code>，给 <code>find_assets</code> 传同一开关可列举沙箱文件。传入 <code>Mods</code> 这类目录时只枚举它的直接子文件，文件夹不会出现在查询结果里。Editor 的根是项目 <code>Assets</code>，桌面 Player 的根是可执行文件目录；Web Player 使用浏览器持久化存储中独立的 loose-file 目录，不会暴露打包后的 MEMFS 内容。句柄提供 <code>read_bytes</code>、<code>read_text</code>、<code>write_bytes</code>、<code>write_text</code> 和非递归 <code>delete</code>。绝对路径、父目录穿越，以及符号链接/junction 穿越都会被拒绝；不要把 <code>SandboxPath</code> 持久化成资产身份。</p>
 <p><code>get_build_scenes()</code> 返回独立的、有序的项目相对路径列表。<code>set_build_scenes(paths)</code> 用一条可撤销操作更新同一份 Build Settings；路径必须是 <code>Assets</code> 下已存在的 <code>.scene</code>。传空列表表示清空，相同列表不新增历史。编辑器的自动保存仍生效，也可显式调用 <code>save_project_settings()</code>，其返回状态与场景保存相同，不要把 <code>PENDING</code> 当成写盘完成。</p>
 <h2 id="_4">保存和切换场景<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
 <p><code>save_scene("Assets/Scenes/关卡.scene")</code> 通过正常保存事务另存当前场景；省略路径则保存当前文档，无路径时请求另存对话框。返回结果不能一律当作“保存完成”：</p>
@@ -379,13 +379,13 @@ Inspector 与 Scene 工具会遵守同一规则：</p>
 <li>场景重开、重新实例化和构建解析内层源的最新内容，即使外层文件没有变化。循环嵌套会报错，不会展开成无限层级。</li>
 </ul>
 <p>这些入口不是完整的 Unity Editor SDK。项目作者工具的完整迁移仍是单独的验收任务。</p>
-
+                
     <nav class="doc-trail" data-doc-trail aria-label="文档连续阅读与反馈">
         <a class="doc-trail-fallback" href="/wiki/site/zh/api/index.html">返回 API 目录</a>
     </nav>
-
-
-
+    
+                
+    
     <section class="doc-build-provenance" data-doc-build-provenance data-state="loading" aria-label="文档发布证据">
         <span class="doc-build-label">发布证据</span>
         <div class="doc-build-facts" data-doc-build-facts aria-live="polite">
@@ -393,8 +393,8 @@ Inspector 与 Scene 工具会遵守同一规则：</p>
         </div>
         <a class="doc-build-manifest" href="/docs-manifest.json">机器清单 JSON</a>
     </section>
-
-
+    
+    
             </div>
         </div>
     </main>
@@ -407,7 +407,7 @@ Inspector 与 Scene 工具会遵守同一规则：</p>
             </div>
         </div>
     </footer>
-
+    
 
     <dialog class="docs-search-dialog" id="docs-search-dialog" role="dialog" aria-modal="true" aria-labelledby="docs-search-title">
         <button type="button" class="docs-search-backdrop" data-docs-search-close tabindex="-1" aria-hidden="true"></button>

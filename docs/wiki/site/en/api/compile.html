@@ -26,11 +26,11 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
     <meta name="referrer" content="strict-origin-when-cross-origin">
     <meta name="description" content="Official Infernux scripting API reference for compile.">
-
+    
     <meta name="theme-color" content="#0a0c11">
     <meta name="color-scheme" content="dark light">
     <title>compile - Infernux Documentation</title>
-
+    
     <link rel="canonical" href="https://infernux-engine.com/wiki/site/en/api/compile.html">
     <meta property="og:type" content="article">
     <meta property="og:site_name" content="Infernux Engine">
@@ -44,9 +44,9 @@
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
     <meta property="og:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status.">
-
-
-
+    
+    
+    
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="compile - Infernux Documentation">
     <meta name="twitter:description" content="Official Infernux scripting API reference for compile.">
@@ -105,7 +105,7 @@
               "name": "Start",
               "item": "https://infernux-engine.com/start.html"
             },
-
+            
             {
               "@type": "ListItem",
               "position": 2,
@@ -118,18 +118,18 @@
               "name": "compile",
               "item": "https://infernux-engine.com/wiki/site/en/api/compile.html"
             }
-
+            
           ]
         }
       ]
     }
     </script>
-
-
+    
+    
     <link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/compile.html">
     <link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/compile.html">
     <link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/compile.html">
-
+    
     <link rel="alternate" type="application/json" title="Infernux API index" href="/api-index.json">
     <link rel="manifest" href="/site.webmanifest">
     <link rel="icon" type="image/png" href="/assets/logo.png">
@@ -142,10 +142,10 @@
     <link rel="stylesheet" href="/css/wiki-template.8274a64753b131d2.css">
 </head>
 <body class="api-reference-page">
-
-
-
-
+    
+    
+    
+    
     <a class="skip-link" href="#main-content">Skip to content</a>
     <!-- Top Navigation -->
     <nav class="navbar" aria-label="Primary navigation">
@@ -182,7 +182,7 @@
         </div>
     </nav>
 
-
+    
     <!-- API Reference Layout -->
     <div class="api-layout">
         <!-- Sidebar — namespace / package tree -->
@@ -310,18 +310,18 @@
 
         <!-- Main content -->
         <main class="api-main" id="main-content">
-
+            
     <nav class="doc-breadcrumb" aria-label="Breadcrumb">
         <a href="/start.html">Start</a>
         <span aria-hidden="true">/</span>
-
+        
         <a href="/wiki/site/en/api/index.html">API</a>
         <span aria-hidden="true">/</span>
-
+        
         <span aria-current="page">compile</span>
     </nav>
-
-
+    
+            
     <aside class="doc-outline" data-doc-outline hidden>
         <div class="doc-outline-head">
             <strong>On this page</strong>
@@ -332,7 +332,7 @@
         </div>
         <nav class="doc-outline-links" id="doc-outline-links" aria-label="Sections on this page"></nav>
     </aside>
-
+    
             <h1 id="compile">compile<a class="headerlink" href="#compile" title="Permanent link">&para;</a></h1>
 <div class="class-info">
 function in <b>Infernux.jit</b>
@@ -347,8 +347,10 @@ function in <b>Infernux.jit</b>
 Use this decorator for CPU numeric work. Infernux analyzes the function and
 selects a serial or proven-parallel native implementation. Desktop targets
 without the bundled CPU compiler reject the declaration. Web explicitly
-defines this decorator as ordinary Python execution at build time; that target
-contract is not an error-time backend fallback.</p>
+cooks the decorated function into ordinary Python bytecode and removes the
+decorator before the Player runs; that target contract is not an error-time
+backend fallback. Calling an uncooked JIT decorator without the bundled
+compiler remains an error.</p>
 <!-- USER CONTENT END -->
 
 <h2 id="parameters">Parameters<a class="headerlink" href="#parameters" title="Permanent link">&para;</a></h2>
@@ -371,7 +373,7 @@ contract is not an error-time backend fallback.</p>
 <h2 id="example">Example<a class="headerlink" href="#example" title="Permanent link">&para;</a></h2>
 <!-- USER CONTENT START -->
 <p>example
-<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">jit</span>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">jit</span>
 <a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
 <a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nd">@jit</span><span class="o">.</span><span class="n">compile</span>
 <a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">integrate</span><span class="p">(</span><span class="n">positions</span><span class="p">,</span> <span class="n">velocities</span><span class="p">,</span> <span class="n">dt</span><span class="p">):</span>
@@ -379,13 +381,13 @@ contract is not an error-time backend fallback.</p>
 <a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>        <span class="n">positions</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">+=</span> <span class="n">velocities</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">*</span> <span class="n">dt</span>
 </code></pre></div></p>
 <!-- USER CONTENT END -->
-
+            
     <nav class="doc-trail" data-doc-trail aria-label="Document navigation and feedback">
         <a class="doc-trail-fallback" href="/wiki/site/en/api/index.html">Back to API index</a>
     </nav>
-
-
-
+    
+            
+    
     <section class="doc-build-provenance" data-doc-build-provenance data-state="loading" aria-label="Documentation build evidence">
         <span class="doc-build-label">Build evidence</span>
         <div class="doc-build-facts" data-doc-build-facts aria-live="polite">
@@ -393,8 +395,8 @@ contract is not an error-time backend fallback.</p>
         </div>
         <a class="doc-build-manifest" href="/docs-manifest.json">Machine manifest JSON</a>
     </section>
-
-
+    
+    
         </main>
     </div>
 
@@ -406,7 +408,7 @@ contract is not an error-time backend fallback.</p>
             </div>
         </div>
     </footer>
-
+    
 
     <dialog class="docs-search-dialog" id="docs-search-dialog" role="dialog" aria-modal="true" aria-labelledby="docs-search-title">
         <button type="button" class="docs-search-backdrop" data-docs-search-close tabindex="-1" aria-hidden="true"></button>
