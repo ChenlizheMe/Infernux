@@ -328,8 +328,25 @@ bool VkDeviceContext::Initialize(SDL_Window *window, const DeviceConfig &config)
 {
     INXLOG_INFO("Initializing Vulkan device context...");
 
+    if (window == nullptr) {
+        INXLOG_ERROR("Vulkan device initialization requires an SDL window");
+        return false;
+    }
+
+    uint32_t extensionCount = 0;
+    const char *const *windowExtensions = SDL_Vulkan_GetInstanceExtensions(&extensionCount);
+    if (windowExtensions == nullptr || extensionCount == 0) {
+        INXLOG_ERROR("SDL did not provide Vulkan window extensions: ", SDL_GetError());
+        return false;
+    }
+    DeviceConfig instanceConfig = config;
+    instanceConfig.windowInstanceExtensions.clear();
+    instanceConfig.windowInstanceExtensions.reserve(extensionCount);
+    for (uint32_t index = 0; index < extensionCount; ++index)
+        instanceConfig.windowInstanceExtensions.emplace_back(windowExtensions[index]);
+
     // Step 1: Create instance
-    if (!CreateInstance(config)) {
+    if (!CreateInstance(instanceConfig)) {
         INXLOG_ERROR("Failed to create Vulkan instance");
         return false;
     }
@@ -626,7 +643,7 @@ bool VkDeviceContext::CreateInstance(const DeviceConfig &config)
     appInfo.apiVersion = m_instanceApiVersion;
 
     // Get required extensions
-    auto extensions = GetRequiredExtensions(m_validationEnabled);
+    auto extensions = GetRequiredExtensions(config, m_validationEnabled);
 
     // Instance create info
     VkInstanceCreateInfo createInfo{};
@@ -787,6 +804,11 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     capabilityRequest.dynamicRendering = true;
     capabilityRequest.synchronization2 = true;
     capabilityRequest.submit2 = capabilitySnapshot.supported.submit2.supported;
+    // Enable optional arithmetic once on the engine-owned device. Compute
+    // providers consume the published enabled state, not a second device probe.
+    capabilityRequest.shaderInt16 = capabilitySnapshot.supported.shaderInt16.supported;
+    capabilityRequest.shaderInt64 = capabilitySnapshot.supported.shaderInt64.supported;
+    capabilityRequest.shaderFloat64 = capabilitySnapshot.supported.shaderFloat64.supported;
     if (forceBoundedDescriptors)
         INXLOG_INFO("Descriptor indexing disabled by INFERNUX_FORCE_BOUNDED_DESCRIPTORS; validating bounded "
                     "descriptor fallback");
@@ -797,11 +819,12 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
 
     const VkPhysicalDeviceFeatures &supportedFeatures = capabilityProbe.coreFeatures;
 
-    VkPhysicalDeviceFeatures deviceFeatures{};
+    VkPhysicalDeviceFeatures deviceFeatures = featureChain.GetFeatures2().features;
     deviceFeatures.samplerAnisotropy = VK_TRUE;
     deviceFeatures.fillModeNonSolid = supportedFeatures.fillModeNonSolid; // Optional wireframe support
     deviceFeatures.depthBiasClamp = supportedFeatures.depthBiasClamp;     // Optional shadow bias clamping
     deviceFeatures.wideLines = supportedFeatures.wideLines;               // For debug lines (when available)
+    deviceFeatures.sampleRateShading = supportedFeatures.sampleRateShading;
 
     const rhi::DeviceCapabilityState enabledCapabilityState = featureChain.GetEnabledState();
     m_rhiCapabilityState = {};
@@ -1153,16 +1176,13 @@ bool VkDeviceContext::CheckDeviceExtensionSupport(VkPhysicalDevice device,
     return requiredExtensions.empty();
 }
 
-std::vector<const char *> VkDeviceContext::GetRequiredExtensions(bool enableValidation) const
+std::vector<const char *> VkDeviceContext::GetRequiredExtensions(const DeviceConfig &config,
+                                                                 bool enableValidation) const
 {
-    // Get SDL required extensions
-    uint32_t sdlExtensionCount = 0;
-    const char *const *sdlExtensions = SDL_Vulkan_GetInstanceExtensions(&sdlExtensionCount);
-
     std::vector<const char *> extensions;
-    if (sdlExtensions) {
-        extensions.insert(extensions.end(), sdlExtensions, sdlExtensions + sdlExtensionCount);
-    }
+    extensions.reserve(config.windowInstanceExtensions.size() + (enableValidation ? 1u : 0u) + 1u);
+    for (const std::string &extension : config.windowInstanceExtensions)
+        extensions.push_back(extension.c_str());
 
     // Add debug utils if validation enabled
     if (enableValidation) {

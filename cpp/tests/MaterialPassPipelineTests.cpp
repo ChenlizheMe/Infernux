@@ -1,3 +1,6 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <function/renderer/MaterialPassPipeline.h>
 
 #include <cassert>
@@ -87,6 +90,21 @@ int main()
     descriptors.insert(baseColor);
     descriptors.insert(forward);
     assert(descriptors.size() == 7);
+    auto reflected = forward;
+    reflected.invertCulling = true;
+    assert(reflected.IsValid() && reflected != forward);
+    assert(reflected.RenderingSignature() == forward.RenderingSignature());
+    descriptors.insert(reflected);
+    assert(descriptors.size() == 8);
+    infernux::rhi::GraphicsPipelineDesc raster;
+    raster.raster.frontFace = infernux::rhi::FrontFace::Clockwise;
+    reflected.ApplyRasterContract(raster);
+    assert(raster.raster.frontFace == infernux::rhi::FrontFace::CounterClockwise);
+    raster.raster.frontFace = infernux::rhi::FrontFace::CounterClockwise;
+    reflected.ApplyRasterContract(raster);
+    assert(raster.raster.frontFace == infernux::rhi::FrontFace::Clockwise);
+    forward.ApplyRasterContract(raster);
+    assert(raster.raster.frontFace == infernux::rhi::FrontFace::Clockwise);
 
     auto differentSamples = forward;
     differentSamples.samples = SampleCount::One;

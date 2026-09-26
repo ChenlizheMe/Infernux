@@ -258,14 +258,14 @@ class Lexer final
 
 bool IsPropertyType(std::string_view value)
 {
-    static const std::unordered_set<std::string> Types = {"Float", "Float2", "Float3", "Float4",
-                                                          "Color", "Int",    "Mat4",   "Texture2D"};
+    static const std::unordered_set<std::string> Types = {"Float", "Float2", "Float3",    "Float4",     "Color",
+                                                          "Int",   "Mat4",   "Texture2D", "FloatArray", "Float4Array"};
     return Types.find(std::string(value)) != Types.end();
 }
 
 bool IsValueType(std::string_view value)
 {
-    return IsPropertyType(value) && value != "Texture2D";
+    return IsPropertyType(value) && value != "Texture2D" && value != "FloatArray" && value != "Float4Array";
 }
 
 bool IsInterpolation(std::string_view value)
@@ -453,8 +453,12 @@ class Parser final
         while (m_current.kind != TokenKind::RightBrace && m_current.kind != TokenKind::End) {
             const Token begin = m_current;
             if (m_current.kind != TokenKind::Identifier ||
-                (m_current.text != "Texture2D" && m_current.text != "Texture2DUInt")) {
-                Error(m_current, "Resources supports Texture2D and Texture2DUInt declarations");
+                (m_current.text != "Texture2D" && m_current.text != "Texture3D" && m_current.text != "Texture2DUInt" &&
+                 m_current.text != "Texture2DMS" && m_current.text != "Texture2DMSUInt" &&
+                 m_current.text != "BufferUInt")) {
+                Error(m_current,
+                      "Resources supports Texture2D, Texture3D, Texture2DUInt, Texture2DMS, Texture2DMSUInt and "
+                      "BufferUInt");
                 SkipToPropertyBoundary();
                 continue;
             }

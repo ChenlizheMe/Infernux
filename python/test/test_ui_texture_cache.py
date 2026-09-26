@@ -7,11 +7,16 @@ from Infernux.ui import ui_texture_cache as texture_cache_module
 class _NativeTexturePreview:
     def __init__(self):
         self.live_texture_id = 0
+        self.imported_texture_id = 0
         self.queries = []
 
     def get_texture_preview_texture_id(self, resource_key):
         self.queries.append(resource_key)
         return self.live_texture_id
+
+    def _get_imported_texture_ui_texture_id(self, resource_key, guid):
+        self.queries.append((resource_key, guid))
+        return self.imported_texture_id
 
 
 class _Engine:
@@ -77,3 +82,41 @@ def test_ui_texture_requires_registered_asset_guid(monkeypatch):
     cache = texture_cache_module.UITextureCache()
     with pytest.raises(KeyError, match="not registered in AssetDatabase"):
         cache.get(_Engine(_NativeTexturePreview()), "Assets/UI/missing.png")
+
+
+def test_texture_ref_uses_native_guid_binding_without_path_round_trip(monkeypatch):
+    from Infernux.core.asset_ref import TextureRef
+    monkeypatch.setattr(AssetManager, "require_asset_database", lambda: pytest.fail("GUID binding must not need AssetDatabase"))
+    monkeypatch.setattr(
+        texture_cache_module,
+        "query_or_schedule_texture",
+        lambda *_args, **_kwargs: pytest.fail("GUID binding must not decode a source image"),
+    )
+
+    cache = texture_cache_module.UITextureCache()
+    reference = TextureRef(guid="texture-guid", path_hint="Assets/UI/stale.png")
+    native = _NativeTexturePreview()
+    native.imported_texture_id = 404
+    assert cache.get(_Engine(native), reference) == 404
+    assert native.queries == [("ui_img|texture-guid", "texture-guid")]
+    assert tuple(cache._cache) == ("texture-guid",)
+    generation = cache.generation
+    native.imported_texture_id = 606
+    assert cache.get(_Engine(native), reference) == 606
+    assert cache.generation == generation + 1
+
+
+def test_player_texture_ref_uses_native_cooked_guid_without_editor_database(monkeypatch):
+    from Infernux.application import Application
+    from Infernux.core.asset_ref import TextureRef
+    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
+    monkeypatch.setattr(AssetManager, "require_asset_database", lambda: pytest.fail("Player must not need AssetDatabase"))
+    monkeypatch.setattr(texture_cache_module, "query_or_schedule_texture", lambda *_args, **_kwargs: pytest.fail("Cooked artifacts are not source images"))
+
+    cache = texture_cache_module.UITextureCache()
+    reference = TextureRef(guid="ui-guid", path_hint="C:/host-only/stale.png")
+    native = _NativeTexturePreview()
+    native.imported_texture_id = 505
+    assert cache.get(_Engine(native), reference) == 505
+    assert native.queries == [("ui_img|ui-guid", "ui-guid")]
+    assert tuple(cache._cache) == ("ui-guid",)

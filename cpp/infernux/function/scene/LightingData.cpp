@@ -136,7 +136,7 @@ void SceneLightCollector::AddCanonicalLight(const Light *light, const glm::vec3 
     data.positionRange = glm::vec4(worldPosition, directional ? 0.0f : std::max(light->GetRange(), 0.0f));
     data.directionOuterCos =
         glm::vec4(direction, spot ? std::cos(glm::radians(light->GetOuterSpotAngle() * 0.5f)) : -1.0f);
-    data.colorIntensity = glm::vec4(inx::color::SrgbToLinear(light->GetColor()), std::max(light->GetIntensity(), 0.0f));
+    data.colorIntensity = glm::vec4(light->GetLinearColor(), std::max(light->GetIntensity(), 0.0f));
     data.shadowAndInnerCos = glm::vec4(light->GetShadowStrength(), light->GetShadowBias(), light->GetShadowNormalBias(),
                                        spot ? std::cos(glm::radians(light->GetSpotAngle() * 0.5f)) : -1.0f);
     if (lightType == LightType::Area && light->GetTransform()) {
@@ -169,7 +169,7 @@ void SceneLightCollector::AddDirectionalLight(const Light *light)
     DirectionalLightData &data = m_lightingUBO.directionalLights[m_directionalLightCount];
     data.direction = glm::vec4(glm::normalize(direction), 0.0f);
     // Linear-space color in rgb, intensity in w (shader does color.rgb * color.w)
-    data.color = glm::vec4(inx::color::SrgbToLinear(light->GetColor()), light->GetIntensity());
+    data.color = glm::vec4(light->GetLinearColor(), light->GetIntensity());
 
     // Shadow parameters: x=strength, y=bias, z=normalBias, w=shadowType (0=off, 1=hard, 2=soft)
     float shadowType = 0.0f;
@@ -191,7 +191,7 @@ void SceneLightCollector::AddPointLight(const Light *light, const glm::vec3 &wor
     PointLightSortData sortData;
     sortData.data.position = glm::vec4(worldPosition, light->GetRange());
     // Linear-space color in rgb, intensity in w (shader does color.rgb * color.w)
-    sortData.data.color = glm::vec4(inx::color::SrgbToLinear(light->GetColor()), light->GetIntensity());
+    sortData.data.color = glm::vec4(light->GetLinearColor(), light->GetIntensity());
     // Store range in x for URP-style smooth attenuation (yz unused, kept for compatibility)
     sortData.data.attenuation = glm::vec4(light->GetRange(), 0.0f, 0.0f, 0.0f);
     sortData.data.shadowParams = glm::vec4(light->GetShadowStrength(), light->GetShadowBias(),
@@ -215,7 +215,7 @@ void SceneLightCollector::AddSpotLight(const Light *light, const glm::vec3 &worl
     data.position = glm::vec4(worldPosition, light->GetRange());
     data.direction = glm::vec4(glm::normalize(worldDirection), 0.0f);
     // Linear-space color in rgb, intensity in w (shader does color.rgb * color.w)
-    data.color = glm::vec4(inx::color::SrgbToLinear(light->GetColor()), light->GetIntensity());
+    data.color = glm::vec4(light->GetLinearColor(), light->GetIntensity());
 
     // Calculate cos of angles for spot falloff
     float innerAngleRad = glm::radians(light->GetSpotAngle() * 0.5f);
@@ -274,7 +274,7 @@ void SceneLightCollector::AddAreaLight(const Light *light, const glm::vec3 &worl
     data.direction = glm::vec4(glm::normalize(worldDirection), light->GetAreaTwoSided() ? 1.0f : 0.0f);
     data.rightWidth = glm::vec4(right, size.x);
     data.upHeight = glm::vec4(up, size.y);
-    data.color = glm::vec4(inx::color::SrgbToLinear(light->GetColor()), light->GetIntensity());
+    data.color = glm::vec4(light->GetLinearColor(), light->GetIntensity());
     data.shadowParams = glm::vec4(light->GetShadowStrength(), light->GetShadowBias(), light->GetShadowNormalBias(),
                                   static_cast<float>(light->GetShadows()));
     data.metadata = glm::uvec4(light->GetCullingMask(), light->GetInfluenceDomains(), 0u, 0u);
@@ -367,13 +367,11 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
         shadowCamera.aspect = std::max(camera->GetAspectRatio(), 0.01f);
         shadowCamera.orthographic = camera->GetProjectionMode() == CameraProjection::Orthographic;
         shadowCamera.orthographicHalfHeight = std::max(camera->GetOrthographicSize(), 0.01f);
-        if (camera->GetGameObject() && camera->GetGameObject()->GetTransform()) {
-            const Transform *transform = camera->GetGameObject()->GetTransform();
-            shadowCamera.position = transform->GetWorldPosition();
-            shadowCamera.forward = glm::normalize(transform->GetWorldForward());
-            shadowCamera.right = glm::normalize(transform->GetWorldRight());
-            shadowCamera.up = glm::normalize(transform->GetWorldUp());
-        }
+        const auto cameraToWorld = camera->GetCameraToWorldMatrix();
+        shadowCamera.position = glm::vec3(cameraToWorld[3]);
+        shadowCamera.forward = glm::normalize(glm::vec3(cameraToWorld[2]));
+        shadowCamera.right = glm::normalize(glm::vec3(cameraToWorld[0]));
+        shadowCamera.up = glm::normalize(glm::vec3(cameraToWorld[1]));
     }
 
     // Cascades must cover exactly what the camera renders. Unproject the real

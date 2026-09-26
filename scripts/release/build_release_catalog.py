@@ -9,9 +9,29 @@ from pathlib import Path
 import tomllib
 import urllib.request
 
+from packaging.version import Version
+
 
 ROOT = Path(__file__).resolve().parents[2]
 MINIMUM_UPDATABLE_VERSION = "0.4.0"
+
+
+def require_new_hub_version() -> str:
+    """A wheel build-number change cannot update an already published Hub."""
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    catalog = json.loads((ROOT / "docs/hub-catalog.json").read_text(encoding="utf-8"))
+    published = [
+        item["version"] for item in catalog["releases"] if item["published_at"] is not None
+    ]
+    if published:
+        latest = max(published, key=Version)
+        if Version(version.split("+", 1)[0]) <= Version(latest.split("+", 1)[0]):
+            raise ValueError(
+                f"Hub {latest} is already published; increment project.version "
+                "before publishing changed Hub artifacts. A wheel build number "
+                "does not make an installed Hub discover an update."
+            )
+    return version
 
 
 def wheel_build_number() -> str:
@@ -49,7 +69,7 @@ def build_catalog(
     *,
     resolve_pypi: bool = False,
 ) -> None:
-    version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    version = require_new_hub_version()
     wheel_build = wheel_build_number()
     github_base = f"https://github.com/ChenlizheMe/Infernux/releases/download/v{version}"
     object_base = f"https://downloads.infernux-engine.com/hub/{version}/build-{wheel_build}"
@@ -125,14 +145,20 @@ def build_catalog(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--release-dir", required=True, type=Path)
+    parser.add_argument("--release-dir", type=Path)
+    parser.add_argument("--check-version", action="store_true", help="Check the Hub publication identity without writing catalogs")
     parser.add_argument("--published-at", help="Actual GitHub publication timestamp; omit while preparing the release")
     parser.add_argument("--linux-inventory", type=Path, help="Verified Linux CI archive inventory instead of local Linux files")
     parser.add_argument("--resolve-pypi", action="store_true", help="Use the published files.pythonhosted.org wheel URLs")
     args = parser.parse_args()
-    build_catalog(
-        args.release_dir,
-        args.published_at,
-        args.linux_inventory,
-        resolve_pypi=args.resolve_pypi,
-    )
+    if args.check_version:
+        require_new_hub_version()
+    else:
+        if args.release_dir is None:
+            parser.error("--release-dir is required unless --check-version is used")
+        build_catalog(
+            args.release_dir,
+            args.published_at,
+            args.linux_inventory,
+            resolve_pypi=args.resolve_pypi,
+        )

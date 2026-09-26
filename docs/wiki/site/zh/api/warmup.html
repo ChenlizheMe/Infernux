@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/zh/api/njit.html" class="">njit</a><a href="/wiki/site/zh/api/warmup.html" class="cur">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/zh/api/compile.html" class="">compile</a><a href="/wiki/site/zh/api/statistics.html" class="">statistics</a><a href="/wiki/site/zh/api/warmup.html" class="cur">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -341,9 +341,12 @@
 <div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">warmup</span><span class="p">(</span><span class="n">fn</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="err">→</span> <span class="kc">None</span>
 </code></pre></div>
 <h2 id="_1">描述<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h2>
-<p>Pre-compile a <code>@njit</code> function by calling it with representative args.</p>
+<p>Prepare a compiled CPU function on isolated inputs; errors propagate.</p>
 <!-- USER CONTENT START -->
-<p>description</p>
+<p>description
+使用隔离的参数副本编译并验证一种运行时签名。准备失败会直接抛出，
+不会改用另一个后端再次执行。无 CPU JIT 的目标会在 Cook 普通 Python
+字节码时删除该调用；运行时 API 本身不会变成 no-op。</p>
 <!-- USER CONTENT END -->
 
 <h2 id="_2">参数<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
@@ -365,10 +368,9 @@
 </table>
 <h2 id="_3">示例<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
 <!-- USER CONTENT START -->
-<p>example</p>
-<blockquote>
-<p><strong>示例状态：</strong> 当前尚未为此符号验证 0.4.0 示例。请以上方签名为准；不要根据其他引擎中的同名 API 推测行为。</p>
-</blockquote>
+<p>example
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">jit</span><span class="o">.</span><span class="n">warmup</span><span class="p">(</span><span class="n">integrate</span><span class="p">,</span> <span class="n">positions</span><span class="p">,</span> <span class="n">velocities</span><span class="p">,</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="mf">60.0</span><span class="p">)</span>
+</code></pre></div></p>
 <!-- USER CONTENT END -->
             
     <nav class="doc-trail" data-doc-trail aria-label="文档连续阅读与反馈">

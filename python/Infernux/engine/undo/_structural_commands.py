@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from Infernux.engine.undo._base import UndoCommand
 from Infernux.engine.undo._helpers import (
     _get_active_scene,
+    _get_scene_by_world_id, _find_runtime_object, _scene_world_id,
     _destroy_game_object_immediately,
     _bump_inspector_structure, _notify_gizmos_scene_changed,
     _preserve_ui_world_position, _invalidate_canvas_caches,
@@ -105,6 +106,8 @@ class CreateGameObjectCommand(UndoCommand):
         self._document: Optional[dict] = None
         self._parent_id: Optional[int] = None
         self._sibling_index: int = 0
+        obj = _find_runtime_object(object_id)
+        self._scene_world_id = _scene_world_id(getattr(obj, "scene", None))
         if before_selection is not None and after_selection is not None:
             self.before_selection_snapshot = before_selection
             self.after_selection_snapshot = after_selection
@@ -113,9 +116,9 @@ class CreateGameObjectCommand(UndoCommand):
         pass
 
     def undo(self) -> None:
-        scene = _get_active_scene()
+        obj = _find_runtime_object(self._object_id)
+        scene = getattr(obj, "scene", None) if obj is not None else None
         if scene:
-            obj = scene.find_by_id(self._object_id)
             if obj:
                 destroyed_ids = _object_tree_ids(obj)
                 self._document = _snapshot_object(obj)
@@ -132,8 +135,9 @@ class CreateGameObjectCommand(UndoCommand):
     def redo(self) -> None:
         if self._document is not None:
             from Infernux.engine.undo._recreate import _recreate_game_object_from_document
+            scene = _get_scene_by_world_id(self._scene_world_id)
             restored = _recreate_game_object_from_document(
-                self._document, self._parent_id, self._sibling_index)
+                self._document, self._parent_id, self._sibling_index, scene=scene)
             _validate_recreated_object(restored, self._object_id)
             _bump_inspector_structure()
             _notify_gizmos_scene_changed()
@@ -149,9 +153,10 @@ class DeleteGameObjectCommand(UndoCommand):
         self._parent_id: Optional[int] = None
         self._sibling_index: int = 0
 
-        scene = _get_active_scene()
+        obj = _find_runtime_object(object_id)
+        scene = getattr(obj, "scene", None) if obj is not None else None
+        self._scene_world_id = _scene_world_id(scene)
         if scene:
-            obj = scene.find_by_id(object_id)
             if obj:
                 self._document = _snapshot_object(obj)
                 parent = obj.get_parent()
@@ -160,9 +165,9 @@ class DeleteGameObjectCommand(UndoCommand):
                 self._sibling_index = t.get_sibling_index() if t else 0
 
     def execute(self) -> None:
-        scene = _get_active_scene()
+        obj = _find_runtime_object(self._object_id)
+        scene = getattr(obj, "scene", None) if obj is not None else None
         if scene:
-            obj = scene.find_by_id(self._object_id)
             if obj:
                 destroyed_ids = _object_tree_ids(obj)
                 _destroy_game_object_immediately(scene, obj)
@@ -171,8 +176,9 @@ class DeleteGameObjectCommand(UndoCommand):
     def undo(self) -> None:
         if self._document is not None:
             from Infernux.engine.undo._recreate import _recreate_game_object_from_document
+            scene = _get_scene_by_world_id(self._scene_world_id)
             restored = _recreate_game_object_from_document(
-                self._document, self._parent_id, self._sibling_index)
+                self._document, self._parent_id, self._sibling_index, scene=scene)
             _validate_recreated_object(restored, self._object_id)
             _bump_inspector_structure()
             _notify_gizmos_scene_changed()
@@ -193,14 +199,10 @@ class DeleteGameObjectsCommand(UndoCommand):
         super().__init__(description)
         self._entries: List[dict] = []
 
-        scene = _get_active_scene()
-        if not scene:
-            return
-
         selected_ids = {int(object_id) for object_id in object_ids}
         roots = []
         for object_id in object_ids:
-            obj = scene.find_by_id(int(object_id))
+            obj = _find_runtime_object(int(object_id))
             if obj is None:
                 continue
             parent = obj.get_parent()
@@ -223,24 +225,31 @@ class DeleteGameObjectsCommand(UndoCommand):
             transform = getattr(obj, "transform", None)
             self._entries.append({
                 "object_id": object_id,
+                "scene_world_id": _scene_world_id(getattr(obj, "scene", None)),
                 "document": _snapshot_object(obj),
                 "parent_id": int(parent.id) if parent else None,
                 "sibling_index": int(transform.get_sibling_index()) if transform else 0,
             })
 
     @staticmethod
-    def _entry_order(entry: dict) -> tuple[int, int]:
+    def _entry_order(entry: dict) -> tuple[int, int, int]:
         parent_id = entry["parent_id"]
-        return (-1 if parent_id is None else int(parent_id), int(entry["sibling_index"]))
+        return (
+            int(entry["scene_world_id"]),
+            -1 if parent_id is None else int(parent_id),
+            int(entry["sibling_index"]),
+        )
 
     def execute(self) -> None:
-        scene = _get_active_scene()
-        if not scene:
-            return
         # Destroy from the end of each sibling list so earlier indices do not
         # shift while the transaction is being applied.
         destroyed_ids: set[int] = set()
         for entry in sorted(self._entries, key=self._entry_order, reverse=True):
+            scene = _get_scene_by_world_id(entry["scene_world_id"])
+            if scene is None:
+                raise RuntimeError(
+                    f"delete target Scene is unavailable: {entry['scene_world_id']}"
+                )
             obj = scene.find_by_id(entry["object_id"])
             if obj is not None:
                 destroyed_ids.update(_object_tree_ids(obj))
@@ -252,18 +261,19 @@ class DeleteGameObjectsCommand(UndoCommand):
         restored = []
         try:
             for entry in sorted(self._entries, key=self._entry_order):
+                scene = _get_scene_by_world_id(entry["scene_world_id"])
                 obj = _recreate_game_object_from_document(
-                    entry["document"], entry["parent_id"], entry["sibling_index"])
+                    entry["document"], entry["parent_id"], entry["sibling_index"],
+                    scene=scene)
                 restored.append(
                     _validate_recreated_object(obj, entry["object_id"])
                 )
         except Exception:
-            scene = _get_active_scene()
-            if scene is not None:
-                for obj in reversed(restored):
-                    live = scene.find_by_id(int(obj.id))
-                    if live is not None:
-                        _destroy_game_object_immediately(scene, live)
+            for obj in reversed(restored):
+                live = _find_runtime_object(int(obj.id))
+                scene = getattr(live, "scene", None) if live is not None else None
+                if scene is not None:
+                    _destroy_game_object_immediately(scene, live)
             raise
         if self._entries:
             _bump_inspector_structure()
@@ -271,6 +281,37 @@ class DeleteGameObjectsCommand(UndoCommand):
 
     def redo(self) -> None:
         self.execute()
+
+
+def _capture_prefab_parent_links(roots):
+    """Capture source ownership only; hierarchy moves retain live objects."""
+    result = {}
+    for root in roots:
+        if root is None:
+            continue
+        pending = [root.serialize_document()]
+        while pending:
+            node = pending.pop()
+            result[node["id"]] = (
+                node.get("prefab_guid", ""), node.get("prefab_root", False),
+                node.get("prefab_source_id", 0), node.get("prefab_source"),
+                {item["component_id"]: item.get("prefab_source_id", 0) for item in node["components"]},
+            )
+            pending.extend(node["children"])
+    return result
+
+
+def _restore_prefab_parent_links(scene, links):
+    from Infernux.engine.prefab_manager import _link_prefab_components
+    for identity, (guid, root, source_id, baseline, components) in links.items():
+        obj = scene.find_by_id(identity)
+        if obj is None:
+            raise RuntimeError(f"Moved Prefab object is unavailable: {identity}")
+        obj.prefab_guid = guid
+        obj.prefab_root = root
+        obj.prefab_source_id = source_id
+        obj._prefab_source_document = baseline
+        _link_prefab_components(obj, components)
 
 
 class ReparentCommand(UndoCommand):
@@ -284,18 +325,24 @@ class ReparentCommand(UndoCommand):
         self._object_id = object_id
         self._old_parent_id = old_parent_id
         self._new_parent_id = new_parent_id
+        obj = _find_runtime_object(object_id)
+        self._scene_world_id = _scene_world_id(getattr(obj, "scene", None))
+        self._prefab_links = _capture_prefab_parent_links([obj])
 
     def execute(self) -> None:
         self._apply(self._new_parent_id)
 
     def undo(self) -> None:
         self._apply(self._old_parent_id)
+        scene = _get_scene_by_world_id(self._scene_world_id)
+        if scene is not None:
+            _restore_prefab_parent_links(scene, self._prefab_links)
 
     def redo(self) -> None:
         self._apply(self._new_parent_id)
 
     def _apply(self, parent_id: Optional[int]) -> None:
-        scene = _get_active_scene()
+        scene = _get_scene_by_world_id(self._scene_world_id)
         if not scene:
             return
         obj = scene.find_by_id(self._object_id)
@@ -303,8 +350,9 @@ class ReparentCommand(UndoCommand):
             return
         new_parent = scene.find_by_id(parent_id) if parent_id is not None else None
         old_parent = obj.get_parent()
-        _preserve_ui_world_position(obj, new_parent)
+        restore_ui_rect = _preserve_ui_world_position(obj, new_parent)
         obj.set_parent(new_parent)
+        restore_ui_rect()
         _invalidate_canvas_caches(old_parent)
         _invalidate_canvas_caches(new_parent)
 
@@ -322,18 +370,24 @@ class MoveGameObjectCommand(UndoCommand):
         self._new_parent_id = new_parent_id
         self._old_sibling_index = int(old_sibling_index)
         self._new_sibling_index = int(new_sibling_index)
+        obj = _find_runtime_object(object_id)
+        self._scene_world_id = _scene_world_id(getattr(obj, "scene", None))
+        self._prefab_links = _capture_prefab_parent_links([obj])
 
     def execute(self) -> None:
         self._apply(self._new_parent_id, self._new_sibling_index)
 
     def undo(self) -> None:
         self._apply(self._old_parent_id, self._old_sibling_index)
+        scene = _get_scene_by_world_id(self._scene_world_id)
+        if scene is not None:
+            _restore_prefab_parent_links(scene, self._prefab_links)
 
     def redo(self) -> None:
         self._apply(self._new_parent_id, self._new_sibling_index)
 
     def _apply(self, parent_id: Optional[int], sibling_index: int) -> None:
-        scene = _get_active_scene()
+        scene = _get_scene_by_world_id(self._scene_world_id)
         if not scene:
             return
         obj = scene.find_by_id(self._object_id)
@@ -342,8 +396,9 @@ class MoveGameObjectCommand(UndoCommand):
         parent = scene.find_by_id(parent_id) if parent_id is not None else None
         current_parent = obj.get_parent()
         if current_parent is not parent:
-            _preserve_ui_world_position(obj, parent)
+            restore_ui_rect = _preserve_ui_world_position(obj, parent)
             obj.set_parent(parent)
+            restore_ui_rect()
             _invalidate_canvas_caches(current_parent)
             _invalidate_canvas_caches(parent)
         transform = getattr(obj, "transform", None)
@@ -378,6 +433,19 @@ class SceneHierarchyLayoutCommand(UndoCommand):
         after_ids = self._layout_ids(self._after_layout)
         if before_ids != after_ids:
             raise ValueError("hierarchy layout object sets must match")
+        world_ids = {
+            _scene_world_id(getattr(_find_runtime_object(object_id), "scene", None))
+            for object_id in before_ids
+        }
+        if len(world_ids) != 1 or 0 in world_ids:
+            raise ValueError("hierarchy layout must belong to one loaded Scene")
+        self._scene_world_id = world_ids.pop()
+        before_parents = {obj: parent for parent, objects in self._before_layout.items() for obj in objects}
+        self._moved_ids = tuple(obj for parent, objects in self._after_layout.items()
+                                for obj in objects if before_parents[obj] != parent)
+        self._prefab_links = _capture_prefab_parent_links(
+            [_find_runtime_object(identity) for identity in self._moved_ids],
+        )
 
     @staticmethod
     def _normalize(layout):
@@ -450,8 +518,9 @@ class SceneHierarchyLayoutCommand(UndoCommand):
             if current_parent_id == parent_id:
                 continue
             parent = scene.find_by_id(parent_id) if parent_id is not None else None
-            _preserve_ui_world_position(obj, parent)
+            restore_ui_rect = _preserve_ui_world_position(obj, parent)
             obj.set_parent(parent)
+            restore_ui_rect()
             _invalidate_canvas_caches(current_parent)
             _invalidate_canvas_caches(parent)
 
@@ -471,16 +540,17 @@ class SceneHierarchyLayoutCommand(UndoCommand):
             parent = scene.find_by_id(parent_id) if parent_id is not None else None
             _invalidate_canvas_caches(parent)
 
-    @classmethod
-    def _transition(cls, target, rollback) -> None:
-        scene = _get_active_scene()
+    def _transition(self, target, rollback) -> None:
+        scene = _get_scene_by_world_id(self._scene_world_id)
         if scene is None:
-            raise RuntimeError("hierarchy layout requires an active scene")
+            raise RuntimeError("hierarchy layout owning Scene is unavailable")
+        links = _capture_prefab_parent_links([scene.find_by_id(identity) for identity in self._moved_ids])
         try:
-            cls._apply_layout(scene, target)
+            self._apply_layout(scene, target)
         except Exception as original:
             try:
-                cls._apply_layout(scene, rollback)
+                self._apply_layout(scene, rollback)
+                _restore_prefab_parent_links(scene, links)
             except Exception as rollback_error:
                 raise RuntimeError(
                     "hierarchy layout failed and rollback could not restore the tree"
@@ -492,9 +562,166 @@ class SceneHierarchyLayoutCommand(UndoCommand):
 
     def undo(self) -> None:
         self._transition(self._before_layout, self._after_layout)
+        _restore_prefab_parent_links(_get_scene_by_world_id(self._scene_world_id), self._prefab_links)
 
     def redo(self) -> None:
         self._transition(self._after_layout, self._before_layout)
+
+
+class CrossSceneHierarchyMoveCommand(UndoCommand):
+    """Move root ownership between two loaded Scenes as one atomic edit."""
+
+    def __init__(
+        self,
+        object_ids,
+        source_world_id: int,
+        destination_world_id: int,
+        destination_parent_id: Optional[int],
+        destination_sibling_index: int,
+        description: str = "Move GameObject Between Scenes",
+    ) -> None:
+        super().__init__(description)
+        self._object_ids = tuple(int(value) for value in object_ids)
+        self._source_world_id = int(source_world_id)
+        self._destination_world_id = int(destination_world_id)
+        self._destination_parent_id = (
+            None if destination_parent_id in {None, 0} else int(destination_parent_id)
+        )
+        self._destination_sibling_index = max(0, int(destination_sibling_index))
+        if (
+            not self._object_ids
+            or self._source_world_id <= 0
+            or self._destination_world_id <= 0
+            or self._source_world_id == self._destination_world_id
+        ):
+            raise ValueError("cross-Scene move requires two distinct loaded Scenes")
+
+        source = _get_scene_by_world_id(self._source_world_id)
+        destination = _get_scene_by_world_id(self._destination_world_id)
+        if source is None or destination is None:
+            raise RuntimeError("cross-Scene move owner is unavailable")
+        self._source_locations = []
+        roots = []
+        for object_id in self._object_ids:
+            obj = source.find_by_id(object_id)
+            if obj is None:
+                raise RuntimeError(f"cross-Scene move object is unavailable: {object_id}")
+            parent = obj.get_parent()
+            transform = getattr(obj, "transform", None)
+            self._source_locations.append(
+                (
+                    object_id,
+                    int(parent.id) if parent is not None else None,
+                    int(transform.get_sibling_index()) if transform is not None else 0,
+                )
+            )
+            roots.append(obj)
+        self._prefab_links = _capture_prefab_parent_links(roots)
+
+    def scene_world_ids(self) -> tuple[int, ...]:
+        return self._source_world_id, self._destination_world_id
+
+    @staticmethod
+    def _move_roots(object_ids, source, destination) -> list:
+        from Infernux.lib import SceneManager
+
+        manager = SceneManager.instance()
+        moved = []
+        for object_id in object_ids:
+            obj = source.find_by_id(object_id)
+            if obj is None:
+                raise RuntimeError(f"cross-Scene move object is unavailable: {object_id}")
+            old_parent = obj.get_parent()
+            if old_parent is not None:
+                obj.set_parent(None)
+                _invalidate_canvas_caches(old_parent)
+            manager.move_game_object_to_scene(obj, destination)
+            moved.append(obj)
+        return moved
+
+    def _move_to_destination(self) -> None:
+        source = _get_scene_by_world_id(self._source_world_id)
+        destination = _get_scene_by_world_id(self._destination_world_id)
+        if source is None or destination is None:
+            raise RuntimeError("cross-Scene move owner is unavailable")
+        parent = (
+            destination.find_by_id(self._destination_parent_id)
+            if self._destination_parent_id is not None
+            else None
+        )
+        if self._destination_parent_id is not None and parent is None:
+            raise RuntimeError("cross-Scene destination parent is unavailable")
+        moved = self._move_roots(self._object_ids, source, destination)
+        for obj in moved:
+            if parent is not None:
+                obj.set_parent(parent)
+        for offset, obj in enumerate(moved):
+            transform = getattr(obj, "transform", None)
+            if transform is not None:
+                transform.set_sibling_index(self._destination_sibling_index + offset)
+        _invalidate_canvas_caches(parent)
+        _notify_gizmos_scene_changed()
+
+    def _move_to_source(self) -> None:
+        source = _get_scene_by_world_id(self._source_world_id)
+        destination = _get_scene_by_world_id(self._destination_world_id)
+        if source is None or destination is None:
+            raise RuntimeError("cross-Scene move owner is unavailable")
+        moved = self._move_roots(self._object_ids, destination, source)
+        moved_by_id = {int(obj.id): obj for obj in moved}
+        for object_id, parent_id, _index in self._source_locations:
+            parent = source.find_by_id(parent_id) if parent_id is not None else None
+            if parent_id is not None and parent is None:
+                raise RuntimeError("cross-Scene source parent is unavailable")
+            if parent is not None:
+                moved_by_id[object_id].set_parent(parent)
+        for object_id, _parent_id, sibling_index in sorted(
+            self._source_locations,
+            key=lambda value: (value[1] or 0, value[2]),
+        ):
+            transform = getattr(moved_by_id[object_id], "transform", None)
+            if transform is not None:
+                transform.set_sibling_index(sibling_index)
+        _restore_prefab_parent_links(source, self._prefab_links)
+        _notify_gizmos_scene_changed()
+
+    def execute(self) -> None:
+        self._move_to_destination()
+
+    def undo(self) -> None:
+        self._move_to_source()
+
+    def redo(self) -> None:
+        self._move_to_destination()
+
+
+class AdditiveSceneResidencyCommand(UndoCommand):
+    """Undo/redo one additive Scene residency change through its owner-safe queue."""
+
+    marks_dirty = False
+    separates_history = True
+    preserves_explicit_context = True
+
+    def __init__(self, scene_files, asset_guid: str, description: str) -> None:
+        super().__init__(description)
+        self._scene_files = scene_files
+        self._asset_guid = str(asset_guid or "").strip().casefold()
+        if not self._asset_guid:
+            raise ValueError("additive Scene history requires an asset GUID")
+
+    def execute(self) -> None:
+        if not self._scene_files.open_scene_additive_guid(
+            self._asset_guid,
+            record_history=False,
+        ):
+            raise RuntimeError("additive Scene could not be restored")
+
+    def undo(self) -> None:
+        if not self._scene_files.request_unload_scene_guid(self._asset_guid):
+            raise RuntimeError("additive Scene could not be unloaded")
+
+    def redo(self) -> None:
+        self.execute()
 
 
 class GlobalSelectionCommand(UndoCommand):
@@ -590,11 +817,18 @@ class PrefabModeCommand(UndoCommand):
 
     marks_dirty: bool = False
 
-    def __init__(self, prefab_path: str, enter_mode: bool):
+    def __init__(self, prefab_guid: str, enter_mode: bool):
         action = "Enter Prefab Mode" if enter_mode else "Exit Prefab Mode"
         super().__init__(action)
-        self._prefab_path = prefab_path or ""
+        self._prefab_guid = str(prefab_guid or "").strip().casefold()
+        if not self._prefab_guid:
+            raise ValueError("Prefab Mode history requires an asset GUID")
         self._enter_mode = bool(enter_mode)
+
+    def _enter(self, sfm) -> bool:
+        database = getattr(sfm, "_asset_database", None)
+        path = str(database.get_path_from_guid(self._prefab_guid) or "").strip() if database else ""
+        return bool(path and sfm.open_prefab_mode(path, preserve_undo_history=True))
 
     def execute(self) -> None:
         from Infernux.engine.scene_manager import SceneFileManager
@@ -602,10 +836,7 @@ class PrefabModeCommand(UndoCommand):
         if not sfm:
             raise RuntimeError("Prefab Mode requires an active SceneFileManager")
         if self._enter_mode:
-            succeeded = sfm.open_prefab_mode(
-                self._prefab_path,
-                preserve_undo_history=True,
-            )
+            succeeded = self._enter(sfm)
         else:
             succeeded = sfm._do_exit_prefab_mode(preserve_undo_history=True)
         if not succeeded:
@@ -619,10 +850,7 @@ class PrefabModeCommand(UndoCommand):
         if self._enter_mode:
             succeeded = sfm._do_exit_prefab_mode(preserve_undo_history=True)
         else:
-            succeeded = sfm.open_prefab_mode(
-                self._prefab_path,
-                preserve_undo_history=True,
-            )
+            succeeded = self._enter(sfm)
         if not succeeded:
             raise RuntimeError(f"Undo {self.description} was rejected")
 
@@ -631,12 +859,13 @@ class PrefabModeCommand(UndoCommand):
 
 
 class PrefabUnpackCommand(UndoCommand):
-    """Undoable removal of prefab linkage from one complete instance tree."""
+    """Remove the enclosing instance link while retaining nested instances."""
 
     def __init__(self, object_id: int, description: str = "Unpack Prefab"):
         super().__init__(description)
         self._object_id = int(object_id)
-        self._linkage: list[tuple[int, str, bool]] = []
+        self._linkage: list[tuple[int, str, bool, int, dict | None, dict]] = []
+        self._nested_roots: set[int] = set()
         scene = _get_active_scene()
         root = scene.find_by_id(self._object_id) if scene else None
         if root is not None:
@@ -647,8 +876,15 @@ class PrefabUnpackCommand(UndoCommand):
                     int(obj.id),
                     getattr(obj, "prefab_guid", "") or "",
                     bool(getattr(obj, "prefab_root", False)),
+                    int(getattr(obj, "prefab_source_id", 0)),
+                    obj._prefab_source_document,
+                    {record["component_id"]: record.get("prefab_source_id", 0)
+                     for record in obj.serialize_document()["components"]},
                 ))
-                pending.extend(obj.get_children())
+                if obj.id != self._object_id and obj.prefab_root:
+                    self._nested_roots.add(int(obj.id))
+                else:
+                    pending.extend(obj.get_children())
 
     def execute(self) -> None:
         self._apply(restored=False)
@@ -663,12 +899,22 @@ class PrefabUnpackCommand(UndoCommand):
         scene = _get_active_scene()
         if scene is None:
             return
-        for object_id, prefab_guid, prefab_root in self._linkage:
+        from Infernux.engine.prefab_manager import _link_prefab_components
+        for object_id, prefab_guid, prefab_root, source_id, source_document, component_ids in self._linkage:
             obj = scene.find_by_id(object_id)
             if obj is None:
                 continue
+            if object_id in self._nested_roots and not restored:
+                baseline = dict(source_document) if source_document else None
+                if baseline:
+                    baseline.pop("outer_source_id", None)
+                obj._prefab_source_document = baseline
+                continue
             obj.prefab_guid = prefab_guid if restored else ""
             obj.prefab_root = prefab_root if restored else False
+            obj.prefab_source_id = source_id if restored else 0
+            obj._prefab_source_document = source_document if restored else None
+            _link_prefab_components(obj, component_ids if restored else dict.fromkeys(component_ids, 0))
         _bump_inspector_structure()
 
 
@@ -685,13 +931,13 @@ class PrefabRevertCommand(UndoCommand):
         self._asset_database = asset_database
 
     def execute(self) -> None:
-        self._apply(self._reverted_document, preserve_document_ids=False)
+        self._apply(self._reverted_document, preserve_document_ids=True)
 
     def undo(self) -> None:
         self._apply(self._before_document, preserve_document_ids=True)
 
     def redo(self) -> None:
-        self._apply(self._reverted_document, preserve_document_ids=False)
+        self._apply(self._reverted_document, preserve_document_ids=True)
 
     def _apply(self, document: dict, *, preserve_document_ids: bool) -> None:
         scene = _get_active_scene()
@@ -715,7 +961,8 @@ class PrefabApplyOverridesCommand(UndoCommand):
     """Atomically apply one Prefab asset edit and all live instance projections."""
 
     def __init__(self, capture_state, apply_overrides, restore_state,
-                 description: str = "Apply Prefab Overrides"):
+                 description: str = "Apply Prefab Overrides", *, scene_world_ids=None,
+                 validate_replay=None):
         super().__init__(description)
         if not callable(capture_state) or not callable(apply_overrides):
             raise TypeError("Prefab Apply command requires capture and apply callbacks")
@@ -726,6 +973,11 @@ class PrefabApplyOverridesCommand(UndoCommand):
         self._restore_state = restore_state
         self._before_state = None
         self._after_state = None
+        self._world_ids = tuple(scene_world_ids) if scene_world_ids is not None else (0,)
+        self._validate_replay = validate_replay
+
+    def scene_world_ids(self) -> tuple[int, ...]:
+        return self._world_ids
 
     def execute(self) -> None:
         if self._before_state is not None:
@@ -744,9 +996,13 @@ class PrefabApplyOverridesCommand(UndoCommand):
     def undo(self) -> None:
         if self._before_state is None:
             raise RuntimeError("Prefab Apply command has not executed")
+        if self._validate_replay is not None:
+            self._validate_replay(self._after_state)
         self._restore_state(self._before_state)
 
     def redo(self) -> None:
         if self._after_state is None:
             raise RuntimeError("Prefab Apply command has no committed result")
+        if self._validate_replay is not None:
+            self._validate_replay(self._before_state)
         self._restore_state(self._after_state)

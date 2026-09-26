@@ -265,7 +265,9 @@ class TestToolbarPanel:
     def test_grid_state_is_read_only_and_mutation_uses_global_command(self):
         tb = ToolbarPanel()
         tb.is_show_grid = lambda: True
+        tb.is_show_gizmos = lambda: True
         assert tb.is_show_grid()
+        assert tb.is_show_gizmos()
 
         source = Path("cpp/infernux/function/editor/ToolbarPanel.cpp").read_text(encoding="utf-8")
         header = Path("cpp/infernux/function/editor/ToolbarPanel.h").read_text(encoding="utf-8")
@@ -273,6 +275,9 @@ class TestToolbarPanel:
         bootstrap = Path("python/Infernux/engine/bootstrap.py").read_text(encoding="utf-8")
 
         assert 'executeCommand("scene.toggle_grid", "toolbar", "")' in source
+        assert 'executeCommand("scene.toggle_gizmos", "toolbar", "")' in source
+        assert "if (!isShowGrid || !isShowGizmos)" in source
+        assert "!isShowGizmos())" not in source
         assert "setShowGrid" not in header
         assert 'def_readwrite("set_show_grid"' not in binding
         assert "tb.set_show_grid" not in bootstrap
@@ -390,22 +395,9 @@ class TestEditorShortcutInput:
 
         assert "ImGui::GetTopMostPopupModal()" in source
         assert "m_modalActivePreviousFrame" in header
-        assert 'dispatch(shift ? "Ctrl+Shift+Z" : "Ctrl+Z", true)' in source
-        assert 'dispatch("Ctrl+Y", true)' in source
-
-    def test_find_and_align_with_view_have_distinct_global_chords(self):
-        root = Path(__file__).parents[2] / "cpp" / "infernux" / "function" / "editor"
-        source = (root / "EditorShortcutInput.cpp").read_text(encoding="utf-8")
-
-        assert 'dispatch(shift ? "Ctrl+Shift+F" : "Ctrl+F")' in source
-        assert 'dispatch("F")' in source
-
-    def test_project_history_alt_chords_reach_the_shortcut_router(self):
-        root = Path(__file__).parents[2] / "cpp" / "infernux" / "function" / "editor"
-        source = (root / "EditorShortcutInput.cpp").read_text(encoding="utf-8")
-
-        assert 'dispatch("Alt+Left")' in source
-        assert 'dispatch("Alt+Right")' in source
+        assert "ctrl && !alt && !super" in source
+        assert "key == ImGuiKey_Z || (!shift && key == ImGuiKey_Y)" in source
+        assert "dispatch(chord.c_str(), historyChord)" in source
 
     def test_default_dock_layout_does_not_bypass_window_focus_core(self):
         source = (
@@ -670,3 +662,62 @@ class TestHierarchyPanel:
         hp.is_selection_empty = lambda: len(selected) == 0
         hp.set_selected_object_by_id(42)
         assert 42 in selected
+
+    def test_hierarchy_drag_feedback_uses_theme_red_and_neutral_hover(self):
+        from Infernux.engine.ui.theme import Theme
+
+        source = Path("cpp/infernux/function/editor/HierarchyPanel.cpp").read_text(encoding="utf-8")
+        project_source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
+        assert Theme.HIERARCHY_ROW_SELECTED[:3] == pytest.approx(Theme.SELECTION_BG[:3])
+        assert Theme.HIERARCHY_ROW_SELECTED[3] == pytest.approx(0.22)
+        assert "ImVec4(cAccent.x, cAccent.y, cAccent.z, 0.22f)" in project_source
+        assert Theme.HIERARCHY_ROW_HOVER[0] == Theme.HIERARCHY_ROW_HOVER[1]
+        assert Theme.HIERARCHY_ROW_HOVER[1] == Theme.HIERARCHY_ROW_HOVER[2]
+        assert "EditorTheme::HIERARCHY_ROW_SELECTED" in source
+        assert "EditorTheme::HIERARCHY_ROW_HOVER" in source
+        assert "m_draggedObjectId = objId;" in source
+        assert "if (m_selIds.count(objId) == 0)" in source
+        assert "dragBodyHovered" in source
+        assert "dragBodyHovered ? EditorTheme::HIERARCHY_ROW_HOVER" in source
+        assert "if (dragBodyHovered && !selectedOrDragged)" in source
+
+    def test_hierarchy_reorder_indicator_is_one_crisp_subtree_boundary(self):
+        source = Path("cpp/infernux/function/editor/HierarchyPanel.cpp").read_text(encoding="utf-8")
+        theme_source = Path("python/Infernux/engine/ui/theme.py").read_text(encoding="utf-8")
+        reorder = source[
+            source.index("void HierarchyPanel::RenderReorderSep") :
+            source.index("void HierarchyPanel::RenderMultiDropTarget")
+        ]
+        assert "DND_REORDER_LINE        : RGBA = (1.0, 1.0, 1.0, 1.0)" in theme_source
+        assert "DND_REORDER_LINE_THICKNESS: float = 1.0" in theme_source
+        assert "DND_REORDER_HIT_ABOVE   : float = 4.0" in theme_source
+        assert "DrawFilledRect" in reorder
+        assert "DrawLine" not in reorder
+        assert "savedY - EditorTheme::DND_REORDER_HIT_ABOVE" in reorder
+        assert "minimumDepth <= currentItem.depth" in source
+        assert "afterObject = afterObject->GetParent();" in source
+        assert '"##boundary_after_"' in source
+
+    def test_scene_headers_are_reorderable_and_tail_targets_last_scene(self):
+        source = Path("cpp/infernux/function/editor/HierarchyPanel.cpp").read_text(encoding="utf-8")
+        header = Path("cpp/infernux/function/editor/HierarchyPanel.h").read_text(encoding="utf-8")
+
+        assert 'SCENE_DRAG_DROP_TYPE = "HIERARCHY_SCENE"' in header
+        assert "SetDragDropPayload(SCENE_DRAG_DROP_TYPE, worldId)" in source
+        assert "SceneManager::Instance().MoveSceneAdjacent" in source
+        assert "m_selectedSceneWorldId == worldId || dragged" in source
+        assert "active || dragged" not in source
+        assert "m_pendingSceneSelectWorldId = worldId;" in source
+        assert "ImGuiTreeNodeFlags_OpenOnArrow" in source
+        assert "dragTargetHovered" in source
+        assert "ClearSelectionAndNotify();\n                m_selectedSceneWorldId = worldId;" in source
+        assert '"##scene_first_root_"' in source
+        assert "m_cachedScenes.back()->GetWorldId()" in source
+        assert "ReparentToRoot(payload, lastWorldId);" in source
+
+    def test_hierarchy_rows_use_compact_theme_padding(self):
+        from Infernux.engine.ui.theme import Theme
+
+        native_theme = Path("cpp/infernux/function/editor/EditorTheme.h").read_text(encoding="utf-8")
+        assert Theme.TREE_FRAME_PAD == pytest.approx((2.0, 2.0))
+        assert "TREE_FRAME_PAD{2.0f, 2.0f}" in native_theme

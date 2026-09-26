@@ -65,6 +65,8 @@ class ComponentDataStore
     // -- transactional schema publication --
 
     SchemaTransactionId BeginSchemaTransaction();
+    // A published name may be prepared again. The candidate has independent
+    // storage; commit replaces name lookup, while old slots survive retirement.
     PreparedClassId PrepareClass(SchemaTransactionId transactionId, const std::string &className);
     uint32_t PrepareField(SchemaTransactionId transactionId, PreparedClassId preparedClassId,
                           const std::string &fieldName, DataType type);

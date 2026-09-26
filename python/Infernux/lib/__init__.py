@@ -10,6 +10,7 @@ import importlib.machinery
 import importlib.util
 import os
 import sys
+from inspect import isfunction, ismethoddescriptor
 from functools import wraps
 
 
@@ -398,11 +399,11 @@ def _raise_invalid_native(obj, name: str, exc: RuntimeError):
     ) from exc
 
 
-def _wrap_native_callable(obj, name: str, func):
+def _wrap_native_method(name: str, func):
     @wraps(func)
-    def _guarded(*args, **kwargs):
+    def _guarded(obj, *args, **kwargs):
         try:
-            return func(*args, **kwargs)
+            return func(obj, *args, **kwargs)
         except RuntimeError as exc:
             if _is_native_lifetime_error(exc):
                 _raise_invalid_native(obj, name, exc)
@@ -412,35 +413,37 @@ def _wrap_native_callable(obj, name: str, func):
     return _guarded
 
 
-def _install_native_lifetime_guard(cls) -> None:
-    """Patch a pybind class so stale native pointers fail fast with a typed error."""
-    if getattr(cls, "_infernux_native_lifetime_guard_installed", False):
+def _install_native_lifetime_guard(cls, *, check_liveness: bool = True) -> None:
+    """Guard the native boundary once, not every Python method lookup.
+
+    Methods and properties use ordinary descriptor binding after installation.
+    Python fields need no interception: native accesses inside user methods
+    already cross this boundary. There is no per-object callable cache.
+    Query/callback records are values, not entities with an id. Guard their
+    native property access without replacing their Python truth value.
+    """
+    if cls.__dict__.get("_infernux_native_lifetime_guard_installed", False):
         return
 
-    original_getattribute = cls.__getattribute__
-    original_setattr = cls.__setattr__
-
-    def _guarded_getattribute(self, name):
-        try:
-            value = original_getattribute(self, name)
-        except RuntimeError as exc:
-            if _is_native_lifetime_error(exc):
-                _raise_invalid_native(self, name, exc)
-            raise
-
+    for name, method in tuple(vars(cls).items()):
         if name.startswith("__"):
-            return value
-        if callable(value) and not getattr(value, "_infernux_native_guarded", False):
-            return _wrap_native_callable(self, name, value)
-        return value
+            continue
+        if isinstance(method, property):
+            setattr(cls, name, property(
+                _wrap_native_method(name, method.fget) if method.fget else None,
+                _wrap_native_method(name, method.fset) if method.fset else None,
+                _wrap_native_method(name, method.fdel) if method.fdel else None,
+                doc=method.__doc__,
+            ))
+        elif (not isinstance(method, (staticmethod, classmethod))
+              and (isfunction(method) or ismethoddescriptor(method))):
+            setattr(cls, name, _wrap_native_method(name, method))
 
-    def _guarded_setattr(self, name, value):
-        try:
-            return original_setattr(self, name, value)
-        except RuntimeError as exc:
-            if _is_native_lifetime_error(exc):
-                _raise_invalid_native(self, name, exc)
-            raise
+    if not check_liveness or getattr(cls, "_infernux_native_lifetime_guard_installed", False):
+        cls._infernux_native_lifetime_guard_installed = True
+        return  # Inherit the native base's liveness check.
+
+    original_getattribute = cls.__getattribute__
 
     def _guarded_bool(self):
         for attr in ("id", "component_id"):
@@ -456,14 +459,21 @@ def _install_native_lifetime_guard(cls) -> None:
                 return True
         return False
 
-    cls.__getattribute__ = _guarded_getattribute
-    cls.__setattr__ = _guarded_setattr
     cls.__bool__ = _guarded_bool
     cls._infernux_native_lifetime_guard_installed = True
 
 
-for _native_cls in (GameObject, Component, Transform, RaycastHit, CollisionInfo):
-    _install_native_lifetime_guard(_native_cls)
+def _install_native_lifetime_guards(cls):
+    _install_native_lifetime_guard(cls)
+    for child in cls.__subclasses__():
+        _install_native_lifetime_guards(child)
+
+
+for _native_cls in (GameObject, Component):
+    _install_native_lifetime_guards(_native_cls)
+
+for _native_cls in (RaycastHit, CollisionInfo):
+    _install_native_lifetime_guard(_native_cls, check_liveness=False)
 
 
 class _Vec3WritebackProxy:
@@ -651,6 +661,10 @@ class _Vec3WritebackProxy:
 def _unwrap_vec3(value):
     if isinstance(value, _Vec3WritebackProxy):
         return value._value
+    # Keep Transform setters consistent with Rigidbody/vector convenience APIs:
+    # plain three-item sequences are authoring values, not pybind arguments.
+    if isinstance(value, (tuple, list)) and len(value) == 3:
+        return Vector3(float(value[0]), float(value[1]), float(value[2]))
     return value
 
 
@@ -777,37 +791,21 @@ def _instantiate_prefab_reference(
     instantiate_in_world_space=False,
     configure_created=None,
 ):
-    current_path = getattr(prefab_ref, "path_hint", "")
-    guid = getattr(prefab_ref, "guid", "")
-    if not guid and not current_path:
+    guid = str(getattr(prefab_ref, "guid", "") or "").strip()
+    if not guid:
         return None
 
     from Infernux.engine.prefab_manager import instantiate_prefab
 
-    if guid:
-        adb = None
-        registry = AssetRegistry.instance()
-        if registry:
-            adb = registry.get_asset_database()
-        result = instantiate_prefab(
-            guid=guid,
-            parent=parent,
-            asset_database=adb,
-            instantiate_in_world_space=instantiate_in_world_space,
-            configure_created=configure_created,
-        )
-        if result is not None:
-            return result
-
-    if current_path and os.path.isfile(current_path):
-        return instantiate_prefab(
-            file_path=current_path,
-            parent=parent,
-            instantiate_in_world_space=instantiate_in_world_space,
-            configure_created=configure_created,
-        )
-
-    return None
+    registry = AssetRegistry.instance()
+    asset_database = registry.get_asset_database() if registry else None
+    return instantiate_prefab(
+        guid=guid,
+        parent=parent,
+        asset_database=asset_database,
+        instantiate_in_world_space=instantiate_in_world_space,
+        configure_created=configure_created,
+    )
 
 
 def _parse_instantiate_arguments(args, kwargs):
@@ -1010,7 +1008,8 @@ def _resolve_python_component_class(component_type):
     if isinstance(component_type, type) and issubclass(component_type, InxComponent):
         if issubclass(component_type, BuiltinComponent):
             return None
-        return component_type
+        from Infernux.components.registry import resolve_published_type
+        return resolve_published_type(component_type)
 
     if isinstance(component_type, str):
         component_cls = get_type(component_type)

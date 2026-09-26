@@ -158,6 +158,8 @@ bool VkSwapchainManager::BuildGeneration(const VkDeviceContext &context, uint32_
     createInfo.imageExtent = extent;
     createInfo.imageArrayLayers = 1;
     createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if ((swapchainSupport.capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0)
+        createInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
     // Handle queue family sharing
     const QueueFamilyIndices &indices = context.GetQueueIndices();
@@ -208,6 +210,7 @@ bool VkSwapchainManager::BuildGeneration(const VkDeviceContext &context, uint32_
         INXLOG_ERROR("Failed to create swapchain: ", VkResultToString(result));
         return false;
     }
+    generation.imageUsage = createInfo.imageUsage;
 
     // Store format and extent
     generation.imageFormat = surfaceFormat.format;

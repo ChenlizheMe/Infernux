@@ -549,12 +549,22 @@ def test_particle_graph_save_as_clears_document_dirty_state(
 
     previous_core = EditorInteractionCore._instance
     core = EditorInteractionCore()
+    class _Database:
+        @staticmethod
+        def get_guid_from_path(path):
+            return (
+                "saved-particle-graph-guid"
+                if str(path).endswith("Smoke.particlegraph")
+                else ""
+            )
+
     monkeypatch.setattr(asset_save_dialog, "get_project_root", lambda: str(tmp_path))
     monkeypatch.setattr(asset_save_dialog, "is_synthetic_input_frame", lambda: True)
+    monkeypatch.setattr(AssetManager, "_asset_database", _Database())
     monkeypatch.setattr(
         AssetManager,
         "reimport_asset",
-        classmethod(lambda cls, _path: None),
+        classmethod(lambda cls, _path: True),
     )
     try:
         panel = ParticleGraphEditorPanel()
@@ -709,7 +719,7 @@ def test_unsaved_scene_user_save_uses_native_dialog(tmp_path, monkeypatch):
     manager = _scene_manager()
     try:
         manager._current_scene_path = None
-        manager._do_save = lambda path: saved.append(path) or True
+        manager._do_save = lambda path, **_kwargs: saved.append(path) or True
         manager._show_save_as_dialog()
 
         assert manager._save_as_popup_open is False
@@ -915,10 +925,13 @@ def test_dirty_scene_open_uses_replace_document_transaction(monkeypatch):
 
 
 def _enter_fake_prefab_mode(manager: SceneFileManager, prefab_path: str) -> tuple[str, str]:
+    from Infernux.engine.interaction import DocumentKey, DocumentKind
+
     previous_document_id = manager.document_id
     manager._previous_scene_document_id = previous_document_id
     manager._previous_scene_path = manager._current_scene_path
     manager.is_prefab_mode = True
+    manager.prefab_mode_guid = "interaction-prefab-guid"
     manager.prefab_mode_path = prefab_path
     manager._current_scene_path = prefab_path
     manager._replace_scene_document(
@@ -927,6 +940,7 @@ def _enter_fake_prefab_mode(manager: SceneFileManager, prefab_path: str) -> tupl
         title="InteractionPrefab",
         dirty=True,
         preserve_previous=True,
+        key_override=DocumentKey.asset(DocumentKind.PREFAB, manager.prefab_mode_guid),
     )
     return previous_document_id, manager.document_id
 

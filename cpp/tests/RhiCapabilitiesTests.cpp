@@ -1,6 +1,10 @@
 #include <function/renderer/rhi/RhiDevice.h>
 
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
+#include <set>
 #include <string>
 
 using namespace infernux::rhi;
@@ -75,6 +79,50 @@ int main()
     assert(CheckDeviceCapabilities(state, syncRequest).code == DeviceCapabilityDiagnosticCode::NotEnabled);
     state.synchronization2.enabled = true;
     assert(CheckDeviceCapabilities(state, syncRequest).IsSupported());
+
+    DeviceCapabilityState computeState;
+    DeviceCapabilityRequest computeRequest;
+    computeRequest.shaderFloat64 = true;
+    auto computeCheck = CheckDeviceCapabilities(computeState, computeRequest);
+    assert(computeCheck.code == DeviceCapabilityDiagnosticCode::Unsupported);
+    assert(computeCheck.capability == DeviceCapability::ShaderFloat64);
+    computeState.shaderFloat64.supported = true;
+    assert(CheckDeviceCapabilities(computeState, computeRequest).code == DeviceCapabilityDiagnosticCode::NotEnabled);
+    computeState.shaderFloat64.enabled = true;
+    assert(CheckDeviceCapabilities(computeState, computeRequest).IsSupported());
+    computeRequest.shaderInt16 = true;
+    computeRequest.shaderInt64 = true;
+    computeState.shaderInt16 = {true, true};
+    computeState.shaderInt64 = {true, false};
+    computeCheck = CheckDeviceCapabilities(computeState, computeRequest);
+    assert(computeCheck.capability == DeviceCapability::ShaderInt64);
+    assert(computeCheck.code == DeviceCapabilityDiagnosticCode::NotEnabled);
+    computeState.shaderInt64.enabled = true;
+    assert(CheckDeviceCapabilities(computeState, computeRequest).IsSupported());
+
+    // Every enabled shader contract must have a distinct cache key. Physical
+    // support without logical-device enablement must not select another key.
+    std::set<uint64_t> shaderContracts;
+    for (uint32_t bits = 0; bits < 128; ++bits) {
+        DeviceCapabilityState contract;
+        const DeviceCapabilityStatus bindless{true, (bits & 1u) != 0};
+        contract.bindless.descriptorIndexing = bindless;
+        contract.bindless.runtimeDescriptorArray = bindless;
+        contract.bindless.shaderSampledImageArrayNonUniformIndexing = bindless;
+        contract.bindless.descriptorBindingPartiallyBound = bindless;
+        contract.bindless.descriptorBindingVariableDescriptorCount = bindless;
+        contract.bindless.descriptorBindingSampledImageUpdateAfterBind = bindless;
+        contract.dynamicRendering = {true, (bits & 2u) != 0};
+        contract.synchronization2 = {true, (bits & 4u) != 0};
+        contract.submit2 = {true, (bits & 8u) != 0};
+        contract.shaderInt16 = {true, (bits & 16u) != 0};
+        contract.shaderInt64 = {true, (bits & 32u) != 0};
+        contract.shaderFloat64 = {true, (bits & 64u) != 0};
+        const auto key = ComputeDeviceShaderContractKey(contract);
+        if (bits == 0)
+            assert(key == ComputeDeviceShaderContractKey({}));
+        assert(shaderContracts.insert(key).second);
+    }
 
     return 0;
 }

@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -12,37 +13,44 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize("preset", ["windows-msvc-release", "linux-clang-release"])
-def test_release_output_paths_follow_version_and_preserve_other_outputs(tmp_path, preset):
+def test_release_output_paths_follow_version_and_preserve_other_outputs(preset):
     cmake = shutil.which("cmake")
     if cmake is None:
         pytest.skip("CMake executable is required")
-    source = tmp_path / "source"
-    source.mkdir()
-    binary = source / "out/build" / preset
-    (source / "CMakeLists.txt").write_text(
-        'cmake_minimum_required(VERSION 3.25)\nproject(OutputOwnership NONE)\n'
-        f'set(Python3_EXECUTABLE "{Path(sys.executable).as_posix()}")\n'
-        f'include("{ROOT.as_posix()}/cmake/InfernuxOutputPaths.cmake")\n'
-        'file(WRITE "${CMAKE_BINARY_DIR}/paths.txt" '
-        '"${INFERNUX_STAGE_DIR}\\n${INFERNUX_RELEASE_DIR}\\n")\n',
-        encoding="utf-8",
-    )
-    existing = source / "dist/releases/0.4.0/other-platform.bin"
-    existing.parent.mkdir(parents=True)
-    existing.write_bytes(b"preserve the other producer")
-    for version in ("0.4.0", "0.4.1"):
-        (source / "pyproject.toml").write_text(
-            f'[project]\nversion = "{version}"\n', encoding="utf-8"
+    # Some Windows CMake distributions terminate before configure when their
+    # source directory contains non-ASCII characters.  This test owns output
+    # layout, not CMake's host-path decoder, so keep the isolated fixture under
+    # the repository's ASCII build root just like the real presets.
+    fixture_root = ROOT / "out" / "pytest-cmake"
+    fixture_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=fixture_root) as temporary:
+        source = Path(temporary) / "source"
+        source.mkdir()
+        binary = source / "out/build" / preset
+        (source / "CMakeLists.txt").write_text(
+            'cmake_minimum_required(VERSION 3.25)\nproject(OutputOwnership NONE)\n'
+            f'set(Python3_EXECUTABLE "{Path(sys.executable).as_posix()}")\n'
+            f'include("{ROOT.as_posix()}/cmake/InfernuxOutputPaths.cmake")\n'
+            'file(WRITE "${CMAKE_BINARY_DIR}/paths.txt" '
+            '"${INFERNUX_STAGE_DIR}\\n${INFERNUX_RELEASE_DIR}\\n")\n',
+            encoding="utf-8",
         )
-        result = subprocess.run(
-            [cmake, "-S", str(source), "-B", str(binary)],
-            capture_output=True, text=True, encoding="utf-8", timeout=30,
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-        stage, release = (binary / "paths.txt").read_text(encoding="utf-8").splitlines()
-        assert Path(stage) == source / "out/stage" / preset
-        assert Path(release) == source / "dist/releases" / version
-        assert existing.read_bytes() == b"preserve the other producer"
+        existing = source / "dist/releases/0.4.0/other-platform.bin"
+        existing.parent.mkdir(parents=True)
+        existing.write_bytes(b"preserve the other producer")
+        for version in ("0.4.0", "0.4.1"):
+            (source / "pyproject.toml").write_text(
+                f'[project]\nversion = "{version}"\n', encoding="utf-8"
+            )
+            result = subprocess.run(
+                [cmake, "-S", str(source), "-B", str(binary)],
+                capture_output=True, text=True, encoding="utf-8", timeout=30,
+            )
+            assert result.returncode == 0, result.stdout + result.stderr
+            stage, release = (binary / "paths.txt").read_text(encoding="utf-8").splitlines()
+            assert Path(stage) == source / "out/stage" / preset
+            assert Path(release) == source / "dist/releases" / version
+            assert existing.read_bytes() == b"preserve the other producer"
 
 
 def test_product_targets_do_not_clean_source_python_caches():

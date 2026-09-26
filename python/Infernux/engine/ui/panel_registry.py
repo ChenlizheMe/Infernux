@@ -27,7 +27,6 @@ Window menu and can be opened/closed.
 from __future__ import annotations
 
 from contextlib import contextmanager
-from contextvars import ContextVar
 from typing import Iterator
 from typing import Callable, Dict, List, Optional, Type, TYPE_CHECKING
 
@@ -35,6 +34,7 @@ from Infernux.engine.interaction import (
     PanelInteractionDescriptor,
     PanelInteractionRegistry,
 )
+from Infernux.engine.interaction._contributions import current_owner, contribution_scope
 
 if TYPE_CHECKING:
     from Infernux.lib import InxGUIRenderable
@@ -88,7 +88,7 @@ class PanelRegistry:
     """
 
     _registrations: List[_PanelRegistration] = []
-    _owner: ContextVar[str] = ContextVar("infernux_panel_owner", default="")
+    _owner = current_owner
     _live_window_manager: Optional[WindowManager] = None
     _live_interaction_registry: Optional[PanelInteractionRegistry] = None
 
@@ -123,11 +123,8 @@ class PanelRegistry:
     def contribution_scope(cls, owner: str) -> Iterator[None]:
         """Attribute registrations performed during one preload import."""
 
-        token = cls._owner.set(str(owner or ""))
-        try:
+        with contribution_scope(owner):
             yield
-        finally:
-            cls._owner.reset(token)
 
     # ------------------------------------------------------------------
     # API called by release_engine()

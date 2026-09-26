@@ -25,6 +25,11 @@ manifest and no installation record. Its compiled preload reads its TXT through
 the same package resolver. Scene startup requires that exact preload value, so
 missing local author content fails every target's gameplay acceptance.
 
+The bootstrap also invokes the public ``@inx.jit.compile`` and
+``inx.jit.warmup`` API. Targets with a CPU compiler execute the compiled
+function; the Web exporter cooks the same source into ordinary Python bytecode.
+The Web CI checks the sealed bytecode and requires its exact result in Chromium.
+
 The interactive Balance project remains the functional acceptance project for
 physics, animation, particles, LineRenderer, authored materials, and shared
 Action input. This fixture does not replace those device tests.

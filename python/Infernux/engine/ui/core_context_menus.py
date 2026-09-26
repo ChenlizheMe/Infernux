@@ -34,12 +34,14 @@ def _hierarchy_create_entries(
     *,
     semantic_root: str,
 ):
-    ui = _create_object(
-        translate,
-        "hierarchy.ui_canvas",
-        "ui.canvas",
-        parent_id,
-        f"{semantic_root}.ui.canvas",
+    ui_specs = (
+        ("hierarchy.ui_canvas", "ui.canvas", "canvas"),
+        ("hierarchy.ui_frame", "ui.frame", "frame"),
+        ("hierarchy.ui_text", "ui.text", "text"),
+        ("hierarchy.ui_image", "ui.image", "image"),
+        ("hierarchy.ui_button", "ui.button", "button"),
+        ("hierarchy.ui_progress_bar", "ui.progress_bar", "progress_bar"),
+        ("hierarchy.ui_slider", "ui.slider", "slider"),
     )
     primitive_specs = (
         ("hierarchy.primitive_cube", "primitive.cube", "cube"),
@@ -138,7 +140,16 @@ def _hierarchy_create_entries(
         ),
         ContextMenuSubmenu(
             translate("hierarchy.ui_menu"),
-            (ui,),
+            tuple(
+                _create_object(
+                    translate,
+                    label_key,
+                    kind,
+                    parent_id,
+                    f"{semantic_root}.ui.{suffix}",
+                )
+                for label_key, kind, suffix in ui_specs
+            ),
             semantic_id=f"{semantic_root}.ui",
         ),
     )
@@ -328,6 +339,22 @@ def project_context_menu(
     current_path: str = "",
 ):
     """Return the Project menu for paths frozen when its popup opened."""
+    from Infernux.core.data_asset import get_registered_data_asset_types
+
+    data_assets = tuple(
+        ContextMenuCommand(
+            "asset.create",
+            label=f"{asset_type.__name__} (.inxdata)",
+            payload={
+                "kind": "data_asset",
+                "base_name": f"New{asset_type.__name__}",
+                "extension": ".inxdata",
+                "variant": type_id,
+            },
+            semantic_id=f"project.context.create.data_asset.{type_id}",
+        )
+        for type_id, asset_type in get_registered_data_asset_types()
+    )
     effects = tuple(
         _asset_create(translate, label, "render_effect", base, ".effect", feature)
         for label, base, feature in (
@@ -367,6 +394,14 @@ def project_context_menu(
         ),
         _asset_create(
             translate, "project.create_physic_material", "physic_material", "NewPhysicMaterial", ".physicMaterial",
+        ),
+        _asset_create(
+            translate, "project.create_render_texture", "render_texture", "NewRenderTexture", ".rendertexture",
+        ),
+        ContextMenuSubmenu(
+            translate("project.create_data_asset"),
+            data_assets,
+            semantic_id="project.context.create.data_asset",
         ),
         _asset_create(
             translate, "project.create_scene", "scene", "NewScene", ".scene",

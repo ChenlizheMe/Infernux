@@ -36,8 +36,11 @@ def serve(monkeypatch, catalog):
 
 def pinned(project):
     registry = PluginRegistry(str(project))
-    source = {"type": "github", "location": "https://github.com/ChenlizheMe/Infernux",
-              "subdirectory": "external/plugins/infernux_web", "revision": "old-engine-commit"}
+    source = {
+        "type": "github",
+        "location": "https://github.com/ChenlizheMe/infernux_web",
+        "official": True,
+    }
     registry.record_install(
         {"reference": "infernux/platform-web", "version": "0.1.0"}, files=[],
         control={"guid": "a" * 32, "owned": True, "path_hint": "Packages/infernux/platform-web/inx_package.json"},
@@ -109,26 +112,6 @@ def test_refresh_preserves_local_author_catalog_override(tmp_path, monkeypatch, 
     official.refresh_official_registry(str(tmp_path / "project"))
     assert registry.find("infernux/platform-web")["source"] == source
     assert registry.find("infernux/platform-web")["version"] == "custom"
-
-
-def test_legacy_remote_catalog_is_migrated_without_old_subdirectory(tmp_path, monkeypatch, catalog):
-    catalog["packages"][0]["source"] = {
-        "type": "github", "location": "https://github.com/ChenlizheMe/Infernux",
-        "subdirectory": "external/plugins/infernux_web", "revision": "old-commit",
-    }
-    serve(monkeypatch, catalog)
-    result = official.refresh_official_registry(str(tmp_path / "project"))
-    assert result[0]["source"]["location"] == "https://github.com/ChenlizheMe/infernux_web"
-    assert "revision" not in result[0]["source"]
-    assert "subdirectory" not in result[0]["source"]
-
-
-def test_installed_legacy_repository_resolves_without_rewriting_pin(tmp_path, catalog):
-    registry = pinned(tmp_path / "project")
-    original = Path(registry.lock_path).read_bytes()
-    manager = PluginManager(str(tmp_path / "project"), runtime=True)
-    assert manager.release_repository("infernux/platform-web") == "https://github.com/ChenlizheMe/infernux_web"
-    assert Path(registry.lock_path).read_bytes() == original
 
 
 def test_bundled_official_package_can_discover_its_publisher(tmp_path, catalog):

@@ -2,6 +2,7 @@
 
 #include "InxMesh.h"
 #include "MeshArtifact.h"
+#include "MeshImportSettings.h"
 
 #include <core/log/InxLog.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
@@ -10,8 +11,17 @@
 #include <function/resources/InxSkinnedMesh/SkinnedMeshArtifact.h>
 #include <platform/filesystem/InxPath.h>
 
+#if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+#include <assimp/Importer.hpp>
+#include <assimp/material.h>
+#include <assimp/postprocess.h>
+#include <assimp/scene.h>
+#endif
+
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <set>
 
 namespace infernux
 {
@@ -58,6 +68,7 @@ RuntimeAssetPayload MeshLoader::Load(const std::string &filePath, const std::str
                                  "'");
 
     auto mesh = MeshArtifact::Deserialize(ReadArtifactBytes(artifactPath, "Mesh artifact"), sourceHash);
+    mesh->SetCpuReadable(MeshImportSettings::Read(*metadata).isReadable);
     auto skinned = SkinnedMeshArtifact::Deserialize(
         ReadArtifactBytes(skinnedArtifactPath, "skinned Mesh companion artifact"), sourceHash);
     if (skinned) {
@@ -82,14 +93,7 @@ bool MeshLoader::Reload(const RuntimeAssetPayload &existing, const std::string &
     if (!target)
         return false;
 
-    target->SetName(loaded->GetName());
-    target->SetFilePath(loaded->GetFilePath());
-    target->SetData(std::vector<Vertex>(loaded->GetVertices()), std::vector<uint32_t>(loaded->GetIndices()),
-                    std::vector<SubMesh>(loaded->GetSubMeshes()));
-    target->SetMaterialSlotNames(std::vector<std::string>(loaded->GetMaterialSlotNames()));
-    target->SetMaterialSlotData(std::vector<MaterialSlotData>(loaded->GetMaterialSlotData()));
-    target->SetNodeNames(std::vector<std::string>(loaded->GetNodeNames()));
-    target->SetSkinnedData(loaded->GetSkinnedData());
+    target->ReplaceImportedContent(*loaded);
     INXLOG_INFO("MeshLoader::Reload: updated '", target->GetName(), "' in-place");
     return true;
 }
@@ -102,9 +106,101 @@ size_t MeshLoader::EstimateRuntimeBytes(const RuntimeAssetPayload &payload) cons
     return mesh->GetRuntimeMemoryBytes();
 }
 
-std::set<std::string> MeshLoader::ScanDependencies(const std::string &, AssetDatabase *)
+std::set<std::string> MeshLoader::ScanExternalTexturePaths(const std::string &filePath)
 {
-    return {};
+    std::set<std::string> paths;
+#if defined(INFERNUX_RUNTIME_MINIMAL_HOST)
+    // A cooked Player consumes GUID dependencies published by the importer.
+    // It never parses mutable model sources and therefore must not carry
+    // Assimp or its generated configuration into the runtime host.
+    (void)filePath;
+    return paths;
+#else
+    if (filePath.empty())
+        return paths;
+
+    const auto sourcePath = ToFsPath(filePath);
+    if (!std::filesystem::is_regular_file(sourcePath))
+        return paths;
+
+    // Model import is the authoring boundary where mutable paths may be
+    // resolved to authoritative GUIDs.  Keep runtime loaders GUID-only.
+    Assimp::Importer importer;
+    const aiScene *scene = importer.ReadFile(
+        FromFsPath(sourcePath), aiProcess_Triangulate | aiProcess_JoinIdenticalVertices | aiProcess_SortByPType);
+    if (!scene || !scene->mMaterials)
+        return paths;
+
+    const std::filesystem::path sourceDirectory = sourcePath.parent_path();
+    for (unsigned int materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex) {
+        const aiMaterial *material = scene->mMaterials[materialIndex];
+        if (!material)
+            continue;
+        // Scan every texture semantic.  The runtime material may choose only
+        // a subset today, but Cook must not silently omit a source texture
+        // that belongs to a composite model asset.
+        for (unsigned int textureType = aiTextureType_NONE + 1; textureType <= aiTextureType_UNKNOWN; ++textureType) {
+            const auto semantic = static_cast<aiTextureType>(textureType);
+            const unsigned int count = material->GetTextureCount(semantic);
+            for (unsigned int textureIndex = 0; textureIndex < count; ++textureIndex) {
+                aiString texturePath;
+                if (material->GetTexture(semantic, textureIndex, &texturePath) != AI_SUCCESS)
+                    continue;
+                const std::string authoredPath = texturePath.C_Str();
+                // Embedded blobs are part of the source container.  They do
+                // not have a project GUID until the importer gains explicit
+                // embedded-texture extraction; do not invent one from the
+                // literal '*N' token.
+                if (authoredPath.empty() || authoredPath.front() == '*')
+                    continue;
+
+                // Blender writes project-relative external paths with a
+                // leading "//".  Strip that authoring marker before asking
+                // std::filesystem to classify the path; on Windows the raw
+                // spelling would otherwise look like a UNC path.
+                const bool blenderRelative = authoredPath.rfind("//", 0) == 0;
+                std::string normalizedPath = blenderRelative ? authoredPath.substr(2) : authoredPath;
+                // Assimp preserves Windows-authored OBJ/MTL separators even
+                // when the same source is imported on Linux.  Treat both
+                // separators as path separators at this authoring boundary;
+                // runtime identities remain canonical engine paths.
+                std::replace(normalizedPath.begin(), normalizedPath.end(), '\\', '/');
+                std::filesystem::path candidate = std::filesystem::u8path(normalizedPath);
+                if (candidate.is_relative())
+                    candidate = sourceDirectory / candidate;
+                // Keep filesystem identity/normalization in the shared InxPath
+                // boundary.  Do not let an importer create its own lexical
+                // spelling that can diverge from AssetDatabase keys.
+                candidate = ToFsPath(NormalizeFilesystemPathLexically(FromFsPath(candidate)));
+                if (!std::filesystem::is_regular_file(candidate))
+                    continue;
+                paths.insert(FromFsPath(candidate));
+            }
+        }
+    }
+    return paths;
+#endif
+}
+
+std::set<std::string> MeshLoader::ScanDependencies(const std::string &filePath, AssetDatabase *adb)
+{
+    std::set<std::string> dependencies;
+    if (!adb)
+        return dependencies;
+    const auto metadata = adb->GetMetaByGuid(adb->GetGuidFromPath(filePath));
+    if (metadata) {
+        const auto settings = MeshImportSettings::Read(*metadata);
+        if (settings.materialImportMode == "none")
+            return dependencies;
+        for (const auto &[source, guid] : settings.materialRemaps.items())
+            dependencies.insert(guid.get<std::string>());
+    }
+    for (const auto &path : ScanExternalTexturePaths(filePath)) {
+        const std::string guid = adb->GetGuidFromPath(path);
+        if (!guid.empty())
+            dependencies.insert(guid);
+    }
+    return dependencies;
 }
 
 } // namespace infernux

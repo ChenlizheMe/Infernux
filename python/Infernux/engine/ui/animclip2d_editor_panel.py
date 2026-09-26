@@ -417,7 +417,7 @@ class AnimClip2DEditorPanel(EditorPanel):
 
     def _capture_authoring_snapshot(self) -> dict:
         return {
-            "texture_path": self._tex.file_path if self._tex else "",
+            "texture_guid": self._tex.guid if self._tex else "",
             "clips": [
                 {
                     "stable_id": clip.stable_id,
@@ -435,21 +435,28 @@ class AnimClip2DEditorPanel(EditorPanel):
         return self._capture_authoring_snapshot()
 
     def restore_authoring_snapshot(self, state: dict) -> None:
-        if type(state) is not dict or set(state) != {"texture_path", "clips"}:
+        if type(state) is not dict or set(state) != {"texture_guid", "clips"}:
             raise ValueError("2D animation authoring state must use the complete current field set")
-        if type(state["texture_path"]) is not str:
-            raise TypeError("2D animation texture_path must be a string")
+        if type(state["texture_guid"]) is not str:
+            raise TypeError("2D animation texture_guid must be a string")
         if type(state["clips"]) is not list:
             raise TypeError("2D animation clips must be an array")
         items = state["clips"]
         if len(items) != 1:
             raise ValueError("2D animation authoring state must contain exactly one clip")
         clip = _clip_state_from_document(items[0])
-        texture_path = state["texture_path"]
-        current_path = self._tex.file_path if self._tex else ""
-        if texture_path and not same_path(texture_path, current_path):
+        texture_guid = str(state["texture_guid"] or "").strip()
+        current_guid = self._tex.guid if self._tex else ""
+        if texture_guid and texture_guid.casefold() != current_guid.casefold():
+            from Infernux.core.assets import AssetManager
+
+            texture_path = str(
+                AssetManager.require_asset_database().get_path_from_guid(texture_guid) or ""
+            ).strip()
+            if not texture_path:
+                raise LookupError(f"animation texture GUID is not registered: {texture_guid}")
             self._load_texture(texture_path)
-        elif not texture_path and self._tex is not None:
+        elif not texture_guid and self._tex is not None:
             self._cleanup_texture()
             self._tex = None
         self._clips = [clip]
@@ -459,19 +466,15 @@ class AnimClip2DEditorPanel(EditorPanel):
     def capture_document_restore_state(self, document_id: str) -> dict:
         if document_id != self.document_id:
             raise ValueError("2D animation restore capture targeted another document")
-        document = self._animclip_document()
-        return {
-            "authoring": self._capture_authoring_snapshot(),
-            "file_path": document.resource_path if document is not None else "",
-        }
+        return {"authoring": self._capture_authoring_snapshot()}
 
     def restore_document_restore_state(self, state: dict) -> None:
-        if not isinstance(state, dict) or set(state) != {"authoring", "file_path"}:
+        if not isinstance(state, dict) or set(state) != {"authoring"}:
             raise ValueError("2D animation document restore state is invalid")
 
         def validate_authoring(authoring) -> None:
             if not isinstance(authoring, dict) or set(authoring) != {
-                "texture_path",
+                "texture_guid",
                 "clips",
             }:
                 raise ValueError("2D animation authoring restore state is invalid")
@@ -499,10 +502,7 @@ class AnimClip2DEditorPanel(EditorPanel):
         state,
         error: Exception,
     ) -> bool:
-        del error
-        path = str(state.get("file_path", "")) if isinstance(state, dict) else ""
-        if path and os.path.isfile(path):
-            return self.open_document_resource_immediate(path) is True
+        del state, error
         return self._new_clip_document_immediate()
 
     def _apply_authoring_mutation(
@@ -704,7 +704,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             guid = ""
         if guid:
             return DocumentKey.asset(DocumentKind.ANIMATION_CLIP, guid)
-        return DocumentKey.resource(DocumentKind.ANIMATION_CLIP, normalized)
+        return DocumentKey.session(DocumentKind.ANIMATION_CLIP)
 
     def _replace_animclip_document(self, *, resource_path: str, dirty: bool) -> None:
         from Infernux.engine.interaction import (
@@ -1727,7 +1727,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             Debug.log_warning(f"[AnimClipEditor] Failed to load: {animclip_path}")
             return False
 
-        # Resolve texture from clip's GUID or path
+        # Resolve the authoring texture from its durable GUID.
         if self._tex is not None:
             self._cleanup_texture()
             self._tex = None
@@ -1743,22 +1743,6 @@ class AnimClip2DEditorPanel(EditorPanel):
                         tex_resolved = True
             except Exception:
                 pass
-
-        if not tex_resolved and clip_data.authoring_texture_path:
-            tp = clip_data.authoring_texture_path
-            if os.path.isfile(tp):
-                self._load_texture(tp)
-            else:
-                # Try relative to project root
-                try:
-                    from Infernux.engine.project_context import get_project_root
-                    pr = get_project_root()
-                    if pr:
-                        abs_tp = os.path.join(pr, tp)
-                        if os.path.isfile(abs_tp):
-                            self._load_texture(abs_tp)
-                except Exception:
-                    pass
 
         # Import clip state
         cs = _ClipState(
@@ -1864,7 +1848,6 @@ class AnimClip2DEditorPanel(EditorPanel):
         return AnimationClip(
             name=name or clip.name,
             authoring_texture_guid=tex.guid if tex else "",
-            authoring_texture_path=tex.file_path if tex else "",
             frames=copy.deepcopy(clip.frames),
             fps=clip.fps,
             loop=clip.loop,

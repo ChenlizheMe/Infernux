@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import fnmatch
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
 from typing import Any, Mapping, Optional
 
@@ -24,6 +25,23 @@ from .path_utils import (
 
 PLAYER_MANIFEST_SCHEMA = "infernux.player_runtime_manifest"
 _KNOWN_OPTIONAL_SUBSYSTEMS = frozenset({"splash"})
+
+
+def _portable_glob_match(value: str, pattern: str) -> bool:
+    """Match a portable glob with ``**/`` representing zero or more levels."""
+    candidates = {pattern}
+    collapsed = pattern
+    while "**/" in collapsed:
+        collapsed = collapsed.replace("**/", "", 1)
+        candidates.add(collapsed)
+    for candidate in candidates:
+        if not fnmatch.fnmatchcase(value, candidate):
+            continue
+        if "**" in candidate or "/" not in candidate:
+            return True
+        if value.count("/") == candidate.count("/"):
+            return True
+    return False
 
 
 def _freeze_document(value: Any) -> Any:
@@ -563,8 +581,12 @@ class PlayerRuntimeAssetCatalog:
     _artifacts_by_id: Mapping[str, Mapping[str, Any]]
     _artifact_ids_by_guid: Mapping[str, tuple[str, ...]]
     _asset_paths: Mapping[str, str]
+    _asset_guids_by_path: Mapping[str, str]
+    _primary_paths_by_guid: Mapping[str, str]
+    _source_paths_by_guid: Mapping[str, str]
+    _source_extensions_by_guid: Mapping[str, str]
     _package_directories: Mapping[str, str]
-    _scene_paths: Mapping[str, str]
+    _scene_paths_by_guid: Mapping[str, str]
 
     @classmethod
     def from_documents(
@@ -632,9 +654,11 @@ class PlayerRuntimeAssetCatalog:
                 for artifact in artifacts_by_id.values()
             )
         }
-        scene_paths: dict[str, str] = {
-            path.casefold(): path for path in scene_artifact_paths
-        }
+        scene_paths_by_guid: dict[str, str] = {}
+        asset_guids_by_path: dict[str, str] = {}
+        primary_paths_by_guid: dict[str, str] = {}
+        source_extensions_by_guid: dict[str, str] = {}
+        source_paths_by_guid: dict[str, str] = {}
         # Raw package payloads retain sibling layout. Derive their directory
         # membership once from cataloged assets, never from a filesystem walk.
         package_directories: dict[str, str] = {}
@@ -679,10 +703,19 @@ class PlayerRuntimeAssetCatalog:
                     f"Player runtime asset primary artifact is missing for GUID {guid}"
                 )
             primary_path = str(primary_artifact["runtime_path"])
+            primary_paths_by_guid[guid] = primary_path
             source_alias = record.get("runtime_path")
             if source_alias:
                 normalized_alias = cls._normalized_runtime_path(source_alias)
+                source_paths_by_guid[guid] = normalized_alias
+                source_extensions_by_guid[guid] = Path(normalized_alias).suffix.casefold()
                 alias_key = normalized_alias.casefold()
+                existing_guid = asset_guids_by_path.get(alias_key)
+                if existing_guid is not None and existing_guid != guid:
+                    raise RuntimeError(
+                        f"Player runtime asset GUID alias is ambiguous: {normalized_alias}"
+                    )
+                asset_guids_by_path[alias_key] = guid
                 existing = asset_paths.get(alias_key)
                 if existing is not None and existing != primary_path:
                     raise RuntimeError(
@@ -690,9 +723,7 @@ class PlayerRuntimeAssetCatalog:
                     )
                 asset_paths[alias_key] = primary_path
             if primary_path in scene_artifact_paths:
-                scene_paths[primary_path.casefold()] = primary_path
-                if source_alias:
-                    scene_paths[normalized_alias.casefold()] = primary_path
+                scene_paths_by_guid[guid] = primary_path
             seen_guids.add(guid)
 
         return cls(
@@ -710,14 +741,25 @@ class PlayerRuntimeAssetCatalog:
                 }
             ),
             _asset_paths=MappingProxyType(dict(asset_paths)),
+            _asset_guids_by_path=MappingProxyType(asset_guids_by_path),
+            _primary_paths_by_guid=MappingProxyType(primary_paths_by_guid),
+            _source_paths_by_guid=MappingProxyType(source_paths_by_guid),
+            _source_extensions_by_guid=MappingProxyType(source_extensions_by_guid),
             _package_directories=MappingProxyType(package_directories),
-            _scene_paths=MappingProxyType(dict(scene_paths)),
+            _scene_paths_by_guid=MappingProxyType(scene_paths_by_guid),
         )
 
     @staticmethod
     def _normalized_runtime_path(value: object) -> str:
         if not isinstance(value, str) or not value:
             raise RuntimeError("Player runtime artifact path is missing")
+        portable = value.replace("\\", "/")
+        if (
+            PurePosixPath(value).is_absolute()
+            or bool(PureWindowsPath(value).anchor)
+            or any(part in {"", ".", ".."} for part in portable.split("/"))
+        ):
+            raise RuntimeError(f"Player runtime artifact path is unsafe: {value}")
         try:
             normalized = portable_relative_path(value)
         except ValueError:
@@ -730,13 +772,83 @@ class PlayerRuntimeAssetCatalog:
     def artifact_ids_for_guid(self, guid: str) -> tuple[str, ...]:
         return self._artifact_ids_by_guid.get(str(guid), ())
 
-    def resolve_asset(
+    def query_asset_guids(self, pattern: str) -> tuple[str, ...]:
+        """Map one authored Assets path/glob to frozen GUID identities."""
+        raw = str(pattern).strip()
+        if raw in self._primary_paths_by_guid:
+            return (raw,)
+        portable = raw.replace("\\", "/")
+        if (
+            not portable
+            or PurePosixPath(raw).is_absolute()
+            or bool(PureWindowsPath(raw).anchor)
+            or any(part in {"", ".", ".."} for part in portable.split("/"))
+        ):
+            raise ValueError("Player asset queries must be safe relative paths")
+        try:
+            normalized = portable_relative_path(raw)
+        except ValueError as exc:
+            raise ValueError("Player asset queries must be safe relative paths") from exc
+        if (
+            normalized.casefold() != "assets"
+            and not normalized.casefold().startswith("assets/")
+        ):
+            raise ValueError("Player asset queries must be Assets-relative")
+        folded = normalized.casefold()
+        has_magic = any(char in normalized for char in "*?[")
+        if not has_magic:
+            guid = self._asset_guids_by_path.get(folded)
+            if guid is not None:
+                return (guid,)
+            prefix = folded.rstrip("/") + "/"
+            matches = {
+                child_guid
+                for path, child_guid in self._asset_guids_by_path.items()
+                if path.startswith(prefix) and "/" not in path[len(prefix):]
+            }
+            return tuple(sorted(matches))
+        matches = {
+            guid
+            for path, guid in self._asset_guids_by_path.items()
+            if path.startswith("assets/")
+            and _portable_glob_match(path, folded)
+        }
+        return tuple(sorted(matches))
+
+    def resolve_guid(self, guid: str) -> Optional[str]:
+        """Resolve one managed GUID to its cooked primary payload."""
+        cooked_runtime_path = self._primary_paths_by_guid.get(str(guid))
+        if cooked_runtime_path is None:
+            return None
+        candidate = resolved_path(
+            os.path.join(self.project_root, *cooked_runtime_path.split("/"))
+        )
+        if (
+            not is_path_within(candidate, self.project_root, allow_root=False)
+            or not os.path.isfile(candidate)
+        ):
+            return None
+        return candidate
+
+    def source_extension_for_guid(self, guid: str) -> str:
+        """Return the frozen authored suffix without touching a payload file."""
+        return self._source_extensions_by_guid.get(str(guid), "")
+
+    def source_path_for_guid(self, guid: str) -> str:
+        """Return the authored relative path for a cataloged asset.
+
+        Player scene-name resolution uses this immutable catalog alias.  It
+        never scans the shipped project or reconstructs a path from a GUID.
+        """
+        return self._source_paths_by_guid.get(str(guid), "")
+
+    def resolve_package(
         self,
         reference: os.PathLike[str] | str,
         *,
         allow_directory: bool = False,
     ) -> Optional[str]:
-        """Resolve a cataloged source alias or cooked path to its payload."""
+        """Resolve one cataloged package file/directory to its physical payload."""
         raw = os.fspath(reference)
         requested = resolved_path(
             raw if os.path.isabs(raw) else os.path.join(self.project_root, raw)
@@ -745,6 +857,8 @@ class PlayerRuntimeAssetCatalog:
             return None
         runtime_path = relative_path(requested, self.project_root).replace("\\", "/")
         key = runtime_path.casefold()
+        if not key.startswith("packages/"):
+            return None
         directory = allow_directory and key in self._package_directories
         cooked_runtime_path = (
             self._package_directories[key] if directory else self._asset_paths.get(key)
@@ -761,17 +875,8 @@ class PlayerRuntimeAssetCatalog:
             return None
         return candidate
 
-    def resolve_scene(self, reference: os.PathLike[str] | str) -> Optional[str]:
-        raw = os.fspath(reference)
-        requested = resolved_path(
-            raw if os.path.isabs(raw) else os.path.join(self.project_root, raw)
-        )
-        if not is_path_within(requested, self.project_root, allow_root=False):
-            return None
-        runtime_path = relative_path(requested, self.project_root)
-        cooked_runtime_path = self._scene_paths.get(
-            runtime_path.replace("\\", "/").casefold()
-        )
+    def resolve_scene(self, scene_guid: str) -> Optional[str]:
+        cooked_runtime_path = self._scene_paths_by_guid.get(str(scene_guid))
         if cooked_runtime_path is None:
             return None
         candidate = resolved_path(

@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 PACKAGING_DIR = Path(__file__).resolve().parents[1]
 if str(PACKAGING_DIR) not in sys.path:
@@ -266,9 +268,28 @@ def test_upgraded_hub_requires_the_new_default_runtime(monkeypatch):
     assert observed["finished"] is True
 
 
-def test_packaged_hub_checks_for_updates_before_runtime_bootstrap():
+def test_packaged_hub_preserves_explicitly_disabled_update_checks():
     observed = []
     launcher = SimpleNamespace(
+        db=SimpleNamespace(get_setting=lambda _key, _default: "disabled"),
+        _startup_update_pending=False,
+        update_controller=SimpleNamespace(
+            check=lambda **kwargs: observed.append(("update", kwargs))
+        ),
+        _bootstrap_python_runtime=lambda: observed.append(("runtime", {})),
+    )
+
+    GameEngineLauncher._bootstrap_hub(launcher)
+
+    assert launcher._startup_update_pending is False
+    assert observed == [("runtime", {})]
+
+
+@pytest.mark.parametrize("saved", [None, "enabled"])
+def test_packaged_hub_checks_by_default_and_when_explicitly_enabled(saved):
+    observed = []
+    launcher = SimpleNamespace(
+        db=SimpleNamespace(get_setting=lambda _key, default: default if saved is None else saved),
         _startup_update_pending=False,
         update_controller=SimpleNamespace(
             check=lambda **kwargs: observed.append(("update", kwargs))
@@ -288,6 +309,20 @@ def test_packaged_hub_checks_for_updates_before_runtime_bootstrap():
         ("update", {"silent": True}),
         ("runtime", {}),
     ]
+
+
+@pytest.mark.parametrize("saved, expected", [(None, True), ("enabled", True), ("disabled", False)])
+def test_startup_release_notices_follow_the_same_update_preference(saved, expected):
+    observed = []
+    launcher = SimpleNamespace(
+        db=SimpleNamespace(get_setting=lambda _key, default: default if saved is None else saved),
+        installs_view=SimpleNamespace(refresh=lambda: observed.append("installs")),
+        notification_controller=SimpleNamespace(show_pending=lambda: observed.append("notices")),
+    )
+
+    GameEngineLauncher._finish_startup(launcher)
+
+    assert observed == (["installs", "notices"] if expected else ["installs"])
 
 
 def test_fresh_installer_runtime_skips_the_upgrade_requirement(monkeypatch):

@@ -169,6 +169,18 @@ int main()
     editScene->SetMainCamera(camera);
     assert(editScene->GetStructureVersion() == revision);
 
+    // Child-to-child reparenting bypasses Scene's root attach/detach paths.
+    // It still changes traversal order and inherited component policy.
+    GameObject *parentA = editScene->CreateGameObject("Parent A");
+    GameObject *parentB = editScene->CreateGameObject("Parent B");
+    cameraObject->SetParent(parentA);
+    revision = editScene->GetStructureVersion();
+    cameraObject->SetParent(parentB);
+    assert(editScene->GetStructureVersion() > revision);
+    revision = editScene->GetStructureVersion();
+    cameraObject->SetParent(parentB);
+    assert(editScene->GetStructureVersion() == revision);
+
     manager.UnloadAllScenes();
     return 0;
 }

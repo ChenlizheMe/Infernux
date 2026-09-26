@@ -14,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace infernux
@@ -63,6 +64,7 @@ class ConsolePanel : public EditorPanel
     [[nodiscard]] uint64_t GetRevision() const noexcept;
     [[nodiscard]] uint64_t GetSelectedUid() const noexcept;
     [[nodiscard]] bool HasSelectedEntry() const noexcept;
+    [[nodiscard]] std::vector<uint64_t> GetSelectedUids() const;
 
     /// Snapshot the entries currently visible in the native Console view.
     /// This is intentionally a bounded, filtered view so external tools do
@@ -167,9 +169,12 @@ class ConsolePanel : public EditorPanel
     // m_selectedUid mirrors SelectionService for drawing only. User actions
     // publish intent and never mutate this field directly.
     uint64_t m_selectedUid = 0;
+    std::vector<uint64_t> m_selectedUids;
+    std::unordered_set<uint64_t> m_selectedUidLookup;
     uint64_t m_requestedUid = 0;
     bool m_followTail = true;
     bool m_scrollToBottom = false;
+    bool m_resetScrollToTop = false;
     std::array<char, 256> m_search{};
     std::string m_searchEditStart;
     bool m_focusSearchNextFrame = false;
@@ -192,6 +197,11 @@ class ConsolePanel : public EditorPanel
     bool MatchesCurrentFilters(const LogEntry &entry) const;
     std::string CollapseKey(const LogEntry &entry) const;
     int FindVisibleIndexByUid(uint64_t uid) const;
+    [[nodiscard]] bool IsUidSelected(uint64_t uid) const noexcept;
+    void ReplaceLocalSelection(uint64_t uid);
+    void ToggleLocalSelection(uint64_t uid);
+    void PruneLocalSelection();
+    [[nodiscard]] std::vector<int> SelectedVisibleIndices() const;
     void SelectUid(uint64_t uid, bool focusWindow, bool publishSelection = true, bool recordHistory = true);
     void PublishSelection(uint64_t uid, bool recordHistory);
     void RenderToolbar(InxGUIContext *ctx);

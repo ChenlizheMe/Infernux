@@ -8,7 +8,7 @@ use triangle-mesh collision; switching to a dynamic Rigidbody sets the public
 
 from __future__ import annotations
 
-from Infernux.components.builtin.collider import Collider
+from Infernux.components.builtin.collider import Collider, _native_collider_properties
 from Infernux.components.builtin_component import CppProperty
 from Infernux.components.fields import FieldType
 
@@ -18,12 +18,8 @@ class MeshCollider(Collider):
 
     _cpp_type_name = "MeshCollider"
 
-    convex = CppProperty(
-        "convex",
-        FieldType.BOOL,
-        default=False,
-        tooltip="Use convex hull collision. Required for dynamic rigidbodies.",
-    )
+    center, is_trigger, physic_material = _native_collider_properties(_cpp_type_name)
+    convex = CppProperty.from_native(_cpp_type_name, "convex")
     shape_error = CppProperty(
         "shape_error",
         FieldType.STRING,
@@ -36,6 +32,17 @@ class MeshCollider(Collider):
         default=False,
         readonly=True,
     )
+
+    def recook(self) -> None:
+        """Request collision rebuilding from the current MeshRenderer geometry.
+
+        Visual NumPy mesh updates do not recook collision. This request uses
+        a snapshot of the mesh at the time of this call, so subsequent visual
+        edits do not change the request. Collider scale/center still apply.
+        It uses the existing cooking worker and physics publication boundary; observe
+        ``is_cooking`` and ``shape_error`` for completion and errors.
+        """
+        self._require_cpp_component().recook()
 
     # ------------------------------------------------------------------
     # Custom inspector: force-check convex when dynamic Rigidbody exists

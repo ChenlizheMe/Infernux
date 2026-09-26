@@ -19,6 +19,7 @@ from .package import (
 )
 from .registry import PluginRegistry
 from .platform_support import plugin_install_block_reason
+from .categories import OFFICIAL_PLUGIN_CATEGORIES, normalize_plugin_category
 
 __all__ = [
     "InxPackage",
@@ -41,4 +42,6 @@ __all__ = [
     "normalize_player_rules",
     "player_file_exported",
     "plugin_install_block_reason",
+    "OFFICIAL_PLUGIN_CATEGORIES",
+    "normalize_plugin_category",
 ]

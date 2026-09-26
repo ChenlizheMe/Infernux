@@ -9,8 +9,12 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDependencyGraph.h>
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
+#include <function/renderer/shader/ShaderProgram.h>
+#endif
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxResource/InxResourceMeta.h>
@@ -54,12 +58,19 @@ std::optional<MaterialPropertyType> ShaderMaterialPropertyType(const ShaderProgr
         return MaterialPropertyType::Int;
     if (binding.type == "Mat4")
         return MaterialPropertyType::Mat4;
+    if (binding.type == "FloatArray")
+        return MaterialPropertyType::FloatArray;
+    if (binding.type == "Float4Array")
+        return MaterialPropertyType::Float4Array;
     return std::nullopt;
 }
 
 bool MaterialValueMatchesType(const MaterialProperty &property, MaterialPropertyType type)
 {
-    if (property.type != type)
+    const auto isVector4 = [](MaterialPropertyType value) {
+        return value == MaterialPropertyType::Float4 || value == MaterialPropertyType::Color;
+    };
+    if (property.type != type && !(isVector4(property.type) && isVector4(type)))
         return false;
     switch (type) {
     case MaterialPropertyType::Float:
@@ -77,6 +88,10 @@ bool MaterialValueMatchesType(const MaterialProperty &property, MaterialProperty
         return std::holds_alternative<glm::mat4>(property.value);
     case MaterialPropertyType::Texture2D:
         return std::holds_alternative<std::string>(property.value);
+    case MaterialPropertyType::FloatArray:
+        return std::holds_alternative<std::vector<float>>(property.value);
+    case MaterialPropertyType::Float4Array:
+        return std::holds_alternative<std::vector<glm::vec4>>(property.value);
     }
     return false;
 }
@@ -100,6 +115,10 @@ MaterialPropertyValue ShaderPropertyFallback(MaterialPropertyType type)
         return glm::mat4(1.0f);
     case MaterialPropertyType::Texture2D:
         return std::string{};
+    case MaterialPropertyType::FloatArray:
+        return std::vector<float>{};
+    case MaterialPropertyType::Float4Array:
+        return std::vector<glm::vec4>{};
     }
     return 0.0f;
 }
@@ -145,6 +164,30 @@ MaterialPropertyValue ParseShaderPropertyDefault(const ShaderProgramPropertyBind
             glm::mat4 result{0.0f};
             if (readVector(&result[0][0], 16))
                 return result;
+        } else if (type == MaterialPropertyType::FloatArray && value.is_array()) {
+            std::vector<float> result;
+            result.reserve(value.size());
+            for (const auto &element : value) {
+                if (!element.is_number())
+                    return ShaderPropertyFallback(type);
+                result.push_back(element.get<float>());
+            }
+            return result;
+        } else if (type == MaterialPropertyType::Float4Array && value.is_array()) {
+            std::vector<glm::vec4> result;
+            result.reserve(value.size());
+            for (const auto &element : value) {
+                if (!element.is_array() || element.size() != 4)
+                    return ShaderPropertyFallback(type);
+                glm::vec4 vector{};
+                for (size_t component = 0; component < 4; ++component) {
+                    if (!element[component].is_number())
+                        return ShaderPropertyFallback(type);
+                    vector[component] = element[component].get<float>();
+                }
+                result.push_back(vector);
+            }
+            return result;
         }
     } catch (const json::exception &) {
     }
@@ -163,8 +206,9 @@ std::string RestoreTextureGuidReference(const std::string &textureGuid)
     const auto metadata = database->GetMetaByGuid(textureGuid);
     if (!metadata)
         return textureGuid;
-    if (metadata->GetResourceType() != ResourceType::Texture)
-        throw std::invalid_argument("asset GUID is not a Texture: " + textureGuid);
+    if (metadata->GetResourceType() != ResourceType::Texture &&
+        metadata->GetResourceType() != ResourceType::RenderTexture)
+        throw std::invalid_argument("asset GUID is not a Texture or RenderTexture: " + textureGuid);
     return textureGuid;
 }
 
@@ -173,7 +217,6 @@ json SerializeShaderReference(const ShaderAssetReference &reference)
     return {
         {"guid", reference.guid},
         {"shader_id", reference.shaderId},
-        {"path_hint", reference.pathHint},
     };
 }
 
@@ -182,7 +225,7 @@ ShaderAssetReference DeserializeShaderReference(const json &document)
     return ShaderAssetReference{
         document["guid"].get<std::string>(),
         document["shader_id"].get<std::string>(),
-        document["path_hint"].get<std::string>(),
+        {},
     };
 }
 
@@ -215,8 +258,8 @@ std::string ResolveEngineTextureGuid(const std::string &textureRef)
     throw std::invalid_argument("engine texture cannot be resolved: " + textureRef);
 }
 
-std::shared_ptr<InxMaterial>
-CreateTexturedComponentGizmoIconMaterial(const std::string &name, const std::string &textureRef, bool hardAlpha = false)
+std::shared_ptr<InxMaterial> CreateTexturedComponentGizmoIconMaterial(const std::string &name,
+                                                                      const std::string &textureRef)
 {
     auto material = std::make_shared<InxMaterial>(name);
     material->SetShader("Gizmo Icon");
@@ -235,17 +278,27 @@ CreateTexturedComponentGizmoIconMaterial(const std::string &name, const std::str
     state.srcAlphaBlendFactor = MaterialBlendFactor::One;
     state.dstAlphaBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
     state.alphaBlendOp = MaterialBlendOp::Add;
-    // Camera and particle icons keep their soft source edges.  The light
-    // icon is authored as a binary white mask, so use a cutout there to
-    // prevent bilinear sampling from creating a gray translucent fringe.
-    state.alphaClipEnabled = hardAlpha;
-    state.alphaClipThreshold = hardAlpha ? 0.5f : 0.0f;
+    // Authored icon alpha includes translucent interiors, not just edge
+    // coverage. A mask cutoff destroys those areas (e.g. the light bulb).
+    state.alphaClipEnabled = false;
+    state.alphaClipThreshold = 0.0f;
     state.renderQueue = 24950;
     material->SetRenderState(state);
     material->SyncAlphaClipProperty();
 
     material->SetColor("baseColor", glm::vec4(1.0f));
     material->SetTextureGuid("texSampler", ResolveEngineTextureGuid(textureRef));
+    MaterialTextureSampler iconSampler;
+    iconSampler.minFilter = MaterialSamplerFilter::Linear;
+    iconSampler.magFilter = MaterialSamplerFilter::Linear;
+    // Preserve smooth within-mip filtering, but never blend two downsampled
+    // alpha masks together. The shader's small negative LOD bias selects the
+    // next finer authored mip and nearest-mip selection keeps thin icon
+    // strokes crisp at their 40-60 px Scene-view size.
+    iconSampler.mipFilter = MaterialSamplerFilter::Nearest;
+    iconSampler.addressU = MaterialSamplerAddress::Clamp;
+    iconSampler.addressV = MaterialSamplerAddress::Clamp;
+    material->SetTextureSampler("texSampler", iconSampler);
     material->SetBuiltin(true);
 
     return material;
@@ -516,11 +569,21 @@ size_t InxMaterial::GetRuntimeMemoryBytes() const noexcept
     bytes += m_shaderPropertyOrder.capacity() * sizeof(std::string);
     for (const auto &name : m_shaderPropertyOrder)
         bytes += name.capacity();
+    bytes += m_textureSamplers.size() * (sizeof(MaterialTextureSampler) + sizeof(std::string));
+    for (const auto &[name, sampler] : m_textureSamplers) {
+        (void)sampler;
+        bytes += name.capacity();
+    }
     return bytes;
 }
 
 InxMaterial::InxMaterial(const std::string &name) : m_name(name)
 {
+}
+
+InxMaterial::~InxMaterial()
+{
+    AssetDependencyGraph::Instance().ClearRuntimeDependenciesOf(GetTextureDependencyOwner());
 }
 
 InxMaterial::InxMaterial(const std::string &name, const std::string &shaderName)
@@ -532,8 +595,9 @@ InxMaterial::InxMaterial(const InxMaterial &other)
     : m_name(other.m_name), m_guid(other.m_guid), m_filePath(other.m_filePath), m_builtin(other.m_builtin),
       m_vertexShader(other.m_vertexShader), m_fragmentShader(other.m_fragmentShader), m_passTag(other.m_passTag),
       m_renderState(other.m_renderState), m_renderStateOverrides(other.m_renderStateOverrides),
-      m_properties(other.m_properties), m_shaderPropertyOrder(other.m_shaderPropertyOrder), m_pipelineDirty(true),
-      m_propertiesDirty(true), m_version(0), m_isDeleted(other.m_isDeleted)
+      m_properties(other.m_properties), m_textureSamplers(other.m_textureSamplers), m_buffers(other.m_buffers),
+      m_shaderPropertyOrder(other.m_shaderPropertyOrder), m_pipelineDirty(true), m_propertiesDirty(true), m_version(0),
+      m_isDeleted(other.m_isDeleted)
 {
     // GPU-transient state must never be copied across logical material instances.
 }
@@ -544,6 +608,7 @@ void InxMaterial::ResetRenderStateAuthorship()
         return;
     m_renderStateOverrides = 0;
     m_pipelineDirty = true;
+    ++m_version;
 }
 
 InxMaterial &InxMaterial::operator=(const InxMaterial &other)
@@ -562,11 +627,16 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
     m_renderState = other.m_renderState;
     m_renderStateOverrides = other.m_renderStateOverrides;
     m_properties = other.m_properties;
+    m_textureSamplers = other.m_textureSamplers;
+    m_buffers = other.m_buffers;
+    m_renderTextures.clear();
+    m_runtimeTextureOverrides.clear();
+    m_textureAssetsPending = true;
     m_shaderPropertyOrder = other.m_shaderPropertyOrder;
 
-    // Reset runtime-only GPU state so this instance cannot retain stale handles.
-    ClearAllPassPipelines();
+    // Reset runtime-only Vulkan state so this instance cannot retain stale handles.
 #if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
+    ClearAllPassPipelines();
     m_uboBuffer = VK_NULL_HANDLE;
     m_uboAllocator = VK_NULL_HANDLE;
     m_uboAllocation = VK_NULL_HANDLE;
@@ -575,6 +645,7 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
     m_pipelineDirty = true;
     m_propertiesDirty = true;
     m_version = 0;
+    m_derivedVersion = 0;
     m_isDeleted = other.m_isDeleted;
 
     return *this;
@@ -583,6 +654,19 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
 void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType type, MaterialPropertyValue value)
 {
     const auto existing = m_properties.find(name);
+    if (existing != m_properties.end()) {
+        if (existing->second.type == MaterialPropertyType::FloatArray && type == MaterialPropertyType::FloatArray &&
+            std::get<std::vector<float>>(existing->second.value).size() != std::get<std::vector<float>>(value).size())
+            throw std::invalid_argument("material property '" + name + "' does not match the reflected array length");
+        if (existing->second.type == MaterialPropertyType::Float4Array && type == MaterialPropertyType::Float4Array &&
+            std::get<std::vector<glm::vec4>>(existing->second.value).size() !=
+                std::get<std::vector<glm::vec4>>(value).size())
+            throw std::invalid_argument("material property '" + name + "' does not match the reflected array length");
+    }
+    if (m_renderTextures.erase(name) ||
+        (existing != m_properties.end() && existing->second.type == MaterialPropertyType::Texture2D))
+        m_textureAssetsPending = true;
+    m_runtimeTextureOverrides.erase(name);
     const bool hdr = existing != m_properties.end() && existing->second.hdr;
     const auto range = existing != m_properties.end() ? existing->second.range : std::nullopt;
     m_properties[name] = MaterialProperty{name, type, std::move(value), hdr, range};
@@ -625,7 +709,7 @@ void InxMaterial::SetMatrix(const std::string &name, const glm::mat4 &matrix)
     SetPropertyValue(name, MaterialPropertyType::Mat4, matrix);
 }
 
-std::string InxMaterial::RequireTextureGuid(const std::string &textureGuid)
+std::string InxMaterial::RequireTextureGuid(const std::string &textureGuid, bool allowRenderTexture)
 {
     if (textureGuid.empty())
         return {};
@@ -637,14 +721,114 @@ std::string InxMaterial::RequireTextureGuid(const std::string &textureGuid)
     const auto metadata = database->GetMetaByGuid(textureGuid);
     if (!metadata)
         throw std::invalid_argument("texture GUID does not exist: " + textureGuid);
-    if (metadata->GetResourceType() != ResourceType::Texture)
-        throw std::invalid_argument("asset GUID is not a Texture: " + textureGuid);
+    if (metadata->GetResourceType() != ResourceType::Texture &&
+        !(allowRenderTexture && metadata->GetResourceType() == ResourceType::RenderTexture))
+        throw std::invalid_argument("asset GUID is not a Texture or RenderTexture: " + textureGuid);
     return textureGuid;
+}
+
+void InxMaterial::SetRenderTexture(const std::string &name, std::shared_ptr<rhi::RenderTexture> texture)
+{
+    if (!texture)
+        throw std::invalid_argument("Material RenderTexture binding requires a resource");
+    const auto property = m_properties.find(name);
+    if (property != m_properties.end() && property->second.type != MaterialPropertyType::Texture2D)
+        throw std::invalid_argument("Material property is not a texture: " + name);
+    if (GetRenderTexture(name) == texture && HasRuntimeTextureOverride(name))
+        return;
+    // Introduce the shader property if necessary, never a fake asset GUID.
+    if (property == m_properties.end())
+        m_properties.emplace(name, MaterialProperty{name, MaterialPropertyType::Texture2D, std::string{}});
+    m_renderTextures[name] = std::move(texture);
+    m_runtimeTextureOverrides.insert(name);
+    m_textureAssetsPending = true;
+    m_propertiesDirty = true;
+    ++m_version;
+}
+
+std::shared_ptr<rhi::RenderTexture> InxMaterial::GetRenderTexture(const std::string &name) const
+{
+    const auto found = m_renderTextures.find(name);
+    return found == m_renderTextures.end() ? nullptr : found->second;
+}
+
+void InxMaterial::SetBuffer(const std::string &name, std::shared_ptr<rhi::ComputeBuffer> buffer)
+{
+    if (name.empty())
+        throw std::invalid_argument("material buffer name cannot be empty");
+    if (!buffer) {
+        if (m_buffers.erase(name) != 0) {
+            m_propertiesDirty = true;
+            ++m_version;
+        }
+        return;
+    }
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
+    const ShaderProgram *program = GetPassShaderProgram(ShaderCompileTarget::Forward);
+    if (program) {
+        const auto binding =
+            std::find_if(program->GetDescriptorBindings().begin(), program->GetDescriptorBindings().end(),
+                         [&](const MergedDescriptorBinding &candidate) {
+                             return candidate.set == 0 && candidate.name == name &&
+                                    candidate.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                         });
+        if (binding == program->GetDescriptorBindings().end())
+            throw std::invalid_argument("material shader has no storage buffer named '" + name + "'");
+    }
+#else
+    throw std::logic_error("material storage buffers require a renderer with material buffer support");
+#endif
+    m_buffers[name] = std::move(buffer);
+    m_propertiesDirty = true;
+    ++m_version;
+}
+
+std::shared_ptr<rhi::ComputeBuffer> InxMaterial::GetBuffer(const std::string &name) const
+{
+    const auto found = m_buffers.find(name);
+    return found == m_buffers.end() ? nullptr : found->second;
+}
+
+void InxMaterial::PublishTextureAssets(std::unordered_map<std::string, std::shared_ptr<rhi::RenderTexture>> textures)
+{
+    for (const auto &name : m_runtimeTextureOverrides)
+        textures[name] = m_renderTextures.at(name);
+    if (textures != m_renderTextures) {
+        m_renderTextures = std::move(textures);
+        MarkPropertiesDirty();
+        ++m_version;
+        ++m_derivedVersion;
+    }
+    m_textureAssetsPending = false;
+}
+
+void InxMaterial::InvalidateTextureAssets(const std::string &guid, bool deleted)
+{
+    // Modified assets publish into their existing graphics owner. Keep that
+    // lease until resolution publishes the complete new binding set.
+    if (deleted) {
+        for (const auto &[name, property] : m_properties) {
+            if (property.type == MaterialPropertyType::Texture2D && std::get<std::string>(property.value) == guid &&
+                !HasRuntimeTextureOverride(name))
+                m_renderTextures.erase(name);
+        }
+    }
+    m_textureAssetsPending = true;
+    MarkPropertiesDirty();
+    ++m_version;
+    ++m_derivedVersion;
 }
 
 void InxMaterial::SetTextureGuid(const std::string &name, const std::string &textureGuid)
 {
-    const std::string validatedGuid = RequireTextureGuid(textureGuid);
+    const std::string validatedGuid = RequireTextureGuid(textureGuid, true);
+    const auto previous = m_properties.find(name);
+    if (previous != m_properties.end() && previous->second.type == MaterialPropertyType::Texture2D &&
+        std::get<std::string>(previous->second.value) == validatedGuid && !HasRuntimeTextureOverride(name))
+        return;
+    const bool hadRuntimeTexture = m_renderTextures.erase(name) != 0;
+    m_runtimeTextureOverrides.erase(name);
+    m_textureAssetsPending = true;
 
     auto it = m_properties.find(name);
     std::string previousGuid;
@@ -655,7 +839,7 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
         range = it->second.range;
         const auto *existing = std::get_if<std::string>(&it->second.value);
         if (existing) {
-            if (*existing == validatedGuid)
+            if (*existing == validatedGuid && !hadRuntimeTexture)
                 return;
             previousGuid = *existing;
         }
@@ -674,6 +858,12 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
 
 void InxMaterial::ClearTexture(const std::string &name)
 {
+    m_runtimeTextureOverrides.erase(name);
+    m_textureAssetsPending = true;
+    if (m_renderTextures.erase(name)) {
+        m_propertiesDirty = true;
+        ++m_version;
+    }
     auto it = m_properties.find(name);
     if (it != m_properties.end() && it->second.type == MaterialPropertyType::Texture2D) {
         const auto *oldGuid = std::get_if<std::string>(&it->second.value);
@@ -692,6 +882,10 @@ void InxMaterial::ClearTexture(const std::string &name)
 
 bool InxMaterial::RemoveProperty(const std::string &name)
 {
+    m_renderTextures.erase(name);
+    m_runtimeTextureOverrides.erase(name);
+    m_textureSamplers.erase(name);
+    m_textureAssetsPending = true;
     auto it = m_properties.find(name);
     if (it == m_properties.end())
         return false;
@@ -743,6 +937,13 @@ bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact 
             continue;
         }
 
+        // Color is a Float4 with editor semantics, not a different value
+        // shape. Adopt the shader's semantic type without erasing the tint.
+        if (existing->second.type != *expectedType) {
+            existing->second.type = *expectedType;
+            changed = true;
+        }
+
         if (existing->second.hdr != binding.hdr) {
             existing->second.hdr = binding.hdr;
             changed = true;
@@ -760,6 +961,7 @@ bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact 
     if (changed) {
         m_propertiesDirty = true;
         ++m_version;
+        ++m_derivedVersion;
     }
     return changed;
 }
@@ -784,6 +986,7 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
                                         const std::string &passTag, const std::string &stencil,
                                         const std::string &alphaClip)
 {
+    const uint64_t previousVersion = m_version;
     bool changed = false;
 
     // Shader metadata describes the complete default state, not a patch over
@@ -909,6 +1112,7 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
 
     if (changed)
         m_pipelineDirty = true;
+    m_derivedVersion += m_version - previousVersion;
 }
 
 void InxMaterial::SyncAlphaClipProperty()
@@ -923,8 +1127,8 @@ nlohmann::json InxMaterial::SerializeDocument() const
     j["name"] = m_name;
     j["builtin"] = m_builtin;
 
-    // GUID is authoritative, shader_id is the stable compiler identity, and
-    // path_hint recovers assets whose database has not been rebuilt yet.
+    // GUID is authoritative and shader_id identifies built-in programs.
+    // Editor paths are resolved from GUIDs after loading and never persist.
     j["shaders"]["vertex"] = SerializeShaderReference(m_vertexShader);
     j["shaders"]["fragment"] = SerializeShaderReference(m_fragmentShader);
 
@@ -1030,10 +1234,34 @@ nlohmann::json InxMaterial::SerializeDocument() const
         case MaterialPropertyType::Texture2D:
             propJson["guid"] = std::get<std::string>(prop.value);
             break;
+        case MaterialPropertyType::FloatArray:
+            propJson["value"] = std::get<std::vector<float>>(prop.value);
+            break;
+        case MaterialPropertyType::Float4Array: {
+            propJson["value"] = json::array();
+            for (const auto &value : std::get<std::vector<glm::vec4>>(prop.value))
+                propJson["value"].push_back({value.x, value.y, value.z, value.w});
+            break;
+        }
         }
         props[propName] = propJson;
     }
     j["properties"] = props;
+
+    if (!m_textureSamplers.empty()) {
+        auto samplers = json::object();
+        for (const auto &[name, sampler] : m_textureSamplers) {
+            samplers[name] = {
+                {"minFilter", static_cast<uint32_t>(sampler.minFilter)},
+                {"magFilter", static_cast<uint32_t>(sampler.magFilter)},
+                {"mipFilter", static_cast<uint32_t>(sampler.mipFilter)},
+                {"addressU", static_cast<uint32_t>(sampler.addressU)},
+                {"addressV", static_cast<uint32_t>(sampler.addressV)},
+                {"addressW", static_cast<uint32_t>(sampler.addressW)},
+            };
+        }
+        j["textureSamplers"] = std::move(samplers);
+    }
 
     if (!m_shaderPropertyOrder.empty())
         j["_shader_property_order"] = m_shaderPropertyOrder;
@@ -1113,6 +1341,9 @@ bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
     m_renderState = staged.m_renderState;
     m_renderStateOverrides = staged.m_renderStateOverrides;
     m_properties = std::move(staged.m_properties);
+    m_textureSamplers = std::move(staged.m_textureSamplers);
+    // Runtime buffer publications do not belong to the serialized asset.
+    m_buffers.clear();
     m_shaderPropertyOrder = std::move(staged.m_shaderPropertyOrder);
     m_pipelineDirty = true;
     m_propertiesDirty = true;
@@ -1232,12 +1463,47 @@ bool InxMaterial::ApplyDocument(const nlohmann::json &document)
                 // Interactive assignment remains strict in SetTextureGuid().
                 prop.value = RestoreTextureGuidReference(propJson["guid"].get<std::string>());
                 break;
+            case MaterialPropertyType::FloatArray:
+                prop.value = propJson["value"].get<std::vector<float>>();
+                break;
+            case MaterialPropertyType::Float4Array: {
+                std::vector<glm::vec4> values;
+                for (const auto &value : propJson["value"])
+                    values.emplace_back(value[0].get<float>(), value[1].get<float>(), value[2].get<float>(),
+                                        value[3].get<float>());
+                prop.value = std::move(values);
+                break;
+            }
             }
             m_properties[propName] = std::move(prop);
         }
 
+        m_textureSamplers.clear();
+        if (j.contains("textureSamplers")) {
+            for (const auto &[name, value] : j["textureSamplers"].items()) {
+                MaterialTextureSampler sampler;
+                sampler.minFilter = static_cast<MaterialSamplerFilter>(value.at("minFilter").get<uint32_t>());
+                sampler.magFilter = static_cast<MaterialSamplerFilter>(value.at("magFilter").get<uint32_t>());
+                sampler.mipFilter = static_cast<MaterialSamplerFilter>(value.at("mipFilter").get<uint32_t>());
+                sampler.addressU = static_cast<MaterialSamplerAddress>(value.at("addressU").get<uint32_t>());
+                sampler.addressV = static_cast<MaterialSamplerAddress>(value.at("addressV").get<uint32_t>());
+                sampler.addressW = static_cast<MaterialSamplerAddress>(value.at("addressW").get<uint32_t>());
+                m_textureSamplers.emplace(name, sampler);
+            }
+        }
+
         m_pipelineDirty = true;
         m_propertiesDirty = true;
+        m_textureAssetsPending = true;
+        for (auto it = m_renderTextures.begin(); it != m_renderTextures.end();) {
+            const auto property = m_properties.find(it->first);
+            if (!HasRuntimeTextureOverride(it->first) || property == m_properties.end() ||
+                property->second.type != MaterialPropertyType::Texture2D) {
+                m_runtimeTextureOverrides.erase(it->first);
+                it = m_renderTextures.erase(it);
+            } else
+                ++it;
+        }
         SyncAlphaClipProperty();
 
         return true;
@@ -1273,6 +1539,10 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateDefaultLit()
     material->SetColor("emissionColor", glm::vec4(0.0f, 0.0f, 0.0f, 0.0f));
     material->SetFloat("normalScale", 1.0f);
     material->SetFloat("specularHighlights", 1.0f);
+    material->SetVector4("metallicChannels", glm::vec4(1, 0, 0, 0));
+    material->SetVector4("smoothnessChannels", glm::vec4(1, 0, 0, 0));
+    material->SetFloat("smoothnessFromRoughness", 0.0f);
+    material->SetFloat("occlusionStrength", 1.0f);
 
     // Mark as built-in (shader cannot be changed by user)
     material->SetBuiltin(true);
@@ -1525,7 +1795,51 @@ std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoCameraIconMaterial
 
 std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoLightIconMaterial()
 {
-    return CreateTexturedComponentGizmoIconMaterial("ComponentGizmoLightIconMaterial", "icons/gizmo_light.png", true);
+    // Scene gizmos use their own neutral silhouette.  The component icon is
+    // intentionally coloured for Inspector chrome and must never leak into
+    // the world-space billboard material.
+    return CreateTexturedComponentGizmoIconMaterial("ComponentGizmoLightIconMaterial", "icons/gizmo_light.png");
+}
+
+void InxMaterial::SetTextureSampler(const std::string &name, const MaterialTextureSampler &sampler)
+{
+    const auto property = m_properties.find(name);
+    if (property == m_properties.end() || property->second.type != MaterialPropertyType::Texture2D)
+        throw std::invalid_argument("texture sampler requires an existing Texture2D property: " + name);
+    if (!sampler.HasOverrides()) {
+        ClearTextureSampler(name);
+        return;
+    }
+    const auto current = m_textureSamplers.find(name);
+    if (current != m_textureSamplers.end() && current->second == sampler)
+        return;
+    m_textureSamplers[name] = sampler;
+    m_propertiesDirty = true;
+    ++m_version;
+}
+
+const MaterialTextureSampler *InxMaterial::GetTextureSampler(const std::string &name) const noexcept
+{
+    const auto found = m_textureSamplers.find(name);
+    return found == m_textureSamplers.end() ? nullptr : &found->second;
+}
+
+void InxMaterial::ClearTextureSampler(const std::string &name)
+{
+    if (m_textureSamplers.erase(name) == 0)
+        return;
+    m_propertiesDirty = true;
+    ++m_version;
+}
+
+void InxMaterial::SetFloatArray(const std::string &name, const std::vector<float> &values)
+{
+    SetPropertyValue(name, MaterialPropertyType::FloatArray, values);
+}
+
+void InxMaterial::SetVector4Array(const std::string &name, const std::vector<glm::vec4> &values)
+{
+    SetPropertyValue(name, MaterialPropertyType::Float4Array, values);
 }
 
 std::shared_ptr<InxMaterial> InxMaterial::CreateComponentGizmoParticleIconMaterial()
@@ -1604,8 +1918,8 @@ std::shared_ptr<InxMaterial> InxMaterial::Clone() const
     auto clone = std::make_shared<InxMaterial>();
 
     // Deep copy identity (clear GUID & file path — runtime-only instance)
-    // Each clone gets a unique name so GetMaterialKey() returns a unique key,
-    // ensuring separate descriptor sets / UBOs in the renderer.
+    // The constructor allocates an independent runtime identity for descriptor
+    // sets / UBOs; display names and source paths do not define that identity.
     clone->m_name = m_name + " (Instance_" + std::to_string(s_cloneCounter.fetch_add(1)) + ")";
     // clone->m_guid intentionally left empty — no asset identity
     // clone->m_filePath intentionally left empty — not saved to disk
@@ -1623,6 +1937,10 @@ std::shared_ptr<InxMaterial> InxMaterial::Clone() const
     // Deep copy all properties (floats, vecs, colors, texture GUIDs, etc.)
     // Texture references are GUIDs (strings) — shared by value, same as Unity.
     clone->m_properties = m_properties;
+    clone->m_textureSamplers = m_textureSamplers;
+    clone->m_renderTextures = m_renderTextures;
+    clone->m_buffers = m_buffers;
+    clone->m_runtimeTextureOverrides = m_runtimeTextureOverrides;
 
     // GPU-transient state is NOT copied — lazily recreated by the renderer.
     // m_passPipelines[] are already default-initialized (VK_NULL_HANDLE).

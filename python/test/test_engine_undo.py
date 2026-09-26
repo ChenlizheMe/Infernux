@@ -115,6 +115,19 @@ def _patch_undo_modules(monkeypatch, attr: str, value):
             monkeypatch.setattr(mod, attr, value)
 
 
+def _patch_world_undo(monkeypatch, scene):
+    """Bind undo fixtures to the same World-wide lookup used by the engine."""
+    def _find(object_id):
+        obj = scene.find_by_id(object_id) if scene is not None else None
+        if obj is not None and getattr(obj, "scene", None) is None:
+            obj.scene = scene
+        return obj
+
+    _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: scene)
+    _patch_undo_modules(monkeypatch, "_find_runtime_object", _find)
+    _patch_undo_modules(monkeypatch, "_get_scene_by_world_id", lambda _world_id: scene)
+
+
 @contextmanager
 def _override_recreate_game_object(fn):
     orig_root = _undo_mod._recreate_game_object_from_document
@@ -306,7 +319,7 @@ class TestSetPropertyCommand:
                 return live if object_id == 7 else None
 
         cmd = SetPropertyCommand(stale, "active", True, False)
-        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: _Scene())
+        _patch_world_undo(monkeypatch, _Scene())
 
         cmd.execute()
         assert live.active is False
@@ -343,7 +356,7 @@ class TestSetPropertyCommand:
             def find_by_id(self, oid):
                 return fake_obj if oid == 7 else None
 
-        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: _FakeScene())
+        _patch_world_undo(monkeypatch, _FakeScene())
 
         resolve = getattr(_undo_mod_ref, "_resolve_live_ref")
         result = resolve("stale_ref", 7, "_PyComp")
@@ -777,10 +790,17 @@ class TestPrefabUnpackCommand:
                 self.id = object_id
                 self.prefab_guid = guid
                 self.prefab_root = is_root
+                self._prefab_source_document = {"name": "Source"} if is_root else None
                 self._children = list(children or [])
 
             def get_children(self):
                 return list(self._children)
+
+            def get_components(self):
+                return []
+
+            def serialize_document(self):
+                return {"components": []}
 
         left = _GameObject(2, "prefab-guid")
         right = _GameObject(3, "prefab-guid")
@@ -796,11 +816,13 @@ class TestPrefabUnpackCommand:
 
         cmd = PrefabUnpackCommand(root.id)
         cmd.execute()
+        assert root._prefab_source_document is None
         assert [(obj.prefab_guid, obj.prefab_root) for obj in (root, left, right)] == [
             ("", False), ("", False), ("", False),
         ]
 
         cmd.undo()
+        assert root._prefab_source_document == {"name": "Source"}
         assert [(obj.prefab_guid, obj.prefab_root) for obj in (root, left, right)] == [
             ("prefab-guid", True),
             ("prefab-guid", False),
@@ -808,6 +830,7 @@ class TestPrefabUnpackCommand:
         ]
 
         cmd.redo()
+        assert root._prefab_source_document is None
         assert [(obj.prefab_guid, obj.prefab_root) for obj in (root, left, right)] == [
             ("", False), ("", False), ("", False),
         ]
@@ -818,6 +841,10 @@ class TestPrefabModeCommand:
         calls = []
 
         class _FakeSceneManager:
+            _asset_database = types.SimpleNamespace(
+                get_path_from_guid=lambda guid: "Assets/test.prefab" if guid == "prefab-guid" else ""
+            )
+
             def open_prefab_mode(self, path, preserve_undo_history=False):
                 calls.append(("open", path, preserve_undo_history))
                 return True
@@ -837,7 +864,7 @@ class TestPrefabModeCommand:
         scene_manager_mod.SceneFileManager = _SceneFileManager
         monkeypatch.setitem(sys.modules, "Infernux.engine.scene_manager", scene_manager_mod)
 
-        cmd = PrefabModeCommand("Assets/test.prefab", enter_mode=True)
+        cmd = PrefabModeCommand("prefab-guid", enter_mode=True)
         cmd.execute()
         cmd.undo()
         cmd.redo()
@@ -848,8 +875,52 @@ class TestPrefabModeCommand:
             ("open", "Assets/test.prefab", True),
         ]
 
+    def test_redo_resolves_the_current_path_from_stable_guid(self, monkeypatch):
+        calls = []
+        paths = {"prefab-guid": "Assets/BeforeMove.prefab"}
+
+        class _FakeSceneManager:
+            _asset_database = types.SimpleNamespace(
+                get_path_from_guid=lambda guid: paths.get(guid, "")
+            )
+
+            def open_prefab_mode(self, path, preserve_undo_history=False):
+                calls.append(("open", path, preserve_undo_history))
+                return True
+
+            def _do_exit_prefab_mode(self, preserve_undo_history=False):
+                calls.append(("exit", "", preserve_undo_history))
+                return True
+
+        fake_sfm = _FakeSceneManager()
+        scene_manager_mod = types.ModuleType("Infernux.engine.scene_manager")
+
+        class _SceneFileManager:
+            @staticmethod
+            def instance():
+                return fake_sfm
+
+        scene_manager_mod.SceneFileManager = _SceneFileManager
+        monkeypatch.setitem(sys.modules, "Infernux.engine.scene_manager", scene_manager_mod)
+
+        command = PrefabModeCommand("prefab-guid", enter_mode=True)
+        command.execute()
+        command.undo()
+        paths["prefab-guid"] = "Assets/AfterMove.prefab"
+        command.redo()
+
+        assert calls == [
+            ("open", "Assets/BeforeMove.prefab", True),
+            ("exit", "", True),
+            ("open", "Assets/AfterMove.prefab", True),
+        ]
+
     def test_rejected_transition_raises_and_cannot_be_recorded(self, monkeypatch):
         class _FakeSceneManager:
+            _asset_database = types.SimpleNamespace(
+                get_path_from_guid=lambda guid: "Assets/test.prefab" if guid == "prefab-guid" else ""
+            )
+
             @staticmethod
             def open_prefab_mode(_path, preserve_undo_history=False):
                 del preserve_undo_history
@@ -865,7 +936,7 @@ class TestPrefabModeCommand:
         scene_manager_mod.SceneFileManager = _SceneFileManager
         monkeypatch.setitem(sys.modules, "Infernux.engine.scene_manager", scene_manager_mod)
 
-        command = PrefabModeCommand("Assets/test.prefab", enter_mode=True)
+        command = PrefabModeCommand("prefab-guid", enter_mode=True)
         with pytest.raises(RuntimeError, match="Enter Prefab Mode was rejected"):
             command.execute()
 
@@ -916,6 +987,39 @@ class TestRenderStackFieldCommand:
 # ══════════════════════════════════════════════════════════════════════
 
 class TestUndoManager:
+    def test_deferred_replay_does_not_restore_context_inside_ui_callback(
+        self, _reset_undo_manager, runtime_scheduler,
+    ):
+        from Infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
+
+        mgr = _reset_undo_manager
+        restored = []
+
+        def restore_context(context, phase):
+            assert_runtime_dispatch_safe_point()
+            restored.append(phase)
+
+        mgr.set_context_hooks(lambda: EditorContextSnapshot(), restore_context)
+        obj = _Obj()
+        mgr.execute(SetPropertyCommand(obj, "x", 0, 10))
+        runtime_scheduler.begin_native_frame()
+        try:
+            mgr.undo(defer=True)
+            assert obj.x == 10
+            assert mgr.is_replay_pending and not restored
+            assert not mgr.can_undo and not mgr.can_redo
+        finally:
+            runtime_scheduler.end_native_frame()
+        mgr.process_pending_replay()
+        assert obj.x == 0 and not mgr.is_replay_pending
+        assert restored
+        restored.clear()
+        mgr.redo(defer=True)
+        assert obj.x == 0 and mgr.is_replay_pending and not restored
+        mgr.process_pending_replay()
+        assert obj.x == 10 and not mgr.is_replay_pending
+        assert restored
+
     def test_execute_then_undo(self, _reset_undo_manager):
         mgr = _reset_undo_manager
         obj = _Obj()
@@ -1362,7 +1466,7 @@ class TestStructuralCommandSelectionContext:
                 return self.object if self.object and object_id == 42 else None
 
         scene = _Scene()
-        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: scene)
+        _patch_world_undo(monkeypatch, scene)
         monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 42})
         monkeypatch.setattr(
             _structural_mod,
@@ -1436,7 +1540,7 @@ class TestStructuralCommandSelectionContext:
                 return self.object if self.object and object_id == 42 else None
 
         scene = _Scene()
-        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: scene)
+        _patch_world_undo(monkeypatch, scene)
         monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 42})
         monkeypatch.setattr(
             _structural_mod,
@@ -1491,7 +1595,7 @@ class TestStructuralCommandSelectionContext:
             def find_by_id(object_id):
                 return _Object() if object_id == 99 else None
 
-        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: _Scene())
+        _patch_world_undo(monkeypatch, _Scene())
         monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 99})
         monkeypatch.setattr(
             _structural_mod,
@@ -1529,7 +1633,7 @@ class TestStructuralCommandSelectionContext:
             def find_by_id(object_id):
                 return _Object() if object_id == 42 else None
 
-        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: _Scene())
+        _patch_world_undo(monkeypatch, _Scene())
         monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda _obj: {"id": 42})
         monkeypatch.setattr(
             _structural_mod,
@@ -1577,7 +1681,7 @@ class TestDeleteGameObjectsCommand:
         destroyed = []
         restored = []
 
-        monkeypatch.setattr(_structural_mod, "_get_active_scene", lambda: scene)
+        _patch_world_undo(monkeypatch, scene)
         monkeypatch.setattr(_structural_mod, "_snapshot_object", lambda obj: {"id": obj.id})
         monkeypatch.setattr(
             _structural_mod,
@@ -1593,7 +1697,8 @@ class TestDeleteGameObjectsCommand:
         command.execute()
         assert destroyed == [20, 10]
 
-        def restore_object(document, parent_id, sibling_index):
+        def restore_object(document, parent_id, sibling_index, *, scene=None):
+            assert scene is not None
             restored.append((document["id"], parent_id, sibling_index))
             return self._Object(document["id"], sibling_index)
 
@@ -1700,7 +1805,7 @@ class TestImmediateDestroyHelpers:
         fake_obj = _FakeObject(42)
         fake_scene = _FakeScene(fake_obj)
         calls = []
-        _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: fake_scene)
+        _patch_world_undo(monkeypatch, fake_scene)
         _patch_undo_modules(
             monkeypatch,
             "_destroy_game_object_immediately",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -1551,7 +1552,12 @@ def test_animfsm_3d_clip_picker_includes_embedded_model_takes(monkeypatch):
     monkeypatch.setattr(
         asset_types,
         "read_meta_file",
-        lambda path: {"animation_names_csv": "Idle, Drive"} if path == model_path else {},
+        lambda path: {"model_animations": json.dumps([
+            {"id": "source-49646c65", "guid": "b" * 32,
+             "name": "Idle", "duration": 1.0},
+            {"id": "source-4472697665", "guid": "c" * 32,
+             "name": "Drive", "duration": 2.0},
+        ])} if path == model_path else {},
     )
     monkeypatch.setattr(
         asset_types,
@@ -1566,8 +1572,8 @@ def test_animfsm_3d_clip_picker_includes_embedded_model_takes(monkeypatch):
         {
             "asset_type": "AnimationClip3D",
             "builtin": "",
-            "guid": "",
-            "path_hint": f"{'a' * 32}::subanim:1",
+            "guid": "c" * 32,
+            "path_hint": f"{model_path}::subanim:source-4472697665",
         },
     )]
 

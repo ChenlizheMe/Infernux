@@ -16,10 +16,17 @@ from Infernux.engine.interaction import (
 from Infernux.engine.undo import ProjectAssetDeleteCommand
 
 
+class _Database:
+    @staticmethod
+    def get_guid_from_path(path):
+        name = __import__("os").path.basename(str(path)).casefold()
+        return f"{name}-guid" if name and not name.endswith(".meta") else ""
+
+
 def _service(tmp_path):
     selection = SelectionService()
     service = ProjectAssetCommandService(selection)
-    service.configure(str(tmp_path), None)
+    service.configure(str(tmp_path), _Database())
     return service
 
 
@@ -88,7 +95,7 @@ def test_delete_service_rejects_scene_open_inside_deleted_directory(tmp_path):
 
     registry = DocumentRegistry()
     registry.open_or_create(
-        DocumentKey.resource(DocumentKind.SCENE, str(scene)),
+        DocumentKey.asset(DocumentKind.SCENE, "checkpoint.scene-guid"),
         "Checkpoint",
         resource_path=str(scene),
     )
@@ -105,7 +112,7 @@ def test_non_scene_open_document_is_left_to_unified_close_contract(tmp_path):
 
     registry = DocumentRegistry()
     document, _ = registry.open_or_create(
-        DocumentKey.resource(DocumentKind.MATERIAL, str(material)),
+        DocumentKey.asset(DocumentKind.MATERIAL, "open.mat-guid"),
         "Open",
         resource_path=str(material),
     )

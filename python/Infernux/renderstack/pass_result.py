@@ -47,6 +47,7 @@ class PassResult:
         repr=False,
         compare=False,
     )
+    _owner_graph: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         source = str(self.source or "").strip()
@@ -80,6 +81,11 @@ class PassResult:
         """Publish a lazy provider result without changing source identity."""
         if texture is None:
             raise ValueError("pass result cannot publish a null buffer")
+        if self._owner_graph is not None and not (
+            self._owner_graph._owns_texture(texture)
+            or self._owner_graph._owns_buffer(texture)
+        ):
+            raise ValueError("materialized pass resource does not belong to this RenderGraph")
         self.buffers[normalize_buffer_name(name)] = texture
 
     @property

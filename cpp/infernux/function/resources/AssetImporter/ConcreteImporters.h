@@ -3,6 +3,7 @@
 #include "AssetImporter.h"
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetFormatRegistry.h>
+#include <function/resources/InxMesh/MeshImportSettings.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 
 #include <fstream>
@@ -12,6 +13,24 @@
 
 namespace infernux
 {
+
+// ==========================================================================
+// PrefabImporter
+// ==========================================================================
+
+class PrefabImporter final : public AssetImporter
+{
+  public:
+    [[nodiscard]] ResourceType GetResourceType() const override
+    {
+        return ResourceType::DefaultText;
+    }
+    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".prefab"};
+    }
+    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
+};
 
 // ==========================================================================
 // TextureImporter
@@ -184,6 +203,43 @@ class ParticleGraphImporter final : public AssetImporter
 };
 
 // ==========================================================================
+// DataAssetImporter
+// ==========================================================================
+
+class RenderTextureImporter final : public AssetImporter
+{
+  public:
+    [[nodiscard]] ResourceType GetResourceType() const override
+    {
+        return ResourceType::RenderTexture;
+    }
+    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".rendertexture"};
+    }
+    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
+};
+
+class DataAssetImporter final : public AssetImporter
+{
+  public:
+    [[nodiscard]] ResourceType GetResourceType() const override
+    {
+        return ResourceType::DataAsset;
+    }
+
+    [[nodiscard]] std::vector<std::string> GetSupportedExtensions() const override
+    {
+        return {".inxdata"};
+    }
+
+    [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
+
+  private:
+    [[nodiscard]] std::vector<std::string> ScanDependencies(const ImportRequest &request) const;
+};
+
+// ==========================================================================
 // ScriptImporter
 // ==========================================================================
 
@@ -234,6 +290,8 @@ class AudioImporter final : public AssetImporter
     {
         if (!meta.HasKey("force_mono"))
             meta.AddMetadata("force_mono", false);
+        if (!meta.HasKey("load_type"))
+            meta.AddMetadata("load_type", std::string("decompress_on_load"));
         if (!meta.HasKey("load_in_background"))
             meta.AddMetadata("load_in_background", false);
         if (!meta.HasKey("quality"))
@@ -261,22 +319,6 @@ class ModelImporter final : public AssetImporter
     }
 
     [[nodiscard]] ImportArtifact Import(const ImportRequest &request) const override;
-
-    void EnsureDefaultSettings(InxResourceMeta &meta) const override
-    {
-        if (!meta.HasKey("scale_factor"))
-            meta.AddMetadata("scale_factor", 1.0f);
-        if (!meta.HasKey("generate_normals"))
-            meta.AddMetadata("generate_normals", true);
-        if (!meta.HasKey("generate_tangents"))
-            meta.AddMetadata("generate_tangents", true);
-        if (!meta.HasKey("flip_uvs"))
-            meta.AddMetadata("flip_uvs", true);
-        if (!meta.HasKey("swap_uv_channels"))
-            meta.AddMetadata("swap_uv_channels", false);
-        if (!meta.HasKey("optimize_mesh"))
-            meta.AddMetadata("optimize_mesh", true);
-    }
 };
 
 } // namespace infernux

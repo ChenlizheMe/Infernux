@@ -21,6 +21,7 @@ const rootPages = [
     ...learningChapters.map((chapter) => `learn/${chapter.slug}.html`),
     "roadmap.html",
     "download.html",
+    "code-signing-policy.html",
 ];
 const entries = new Map();
 

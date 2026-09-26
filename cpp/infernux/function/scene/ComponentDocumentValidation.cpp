@@ -4,7 +4,6 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
-#include <unordered_set>
 
 namespace infernux::component_document_validation
 {
@@ -31,17 +30,7 @@ void ValidateComponentDocumentImpl(const nlohmann::json &document, std::string_v
 {
     if (!document.is_object())
         throw std::invalid_argument(std::string(expectedType) + " document must be an object");
-
-    std::unordered_set<std::string> allowed = {"type", "component_id", "enabled", "execution_order"};
-    for (const std::string_view field : requiredFields)
-        allowed.emplace(field);
-    for (const std::string_view field : optionalFields)
-        allowed.emplace(field);
-    for (const auto &[field, value] : document.items()) {
-        (void)value;
-        if (allowed.find(field) == allowed.end())
-            throw std::invalid_argument(FieldPath(expectedType, field) + " is not part of the current format");
-    }
+    (void)optionalFields;
 
     const auto &type = RequireField(document, "type", expectedType);
     if (!type.is_string() || type.get_ref<const std::string &>() != expectedType)
@@ -57,6 +46,12 @@ void ValidateComponentDocumentImpl(const nlohmann::json &document, std::string_v
 
     for (const std::string_view field : requiredFields)
         RequireField(document, field, expectedType);
+
+    if (const auto sourceId = document.find("prefab_source_id"); sourceId != document.end()) {
+        if (!sourceId->is_number_unsigned() || sourceId->get<uint64_t>() == 0)
+            throw std::invalid_argument(FieldPath(expectedType, "prefab_source_id") +
+                                        " must be a non-zero unsigned integer");
+    }
 }
 
 } // namespace

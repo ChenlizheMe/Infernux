@@ -30,6 +30,11 @@ struct RecordedCommands
     BufferHandle copySourceBuffer;
     BufferHandle copyDestinationBuffer;
     BufferCopyRegion bufferCopy;
+    BufferHandle fillDestination;
+    uint64_t fillOffset = 0;
+    uint64_t fillSize = 0;
+    uint32_t fillValue = 0;
+    uint32_t fillCount = 0;
     TextureHandle copySourceTexture;
     TextureHandle copyDestinationTexture;
     TextureCopyRegion textureCopy;
@@ -103,6 +108,17 @@ void CopyBuffer(void *context, BufferHandle source, BufferHandle destination, co
     recorded.bufferCopy = region;
 }
 
+bool FillBuffer(void *context, BufferHandle destination, uint64_t offset, uint64_t byteSize, uint32_t value)
+{
+    auto &recorded = *static_cast<RecordedCommands *>(context);
+    recorded.fillDestination = destination;
+    recorded.fillOffset = offset;
+    recorded.fillSize = byteSize;
+    recorded.fillValue = value;
+    ++recorded.fillCount;
+    return true;
+}
+
 void CopyTexture(void *context, TextureHandle source, TextureHandle destination, const TextureCopyRegion &region)
 {
     auto &recorded = *static_cast<RecordedCommands *>(context);
@@ -123,6 +139,14 @@ void ResolveTexture(void *context, TextureHandle source, TextureHandle destinati
 
 int main()
 {
+    assert(ToVkPipelineStages(PipelineStage::ComputeShader | PipelineStage::Transfer) ==
+           (VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT));
+    assert(ToVkPipelineStages(PipelineStage::None) == 0);
+    assert(ToVkPipelineStages(PipelineStage::None, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT) ==
+           VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+    assert(ToVkAccessFlags(Access::ShaderWrite | Access::TransferRead | Access::HostRead) ==
+           (VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_HOST_READ_BIT));
+    assert(ToVkAccessFlags(Access::None) == 0);
     static_assert(infernux::rhi::ToVkImageAspectMask(VK_FORMAT_R8G8B8A8_UNORM) == VK_IMAGE_ASPECT_COLOR_BIT);
     static_assert(infernux::rhi::ToVkImageAspectMask(VK_FORMAT_D32_SFLOAT) == VK_IMAGE_ASPECT_DEPTH_BIT);
     static_assert(infernux::rhi::ToVkImageAspectMask(VK_FORMAT_S8_UINT) == VK_IMAGE_ASPECT_STENCIL_BIT);
@@ -191,9 +215,21 @@ int main()
     const BufferHandle copyDestinationBuffer{12, 1};
     const TextureHandle copySourceTexture{13, 1};
     const TextureHandle copyDestinationTexture{14, 1};
-    const TransferCommandEncoder::DispatchTable transferDispatch{CopyBuffer, CopyTexture, ResolveTexture};
+    const TransferCommandEncoder::DispatchTable transferDispatch{CopyBuffer, CopyTexture, ResolveTexture, FillBuffer};
     const TransferCommandEncoder transferEncoder(&recorded, &transferDispatch);
     transferEncoder.CopyBuffer(copySourceBuffer, copyDestinationBuffer, {16, 32, 128});
+    assert(transferEncoder.FillBuffer(copyDestinationBuffer, 16, 128, 0x12345678u));
+    assert(recorded.fillDestination == copyDestinationBuffer);
+    assert(recorded.fillOffset == 16 && recorded.fillSize == 128);
+    assert(recorded.fillValue == 0x12345678u);
+    assert(!transferEncoder.FillBuffer({}, 0, 16));
+    assert(!transferEncoder.FillBuffer(copyDestinationBuffer, 1, 16));
+    assert(!transferEncoder.FillBuffer(copyDestinationBuffer, 0, 3));
+    assert(!transferEncoder.FillBuffer(copyDestinationBuffer, 0, 0));
+    assert(!TransferCommandEncoder{}.FillBuffer(copyDestinationBuffer, 0, 16));
+    const TransferCommandEncoder::DispatchTable unsupportedFill{};
+    assert(!TransferCommandEncoder(&recorded, &unsupportedFill).FillBuffer(copyDestinationBuffer, 0, 16));
+    assert(recorded.fillCount == 1);
     transferEncoder.CopyTexture(copySourceTexture, copyDestinationTexture,
                                 {TextureAspect::Depth, 1, 2, 3, 4, 64, 32, 1});
     transferEncoder.ResolveTexture(copySourceTexture, copyDestinationTexture,
@@ -355,9 +391,11 @@ int main()
     assert(plan.batches[1].queue == QueueRole::Compute);
     assert(!plan.batches[1].waitsFor.empty());
     assert(plan.batches[1].waitsFor.front().sourceBatch == 0);
+    assert(plan.batches[1].waitsFor.front().waitStages == PipelineStage::AllCommands);
     assert(plan.batches[2].queue == QueueRole::Graphics);
     assert(!plan.batches[2].waitsFor.empty());
     assert(plan.batches[2].waitsFor.front().sourceBatch == 1);
+    assert(plan.batches[2].waitsFor.front().waitStages != PipelineStage::AllCommands);
 
     const std::vector<SubmissionWorkItem> parallelWork = {
         {100, planDevice, QueueRole::Graphics, SubmissionDomain::Frame, planView, PipelineStage::AllGraphics, {}},

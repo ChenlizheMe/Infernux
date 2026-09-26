@@ -35,9 +35,6 @@ from __future__ import annotations
 from typing import Optional
 
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
-from Infernux.components.fields import FieldType
-
-
 class AudioSource(BuiltinComponent):
     """Python wrapper for the C++ AudioSource component.
 
@@ -57,98 +54,29 @@ class AudioSource(BuiltinComponent):
     _component_category_ = "Audio"
 
     # ---- Track Count ----
-    track_count = CppProperty(
-        "track_count",
-        FieldType.INT,
-        default=1,
-        range=(1, 16),
-        tooltip="Number of audio tracks (each can play a different clip)",
-    )
+    track_count = CppProperty.from_native("AudioSource", "track_count")
 
     # ---- Volume / Pitch / Mute (source-level) ----
-    volume = CppProperty(
-        "volume",
-        FieldType.FLOAT,
-        default=1.0,
-        range=(0.0, 1.0),
-        tooltip="Source-level volume. Multiplied with per-track volume.",
-    )
-    pitch = CppProperty(
-        "pitch",
-        FieldType.FLOAT,
-        default=1.0,
-        range=(0.1, 3.0),
-        tooltip="Pitch multiplier (1.0 = normal speed)",
-    )
-    mute = CppProperty(
-        "mute",
-        FieldType.BOOL,
-        default=False,
-        tooltip="If enabled, all tracks are muted",
-    )
+    volume = CppProperty.from_native("AudioSource", "volume")
+    pitch = CppProperty.from_native("AudioSource", "pitch")
+    mute = CppProperty.from_native("AudioSource", "mute")
 
     # ---- Loop / PlayOnAwake ----
-    loop = CppProperty(
-        "loop",
-        FieldType.BOOL,
-        default=False,
-        tooltip="Whether to loop playback (all tracks)",
-    )
-    play_on_awake = CppProperty(
-        "play_on_awake",
-        FieldType.BOOL,
-        default=True,
-        tooltip="Automatically play track 0 when the component starts",
-    )
+    loop = CppProperty.from_native("AudioSource", "loop")
+    play_on_awake = CppProperty.from_native("AudioSource", "play_on_awake")
 
-    # ---- 3D Spatial ----
-    min_distance = CppProperty(
-        "min_distance",
-        FieldType.FLOAT,
-        default=1.0,
-        range=(0.0, 500.0),
-        header="3D Spatial",
-        tooltip="Distance at which volume starts to attenuate",
-    )
-    max_distance = CppProperty(
-        "max_distance",
-        FieldType.FLOAT,
-        default=500.0,
-        range=(0.0, 10000.0),
-        tooltip="Distance at which volume reaches minimum",
-    )
+    # ---- 2D / 3D Spatial ----
+    spatial_blend = CppProperty.from_native("AudioSource", "spatial_blend")
+    min_distance = CppProperty.from_native("AudioSource", "min_distance")
+    max_distance = CppProperty.from_native("AudioSource", "max_distance")
+    output_bus = CppProperty.from_native("AudioSource", "output_bus")
 
     # ------------------------------------------------------------------
     # Properties (not shown in inspector, accessible via script)
     # ------------------------------------------------------------------
 
-    @property
-    def one_shot_pool_size(self) -> int:
-        """Number of pooled one-shot voices for transient SFX playback."""
-        cpp = self._cpp_component
-        if cpp is not None:
-            return cpp.one_shot_pool_size
-        return 8
-
-    @one_shot_pool_size.setter
-    def one_shot_pool_size(self, value: int):
-        cpp = self._cpp_component
-        if cpp is not None:
-            cpp.one_shot_pool_size = int(value)
-
-    @property
-    def output_bus(self) -> str:
-        """Output audio bus name (for future Wwise routing)."""
-        cpp = self._cpp_component
-        if cpp is not None:
-            return cpp.output_bus
-        return "Master"
-
-    @output_bus.setter
-    def output_bus(self, value: str):
-        cpp = self._cpp_component
-        if cpp is not None:
-            cpp.output_bus = str(value)
+    one_shot_pool_size = CppProperty.from_native("AudioSource", "one_shot_pool_size")
+    priority = CppProperty.from_native("AudioSource", "priority")
 
     # ------------------------------------------------------------------
     # Track management (delegate methods)
@@ -253,6 +181,26 @@ class AudioSource(BuiltinComponent):
         if cpp is not None:
             cpp.stop_all()
 
+    def get_track_time(self, track_index: int = 0) -> float:
+        """Clip seconds of the next mixed sample, independent of game frames.
+
+        The hardware can lag this position by its output buffering latency.
+        Individual/global pause freezes the sample cursor.
+        """
+        cpp = self._cpp_component
+        return cpp.get_track_time(track_index) if cpp is not None else 0.0
+
+    def set_track_time(self, track_index: int, seconds: float) -> None:
+        """Seek without changing whether the track is playing or paused.
+
+        A stopped track starts here on its next ``play``; ``stop`` resets it.
+        Position is runtime state and is not saved into Scene or Prefab assets.
+        A loaded clip and a finite time in [0, clip duration] are required.
+        """
+        cpp = self._cpp_component
+        if cpp is not None:
+            cpp.set_track_time(track_index, seconds)
+
     def is_track_playing(self, track_index: int) -> bool:
         """Whether a specific track is currently playing."""
         cpp = self._cpp_component
@@ -266,6 +214,17 @@ class AudioSource(BuiltinComponent):
         if cpp is not None:
             return cpp.is_track_paused(track_index)
         return False
+
+    def is_track_virtual(self, track_index: int = 0) -> bool:
+        """True when playback advances without occupying a physical mixing voice."""
+        cpp = self._cpp_component
+        return cpp.is_track_virtual(track_index) if cpp is not None else False
+
+    @property
+    def rejected_one_shot_count(self) -> int:
+        """Quieter incoming one-shots rejected by this source's full pool."""
+        cpp = self._cpp_component
+        return cpp.rejected_one_shot_count if cpp is not None else 0
 
     @property
     def is_playing(self) -> bool:

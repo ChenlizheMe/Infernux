@@ -5,11 +5,14 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <string>
 
 #include <core/log/InxLog.h>
 #include <core/types/InxApplication.h>
+
+#include "WindowPresentationPolicy.h"
 
 #include <vulkan/vulkan.h>
 
@@ -126,8 +129,13 @@ class InxView
 
     bool IsMinimized() const
     {
-        return m_isMinimized || m_applicationInBackground.load(std::memory_order_acquire) ||
-               m_surfaceRecreationPending.load(std::memory_order_acquire);
+        const SDL_WindowFlags flags = m_window ? SDL_GetWindowFlags(m_window) : SDL_WINDOW_MINIMIZED;
+        const WindowVisibility visibility =
+            (flags & SDL_WINDOW_MINIMIZED) != 0
+                ? WindowVisibility::Minimized
+                : ((flags & SDL_WINDOW_OCCLUDED) != 0 ? WindowVisibility::Occluded : WindowVisibility::Visible);
+        return ShouldSuspendWindowRendering(visibility, m_applicationInBackground.load(std::memory_order_acquire),
+                                            m_surfaceRecreationPending.load(std::memory_order_acquire));
     }
     [[nodiscard]] bool IsApplicationInBackground() const noexcept
     {
@@ -142,10 +150,8 @@ class InxView
         m_surfaceRecreationPending.store(true, std::memory_order_release);
         RequestExternalWake();
     }
-    void AcknowledgeSurfaceRecreation() noexcept
-    {
-        m_surfaceRecreationPending.store(false, std::memory_order_release);
-    }
+    void AcknowledgeSurfaceRecreation() noexcept;
+    void SetPresentationSuspendHandler(std::function<void()> handler);
     // ---- Power-save / idle accessors ----
     FpsIdling &GetIdling()
     {
@@ -222,18 +228,21 @@ class InxView
 
     int m_windowWidth = 0;
     int m_windowHeight = 0;
+    int m_framebufferWidth = 0;
+    int m_framebufferHeight = 0;
 
     SDL_Window *m_window = nullptr;
 
     bool m_keepRunning;
     bool m_closeRequested = false;
-    bool m_isMinimized = false;
     std::atomic_bool m_applicationInBackground{false};
     std::atomic_bool m_surfaceRecreationPending{false};
     std::atomic_bool m_hasCreatedSurface{false};
     bool m_eventWatchInstalled = false;
     bool m_isPlayMode = false;
+    bool m_activateWhenShown = true;
     bool m_needsImmediateGuiRefresh = false;
+    std::function<void()> m_presentationSuspendHandler;
     InxAppMetadata m_appMetadata;
 
     // ---- Power-save idle state ----
@@ -267,6 +276,7 @@ class InxView
     SDL_Keymod m_syntheticKeyModifiers = SDL_KMOD_NONE;
 
     void SDLInit();
+    [[nodiscard]] bool ShowNativeWindow();
     static bool SDLCALL WatchApplicationEvents(void *userdata, SDL_Event *event);
     uint64_t QueueSyntheticInput(SyntheticInputEvent event);
     [[nodiscard]] bool HasPendingSyntheticInput() const;

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <core/log/InxLog.h>
+#include <function/resources/AssetDependencyGraph.h>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
@@ -116,6 +117,8 @@ bool Component::IsComponentType(const std::string &typeName) const
 
 void Component::CallAwake()
 {
+    if (m_gameObject && m_gameObject->GetScene() && m_gameObject->GetScene()->IsPreview())
+        return;
     if (m_hasAwake || m_hasDestroyed) {
         return;
     }
@@ -138,6 +141,8 @@ void Component::CallStart()
 
 void Component::CallOnEnable()
 {
+    if (m_gameObject && m_gameObject->GetScene() && m_gameObject->GetScene()->IsPreview())
+        return;
     if (m_wasEnabled || m_hasDestroyed) {
         return;
     }
@@ -226,6 +231,7 @@ void Component::SetEnabled(bool enabled)
 
 void Component::SetComponentID(uint64_t id)
 {
+    AssetDependencyGraph::Instance().RekeyRuntimeDependencies(GetInstanceGuid(), std::to_string(id));
     // Re-key the registry
     GetInstanceRegistry().erase(m_componentId);
     m_componentId = id;
@@ -268,6 +274,8 @@ nlohmann::json Component::SerializeDocument() const
     j["enabled"] = m_enabled;
     j["execution_order"] = m_executionOrder;
     j["component_id"] = m_componentId;
+    if (m_prefabSourceId)
+        j["prefab_source_id"] = m_prefabSourceId;
     return j;
 }
 
@@ -303,12 +311,12 @@ bool Component::DeserializeDocument(const nlohmann::json &j)
             INXLOG_ERROR("Component::Deserialize for '", GetTypeName(), "': missing or invalid base fields");
             return false;
         }
-        if (j.contains("instance_guid")) {
-            INXLOG_ERROR("Component::Deserialize for '", GetTypeName(),
-                         "': instance_guid was removed; use component_id");
+        if (j.contains("prefab_source_id") &&
+            (!j["prefab_source_id"].is_number_unsigned() || j["prefab_source_id"].get<uint64_t>() == 0)) {
+            INXLOG_ERROR("Component prefab_source_id must be a non-zero unsigned integer");
             return false;
         }
-
+        m_prefabSourceId = j.value("prefab_source_id", uint64_t{0});
         m_enabled = j["enabled"].get<bool>();
         m_executionOrder = j["execution_order"].get<int>();
         if (j.contains("component_id")) {

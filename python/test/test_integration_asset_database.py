@@ -12,6 +12,7 @@ import pytest
 
 from Infernux.lib import AssetDependencyGraph, AssetMutationErrorCode, AssetRegistry, InxMaterial, ResourceType
 from Infernux.core.assets import AssetManager
+from Infernux.core.asset_types import read_mesh_import_settings
 from Infernux.engine.path_utils import same_path
 from Infernux.particle import (
     AssetReference,
@@ -20,6 +21,295 @@ from Infernux.particle import (
     SdfVolume,
     VectorField,
 )
+
+
+def _enable_mesh_read_write(database, source: Path) -> None:
+    settings = read_mesh_import_settings(str(source))
+    settings.is_readable = True
+    result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict(), database=database)
+    assert result, result.error
+
+
+def test_mesh_position_publication_preserves_identity_and_source(engine, tmp_path: Path):
+    database = engine.get_asset_database()
+    registry = AssetRegistry.instance()
+    source = tmp_path / "editable.obj"
+    document = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+    source.write_text(document, encoding="ascii")
+    guid = database.import_asset(str(source)).guid
+    try:
+        _enable_mesh_read_write(database, source)
+        pending = registry.begin_load_mesh_by_guid(guid)
+        mesh = registry.load_mesh_by_guid(guid)
+        original = mesh._particle_sampling_data()
+        version = registry.get_asset_residency(guid).runtime_version
+        positions = original["positions"][1:2].copy()
+        positions[:, 2] = 2.0
+        registry.update_mesh_positions(guid, 1, positions)
+        positions[:] = 99  # Native publication owns its data.
+        assert registry.get_mesh(guid) is mesh
+        current = mesh._particle_sampling_data()
+        expected = original["positions"].copy()
+        expected[1, 2] = 2.0
+        np.testing.assert_array_equal(current["positions"], expected)
+        np.testing.assert_array_equal(current["indices"], original["indices"])
+        assert registry.get_asset_residency(guid).runtime_version == version + 1
+        assert source.read_text(encoding="ascii") == document
+        deadline = time.monotonic() + 10.0
+        while not pending.complete and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert pending.complete
+        with pytest.raises(RuntimeError, match="stale"):
+            registry.try_commit_asset_load(pending)
+        registry.update_mesh_positions(guid, mesh.vertex_count, np.empty((0, 3), np.float32))
+        for first, values, message in (
+            (mesh.vertex_count, np.zeros((1, 3), np.float32), "exceeds"),
+            (0, np.full((1, 3), np.nan, np.float32), "finite"),
+            (0, np.zeros((1, 2), np.float32), "shape"),
+        ):
+            with pytest.raises(ValueError, match=message):
+                registry.update_mesh_positions(guid, first, values)
+        assert registry.get_asset_residency(guid).runtime_version == version + 1
+        np.testing.assert_array_equal(mesh._particle_sampling_data()["positions"], expected)
+    finally:
+        database.delete_asset(str(source))
+
+
+def test_shared_mesh_position_publication_keeps_collision_until_recook(engine, scene, tmp_path: Path):
+    from Infernux.lib import MeshCollider as NativeMeshCollider, Physics, Vector3
+
+    database = engine.get_asset_database()
+    registry = AssetRegistry.instance()
+    source = tmp_path / "shared-surface.obj"
+    source.write_text("v -1 0 -1\nv -1 0 1\nv 1 0 -1\nf 1 2 3\n", encoding="ascii")
+    guid = database.import_asset(str(source)).guid
+    objects = []
+    try:
+        _enable_mesh_read_write(database, source)
+        for x in (0, 5):
+            go = scene.create_game_object("shared surface")
+            objects.append(go)
+            go.transform.position = Vector3(x, 0, 0)
+            go.add_component("MeshRenderer").set_mesh_asset_guid(guid)
+            go.add_component("MeshCollider")
+        Physics.sync_transforms()
+        before = NativeMeshCollider.get_cooking_cache_stats()["async_submissions"]
+        positions = registry.get_mesh(guid)._particle_sampling_data()["positions"]
+        positions[:, 1] = 2
+        normals = np.tile(np.array([0.6, 0.8, 0], np.float32), (len(positions), 1))
+        registry.update_mesh_positions(guid, 0, positions, normals=normals)
+        version = registry.get_asset_residency(guid).runtime_version
+        for invalid in (np.zeros((len(positions), 2), np.float32), np.full_like(normals, np.inf)):
+            with pytest.raises(ValueError, match="normals"):
+                registry.update_mesh_positions(guid, 0, positions + 10, normals=invalid)
+        assert registry.get_asset_residency(guid).runtime_version == version
+        registry.update_mesh_positions(guid, 0, positions)
+        # Omitting normals preserves the previously published lighting attributes.
+        Physics.sync_transforms()
+        assert NativeMeshCollider.get_cooking_cache_stats()["async_submissions"] == before
+        generation_before_recook = int(Physics.query_generation)
+        for go, x in zip(objects, (0, 5)):
+            np.testing.assert_array_equal(go.get_component("MeshRenderer").get_positions(), positions)
+            np.testing.assert_allclose(go.get_component("MeshRenderer").get_normals(), normals)
+            assert Physics.raycast(Vector3(x - 0.5, 5, -0.5), Vector3(0, -1, 0), 10).point.y == pytest.approx(0)
+        objects[0].get_component("MeshCollider").recook()
+        Physics.sync_transforms()
+        assert int(Physics.query_generation) > generation_before_recook
+        assert Physics.raycast(Vector3(-0.5, 5, -0.5), Vector3(0, -1, 0), 10).point.y == pytest.approx(2)
+        assert Physics.raycast(Vector3(4.5, 5, -0.5), Vector3(0, -1, 0), 10).point.y == pytest.approx(0)
+    finally:
+        for go in objects:
+            scene.destroy_game_object(go)
+        database.delete_asset(str(source))
+
+
+def test_authored_mesh_import_restores_edited_geometry_with_independent_identity(engine, tmp_path: Path):
+    database = engine.get_asset_database()
+    registry = AssetRegistry.instance()
+    original = tmp_path / "original.obj"
+    authored = tmp_path / "edited.inxmesh"
+    original.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="ascii")
+    original_guid = database.import_asset(str(original)).guid
+    try:
+        _enable_mesh_read_write(database, original)
+        mesh = registry.load_mesh_by_guid(original_guid)
+        positions = mesh._particle_sampling_data()["positions"]
+        positions[:, 2] = 3
+        normals = np.tile(np.array([0, 0, 1], np.float32), (len(positions), 1))
+        registry.update_mesh_positions(original_guid, 0, positions, normals=normals)
+        source_bytes = mesh.serialize_source()
+        authored.write_bytes(source_bytes)
+        imported = database.import_asset(str(authored))
+        assert imported.resource_type == ResourceType.Mesh
+        assert imported.guid != original_guid
+        _enable_mesh_read_write(database, authored)
+        restored = registry.load_mesh_by_guid(imported.guid)
+        assert restored is not mesh
+        np.testing.assert_array_equal(restored._particle_sampling_data()["positions"], positions)
+        assert restored.serialize_source() == source_bytes
+        registry.invalidate_asset(imported.guid)
+        reloaded = registry.load_mesh_by_guid(imported.guid)
+        assert reloaded is not restored
+        assert reloaded.serialize_source() == source_bytes
+        registry.update_mesh_positions(original_guid, 0, positions + 5)
+        assert reloaded.serialize_source() == source_bytes
+        replacement_bytes = mesh.serialize_source()
+        authored.write_bytes(replacement_bytes)
+        replaced = database.import_asset(str(authored))
+        assert replaced.guid == imported.guid
+        registry.invalidate_asset(imported.guid)
+        assert registry.load_mesh_by_guid(imported.guid).serialize_source() == replacement_bytes
+    finally:
+        if database.contains_path(str(authored)):
+            database.delete_asset(str(authored))
+        database.delete_asset(str(original))
+
+
+def test_authored_mesh_cooked_artifact_validates_and_loads_without_source(engine, tmp_path: Path):
+    from Infernux.engine.runtime_artifact_catalog import validate_artifact, artifact_source_hash
+    from Infernux.engine.player_package_native import write_pack, read_entry
+    from Infernux.engine.game_builder import GameBuilder
+
+    database = engine.get_asset_database()
+    registry = AssetRegistry.instance()
+    root = Path(database.assets_root).parent
+    original = Path(database.assets_root) / "041-cooked-source.obj"
+    authored = Path(database.assets_root) / "041-cooked-copy.inxmesh"
+    settings = root / "ProjectSettings" / "BuildSettings.json"
+    previous_settings = settings.read_bytes() if settings.exists() else None
+    settings.parent.mkdir(exist_ok=True)
+    settings.write_text('{"scene_guids": []}', encoding="utf-8")
+    original.write_text("v 0 0 2\nv 1 0 2\nv 0 1 2\nf 1 2 3\n", encoding="ascii")
+    try:
+        original_guid = database.import_asset(str(original)).guid
+        _enable_mesh_read_write(database, original)
+        source_bytes = registry.load_mesh_by_guid(original_guid).serialize_source()
+        authored.write_bytes(source_bytes)
+        guid = database.import_asset(str(authored)).guid
+        _enable_mesh_read_write(database, authored)
+        database.flush_derived_index()
+        index = json.loads(Path(database.asset_index_path).read_text(encoding="utf-8"))
+        entry = next(item for item in index["entries"] if item["guid"] == guid)
+        artifact = root / entry["artifact_path"]
+        binding = validate_artifact(root, entry, artifact)
+        assert binding["source_guid"] == guid
+        assert artifact_source_hash(artifact) != "infernux.static-mesh.source"
+        assert artifact.read_bytes() != source_bytes
+        builder = GameBuilder(str(root), str(tmp_path / "Build"))
+        builder.freeze_asset_index_entries([entry])
+        builder._runtime_artifact_bindings = {}
+        builder._runtime_artifact_source_paths = set()
+        staged = tmp_path / "Staged"
+        builder._stage_library_runtime_artifacts(str(staged))
+        assert (staged / entry["artifact_path"]).read_bytes() == artifact.read_bytes()
+        assert f"assets/{authored.name}" in builder._runtime_artifact_source_paths
+        assert builder._runtime_artifact_bindings[entry["artifact_path"]]["source_guid"] == guid
+        assert not (staged / "Assets" / authored.name).exists()
+        package = tmp_path / "Content.inxpkg"
+        write_pack(((entry["artifact_path"], staged / entry["artifact_path"]),), package)
+        assert read_entry(package, entry["artifact_path"]) == artifact.read_bytes()
+        authored.unlink()
+        registry.invalidate_asset(guid)
+        loaded = registry.load_mesh_by_guid(guid)
+        assert loaded.serialize_source() == source_bytes
+    finally:
+        if previous_settings is None:
+            settings.unlink(missing_ok=True)
+        else:
+            settings.write_bytes(previous_settings)
+        for source in (authored, original):
+            if database.contains_path(str(source)):
+                database.delete_asset(str(source))
+            source.unlink(missing_ok=True)
+            Path(f"{source}.meta").unlink(missing_ok=True)
+
+
+def test_mesh_copy_command_undo_redo_restores_identity(engine, tmp_path: Path):
+    from Infernux.engine.interaction import EditorActionJournal, ProjectAssetCommandService, SelectionService
+    from Infernux.engine.undo import UndoManager
+
+    database = engine.get_asset_database()
+    registry = AssetRegistry.instance()
+    assets = tmp_path / "Assets"
+    assets.mkdir()
+    original = assets / "original.obj"
+    target = assets / "copy.inxmesh"
+    original.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="ascii")
+    original_guid = database.import_asset(str(original)).guid
+    _enable_mesh_read_write(database, original)
+    manager = UndoManager(EditorActionJournal())
+    service = ProjectAssetCommandService(SelectionService())
+    service.configure(str(tmp_path), database)
+    try:
+        mesh = registry.load_mesh_by_guid(original_guid)
+        saved = service.save_mesh_copy(mesh, str(target))
+        assert Path(saved) == target
+        guid = database.get_guid_from_path(str(target))
+        assert guid and guid != original_guid
+        content = target.read_bytes()
+        with pytest.raises(FileExistsError):
+            service.save_mesh_copy(mesh, str(target))
+        manager.undo()
+        assert not target.exists()
+        assert not database.contains_guid(guid)
+        manager.redo()
+        assert database.get_guid_from_path(str(target)) == guid
+        assert target.read_bytes() == content
+        _enable_mesh_read_write(database, target)
+        assert registry.load_mesh_by_guid(guid).serialize_source() == content
+        occupied = assets / "occupied.inxmesh"
+
+        class ConcurrentTarget:
+            def serialize_source(self):
+                occupied.write_bytes(b"another author's file")
+                return content
+
+        with pytest.raises(RuntimeError):
+            service.save_mesh_copy(ConcurrentTarget(), str(occupied))
+        assert occupied.read_bytes() == b"another author's file"
+    finally:
+        service.shutdown()
+        if database.contains_path(str(target)):
+            database.delete_asset(str(target))
+        database.delete_asset(str(original))
+
+
+def test_mesh_assignment_command_restores_complete_source(engine, scene, tmp_path: Path, monkeypatch):
+    from Infernux.lib import PrimitiveType
+    from Infernux.engine.interaction import ComponentCommandService, EditorActionJournal
+    from Infernux.engine.undo import UndoManager
+
+    database = engine.get_asset_database()
+    source = tmp_path / "assigned.obj"
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    source.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="ascii")
+    guid = database.import_asset(str(source)).guid
+    owner = scene.create_game_object("renderer")
+    renderer = owner.add_component("MeshRenderer")
+    renderer.set_primitive_mesh(PrimitiveType.Cube)
+    before = renderer.serialize_document()
+    previous_manager = UndoManager._instance
+    manager = UndoManager(EditorActionJournal())
+    service = ComponentCommandService()
+    try:
+        assert service.assign_mesh_asset(renderer, guid)
+        after = renderer.serialize_document()
+        assert after["meshAssetGuid"] == guid
+        assert not after.get("useInlineMesh", False)
+        manager.undo()
+        assert renderer.serialize_document() == before
+        manager.redo()
+        assert renderer.serialize_document() == after
+        assert not service.assign_mesh_asset(renderer, guid)
+        with pytest.raises(ValueError, match="registered Mesh"):
+            service.assign_mesh_asset(renderer, "missing-guid")
+        assert renderer.serialize_document() == after
+        assert len(manager.action_journal.applied_entries()) == 1
+    finally:
+        service.shutdown()
+        UndoManager._instance = previous_manager
+        scene.destroy_game_object(owner)
+        database.delete_asset(str(source))
 
 
 def test_audio_import_requires_complete_metadata(engine, tmp_path: Path):
@@ -84,13 +374,13 @@ def test_render_effect_import_tracks_group_dependencies(engine, tmp_path: Path):
                     "entries": [
                         {
                             "entry_id": "bloom",
-                            "asset": {"guid": bloom_result.guid, "path_hint": str(bloom)},
+                            "asset": {"guid": bloom_result.guid},
                             "enabled": True,
                             "overrides": {"intensity": 0.8},
                         },
                         {
                             "entry_id": "tonemapping",
-                            "asset": {"guid": tone_result.guid, "path_hint": str(tone)},
+                            "asset": {"guid": tone_result.guid},
                             "enabled": True,
                             "overrides": {},
                         },
@@ -114,7 +404,7 @@ def test_render_effect_import_tracks_group_dependencies(engine, tmp_path: Path):
                 asset_db.delete_asset(str(path))
 
 
-def test_render_effect_import_rejects_path_only_dependency(engine, tmp_path: Path):
+def test_render_effect_import_ignores_path_only_dependency(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
     source = tmp_path / "Path Only.effectgroup"
     source.write_text(
@@ -139,13 +429,12 @@ def test_render_effect_import_rejects_path_only_dependency(engine, tmp_path: Pat
 
     result = asset_db.import_asset(str(source))
 
-    assert not result
-    assert "must provide a GUID" in result.error
-    assert "path_hint is non-authoritative" in result.error
-    assert not asset_db.contains_path(str(source))
+    assert result
+    assert asset_db.contains_path(str(source))
+    assert AssetDependencyGraph.instance().get_dependencies(result.guid) == set()
 
 
-def test_render_effect_import_rejects_mount_scope_in_asset(engine, tmp_path: Path):
+def test_render_effect_import_does_not_consume_mount_scope_in_asset(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
     source = tmp_path / "InvalidScope.effect"
     source.write_text(
@@ -163,9 +452,9 @@ def test_render_effect_import_rejects_mount_scope_in_asset(engine, tmp_path: Pat
 
     result = asset_db.import_asset(str(source))
 
-    assert not result
-    assert not asset_db.contains_path(str(source))
-    assert asset_db.get_guid_from_path(str(source)) == ""
+    assert result
+    assert asset_db.contains_path(str(source))
+    assert asset_db.get_guid_from_path(str(source)) == result.guid
 
 
 def test_particle_graph_import_compiles_and_publishes_aot(engine, tmp_path: Path):
@@ -689,7 +978,7 @@ def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
 
     selection = SelectionService()
     selection.select(
-        SelectionTarget.asset(str(source_a)),
+        SelectionTarget.asset(imported_a.guid),
         owner_id="project",
         record_history=False,
     )
@@ -713,7 +1002,7 @@ def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
         assert asset_db.query_generation == generation_before + 1
         assert asset_db.get_guid_from_path(str(moved_a)) == imported_a.guid
         assert asset_db.get_guid_from_path(str(moved_b)) == imported_b.guid
-        assert selection.snapshot.primary == SelectionTarget.asset(str(moved_a))
+        assert selection.snapshot.primary == SelectionTarget.asset(imported_a.guid)
         assert len(published) == 1
         assert published[0].operation_id == "directory-transaction"
         assert len(published[0].changes) == 2
@@ -727,80 +1016,50 @@ def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
                 asset_db.delete_asset(str(path))
 
 
-def test_project_shader_move_migrates_material_reference_and_reimports(
+def test_project_shader_move_preserves_material_guid_reference_without_rewrite(
     engine, tmp_path: Path
 ):
     from Infernux.engine.ui import project_file_ops
 
-    asset_db = engine.get_asset_database()
+    database = engine.get_asset_database()
     graph = AssetDependencyGraph.instance()
-    shader_dir = tmp_path / "Shaders"
-    moved_dir = tmp_path / "Rendering"
-    shader_dir.mkdir()
-    moved_dir.mkdir()
-    vertex = shader_dir / "surface.vert"
-    fragment = shader_dir / "surface.frag"
+    source_dir = tmp_path / "Shaders"
+    destination_dir = tmp_path / "Rendering"
+    source_dir.mkdir()
+    destination_dir.mkdir()
+    vertex = source_dir / "surface.vert"
+    fragment = source_dir / "surface.frag"
     material = tmp_path / "Surface.mat"
     vertex.write_text("void main() {}", encoding="utf-8")
     fragment.write_text("void main() {}", encoding="utf-8")
-    vertex_guid = asset_db.import_asset(str(vertex)).guid
-    fragment_guid = asset_db.import_asset(str(fragment)).guid
+    vertex_guid = database.import_asset(str(vertex)).guid
+    fragment_guid = database.import_asset(str(fragment)).guid
     assert vertex_guid and fragment_guid
-
     document = json.loads(InxMaterial.create_default_lit().serialize())
     document["shaders"] = {
-        "vertex": {
-            "guid": vertex_guid,
-            "shader_id": "surface-vertex",
-            "path_hint": str(vertex),
-        },
-        "fragment": {
-            "guid": fragment_guid,
-            "shader_id": "surface-fragment",
-            "path_hint": str(fragment),
-        },
+        "vertex": {"guid": vertex_guid, "shader_id": "surface-vertex"},
+        "fragment": {"guid": fragment_guid, "shader_id": "surface-fragment"},
     }
-    material.write_text(json.dumps(document), encoding="utf-8")
-    material_guid = asset_db.import_asset(str(material)).guid
+    original = json.dumps(document)
+    material.write_text(original, encoding="utf-8")
+    material_guid = database.import_asset(str(material)).guid
     assert material_guid
-    document["shaders"]["fragment"]["guid"] = ""
-    material.write_text(json.dumps(document), encoding="utf-8")
-    destination = moved_dir / fragment.name
+    destination = destination_dir / fragment.name
 
     try:
         result = project_file_ops.move_path(
-            str(fragment),
-            str(destination),
-            asset_db,
-            origin="user",
-            operation_id="shader-reference-relocation",
+            str(fragment), str(destination), database,
+            origin="user", operation_id="shader-guid-relocation",
         )
 
         assert same_path(result, str(destination))
-        migrated = json.loads(material.read_text(encoding="utf-8"))
-        assert migrated["shaders"]["fragment"] == {
-            "guid": fragment_guid,
-            "shader_id": "surface-fragment",
-            "path_hint": str(destination).replace("\\", "/"),
-        }
+        assert material.read_text(encoding="utf-8") == original
+        assert database.get_guid_from_path(str(destination)) == fragment_guid
         assert fragment_guid in set(graph.get_dependencies(material_guid))
-        assert asset_db.get_guid_from_path(str(destination)) == fragment_guid
-
-        restored = project_file_ops.move_path(
-            str(destination),
-            str(fragment),
-            asset_db,
-            origin="user",
-            operation_id="shader-reference-relocation-undo",
-        )
-        assert same_path(restored, str(fragment))
-        restored_document = json.loads(material.read_text(encoding="utf-8"))
-        assert restored_document["shaders"]["fragment"]["guid"] == fragment_guid
-        assert same_path(asset_db.get_path_from_guid(fragment_guid), str(fragment))
     finally:
         for path in (material, fragment, destination, vertex):
-            if asset_db.contains_path(str(path)):
-                asset_db.delete_asset(str(path))
+            if database.contains_path(str(path)):
+                database.delete_asset(str(path))
             path.unlink(missing_ok=True)
             Path(f"{path}.meta").unlink(missing_ok=True)
 
@@ -1145,7 +1404,7 @@ def test_asset_index_reuses_unchanged_assets_and_recovers_from_corruption(engine
 
         index_path = Path(asset_db.asset_index_path)
         index_document = json.loads(index_path.read_text(encoding="utf-8"))
-        assert set(index_document) == {"project_root", "entries"}
+        assert set(index_document) == {"project_root", "import_revision", "entries"}
 
         query_generation = asset_db.query_generation
         catalog_generation = asset_db.catalog_generation
@@ -1177,12 +1436,14 @@ def test_asset_index_reuses_unchanged_assets_and_recovers_from_corruption(engine
         assert asset_db.last_refresh_reused_count >= len(paths) - 1
         assert asset_db.get_guid_from_path(str(paths[5])) == original_guids[paths[5]]
 
-        index_path.write_text('{"legacy": true}', encoding="utf-8")
+        legacy = json.loads(index_path.read_text(encoding="utf-8"))
+        del legacy["import_revision"]
+        index_path.write_text(json.dumps(legacy), encoding="utf-8")
         asset_db.refresh()
         assert asset_db.last_refresh_imported_count >= len(paths)
         assert {path: asset_db.get_guid_from_path(str(path)) for path in paths} == original_guids
         rebuilt = json.loads(index_path.read_text(encoding="utf-8"))
-        assert set(rebuilt) == {"project_root", "entries"}
+        assert set(rebuilt) == {"project_root", "import_revision", "entries"}
     finally:
         for path in paths:
             path.unlink(missing_ok=True)

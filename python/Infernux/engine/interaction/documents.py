@@ -55,7 +55,9 @@ class DocumentKind(str, Enum):
     SCENE = "scene"
     PREFAB = "prefab"
     MATERIAL = "material"
+    DATA_ASSET = "data_asset"
     PHYSIC_MATERIAL = "physic_material"
+    RENDER_TEXTURE = "render_texture"
     RENDER_EFFECT = "render_effect"
     ANIMATION_CLIP = "animation_clip"
     ANIMATION_FSM = "animation_fsm"
@@ -65,6 +67,50 @@ class DocumentKind(str, Enum):
     IMPORT_SETTINGS = "import_settings"
     PROJECT_SETTINGS = "project_settings"
     GENERIC = "generic"
+
+
+_REGISTERED_ASSET_DOCUMENT_KINDS = frozenset(
+    kind
+    for kind in DocumentKind
+    if kind not in {DocumentKind.PROJECT_SETTINGS, DocumentKind.GENERIC}
+)
+
+
+def is_registered_asset_document_kind(kind: DocumentKind) -> bool:
+    return DocumentKind(kind) in _REGISTERED_ASSET_DOCUMENT_KINDS
+
+
+def _asset_database():
+    try:
+        from Infernux.core.assets import AssetManager
+
+        return getattr(AssetManager, "_asset_database", None)
+    except (ImportError, RuntimeError):
+        return None
+
+
+def _asset_guid_from_path(path: str) -> str:
+    database = _asset_database()
+    resolver = getattr(database, "get_guid_from_path", None)
+    if not callable(resolver):
+        return ""
+    try:
+        return str(resolver(str(path or "")) or "").strip()
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        return ""
+
+
+def _asset_path_from_key(key: "DocumentKey") -> str:
+    if key.identity_kind is not DocumentIdentityKind.ASSET_GUID:
+        return ""
+    database = _asset_database()
+    resolver = getattr(database, "get_path_from_guid", None)
+    if not callable(resolver):
+        return ""
+    try:
+        return str(resolver(key.identity) or "").strip()
+    except (KeyError, RuntimeError, TypeError, ValueError):
+        return ""
 
 
 class DocumentIdentityKind(str, Enum):
@@ -84,6 +130,10 @@ class DocumentKey:
         identity_kind = DocumentIdentityKind(self.identity_kind)
         identity = str(self.identity or "").strip()
         if identity_kind is DocumentIdentityKind.RESOURCE_PATH:
+            if is_registered_asset_document_kind(kind):
+                raise ValueError(
+                    f"{kind.value} documents require GUID identity"
+                )
             identity = path_key(identity)
         elif identity_kind is DocumentIdentityKind.ASSET_GUID:
             identity = identity.casefold()
@@ -167,6 +217,7 @@ class SaveTicketStatus(str, Enum):
 class DocumentActionResult:
     status: DocumentActionStatus
     message: str = ""
+    durable_file_state: Any = field(default=None, repr=False, compare=False)
 
     @property
     def accepted(self) -> bool:
@@ -192,6 +243,7 @@ class SaveTicket:
     publication_bookkeeping_revision: Optional[int] = None
     status: SaveTicketStatus = SaveTicketStatus.PENDING
     message: str = ""
+    was_conflicted: bool = False
 
     @property
     def is_pending(self) -> bool:
@@ -244,6 +296,9 @@ class EditorDocument:
     imported_disk_revision: int = 0
     preview_dependency_revision: int = 0
     durable_file_state: Any = field(default=None, repr=False)
+    # Observation being arbitrated is distinct from the loaded/CAS baseline.
+    # Failed imports must not acknowledge bytes that never became live.
+    external_file_state: Any = field(default=None, repr=False)
     state: DocumentState = DocumentState.READY
     capabilities: DocumentCapability = DocumentCapability.NONE
     view_ids: set[str] = field(default_factory=set)
@@ -462,7 +517,11 @@ class DocumentRegistry:
                     "identity": document.key.identity,
                 },
                 "title": document.title,
-                "resource_path": document.resource_path,
+                "resource_path": (
+                    ""
+                    if document.key.identity_kind is DocumentIdentityKind.ASSET_GUID
+                    else document.resource_path
+                ),
                 "revision": document.revision,
                 "saved_revision": document.saved_revision,
                 "external_revision": document.external_revision,
@@ -539,11 +598,21 @@ class DocumentRegistry:
                 "identity",
             }:
                 raise ValueError("document session key has an invalid field set")
-            key = DocumentKey(
-                kind,
-                DocumentIdentityKind(key_data["identity_kind"]),
-                key_data["identity"],
-            )
+            identity_kind = DocumentIdentityKind(key_data["identity_kind"])
+            # Path-addressed records predate GUID-only asset document identity.
+            # They are intentionally not interpreted or migrated: a different
+            # asset may now own that path.
+            if (
+                is_registered_asset_document_kind(kind)
+                and identity_kind is DocumentIdentityKind.RESOURCE_PATH
+            ):
+                continue
+            key = DocumentKey(kind, identity_kind, key_data["identity"])
+            restored_resource_path = str(raw_record["resource_path"] or "")
+            if identity_kind is DocumentIdentityKind.ASSET_GUID:
+                restored_resource_path = _asset_path_from_key(key)
+                if not restored_resource_path:
+                    continue
             revision = int(raw_record["revision"])
             saved_revision = int(raw_record["saved_revision"])
             external_revision = int(raw_record["external_revision"])
@@ -579,6 +648,7 @@ class DocumentRegistry:
             record = copy.deepcopy(raw_record)
             record["kind"] = kind
             record["key"] = key
+            record["resource_path"] = restored_resource_path
             record["view_ids"] = tuple(normalized_views)
             record["dirty_view_ids"] = normalized_dirty_views
             record["revision"] = revision
@@ -675,6 +745,7 @@ class DocumentRegistry:
             document_key = (
                 DocumentKey.resource(document_kind, resource_path)
                 if resource_path
+                and not is_registered_asset_document_kind(document_kind)
                 else DocumentKey.session(document_kind, identifier)
             )
         elif document_key.kind is not document_kind:
@@ -685,7 +756,11 @@ class DocumentRegistry:
                 f"document key already registered by {existing_id}: {document_key}"
             )
         dormant = self._dormant_locators_by_key.get(document_key)
-        if dormant is None and resource_path:
+        if (
+            dormant is None
+            and resource_path
+            and document_key.identity_kind is DocumentIdentityKind.RESOURCE_PATH
+        ):
             resource_identity = path_key(resource_path)
             dormant = next(
                 (
@@ -743,6 +818,8 @@ class DocumentRegistry:
                 current_revision: frozenset(initial_dirty_views)
             },
         )
+        if initial_state is DocumentState.CONFLICT:
+            document.external_file_state = document.durable_file_state
         self._documents[identifier] = document
         self._document_ids_by_key[document_key] = identifier
         self._document_ids_by_stable_id[logical_id] = identifier
@@ -775,7 +852,11 @@ class DocumentRegistry:
         return DocumentLocator(
             document.stable_id,
             document.key,
-            resource_path=document.resource_path,
+            resource_path=(
+                ""
+                if document.key.identity_kind is DocumentIdentityKind.ASSET_GUID
+                else document.resource_path
+            ),
             title=document.title,
         )
 
@@ -823,40 +904,20 @@ class DocumentRegistry:
         asset_guid = str(guid or "").strip()
         if not path:
             raise ValueError("document resource path must not be empty")
-        key = (
-            DocumentKey.asset(document_kind, asset_guid)
-            if asset_guid
-            else DocumentKey.resource(document_kind, path)
-        )
-        resource_identity = path_key(path)
+        if asset_guid or is_registered_asset_document_kind(document_kind):
+            asset_guid = asset_guid or _asset_guid_from_path(path)
+            if not asset_guid:
+                raise LookupError(f"registered asset has no GUID: {path}")
+            key = DocumentKey.asset(document_kind, asset_guid)
+            path = _asset_path_from_key(key) or path
+        else:
+            key = DocumentKey.resource(document_kind, path)
         document = self.get_by_key(key)
-        if document is None:
-            document = next(
-                (
-                    candidate
-                    for candidate in self._documents.values()
-                    if candidate.kind is document_kind
-                    and candidate.resource_path
-                    and path_key(candidate.resource_path) == resource_identity
-                ),
-                None,
-            )
         if document is not None:
             locator = self.locate(document.document_id)
             if locator is not None:
                 return locator
         dormant = self._dormant_locators_by_key.get(key)
-        if dormant is None:
-            dormant = next(
-                (
-                    locator
-                    for locator in self._dormant_locators_by_stable_id.values()
-                    if locator.key_hint.kind is document_kind
-                    and locator.resource_path
-                    and path_key(locator.resource_path) == resource_identity
-                ),
-                None,
-            )
         if dormant is not None:
             return dormant
         # Session documents are restored lazily by their owning Views.  A
@@ -868,11 +929,6 @@ class DocumentRegistry:
                 record
                 for record in self._pending_session_records.values()
                 if record["key"] == key
-                or (
-                    record["kind"] is document_kind
-                    and record["resource_path"]
-                    and path_key(record["resource_path"]) == resource_identity
-                )
             ),
             None,
         )
@@ -880,7 +936,11 @@ class DocumentRegistry:
             return DocumentLocator(
                 str(pending["stable_id"]),
                 key,
-                resource_path=str(pending["resource_path"] or path),
+                resource_path=(
+                    ""
+                    if key.identity_kind is DocumentIdentityKind.ASSET_GUID
+                    else str(pending["resource_path"] or path)
+                ),
                 title=str(pending["title"] or title),
             )
         stable_seed = (
@@ -890,7 +950,9 @@ class DocumentRegistry:
         return DocumentLocator(
             uuid.uuid5(uuid.NAMESPACE_URL, stable_seed).hex,
             key,
-            resource_path=path,
+            resource_path=(
+                "" if key.identity_kind is DocumentIdentityKind.ASSET_GUID else path
+            ),
             title=str(title or ""),
         )
 
@@ -903,7 +965,10 @@ class DocumentRegistry:
         identity is known to the registry (live, dormant, or pending session),
         key fallback is no longer allowed for it.
         """
-        if not locator.resource_path:
+        if (
+            not locator.resource_path
+            and locator.key_hint.identity_kind is not DocumentIdentityKind.ASSET_GUID
+        ):
             return False
         if locator.stable_id in self._document_ids_by_stable_id:
             return False
@@ -999,7 +1064,11 @@ class DocumentRegistry:
                 return document, False
 
         existing = self.get_by_key(key)
-        if existing is None and resource_path:
+        if (
+            existing is None
+            and resource_path
+            and key.identity_kind is DocumentIdentityKind.RESOURCE_PATH
+        ):
             resource_identity = path_key(resource_path)
             existing = next(
                 (
@@ -1027,7 +1096,11 @@ class DocumentRegistry:
             )
             return existing, False
         dormant_locator = self._dormant_locators_by_key.get(key)
-        if dormant_locator is None and resource_path:
+        if (
+            dormant_locator is None
+            and resource_path
+            and key.identity_kind is DocumentIdentityKind.RESOURCE_PATH
+        ):
             resource_identity = path_key(resource_path)
             dormant_locator = next(
                 (
@@ -1178,6 +1251,9 @@ class DocumentRegistry:
         document = self._documents.get(identifier)
         if document is None:
             return False
+        cancel = getattr(document.controller, "cancel_pending_writes", None)
+        if callable(cancel):
+            cancel()
         restore_state = None
         if preserve_dormant:
             capture = getattr(
@@ -1207,7 +1283,11 @@ class DocumentRegistry:
         locator = DocumentLocator(
             document.stable_id,
             document.key,
-            resource_path=document.resource_path,
+            resource_path=(
+                ""
+                if document.key.identity_kind is DocumentIdentityKind.ASSET_GUID
+                else document.resource_path
+            ),
             title=document.title,
         )
         if not preserve_dormant:
@@ -1323,13 +1403,23 @@ class DocumentRegistry:
         """Move every open projection of one resource as one registry edit."""
         source_key = path_key(source_path)
         destination = str(destination_path or "")
+        asset_guid = str(guid or "").strip().casefold()
         if not source_key or not destination:
             raise ValueError("document resource remap requires source and destination")
 
         affected = tuple(
             document
             for document in self._documents.values()
-            if document.resource_path and path_key(document.resource_path) == source_key
+            if (
+                document.key.identity_kind is DocumentIdentityKind.ASSET_GUID
+                and asset_guid
+                and document.key.identity == asset_guid
+            )
+            or (
+                document.key.identity_kind is DocumentIdentityKind.RESOURCE_PATH
+                and document.resource_path
+                and path_key(document.resource_path) == source_key
+            )
         )
         for document in affected:
             if self.active_save_ticket(document.document_id) is not None:
@@ -1373,17 +1463,64 @@ class DocumentRegistry:
                 from Infernux.debug import Debug
 
                 Debug.log_suppressed("DocumentRegistry.resource_moved", exc)
+        dormant = tuple(
+            (stable_id, record)
+            for stable_id, record in self._dormant_documents_by_stable_id.items()
+            if (
+                record.document.key.identity_kind is DocumentIdentityKind.ASSET_GUID
+                and asset_guid
+                and record.document.key.identity == asset_guid
+            )
+            or (
+                record.document.key.identity_kind is DocumentIdentityKind.RESOURCE_PATH
+                and record.document.resource_path
+                and path_key(record.document.resource_path) == source_key
+            )
+        )
+        for stable_id, record in dormant:
+            record.document.resource_path = destination
+            record.document.durable_file_state = _capture_durable_file_state(destination)
+            if title:
+                record.document.title = title
+            locator = self._dormant_locators_by_stable_id[stable_id]
+            updated = DocumentLocator(
+                locator.stable_id,
+                locator.key_hint,
+                resource_path=(
+                    ""
+                    if locator.key_hint.identity_kind
+                    is DocumentIdentityKind.ASSET_GUID
+                    else destination
+                ),
+                title=record.document.title,
+            )
+            self._dormant_locators_by_stable_id[stable_id] = updated
+            self._dormant_locators_by_key[locator.key_hint] = updated
+        if dormant:
+            self._touch()
         return tuple(remapped_ids)
 
     def preflight_resource_remaps(self, remaps) -> None:
         """Validate a complete relocation batch without changing document state."""
-        pairs = tuple((path_key(source), str(destination or "")) for source, destination in remaps)
-        if any(not source or not destination for source, destination in pairs):
+        entries = tuple(
+            (path_key(source), str(destination or ""), str(guid or "").strip().casefold())
+            for source, destination, guid in remaps
+        )
+        if any(not source or not destination for source, destination, _guid in entries):
             raise ValueError("document resource remap requires source and destination")
         destinations: dict[DocumentKey, str] = {}
         for document in self._documents.values():
-            source_key = path_key(document.resource_path) if document.resource_path else ""
-            destination = next((value for source, value in pairs if source == source_key), "")
+            if document.key.identity_kind is DocumentIdentityKind.ASSET_GUID:
+                destination = next(
+                    (value for _source, value, guid in entries if guid == document.key.identity),
+                    "",
+                )
+            else:
+                source_key = path_key(document.resource_path) if document.resource_path else ""
+                destination = next(
+                    (value for source, value, _guid in entries if source == source_key),
+                    "",
+                )
             if not destination:
                 continue
             if self.active_save_ticket(document.document_id) is not None:
@@ -1494,7 +1631,7 @@ class DocumentRegistry:
         self._touch()
         return target
 
-    def establish_loaded_baseline(self, document_id: str) -> int:
+    def establish_loaded_baseline(self, document_id: str, *, durable_file_state=None) -> int:
         """Publish content loaded from an authoritative persisted source.
 
         Loading/reloading is not a save operation.  It replaces the in-memory
@@ -1517,6 +1654,19 @@ class DocumentRegistry:
         document.dirty_view_ids.clear()
         document._dirty_view_ids_by_revision[revision] = frozenset()
         document.state = DocumentState.READY
+        document.external_file_state = None
+        if durable_file_state is not None:
+            document.durable_file_state = durable_file_state
+            try:
+                observed = _capture_durable_file_state(document.resource_path)
+            except (OSError, RuntimeError):
+                # Publication succeeded, but a locked/unreadable source cannot
+                # be advertised as matching the newly loaded authoring state.
+                observed = None
+            if _durable_file_identity(observed) != _durable_file_identity(durable_file_state):
+                document.external_file_state = observed
+                document.external_revision += 1
+                document.state = DocumentState.CONFLICT
         self._touch()
         return revision
 
@@ -1640,39 +1790,70 @@ class DocumentRegistry:
         document = self.require(document_id)
         if document.state is DocumentState.CONFLICT:
             return
+        document.external_file_state = _capture_durable_file_state(document.resource_path)
         document.state = DocumentState.CONFLICT
         self._touch()
 
-    def documents_for_resource(self, resource_path: str) -> tuple[EditorDocument, ...]:
-        """Return every live document whose durable source is ``resource_path``."""
+    def documents_for_resource(
+        self,
+        resource_path: str,
+        *,
+        guid: str = "",
+    ) -> tuple[EditorDocument, ...]:
+        """Return live documents for a registered GUID or a non-asset path."""
         identity = path_key(resource_path)
-        if not identity:
+        asset_guid = str(guid or _asset_guid_from_path(resource_path)).strip().casefold()
+        if not identity and not asset_guid:
             return ()
         return tuple(
             document
             for document in self._documents.values()
-            if document.resource_path and path_key(document.resource_path) == identity
+            if (
+                document.key.identity_kind is DocumentIdentityKind.ASSET_GUID
+                and asset_guid
+                and document.key.identity == asset_guid
+            )
+            or (
+                document.key.identity_kind is DocumentIdentityKind.RESOURCE_PATH
+                and document.resource_path
+                and path_key(document.resource_path) == identity
+            )
         )
 
-    def documents_under_resource(self, resource_path: str) -> tuple[EditorDocument, ...]:
-        """Return live documents whose durable source is a path or its child.
+    def documents_under_resource(
+        self,
+        resource_path: str,
+        *,
+        guids: tuple[str, ...] | frozenset[str] = (),
+    ) -> tuple[EditorDocument, ...]:
+        """Return live documents under a deletion boundary.
 
         Project deletion is a tree mutation.  An exact-path lookup is enough
         for deleting one file, but it misses an authoring document inside a
-        deleted folder and lets the registry outlive the filesystem change.
-        Keep this query in the registry so every caller uses the same document
-        ownership rules.
+        deleted folder. Registered assets are matched only by the GUIDs that
+        the project boundary resolved before deletion; paths remain valid only
+        for generic non-asset documents.
         """
         root = path_key(resource_path)
-        if not root:
+        asset_guids = frozenset(
+            str(guid or "").strip().casefold() for guid in guids if str(guid or "").strip()
+        )
+        if not root and not asset_guids:
             return ()
         return tuple(
             document
             for document in self._documents.values()
-            if document.resource_path
-            and (
-                path_key(document.resource_path) == root
-                or path_key(document.resource_path).startswith(root + os.sep)
+            if (
+                document.key.identity_kind is DocumentIdentityKind.ASSET_GUID
+                and document.key.identity in asset_guids
+            )
+            or (
+                document.key.identity_kind is DocumentIdentityKind.RESOURCE_PATH
+                and document.resource_path
+                and (
+                    path_key(document.resource_path) == root
+                    or path_key(document.resource_path).startswith(root + os.sep)
+                )
             )
         )
 
@@ -1728,6 +1909,7 @@ class DocumentRegistry:
         self,
         resource_path: str,
         *,
+        guid: str = "",
         deleted: bool = False,
     ) -> Optional[bool]:
         """Compare the current disk identity with all live document baselines.
@@ -1738,7 +1920,7 @@ class DocumentRegistry:
         filesystem identity can be captured; it must not manufacture a
         conflict from that uncertainty.
         """
-        affected = self.documents_for_resource(resource_path)
+        affected = self.documents_for_resource(resource_path, guid=guid)
         if not affected:
             return True
         current = _capture_durable_file_state(resource_path)
@@ -1762,6 +1944,7 @@ class DocumentRegistry:
         self,
         resource_path: str,
         *,
+        guid: str = "",
         deleted: bool = False,
     ) -> bool:
         """Reserve one real content change before AssetManager mutates resources.
@@ -1773,8 +1956,8 @@ class DocumentRegistry:
         A watcher event whose durable identity still matches every live
         baseline is a no-op.
         """
-        identity = path_key(resource_path)
-        affected = self.documents_for_resource(resource_path)
+        identity = str(guid or _asset_guid_from_path(resource_path)).strip().casefold()
+        affected = self.documents_for_resource(resource_path, guid=guid)
         if not affected:
             return True
         if identity in self._external_change_preflights:
@@ -1782,6 +1965,7 @@ class DocumentRegistry:
 
         content_changed = self.durable_resource_content_changed(
             resource_path,
+            guid=guid,
             deleted=deleted,
         )
         if content_changed is False:
@@ -1789,8 +1973,12 @@ class DocumentRegistry:
         if content_changed is None:
             return False
 
+        observed_file_state = _capture_durable_file_state(resource_path)
         for document in affected:
-            document.external_revision += 1
+            if (_durable_file_identity(document.external_file_state)
+                    != _durable_file_identity(observed_file_state)):
+                document.external_revision += 1
+                document.external_file_state = observed_file_state
 
         scene_documents = tuple(
             document
@@ -1835,20 +2023,26 @@ class DocumentRegistry:
         self._touch()
         return True
 
-    def has_pending_external_change_preflight(self, resource_path: str) -> bool:
+    def has_pending_external_change_preflight(
+        self,
+        resource_path: str,
+        *,
+        guid: str = "",
+    ) -> bool:
         """Return whether a watcher change still awaits successful publish."""
-        identity = path_key(resource_path)
+        identity = str(guid or _asset_guid_from_path(resource_path)).strip().casefold()
         return bool(identity and identity in self._external_change_preflights)
 
     def fail_external_resource_change(
         self,
         resource_path: str,
         *,
+        guid: str = "",
         message: str = "",
     ) -> tuple[str, ...]:
         """Abort an approved reimport and preserve every live document."""
         del message
-        identity = path_key(resource_path)
+        identity = str(guid or _asset_guid_from_path(resource_path)).strip().casefold()
         document_ids = self._external_change_preflights.pop(identity, ())
         for document_id in document_ids:
             document = self.get(document_id)
@@ -1862,6 +2056,7 @@ class DocumentRegistry:
         self,
         resource_path: str,
         *,
+        guid: str = "",
         deleted: bool = False,
     ) -> tuple[str, ...]:
         """Apply one watcher-confirmed external content revision.
@@ -1872,16 +2067,17 @@ class DocumentRegistry:
         changes are consequences, never user actions, so this method does not
         touch the global action journal.
         """
-        identity = path_key(resource_path)
+        identity = str(guid or _asset_guid_from_path(resource_path)).strip().casefold()
         document_ids = self._external_change_preflights.pop(identity, ())
         if not document_ids:
             if not self.preflight_external_resource_change(
                 resource_path,
+                guid=guid,
                 deleted=deleted,
             ):
                 return tuple(
                     document.document_id
-                    for document in self.documents_for_resource(resource_path)
+                    for document in self.documents_for_resource(resource_path, guid=guid)
                 )
             document_ids = self._external_change_preflights.pop(identity, ())
 
@@ -1899,6 +2095,7 @@ class DocumentRegistry:
                     document.durable_file_state = _capture_durable_file_state(
                         resource_path
                     )
+                    document.external_file_state = None
                 continue
             reload_from_disk = self._reload_callback(document)
             if not callable(reload_from_disk):
@@ -1924,9 +2121,13 @@ class DocumentRegistry:
                 if current is not None:
                     current.state = DocumentState.CONFLICT
                 continue
-            self.establish_loaded_baseline(current.document_id)
-            current.durable_file_state = _capture_durable_file_state(resource_path)
-            current.state = DocumentState.READY
+            file_state = (result.durable_file_state
+                          if isinstance(result, DocumentActionResult) else None)
+            self.establish_loaded_baseline(
+                current.document_id,
+                durable_file_state=(file_state if file_state is not None else
+                                    _capture_durable_file_state(resource_path)),
+            )
         if affected:
             self._touch()
         return tuple(document.document_id for document in affected)
@@ -1972,10 +2173,18 @@ class DocumentRegistry:
                 "the document controller rejected the durable reload",
             )
         current = self.require(document.document_id)
-        self.establish_loaded_baseline(current.document_id)
-        current.durable_file_state = _capture_durable_file_state(
-            current.resource_path
+        file_state = (result.durable_file_state
+                      if isinstance(result, DocumentActionResult) else None)
+        self.establish_loaded_baseline(
+            current.document_id,
+            durable_file_state=(file_state if file_state is not None else
+                                _capture_durable_file_state(current.resource_path)),
         )
+        if current.state is DocumentState.CONFLICT:
+            return DocumentActionResult(
+                DocumentActionStatus.FAILED,
+                "the durable resource changed again while it was loading; review the current external conflict",
+            )
         return DocumentActionResult(DocumentActionStatus.APPLIED)
 
     def complete_external_reload(
@@ -1984,6 +2193,7 @@ class DocumentRegistry:
         *,
         success: bool,
         message: str = "",
+        durable_file_state=None,
     ) -> DocumentActionResult:
         """Complete a controller-owned asynchronous durable reload."""
         identifier = str(document_id or "")
@@ -1995,13 +2205,19 @@ class DocumentRegistry:
                 message or "the document closed before durable reload completed",
             )
         elif success:
-            self.establish_loaded_baseline(identifier)
-            document = self.require(identifier)
-            document.durable_file_state = _capture_durable_file_state(
-                document.resource_path
+            self.establish_loaded_baseline(
+                identifier,
+                durable_file_state=(durable_file_state if durable_file_state is not None else
+                                    _capture_durable_file_state(document.resource_path)),
             )
-            document.state = DocumentState.READY
-            result = DocumentActionResult(DocumentActionStatus.APPLIED)
+            document = self.require(identifier)
+            result = (
+                DocumentActionResult(
+                    DocumentActionStatus.FAILED,
+                    "the durable resource changed again while it was loading; review the current external conflict",
+                ) if document.state is DocumentState.CONFLICT else
+                DocumentActionResult(DocumentActionStatus.APPLIED)
+            )
         else:
             document.state = DocumentState.CONFLICT
             result = DocumentActionResult(
@@ -2029,6 +2245,15 @@ class DocumentRegistry:
                 DocumentActionStatus.REJECTED,
                 "the external conflict cannot be resolved while a save is pending",
             )
+        if document.resource_path and document.external_file_state is None:
+            return DocumentActionResult(
+                DocumentActionStatus.REJECTED,
+                "the external file state is unavailable; inspect the durable resource before resolving the conflict",
+            )
+        document.durable_file_state = document.external_file_state
+        document.external_file_state = None
+        if not document.is_dirty:
+            self.mark_changed(document.document_id)
         document.state = DocumentState.READY
         self._touch()
         return DocumentActionResult(DocumentActionStatus.APPLIED)
@@ -2068,6 +2293,11 @@ class DocumentRegistry:
             clean_revision,
         )
         document.state = restored_state
+        if restored_state is DocumentState.CONFLICT:
+            observed = _capture_durable_file_state(document.resource_path)
+            if _durable_file_identity(observed) != _durable_file_identity(document.external_file_state):
+                document.external_revision += 1
+            document.external_file_state = observed
         self._touch()
 
     def dirty_documents(self) -> tuple[EditorDocument, ...]:
@@ -2257,6 +2487,7 @@ class DocumentRegistry:
             document_id=document.document_id,
             captured_revision=document.revision,
             captured_external_revision=document.external_revision,
+            was_conflicted=document.state is DocumentState.CONFLICT,
             expected_file_state=document.durable_file_state,
             resource_path=document.resource_path,
             save_as=bool(save_as),
@@ -2371,7 +2602,13 @@ class DocumentRegistry:
             return ticket
         if conflict:
             success = False
-            document.state = DocumentState.CONFLICT
+            try:
+                self.mark_conflict(document.document_id)
+            except (OSError, RuntimeError) as exc:
+                # A failed disk inspection must not leave a save ticket live
+                # or permit an unconditional write on the next attempt.
+                document.state = DocumentState.CONFLICT
+                message = str(exc)
         if success:
             external_revision_changed = (
                 not ticket.save_as
@@ -2433,6 +2670,7 @@ class DocumentRegistry:
                 if committed_file_state is not None
                 else _capture_durable_file_state(document.resource_path)
             )
+            document.external_file_state = None
             document.edit_revision = max(document.edit_revision, document.revision)
             document.state = DocumentState.READY
             if ticket.save_as:
@@ -2440,7 +2678,11 @@ class DocumentRegistry:
             ticket.status = SaveTicketStatus.SUCCEEDED
         else:
             if not conflict and document.state is not DocumentState.CONFLICT:
-                document.state = DocumentState.READY
+                # Save Copy temporarily presents SAVING, but failure or
+                # cancellation has not resolved the original disk conflict.
+                document.state = (
+                    DocumentState.CONFLICT if ticket.was_conflicted else DocumentState.READY
+                )
             ticket.status = (
                 SaveTicketStatus.CANCELLED if cancelled else SaveTicketStatus.FAILED
             )
@@ -2537,6 +2779,9 @@ class DocumentRegistry:
         ):
             return
         for document in self._documents.values():
+            cancel = getattr(document.controller, "cancel_pending_writes", None)
+            if callable(cancel):
+                cancel()
             document.state = DocumentState.CLOSED
             document.view_ids.clear()
         self._documents.clear()

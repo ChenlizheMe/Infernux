@@ -57,6 +57,10 @@ class TestFocusGating:
         Input.set_game_viewport_origin(100.0, 200.0)
         assert Input._game_viewport_origin == (100.0, 200.0)
 
+    def test_set_game_viewport_size(self):
+        Input.set_game_viewport_size(640.0, 360.0)
+        assert Input.game_viewport_size == (640.0, 360.0)
+
     def test_automation_scope_routes_game_input_without_claiming_editor_focus(self):
         Input.set_game_focused(False)
 
@@ -171,6 +175,26 @@ class TestMouseQueries:
         assert isinstance(pos, tuple) and len(pos) == 2
 
 
+class TestCursorState:
+    def test_visibility_confinement_and_lock_are_independent(self):
+        Input.set_cursor_visible(False)
+        Input.set_cursor_confined(True)
+        Input.set_cursor_locked(True)
+        try:
+            assert Input.is_cursor_visible() is False
+            assert Input.is_cursor_confined() is True
+            assert Input.is_cursor_locked() is True
+
+            Input.set_cursor_locked(False)
+            assert Input.is_cursor_visible() is False
+            assert Input.is_cursor_confined() is True
+            assert Input.warp_cursor(10.0, 20.0) is False
+        finally:
+            Input.set_cursor_locked(False)
+            Input.set_cursor_confined(False)
+            Input.set_cursor_visible(True)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Axis queries (real C++ backend — idle state)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -244,10 +268,14 @@ class TestInputMetaclassProperties:
             pressure=0.5,
             contact_size=(0.02, 0.03),
             is_primary=True,
+            began_this_frame=True,
+            begin_normalized_position=(0.2, 0.2),
             cancel_reason="",
             phase=TouchPhase.MOVED,
         )
         assert touch.phase is TouchPhase.MOVED
+        assert touch.began_this_frame
+        assert touch.begin_normalized_position == pytest.approx((0.2, 0.2))
         assert touch.position == (480.0, 270.0)
         assert touch.normalized_position == (0.25, 0.25)
         assert touch.contact_size == (0.02, 0.03)
@@ -295,6 +323,9 @@ class TestInputMetaclassProperties:
             contact_width=0.02,
             contact_height=0.03,
             is_primary=True,
+            began_this_frame=True,
+            begin_x=0.2,
+            begin_y=0.8,
             cancel_reason="",
             phase="moved",
         )
@@ -317,6 +348,8 @@ class TestInputMetaclassProperties:
         assert touch.contact_size == pytest.approx((38.4, 32.4))
         assert touch.delta_time == pytest.approx(0.016)
         assert touch.phase is TouchPhase.MOVED
+        assert touch.began_this_frame
+        assert touch.begin_normalized_position == pytest.approx((0.2, 0.2))
 
     def test_platform_text_input_runtime_service(self):
         class _TextInputService:

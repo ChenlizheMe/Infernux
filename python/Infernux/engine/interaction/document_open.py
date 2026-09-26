@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, Protocol
 
-from .documents import DocumentKind, DocumentLocator, DocumentRegistry, EditorDocument
+from .documents import (
+    DocumentIdentityKind,
+    DocumentKind,
+    DocumentLocator,
+    DocumentRegistry,
+    EditorDocument,
+)
 
 
 class DocumentOpenStatus(str, Enum):
@@ -83,7 +89,7 @@ class DocumentOpenService:
                 ),
             )
         try:
-            raw_result = adapter(locator)
+            raw_result = adapter(self._io_locator(locator))
         except Exception as exc:
             return DocumentOpenResult(DocumentOpenStatus.FAILED, message=str(exc))
 
@@ -118,7 +124,7 @@ class DocumentOpenService:
             adapter = self._adapters.get(locator.key_hint.kind)
             if adapter is not None:
                 try:
-                    result = self._normalize_result(adapter(locator))
+                    result = self._normalize_result(adapter(self._io_locator(locator)))
                 except Exception as exc:
                     return DocumentOpenResult(
                         DocumentOpenStatus.FAILED,
@@ -128,6 +134,30 @@ class DocumentOpenService:
                     return result
             return DocumentOpenResult(DocumentOpenStatus.READY, document)
         return self.resolve_or_open(locator)
+
+    @staticmethod
+    def _io_locator(locator: DocumentLocator) -> DocumentLocator:
+        """Attach the current disk projection only for the adapter I/O call."""
+        if locator.key_hint.identity_kind is not DocumentIdentityKind.ASSET_GUID:
+            return locator
+        from Infernux.core.assets import AssetManager
+
+        path = str(
+            AssetManager.require_asset_database().get_path_from_guid(
+                locator.key_hint.identity
+            )
+            or ""
+        ).strip()
+        if not path:
+            raise LookupError(
+                f"registered asset GUID is unavailable: {locator.key_hint.identity}"
+            )
+        return DocumentLocator(
+            locator.stable_id,
+            locator.key_hint,
+            resource_path=path,
+            title=locator.title,
+        )
 
     def clear(self) -> None:
         self._adapters.clear()

@@ -21,6 +21,7 @@ Use held-state queries for continuous actions and down/up queries for one-frame 
 | frame_index | `int` | Monotonic identity of the current native input frame. |
 | mouse_position | `Tuple[float, float]` | The current mouse position in screen coordinates. |
 | game_mouse_position | `Tuple[float, float]` | The current mouse position in game viewport coordinates. |
+| game_viewport_size | `Tuple[float, float]` | The current game viewport size in pixels. |
 | mouse_scroll_delta | `Tuple[float, float]` | The mouse scroll delta for the current frame. |
 | input_string | `str` | Characters typed by the user in the current frame. |
 | any_key | `bool` | Returns True while any key or mouse button is held down. |
@@ -45,6 +46,7 @@ Use held-state queries for continuous actions and down/up queries for one-frame 
 |------|------|
 | `static Input.set_game_focused(focused: bool) → None` | Set whether the game viewport has input focus. |
 | `static Input.set_game_viewport_origin(x: float, y: float) → None` | Set the game viewport origin in screen coordinates. |
+| `static Input.set_game_viewport_size(width: float, height: float) → None` | Set the game viewport size in pixels. |
 | `static Input.is_game_focused() → bool` | Returns True if the game viewport has input focus. |
 | `static Input.get_key(key: Union[str, int]) → bool` | Returns True while the user holds down the specified key. |
 | `static Input.get_key_down(key: Union[str, int]) → bool` | Returns True during the frame the user starts pressing the key. |
@@ -60,6 +62,11 @@ Use held-state queries for continuous actions and down/up queries for one-frame 
 | `static Input.get_game_mouse_frame_state(button: int = ...) → Tuple[float, float, float, float, bool, bool, bool]` | Get comprehensive game-viewport mouse state for the current frame. |
 | `static Input.set_cursor_locked(locked: bool) → None` | Lock or unlock the cursor. |
 | `static Input.is_cursor_locked() → bool` | Returns True if the cursor is currently locked. |
+| `static Input.set_cursor_visible(visible: bool) → None` | Show or hide the cursor without changing relative mouse mode. |
+| `static Input.is_cursor_visible() → bool` | Return the requested cursor visibility. |
+| `static Input.set_cursor_confined(confined: bool) → None` | Confine or release the visible cursor without locking it. |
+| `static Input.is_cursor_confined() → bool` | Return whether visible cursor confinement is requested. |
+| `static Input.warp_cursor(x: float, y: float) → bool` | Warp the visible cursor in logical window coordinates. |
 | `static Input.get_axis(axis_name: str) → float` | Returns the value of the virtual axis identified by axis_name. |
 | `static Input.get_axis_raw(axis_name: str) → float` | Returns the raw value of the virtual axis with no smoothing. |
 | `static Input.reset_input_axes() → None` | Reset all input axes to zero. |

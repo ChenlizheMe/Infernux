@@ -59,15 +59,24 @@ def _clamp(value, min_value, max_value):
 
 
 def _light_gizmo_color(light):
-    rgba = light.color
+    # Gizmo vertices are consumed in the linear scene pipeline and encoded once
+    # on presentation. Feeding display/sRGB values here would brighten every
+    # non-white light icon a second time.
+    # Native Light wrappers expose ``effective_linear_color``.  Keep icon
+    # collection independent from wrapper construction however: a component
+    # proxy can be intentionally minimal while a scene is being refreshed
+    # (and test doubles use the same contract).  In that case the authored
+    # gizmo tint is already linear and is the correct deterministic value.
+    rgba = getattr(light, "effective_linear_color", None)
+    if rgba is None:
+        rgba = getattr(light, "_gizmo_icon_color", (1.0, 1.0, 1.0))
     r = float(rgba[0]) if len(rgba) > 0 else 1.0
     g = float(rgba[1]) if len(rgba) > 1 else 1.0
     b = float(rgba[2]) if len(rgba) > 2 else 1.0
-    boost = 0.35
     return (
-        _clamp(r * 0.75 + boost, 0.0, 1.0),
-        _clamp(g * 0.75 + boost, 0.0, 1.0),
-        _clamp(b * 0.75 + boost, 0.0, 1.0),
+        _clamp(r, 0.0, 1.0),
+        _clamp(g, 0.0, 1.0),
+        _clamp(b, 0.0, 1.0),
     )
 
 
@@ -106,100 +115,67 @@ class Light(BuiltinComponent):
     _component_category_ = "Rendering"
     _always_show = False
 
-    # Scene icon: yellow diamond shown at light position (Unity-style)
-    _gizmo_icon_color = (1.0, 0.92, 0.016)
+    # A white texture leaves the billboard free to take its tint from each light.
+    _gizmo_icon_color = (1.0, 1.0, 1.0)
     _gizmo_icon_kind = ICON_KIND_LIGHT
 
     # ---- Light type ----
-    light_type = CppProperty(
-        "light_type",
-        FieldType.ENUM,
-        default=None,
-        enum_type="LightType",
-        enum_labels=["Directional", "Point", "Spot", "Area"],
-        tooltip="Type of light (Directional, Point, Spot, Area)",
-    )
+    light_type = CppProperty.from_native("Light", "light_type")
 
     # ---- Color & intensity ----
+    color_mode = CppProperty.from_native("Light", "color_mode")
     color = CppProperty(
         "color",
         FieldType.COLOR,
         default=None,
-        header="Appearance",
-        tooltip="Light color (linear RGB)",
+        tooltip="Authored sRGB color; a filter when using color temperature",
         get_converter=_rgb_to_rgba,
         set_converter=_rgba_to_vec3,
     )
-    intensity = CppProperty(
-        "intensity",
-        FieldType.FLOAT,
-        default=1.0,
-        range=(0.0, 10.0),
-        tooltip="Light intensity multiplier",
+    use_color_temperature = CppProperty.from_native("Light", "use_color_temperature")
+    color_temperature = CppProperty.from_native(
+        "Light", "color_temperature", visible_when=lambda comp: comp.use_color_temperature
     )
+    intensity = CppProperty.from_native("Light", "intensity")
+
+    @property
+    def effective_color(self):
+        """Emitted sRGB color after the optional Kelvin filter, before intensity."""
+        return self._require_cpp_component().effective_color
+
+    @property
+    def effective_linear_color(self):
+        """Emitted linear RGB color used by rendering, before intensity."""
+        return self._require_cpp_component().effective_linear_color
 
     # ---- Range (Point / Spot) ----
-    range = CppProperty(
-        "range",
-        FieldType.FLOAT,
-        default=10.0,
-        range=(0.1, 100.0),
-        visible_when=lambda comp: int(comp.light_type) in (1, 2, 3),
-        tooltip="Light range (Point / Spot / Area lights)",
+    range = CppProperty.from_native(
+        "Light", "range", visible_when=lambda comp: int(comp.light_type) in (1, 2, 3)
     )
 
     # ---- Spot angles ----
-    spot_angle = CppProperty(
-        "spot_angle",
-        FieldType.FLOAT,
-        default=30.0,
-        range=(1.0, 179.0),
-        visible_when=lambda comp: int(comp.light_type) == 2,
-        tooltip="Inner spot angle in degrees",
+    spot_angle = CppProperty.from_native(
+        "Light", "spot_angle", visible_when=lambda comp: int(comp.light_type) == 2
     )
-    outer_spot_angle = CppProperty(
-        "outer_spot_angle",
-        FieldType.FLOAT,
-        default=45.0,
-        range=(1.0, 179.0),
-        visible_when=lambda comp: int(comp.light_type) == 2,
-        tooltip="Outer spot angle in degrees",
+    outer_spot_angle = CppProperty.from_native(
+        "Light", "outer_spot_angle", visible_when=lambda comp: int(comp.light_type) == 2
     )
 
-    area_size = CppProperty(
-        "area_size",
-        FieldType.VEC2,
-        default=[1.6, 1.0],
+    area_size = CppProperty.from_native(
+        "Light", "area_size",
         visible_when=lambda comp: int(comp.light_type) == _AREA_LIGHT,
-        tooltip="Rectangle width and height",
         get_converter=_vec2_to_list,
         set_converter=_list_to_vec2,
     )
-    area_two_sided = CppProperty(
-        "area_two_sided",
-        FieldType.BOOL,
-        default=False,
+    area_two_sided = CppProperty.from_native(
+        "Light", "area_two_sided",
         visible_when=lambda comp: int(comp.light_type) == _AREA_LIGHT,
-        tooltip="Emit light from both sides of the rectangle",
     )
 
     # ---- Shadows ----
-    shadows = CppProperty(
-        "shadows",
-        FieldType.ENUM,
-        default=None,
-        enum_type="LightShadows",
-        enum_labels=["No Shadows", "Hard", "Soft"],
-        header="Shadows",
-        tooltip="Shadow type (None, Hard, Soft)",
-    )
-    shadow_strength = CppProperty(
-        "shadow_strength",
-        FieldType.FLOAT,
-        default=1.0,
-        range=(0.0, 1.0),
-        visible_when=lambda comp: int(comp.shadows) > 0,
-        tooltip="Shadow strength (0-1)",
+    shadows = CppProperty.from_native("Light", "shadows")
+    shadow_strength = CppProperty.from_native(
+        "Light", "shadow_strength", visible_when=lambda comp: int(comp.shadows) > 0
     )
 
     @property
@@ -212,13 +188,8 @@ class Light(BuiltinComponent):
         """Engine-managed normal bias, expressed in shadow-map texels."""
         return float(self._require_cpp_component().shadow_normal_bias)
 
-    shadow_softness = CppProperty(
-        "shadow_softness",
-        FieldType.FLOAT,
-        default=1.5,
-        range=(0.25, 8.0),
-        visible_when=lambda comp: int(comp.shadows) == 2,
-        tooltip="Soft-shadow filter radius in shadow-map texels",
+    shadow_softness = CppProperty.from_native(
+        "Light", "shadow_softness", visible_when=lambda comp: int(comp.shadows) == 2
     )
 
     affect_geometry = CppProperty(

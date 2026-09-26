@@ -26,6 +26,17 @@
 
 <!-- USER CONTENT END -->
 
+## 公共方法
+
+| 方法 | 描述 |
+|------|------|
+| `raycast(origin: Any, direction: Any, max_distance: float = 1000.0) → Any | None` |  |
+| `closest_point(point: Any) → Any` |  |
+
+<!-- USER CONTENT START --> public_methods
+
+<!-- USER CONTENT END -->
+
 ## 示例
 
 <!-- USER CONTENT START --> example

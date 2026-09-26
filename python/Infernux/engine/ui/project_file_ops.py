@@ -5,7 +5,6 @@ Functions accept the required state as explicit parameters so they don't
 depend on ``ProjectPanel`` internals.
 """
 
-import json
 import os
 import re
 import shutil
@@ -80,13 +79,11 @@ MATERIAL_TEMPLATE = '''{{
   "shaders": {{
     "vertex": {{
       "guid": "",
-      "shader_id": "Standard",
-      "path_hint": ""
+      "shader_id": "Standard"
     }},
     "fragment": {{
       "guid": "",
-      "shader_id": "Unlit",
-      "path_hint": ""
+      "shader_id": "Unlit"
     }}
   }},
   "renderState": {{
@@ -116,7 +113,7 @@ MATERIAL_TEMPLATE = '''{{
   }},
   "properties": {{
     "baseColor": {{
-      "type": 3,
+      "type": 7,
       "value": [1.0, 1.0, 1.0, 1.0]
     }}
   }}
@@ -134,7 +131,6 @@ PHYSIC_MATERIAL_TEMPLATE = '''{
 ANIMCLIP_TEMPLATE = '''{
   "name": "{clip_name}",
   "authoring_texture_guid": "",
-  "authoring_texture_path": "",
   "frames": [],
   "fps": 12.0,
   "loop": true,
@@ -145,7 +141,6 @@ ANIMCLIP_TEMPLATE = '''{
 ANIMCLIP3D_TEMPLATE = '''{
   "name": "{clip_name}",
   "source_model_guid": "",
-  "source_model_path": "",
   "take_name": "",
   "bind_pose_bone_names": [],
   "duration_hint": 0.0,
@@ -295,29 +290,6 @@ def _iter_asset_move_pairs(old_path: str, new_path: str):
         yield old_path, new_path
 
 
-def _update_build_settings_scene_path(old_path: str, new_path: str):
-    """Project a scene asset move into the shared Project Settings document."""
-    from Infernux.engine.interaction import ensure_project_settings_document
-    from Infernux.engine.project_context import get_project_root
-
-    root = get_project_root()
-    if not root:
-        return
-    controller = ensure_project_settings_document(root)
-    settings = controller.section("build")
-    scenes = settings.get("scenes", [])
-    old_norm = path_key(old_path)
-    changed = False
-    for i, s in enumerate(scenes):
-        scene_path = s if os.path.isabs(s) else os.path.join(root, s)
-        if path_key(scene_path) == old_norm:
-            scenes[i] = relative_path(new_path, root)
-            changed = True
-    if changed:
-        settings["scenes"] = scenes
-        controller.apply_derived_section("build", settings)
-
-
 def on_asset_mutation(change) -> None:
     """Project UI consequences registered with the global mutation service."""
     from Infernux.engine.interaction import AssetMutationKind, iter_asset_mutations
@@ -327,12 +299,7 @@ def on_asset_mutation(change) -> None:
     for mutation in iter_asset_mutations(change):
         old_path = mutation.source_path
         new_path = mutation.destination_path
-        if (
-            mutation.kind is AssetMutationKind.MOVED
-            and new_path.lower().endswith(".scene")
-        ):
-            _update_build_settings_scene_path(old_path, new_path)
-        asset_details_renderer.invalidate_asset(old_path)
+        asset_details_renderer.invalidate_asset(old_path, keep_view=mutation.kind is AssetMutationKind.MODIFIED)
         if new_path:
             asset_details_renderer.invalidate_asset(new_path)
 
@@ -425,26 +392,8 @@ def move_paths_batch(
             origin=origin,
             operation_id=operation_id,
         )
-    try:
-        from Infernux.engine.interaction.asset_content import (
-            AssetReferenceRelocationPlanner,
-        )
-        from Infernux.engine.project_context import get_project_root
-
-        project_root = str(getattr(database, "project_root", "") or get_project_root() or "")
-        reference_patches = AssetReferenceRelocationPlanner.build_patches(
-            relocation_entries,
-            database=database,
-            project_root=project_root,
-            source_text_patches=source_text_patches,
-        )
-    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        if plan is not None:
-            mutations.abort_relocation(plan)
-        raise RuntimeError("asset reference relocation preflight failed") from exc
     workspace_moves: list[tuple[str, str]] = []
     patched_sources: list[tuple[str, tuple[str, str]]] = []
-    patched_references = []
     database_moves: list[tuple[str, str]] = []
     try:
         if source_text_patches:
@@ -493,23 +442,6 @@ def move_paths_batch(
                         publish_interaction=plan is None,
                     )
                 database_moves.append((old_file, new_file))
-        if reference_patches:
-            from Infernux.core.document_store import write_document_text
-
-            for patch in reference_patches:
-                AssetManager._suppress_watcher_echo("modified", patch.destination_path)
-                write_document_text(patch.destination_path, patch.updated)
-                patched_references.append(patch)
-            for patch in reference_patches:
-                result = AssetManager.reimport_asset(
-                    patch.destination_path,
-                    database=database,
-                )
-                if not result:
-                    message = str(getattr(result, "error", "") or "asset reimport failed")
-                    raise RuntimeError(
-                        f"asset reference migration failed for '{patch.destination_path}': {message}"
-                    )
         if plan is not None:
             mutations.commit_relocation(plan)
     except (OSError, RuntimeError, ValueError) as exc:
@@ -522,20 +454,6 @@ def move_paths_batch(
                     RuntimeError(
                         f"asset workspace rollback failed for '{new_abs}' -> "
                         f"'{old_abs}': {rollback_exc}"
-                    )
-                )
-        for patch in reversed(patched_references):
-            if not os.path.isfile(patch.source_path):
-                continue
-            try:
-                from Infernux.core.document_store import write_document_text
-
-                write_document_text(patch.source_path, patch.original)
-            except OSError as rollback_exc:
-                rollback_failures.append(
-                    RuntimeError(
-                        f"asset reference rollback failed for "
-                        f"'{patch.source_path}': {rollback_exc}"
                     )
                 )
         for old_abs, patch in reversed(patched_sources):
@@ -922,6 +840,72 @@ def create_physic_material(current_path: str, material_name: str, asset_database
         guid = _import_new_asset(file_path, asset_database)
         if not guid:
             return False, f"AssetDatabase failed to import '{file_name}'"
+    return True, ""
+
+
+def create_render_texture(current_path: str, asset_name: str, asset_database=None):
+    """Create an imported target description without allocating a GPU target."""
+    from Infernux.lib import _Infernux
+
+    if not current_path or not asset_name.strip():
+        return False, "RenderTexture name cannot be empty"
+    extension = ".rendertexture"
+    name = asset_name.strip()
+    if name.casefold().endswith(extension):
+        name = name[:-len(extension)]
+    if not name:
+        return False, "RenderTexture name cannot be empty"
+    path = os.path.join(current_path, name + extension)
+    if os.path.exists(path):
+        return False, f"'{name + extension}' already exists"
+    description = _Infernux._RenderTextureDesc()
+    # Project assets are ready for Camera assignment; compute-only targets may
+    # explicitly disable depth in the Inspector. Low-level defaults stay color-only.
+    description.depth_format = _Infernux.PixelFormat.D32_SFLOAT
+    content = _Infernux._render_texture_description_to_json(description)
+    written, error = _write_new_text_asset(path, content)
+    if not written:
+        return False, error
+    if asset_database is not None and not _import_new_asset(path, asset_database):
+        return False, f"AssetDatabase failed to import '{name + extension}'"
+    return True, ""
+
+
+def create_data_asset(current_path: str, asset_name: str, type_id: str, asset_database=None, *, value=None):
+    """Create one typed ``.inxdata`` asset from its published DataAsset class."""
+    if not current_path or not asset_name:
+        return False, "Invalid DataAsset name"
+    asset_name = asset_name.strip()
+    if not asset_name:
+        return False, "DataAsset name cannot be empty"
+    if asset_name.lower().endswith(".inxdata"):
+        asset_name = asset_name[:-len(".inxdata")]
+    if not asset_name or os.path.basename(asset_name) != asset_name:
+        return False, "Invalid DataAsset name"
+
+    from Infernux.components.serializable_object import get_serializable_class, get_serializable_type_id
+    from Infernux.core.data_asset import DataAsset
+
+    asset_type = get_serializable_class(str(type_id or "").strip())
+    if asset_type is None or asset_type is DataAsset or not issubclass(asset_type, DataAsset):
+        return False, f"Unknown DataAsset type: {type_id}"
+    if value is not None and (
+        not isinstance(value, DataAsset)
+        or get_serializable_type_id(value) != get_serializable_type_id(asset_type)
+    ):
+        return False, "Initial value must have the requested DataAsset type"
+
+    file_name = asset_name + ".inxdata"
+    file_path = os.path.join(current_path, file_name)
+    if os.path.exists(file_path):
+        return False, f"'{file_name}' already exists"
+    try:
+        # Preloads can retain a value from before a script type publication.
+        # Materialize its document with the current authoritative schema.
+        initial = asset_type() if value is None else asset_type.from_document(value.serialize_document())
+        initial.save_to(file_path, database=asset_database)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return False, str(exc)
     return True, ""
 
 

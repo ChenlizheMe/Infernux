@@ -361,9 +361,12 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     build_settings = json.loads(
         (Path(result) / "ProjectSettings" / "BuildSettings.json").read_text(encoding="utf-8")
     )
-    assert build_settings["scenes"] == [
-        str(Path(result) / "Assets" / "Scenes" / "Start.scene")
-    ]
+    scene_path = Path(result) / "Assets" / "Scenes" / "Start.scene"
+    scene_meta = json.loads(
+        scene_path.with_suffix(".scene.meta").read_text(encoding="utf-8")
+    )
+    scene_guid = scene_meta["metadata"]["guid"]["value"]
+    assert build_settings["scene_guids"] == [scene_guid]
     editor_settings = json.loads(
         (Path(result) / "ProjectSettings" / "EditorSettings.json").read_text(encoding="utf-8")
     )
@@ -392,11 +395,27 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
         "clearFlags",
         "cullingMask",
         "depth",
+        "dithering",
         "farClip",
         "fov",
+        "usePhysicalProperties",
+        "iso",
+        "shutterSpeed",
+        "aperture",
+        "focusDistance",
+        "focalLength",
+        "bladeCount",
+        "curvature",
+        "barrelClipping",
+        "anamorphism",
+        "sensorSize",
+        "lensShift",
+        "gateFit",
         "nearClip",
         "orthoSize",
         "projectionMode",
+        "stopNaNs",
+        "targetTextureGuid",
     }
     light_data = scene["objects"][1]["components"][0]["data"]
     assert set(light_data) == {
@@ -411,15 +430,12 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
         "outerSpotAngle",
         "range",
         "renderMode",
-        "shadowBias",
-        "shadowNormalBias",
         "shadowSoftness",
         "shadowStrength",
         "shadows",
         "spotAngle",
     }
-    assert light_data["shadowBias"] == 1.0
-    assert light_data["shadowNormalBias"] == 1.0
+    assert light_data["shadowSoftness"] == 1.5
     assert (Path(result) / ".vscode").is_dir()
     assert not list(tmp_path.glob(".infernux-create-*"))
 

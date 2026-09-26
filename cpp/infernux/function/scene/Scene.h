@@ -27,7 +27,7 @@ class Scene
 {
   public:
     Scene() = default;
-    explicit Scene(const std::string &name) : m_name(name)
+    explicit Scene(const std::string &name, bool preview = false) : m_name(name), m_isPreview(preview)
     {
     }
     ~Scene();
@@ -49,6 +49,12 @@ class Scene
     void SetName(const std::string &name)
     {
         m_name = name;
+    }
+
+    /// Isolated authoring content, never a member of the gameplay world.
+    [[nodiscard]] bool IsPreview() const noexcept
+    {
+        return m_isPreview;
     }
 
     /// Per-scene environment (skybox material + ambient) settings.
@@ -277,7 +283,12 @@ class Scene
 
     void SetPlaying(bool playing)
     {
+        const bool wasPlaying = m_isPlaying;
         m_isPlaying = playing;
+        if (!wasPlaying && playing && m_hasStarted) {
+            for (auto &root : m_rootObjects)
+                QueueStartObject(root.get());
+        }
     }
 
     /// @brief Monotonically increasing counter bumped whenever the scene
@@ -323,7 +334,9 @@ class Scene
     ///   5. `m_structureVersion` is bumped only after a successful commit.
     ///
     /// @brief Rebuild the scene from an already parsed current-schema document.
-    bool DeserializeDocument(const nlohmann::json &document);
+    bool DeserializeDocument(const nlohmann::json &document,
+                             std::unordered_map<uint64_t, uint64_t> *objectIdRemap = nullptr,
+                             std::unordered_map<uint64_t, uint64_t> *componentIdRemap = nullptr);
 
     /// Commit a validated candidate while retaining the current native world.
     /// The returned token must be finalized after cross-language publish or
@@ -427,6 +440,7 @@ class Scene
     static uint64_t GenerateWorldId();
 
     std::string m_name = "Untitled Scene";
+    bool m_isPreview = false;
     uint64_t m_worldId = GenerateWorldId();
 
     // Root-level game objects (objects without parents)
@@ -484,6 +498,8 @@ class SceneCommitToken final
     SceneCommitToken &operator=(const SceneCommitToken &) = delete;
 
     [[nodiscard]] bool IsActive() const noexcept;
+    [[nodiscard]] const std::unordered_map<uint64_t, uint64_t> &GetObjectIdRemap() const noexcept;
+    [[nodiscard]] const std::unordered_map<uint64_t, uint64_t> &GetComponentIdRemap() const noexcept;
     bool Rollback();
     void Finalize();
 

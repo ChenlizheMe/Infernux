@@ -109,8 +109,16 @@ class ClosablePanel(InxGUIRenderable):
         document_id: str,
         *,
         replace_existing: bool = False,
+        preserve_previous: bool = False,
     ) -> None:
-        """Bind this view to one stable document identity."""
+        """Bind this view to one stable document identity.
+
+        ``preserve_previous`` is the multi-document switch path: the view is
+        detached from its previous document without closing that document.
+        Loaded scenes remain live editor documents even when another scene is
+        active, so changing the Scene/Game/UI view target must never retire
+        their identities.
+        """
         from Infernux.engine.interaction import DocumentRegistry
 
         identifier = str(document_id or "").strip()
@@ -120,7 +128,13 @@ class ClosablePanel(InxGUIRenderable):
         registry.require(identifier)
         previous_id = self._document_id
         if previous_id and previous_id != identifier:
-            if replace_existing:
+            if replace_existing and preserve_previous:
+                raise ValueError(
+                    "replace_existing and preserve_previous are mutually exclusive"
+                )
+            if preserve_previous:
+                registry.detach_view(self._window_id)
+            elif replace_existing:
                 registry.replace_view_document(identifier, self._window_id)
             else:
                 registry.close_view(self._window_id)

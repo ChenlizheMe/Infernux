@@ -87,7 +87,8 @@ nav:
       - Input: en/api/Input.md
       - KeyCode: en/api/KeyCode.md
     - Infernux.jit:
-      - njit: en/api/njit.md
+      - compile: en/api/compile.md
+      - statistics: en/api/statistics.md
       - warmup: en/api/warmup.md
     - Infernux.math:
       - quaternion: en/api/quaternion.md
@@ -203,7 +204,8 @@ nav:
       - Input: zh/api/Input.md
       - KeyCode: zh/api/KeyCode.md
     - Infernux.jit:
-      - njit: zh/api/njit.md
+      - compile: zh/api/compile.md
+      - statistics: zh/api/statistics.md
       - warmup: zh/api/warmup.md
     - Infernux.math:
       - quaternion: zh/api/quaternion.md

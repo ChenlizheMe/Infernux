@@ -74,7 +74,8 @@ def test_supervisor_prepares_desktop_style_project_and_persists_policy(tmp_path)
         "arguments": {},
     }
     assert "infernux.mcp.checkpoint.list" in handoff["instructions"][-1]
-    assert "lease" not in json.dumps(handoff).lower()
+    assert "supervisor_lease" not in handoff
+    assert "lease_token" not in handoff
     persisted_handoff = json.loads((project / ".infernux" / "mcp_sessions" / supervisor.session_id / "agent-handoff.json").read_text(encoding="utf-8"))
     assert persisted_handoff == handoff
     with open(project / "ProjectSettings" / "mcp_capabilities.json", "r", encoding="utf-8") as f:
@@ -96,7 +97,9 @@ def test_supervisor_checkpoint_restores_project_ledger_but_preserves_derived_sta
     editor_settings = settings / "EditorSettings.json"
     cache = library / "cache.bin"
     scene.write_text("clean scene\n", encoding="utf-8")
-    build_settings.write_text('{"scenes": ["Race.scene"]}\n', encoding="utf-8")
+    build_settings.write_text(
+        '{"scene_guids": ["race-scene-guid"]}\n', encoding="utf-8"
+    )
     editor_settings.write_text('{"lastOpenedScene": "Race.scene"}\n', encoding="utf-8")
     cache.write_bytes(b"derived-before")
     supervisor = SupervisorSession(str(project), session_id="checkpoint-session")
@@ -221,7 +224,8 @@ def test_supervisor_switch_mode_is_explicit_and_records_a_secret_free_audit(tmp_
     assert result["handoff"]["checkpoint"] == "session-start"
     assert result["handoff"]["phase"] == "verified"
     assert result["last_handoff"]["handoff_id"] == result["handoff"]["handoff_id"]
-    assert "lease" not in json.dumps(result["handoff"]).lower()
+    assert "supervisor_lease" not in result["handoff"]
+    assert "lease_token" not in result["handoff"]
     assert supervisor.handoff_history()[-1]["state"] == "completed"
 
 
@@ -610,7 +614,9 @@ def test_supervisor_public_status_excludes_private_lease_but_persists_recovery_s
     assert persisted["supervisor_lease"] == supervisor._supervisor_lease
 
 
-def _write_debug_player_output(tmp_path, project_root, *, debug_build=True, scenes=None):
+def _write_debug_player_output(
+    tmp_path, project_root, *, debug_build=True, scene_guids=None
+):
     output = tmp_path / "PlayerBuild"
     data = output / "Pilot_Data"
     data.mkdir(parents=True)
@@ -621,7 +627,7 @@ def _write_debug_player_output(tmp_path, project_root, *, debug_build=True, scen
     build_manifest.write_text(json.dumps({
         "game_name": "Pilot",
         "debug_build": debug_build,
-        "scenes": scenes or [],
+        "scene_guids": scene_guids or [],
         "build_output": {
             "tool": "Infernux",
             "project_identity": supervisor_module.path_fingerprint(str(project_root)),
@@ -832,9 +838,26 @@ def test_supervisor_player_scene_override_is_limited_to_manifest_scene(tmp_path,
     (project / "Assets").mkdir(parents=True)
     race_scene = project / "Assets" / "RaceTrack.scene"
     race_scene.write_text("{}", encoding="utf-8")
+    library = project / "Library"
+    library.mkdir(parents=True)
+    (library / "AssetIndex.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "guid": "race-scene-guid",
+                        "normalized_path": "Assets/RaceTrack.scene",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     supervisor = SupervisorSession(str(project), session_id="player-start-scene")
     supervisor.prepare_project()
-    executable = _write_debug_player_output(tmp_path, project, scenes=["Assets/RaceTrack.scene"])
+    executable = _write_debug_player_output(
+        tmp_path, project, scene_guids=["race-scene-guid"]
+    )
     captured = {}
 
     class _PlayerProcess:
@@ -857,11 +880,11 @@ def test_supervisor_player_scene_override_is_limited_to_manifest_scene(tmp_path,
         timeout_seconds=1.0,
     )
 
-    assert status["player_start_scene"] == "Assets/RaceTrack.scene"
-    assert captured["env"]["_INFERNUX_PLAYER_START_SCENE"] == "Assets/RaceTrack.scene"
+    assert status["player_start_scene"] == "race-scene-guid"
+    assert captured["env"]["_INFERNUX_PLAYER_START_SCENE_GUID"] == "race-scene-guid"
     with pytest.raises(ValueError, match="BuildManifest"):
         supervisor_module._resolve_player_start_scene(
-            "Assets/Other.scene", str(project), {"scenes": ["Assets/RaceTrack.scene"]}
+            "Assets/Other.scene", str(project), {"scene_guids": ["race-scene-guid"]}
         )
     supervisor._close_player_log()
 

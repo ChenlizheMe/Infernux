@@ -22,7 +22,7 @@
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "INFERNUX_BUILD_PLAYER_HOST": "ON",
         "INFERNUX_BUILD_TESTS": "ON",
-        "INFERNUX_RUNTIME_STATIC": "OFF"
+        "INFERNUX_RUNTIME_STATIC": "ON"
       }
     },
     {
@@ -44,7 +44,7 @@
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "INFERNUX_BUILD_PLAYER_HOST": "OFF",
         "INFERNUX_BUILD_TESTS": "ON",
-        "INFERNUX_RUNTIME_STATIC": "OFF"
+        "INFERNUX_RUNTIME_STATIC": "ON"
       }
     }
   ],

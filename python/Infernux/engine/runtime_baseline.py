@@ -40,7 +40,9 @@ RUNTIME_BASELINE_LIFECYCLE_CALLBACKS = (
     "start",
     "on_enable",
     "fixed_update",
+    "physics_pre_step",
     "physics_callback",
+    "physics_post_step",
     "update",
     "late_update",
     "on_disable",
@@ -846,7 +848,7 @@ class RuntimeBaselineRunner:
         metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         frame_count = max(1, int(frames))
-        start_frame = int(native_engine.begin_renderer_performance_window())
+        start_frame = int(native_engine.begin_renderer_performance_window(frame_count))
         wait_frames(frame_count)
         window = dict(native_engine.get_renderer_performance_window())
         self.recorder.record_performance_window(
@@ -969,6 +971,9 @@ def runtime_baseline_diagnostics(
     scheduler_profile = _safe_mapping_call(scheduler, "profiler_snapshot")
     journal = getattr(scheduler, "change_journal", None)
     journal_profile = _safe_mapping_call(journal, "profiler_snapshot")
+    gizmo_profile = _safe_mapping_call(
+        engine, "get_gizmo_collection_observation"
+    )
     scene_profile: dict[str, Any] = {}
     try:
         from Infernux.lib import SceneManager
@@ -1015,6 +1020,7 @@ def runtime_baseline_diagnostics(
         "live_sources": {
             "scheduler": scheduler_profile,
             "change_journal": journal_profile,
+            "gizmo_collection": _stable_value(gizmo_profile),
             "scene_frame": _stable_value(scene_profile),
             "renderer_frame": _stable_value(native_frame),
             "counter_slots": live_counter_slots,

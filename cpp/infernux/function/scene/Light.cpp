@@ -4,7 +4,9 @@
 #include "GameObject.h"
 #include "SceneManager.h"
 #include "Transform.h"
+#include <cmath>
 #include <core/log/InxLog.h>
+#include <core/types/ColorSpace.h>
 #include <limits>
 #include <nlohmann/json.hpp>
 
@@ -13,8 +15,102 @@ using json = nlohmann::json;
 namespace infernux
 {
 
-// Register Light component with factory
-INFERNUX_REGISTER_VALIDATED_COMPONENT("Light", Light)
+namespace
+{
+glm::vec3 ApproximateBlackbodySrgb(float kelvin)
+{
+    const float t = glm::clamp(kelvin, 1000.0f, 20000.0f) / 100.0f;
+    const float red =
+        t <= 66.0f ? 1.0f : glm::clamp(329.698727446f * std::pow(t - 60.0f, -0.1332047592f) / 255.0f, 0.0f, 1.0f);
+    const float green = t <= 66.0f
+                            ? glm::clamp((99.4708025861f * std::log(t) - 161.1195681661f) / 255.0f, 0.0f, 1.0f)
+                            : glm::clamp(288.1221695283f * std::pow(t - 60.0f, -0.0755148492f) / 255.0f, 0.0f, 1.0f);
+    const float blue = t >= 66.0f ? 1.0f
+                       : t <= 19.0f
+                           ? 0.0f
+                           : glm::clamp((138.5177312231f * std::log(t - 10.0f) - 305.0447927307f) / 255.0f, 0.0f, 1.0f);
+    return {red, green, blue};
+}
+
+glm::vec3 NormalizedBlackbodyLinear(float kelvin)
+{
+    if (kelvin == 6500.0f)
+        return glm::vec3(1.0f);
+    static const glm::vec3 reference = inx::color::SrgbToLinear(ApproximateBlackbodySrgb(6500.0f));
+    return inx::color::SrgbToLinear(ApproximateBlackbodySrgb(kelvin)) / reference;
+}
+
+SemanticTypeDescriptor DescribeLight()
+{
+    SemanticTypeDescriptor type;
+    type.typeGuid = "native:infernux.Light";
+    type.readableId = "infernux.component.light";
+    type.owner = "engine:native";
+    type.origin = "native";
+    type.displayName = "Light";
+    type.runtimeProfiles = {"editor", "player", "headless"};
+    const auto add = [&](const char *name, const char *stored, const char *kind, json initial) -> json & {
+        type.fields.push_back({std::string("Light.") + name,
+                               std::string("FieldType.") + kind,
+                               false,
+                               {{"field_id", name},
+                                {"serialized_name", stored},
+                                {"serialized", true},
+                                {"hidden", false},
+                                {"nullable", false},
+                                {"storage_kind", "native_property"},
+                                {"display_name_key", std::string("light.") + name},
+                                {"tooltip", std::string("light.tooltip.") + name},
+                                {"default", std::move(initial)}}});
+        return type.fields.back().attributes;
+    };
+    const auto enumeration = [&](const char *name, const char *stored, const char *enumName,
+                                 std::initializer_list<const char *> names, std::initializer_list<const char *> labels,
+                                 const char *initial) {
+        json members = json::array();
+        size_t value = 0;
+        for (const char *member : names)
+            members.push_back({{"name", member}, {"value", value++}});
+        auto &attributes = add(name, stored, "ENUM", {{"$type", "enum"}, {"enum_type", enumName}, {"name", initial}});
+        attributes["enum"] = {{"type_id", std::string("native:infernux.") + enumName},
+                              {"members", std::move(members)},
+                              {"labels", labels}};
+    };
+
+    enumeration("light_type", "lightType", "LightType", {"Directional", "Point", "Spot", "Area"},
+                {"light.type.directional", "light.type.point", "light.type.spot", "light.type.area"}, "Directional");
+    enumeration("color_mode", "colorMode", "LightColorMode", {"Color", "FilterAndTemperature"},
+                {"light.color_mode.color", "light.color_mode.filter_and_temperature"}, "Color");
+    type.fields.back().attributes["header"] = "light.section.appearance";
+    type.fields.back().attributes["serialized"] = false;
+    type.fields.back().attributes["setter_owns_document_shape"] = true;
+    add("color", "color", "VEC3", {1.0, 1.0, 1.0});
+    add("use_color_temperature", "useColorTemperature", "BOOL", false)["hidden"] = true;
+    add("color_temperature", "colorTemperature", "FLOAT", 6500.0)["range"] = {1000.0, 20000.0};
+    add("intensity", "intensity", "FLOAT", 1.0)["range"] = {0.0, 10.0};
+    add("range", "range", "FLOAT", 10.0)["range"] = {0.1, 100.0};
+    add("spot_angle", "spotAngle", "FLOAT", 30.0)["range"] = {1.0, 179.0};
+    add("outer_spot_angle", "outerSpotAngle", "FLOAT", 45.0)["range"] = {1.0, 179.0};
+    add("area_size", "areaSize", "VEC2", {1.6, 1.0});
+    add("area_two_sided", "areaTwoSided", "BOOL", false);
+    enumeration("shadows", "shadows", "LightShadows", {"NoShadows", "Hard", "Soft"},
+                {"light.shadows.none", "light.shadows.hard", "light.shadows.soft"}, "Hard");
+    type.fields.back().attributes["header"] = "light.section.shadows";
+    add("shadow_strength", "shadowStrength", "FLOAT", 1.0)["range"] = {0.0, 1.0};
+    add("shadow_softness", "shadowSoftness", "FLOAT", 1.5)["range"] = {0.25, 8.0};
+    enumeration("render_mode", "renderMode", "LightRenderMode", {"Auto", "ForcePixel", "ForceVertex"},
+                {"light.render.auto", "light.render.force_pixel", "light.render.force_vertex"}, "Auto");
+    type.fields.back().attributes["header"] = "light.section.rendering";
+    add("culling_mask", "cullingMask", "INT", 0xffffffffu);
+    add("influence_domains", "influenceDomains", "INT", AllLightInfluenceDomains);
+    add("baked", "baked", "BOOL", false)["header"] = "light.section.baking";
+    return type;
+}
+
+const bool registeredLight = ComponentFactory::Register(
+    "Light", [] { return std::make_unique<Light>(); }, Light::ValidateSerializedDocument, Light::GetTypeConstraints(),
+    DescribeLight);
+} // namespace
 
 Light::~Light()
 {
@@ -37,6 +133,22 @@ void Light::OnDisable()
     SceneManager::Instance().UnregisterLight(this);
 }
 
+glm::vec3 Light::GetLinearColor() const
+{
+    return m_effectiveLinearColor;
+}
+
+glm::vec3 Light::GetEffectiveColor() const
+{
+    return inx::color::LinearToSrgb(GetLinearColor());
+}
+
+void Light::UpdateEffectiveColorCache()
+{
+    const glm::vec3 filter = inx::color::SrgbToLinear(m_color);
+    m_effectiveLinearColor = m_useColorTemperature ? filter * NormalizedBlackbodyLinear(m_colorTemperature) : filter;
+}
+
 nlohmann::json Light::SerializeDocument() const
 {
     json j = Component::SerializeDocument();
@@ -46,6 +158,8 @@ nlohmann::json Light::SerializeDocument() const
 
     // Color & intensity
     j["color"] = {m_color.r, m_color.g, m_color.b};
+    j["useColorTemperature"] = m_useColorTemperature;
+    j["colorTemperature"] = m_colorTemperature;
     j["intensity"] = m_intensity;
 
     // Range
@@ -77,11 +191,13 @@ void Light::ValidateSerializedDocument(const nlohmann::json &j)
 {
     using namespace component_document_validation;
     ValidateComponentDocument(j, "Light",
-                              {"lightType", "color", "intensity", "range", "spotAngle", "outerSpotAngle", "areaSize",
-                               "areaTwoSided", "shadows", "shadowStrength", "shadowSoftness", "renderMode",
-                               "cullingMask", "influenceDomains", "baked"});
+                              {"lightType", "color", "useColorTemperature", "colorTemperature", "intensity", "range",
+                               "spotAngle", "outerSpotAngle", "areaSize", "areaTwoSided", "shadows", "shadowStrength",
+                               "shadowSoftness", "renderMode", "cullingMask", "influenceDomains", "baked"});
     const int lightType = RequireInteger(j, "lightType", "Light");
     RequireFiniteVector(j, "color", 3, "Light");
+    RequireBoolean(j, "useColorTemperature", "Light");
+    const float colorTemperature = RequireFiniteFloat(j, "colorTemperature", "Light");
     const float intensity = RequireFiniteFloat(j, "intensity", "Light");
     const float range = RequireFiniteFloat(j, "range", "Light");
     const float spotAngle = RequireFiniteFloat(j, "spotAngle", "Light");
@@ -98,6 +214,8 @@ void Light::ValidateSerializedDocument(const nlohmann::json &j)
 
     if (lightType < static_cast<int>(LightType::Directional) || lightType > static_cast<int>(LightType::Area))
         throw std::invalid_argument("Light.lightType is unsupported");
+    if (colorTemperature < 1000.0f || colorTemperature > 20000.0f)
+        throw std::invalid_argument("Light.colorTemperature must be between 1000 and 20000 K");
     if (intensity < 0.0f || range <= 0.0f)
         throw std::invalid_argument("Light intensity and range are invalid");
     if (spotAngle <= 0.0f || outerSpotAngle < spotAngle || outerSpotAngle >= 180.0f)
@@ -126,6 +244,9 @@ bool Light::DeserializeDocument(const nlohmann::json &j)
 
         m_lightType = static_cast<LightType>(j["lightType"].get<int>());
         m_color = glm::vec3(j["color"][0].get<float>(), j["color"][1].get<float>(), j["color"][2].get<float>());
+        m_useColorTemperature = j["useColorTemperature"].get<bool>();
+        m_colorTemperature = j["colorTemperature"].get<float>();
+        UpdateEffectiveColorCache();
         m_intensity = j["intensity"].get<float>();
         m_range = j["range"].get<float>();
         m_spotAngle = j["spotAngle"].get<float>();
@@ -154,6 +275,9 @@ std::unique_ptr<Component> Light::Clone() const
     clone->m_executionOrder = m_executionOrder;
     clone->m_lightType = m_lightType;
     clone->m_color = m_color;
+    clone->m_useColorTemperature = m_useColorTemperature;
+    clone->m_colorTemperature = m_colorTemperature;
+    clone->m_effectiveLinearColor = m_effectiveLinearColor;
     clone->m_intensity = m_intensity;
     clone->m_range = m_range;
     clone->m_spotAngle = m_spotAngle;

@@ -11,11 +11,63 @@
 #endif
 
 #include <cstring>
+#include <stdexcept>
+#include <type_traits>
+#include <utility>
 
 namespace infernux
 {
 namespace
 {
+template <typename T, typename = void> struct HasGlPlainUniforms : std::false_type
+{
+};
+
+template <typename T>
+struct HasGlPlainUniforms<T, std::void_t<decltype(std::declval<const T &>().gl_plain_uniforms)>> : std::true_type
+{
+};
+
+template <typename T, typename = void> struct HasTensors : std::false_type
+{
+};
+
+template <typename T> struct HasTensors<T, std::void_t<decltype(std::declval<const T &>().tensors)>> : std::true_type
+{
+};
+
+template <typename T, typename = void> struct HasShaderRecordBuffers : std::false_type
+{
+};
+
+template <typename T>
+struct HasShaderRecordBuffers<T, std::void_t<decltype(std::declval<const T &>().shader_record_buffers)>>
+    : std::true_type
+{
+};
+
+ReflectedImageDimension ImageDimension(spv::Dim dimension)
+{
+    switch (dimension) {
+    case spv::Dim1D:
+        return ReflectedImageDimension::D1;
+    case spv::Dim2D:
+        return ReflectedImageDimension::D2;
+    case spv::Dim3D:
+        return ReflectedImageDimension::D3;
+    case spv::DimCube:
+        return ReflectedImageDimension::Cube;
+    case spv::DimRect:
+        return ReflectedImageDimension::Rect;
+    case spv::DimBuffer:
+        return ReflectedImageDimension::Buffer;
+    case spv::DimSubpassData:
+        return ReflectedImageDimension::SubpassData;
+    default:
+        return ReflectedImageDimension::Unknown;
+    }
+}
+
 VkFormat StageIoFormat(const spirv_cross::SPIRType &type)
 {
     if (type.width != 32)
@@ -93,9 +145,33 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
 
     try {
         spirv_cross::Compiler compiler(spirvCode);
+        const auto &capabilities = compiler.get_declared_capabilities();
+        m_sampleRateShading =
+            std::find(capabilities.begin(), capabilities.end(), spv::CapabilitySampleRateShading) != capabilities.end();
 
         // Get all shader resources
         spirv_cross::ShaderResources resources = compiler.get_shader_resources();
+
+        // The general renderer has specialized descriptor paths for these
+        // classes; UI has only one combined 2D sampler. Preserve every other
+        // SPIR-V resource class so UI validation cannot silently miss one.
+        const auto recordUnsupported = [this](const auto &entries, const char *kind) {
+            for (const auto &entry : entries)
+                m_unsupportedDescriptorResources.emplace_back(std::string(kind) + " '" + entry.name + "'");
+        };
+        recordUnsupported(resources.subpass_inputs, "input attachment");
+        recordUnsupported(resources.atomic_counters, "atomic counter");
+        recordUnsupported(resources.acceleration_structures, "acceleration structure");
+        const auto recordExtendedUnsupported = [&recordUnsupported](const auto &resourceTable) {
+            using ResourceTable = std::decay_t<decltype(resourceTable)>;
+            if constexpr (HasGlPlainUniforms<ResourceTable>::value)
+                recordUnsupported(resourceTable.gl_plain_uniforms, "plain uniform");
+            if constexpr (HasTensors<ResourceTable>::value)
+                recordUnsupported(resourceTable.tensors, "tensor");
+            if constexpr (HasShaderRecordBuffers<ResourceTable>::value)
+                recordUnsupported(resourceTable.shader_record_buffers, "shader record buffer");
+        };
+        recordExtendedUnsupported(resources);
 
         // Process uniform buffers
         for (const auto &ubo : resources.uniform_buffers) {
@@ -174,6 +250,10 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
 
             const auto &type = compiler.get_type(image.type_id);
             info.arraySize = type.array.empty() ? 1 : type.array[0];
+            info.multisampled = type.image.ms;
+            info.dimension = ImageDimension(type.image.dim);
+            info.arrayed = type.image.arrayed;
+            info.hasArrayDimension = !type.array.empty();
 
             m_sampledImages.push_back(info);
         }
@@ -202,15 +282,22 @@ bool ShaderReflection::Reflect(const std::vector<uint32_t> &spirvCode, VkShaderS
 
             const auto &type = compiler.get_type(image.type_id);
             info.arraySize = type.array.empty() ? 1 : type.array[0];
+            info.multisampled = type.image.ms;
+            info.dimension = ImageDimension(type.image.dim);
+            info.arrayed = type.image.arrayed;
+            info.hasArrayDimension = !type.array.empty();
 
             m_sampledImages.push_back(info);
         }
 
         for (const auto &buffer : resources.storage_buffers) {
             StorageBufferInfo info;
-            info.name = buffer.name;
             info.binding = compiler.get_decoration(buffer.id, spv::DecorationBinding);
             info.set = compiler.get_decoration(buffer.id, spv::DecorationDescriptorSet);
+            info.name = compiler.get_name(buffer.base_type_id);
+            if (info.name.empty())
+                throw std::runtime_error("Storage buffer interface block at set " + std::to_string(info.set) +
+                                         ", binding " + std::to_string(info.binding) + " has no declared name");
             info.stageFlags = stage;
             const auto &type = compiler.get_type(buffer.type_id);
             info.arraySize = type.array.empty() ? 1 : type.array[0];
@@ -384,10 +471,12 @@ std::vector<uint32_t> ShaderReflection::GetUsedDescriptorSets() const
 
 void ShaderReflection::Clear()
 {
+    m_sampleRateShading = false;
     m_uniformBuffers.clear();
     m_sampledImages.clear();
     m_storageBuffers.clear();
     m_storageImages.clear();
+    m_unsupportedDescriptorResources.clear();
     m_pushConstants.clear();
     m_inputs.clear();
     m_outputs.clear();

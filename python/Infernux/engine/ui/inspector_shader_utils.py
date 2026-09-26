@@ -432,10 +432,15 @@ def make_shader_reference(value, ext: str) -> dict[str, str]:
     reference. GUID and path are enriched whenever imported metadata is
     available; built-in ID-only references remain valid.
     """
-    existing = value if isinstance(value, dict) else {}
+    structured = isinstance(value, dict)
+    existing = value if structured else {}
     guid = existing.get("guid", "") if isinstance(existing.get("guid", ""), str) else ""
     shader_id = shader_ref_id(value)
-    path_hint = existing.get("path_hint", "") if isinstance(existing.get("path_hint", ""), str) else ""
+    if not shader_id and structured and isinstance(existing.get("builtin", ""), str):
+        shader_id = existing.get("builtin", "").strip()
+    # A structured value already crossed the editor assignment boundary. Its
+    # old path_hint is ignored and current display data is resolved by GUID.
+    path_hint = ""
 
     if isinstance(value, str):
         candidate = value.strip()
@@ -458,7 +463,7 @@ def make_shader_reference(value, ext: str) -> dict[str, str]:
     resolved_path = ""
     if guid and database:
         resolved_path = database.get_path_from_guid(guid) or ""
-    if not resolved_path and path_hint and os.path.isfile(path_hint):
+    if not structured and not resolved_path and path_hint and os.path.isfile(path_hint):
         resolved_path = path_hint
     if not resolved_path:
         resolved_path = get_shader_file_path(shader_id, ext) or ""

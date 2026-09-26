@@ -1,7 +1,7 @@
 # Source ownership for the native runtime and Python bindings.
 
 file(GLOB_RECURSE INFERNUX_RUNTIME_SOURCES CONFIGURE_DEPENDS cpp/*.cpp cpp/*.h)
-list(APPEND INFERNUX_RUNTIME_SOURCES "${CMAKE_SOURCE_DIR}/external/stb/stb_vorbis.c")
+list(APPEND INFERNUX_RUNTIME_SOURCES "${CMAKE_SOURCE_DIR}/external/MikkTSpace/mikktspace.c")
 
 # Runtime implementation and Python bindings are separate binary layers.
 list(FILTER INFERNUX_RUNTIME_SOURCES EXCLUDE REGEX "tools/launcher/")
@@ -22,6 +22,28 @@ file(GLOB_RECURSE INFERNUX_FOUNDATION_SOURCES CONFIGURE_DEPENDS
 )
 list(APPEND INFERNUX_FOUNDATION_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxTexture/StbImage.cpp"
+)
+
+# Decode and stream audio without pulling scene/component ownership into a DLL.
+set(INFERNUX_AUDIO_RUNTIME_SOURCES
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/audio/AudioDecoders.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/audio/AudioStreamDecoder.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/audio/AudioStreamBuffer.cpp"
+    "${CMAKE_SOURCE_DIR}/external/stb/stb_vorbis.c"
+)
+
+# Asset identity, metadata, and dependency publication form one native ABI.
+# Keep this layer independent of scene/renderer ownership so the composition
+# archive does not repeatedly compile and link the asset catalog core.
+set(INFERNUX_ASSET_RUNTIME_SOURCES
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetDependencyGraph.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetDependencyGraph.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetRuntimeApi.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetDatabase/AssetIndex.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/AssetDatabase/AssetIndex.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxResource/InxResourceMeta.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxResource/InxResourceMeta.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/resources/InxResource/InxResourceMeta.inl"
 )
 
 set(INFERNUX_PARTICLE_RUNTIME_SOURCES
@@ -54,6 +76,8 @@ file(GLOB_RECURSE INFERNUX_RENDER_CORE_SOURCES CONFIGURE_DEPENDS
 list(APPEND INFERNUX_RENDER_CORE_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/FullscreenRenderer.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/FullscreenRenderer.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/SceneDepthResolver.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/SceneDepthResolver.h"
 )
 
 set(INFERNUX_RENDERER_RUNTIME_SOURCES
@@ -67,9 +91,17 @@ file(GLOB_RECURSE INFERNUX_VULKAN_BACKEND_SOURCES CONFIGURE_DEPENDS
     cpp/infernux/function/renderer/vk/*.cpp
     cpp/infernux/function/renderer/vk/*.h
 )
+list(APPEND INFERNUX_VULKAN_BACKEND_SOURCES
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/CaptureService.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/CaptureService.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/TransientResourcePool.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/TransientResourcePool.h"
+)
 
 list(REMOVE_ITEM INFERNUX_RUNTIME_SOURCES
     ${INFERNUX_FOUNDATION_SOURCES}
+    ${INFERNUX_AUDIO_RUNTIME_SOURCES}
+    ${INFERNUX_ASSET_RUNTIME_SOURCES}
     ${INFERNUX_PARTICLE_RUNTIME_SOURCES}
     ${INFERNUX_SHADER_COMPILER_SOURCES}
     ${INFERNUX_RENDER_CORE_SOURCES}

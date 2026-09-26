@@ -312,22 +312,29 @@ void TransformECSStore::SyncSceneWorldMatrices(Scene *scene)
 
 bool TransformECSStore::IsFrameCacheActiveFor(Handle h) const
 {
-    if (!m_frameCacheActive || !IsValid(h)) {
-        return false;
-    }
-
-    return IsSlotInScene(h.index, m_fcScene);
+    return m_frameCacheActive && IsValid(h);
 }
 
-bool TransformECSStore::IsSlotInScene(size_t index, const Scene *scene) const
+void TransformECSStore::SyncAllWorldMatrices()
 {
-    if (!scene || index >= m_owners.size() || !m_alive[index]) {
-        return false;
+    if (m_frameCacheActive || !m_anyWorldMatrixDirty) {
+        return;
     }
 
-    Transform *owner = m_owners[index];
-    GameObject *go = owner ? owner->GetGameObject() : nullptr;
-    return go && go->GetScene() == scene;
+    for (uint32_t index : m_worldMatrixDirtyIndices) {
+        if (index >= m_alive.size() || !m_alive[index] || !m_worldMatrixDirty[index]) {
+            if (index < m_worldMatrixDirtyListed.size())
+                m_worldMatrixDirtyListed[index] = 0;
+            continue;
+        }
+
+        Transform *owner = m_owners[index];
+        if (owner)
+            (void)owner->GetWorldMatrix();
+        m_worldMatrixDirtyListed[index] = 0;
+    }
+    m_worldMatrixDirtyIndices.clear();
+    m_anyWorldMatrixDirty = false;
 }
 
 void TransformECSStore::SyncObjectWorldMatrices(GameObject *obj)
@@ -575,14 +582,11 @@ void TransformECSStore::ScatterWorldRotations(Transform *const *transforms, cons
 
 // ── Frame Cache ──────────────────────────────────────────────────────
 
-void TransformECSStore::BeginFrameCache(Scene *scene)
+void TransformECSStore::BeginFrameCache()
 {
-    if (!scene) {
-        return;
-    }
-
-    // Ensure world matrices are up-to-date before snapshotting.
-    SyncSceneWorldMatrices(scene);
+    // Snapshot one coherent World. Scene activation is not a Transform
+    // execution boundary, so every alive slot uses the same cache semantics.
+    SyncAllWorldMatrices();
 
     const size_t cap = m_generations.size();
 
@@ -604,7 +608,6 @@ void TransformECSStore::BeginFrameCache(Scene *scene)
     m_fcPublishedPhysicsPose = false;
 
     m_frameCacheActive = true;
-    m_fcScene = scene;
 }
 
 bool TransformECSStore::EndFrameCache()
@@ -619,7 +622,7 @@ bool TransformECSStore::EndFrameCache()
     for (uint32_t i : m_fcDirtyIndices) {
         const uint8_t d = m_fcDirty[i];
         m_fcDirty[i] = 0;
-        if (d == 0 || !IsSlotInScene(i, m_fcScene)) {
+        if (d == 0 || i >= m_alive.size() || !m_alive[i]) {
             continue;
         }
 
@@ -690,11 +693,10 @@ bool TransformECSStore::EndFrameCache()
 
     // Pre-sync world matrices now so CollectRenderables hits clean
     // caches (avoids 14,400 lazy recomputes with poor cache locality).
-    if (m_fcScene && requiresFullSync) {
+    if (requiresFullSync) {
         m_anyWorldMatrixDirty = true; // dirty from the loop above
-        SyncSceneWorldMatrices(m_fcScene);
+        SyncAllWorldMatrices();
     }
-    m_fcScene = nullptr;
     const bool publishedPhysicsPose = m_fcPublishedPhysicsPose;
     m_fcPublishedPhysicsPose = false;
     return publishedPhysicsPose;

@@ -47,6 +47,10 @@ const char *ResourceTypeName(ResourceType type)
         return "RenderEffect";
     case ResourceType::ParticleGraph:
         return "ParticleGraph";
+    case ResourceType::DataAsset:
+        return "DataAsset";
+    case ResourceType::RenderTexture:
+        return "RenderTexture";
     }
     return "Unknown";
 }
@@ -68,6 +72,8 @@ std::optional<ResourceType> ResourceTypeFromName(const std::string &name)
         {"PhysicMaterial", ResourceType::PhysicMaterial},
         {"RenderEffect", ResourceType::RenderEffect},
         {"ParticleGraph", ResourceType::ParticleGraph},
+        {"DataAsset", ResourceType::DataAsset},
+        {"RenderTexture", ResourceType::RenderTexture},
     };
     const auto found = types.find(name);
     return found == types.end() ? std::nullopt : std::optional<ResourceType>(found->second);
@@ -216,6 +222,12 @@ class ResourcePreflight
             return;
         const std::string &type = record.nativeTypeName;
         const nlohmann::json data = BuildNativeComponentDocument(record);
+        if (type == "Camera") {
+            const std::string guid = data.value("targetTextureGuid", std::string{});
+            if (!guid.empty())
+                RequireAsset(guid, ResourceType::RenderTexture, path + ".targetTextureGuid");
+            return;
+        }
         if (type == "BoxCollider" || type == "SphereCollider" || type == "CapsuleCollider" ||
             type == "CylinderCollider" || type == "MeshCollider") {
             const std::string guid = data.at("physic_material_guid").get<std::string>();
@@ -257,6 +269,11 @@ class ResourcePreflight
 
     void ValidateObject(const nlohmann::json &object, const std::string &path)
     {
+        if (const auto source = object.find("model_source"); source != object.end()) {
+            if (!source->is_object() || !source->contains("guid") || !(*source)["guid"].is_string())
+                throw std::invalid_argument(path + ".model_source.guid must be a string");
+            RequireAsset((*source)["guid"].get<std::string>(), ResourceType::Mesh, path + ".model_source.guid");
+        }
         const auto &components = object.at("components");
         for (size_t index = 0; index < components.size(); ++index)
             ValidateComponent(components[index], path + ".components[" + std::to_string(index) + "]");

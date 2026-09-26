@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -93,6 +95,41 @@ def test_release_catalog_reads_the_wheel_build_number(tmp_path):
         "infernux-1.2.3-4-cp313-cp313-win_amd64.whl",
         "infernux-1.2.3-4-cp313-cp313-manylinux_2_35_x86_64.whl",
     }
+
+
+def test_release_catalog_rejects_republishing_an_existing_hub_version(tmp_path):
+    module = _load(
+        "infernux_build_release_catalog_republish_guard",
+        "scripts/release/build_release_catalog.py",
+    )
+    module.ROOT = tmp_path
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nversion = "1.2.4"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/hub-catalog.json").write_text(
+        json.dumps(
+            {
+                "$schema": "infernux.hub_catalog",
+                "stable": "1.2.3",
+                "releases": [
+                    {
+                        "version": "1.2.4",
+                        "published_at": "2026-09-20T00:00:00Z",
+                    },
+                    {
+                        "version": "1.2.3",
+                        "published_at": "2026-09-01T00:00:00Z",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="already published.*increment project.version"):
+        module.require_new_hub_version()
 
 
 def test_desktop_ci_exposes_one_click_publication():

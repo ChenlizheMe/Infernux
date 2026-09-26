@@ -56,27 +56,18 @@ def _resolve_guid_path(guid: str) -> str:
         return ""
 
 
-def canonical_asset_reference_identity(guid: str, path_hint: str) -> tuple[str, str]:
-    """Canonicalize a reference at the editor authoring boundary.
+def _resolve_path_guid(path: str) -> str:
+    """Resolve an editor-selected raw path once, before it becomes a ref."""
 
-    A picker/drop operation may initially arrive as a path, so the editor is
-    allowed to translate that path to a GUID before persistence. Import,
-    runtime loading, dependency tracking, and later resolution are GUID-only;
-    they must never use ``path_hint`` to recover asset identity.
-    """
-
-    identity = str(guid or "").strip()
-    hint = str(path_hint or "").strip()
+    token = str(path or "").strip()
+    if not token:
+        return ""
     database = _asset_database()
-    if database is None:
-        return identity, hint
-    if identity:
-        return identity, hint
-    if not hint:
-        return "", ""
-
-    candidates = [hint]
-    if not os.path.isabs(hint):
+    resolve_guid = getattr(database, "get_guid_from_path", None)
+    if not callable(resolve_guid):
+        return ""
+    candidates = [token]
+    if not os.path.isabs(token):
         try:
             from Infernux.engine.project_context import get_project_root
 
@@ -84,15 +75,26 @@ def canonical_asset_reference_identity(guid: str, path_hint: str) -> tuple[str, 
         except (ImportError, RuntimeError):
             project_root = ""
         if project_root:
-            candidates.insert(0, os.path.join(project_root, hint))
+            candidates.append(os.path.join(project_root, token))
     for candidate in candidates:
         try:
-            resolved_guid = str(database.get_guid_from_path(candidate) or "").strip()
+            guid = str(resolve_guid(candidate) or "").strip()
         except (KeyError, RuntimeError, TypeError, ValueError):
             continue
-        if resolved_guid:
-            return resolved_guid, hint
-    return "", hint
+        if guid:
+            return guid
+    return ""
+
+
+def canonical_asset_reference_identity(guid: str, path_hint: str) -> tuple[str, str]:
+    """Normalize stored reference fields without deriving identity from a path.
+
+    Picker and drag/drop code owns path-to-GUID conversion before it creates a
+    reference.  This shared persistence/runtime boundary deliberately keeps a
+    path hint as display data only.
+    """
+
+    return str(guid or "").strip(), str(path_hint or "").strip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +107,7 @@ class AssetReferenceType:
     aliases: tuple[str, ...] = ()
     allow_structured_reference: bool = False
     virtual_path_markers: tuple[str, ...] = ()
+    compatible_types: tuple[str, ...] = ()
 
     @property
     def patterns(self) -> tuple[str, ...]:
@@ -124,6 +127,7 @@ class AssetReferenceType:
                 self.type_id.casefold(),
                 self.display_name.casefold(),
                 *(str(alias).strip().casefold() for alias in self.aliases),
+                *(value.casefold() for value in self.compatible_types),
             }
             if source_type and source_type.casefold() not in accepted_types:
                 return (
@@ -137,6 +141,8 @@ class AssetReferenceType:
                 if self.allow_structured_reference:
                     return ""
                 return f"{self.display_name} reference rejects built-in '{builtin}'"
+            if not guid:
+                return f"{self.display_name} reference is empty"
             if payload.get("$type") and not guid and not path:
                 return (
                     f"{self.display_name} reference rejects non-asset structured "
@@ -162,10 +168,12 @@ class AssetReferenceType:
                     f"'{type(payload).__name__}'"
                 )
 
-        if guid and not path:
+        if guid:
             path = _resolve_guid_path(guid)
             if not path:
                 return f"{self.display_name} reference uses unknown GUID '{guid}'"
+        elif not isinstance(payload, str):
+            path = ""
         if not path:
             return f"{self.display_name} reference is empty"
         portable_path = path.replace("\\", "/")
@@ -182,6 +190,10 @@ class AssetReferenceType:
                     "information"
                 )
             portable_path = resolved.replace("\\", "/")
+            for marker in self.virtual_path_markers:
+                head, separator, tail = portable_path.partition(marker)
+                if separator and head and tail:
+                    return ""
         if not any(portable_path.casefold().endswith(item) for item in self.extensions):
             accepted = ", ".join(sorted(self.extensions))
             return (
@@ -200,8 +212,15 @@ class AssetReferenceCodec:
     def encode(cls, asset_type: str, value: Any) -> str:
         descriptor = asset_type_registry.require(asset_type)
         payload = cls.normalize(descriptor.type_id, value)
-        if not any(payload[key] for key in ("guid", "path_hint", "builtin")):
+        if not any(payload[key] for key in ("guid", "builtin")):
             return ""
+        # Clipboard data is an authoring transport, but it must still carry
+        # the stable identity rather than snapshotting a renameable path.
+        payload = {
+            "asset_type": payload["asset_type"],
+            "builtin": payload["builtin"],
+            "guid": payload["guid"],
+        }
         return cls.PREFIX + json.dumps(
             payload,
             ensure_ascii=False,
@@ -215,19 +234,13 @@ class AssetReferenceCodec:
         if not token.startswith(cls.PREFIX):
             raise ValueError("clipboard does not contain an Infernux asset reference")
         raw = json.loads(token[len(cls.PREFIX) :])
-        if type(raw) is not dict or set(raw) != {
-            "asset_type",
-            "builtin",
-            "guid",
-            "path_hint",
-        }:
-            raise ValueError("asset reference clipboard payload has invalid fields")
-        if not all(type(value) is str for value in raw.values()):
-            raise TypeError("asset reference clipboard values must be strings")
-        descriptor = asset_type_registry.require(raw["asset_type"])
+        if type(raw) is not dict:
+            raise ValueError("asset reference clipboard payload must be an object")
+        asset_type = raw.get("asset_type", "")
+        if type(asset_type) is not str:
+            raise TypeError("asset reference clipboard asset_type must be a string")
+        descriptor = asset_type_registry.require(asset_type)
         payload = cls.normalize(descriptor.type_id, raw)
-        if not any(payload[key] for key in ("guid", "path_hint", "builtin")):
-            raise ValueError("asset reference clipboard payload is empty")
         return payload
 
     @staticmethod
@@ -235,12 +248,16 @@ class AssetReferenceCodec:
         guid = ""
         path_hint = ""
         builtin = ""
-        if isinstance(value, dict):
+        structured = isinstance(value, dict)
+        if structured:
             guid = str(value.get("guid") or "").strip()
             path_hint = str(value.get("path_hint") or "").strip()
             builtin = str(value.get("builtin") or "").strip()
         elif isinstance(value, str):
             path_hint = value.strip()
+            # Raw strings occur only at editor file-selection/drop boundaries.
+            # Convert them to GUID identity immediately when imported.
+            guid = _resolve_path_guid(path_hint)
         elif value is not None:
             guid = str(getattr(value, "guid", "") or "").strip()
             path_hint = str(
@@ -250,6 +267,34 @@ class AssetReferenceCodec:
             ).strip()
             builtin = str(getattr(value, "builtin", "") or "").strip()
         guid, path_hint = canonical_asset_reference_identity(guid, path_hint)
+        # Structured documents already crossed the authoring boundary. Their
+        # path field is an obsolete display snapshot regardless of whether a
+        # GUID is present; current display paths are always resolved by GUID.
+        if structured:
+            path_hint = ""
+        descriptor = asset_type_registry.get(asset_type)
+        if descriptor is not None and descriptor.compatible_types:
+            # A field accepting several resource types is not itself a new
+            # asset type. Clipboard references retain the concrete resource
+            # kind, so a material's sampled image can be pasted into a static
+            # image slot, or its render target into a Camera slot.
+            path = _resolve_guid_path(guid)
+            extension = PurePath(path.replace("\\", "/")).suffix.casefold()
+            for type_id in descriptor.compatible_types:
+                member = asset_type_registry.require(type_id)
+                if extension in member.extensions:
+                    asset_type = member.type_id
+                    break
+            else:
+                # Deleted assets still retain their concrete kind in scene
+                # documents. The field union is never a resource identity.
+                from .asset_ref import AssetRefBase, get_asset_type_for_ref
+                declared = (value.get("asset_type", "") if structured
+                            else get_asset_type_for_ref(value) if isinstance(value, AssetRefBase)
+                            else "")
+                member = asset_type_registry.get(declared)
+                if member is not None and member.type_id in descriptor.compatible_types:
+                    asset_type = member.type_id
         return {
             "asset_type": str(asset_type or "").strip(),
             "builtin": builtin,
@@ -266,14 +311,16 @@ def resolve_asset_reference_path(asset_type: str, value: Any) -> str:
     if error:
         raise ValueError(error)
     payload = AssetReferenceCodec.normalize(descriptor.type_id, value)
-    path = payload["path_hint"]
-    if path:
-        return path
     guid = payload["guid"]
     if guid:
         resolved = _resolve_guid_path(guid)
         if resolved:
             return resolved
+        raise ValueError(f"{descriptor.display_name} reference has no resolvable path")
+    # A raw string is an explicit editor file-selection input.  A path_hint
+    # carried by a reference document is not an identity fallback.
+    if isinstance(value, str) and payload["path_hint"]:
+        return payload["path_hint"]
     raise ValueError(f"{descriptor.display_name} reference has no resolvable path")
 
 
@@ -343,6 +390,7 @@ def _register_builtin(
     aliases: tuple[str, ...] = (),
     structured: bool = False,
     virtual_path_markers: tuple[str, ...] = (),
+    compatible_types: tuple[str, ...] = (),
 ) -> None:
     asset_type_registry.register(
         AssetReferenceType(
@@ -354,6 +402,7 @@ def _register_builtin(
             aliases=aliases,
             allow_structured_reference=structured,
             virtual_path_markers=virtual_path_markers,
+            compatible_types=compatible_types,
         )
     )
 
@@ -361,11 +410,16 @@ def _register_builtin(
 _register_builtin("Material", "Material", MATERIAL_EXTENSIONS, ("MATERIAL_FILE",), "mat")
 _register_builtin(
     "Texture", "Texture", IMAGE_EXTENSIONS, ("TEXTURE_GUID", "TEXTURE_FILE"), "tex",
-    aliases=("Texture2D",), structured=True,
+    aliases=("Texture2D",), structured=True, virtual_path_markers=("::subtex:",),
 )
 _register_builtin(
     "Texture.SDF", "Signed Distance Field", {".inxsdf"},
     ("TEXTURE_GUID", "TEXTURE_FILE"), "sdf", structured=True,
+)
+_register_builtin(
+    "Texture.Sampled", "Sampled Texture", {*IMAGE_EXTENSIONS, ".rendertexture"},
+    ("TEXTURE_GUID", "TEXTURE_FILE", "RENDER_TEXTURE_FILE"), "sampled_tex",
+    structured=True, compatible_types=("Texture", "Texture2D", "RenderTexture"), virtual_path_markers=("::subtex:",),
 )
 _register_builtin(
     "Texture.VectorField", "Vector Field", {".inxvfield"},
@@ -376,7 +430,7 @@ _register_builtin("Shader.Fragment", "Fragment Shader", {".frag"}, ("SHADER_FILE
 _register_builtin("Shader", "Shader", {".vert", ".frag"}, ("SHADER_FILE",), "shd")
 _register_builtin(
     "Mesh", "Mesh", MESH_EXTENSIONS, ("MODEL_GUID", "MODEL_FILE"), "mesh",
-    aliases=("Model",), structured=True,
+    aliases=("Model",), structured=True, virtual_path_markers=("::submesh:",),
 )
 _register_builtin("AudioClip", "AudioClip", AUDIO_EXTENSIONS, ("AUDIO_FILE",), "aud", aliases=("Audio",))
 _register_builtin("Font", "Font", FONT_EXTENSIONS, ("FONT_FILE",), "font")
@@ -402,3 +456,5 @@ _register_builtin(
 )
 _register_builtin("AnimationTimeline", "Timeline", ANIMTIMELINE_EXTENSIONS, ("ANIMTIMELINE_FILE",), "atl")
 _register_builtin("TimelineFSM", "TimelineFSM", TIMELINEFSM_EXTENSIONS, ("TIMELINEFSM_FILE",), "tlfsm")
+_register_builtin("DataAsset", "Data Asset", {".inxdata"}, ("DATA_ASSET_FILE",), "data")
+_register_builtin("RenderTexture", "Render Texture", {".rendertexture"}, ("RENDER_TEXTURE_FILE",), "rt")

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from Infernux.engine.import_coordinator import (
     AssetFsEvent,
     AssetFsEventKind,
@@ -91,6 +93,28 @@ def test_guid_matched_delete_create_becomes_move_and_chains(tmp_path):
     assert events[0].kind is AssetFsEventKind.MOVED
     assert events[0].path == str(first.resolve())
     assert events[0].destination == str(third.resolve())
+
+
+@pytest.mark.parametrize("modified", [False, True])
+def test_same_guid_create_then_delete_is_not_an_atomic_replacement(tmp_path, modified):
+    coordinator = _coordinator(_Clock())
+    path = str(tmp_path / "NewTarget.rendertexture")
+    coordinator.submit(AssetFsEventKind.CREATED, path, guid_hint="target-guid")
+    if modified:
+        coordinator.submit(AssetFsEventKind.MODIFIED, path)
+    coordinator.submit(AssetFsEventKind.DELETED, path, guid_hint="target-guid")
+    assert coordinator.drain(force=True) == []
+
+
+def test_same_guid_delete_then_create_preserves_atomic_replacement(tmp_path):
+    coordinator = _coordinator(_Clock())
+    path = str(tmp_path / "Target.rendertexture")
+    coordinator.submit(AssetFsEventKind.DELETED, path, guid_hint="target-guid")
+    coordinator.submit(AssetFsEventKind.CREATED, path, guid_hint="target-guid")
+    event, = coordinator.drain(force=True)
+    assert event.kind is AssetFsEventKind.MODIFIED
+    assert event.guid_hint == "target-guid"
+    assert not event.destination
 
 
 def test_delete_and_meta_delete_have_independent_grace_periods(tmp_path):
@@ -187,6 +211,26 @@ def test_concurrent_submit_is_thread_safe(tmp_path):
 
     assert coordinator.pending_count == 1
     assert len(coordinator.drain(force=True)) == 1
+
+
+@pytest.mark.parametrize("staging_name", ["TankBattle.py.tmp.47892.966d5eeabe93", ".editor-save", "draft.tmp"])
+def test_unregistered_rename_publication_consumes_staging_events(tmp_path, staging_name):
+    coordinator = _coordinator(_Clock())
+    source = str(tmp_path / staging_name)
+    target = str(tmp_path / "TankBattle.py")
+    coordinator.submit(AssetFsEventKind.CREATED, source)
+    coordinator.submit(AssetFsEventKind.MODIFIED, source)
+    coordinator.submit(AssetFsEventKind.DELETED, target, guid_hint="target-guid")
+    coordinator.submit(
+        AssetFsEventKind.MOVED, source, destination=target,
+        source_registered=False, guid_hint="target-guid",
+    )
+
+    event, = coordinator.drain(force=True)
+    assert event.kind is AssetFsEventKind.MODIFIED
+    assert event.path == str((tmp_path / "TankBattle.py").resolve())
+    assert event.destination == ""
+    assert event.guid_hint == "target-guid"
 
 
 def test_bounded_drain_preserves_ready_fifo_and_force_drains_remainder(tmp_path):

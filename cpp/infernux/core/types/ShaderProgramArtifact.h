@@ -138,6 +138,7 @@ struct ShaderProgramPropertyBinding
     std::optional<uint32_t> textureSlot;
     uint32_t byteSize = 0;
     uint32_t byteAlignment = 0;
+    uint32_t arrayCount = 1;
 
     [[nodiscard]] bool IsTexture() const noexcept
     {

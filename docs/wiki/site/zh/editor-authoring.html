@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Official Infernux documentation for 编写编辑器工具.">
+    
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <title>编写编辑器工具 - Infernux Documentation</title>
+    
+    <link rel="canonical" href="https://infernux-engine.com/wiki/site/zh/editor-authoring.html">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="Infernux Engine">
+    <meta property="og:title" content="编写编辑器工具 - Infernux Documentation">
+    <meta property="og:description" content="Official Infernux documentation for 编写编辑器工具.">
+    <meta property="og:url" content="https://infernux-engine.com/wiki/site/zh/editor-authoring.html">
+    <meta property="og:locale" content="zh_CN">
+    <meta property="og:locale:alternate" content="en_US">
+    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta property="og:image:type" content="image/jpeg">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="Infernux NASA Punk 任务卡，包含编辑器、熔炉标志和技术预览状态。">
+    
+    
+    
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="编写编辑器工具 - Infernux Documentation">
+    <meta name="twitter:description" content="Official Infernux documentation for 编写编辑器工具.">
+    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta name="twitter:image:alt" content="Infernux NASA Punk 任务卡，包含编辑器、熔炉标志和技术预览状态。">
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "TechArticle",
+          "@id": "https://infernux-engine.com/wiki/site/zh/editor-authoring.html#document",
+          "headline": "\u7f16\u5199\u7f16\u8f91\u5668\u5de5\u5177",
+          "name": "\u7f16\u5199\u7f16\u8f91\u5668\u5de5\u5177",
+          "description": "Official Infernux documentation for \u7f16\u5199\u7f16\u8f91\u5668\u5de5\u5177.",
+          "url": "https://infernux-engine.com/wiki/site/zh/editor-authoring.html",
+          "mainEntityOfPage": {
+            "@type": "WebPage",
+            "@id": "https://infernux-engine.com/wiki/site/zh/editor-authoring.html"
+          },
+          "inLanguage": "zh-CN",
+          "isAccessibleForFree": true,
+          "learningResourceType": "API reference",
+          "articleSection": "API \u53c2\u8003",
+          "image": {
+            "@type": "ImageObject",
+            "url": "https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg",
+            "width": 1200,
+            "height": 630,
+            "caption": "Infernux NASA Punk \u4efb\u52a1\u5361\uff0c\u5305\u542b\u7f16\u8f91\u5668\u3001\u7194\u7089\u6807\u5fd7\u548c\u6280\u672f\u9884\u89c8\u72b6\u6001\u3002"
+          },
+          "author": {
+            "@type": "Organization",
+            "name": "Infernux Engine",
+            "url": "https://infernux-engine.com/"
+          },
+          "publisher": {
+            "@type": "Organization",
+            "name": "Infernux Engine",
+            "url": "https://infernux-engine.com/",
+            "logo": {
+              "@type": "ImageObject",
+              "url": "https://infernux-engine.com/assets/logo.png"
+            }
+          },
+          "isPartOf": { "@id": "https://infernux-engine.com/#website" },
+          "about": { "@id": "https://infernux-engine.com/#software" }
+        },
+        {
+          "@type": "BreadcrumbList",
+          "@id": "https://infernux-engine.com/wiki/site/zh/editor-authoring.html#breadcrumb",
+          "itemListElement": [
+            {
+              "@type": "ListItem",
+              "position": 1,
+              "name": "\u5f00\u59cb\u4f7f\u7528",
+              "item": "https://infernux-engine.com/start.html"
+            },
+            
+            {
+              "@type": "ListItem",
+              "position": 2,
+              "name": "\u7f16\u5199\u7f16\u8f91\u5668\u5de5\u5177",
+              "item": "https://infernux-engine.com/wiki/site/zh/editor-authoring.html"
+            }
+            
+          ]
+        }
+      ]
+    }
+    </script>
+    
+    
+    <link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/editor-authoring.html">
+    <link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/editor-authoring.html">
+    <link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/editor-authoring.html">
+    
+    <link rel="alternate" type="application/json" title="Infernux API index" href="/api-index.json">
+    <link rel="manifest" href="/site.webmanifest">
+    <link rel="icon" type="image/png" href="/assets/logo.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/infernux-apple-touch-icon.png">
+    <link rel="stylesheet" href="/css/fonts.css?v=1">
+    <link rel="stylesheet" href="/css/style.css?v=20">
+    <link rel="stylesheet" href="/css/fontawesome-subset.css?v=6.4.0">
+    <link rel="stylesheet" href="/css/docs-search.css?v=3">
+    <link rel="stylesheet" href="/css/wiki-generated.css?v=9">
+    <link rel="stylesheet" href="/css/wiki-template.8274a64753b131d2.css">
+</head>
+<body class="guide-page">
+    
+    
+    
+    
+    <a class="skip-link" href="#main-content">跳到正文</a>
+    <!-- Top Navigation -->
+    <nav class="navbar" aria-label="主导航">
+        <div class="nav-container">
+            <a href="/index.html" class="nav-logo">
+                <span class="logo-icon"><img src="/assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
+                <span class="logo-text">Infernux</span>
+            </a>
+            <div class="nav-links" id="primary-navigation">
+                <a href="/start.html" class="nav-priority">开始使用</a>
+                <a href="/learn.html">学习</a>
+                <a href="/wiki/site/zh/api/index.html">API</a>
+                <a href="/roadmap.html">路线图</a>
+                <a href="https://infernux-engine.discourse.group/" class="nav-priority">社区</a>
+                <a href="/download.html">下载</a>
+                <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener">
+                    <i class="fab fa-github" aria-hidden="true"></i> GitHub
+                </a>
+            </div>
+            <div class="nav-right">
+                <button type="button" class="docs-context-trigger" data-doc-context-trigger title="复制版本、来源和权威链接" aria-label="复制供 Agent 使用的页面上下文">
+                    <i class="fas fa-copy" aria-hidden="true"></i><span data-doc-context-label>复制给 Agent</span>
+                </button>
+                <button type="button" class="docs-search-trigger" data-docs-search-trigger aria-haspopup="dialog" aria-controls="docs-search-dialog" aria-expanded="false">
+                    <i class="fas fa-magnifying-glass" aria-hidden="true"></i><span data-docs-search-trigger-label>搜索文档</span><kbd aria-hidden="true">/</kbd>
+                </button>
+                <button type="button" class="theme-toggle" data-site-action="theme" title="Toggle theme" aria-label="Toggle theme" aria-pressed="false">
+                    <i class="fas fa-moon" id="theme-icon"></i>
+                </button>
+                <button type="button" class="mobile-menu-btn" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    
+    <!-- Article Layout (No Sidebar) -->
+    <main class="page-shell article-page-shell" id="main-content">
+        <div class="container article-page-container">
+            <div class="api-main article-page-content">
+                
+    <nav class="doc-breadcrumb" aria-label="面包屑">
+        <a href="/start.html">开始使用</a>
+        <span aria-hidden="true">/</span>
+        
+        <span aria-current="page">编写编辑器工具</span>
+    </nav>
+    
+                
+                
+    <aside class="doc-outline" data-doc-outline hidden>
+        <div class="doc-outline-head">
+            <strong>本页目录</strong>
+            <button type="button" class="doc-outline-toggle" aria-controls="doc-outline-links" aria-expanded="true">
+                <span>收起章节</span>
+                <span class="doc-outline-toggle-mark" aria-hidden="true">⌄</span>
+            </button>
+        </div>
+        <nav class="doc-outline-links" id="doc-outline-links" aria-label="本页章节"></nav>
+    </aside>
+    
+                <h1 id="_1">编写编辑器工具<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h1>
+<p><code>inx.editor</code> 是项目自定义编辑器工具的公开入口。创建物体、Prefab、保存和撤销都沿用编辑器现有服务，不需要脚本自行拼装 Scene JSON。它要求已打开的编辑器会话，Play 模式不可用；不要把这些调用放进游戏运行脚本。</p>
+<p>把下面的脚本保存为 <code>Assets/Editor/CreateObstacle.py</code>。加载后按 F9，或在命令面板中搜索“创建机关”，即可创建机关层级、保存为 Prefab 并放置一个实例。</p>
+<h2 id="_2">创建与撤销<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">class</span><span class="w"> </span><span class="nc">ObstacleTools</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxPreload</span><span class="p">):</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">preload</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>        <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">EditorCommandRegistry</span><span class="o">.</span><span class="n">instance</span><span class="p">()</span><span class="o">.</span><span class="n">register</span><span class="p">(</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>            <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">EditorCommand</span><span class="p">(</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>                <span class="s2">"my_game.create_obstacle"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">create_obstacle</span><span class="p">,</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>                <span class="n">display_name</span><span class="o">=</span><span class="s2">"创建机关"</span><span class="p">,</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>            <span class="p">)</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        <span class="p">)</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">ShortcutRouter</span><span class="o">.</span><span class="n">instance</span><span class="p">()</span><span class="o">.</span><span class="n">register</span><span class="p">(</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>            <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">ShortcutBinding</span><span class="p">(</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>                <span class="s2">"my_game.create_obstacle"</span><span class="p">,</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">KeyChord</span><span class="p">(</span><span class="s2">"F9"</span><span class="p">),</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>                <span class="n">binding_id</span><span class="o">=</span><span class="s2">"my_game.create_obstacle.f9"</span><span class="p">,</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>            <span class="p">)</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        <span class="p">)</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">create_obstacle</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>        <span class="k">with</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">edit_scene</span><span class="p">(</span><span class="s2">"创建机关"</span><span class="p">):</span>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>            <span class="n">root</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">create_game_object</span><span class="p">(</span><span class="s2">"机关"</span><span class="p">)</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>            <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">create_game_object</span><span class="p">(</span><span class="s2">"主体"</span><span class="p">,</span> <span class="n">kind</span><span class="o">=</span><span class="s2">"primitive.cube"</span><span class="p">,</span> <span class="n">parent</span><span class="o">=</span><span class="n">root</span><span class="p">)</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>            <span class="n">path</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">create_prefab</span><span class="p">(</span><span class="n">root</span><span class="p">,</span> <span class="s2">"Assets"</span><span class="p">)</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>            <span class="n">instance</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">instantiate_prefab</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>        <span class="k">return</span> <span class="n">instance</span><span class="o">.</span><span class="n">id</span>
+</code></pre></div>
+<p>一次撤销会移除这组创建的物体、资产和实例，重做会恢复它们。注册操作放在 <code>preload</code> 中：热重载、卸载及关闭项目时，注册项随所属脚本清理，不要每帧注册，也不要在模块导入时直接创建场景物体。</p>
+<h2 id="transform">由组件驱动的 Transform 字段<a class="headerlink" href="#transform" title="Permanent link">&para;</a></h2>
+<p>当启用的组件负责其 GameObject 的部分 Transform 时，只需声明一次所有权，
+Inspector 与 Scene 工具会遵守同一规则：</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">infernux.components</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="n">DrivenTransformProperties</span><span class="p">,</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">InxComponent</span><span class="p">,</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">drives_transform</span><span class="p">,</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="p">)</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="nd">@drives_transform</span><span class="p">(</span><span class="n">DrivenTransformProperties</span><span class="o">.</span><span class="n">SCALE</span><span class="p">)</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="k">class</span><span class="w"> </span><span class="nc">ProceduralSurface</span><span class="p">(</span><span class="n">InxComponent</span><span class="p">):</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>    <span class="k">pass</span>
+</code></pre></div>
+<p>Scale 和 Rect 工具不会覆盖被驱动的缩放。可组合 <code>POSITION</code>、<code>ROTATION</code>、
+<code>SCALE</code>，或直接使用 <code>ALL</code>。如果所有权会动态改变，组件可实现
+<code>driven_transform_properties()</code> 返回当前标志；禁用该组件即释放作者锁。</p>
+<h2 id="scene-view-handle">自定义 Scene View Handle<a class="headerlink" href="#scene-view-handle" title="Permanent link">&para;</a></h2>
+<p>项目和编辑器插件通过 <code>inx.editor.register_handle_provider()</code> 注册一个稳定的 Handle provider。provider 每次收到 <code>EditorHandleContext</code>，可提交世界空间的 <code>position</code>、<code>direction</code>、<code>radius</code> 和 <code>limit</code> Handle：</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="k">class</span><span class="w"> </span><span class="nc">SpawnHandles</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxPreload</span><span class="p">):</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">preload</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">):</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>        <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">register_handle_provider</span><span class="p">(</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>            <span class="s2">"sample.spawn"</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">draw_handles</span><span class="p">,</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>            <span class="n">on_retire</span><span class="o">=</span><span class="bp">self</span><span class="o">.</span><span class="n">release_preview_resources</span><span class="p">,</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>        <span class="p">)</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">draw_handles</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">handles</span><span class="p">):</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>        <span class="n">target</span> <span class="o">=</span> <span class="n">current_spawn_target</span><span class="p">()</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>        <span class="k">if</span> <span class="n">target</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>            <span class="k">return</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>        <span class="n">handles</span><span class="o">.</span><span class="n">position</span><span class="p">(</span><span class="s2">"position"</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">position</span><span class="p">,</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>                         <span class="k">lambda</span> <span class="n">value</span><span class="p">:</span> <span class="n">set_spawn_position</span><span class="p">(</span><span class="n">target</span><span class="p">,</span> <span class="n">value</span><span class="p">))</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>        <span class="n">handles</span><span class="o">.</span><span class="n">direction</span><span class="p">(</span><span class="s2">"forward"</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">position</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">forward</span><span class="p">,</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>                          <span class="k">lambda</span> <span class="n">value</span><span class="p">:</span> <span class="n">set_spawn_forward</span><span class="p">(</span><span class="n">target</span><span class="p">,</span> <span class="n">value</span><span class="p">))</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>        <span class="n">handles</span><span class="o">.</span><span class="n">radius</span><span class="p">(</span><span class="s2">"radius"</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">position</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">radius</span><span class="p">,</span>
+<a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>                       <span class="k">lambda</span> <span class="n">value</span><span class="p">:</span> <span class="n">set_spawn_radius</span><span class="p">(</span><span class="n">target</span><span class="p">,</span> <span class="n">value</span><span class="p">))</span>
+<a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>        <span class="n">handles</span><span class="o">.</span><span class="n">limit</span><span class="p">(</span><span class="s2">"travel"</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">position</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">forward</span><span class="p">,</span>
+<a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>                      <span class="p">(</span><span class="n">target</span><span class="o">.</span><span class="n">minimum</span><span class="p">,</span> <span class="n">target</span><span class="o">.</span><span class="n">maximum</span><span class="p">),</span>
+<a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>                      <span class="k">lambda</span> <span class="n">value</span><span class="p">:</span> <span class="n">set_spawn_limits</span><span class="p">(</span><span class="n">target</span><span class="p">,</span> <span class="n">value</span><span class="p">))</span>
+<a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>
+<a id="__codelineno-2-24" name="__codelineno-2-24" href="#__codelineno-2-24"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">release_preview_resources</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+<a id="__codelineno-2-25" name="__codelineno-2-25" href="#__codelineno-2-25"></a>        <span class="k">pass</span>
+</code></pre></div>
+<p>provider 只注册一次，每帧根据当前 Selection 提交当帧仍然有效的 Handle；<code>handles.selection</code> 是本次收集使用的选择快照。所有值和回调都属于该帧，未再次提交的 Handle 会立即失效，不保留旧回调。<code>direction</code> 回调收到归一化方向，<code>radius</code> 不会变为负数，<code>limit</code> 始终保持最小值不大于最大值。</p>
+<p>注册返回的 <code>HandleRegistration</code> 可以显式 <code>close()</code>。在 preload 中注册时，注册项自动归属于该 preload；插件热重载、禁用、卸载或编辑器关闭会先取消仍在拖拽的 Handle、用初值调用 <code>on_changed</code>/<code>on_cancel</code>，再调用一次 <code>on_retire</code> 并清除 provider 的当帧资源和回调。不要保留 <code>EditorHandleContext</code> 到下一帧。跨帧撤销记录仍由项目回调接入自己的文档/命令服务，Handle API 不把任意字段赋值自动变成 Undo。</p>
+<ul>
+<li><code>create_game_object</code> 返回新物体；<code>kind</code> 与 Hierarchy 创建类型共用，例如 <code>empty</code>、<code>primitive.sphere</code>、<code>ui.button</code>。</li>
+<li>初始组件和 Transform 值可以放进 <code>configure(obj)</code> 回调，在创建快照记录前完成，撤销/重做能恢复这些初值。回调抛出异常会取消该物体的创建。</li>
+<li><code>edit_scene</code> 只合并已经走编辑器历史服务的操作，不会自动拦截任意 Python 赋值，也不是整个脚本失败时的全量回滚事务。</li>
+<li><code>create_prefab(obj, directory)</code> 的第二个参数是目录，不是文件名；它创建唯一名称的资产并建立源链接，不覆盖已有 Prefab。</li>
+<li><code>instantiate_prefab</code> 返回新实例；<code>apply_prefab(obj)</code> 应用覆盖，<code>revert_prefab(obj)</code> 恢复源值，均进入全局撤销历史。</li>
+</ul>
+<h2 id="prefab">离线编辑 Prefab<a class="headerlink" href="#prefab" title="Permanent link">&para;</a></h2>
+<p>不必把 Prefab 拖进当前场景，也可以修改它的内容：</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">edit_obstacle</span><span class="p">():</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">path</span> <span class="o">=</span> <span class="s2">"Assets/Obstacle.prefab"</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">root</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">load_prefab_contents</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="k">try</span><span class="p">:</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>        <span class="n">root</span><span class="o">.</span><span class="n">name</span> <span class="o">=</span> <span class="s2">"机关"</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>        <span class="n">root</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">local_position</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">vector3</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>        <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">save_as_prefab_asset</span><span class="p">(</span><span class="n">root</span><span class="p">,</span> <span class="n">path</span><span class="p">)</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="k">finally</span><span class="p">:</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>        <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">unload_prefab_contents</span><span class="p">(</span><span class="n">root</span><span class="p">)</span>
+</code></pre></div>
+<p>加载的物体位于隔离场景，不进入 Hierarchy、游戏渲染、物理查询或 Awake/Start/Update；序列化回调仍会执行。临时树的赋值不逐条记录撤销，保存资产才形成一条 Project Undo。未保存就释放会丢弃临时修改，关编辑器也会释放这些对象。</p>
+<p>从菜单、命令面板或 Inspector 按钮调用时，将整个批量操作交给编辑器已有的延迟任务，避免在界面绘制期间发布脚本类型：</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">on_edit_command</span><span class="p">(</span><span class="n">context</span><span class="p">):</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">accepted</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">defer</span><span class="p">(</span><span class="n">edit_obstacle</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">"编辑机关 Prefab"</span><span class="p">)</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="k">if</span> <span class="ow">not</span> <span class="n">accepted</span><span class="p">:</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>        <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">"请等待当前编辑器任务完成"</span><span class="p">)</span>
+</code></pre></div>
+<p>已有编辑器任务运行时，<code>defer</code> 返回 <code>False</code>，不会当场执行或自动重试。注册这类命令时使用 <code>creates_user_action=False</code>，实际的作者操作由延迟执行的批次自行记录。</p>
+<p><code>save_as_prefab_asset</code> 返回资产路径。另存的新文件必须位于 <code>Assets</code> 或 <code>Packages</code> 内，父目录必须存在；已有文件只能由从该文件加载的内容覆盖。它保留嵌套 Prefab、内部引用和稳定源身份。普通场景物体保存为普通 Prefab，不会自动连接为实例；需要“创建并连接”时仍用 <code>create_prefab</code>。已关联 Prefab 的根对象另存到新路径时，会创建基于原资产的 Variant（预制体变体），变体也可以继续派生变体。</p>
+<p>离线保存和 Apply 会一起更新已登记的派生变体及其已加载场景实例，并纳入同一次撤销/重做。Prefab Mode 保存也使用同一发布路径，退出时会同步原场景中的派生实例。变体自己的属性覆盖、新增子物体和移除组件会保留；继承的物体可以停用，但不能直接删除或换父级。变体仍使用 <code>.prefab</code> 文件保存继承信息，不引入第二套运行时物体。</p>
+<p>加载和构建会解析当前基础资产，而不会在读取时改写作者文件；基础文件变化会使模板缓存失效。构建后的变体只保留解析完成的物体树，不携带编辑器继承元数据。专用覆盖编辑界面、外部修改自动传播到已打开场景实例、最终 Player 运行验收仍在完善中。</p>
+<p>源文件在加载后被修改或删除时，保存会拒绝，需重新加载；同一资产已在 Prefab Mode 中打开时，应先结束该编辑会话。保存已有源资产或应用实例覆盖时，会同步所有已加载场景中的关联实例，包括嵌套实例，同时保留实例自己的覆盖和组件引用。如果两端的层级修改合成了父子循环，会在写入源资产前拒绝。</p>
+<p>源资产和受影响实例共用一次 Undo/Redo；每个受影响场景分别记录未保存状态，无关场景保持不变。释放临时内容后仍可撤销此次保存。已关闭的编辑器场景会根据历史文档重新追加加载，保留实例身份和覆盖，不替换当前活动场景。该能力要求场景曾注册到编辑器；直接销毁未注册的原生 World 不会留下可恢复文档。</p>
+<p>源文件被外部修改、删除，或在同一路径被另一资产替换时，Undo/Redo 会拒绝覆盖并保留历史记录，不静默跳过。仅调整 JSON 排版不视为内容冲突。</p>
+<h2 id="_3">创建数据资产和构建列表<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<p>运行时数据类型放在 <code>Assets/Scripts/LevelConfig.py</code>，用 <code>DataAsset</code> 和 <code>serialized_field</code> 声明。编辑器工具可以用 <code>from Scripts.LevelConfig import LevelConfig</code> 引用它；<code>Assets</code> 是项目模块根，不是 Python 包名。</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">Scripts.LevelConfig</span><span class="w"> </span><span class="kn">import</span> <span class="n">LevelConfig</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="k">with</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">edit_scene</span><span class="p">(</span><span class="s2">"创建关卡配置"</span><span class="p">):</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">create_folder</span><span class="p">(</span><span class="s2">"Assets/NewLevel"</span><span class="p">)</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">path</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">create_data_asset</span><span class="p">(</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>        <span class="n">LevelConfig</span><span class="p">(</span><span class="n">title</span><span class="o">=</span><span class="s2">"Garden"</span><span class="p">),</span> <span class="s2">"Assets/NewLevel/Level.inxdata"</span><span class="p">,</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="p">)</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="n">config</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">DataAsset</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">path</span><span class="p">)</span>
+</code></pre></div>
+<p><code>create_data_asset</code> 保存传入值的独立副本，由资产系统创建 GUID 和导入结果，不改变原对象的持久身份。目标文件必须不存在，目录必须已建立；撤销移除新资产，重做保留原 GUID 和字段值。它不覆盖已有配置；已有资产应通过 Inspector 的文档编辑流程修改。</p>
+<p>作者脚本可以操作同一份文档，无需打开 Inspector：</p>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">level</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">load_data_asset</span><span class="p">(</span><span class="s2">"Assets/Data/Level01.inxdata"</span><span class="p">)</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="k">with</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">edit_scene</span><span class="p">(</span><span class="s2">"更新关卡配置"</span><span class="p">):</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">set_data_asset_fields</span><span class="p">(</span><span class="n">level</span><span class="p">,</span> <span class="n">title</span><span class="o">=</span><span class="s2">"第一关"</span><span class="p">,</span> <span class="n">difficulty</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">result</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">save_data_asset</span><span class="p">(</span><span class="n">level</span><span class="p">)</span>
+</code></pre></div>
+<p><code>load_data_asset</code> 读取编辑器当前文档，包括尚未自动保存的修改；不要用直接读取磁盘的 <code>DataAsset.load</code> 来检查刚完成的撤销。<code>set_data_asset_fields</code> 先在独立副本中验证全部声明字段，再形成一条可撤销修改；只读或未知字段会拒绝整个调用，相同值返回 <code>False</code>。多份资产的修改可以放在同一个编辑分组内。<code>save_data_asset</code> 使用现有保存事务，仍需检查 <code>APPLIED/PENDING/FAILED</code>，不绕过自动保存或外部冲突处理。</p>
+<p>关卡目录等资产列表可声明为 <code>inx.list_field(element_type=inx.FieldType.ASSET, asset_type="DataAsset")</code>，列表中保存资产引用，而不是复制每份资产的内容。</p>
+<p>作者工具添加组件时，使用 <code>inx.editor.add_component(obj, "MyComponent", configure=initialize)</code>。它与 Inspector 共用组件添加服务，解析已发布的脚本和资产身份，并把初始化值纳入撤销/重做。直接从旧的导入类构造实例再调用 <code>add_py_component</code>，会绕过这条作者工具链路。</p>
+<p>普通的 <code>obj.add_component(MyComponent)</code> 与 <code>obj.get_component(MyComponent)</code> 也会把保留的类句柄解析到当前已发布脚本类型，包括 preload 在首次资产 GUID 发布前导入的类。匹配按所属模块和限定类名，不会混淆不同脚本中的同名类。直接调用 <code>MyComponent()</code> 再传给低层 <code>add_py_component</code> 不执行这一步身份解析；编辑已有物体且需要撤销时，仍使用 <code>inx.editor.add_component</code>。</p>
+<p>工具需要加载已有材质时，直接调用 <code>inx.AssetManager.load("Assets/Materials/Example.mat")</code>。Editor 会立即把这条 <code>Assets</code> 相对作者路径转换为资产 GUID。Player 也接受相同的 path 表达式，但只能通过构建时冻结的查询索引得到 GUID，之后只按 GUID 继续；它不会扫描 <code>Assets</code>，也不把 path 当成运行时身份。<code>find_assets("Assets/Materials/*.mat")</code> 在两端都返回不可变的 <code>AssetFile</code> 文件对象；对象只用 <code>guid</code> 标识，并可调用 <code>load()</code> 加载，作者路径不会成为它的身份。直接传 <code>Assets/Materials</code> 会枚举该目录的直接子文件；递归查找应显式使用 <code>Assets/Materials/**/*.mat</code>，文件夹本身永远不会成为结果。</p>
+<p>真实文件和 Mod 目录使用显式的第二模式：给 <code>load</code> 传 <code>raw_filesystem=True</code> 可取得 <code>SandboxPath</code>，给 <code>find_assets</code> 传同一开关可列举沙箱文件。传入 <code>Mods</code> 这类目录时只枚举它的直接子文件，文件夹不会出现在查询结果里。Editor 的根是项目 <code>Assets</code>，桌面 Player 的根是可执行文件目录；Web Player 使用浏览器持久化存储中独立的 loose-file 目录，不会暴露打包后的 MEMFS 内容。句柄提供 <code>read_bytes</code>、<code>read_text</code>、<code>write_bytes</code>、<code>write_text</code> 和非递归 <code>delete</code>。绝对路径、父目录穿越，以及符号链接/junction 穿越都会被拒绝；不要把 <code>SandboxPath</code> 持久化成资产身份。</p>
+<p><code>get_build_scenes()</code> 返回独立的、有序的项目相对路径列表。<code>set_build_scenes(paths)</code> 用一条可撤销操作更新同一份 Build Settings；路径必须是 <code>Assets</code> 下已存在的 <code>.scene</code>。传空列表表示清空，相同列表不新增历史。编辑器的自动保存仍生效，也可显式调用 <code>save_project_settings()</code>，其返回状态与场景保存相同，不要把 <code>PENDING</code> 当成写盘完成。</p>
+<h2 id="_4">保存和切换场景<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
+<p><code>save_scene("Assets/Scenes/关卡.scene")</code> 通过正常保存事务另存当前场景；省略路径则保存当前文档，无路径时请求另存对话框。返回结果不能一律当作“保存完成”：</p>
+<ul>
+<li><code>APPLIED</code> / <code>NO_OP</code>：操作完成 / 没有需要保存的更改。</li>
+<li><code>PENDING</code>：仍在等待对话框或异步操作。</li>
+<li><code>REJECTED</code> / <code>FAILED</code>：查看 <code>message</code>，不要继续报告保存成功。</li>
+</ul>
+<p>路径相对于项目目录，也可传绝对路径，最终仍受项目保存边界约束。</p>
+<p><code>new_scene()</code> 和 <code>open_scene(path)</code> 保留未保存更改确认和延迟切换规则。函数返回不代表新场景已经加载，不能紧接着往“目标场景”创建物体。</p>
+<p><code>undo()</code> / <code>redo()</code> 默认等待编辑器安全时点再执行。注册这类命令时设 <code>creates_user_action=False</code>，避免把历史重放又当作新编辑。<code>defer=False</code> 只用于调用者已经处于安全时点的非渲染宿主，不用于界面回调。</p>
+<p>Prefab 的组件源身份与运行时 ID 分开保存。删除或重排同类型组件后，Apply/Revert、Undo/Redo 和场景同步仍按身份找到原组件；实例新增的组件在应用前保持私有，已删除的源 ID 不会分配给之后的新组件。</p>
+<p>没有组件源身份的旧场景只迁移一次，按保存的基线和同类型组件顺序建立链接。如果旧场景在记录身份之前就删除了某个同类型组件，缺失的历史无法凭空恢复。</p>
+<p>组件引用同时保存所属物体、组件类型和精确组件 ID。脚本直接赋值组件实例即可；Inspector 选择器会逐个列出组件，拖入 GameObject 则绑定第一个符合类型的组件。删除目标后，引用返回 <code>None</code>，不会转而指向另一个同类型组件；保存 Prefab 资产前需要清除失效引用。</p>
+<p>旧的仅按类型记录的引用仍可读取，下次保存时写入精确 ID。复制、Prefab 操作和场景载入会同步重映射内部引用；指向复制范围之外的场景对象时，保留外部引用。</p>
+<p>在 Prefab 内改变物体的父级不会改变其身份。源资产的层级修改可以与实例的属性修改合并，实例自己的父级覆盖也会保留。如果两端的修改合成了父子循环，Apply 会在写入资产前拒绝该冲突；调整层级后再应用。</p>
+<h2 id="_5">还原单个属性覆盖<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">revert_property_override</span><span class="p">(</span><span class="n">component</span><span class="p">,</span> <span class="s2">"amount"</span><span class="p">)</span>
+</code></pre></div>
+<p>从最近一层 Prefab 源还原指定的序列化字段，形成一条可撤销操作。其它字段的修改、物体身份和组件引用保持不变，也不会修改源资产。返回 <code>False</code> 表示没有需要记录的变化。</p>
+<p>字段名使用公开的 Python 名称，例如碰撞体的 <code>size</code>、Transform 的 <code>local_position</code>。显式还原根 Transform 字段会恢复源值；整体 Revert 则保留根物体在场景中的摆放。集合字段按整个字段还原，目前不接受嵌套属性路径、实例新增组件或只读字段。如果源引用指向实例中已删除的成员，应先恢复该成员，不会借用其它物体的 ID 补上引用。</p>
+<h2 id="_6">查询属性覆盖<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h2>
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="k">if</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">is_property_override</span><span class="p">(</span><span class="n">component</span><span class="p">,</span> <span class="s2">"amount"</span><span class="p">):</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">revert_property_override</span><span class="p">(</span><span class="n">component</span><span class="p">,</span> <span class="s2">"amount"</span><span class="p">)</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="k">for</span> <span class="n">change</span> <span class="ow">in</span> <span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">get_property_modifications</span><span class="p">(</span><span class="n">instance</span><span class="p">):</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">change</span><span class="o">.</span><span class="n">object_id</span><span class="p">,</span> <span class="n">change</span><span class="o">.</span><span class="n">component_id</span><span class="p">,</span> <span class="n">change</span><span class="o">.</span><span class="n">property_path</span><span class="p">,</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>          <span class="n">change</span><span class="o">.</span><span class="n">source_value</span><span class="p">,</span> <span class="n">change</span><span class="o">.</span><span class="n">instance_value</span><span class="p">)</span>
+</code></pre></div>
+<p>查询与 Apply/Revert 共用源身份和引用比较规则，同名物体、同类型组件不会混在一起。
+<code>is_property_override</code> 接受公开 Python 字段名，也可以查询只读序列化字段。未声明的字段会报错；普通物体和实例新增组件没有对应的源属性覆盖。</p>
+<p><code>get_property_modifications</code> 返回最近一层 Prefab 及其子树的独立数据快照。记录包含场景的 <code>object_id/component_id</code> 和资产内的 <code>source_object_id/source_component_id</code>，不依靠名称或排列下标定位。组件字段路径为 <code>data.&lt;序列化字段名&gt;</code>，Transform 使用 <code>position/rotation/scale</code>。值采用现有序列化格式：源引用使用资产局部 ID，实例引用使用场景 ID；集合按整个字段比较，不拆成单独数组元素。</p>
+<p>根物体摆放和组织属性的差异也会返回，并标记 <code>is_default_override</code>，对应整体 Apply/Revert 原有的保留规则。新增、删除物体或组件以及排序属于结构覆盖，不混入属性记录。这里返回当前值与源资产的差异，不是历史修改日志，也不模拟 Unity 已失效的历史 override。查询不会写盘、增加 Undo 或推进合并基线；修改返回数据不会改变资产。</p>
+<h2 id="prefab_1">嵌套 Prefab<a class="headerlink" href="#prefab_1" title="Permanent link">&para;</a></h2>
+<p>把 Prefab 实例放在另一个待保存的层级下，再保存外层 Prefab，内层实例会保留自己的资产链接。同一内层资产可以出现多次，引用仍指向各自实例中的物体和组件，不会因为源 ID 相同而串到另一份实例。</p>
+<ul>
+<li>对内层实例调用 <code>apply_prefab</code>，修改的是内层源；对外层根调用，则把该修改记录在外层资产中。</li>
+<li>外层 Apply/Revert、Undo/Redo 和 Prefab Mode 保存保留内层链接。复制内层实例会创建新的外层成员，不会复用原成员的身份。</li>
+<li>解包外层实例保留内层 Prefab 链接；这不是递归解包所有层。</li>
+<li>把内层实例移到另一份外层实例下，会解除旧外层的成员身份，保留内层自身的资产链接。Undo 恢复原归属，Redo 再次执行移动。同一外层实例内部换父节点不会改变成员身份。</li>
+<li>普通源节点移出所属实例后，不再保留原实例的成员身份。调整子节点顺序应使用兄弟排序，不要用先脱离再挂回的方式；需要恢复脱离前的归属时使用 Undo。</li>
+<li>场景重开、重新实例化和构建解析内层源的最新内容，即使外层文件没有变化。循环嵌套会报错，不会展开成无限层级。</li>
+</ul>
+<p>这些入口不是完整的 Unity Editor SDK。项目作者工具的完整迁移仍是单独的验收任务。</p>
+                
+    <nav class="doc-trail" data-doc-trail aria-label="文档连续阅读与反馈">
+        <a class="doc-trail-fallback" href="/wiki/site/zh/api/index.html">返回 API 目录</a>
+    </nav>
+    
+                
+    
+    <section class="doc-build-provenance" data-doc-build-provenance data-state="loading" aria-label="文档发布证据">
+        <span class="doc-build-label">发布证据</span>
+        <div class="doc-build-facts" data-doc-build-facts aria-live="polite">
+            <span class="doc-build-loading">正在读取发布版本与来源…</span>
+        </div>
+        <a class="doc-build-manifest" href="/docs-manifest.json">机器清单 JSON</a>
+    </section>
+    
+    
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-bottom">
+                <p>&copy; 2024-2026 Infernux Engine. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+    
+
+    <dialog class="docs-search-dialog" id="docs-search-dialog" role="dialog" aria-modal="true" aria-labelledby="docs-search-title">
+        <button type="button" class="docs-search-backdrop" data-docs-search-close tabindex="-1" aria-hidden="true"></button>
+        <div class="docs-search-panel">
+            <div class="docs-search-head">
+                <h2 id="docs-search-title">搜索 Infernux 文档</h2>
+                <button type="button" class="docs-search-close" data-docs-search-close aria-label="关闭文档搜索"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+            </div>
+            <label class="docs-search-field" for="docs-search-input">
+                <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+                <input class="docs-search-input" id="docs-search-input" type="search" autocomplete="off" spellcheck="false" aria-controls="docs-search-results" aria-describedby="docs-search-status" aria-autocomplete="list" placeholder="API 符号、模块或方法…">
+            </label>
+            <div class="docs-search-filters" id="docs-search-filters" aria-label="文档搜索筛选器"></div>
+            <p class="docs-search-status" id="docs-search-status" aria-live="polite" aria-atomic="true"></p>
+            <div class="docs-search-results" id="docs-search-results" role="list"></div>
+        </div>
+    </dialog>
+
+    <script src="/js/main.js?v=15"></script>
+    <script src="/js/docs-search.js?v=6"></script>
+    <script src="/js/wiki-generated.js?v=14"></script>
+</body>
+</html>

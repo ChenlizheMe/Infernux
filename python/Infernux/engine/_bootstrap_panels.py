@@ -584,6 +584,7 @@ class BootstrapPanelsMixin:
         self.game_view = GameViewPanel(engine=engine)
         self.game_view.set_window_manager(wm)
         wm.register_existing_window("game_view", self.game_view, "game_view")
+        self.game_view.prepare_render_target()
 
         # UI Editor
         self.ui_editor = UIEditorPanel()

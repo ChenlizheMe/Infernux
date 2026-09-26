@@ -216,6 +216,22 @@ class Component
     /// @brief Set component ID (used during deserialization to restore ID)
     void SetComponentID(uint64_t id);
 
+    /// Asset-local Prefab identity; zero denotes a component added to an instance.
+    [[nodiscard]] uint64_t GetPrefabSourceID() const
+    {
+        return m_prefabSourceId;
+    }
+    void SetPrefabSourceID(uint64_t id)
+    {
+        m_prefabSourceId = id;
+    }
+
+    /// Reserve an identity before preflighting a document transaction.
+    static uint64_t ReserveDocumentID()
+    {
+        return GenerateComponentID();
+    }
+
     /// @brief Get a string key suitable for AssetDependencyGraph registration.
     /// Only called by MeshRenderer when asset edges change — NOT on the hot creation path.
     [[nodiscard]] std::string GetInstanceGuid() const
@@ -408,6 +424,13 @@ class Component
     /// @return A new Component (derived type), or nullptr if cloning is not supported.
     [[nodiscard]] virtual std::unique_ptr<Component> Clone() const;
 
+    /// Remap stable references after a native object graph receives fresh
+    /// component IDs (for example Play clones or duplicate scene loads).
+    virtual void RemapComponentReferences(const std::unordered_map<uint64_t, uint64_t> &componentIdRemap)
+    {
+        (void)componentIdRemap;
+    }
+
   protected:
     friend class GameObject;
     friend class Camera;
@@ -429,6 +452,7 @@ class Component
     bool m_isBeingDestroyed = false;
     int m_executionOrder = 0;
     uint64_t m_componentId = 0;
+    uint64_t m_prefabSourceId = 0;
     uint64_t m_lifetimeGeneration = 0;
 
   private:

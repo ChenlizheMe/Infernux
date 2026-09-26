@@ -12,6 +12,7 @@ void main() {
     v.tangent  = inTangent;
     v.color    = inColor;
     v.texCoord = inTexCoord;
+    v.texCoord1 = inTexCoord1;
 ${VERTEX_CALL}
     SkinInstanceData skin = skinInstances[gl_InstanceIndex];
     mat4 instModel = instanceModels[gl_InstanceIndex];
@@ -105,6 +106,7 @@ ${VERTEX_CALL}
     v_Tangent   = worldTangent;
     v_Color     = v.color;
     v_TexCoord  = v.texCoord;
+    v_TexCoord1 = v.texCoord1;
     v_ViewDepth = 0.0;
     v_LineColor = inxLineVertex ? vec4(v.color, inBoneWeights.y) : vec4(1.0);
     gl_Position = shadowUBO.proj * shadowUBO.view * worldPos;

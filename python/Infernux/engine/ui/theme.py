@@ -296,6 +296,9 @@ class Theme:
     HEADER_HOVERED    : RGBA = (0.28,  0.24,  0.24,  1.0)  # Hovered (red tint)
     HEADER_ACTIVE     : RGBA = (0.32,  0.25,  0.25,  1.0)  # Active (deeper red)
     SELECTION_BG      : RGBA = (0.922, 0.341, 0.341, 1.0)  # Selection bg (theme accent #EB5757)
+    HIERARCHY_ROW_HOVER    : RGBA = (0.28, 0.28, 0.28, 1.0)  # Neutral Unity-style hover
+    # Exact same low-brightness accent overlay used by Project/FileManager selected icons.
+    HIERARCHY_ROW_SELECTED : RGBA = (0.922, 0.341, 0.341, 0.22)
 
     # ══════════════════════════════════════════════════════════════════════
     #  Splitter Colors
@@ -311,9 +314,10 @@ class Theme:
     DRAG_DROP_TARGET        : RGBA = (0.0, 0.0, 0.0, 0.0)  # Drop target highlight
     DND_DROP_OUTLINE        : RGBA = (1.0, 1.0, 1.0, 0.85)  # Drop outline color
     DND_DROP_OUTLINE_THICKNESS: float = 1.5  # Outline thickness (px)
-    DND_REORDER_LINE        : RGBA = (1.0, 1.0, 1.0, 0.90)  # Reorder indicator line
-    DND_REORDER_LINE_THICKNESS: float = 2.0  # Line thickness (px)
-    DND_REORDER_SEPARATOR_H : float = 3.0  # Separator height (px)
+    DND_REORDER_LINE        : RGBA = (1.0, 1.0, 1.0, 1.0)  # One solid-white reorder line
+    DND_REORDER_LINE_THICKNESS: float = 1.0  # Crisp line; no anti-aliased gray fringe
+    DND_REORDER_SEPARATOR_H : float = 8.0  # Invisible hit area; visual line remains 1 px
+    DND_REORDER_HIT_ABOVE   : float = 4.0  # Hit area extending above the insertion line
 
     # ══════════════════════════════════════════════════════════════════════
     #  Console & Log Colors

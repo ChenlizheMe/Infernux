@@ -18,9 +18,9 @@ namespace infernux::vk
     return description;
 }
 
-[[nodiscard]] inline std::array<VkVertexInputAttributeDescription, 7> GetVertexAttributeDescriptions() noexcept
+[[nodiscard]] inline std::array<VkVertexInputAttributeDescription, 8> GetVertexAttributeDescriptions() noexcept
 {
-    std::array<VkVertexInputAttributeDescription, 7> descriptions{};
+    std::array<VkVertexInputAttributeDescription, 8> descriptions{};
     descriptions[0] = {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos)};
     descriptions[1] = {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, normal)};
     descriptions[2] = {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, tangent)};
@@ -28,6 +28,9 @@ namespace infernux::vk
     descriptions[4] = {4, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord)};
     descriptions[5] = {5, 0, VK_FORMAT_R32G32B32A32_UINT, offsetof(Vertex, boneIndices)};
     descriptions[6] = {6, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(Vertex, boneWeights)};
+    // Keep the established skinning locations stable. Secondary/lightmap UV
+    // was added later and deliberately occupies the next free location.
+    descriptions[7] = {7, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(Vertex, texCoord1)};
     return descriptions;
 }
 

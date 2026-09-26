@@ -144,9 +144,22 @@ def build_manifest(
     artifacts: Iterable[tuple[str, Path]],
     results: Iterable[tuple[str, Path]],
     require_clean: bool,
+    require_passed: bool = False,
 ) -> dict[str, object]:
     artifact_entries = [artifact_record(name, path, root) for name, path in artifacts]
     result_entries = [result_record(name, path, root) for name, path in results]
+    if require_passed:
+        for result in result_entries:
+            status = str(result.get("status", "")).casefold()
+            success = result.get("success")
+            # Older acceptance reports only carried status.  Preserve those
+            # reports while rejecting an explicit failed status or false flag.
+            if status != "passed" or success is False:
+                raise ValueError(
+                    "Acceptance result is not passed: "
+                    f"{result['id']} (status={result.get('status', '')!r}, "
+                    f"success={success!r})"
+                )
     all_ids = [str(item["id"]) for item in (*artifact_entries, *result_entries)]
     if len(all_ids) != len(set(all_ids)):
         raise ValueError("Artifact and result identifiers must be globally unique")
@@ -175,6 +188,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--artifact", action="append", default=[], metavar="ID=PATH")
     parser.add_argument("--result", action="append", default=[], metavar="ID=PATH")
     parser.add_argument("--require-clean", action="store_true")
+    parser.add_argument(
+        "--require-passed",
+        action="store_true",
+        help="Reject acceptance results whose status is not passed",
+    )
     return parser
 
 
@@ -188,6 +206,7 @@ def main() -> int:
         artifacts=parse_named_paths(arguments.artifact),
         results=parse_named_paths(arguments.result),
         require_clean=bool(arguments.require_clean),
+        require_passed=bool(arguments.require_passed),
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(

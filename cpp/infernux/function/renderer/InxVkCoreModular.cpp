@@ -28,7 +28,9 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 #include <unordered_set>
+#include <utility>
 
 namespace infernux
 {
@@ -106,7 +108,6 @@ InxVkCoreModular::~InxVkCoreModular()
     if (m_backend.Device().IsValid() && !m_shuttingDown) {
         m_backend.Device().WaitIdle();
     }
-
     // Async preview submissions retain transient buffers and cloned materials.
     // Release those leases while every renderer subsystem and the device are
     // still alive, then destroy both previewers in the controlled order below.
@@ -165,8 +166,10 @@ InxVkCoreModular::~InxVkCoreModular()
     // Explicit destruction in controlled order (avoids double-free from
     // RAII reverse-declaration order when handles are shared across systems).
     m_perObjectBuffers.clear();
+    m_residentVertexBufferCount = 0;
     m_sharedMeshBuffers.clear();
     m_pendingSharedMeshBuffers.clear();
+    m_assetMeshViewKeys.clear();
     m_pendingTextureAssetLoads.clear();
     m_pendingTextureStagingLoads.clear();
     m_pendingTextureGpuUploads.clear();
@@ -175,6 +178,7 @@ InxVkCoreModular::~InxVkCoreModular()
     // them before the residency cache so no TextureGpuView can outlive the RHI
     // device through a preview-owned descriptor or asynchronous readback.
     m_gpuMeshPreview.reset();
+    m_gpuAnimationPreview.reset();
     m_gpuMaterialPreview.reset();
     // ShaderProgram keeps the table layout as a device-global ABI object. Drop
     // that reference before destroying the table's VkDescriptorSetLayout.
@@ -209,6 +213,9 @@ InxVkCoreModular::~InxVkCoreModular()
     m_pipelineManager.ClearTrackedNonPipelineResources();
     m_pipelineManager.Destroy();
 
+    // Native residency entries can outlive their Python ComputeHost leases.
+    // Their buffers retire against this queue, so destroy it after all consumers.
+    m_computeQueue.Destroy();
     m_backend.Presentation().Destroy();
     m_backend.Queues().Destroy();
 
@@ -233,6 +240,19 @@ bool InxVkCoreModular::Init(InxAppMetadata appMetaData, InxAppMetadata rendererM
     // Configure device (store for use in PrepareSurface)
     m_deviceConfig.appName = appMetaData.appName ? appMetaData.appName : "Infernux App";
     m_deviceConfig.engineName = rendererMetaData.appName ? rendererMetaData.appName : "Infernux";
+    if (vkWindowExtCount == 0 || vkWindowExts == nullptr) {
+        INXLOG_ERROR("Vulkan window initialization did not provide instance extensions");
+        return false;
+    }
+    m_deviceConfig.windowInstanceExtensions.clear();
+    m_deviceConfig.windowInstanceExtensions.reserve(vkWindowExtCount);
+    for (uint32_t index = 0; index < vkWindowExtCount; ++index) {
+        if (vkWindowExts[index] == nullptr || vkWindowExts[index][0] == '\0') {
+            INXLOG_ERROR("Vulkan window initialization provided an invalid instance extension at index ", index);
+            return false;
+        }
+        m_deviceConfig.windowInstanceExtensions.emplace_back(vkWindowExts[index]);
+    }
 
 #if INFERNUX_VULKAN_VALIDATION_LAYERS
     m_deviceConfig.enableValidationLayers = true;
@@ -248,6 +268,13 @@ bool InxVkCoreModular::Init(InxAppMetadata appMetaData, InxAppMetadata rendererM
     m_instance = m_backend.Device().GetInstance();
 
     return true;
+}
+
+rhi::ComputeQueue &InxVkCoreModular::PrepareComputeQueue()
+{
+    if (!m_computeQueue.IsInitialized() && !m_computeQueue.Initialize(m_backend.Device(), m_backend.Queues()))
+        throw std::runtime_error("Failed to prepare host compute queue");
+    return m_computeQueue;
 }
 
 bool InxVkCoreModular::PrepareSurface()
@@ -415,20 +442,7 @@ bool InxVkCoreModular::RecreatePresentationSurface(const std::function<bool(VkIn
     if (!createSurface || !m_backend.Device().IsValid() || m_instance == VK_NULL_HANDLE)
         return false;
 
-    // Mobile surface replacement is rare and is a hard presentation boundary.
-    // A full drain is intentional: no command may retain an image from the
-    // Android SurfaceView that was destroyed while the app was backgrounded.
-    m_backend.Device().WaitIdle();
-    ReleaseMaterialPassResolutionCache();
-    DestroyGuiRenderGraphs();
-    m_depthImage.reset();
-    m_backend.Presentation().Destroy();
-
-    m_backend.Device().SetExternalSurface(VK_NULL_HANDLE);
-    if (m_surface != VK_NULL_HANDLE) {
-        SDL_Vulkan_DestroySurface(m_instance, m_surface, nullptr);
-        m_surface = VK_NULL_HANDLE;
-    }
+    SuspendPresentationSurface();
 
     VkSurfaceKHR replacement = VK_NULL_HANDLE;
     if (!createSurface(m_instance, &replacement) || replacement == VK_NULL_HANDLE) {
@@ -461,6 +475,29 @@ bool InxVkCoreModular::RecreatePresentationSurface(const std::function<bool(VkIn
     CreateDepthResources();
     INXLOG_INFO("Platform presentation surface recreated: ", extent.width, "x", extent.height);
     return true;
+}
+
+void InxVkCoreModular::SuspendPresentationSurface()
+{
+    // SurfaceView destruction is a hard ownership boundary. Finish every
+    // command that can reference a presentation image before releasing any
+    // swapchain, framebuffer, or VkSurfaceKHR object. The resume path creates
+    // one entirely new generation; no old image or semaphore is retried.
+    if (m_backend.Device().IsValid()) {
+        m_backend.Device().WaitIdle();
+        ReleaseMaterialPassResolutionCache();
+        DestroyGuiRenderGraphs();
+        m_depthImage.reset();
+        auto &presentation = m_backend.Presentation();
+        presentation.SetSkipWaitIdle(true);
+        presentation.Destroy();
+        presentation.SetSkipWaitIdle(false);
+        m_backend.Device().SetExternalSurface(VK_NULL_HANDLE);
+    }
+    if (m_surface != VK_NULL_HANDLE) {
+        SDL_Vulkan_DestroySurface(m_instance, m_surface, nullptr);
+        m_surface = VK_NULL_HANDLE;
+    }
 }
 
 void InxVkCoreModular::PreparePipeline()
@@ -545,6 +582,7 @@ bool InxVkCoreModular::PublishShaderProgramArtifact(const ShaderProgramArtifact 
     }
 
     if (publish.replacedProgram) {
+        m_pendingUIProgramRelease.erase(*publish.replacedProgram);
         auto previousPrograms = m_shaderCache.GetProgramCache().TakePrograms(*publish.replacedProgram);
         for (auto &previous : previousPrograms) {
             m_deletionQueue.Retire([retired = std::move(previous)]() mutable { retired.reset(); });
@@ -562,10 +600,81 @@ bool InxVkCoreModular::HasShaderProgramArtifact(const ShaderProgramKey &programK
 }
 
 std::shared_ptr<const ShaderProgramArtifact>
-InxVkCoreModular::CopyShaderProgramArtifact(const ShaderStagePair &stages) const
+InxVkCoreModular::ShareShaderProgramArtifact(const ShaderStagePair &stages) const
+{
+    return m_shaderCache.ShareProgramArtifact(stages);
+}
+
+bool InxVkCoreModular::ReleaseUIShaderProgramArtifact(const ShaderProgramKey &key)
+{
+    if (m_uiProgramOwners.find(key) != m_uiProgramOwners.end())
+        return false;
+    const auto current = m_shaderCache.ShareProgramArtifact(key.stages);
+    if (!current || current->key != key) {
+        m_pendingUIProgramRelease.erase(key);
+        return false;
+    }
+    if (current->domain != ShaderProgramDomain::ScreenUI && current->domain != ShaderProgramDomain::WorldUI)
+        return false;
+    if (m_materialPipelineManagerInitialized && m_materialPipelineManager.HasMaterialProgramOwner(key)) {
+        m_pendingUIProgramRelease.insert(key);
+        return false;
+    }
+    m_pendingUIProgramRelease.erase(key);
+    auto artifact = m_shaderCache.TakeUIProgramArtifact(key);
+    if (!artifact)
+        return false;
+    auto programs = m_shaderCache.GetProgramCache().TakePrograms(key);
+    for (auto &program : programs) {
+        m_deletionQueue.Retire([retired = std::move(program)]() mutable { retired.reset(); });
+        ++m_shaderHotReloadRetirementCount;
+    }
+    // The UI pipeline is retired by its renderer on the same submission serial.
+    // Shader modules and the last CPU SPIR-V owner follow that serial too.
+    m_deletionQueue.Retire([retired = std::move(artifact)]() mutable { retired.reset(); });
+    return true;
+}
+
+void InxVkCoreModular::AcquireUIShaderProgramOwner(const ShaderProgramKey &key)
+{
+    if (!key.IsValid())
+        throw std::invalid_argument("UI shader program owner requires a valid program key");
+    ++m_uiProgramOwners[key];
+    m_pendingUIProgramRelease.erase(key);
+}
+
+void InxVkCoreModular::ReleaseUIShaderProgramOwner(const ShaderProgramKey &key)
+{
+    const auto owner = m_uiProgramOwners.find(key);
+    if (owner == m_uiProgramOwners.end())
+        throw std::logic_error("UI shader program released without an owner");
+    if (--owner->second != 0)
+        return;
+    m_uiProgramOwners.erase(owner);
+    (void)ReleaseUIShaderProgramArtifact(key);
+}
+
+void InxVkCoreModular::SweepReleasedUIShaderProgramArtifacts()
+{
+    if (m_pendingUIProgramRelease.empty())
+        return;
+    const std::vector<ShaderProgramKey> pending(m_pendingUIProgramRelease.begin(), m_pendingUIProgramRelease.end());
+    for (const auto &key : pending)
+        (void)ReleaseUIShaderProgramArtifact(key);
+}
+
+const ShaderProgramArtifact *
+InxVkCoreModular::ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material,
+                                               const ShaderStagePair &stages, ShaderProgramDomain expectedDomain)
 {
     const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
-    return artifact ? std::make_shared<const ShaderProgramArtifact>(*artifact) : nullptr;
+    if (!artifact && material && m_shaderProgramArtifactResolver) {
+        m_shaderProgramArtifactResolver(material, expectedDomain);
+        artifact = m_shaderCache.FindProgramArtifact(stages);
+    }
+    if (artifact && artifact->domain != expectedDomain)
+        throw std::runtime_error("Material shader domain mismatch before non-UI resolution");
+    return artifact;
 }
 
 void InxVkCoreModular::StoreShaderRenderMeta(const std::string &shaderId, const std::string &cullMode,
@@ -995,6 +1104,8 @@ bool InxVkCoreModular::RecordFrameCommands(VkCommandBuffer cmdBuf, uint32_t imag
     const auto gpuGuiRegion = m_gpuTimestampQueries.BeginRegion(cmdBuf, "GUI", VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
 #endif
     guiGraph.Execute(cmdBuf);
+    if (!RecordPresentationReadback(cmdBuf, imageIndex))
+        return false;
 #if INFERNUX_FRAME_PROFILE
     m_gpuTimestampQueries.EndRegion(cmdBuf, gpuGuiRegion, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 #endif
@@ -1010,6 +1121,47 @@ bool InxVkCoreModular::RecordFrameCommands(VkCommandBuffer cmdBuf, uint32_t imag
     return true;
 }
 
+void InxVkCoreModular::RequestPresentationReadback()
+{
+    m_presentationReadbackRequested = true;
+}
+
+std::shared_ptr<vk::ImageReadbackTicket> InxVkCoreModular::ConsumePresentationReadback()
+{
+    return std::exchange(m_presentationReadback, {});
+}
+
+std::string InxVkCoreModular::ConsumePresentationReadbackError()
+{
+    return std::exchange(m_presentationReadbackError, {});
+}
+
+bool InxVkCoreModular::RecordPresentationReadback(VkCommandBuffer commandBuffer, uint32_t imageIndex)
+{
+    if (!m_presentationReadbackRequested)
+        return true;
+    m_presentationReadbackRequested = false;
+    m_presentationReadback.reset();
+    m_presentationReadbackError.clear();
+
+    if (!m_backend.Presentation().SupportsTransferSource()) {
+        m_presentationReadbackError = "The Vulkan presentation surface does not support engine-side capture";
+        return true;
+    }
+
+    try {
+        const VkExtent2D extent = m_backend.Presentation().GetExtent();
+        m_presentationReadback = m_resourceManager.RecordFrameImageReadback(
+            commandBuffer, m_backend.Presentation().GetImage(imageIndex), VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            extent.width, extent.height, m_backend.Presentation().GetImageFormat(),
+            m_backend.Queues().GetFrameCompletionEpoch(m_currentFrame));
+    } catch (const std::exception &exc) {
+        m_presentationReadbackError = exc.what();
+    }
+    return true;
+}
+
 // ============================================================================
 // Frame Synchronization & Deferred Deletion
 // ============================================================================
@@ -1017,9 +1169,18 @@ bool InxVkCoreModular::RecordFrameCommands(VkCommandBuffer cmdBuf, uint32_t imag
 void InxVkCoreModular::WaitForCurrentFrame()
 {
     const uint32_t frameSlot = GetCurrentFrameSlot();
-    if (m_backend.Queues().WaitForGraphicsFrameSlot(frameSlot, [this, frameSlot](uint32_t elapsedMilliseconds) {
+#if INFERNUX_FRAME_PROFILE
+    const auto waitStarted = std::chrono::high_resolution_clock::now();
+#endif
+    const bool completed =
+        m_backend.Queues().WaitForGraphicsFrameSlot(frameSlot, [this, frameSlot](uint32_t elapsedMilliseconds) {
             m_submissionExecutor.LogFrameWaitDiagnostics(frameSlot, elapsedMilliseconds);
-        })) {
+        });
+#if INFERNUX_FRAME_PROFILE
+    m_drawSubMs[7] +=
+        std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - waitStarted).count();
+#endif
+    if (completed) {
         m_submissionExecutor.CompleteFrame(frameSlot);
         (void)m_backend.Queues().CompleteFrameSlot(frameSlot);
     }
@@ -1027,6 +1188,7 @@ void InxVkCoreModular::WaitForCurrentFrame()
 
 void InxVkCoreModular::CollectRetiredGpuResources()
 {
+    m_computeQueue.Collect();
 #if INFERNUX_FRAME_PROFILE
     (void)m_gpuTimestampQueries.CollectCompletedFrame(m_currentFrame);
 #endif
@@ -1038,8 +1200,13 @@ void InxVkCoreModular::CollectRetiredGpuResources()
     (void)m_backend.Device().GetRhiDevice().CollectDescriptorRetirements(completedEpoch);
     (void)m_backend.Device().GetRhiDevice().CollectResourceRetirements(completedEpoch);
     (void)m_deletionQueue.Collect(completedEpoch);
-    if ((m_ensureFrameCounter & 63u) == 0u)
+    if ((m_ensureFrameCounter & 63u) == 0u) {
+        if (m_materialPipelineManagerInitialized) {
+            (void)m_materialPipelineManager.GetDescriptorManager().CollectExpiredRendererDescriptorSets();
+        }
         CollectUnusedShadowMaterialBindings();
+        CollectUnusedMaterialTextureOwners();
+    }
     if (m_materialPipelineManagerInitialized)
         (void)m_materialPipelineManager.CollectUnusedRenderData();
     (void)m_textureCache.TrimToBudget();

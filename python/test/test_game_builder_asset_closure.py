@@ -58,7 +58,7 @@ def test_all_imported_assets_join_runtime_product_closure(tmp_path):
     (assets / "Unused.mat").write_text("{}", encoding="utf-8")
     (project / "ProjectSettings").mkdir(parents=True)
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["scene"]}),
         encoding="utf-8",
     )
     _write_asset_index(
@@ -77,6 +77,32 @@ def test_all_imported_assets_join_runtime_product_closure(tmp_path):
     assert set(selected) == {"scene", "config", "material", "unused"}
 
 
+def test_selected_package_products_and_dependencies_use_the_project_closure(tmp_path):
+    project = tmp_path / "Project"
+    paths = ("Assets/Main.scene", "Packages/a/runtime/Monitor.rendertexture",
+             "Packages/shared/runtime/Surface.png", "Packages/disabled/runtime/Unused.rendertexture")
+    for relative in paths:
+        path = project / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+    settings = project / "ProjectSettings"
+    settings.mkdir()
+    (settings / "BuildSettings.json").write_text(
+        json.dumps({"scene_guids": ["scene"]}), encoding="utf-8"
+    )
+    _write_asset_index(project, [
+        _entry("scene", paths[0]), _entry("monitor", paths[1], ["texture"]),
+        _entry("texture", paths[2]), _entry("disabled", paths[3]),
+    ])
+    builder = GameBuilder(str(project), str(tmp_path / "Build"))
+    entries = load_asset_index(project)
+    assert set(builder._collect_library_asset_entries(entries)) == {"scene"}
+    selected = builder._collect_library_asset_entries(entries, extra_roots=("monitor",))
+    assert set(selected) == {"scene", "monitor", "texture"}
+    with pytest.raises(RuntimeError, match="absent from the current catalog"):
+        builder._collect_library_asset_entries(entries, extra_roots=("missing",))
+
+
 def test_cook_stages_all_imported_assets_but_not_unindexed_sources(tmp_path):
     project = tmp_path / "Project"
     assets = project / "Assets"
@@ -86,7 +112,7 @@ def test_cook_stages_all_imported_assets_but_not_unindexed_sources(tmp_path):
     (assets / "Unused.mat").write_text("unused", encoding="utf-8")
     (project / "ProjectSettings").mkdir(parents=True)
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["scene"]}),
         encoding="utf-8",
     )
     _write_asset_index(
@@ -117,7 +143,7 @@ def test_cook_uses_current_assetindex_as_the_imported_assets_snapshot(tmp_path):
     (runtime / "unindexed.bin").write_bytes(b"unindexed")
     (project / "ProjectSettings").mkdir(parents=True)
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["scene"]}),
         encoding="utf-8",
     )
     _write_asset_index(
@@ -143,13 +169,13 @@ def test_cook_rejects_build_scene_absent_from_current_assetindex(tmp_path):
     scene.write_text("{}", encoding="utf-8")
     (project / "ProjectSettings").mkdir(parents=True)
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["missing-scene-guid"]}),
         encoding="utf-8",
     )
     _write_asset_index(project, [])
     builder = GameBuilder(str(project), str(tmp_path / "Build"))
 
-    with pytest.raises(RuntimeError, match="BuildSettings scene is absent"):
+    with pytest.raises(ValueError, match="absent from AssetIndex"):
         builder._collect_library_asset_entries(load_asset_index(str(project)))
 
 
@@ -160,7 +186,7 @@ def test_cook_rejects_dependency_absent_from_current_assetindex(tmp_path):
     scene.write_text("{}", encoding="utf-8")
     (project / "ProjectSettings").mkdir(parents=True)
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": ["Assets/Main.scene"]}),
+        json.dumps({"scene_guids": ["scene"]}),
         encoding="utf-8",
     )
     _write_asset_index(

@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Optional
 
 # Re-export MaterialRef from core so existing callers still work.
@@ -25,6 +27,21 @@ from Infernux.core.asset_ref import MaterialRef  # noqa: F401
 from Infernux.debug import Debug
 
 _log = logging.getLogger("Infernux.ref")
+_retiring_worlds = ContextVar('infernux_retiring_reference_worlds', default=frozenset())
+
+
+@contextmanager
+def retiring_scene_references(world_id: int):
+    """Keep retired callbacks from resolving IDs in their replacement Scene.
+
+    Other resident worlds remain accessible. This scope ends before the new
+    Scene runs, so ordinary persistent references still reconnect after reload.
+    """
+    token = _retiring_worlds.set(_retiring_worlds.get() | {int(world_id)})
+    try:
+        yield
+    finally:
+        _retiring_worlds.reset(token)
 
 
 def _iter_reference_scenes():
@@ -37,16 +54,23 @@ def _iter_reference_scenes():
         return ()
 
     scenes = []
-    for getter_name in ("get_active_scene", "get_runtime_persistent_scene"):
-        getter = getattr(manager, getter_name, None)
-        if not callable(getter):
-            continue
-        try:
-            scene = getter()
-        except RuntimeError:
-            continue
-        if scene is not None and all(scene is not existing for existing in scenes):
-            scenes.append(scene)
+    world_ids: set[int] = set()
+
+    def append(scene) -> None:
+        if scene is None:
+            return
+        world_id = int(scene.world_id)
+        if world_id in world_ids or world_id in _retiring_worlds.get():
+            return
+        world_ids.add(world_id)
+        scenes.append(scene)
+
+    append(manager.get_active_scene())
+    for index in range(int(manager.scene_count)):
+        append(manager.get_scene_at(index))
+    append(manager.get_runtime_persistent_scene())
+    for scene in manager._get_preview_scenes():
+        append(scene)
     return tuple(scenes)
 
 
@@ -219,19 +243,22 @@ class PrefabRef:
     """Reference to a prefab asset stored on disk.
 
     Unlike ``GameObjectRef`` which points to a live scene object,
-    ``PrefabRef`` stores the asset GUID and file-path hint of a
-    ``.prefab`` file.  Use :meth:`instantiate` to create a new
-    scene object from the prefab.
+    ``PrefabRef`` stores only the asset GUID of a ``.prefab`` file.  The
+    editor may resolve that GUID to a current path for display, but a path is
+    never retained as identity or used as a runtime fallback.  Use
+    :meth:`instantiate` to create a new scene object from the prefab.
 
     Compatible with ``FieldType.GAME_OBJECT`` — a single field can
     hold either a ``GameObjectRef`` or a ``PrefabRef``.
     """
 
-    __slots__ = ("_guid", "_path_hint", "_name_cache", "_name_cache_path", "_name_cache_stamp")
+    __slots__ = ("_guid", "_name_cache", "_name_cache_path", "_name_cache_stamp")
 
     def __init__(self, guid: str = "", path_hint: str = ""):
-        self._guid: str = guid
-        self._path_hint: str = path_hint
+        self._guid: str = str(guid or "").strip()
+        # ``path_hint`` remains an accepted keyword so old documents and
+        # clipboard payloads are silently ignored.  Authoring entry points
+        # must resolve paths to a GUID before constructing the reference.
         self._name_cache: str = ""
         self._name_cache_path: str = ""
         self._name_cache_stamp: tuple[int, int] | None = None
@@ -239,16 +266,15 @@ class PrefabRef:
     # -- internal helpers --------------------------------------------------
 
     def _resolve_current_path(self) -> str:
-        if self._guid:
-            db = _get_prefab_asset_database()
-            if db is not None:
-                try:
-                    resolved = db.get_path_from_guid(self._guid) or ""
-                except Exception:
-                    resolved = ""
-                if resolved:
-                    self._path_hint = resolved
-        return self._path_hint
+        if not self._guid:
+            return ""
+        db = _get_prefab_asset_database()
+        if db is None:
+            return ""
+        try:
+            return str(db.get_path_from_guid(self._guid) or "")
+        except Exception:
+            return ""
 
     @staticmethod
     def _get_file_stamp(file_path: str) -> tuple[int, int] | None:
@@ -340,22 +366,22 @@ class PrefabRef:
 
     def _serialize(self) -> dict:
         from .value_document import make_asset_ref
-        return make_asset_ref("Prefab", self._guid, self._path_hint)
+        return make_asset_ref("Prefab", self._guid)
 
     @classmethod
     def _from_dict(cls, guid: str, path_hint: str = "") -> "PrefabRef":
-        return cls(guid=guid, path_hint=path_hint)
+        return cls(guid=guid)
 
     # -- dunder helpers ----------------------------------------------------
 
     def __bool__(self) -> bool:
-        return bool(self._guid or self._path_hint)
+        return bool(self._guid)
 
     def __copy__(self):
-        return type(self)(guid=self._guid, path_hint=self._path_hint)
+        return type(self)(guid=self._guid)
 
     def __deepcopy__(self, memo):
-        copied = type(self)(guid=self._guid, path_hint=self._path_hint)
+        copied = type(self)(guid=self._guid)
         memo[id(self)] = copied
         return copied
 
@@ -363,11 +389,11 @@ class PrefabRef:
         if other is None:
             return not self.__bool__()
         if isinstance(other, PrefabRef):
-            return self._guid == other._guid and self._path_hint == other._path_hint
+            return self._guid == other._guid
         return NotImplemented
 
     def __hash__(self):
-        return hash((self._guid, self._path_hint))
+        return hash(self._guid)
 
     def __repr__(self):
         return f"PrefabRef(guid='{self._guid}', path='{self.path_hint}')"
@@ -406,9 +432,23 @@ def _iter_live_components_on_game_object(game_object) -> list[Any]:
     return result
 
 
-def _resolve_component_on_game_object(game_object, component_type: str = ""):
+def _resolve_component_on_game_object(game_object, component_type: str = "", component_id: int = 0):
     """Resolve a component on *game_object* by type name using internal rules."""
     if game_object is None:
+        return None
+
+    if component_id:
+        from .builtin_component import BuiltinComponent
+        for component in game_object.get_components():
+            if component.component_id != component_id:
+                continue
+            name = getattr(component, "type_name", type(component).__name__)
+            if component_type and name != component_type:
+                return None
+            wrapper = BuiltinComponent._builtin_registry.get(name)
+            if wrapper is not None and not isinstance(component, BuiltinComponent):
+                return wrapper._get_or_create_wrapper(component, game_object)
+            return component
         return None
 
     live_components = _iter_live_components_on_game_object(game_object)
@@ -480,8 +520,8 @@ def _get_component_handle(component):
 class ComponentRef:
     """Null-safe reference to a component on a specific GameObject.
 
-    Stores the target GameObject's persistent ID and the component type
-    name.  Lazily resolves the live component instance at access time.
+    Stores the owning GameObject and exact component identities. Legacy
+    type-only references remain readable; newly assigned instances bind an ID.
 
     Usage::
 
@@ -496,11 +536,16 @@ class ComponentRef:
     Serialization uses the current typed value-document schema.
     """
 
-    __slots__ = ("_go_id", "_component_type", "_cached", "_cached_handle")
+    __slots__ = ("_go_id", "_component_type", "_component_id", "_cached", "_cached_handle")
 
-    def __init__(self, *, go_id: int = 0, component_type: str = ""):
+    def __init__(self, component=None, *, go_id: int = 0, component_type: str = "", component_id: int = 0):
+        if component is not None:
+            go_id = component.game_object.id
+            component_type = getattr(component, "type_name", type(component).__name__)
+            component_id = component.component_id
         self._go_id: int = int(go_id)
         self._component_type: str = component_type
+        self._component_id: int = int(component_id)
         self._cached = None
         self._cached_handle = None
 
@@ -519,7 +564,7 @@ class ComponentRef:
                 if go is None:
                     continue
 
-                found = _resolve_component_on_game_object(go, self._component_type)
+                found = _resolve_component_on_game_object(go, self._component_type, self._component_id)
                 if found is not None:
                     self._cached = found
                     self._cached_handle = _get_component_handle(found)
@@ -536,32 +581,26 @@ class ComponentRef:
 
     def resolve(self):
         """Return the live component instance, or ``None`` if unavailable."""
-        # Quick validity check on cached value
-        if self._cached is not None:
+        if self._cached_handle is not None:
             try:
-                if self._cached_handle is not None:
-                    if not any(
-                        scene.resolve_component(self._cached_handle) is not None
-                        for scene in _iter_reference_scenes()
-                    ):
-                        self._cached = None
-                        self._cached_handle = None
-                    else:
-                        return self._cached
-                elif hasattr(self._cached, '_is_destroyed') and self._cached._is_destroyed:
-                    self._cached = None
-                else:
-                    return self._cached
+                alive = any(
+                    scene.resolve_component(self._cached_handle) is not None
+                    for scene in _iter_reference_scenes()
+                )
             except (ImportError, RuntimeError, AttributeError):
+                alive = False
+            if not alive:
                 self._cached = None
                 self._cached_handle = None
+        if self._cached is not None and not getattr(self._cached, '_is_destroyed', False):
+            return self._cached
         return self._resolve()
 
     def __copy__(self):
-        return type(self)(go_id=self._go_id, component_type=self._component_type)
+        return type(self)(go_id=self._go_id, component_type=self._component_type, component_id=self._component_id)
 
     def __deepcopy__(self, memo):
-        copied = type(self)(go_id=self._go_id, component_type=self._component_type)
+        copied = type(self)(go_id=self._go_id, component_type=self._component_type, component_id=self._component_id)
         memo[id(self)] = copied
         return copied
 
@@ -574,6 +613,10 @@ class ComponentRef:
     @property
     def component_type(self) -> str:
         return self._component_type
+
+    @property
+    def component_id(self) -> int:
+        return self._component_id
 
     @property
     def display_name(self) -> str:
@@ -598,13 +641,19 @@ class ComponentRef:
 
     def _serialize(self) -> dict:
         from .value_document import make_component_ref
-        return make_component_ref(self._go_id, self._component_type)
+        identity = self._component_id
+        if not identity and self._go_id:
+            component = self.resolve()
+            if component is not None:
+                identity = component.component_id
+        return make_component_ref(self._go_id, self._component_type, identity)
 
     @classmethod
     def _from_dict(cls, data: dict) -> "ComponentRef":
         return cls(
             go_id=data["game_object_id"],
             component_type=data["component_type"],
+            component_id=data.get("component_id", 0),
         )
 
     # -- dunder helpers ----------------------------------------------------
@@ -632,11 +681,12 @@ class ComponentRef:
             return self._go_id == 0
         if isinstance(other, ComponentRef):
             return (self._go_id == other._go_id
-                    and self._component_type == other._component_type)
+                    and self._component_type == other._component_type
+                    and self._component_id == other._component_id)
         return NotImplemented
 
     def __hash__(self):
-        return hash((self._go_id, self._component_type))
+        return hash((self._go_id, self._component_type, self._component_id))
 
     def __repr__(self):
         comp = self.resolve()

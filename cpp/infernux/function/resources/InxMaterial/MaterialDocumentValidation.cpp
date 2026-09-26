@@ -20,19 +20,13 @@ using json = nlohmann::json;
     throw std::invalid_argument(std::string(path) + ": " + message);
 }
 
-void RequireExactFields(const json &document, const std::unordered_set<std::string> &required,
-                        const std::unordered_set<std::string> &optional, std::string_view path)
+void RequireFields(const json &document, const std::unordered_set<std::string> &required, std::string_view path)
 {
     if (!document.is_object())
         Fail(path, "must be an object");
     for (const auto &field : required) {
         if (!document.contains(field))
             Fail(path, "missing required field '" + field + "'");
-    }
-    for (const auto &[field, value] : document.items()) {
-        (void)value;
-        if (required.find(field) == required.end() && optional.find(field) == optional.end())
-            Fail(path, "contains unknown field '" + field + "'");
     }
 }
 
@@ -79,7 +73,7 @@ void ValidateStencil(const json &document, std::string_view path)
     static const std::unordered_set<std::string> required = {
         "failOp", "passOp", "depthFailOp", "compareOp", "compareMask", "writeMask", "reference",
     };
-    RequireExactFields(document, required, {}, path);
+    RequireFields(document, required, path);
     RequireIntegerRange(document, "failOp", static_cast<int>(MaterialStencilOp::Keep),
                         static_cast<int>(MaterialStencilOp::DecrementAndWrap), path);
     RequireIntegerRange(document, "passOp", static_cast<int>(MaterialStencilOp::Keep),
@@ -120,8 +114,7 @@ void ValidateRenderState(const json &document, std::string_view path)
         "renderQueue",
         "stencilTestEnable",
     };
-    static const std::unordered_set<std::string> optional = {"stencilFront", "stencilBack"};
-    RequireExactFields(document, required, optional, path);
+    RequireFields(document, required, path);
 
     for (const char *field : {"depthBiasEnable", "depthTestEnable", "depthWriteEnable", "blendEnable",
                               "alphaClipEnabled", "stencilTestEnable"}) {
@@ -176,13 +169,13 @@ void ValidateProperty(const std::string &name, const json &document, std::string
 {
     static const std::unordered_set<std::string> textureFields = {"type", "guid"};
     static const std::unordered_set<std::string> valueFields = {"type", "value"};
-    static const std::unordered_set<std::string> metadataFields = {"hdr", "range"};
     if (name.empty())
         Fail(path, "property name must not be empty");
     if (!document.is_object() || !document.contains("type") || !document["type"].is_number_integer())
         Fail(path, "property must contain an integer type");
     const int type = RequireInteger(document, "type", path);
-    if (type < static_cast<int>(MaterialPropertyType::Float) || type > static_cast<int>(MaterialPropertyType::Color)) {
+    if (type < static_cast<int>(MaterialPropertyType::Float) ||
+        type > static_cast<int>(MaterialPropertyType::Float4Array)) {
         Fail(path, "property type is out of range");
     }
 
@@ -204,19 +197,43 @@ void ValidateProperty(const std::string &name, const json &document, std::string
             Fail(path, "Int property range bounds must be integers");
     }
     if (propertyType == MaterialPropertyType::Texture2D) {
-        RequireExactFields(document, textureFields, metadataFields, path);
+        RequireFields(document, textureFields, path);
         if (!document["guid"].is_string())
             Fail(path, "guid must be a string");
         return;
     }
 
-    RequireExactFields(document, valueFields, metadataFields, path);
+    RequireFields(document, valueFields, path);
     if (propertyType == MaterialPropertyType::Int) {
         RequireInteger(document, "value", path);
         return;
     }
     if (propertyType == MaterialPropertyType::Float) {
         RequireFiniteNumber(document, "value", path);
+        return;
+    }
+    if (propertyType == MaterialPropertyType::FloatArray) {
+        const auto &values = document["value"];
+        if (!values.is_array() || values.empty())
+            Fail(path, "FloatArray value must be a non-empty array");
+        for (const auto &value : values) {
+            if (!value.is_number() || !std::isfinite(value.get<double>()))
+                Fail(path, "FloatArray value must contain only finite numbers");
+        }
+        return;
+    }
+    if (propertyType == MaterialPropertyType::Float4Array) {
+        const auto &values = document["value"];
+        if (!values.is_array() || values.empty())
+            Fail(path, "Float4Array value must be a non-empty array");
+        for (const auto &value : values) {
+            if (!value.is_array() || value.size() != 4)
+                Fail(path, "Float4Array value must contain four-component vectors");
+            for (const auto &component : value) {
+                if (!component.is_number() || !std::isfinite(component.get<double>()))
+                    Fail(path, "Float4Array value must contain only finite numbers");
+            }
+        }
         return;
     }
 
@@ -251,9 +268,9 @@ void ValidateProperty(const std::string &name, const json &document, std::string
 
 void ValidateShaderReference(const json &document, std::string_view path)
 {
-    static const std::unordered_set<std::string> fields = {"guid", "shader_id", "path_hint"};
-    RequireExactFields(document, fields, {}, path);
-    for (const char *field : {"guid", "shader_id", "path_hint"}) {
+    static const std::unordered_set<std::string> fields = {"guid", "shader_id"};
+    RequireFields(document, fields, path);
+    for (const char *field : {"guid", "shader_id"}) {
         if (!document[field].is_string())
             Fail(path, std::string(field) + " must be a string");
     }
@@ -261,9 +278,27 @@ void ValidateShaderReference(const json &document, std::string_view path)
         document["shader_id"].get_ref<const std::string &>().empty()) {
         Fail(path, "requires guid or shader_id");
     }
-    if (document["guid"].get_ref<const std::string &>().empty() &&
-        !document["path_hint"].get_ref<const std::string &>().empty()) {
-        Fail(path, "path_hint is non-authoritative and cannot replace a shader asset GUID");
+}
+
+void ValidateTextureSamplers(const json &samplers, const json &properties, std::string_view path)
+{
+    static const std::unordered_set<std::string> fields = {
+        "minFilter", "magFilter", "mipFilter", "addressU", "addressV", "addressW",
+    };
+    if (!samplers.is_object())
+        Fail(path, "must be an object");
+    for (const auto &[name, sampler] : samplers.items()) {
+        const std::string samplerPath = std::string(path) + "." + name;
+        if (!properties.contains(name) ||
+            properties.at(name).at("type").get<int>() != static_cast<int>(MaterialPropertyType::Texture2D))
+            Fail(samplerPath, "must reference an existing Texture2D property");
+        RequireFields(sampler, fields, samplerPath);
+        for (const char *field : {"minFilter", "magFilter", "mipFilter"})
+            RequireIntegerRange(sampler, field, static_cast<int>(MaterialSamplerFilter::Inherit),
+                                static_cast<int>(MaterialSamplerFilter::Linear), samplerPath);
+        for (const char *field : {"addressU", "addressV", "addressW"})
+            RequireIntegerRange(sampler, field, static_cast<int>(MaterialSamplerAddress::Inherit),
+                                static_cast<int>(MaterialSamplerAddress::Mirror), samplerPath);
     }
 }
 
@@ -274,20 +309,15 @@ void ValidateMaterialDocument(const nlohmann::json &document, std::string_view p
     static const std::unordered_set<std::string> required = {
         "name", "builtin", "shaders", "renderState", "properties",
     };
-    static const std::unordered_set<std::string> optional = {
-        "passTag",
-        "renderStateOverrides",
-        "_shader_property_order",
-    };
     static const std::unordered_set<std::string> shaderFields = {"vertex", "fragment"};
-    RequireExactFields(document, required, optional, path);
+    RequireFields(document, required, path);
     if (!document["name"].is_string())
         Fail(path, "name must be a string");
     if (!document["builtin"].is_boolean())
         Fail(path, "builtin must be a boolean");
 
     const std::string shadersPath = std::string(path) + ".shaders";
-    RequireExactFields(document["shaders"], shaderFields, {}, shadersPath);
+    RequireFields(document["shaders"], shaderFields, shadersPath);
     ValidateShaderReference(document["shaders"]["vertex"], shadersPath + ".vertex");
     ValidateShaderReference(document["shaders"]["fragment"], shadersPath + ".fragment");
 
@@ -304,6 +334,9 @@ void ValidateMaterialDocument(const nlohmann::json &document, std::string_view p
         Fail(path, "properties must be an object");
     for (const auto &[name, property] : document["properties"].items())
         ValidateProperty(name, property, std::string(path) + ".properties." + name);
+    if (document.contains("textureSamplers"))
+        ValidateTextureSamplers(document["textureSamplers"], document["properties"],
+                                std::string(path) + ".textureSamplers");
 
     if (document.contains("_shader_property_order")) {
         const auto &order = document["_shader_property_order"];

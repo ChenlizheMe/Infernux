@@ -9,6 +9,7 @@
 #include "vk/RhiVulkanTypes.h"
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxMesh/InxMesh.h>
 #include <function/scene/Scene.h>
 #include <function/scene/SceneRenderBridge.h>
 
@@ -44,6 +45,11 @@ void ScriptableRenderContext::ResetProfileSnapshot()
 // Construction
 // ============================================================================
 
+int ScriptableRenderContext::GetOutputSamples() const noexcept
+{
+    return m_graph && m_graph->HasOutputTexture() ? static_cast<int>(m_graph->GetRenderViewContext().samples) : 0;
+}
+
 ScriptableRenderContext::ScriptableRenderContext(InxVkCoreModular *vkCore, SceneRenderGraph *graph,
                                                  const EditorGizmosContext &gizmoCtx)
     : m_vkCore(vkCore), m_graph(graph), m_gizmoCtx(gizmoCtx)
@@ -75,6 +81,7 @@ void ScriptableRenderContext::SetupCameraProperties(Camera *camera)
         // Propagate Camera clear flags / background color to the render graph
         // so the MainColor pass uses the correct clear behaviour this frame.
         if (m_graph) {
+            m_graph->SetCameraInvertCulling(camera->GetInvertCulling());
             m_graph->UpdateMainPassClearSettings(camera->GetClearFlags(), camera->GetBackgroundColor(),
                                                  camera->GetDithering(), camera->GetStopNaNs());
         }
@@ -199,11 +206,16 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         return;
     }
 
+    // Freeze pass-local values at the same authority boundary as the view's
+    // renderer list. Later parameter edits belong to the next submission.
+    if (m_graph)
+        m_graph->CaptureParameterBlocksForSubmission();
+
     // A game camera with an unchanged borrowed visible set can reuse the
     // RenderGraph's complete submitted list (including its skybox) without
     // copying and then destroying tens of thousands of DrawCalls every frame.
     // Editor-only appenders deliberately stay on the normal path.
-    const bool hasEditorAppenders = m_gizmoCtx.gizmos || m_gizmoCtx.editorTools ||
+    const bool hasEditorAppenders = m_gizmoCtx.gizmos || m_gizmoCtx.editorTools || !m_pendingCommands.empty() ||
                                     (m_gizmoCtx.componentGizmos && (m_gizmoCtx.componentGizmos->HasData() ||
                                                                     m_gizmoCtx.componentGizmos->HasIconData()));
     uint64_t submissionSignature = 1469598103934665603ULL;
@@ -280,6 +292,7 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
     m_orderedDrawCalls = culling.visibleRenderers.Consume();
     const size_t baseOrderedDrawCallCount = m_orderedDrawCalls.size();
     m_orderedDrawCalls.reserve(m_orderedDrawCalls.size() + 16);
+    submittedDomains |= ProcessPendingCommandBuffers();
 #if INFERNUX_FRAME_PROFILE
     g_srcProfileSnapshot.submitBaseMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif
@@ -328,9 +341,7 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 #if INFERNUX_FRAME_PROFILE
         t0 = Clock::now();
 #endif
-        DrawCallResult gizmoResult =
-            m_gizmoCtx.gizmos->GetDrawCalls(m_gizmoCtx.gizmoMaterial, m_gizmoCtx.gridMaterial,
-                                            m_gizmoCtx.selectedObjectId, m_gizmoCtx.activeScene, m_gizmoCtx.cameraPos);
+        DrawCallResult gizmoResult = m_gizmoCtx.gizmos->GetDrawCalls(m_gizmoCtx.gizmoMaterial, m_gizmoCtx.gridMaterial);
         if (!gizmoResult.drawCalls.empty())
             submittedDomains |= RenderDomainBit(RenderDomain::EditorGizmo);
         for (auto &dc : gizmoResult.drawCalls) {
@@ -366,16 +377,24 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
 #endif
         glm::vec3 cameraRight(1.0f, 0.0f, 0.0f);
         glm::vec3 cameraUp(0.0f, 1.0f, 0.0f);
-        if (m_activeCamera && m_activeCamera->GetGameObject() && m_activeCamera->GetGameObject()->GetTransform()) {
-            Transform *cameraTransform = m_activeCamera->GetGameObject()->GetTransform();
-            cameraRight = cameraTransform->GetWorldRight();
-            cameraUp = cameraTransform->GetWorldUp();
+        glm::vec3 iconCameraPosition = m_gizmoCtx.cameraPos;
+        if (m_activeCamera) {
+            // The icon quad is submitted with the cached view/projection pair.
+            // Derive its billboard frame from that same view rather than from
+            // a live camera transform which may have advanced during a graph
+            // rebuild.  This keeps the rendered quad and its pick projection
+            // in the same frame of reference.
+            const auto cameraToWorld = glm::inverse(m_cachedView);
+            cameraRight = glm::normalize(glm::vec3(cameraToWorld[0]));
+            cameraUp = glm::normalize(glm::vec3(cameraToWorld[1]));
+            iconCameraPosition = glm::vec3(cameraToWorld[3]);
         }
         const GizmosDrawCallBuffer::IconMaterials iconMaterials{
             m_gizmoCtx.componentGizmoIconMaterial, m_gizmoCtx.cameraGizmoIconMaterial,
             m_gizmoCtx.lightGizmoIconMaterial, m_gizmoCtx.particleGizmoIconMaterial};
-        DrawCallResult iconResult =
-            m_gizmoCtx.componentGizmos->GetIconDrawCalls(iconMaterials, m_gizmoCtx.cameraPos, cameraRight, cameraUp);
+        DrawCallResult iconResult = m_gizmoCtx.componentGizmos->GetIconDrawCalls(
+            iconMaterials, iconCameraPosition, cameraRight, cameraUp, m_cachedProj,
+            m_graph ? m_graph->GetRenderViewContext().height : 1u, m_gizmoCtx.iconDpiScale);
         if (!iconResult.drawCalls.empty())
             submittedDomains |= RenderDomainBit(RenderDomain::ComponentGizmo);
         static size_t s_lastSubmittedIconDrawCalls = static_cast<size_t>(-1);
@@ -426,7 +445,9 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         mix(dc.objectId);
         mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(dc.meshVertices)));
         mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(dc.meshIndices)));
+        mix(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(dc.meshVertexBuffer.get())));
         mix(dc.meshRuntimeVersion);
+        mix(static_cast<uint64_t>(dc.meshIndexFormat));
         hasForcedBufferUpdate = hasForcedBufferUpdate || dc.forceBufferUpdate;
     };
     if (shadowSource) {
@@ -456,8 +477,11 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
                 continue;
             lastEnsuredId = dc.objectId;
             if (dc.meshVertices && dc.meshIndices) {
-                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate,
-                                              dc.meshAssetGuid, dc.meshRuntimeVersion);
+                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.meshIndexFormat,
+                                              dc.forceBufferUpdate, dc.meshAssetGuid, dc.meshRuntimeVersion,
+                                              dc.meshGeometryView);
+                if (dc.meshVertexBuffer)
+                    m_vkCore->BindObjectVertexBuffer(dc.objectId, dc.meshVertexBuffer);
             }
         }
 
@@ -468,8 +492,11 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
                 continue;
             lastEnsuredId = dc.objectId;
             if (dc.meshVertices && dc.meshIndices) {
-                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate,
-                                              dc.meshAssetGuid, dc.meshRuntimeVersion);
+                m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.meshIndexFormat,
+                                              dc.forceBufferUpdate, dc.meshAssetGuid, dc.meshRuntimeVersion,
+                                              dc.meshGeometryView);
+                if (dc.meshVertexBuffer)
+                    m_vkCore->BindObjectVertexBuffer(dc.objectId, dc.meshVertexBuffer);
             }
         }
     }
@@ -485,8 +512,11 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         if (!reuseObjectBuffers) {
             for (const DrawCall &dc : forwardDrawCalls) {
                 if (dc.meshVertices && dc.meshIndices) {
-                    m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.forceBufferUpdate,
-                                                  dc.meshAssetGuid, dc.meshRuntimeVersion);
+                    m_vkCore->EnsureObjectBuffers(dc.objectId, *dc.meshVertices, *dc.meshIndices, dc.meshIndexFormat,
+                                                  dc.forceBufferUpdate, dc.meshAssetGuid, dc.meshRuntimeVersion,
+                                                  dc.meshGeometryView);
+                    if (dc.meshVertexBuffer)
+                        m_vkCore->BindObjectVertexBuffer(dc.objectId, dc.meshVertexBuffer);
                 }
             }
         }
@@ -577,8 +607,8 @@ bool ScriptableRenderContext::RenderCompiled(Camera *camera, uint64_t sourceRevi
 
 void ScriptableRenderContext::ExecuteCommandBuffer(CommandBuffer &cmd)
 {
-    // Accumulate pending CommandBuffers; they are processed during Submit()
-    m_pendingCommandBuffers.push_back(&cmd);
+    const auto &commands = cmd.GetCommands();
+    m_pendingCommands.insert(m_pendingCommands.end(), commands.begin(), commands.end());
 }
 
 // Names for the unsupported command types so the once-per-process warning is
@@ -598,14 +628,6 @@ const char *RenderCommandTypeName(RenderCommandType type)
         return "ClearRenderTarget";
     case RenderCommandType::DrawMesh:
         return "DrawMesh";
-    case RenderCommandType::SetGlobalTexture:
-        return "SetGlobalTexture";
-    case RenderCommandType::SetGlobalFloat:
-        return "SetGlobalFloat";
-    case RenderCommandType::SetGlobalVector:
-        return "SetGlobalVector";
-    case RenderCommandType::SetGlobalMatrix:
-        return "SetGlobalMatrix";
     }
     return "Unknown";
 }
@@ -629,68 +651,78 @@ void WarnUnimplementedCommand(RenderCommandType type)
 }
 } // namespace
 
-void ScriptableRenderContext::ProcessPendingCommandBuffers()
+RenderDomainMask ScriptableRenderContext::ProcessPendingCommandBuffers()
 {
-    for (CommandBuffer *cmd : m_pendingCommandBuffers) {
-        if (!cmd)
-            continue;
+    RenderDomainMask appendedDomains = 0;
+    for (const auto &command : m_pendingCommands) {
+        switch (command.type) {
+        case RenderCommandType::GetTemporaryRT: {
+            if (m_transientPool) {
+                const auto &params = std::get<GetTemporaryRTParams>(command.data);
+                uint32_t slotId = m_transientPool->Acquire(params.width, params.height, rhi::ToVkFormat(params.format),
+                                                           rhi::ToVkSampleCount(params.samples));
+                m_handleToSlotMap[params.handleId] = slotId;
+            }
+            break;
+        }
 
-        for (const auto &command : cmd->GetCommands()) {
-            switch (command.type) {
-            case RenderCommandType::GetTemporaryRT: {
-                if (m_transientPool) {
-                    const auto &params = std::get<GetTemporaryRTParams>(command.data);
-                    uint32_t slotId =
-                        m_transientPool->Acquire(params.width, params.height, rhi::ToVkFormat(params.format),
-                                                 rhi::ToVkSampleCount(params.samples));
-                    m_handleToSlotMap[params.handleId] = slotId;
+        case RenderCommandType::ReleaseTemporaryRT: {
+            if (m_transientPool) {
+                const auto &params = std::get<ReleaseTemporaryRTParams>(command.data);
+                auto it = m_handleToSlotMap.find(params.handleId);
+                if (it != m_handleToSlotMap.end()) {
+                    m_transientPool->Release(it->second);
+                    m_handleToSlotMap.erase(it);
                 }
-                break;
             }
+            break;
+        }
 
-            case RenderCommandType::ReleaseTemporaryRT: {
-                if (m_transientPool) {
-                    const auto &params = std::get<ReleaseTemporaryRTParams>(command.data);
-                    auto it = m_handleToSlotMap.find(params.handleId);
-                    if (it != m_handleToSlotMap.end()) {
-                        m_transientPool->Release(it->second);
-                        m_handleToSlotMap.erase(it);
-                    }
-                }
+        case RenderCommandType::DrawMesh: {
+            const auto &params = std::get<DrawMeshParams>(command.data);
+            if (!params.geometry || !params.material)
                 break;
+            DrawCall draw;
+            if (params.geometry->subMeshes.empty()) {
+                draw.indexStart = 0;
+                draw.indexCount = static_cast<uint32_t>(params.geometry->indices.size());
+                draw.vertexStart = 0;
+            } else {
+                const auto &submesh = params.geometry->subMeshes.at(static_cast<size_t>(params.submeshIndex));
+                draw.indexStart = submesh.indexStart;
+                draw.indexCount = submesh.indexCount;
+                draw.vertexStart = static_cast<int32_t>(submesh.vertexStart);
             }
+            draw.worldMatrix = params.worldMatrix;
+            draw.material = params.material;
+            draw.parameterBlock = params.parameterBlock;
+            draw.objectId = params.objectId;
+            draw.layerMask = 1u;
+            draw.frustumVisible = true;
+            draw.castsShadows = false;
+            draw.worldBounds = params.worldBounds;
+            draw.meshVertices = params.vertices;
+            draw.meshIndices = params.indices;
+            draw.meshIndexFormat = params.meshIndexFormat;
+            draw.meshDataOwner = params.geometry;
+            draw.meshAssetGuid = params.meshGuid;
+            draw.meshRuntimeVersion = params.meshGeneration;
+            m_orderedDrawCalls.push_back(std::move(draw));
+            appendedDomains |= RenderDomainBit(RenderDomain::SceneGeometry);
+            break;
+        }
 
-            case RenderCommandType::SetGlobalFloat: {
-                const auto &params = std::get<SetGlobalFloatParams>(command.data);
-                m_globalFloats[params.name] = params.value;
-                break;
-            }
-
-            case RenderCommandType::SetGlobalVector: {
-                const auto &params = std::get<SetGlobalVectorParams>(command.data);
-                m_globalVectors[params.name] = {params.x, params.y, params.z, params.w};
-                break;
-            }
-
-            case RenderCommandType::SetGlobalTexture: {
-                const auto &params = std::get<SetGlobalTextureParams>(command.data);
-                m_globalTextures[params.name] = params.handleId;
-                break;
-            }
-
-            // Commands that still need the Vulkan command-buffer integration.
-            // See ScriptableRenderContext::IsCommandImplemented for the
-            // canonical "is this safe to call" predicate exposed to bindings.
-            case RenderCommandType::ClearRenderTarget:
-            case RenderCommandType::SetRenderTarget:
-            case RenderCommandType::DrawMesh:
-            case RenderCommandType::SetGlobalMatrix:
-                WarnUnimplementedCommand(command.type);
-                break;
-            }
+        // Commands that still need the Vulkan command-buffer integration.
+        // See ScriptableRenderContext::IsCommandImplemented for the
+        // canonical "is this safe to call" predicate exposed to bindings.
+        case RenderCommandType::ClearRenderTarget:
+        case RenderCommandType::SetRenderTarget:
+            WarnUnimplementedCommand(command.type);
+            break;
         }
     }
-    m_pendingCommandBuffers.clear();
+    m_pendingCommands.clear();
+    return appendedDomains;
 }
 
 bool ScriptableRenderContext::IsCommandImplemented(RenderCommandType type) noexcept
@@ -698,14 +730,10 @@ bool ScriptableRenderContext::IsCommandImplemented(RenderCommandType type) noexc
     switch (type) {
     case RenderCommandType::GetTemporaryRT:
     case RenderCommandType::ReleaseTemporaryRT:
-    case RenderCommandType::SetGlobalFloat:
-    case RenderCommandType::SetGlobalVector:
-    case RenderCommandType::SetGlobalTexture:
+    case RenderCommandType::DrawMesh:
         return true;
     case RenderCommandType::ClearRenderTarget:
     case RenderCommandType::SetRenderTarget:
-    case RenderCommandType::DrawMesh:
-    case RenderCommandType::SetGlobalMatrix:
         return false;
     }
     return false;
@@ -720,25 +748,6 @@ RenderTargetHandle ScriptableRenderContext::GetCameraTarget(Camera * /*camera*/)
     // Returns the sentinel CAMERA_TARGET_HANDLE.
     // At execution time, this resolves to the scene render target's resolved color image.
     return CAMERA_TARGET_HANDLE;
-}
-
-// ============================================================================
-// Global shader parameters (immediate mode)
-// ============================================================================
-
-void ScriptableRenderContext::SetGlobalTexture(const std::string &name, RenderTargetHandle handle)
-{
-    m_globalTextures[name] = handle.id;
-}
-
-void ScriptableRenderContext::SetGlobalFloat(const std::string &name, float value)
-{
-    m_globalFloats[name] = value;
-}
-
-void ScriptableRenderContext::SetGlobalVector(const std::string &name, float x, float y, float z, float w)
-{
-    m_globalVectors[name] = {x, y, z, w};
 }
 
 } // namespace infernux

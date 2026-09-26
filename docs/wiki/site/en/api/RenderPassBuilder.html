@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/en/api/njit.html" class="">njit</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/compile.html" class="">compile</a><a href="/wiki/site/en/api/statistics.html" class="">statistics</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -342,6 +342,12 @@ class in <b>Infernux.rendergraph</b>
 <p>Fluent builder for constructing a render pass.</p>
 <!-- USER CONTENT START -->
 <p>description</p>
+<p>For a fullscreen effect, <code>set_buffer("values", graph.import_buffer("values", gpu_buffer))</code>
+binds an open <code>inx.buffer(..., dtype="uint32", device="gpu")</code> to a shader
+<code>Resources { BufferUInt values }</code> declaration. Shader resources and the pass's
+<code>set_texture()</code>/<code>set_buffer()</code> calls must have the same order. In GLSL, read
+<code>values.data[index]</code>. This declares a fragment-stage storage read in the same
+render graph; the buffer remains owned by the existing compute runtime.</p>
 <!-- USER CONTENT END -->
 
 <h2 id="constructors">Constructors<a class="headerlink" href="#constructors" title="Permanent link">&para;</a></h2>
@@ -426,6 +432,10 @@ class in <b>Infernux.rendergraph</b>
 <td>Bind a texture to a sampler input for this pass.</td>
 </tr>
 <tr>
+<td><code>set_buffer(resource_name: str, buffer: str | BufferHandle) → RenderPassBuilder</code></td>
+<td>Bind a read-only uint32 GPU buffer to a fullscreen shader resource.</td>
+</tr>
+<tr>
 <td><code>set_textures(bindings: Mapping[str, object]) → RenderPassBuilder</code></td>
 <td>Bind multiple textures to sampler inputs for this pass.</td>
 </tr>
@@ -434,7 +444,7 @@ class in <b>Infernux.rendergraph</b>
 <td>Set clear values for color and/or depth attachments.</td>
 </tr>
 <tr>
-<td><code>draw_renderers(queue_range: Tuple[int, int] = ..., sort_mode: str = ..., pass_tag: str = ..., override_material: str = ..., material_pass: str = ...) → RenderPassBuilder</code></td>
+<td><code>draw_renderers(queue_range: Tuple[int, int] = ..., sort_mode: str = ..., pass_tag: str = ..., override_material: str = ..., material_pass: str = ..., material_filter: str = ..., renderer_selection: RendererSelection | None = ...) → RenderPassBuilder</code></td>
 <td>Draw visible renderers filtered by queue range.</td>
 </tr>
 <tr>
@@ -450,8 +460,12 @@ class in <b>Infernux.rendergraph</b>
 <td>Draw screen-space UI elements in this pass.</td>
 </tr>
 <tr>
-<td><code>fullscreen_quad(shader: str) → RenderPassBuilder</code></td>
-<td>Draw a fullscreen quad with the specified shader.</td>
+<td><code>draw_world_ui(layer_mask: int = ...) → RenderPassBuilder</code></td>
+<td>Draw selected GameObject layers, also respecting Camera culling and pass depth.</td>
+</tr>
+<tr>
+<td><code>fullscreen_quad(shader: str, depth_test: DepthCompare | None = None, depth_write: bool = False, alpha_blend: bool = False) → RenderPassBuilder</code></td>
+<td>Draw a fullscreen triangle with explicit optional depth/blend state.</td>
 </tr>
 <tr>
 <td><code>copy_texture(source: str | TextureHandle, destination: str | TextureHandle) → RenderPassBuilder</code></td>

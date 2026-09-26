@@ -40,13 +40,13 @@ struct PropertyDesc
     // the public semantic contract.
     std::string semanticId;
     float fVal[4] = {0, 0, 0, 0}; // Float or vector x/y/z/w
-    int iVal = 0;                 // Int or enum index
+    int64_t iVal = 0;             // Int (including uint32 masks) or enum index
     bool bVal = false;            // Bool
     std::string sVal;             // String value
     float rangeMin = -1e6f;
     float rangeMax = 1e6f;
-    int intRangeMin = 0;
-    int intRangeMax = 0;
+    int64_t intRangeMin = 0;
+    int64_t intRangeMax = 0;
     bool hasRange = false;
     float speed = 0.1f;
     bool slider = false;
@@ -64,7 +64,7 @@ struct PropertyChange
     int index;
     PropertyDesc::Type type;
     float fVal[4] = {0, 0, 0, 0};
-    int iVal = 0;
+    int64_t iVal = 0;
     bool bVal = false;
     std::string sVal;
 };
@@ -110,7 +110,7 @@ class InxGUIContext
         EditDeactivated = 1u << 4u,
     };
 
-    /* DPI scale — set by InxGUI::Init, read by Python/UI code */
+    /* Authored UI units -> SDL window units, maintained by InxGUI. */
     static float s_dpiScale;
     float GetDpiScale() const;
 
@@ -321,6 +321,7 @@ class InxGUIContext
     /* invisible button (for splitter) */
     bool InvisibleButton(const std::string &id, float width, float height);
     bool IsItemActive();
+    bool IsItemEdited();
     bool IsAnyItemActive();
     bool IsItemHovered();
     bool IsItemFocused();
@@ -435,13 +436,16 @@ class InxGUIContext
     void DrawTextExAligned(float minX, float minY, float maxX, float maxY, const std::string &text, float r, float g,
                            float b, float a, float alignX, float alignY, float fontSize = 0.0f, float wrapWidth = 0.0f,
                            float rotation = 0.0f, bool mirrorH = false, bool mirrorV = false, bool clip = false,
-                           const std::string &fontPath = "", float lineHeight = 1.0f, float letterSpacing = 0.0f);
+                           const std::string &fontPath = "", float lineHeight = 1.0f, float letterSpacing = 0.0f,
+                           const std::vector<std::string> &fallbackFontPaths = {});
     std::pair<float, float> CalcTextSizeA(const std::string &text, float fontSize = 0.0f,
                                           const std::string &fontPath = "", float lineHeight = 1.0f,
-                                          float letterSpacing = 0.0f);
+                                          float letterSpacing = 0.0f,
+                                          const std::vector<std::string> &fallbackFontPaths = {});
     std::pair<float, float> CalcTextSizeWrappedA(const std::string &text, float fontSize = 0.0f, float wrapWidth = 0.0f,
                                                  const std::string &fontPath = "", float lineHeight = 1.0f,
-                                                 float letterSpacing = 0.0f);
+                                                 float letterSpacing = 0.0f,
+                                                 const std::vector<std::string> &fallbackFontPaths = {});
 
     /* draw list clip rect (for custom clipping of draw primitives) */
     void PushDrawListClipRect(float minX, float minY, float maxX, float maxY, bool intersectWithCurrent = true);

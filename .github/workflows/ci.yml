@@ -12,7 +12,7 @@ on:
         type: boolean
         default: false
       replace_existing_release:
-        description: Allow publication to an existing release tag
+        description: Allow recovery publication to an existing unpublished draft
         required: false
         type: boolean
         default: false
@@ -20,6 +20,8 @@ on:
       PYPI_API_TOKEN:
         required: false
       R2_UPLOAD_TOKEN:
+        required: false
+      SIGNPATH_API_TOKEN:
         required: false
   workflow_dispatch:
     inputs:
@@ -29,7 +31,7 @@ on:
         type: boolean
         default: false
       replace_existing_release:
-        description: Allow publication to an existing release tag
+        description: Allow recovery publication to an existing unpublished draft
         required: true
         type: boolean
         default: false
@@ -76,6 +78,7 @@ jobs:
           packaging/tests/test_hub_launch_state.py
           packaging/tests/test_project_runtime_strictness.py
           packaging/tests/test_regression_guide.py
+          packaging/tests/test_cpu_jit_dependency_packaging.py
           -q -ra --junitxml out/test-results/portable-hub.xml
       - uses: actions/upload-artifact@v4
         if: always()
@@ -89,6 +92,7 @@ jobs:
     timeout-minutes: 120
     env:
       VULKAN_SDK_VERSION: "1.3.296.0"
+      SDL_AUDIODRIVER: dummy
     steps:
       - uses: actions/checkout@v4
         with:
@@ -123,16 +127,6 @@ jobs:
           Invoke-WebRequest -Uri $url -OutFile vulkan_sdk.exe
           Start-Process -Wait -FilePath .\vulkan_sdk.exe -ArgumentList `
             "--accept-licenses","--default-answer","--confirm-command","install"
-
-      - name: Install Vulkan Runtime
-        timeout-minutes: 5
-        shell: pwsh
-        run: |
-          conda activate infernux
-          $installer = Join-Path $env:RUNNER_TEMP 'vulkan-runtime.exe'
-          Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/VulkanRT-$env:VULKAN_SDK_VERSION-Installer.exe" -OutFile $installer
-          $process = Start-Process -Wait -PassThru -WindowStyle Hidden -FilePath $installer -ArgumentList '/auto'
-          if ($process.ExitCode -ne 0) { throw "Vulkan Runtime installation failed: $($process.ExitCode)" }
 
       - name: Install build and test dependencies
         shell: pwsh
@@ -196,6 +190,7 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          $env:PYTHONPATH = "$env:GITHUB_WORKSPACE\python" + $(if ($env:PYTHONPATH) { ";$env:PYTHONPATH" } else { "" })
           python -m pytest python\test -q --junitxml out\test-results\pytest-windows.xml
 
       - name: Run Hub tests
@@ -291,6 +286,7 @@ jobs:
       - name: Run Python and platform contract tests
         run: |
           conda activate infernux
+          export PYTHONPATH="$GITHUB_WORKSPACE/python${PYTHONPATH:+:$PYTHONPATH}"
           xvfb-run --auto-servernum python -m pytest python/test -q --junitxml out/test-results/pytest-linux.xml
 
       - name: Build Linux editor wheel and Hub distribution
@@ -328,6 +324,7 @@ jobs:
     permissions:
       actions: read
       contents: write
+      pages: write
     uses: ./.github/workflows/publish-desktop-release.yml
     with:
       run_id: ${{ github.run_id }}

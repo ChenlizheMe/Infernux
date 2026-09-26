@@ -131,6 +131,51 @@ static SkinnedNodePose BlendNodePose(const SkinnedNodePose &a, const SkinnedNode
     return pose;
 }
 
+static constexpr std::array<std::string_view, 15> kRequiredHumanoidSlots = {
+    "hips",
+    "spine",
+    "head",
+    "left_upper_arm",
+    "left_lower_arm",
+    "left_hand",
+    "right_upper_arm",
+    "right_lower_arm",
+    "right_hand",
+    "left_upper_leg",
+    "left_lower_leg",
+    "left_foot",
+    "right_upper_leg",
+    "right_lower_leg",
+    "right_foot",
+};
+
+static bool BuildHumanoidSlotTable(const InxSkinnedMesh &model, std::unordered_map<std::string, int> &slots,
+                                   std::string *reason)
+{
+    const auto reject = [reason](std::string message) {
+        if (reason)
+            *reason = std::move(message);
+        return false;
+    };
+    if (!model.skeleton.IsValid())
+        return reject("humanoid skeleton hierarchy is invalid");
+    if (!model.humanoid.IsValid())
+        return reject("humanoid mapping or reference bind pose is invalid");
+    slots.clear();
+    slots.reserve(model.humanoid.bones.size());
+    std::vector<bool> used(model.skeleton.nodes.size(), false);
+    for (const auto &[slot, nodeIndex] : model.humanoid.bones) {
+        if (slot.empty() || nodeIndex < 0 || static_cast<size_t>(nodeIndex) >= model.skeleton.nodes.size() ||
+            used[static_cast<size_t>(nodeIndex)] || !slots.emplace(slot, nodeIndex).second)
+            return reject("humanoid slot map contains duplicate or invalid node identity");
+        used[static_cast<size_t>(nodeIndex)] = true;
+    }
+    for (const std::string_view required : kRequiredHumanoidSlots)
+        if (slots.find(std::string(required)) == slots.end())
+            return reject("humanoid slot map is missing required slot '" + std::string(required) + "'");
+    return true;
+}
+
 } // namespace
 
 float SkinnedRuntimeAnimation::DurationSeconds() const
@@ -138,6 +183,59 @@ float SkinnedRuntimeAnimation::DurationSeconds() const
     if (durationTicks <= 0.0 || ticksPerSecond <= 0.0)
         return 0.0f;
     return static_cast<float>(durationTicks / ticksPerSecond);
+}
+
+RootMotionDelta InxSkinnedMesh::SampleRootMotionDelta(const std::string &takeName, float fromSeconds, float toSeconds,
+                                                      bool loop) const
+{
+    RootMotionDelta delta;
+    const auto *animation = FindAnimation(takeName);
+    if (!animation || animation->rootMotionNodeIndex < 0 || animation->durationTicks <= 0.0 ||
+        animation->ticksPerSecond <= 0.0)
+        return delta;
+
+    struct Sample
+    {
+        glm::vec3 translation{0.0f};
+        glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    };
+    const auto sample = [&](float seconds) {
+        const double duration = animation->durationTicks;
+        double ticks = static_cast<double>(seconds) * animation->ticksPerSecond;
+        int64_t cycle = 0;
+        if (loop) {
+            cycle = static_cast<int64_t>(std::floor(ticks / duration));
+            ticks -= static_cast<double>(cycle) * duration;
+            if (ticks < 0.0) {
+                ticks += duration;
+                --cycle;
+            }
+        } else {
+            ticks = std::clamp(ticks, 0.0, duration);
+        }
+        Sample value;
+        const glm::vec3 startTranslation = SampleVec3(animation->rootMotionPositions, 0.0, glm::vec3(0.0f));
+        const glm::vec3 endTranslation = SampleVec3(animation->rootMotionPositions, duration, startTranslation);
+        value.translation = SampleVec3(animation->rootMotionPositions, ticks, startTranslation);
+        const glm::quat startRotation =
+            SampleQuat(animation->rootMotionRotations, 0.0, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+        const glm::quat endRotation = SampleQuat(animation->rootMotionRotations, duration, startRotation);
+        value.rotation = SampleQuat(animation->rootMotionRotations, ticks, startRotation);
+        if (loop && cycle != 0) {
+            value.translation += static_cast<float>(cycle) * (endTranslation - startTranslation);
+            const glm::quat cycleRotation = glm::normalize(glm::inverse(startRotation) * endRotation);
+            const float cycleAngle = glm::angle(cycleRotation);
+            const glm::vec3 cycleAxis = cycleAngle > kEpsilon ? glm::axis(cycleRotation) : glm::vec3(0.0f, 1.0f, 0.0f);
+            const glm::quat accumulated = glm::angleAxis(cycleAngle * static_cast<float>(cycle), cycleAxis);
+            value.rotation = glm::normalize(startRotation * accumulated * glm::inverse(startRotation) * value.rotation);
+        }
+        return value;
+    };
+    const Sample from = sample(fromSeconds);
+    const Sample to = sample(toSeconds);
+    delta.translation = (to.translation - from.translation) * scaleFactor;
+    delta.rotation = glm::normalize(glm::inverse(from.rotation) * to.rotation);
+    return delta;
 }
 
 bool Skeleton::IsValid() const noexcept
@@ -308,10 +406,15 @@ size_t InxSkinnedMesh::GetRuntimeMemoryBytes() const noexcept
     bytes += subMeshes.capacity() * sizeof(SubMesh);
     for (const auto &subMesh : subMeshes)
         bytes += subMesh.name.capacity();
+    bytes += morphTargets.capacity() * sizeof(MeshMorphTarget);
+    for (const auto &target : morphTargets)
+        bytes += target.name.capacity() + target.positionDeltas.capacity() * sizeof(glm::vec3) +
+                 target.normalDeltas.capacity() * sizeof(glm::vec3) +
+                 target.tangentDeltas.capacity() * sizeof(glm::vec3);
     bytes += skeleton.GetRuntimeMemoryBytes();
     bytes += animations.capacity() * sizeof(SkinnedRuntimeAnimation);
     for (const auto &animation : animations) {
-        bytes += animation.name.capacity();
+        bytes += animation.name.capacity() + animation.id.capacity();
         bytes += animation.tracks.capacity() * sizeof(SkinnedRuntimeTrack);
         for (const auto &track : animation.tracks) {
             bytes += track.positions.capacity() * sizeof(decltype(track.positions)::value_type);
@@ -335,6 +438,125 @@ size_t InxSkinnedMesh::GetRuntimeMemoryBytes() const noexcept
     return bytes;
 }
 
+SkeletonRetargetMap InxSkinnedMesh::BuildRetargetMap(const InxSkinnedMesh &source,
+                                                     const SkinnedRuntimeAnimation &animation) const
+{
+    // Sampling a take owned by the render model itself must preserve every
+    // imported helper/non-humanoid channel. Generic cross-model animation also
+    // remains the explicitly strict same-node-identity contract.
+    if (&source == this || (!humanoid.enabled && !source.humanoid.enabled))
+        return skeleton.BuildRetargetMap(source.skeleton, animation);
+
+    SkeletonRetargetMap mapping;
+    mapping.targetToSourceNode.assign(skeleton.nodes.size(), -1);
+    mapping.humanoidSlots = true;
+
+    std::unordered_map<std::string, int> targetSlots;
+    std::unordered_map<std::string, int> sourceSlots;
+    if (!BuildHumanoidSlotTable(*this, targetSlots, nullptr) || !BuildHumanoidSlotTable(source, sourceSlots, nullptr))
+        return mapping;
+
+    std::vector<int> sourceToTarget(source.skeleton.nodes.size(), -1);
+    std::vector<bool> animatedSourceAncestors(source.skeleton.nodes.size(), false);
+    for (const auto &[slot, targetIndex] : targetSlots) {
+        const auto found = sourceSlots.find(slot);
+        if (found == sourceSlots.end())
+            continue;
+        const int sourceIndex = found->second;
+        mapping.targetToSourceNode[static_cast<size_t>(targetIndex)] = sourceIndex;
+        sourceToTarget[static_cast<size_t>(sourceIndex)] = targetIndex;
+        ++mapping.mappedNodes;
+        if (static_cast<size_t>(sourceIndex) < animation.trackByNodeIndex.size() &&
+            animation.trackByNodeIndex[static_cast<size_t>(sourceIndex)] >= 0)
+            ++mapping.mappedAnimatedNodes;
+        for (int ancestor = sourceIndex; ancestor >= 0;
+             ancestor = source.skeleton.nodes[static_cast<size_t>(ancestor)].parent)
+            animatedSourceAncestors[static_cast<size_t>(ancestor)] = true;
+    }
+    for (const auto &track : animation.tracks)
+        if (track.nodeIndex >= 0 && static_cast<size_t>(track.nodeIndex) < animatedSourceAncestors.size() &&
+            animatedSourceAncestors[static_cast<size_t>(track.nodeIndex)])
+            ++mapping.mappedAnimationTracks;
+
+    // Compare only the published humanoid graph. DCC helper nodes and optional
+    // slots absent from one side are skipped; slot identity itself is never
+    // inferred from a node name or transform.
+    for (size_t targetIndex = 0; targetIndex < mapping.targetToSourceNode.size(); ++targetIndex) {
+        const int sourceIndex = mapping.targetToSourceNode[targetIndex];
+        if (sourceIndex < 0)
+            continue;
+        int targetAncestor = skeleton.nodes[targetIndex].parent;
+        while (targetAncestor >= 0 && mapping.targetToSourceNode[static_cast<size_t>(targetAncestor)] < 0)
+            targetAncestor = skeleton.nodes[static_cast<size_t>(targetAncestor)].parent;
+        int sourceAncestor = source.skeleton.nodes[static_cast<size_t>(sourceIndex)].parent;
+        while (sourceAncestor >= 0 && sourceToTarget[static_cast<size_t>(sourceAncestor)] < 0)
+            sourceAncestor = source.skeleton.nodes[static_cast<size_t>(sourceAncestor)].parent;
+        const int mappedSourceAncestor = sourceAncestor >= 0 ? sourceToTarget[static_cast<size_t>(sourceAncestor)] : -1;
+        if (targetAncestor != mappedSourceAncestor)
+            ++mapping.topologyDifferences;
+    }
+    mapping.identicalTopology =
+        mapping.mappedNodes >= kRequiredHumanoidSlots.size() && mapping.topologyDifferences == 0;
+    return mapping;
+}
+
+bool InxSkinnedMesh::IsAnimationCompatible(const InxSkinnedMesh &source, const SkinnedRuntimeAnimation &animation,
+                                           std::string *reason) const
+{
+    const auto reject = [reason](std::string message) {
+        if (reason)
+            *reason = std::move(message);
+        return false;
+    };
+    if (&source == this || (!humanoid.enabled && !source.humanoid.enabled))
+        return skeleton.IsAnimationCompatible(source.skeleton, animation, reason);
+    if (humanoid.enabled != source.humanoid.enabled)
+        return reject("cross-skeleton humanoid retarget requires published humanoid mappings on both assets");
+
+    std::unordered_map<std::string, int> slots;
+    if (!BuildHumanoidSlotTable(*this, slots, reason))
+        return false;
+    if (!BuildHumanoidSlotTable(source, slots, reason))
+        return false;
+    if (animation.tracks.empty())
+        return reject("animation has no transform tracks");
+    const SkeletonRetargetMap mapping = BuildRetargetMap(source, animation);
+    if (mapping.mappedAnimationTracks == 0)
+        return reject("animation has no tracks affecting a published humanoid slot");
+    if (!mapping.identicalTopology)
+        return reject("published humanoid slot hierarchy is incompatible; mapped " +
+                      std::to_string(mapping.mappedNodes) + " slots and found " +
+                      std::to_string(mapping.topologyDifferences) + " hierarchy differences");
+    if (reason)
+        reason->clear();
+    return true;
+}
+
+bool InxSkinnedMesh::HasValidMorphTargets() const noexcept
+{
+    const auto finite = [](const glm::vec3 &value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    };
+    if (baseVertices.empty())
+        return morphTargets.empty();
+    for (size_t index = 0; index < morphTargets.size(); ++index) {
+        const auto &target = morphTargets[index];
+        if (target.name.empty() || !std::isfinite(target.defaultWeight) ||
+            target.positionDeltas.size() != baseVertices.size() ||
+            (!target.normalDeltas.empty() && target.normalDeltas.size() != baseVertices.size()) ||
+            (!target.tangentDeltas.empty() && target.tangentDeltas.size() != baseVertices.size()))
+            return false;
+        for (size_t prior = 0; prior < index; ++prior)
+            if (morphTargets[prior].name == target.name)
+                return false;
+        if (!std::all_of(target.positionDeltas.begin(), target.positionDeltas.end(), finite) ||
+            !std::all_of(target.normalDeltas.begin(), target.normalDeltas.end(), finite) ||
+            !std::all_of(target.tangentDeltas.begin(), target.tangentDeltas.end(), finite))
+            return false;
+    }
+    return true;
+}
+
 const SkinnedRuntimeAnimation *InxSkinnedMesh::FindAnimation(const std::string &takeName) const
 {
     if (animations.empty())
@@ -344,6 +566,9 @@ const SkinnedRuntimeAnimation *InxSkinnedMesh::FindAnimation(const std::string &
     if (takeName.empty())
         return nullptr;
 
+    for (const auto &anim : animations)
+        if (anim.id == takeName)
+            return &anim;
     for (const auto &anim : animations)
         if (anim.name == takeName)
             return &anim;
@@ -400,12 +625,12 @@ void InxSkinnedMesh::NormalizeInfluences()
 {
     for (size_t vi = 0; vi < influences.size(); ++vi) {
         auto &inf = influences[vi];
-        float total = 0.0f;
+        double total = 0.0;
         for (float w : inf.weight)
             total += w;
-        if (total > kEpsilon) {
+        if (total > 0.0) {
             for (float &w : inf.weight)
-                w /= total;
+                w = static_cast<float>(w / total);
         }
 
         if (vi < baseVertices.size()) {
@@ -585,16 +810,22 @@ std::vector<glm::mat4> InxSkinnedMesh::BuildBoneMatrices(const SkinnedSampleRequ
     const SkinnedRuntimeAnimation *blendAnim = (request.blendWeight > 0.0f && !request.blendTakeName.empty())
                                                    ? blendSource->FindAnimation(request.blendTakeName)
                                                    : nullptr;
+    std::string compatibilityReason;
+    if (anim && activeSource != this && !IsAnimationCompatible(*activeSource, *anim, &compatibilityReason))
+        throw std::invalid_argument("animation source skeleton is incompatible with render model: " +
+                                    compatibilityReason);
+    if (blendAnim && blendSource != this && !IsAnimationCompatible(*blendSource, *blendAnim, &compatibilityReason))
+        throw std::invalid_argument("blend animation source skeleton is incompatible with render model: " +
+                                    compatibilityReason);
     const double tTicks = ToAnimationTicks(anim, request.timeSeconds, request.loop);
     // Blend source always loops: it represents the outgoing state mid-fade.
     const double blendTicks = ToAnimationTicks(blendAnim, request.blendTimeSeconds, true);
     // Same-take cross-fades at different times are valid (e.g. restarting a
     // clip with a fade) — only a missing blend animation disables blending.
     const float w = blendAnim ? glm::clamp(request.blendWeight, 0.0f, 1.0f) : 0.0f;
-    const SkeletonRetargetMap activeMapping =
-        anim ? skeleton.BuildRetargetMap(activeSource->skeleton, *anim) : SkeletonRetargetMap{};
+    const SkeletonRetargetMap activeMapping = anim ? BuildRetargetMap(*activeSource, *anim) : SkeletonRetargetMap{};
     const SkeletonRetargetMap blendMapping =
-        blendAnim ? skeleton.BuildRetargetMap(blendSource->skeleton, *blendAnim) : SkeletonRetargetMap{};
+        blendAnim ? BuildRetargetMap(*blendSource, *blendAnim) : SkeletonRetargetMap{};
     const std::vector<SkinnedNodePose> activePoses =
         BuildRetargetedLocalPoses(activeSource->skeleton, anim, activeMapping, tTicks);
     const std::vector<SkinnedNodePose> blendPoses =
@@ -652,13 +883,19 @@ std::vector<glm::mat4> InxSkinnedMesh::BuildBoneMatricesFromPoseStack(
                                            ? animationSources[layerIndex].get()
                                            : this;
         const SkinnedRuntimeAnimation *anim = source->FindAnimation(layer.takeName);
+        if (anim && source != this) {
+            std::string compatibilityReason;
+            if (!IsAnimationCompatible(*source, *anim, &compatibilityReason))
+                throw std::invalid_argument("pose-stack animation source skeleton is incompatible with render model: " +
+                                            compatibilityReason);
+        }
         const double tTicks = ToAnimationTicks(anim, layer.timeSeconds, layer.loop);
-        const SkeletonRetargetMap retarget =
-            anim ? skeleton.BuildRetargetMap(source->skeleton, *anim) : SkeletonRetargetMap{};
+        const SkeletonRetargetMap retarget = anim ? BuildRetargetMap(*source, *anim) : SkeletonRetargetMap{};
         const std::vector<SkinnedNodePose> retargetedPoses =
             BuildRetargetedLocalPoses(source->skeleton, anim, retarget, tTicks);
 
-        // Resolve the optional bone mask to a node-name set (empty = all nodes).
+        // Exact local-channel mask (empty = all nodes). Hierarchy propagation
+        // still makes children inherit an animated parent's global transform.
         const bool masked = !layer.boneMask.empty();
         std::unordered_map<std::string, char> maskSet;
         if (masked)
@@ -814,15 +1051,15 @@ std::vector<Vertex> InxSkinnedMesh::SampleVertices(const SkinnedSampleRequest &r
     return outVertices;
 }
 
-bool InxSkinnedMesh::ComputeSkinnedBounds(const std::vector<glm::mat4> &palette, glm::vec3 &outMin,
-                                          glm::vec3 &outMax) const
+bool InxSkinnedMesh::ComputeSkinnedBounds(const std::vector<glm::mat4> &palette, glm::vec3 &outMin, glm::vec3 &outMax,
+                                          int32_t nodeGroup, int32_t submeshIndex) const
 {
     if (baseVertices.empty())
         return false;
 
     outMin = glm::vec3(std::numeric_limits<float>::max());
     outMax = glm::vec3(std::numeric_limits<float>::lowest());
-    for (size_t vertexIndex = 0; vertexIndex < baseVertices.size(); ++vertexIndex) {
+    const auto includeVertex = [&](size_t vertexIndex) {
         const glm::vec3 basePosition = baseVertices[vertexIndex].pos;
         glm::vec4 skinnedPosition(0.0f);
         float totalWeight = 0.0f;
@@ -840,9 +1077,29 @@ bool InxSkinnedMesh::ComputeSkinnedBounds(const std::vector<glm::mat4> &palette,
         const glm::vec3 position =
             totalWeight > kEpsilon ? glm::vec3(skinnedPosition) / totalWeight : basePosition * scaleFactor;
         if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
-            continue;
+            return;
         outMin = glm::min(outMin, position);
         outMax = glm::max(outMax, position);
+    };
+
+    // The renderer draws only one submesh or node group for imported hierarchy
+    // children. A whole-model bound here makes every child pickable across the
+    // entire asset, even where that child's triangles are nowhere near the ray.
+    const bool selectedSubmesh = submeshIndex >= 0 && static_cast<size_t>(submeshIndex) < subMeshes.size();
+    if (selectedSubmesh || (nodeGroup >= 0 && !subMeshes.empty())) {
+        for (size_t index = 0; index < subMeshes.size(); ++index) {
+            const auto &submesh = subMeshes[index];
+            if (selectedSubmesh ? index != static_cast<size_t>(submeshIndex)
+                                : static_cast<int32_t>(submesh.nodeGroup) != nodeGroup)
+                continue;
+            const size_t end =
+                (std::min)(baseVertices.size(), static_cast<size_t>(submesh.vertexStart) + submesh.vertexCount);
+            for (size_t vertexIndex = submesh.vertexStart; vertexIndex < end; ++vertexIndex)
+                includeVertex(vertexIndex);
+        }
+    } else {
+        for (size_t vertexIndex = 0; vertexIndex < baseVertices.size(); ++vertexIndex)
+            includeVertex(vertexIndex);
     }
     return outMin.x <= outMax.x && outMin.y <= outMax.y && outMin.z <= outMax.z;
 }

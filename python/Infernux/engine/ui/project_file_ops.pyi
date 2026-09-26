@@ -10,6 +10,7 @@ Usage::
 from __future__ import annotations
 
 from typing import Optional
+from Infernux.core.data_asset import DataAsset
 
 
 # ── Template strings ────────────────────────────────────────────────
@@ -51,6 +52,20 @@ def create_material(
     material_name: str,
     asset_database: Optional[object] = None,
 ) -> None: ...
+def create_render_texture(
+    current_path: str,
+    asset_name: str,
+    asset_database=None,
+) -> tuple[bool, str]: ...
+
+def create_data_asset(
+    current_path: str,
+    asset_name: str,
+    type_id: str,
+    asset_database: Optional[object] = None,
+    *,
+    value: Optional[DataAsset] = None,
+) -> tuple[bool, str]: ...
 def create_prefab_from_gameobject(
     game_object: object,
     current_path: str,

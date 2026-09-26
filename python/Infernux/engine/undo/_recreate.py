@@ -4,15 +4,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from Infernux.engine.undo._helpers import _get_active_scene
-
-
 def _recreate_game_object_from_document(document: dict,
                                         parent_id: Optional[int],
-                                        sibling_index: int) -> object:
-    scene = _get_active_scene()
+                                        sibling_index: int,
+                                        *, scene) -> object:
     if not scene:
-        raise RuntimeError("cannot restore GameObject without an active scene")
+        raise RuntimeError("cannot restore GameObject without its owning scene")
 
     from Infernux.engine.component_restore import (
         commit_prepared_game_object_document,

@@ -172,6 +172,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
                     destination.skinBoneMatrices = source.skinBoneMatrices;
                     destination.previousSkinBoneMatricesOwner = source.previousSkinBoneMatricesOwner;
                     destination.previousSkinBoneMatrices = source.previousSkinBoneMatrices;
+                    destination.parameterBlock = source.parameterBlock;
                 }
             }
             cameraCache.contentRevision = result.worldOwner->ContentRevision();

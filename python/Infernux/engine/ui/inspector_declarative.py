@@ -12,6 +12,7 @@ from .inspector_utils import (
     has_field_changed,
     max_label_w,
     pretty_field_name,
+    record_inspector_component_item,
     render_compact_section_header,
     render_serialized_field,
 )
@@ -230,6 +231,12 @@ def _render_serialized_target(ctx: InxGUIContext, control: InspectorSerializedTa
             metadata,
             current,
             label_width,
+        )
+        # The nested target (e.g. a pipeline) is replaceable. Its owning
+        # component and the declared control/field names are the stable identity.
+        record_inspector_component_item(
+            ctx, control.owner, f"{control.key}.{field_name}",
+            "inspector_field", display_name, enabled=not metadata.readonly,
         )
         if has_field_changed(metadata.field_type, current, updated) and not metadata.readonly:
             if control.on_change is not None:

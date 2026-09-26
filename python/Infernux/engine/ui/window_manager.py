@@ -924,13 +924,20 @@ class WindowManager:
         self._enqueue_action(_unregister_instance)
         return True
 
-    def close_deleted_resource_editors(self, resource_path: str) -> tuple[str, ...]:
+    def close_deleted_resource_editors(
+        self,
+        resource_path: str,
+        *,
+        guid: str = "",
+    ) -> tuple[str, ...]:
         """Close authoring views whose durable non-scene asset was deleted."""
         from Infernux.engine.interaction import DocumentKind, DocumentRegistry
 
         registry = DocumentRegistry.instance()
         closed: list[str] = []
-        for document in tuple(registry.documents_for_resource(resource_path)):
+        for document in tuple(
+            registry.documents_for_resource(resource_path, guid=guid)
+        ):
             if document.kind is DocumentKind.SCENE:
                 continue
             view_ids = registry.retire_deleted_resource_document(
@@ -976,7 +983,10 @@ class WindowManager:
 
         for mutation in iter_asset_mutations(change):
             if mutation.kind is AssetMutationKind.DELETED:
-                self.close_deleted_resource_editors(mutation.source_path)
+                self.close_deleted_resource_editors(
+                    mutation.source_path,
+                    guid=mutation.guid,
+                )
     
     def is_window_open(self, window_id: str) -> bool:
         """Check if a window is currently open."""

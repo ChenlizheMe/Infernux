@@ -25,6 +25,8 @@ from Infernux.math import vector2 as vector2
 from Infernux.math import vector3 as vector3
 from Infernux.math import vector4 as vector4
 from Infernux.math import quaternion as quaternion
+from Infernux.compute import Buffer as Buffer
+from Infernux.compute import buffer as buffer
 # Game Objects
 from Infernux.lib import GameObject as GameObject
 from Infernux.lib import Transform as Transform
@@ -55,10 +57,24 @@ from Infernux.components import MaterialRef as MaterialRef
 from Infernux.components import ComponentRef as ComponentRef
 from Infernux.components import PrefabRef as PrefabRef
 from Infernux.components import SerializableObject as SerializableObject
+from Infernux.core import DataAsset as DataAsset
+from Infernux.core.render_texture import RenderTexture as RenderTexture
+from Infernux.ui import UICanvas as UICanvas
+from Infernux.ui import UIFrame as UIFrame
+from Infernux.ui import UIGroup as UIGroup
+from Infernux.ui import UIProgressBar as UIProgressBar
+from Infernux.ui import UISlider as UISlider
+from Infernux.ui import UIText as UIText
+from Infernux.ui import UIImage as UIImage
+from Infernux.ui import UIRawImage as UIRawImage
+from Infernux.ui import UIButton as UIButton
+from Infernux.ui import UIEvent as UIEvent
+from Infernux.ui import UIEvent1 as UIEvent1
 
 def serialized_field(
     default: _SerializedValue = ...,
     *,
+    default_factory: Optional[Callable[[], _SerializedValue]] = ...,
     field_type: Optional[FieldType] = ...,
     element_type: Optional[FieldType] = ...,
     element_class: Optional[Type] = ...,
@@ -99,6 +115,8 @@ from Infernux.components import Rigidbody as Rigidbody
 from Infernux.components import RigidbodyConstraints as RigidbodyConstraints
 from Infernux.components import CollisionDetectionMode as CollisionDetectionMode
 from Infernux.components import RigidbodyInterpolation as RigidbodyInterpolation
+from Infernux.components import HingeJoint as HingeJoint
+from Infernux.components import SliderJoint as SliderJoint
 from Infernux.components import AudioSource as AudioSource
 from Infernux.components import AudioListener as AudioListener
 from Infernux.components import SpriteRenderer as SpriteRenderer
@@ -120,9 +138,13 @@ from Infernux.components import ExecuteInEditMode as ExecuteInEditMode
 from Infernux.components import AddComponentMenu as AddComponentMenu
 from Infernux.components import HelpURL as HelpURL
 from Infernux.components import Icon as Icon
+from Infernux.components import DrivenTransformProperties as DrivenTransformProperties
+from Infernux.components import drives_transform as drives_transform
+from Infernux.components import DrivesTransform as DrivesTransform
 # Core assets
 from Infernux.core import Material as Material
 from Infernux.core import Texture as Texture
+from Infernux.core import Mesh as Mesh
 from Infernux.core import Shader as Shader
 from Infernux.core import AudioClip as AudioClip
 from Infernux.core import AnimationClip as AnimationClip
@@ -132,13 +154,17 @@ from Infernux.core import AnimState as AnimState
 from Infernux.core import AnimTransition as AnimTransition
 from Infernux.core import AnimCondition as AnimCondition
 from Infernux.core import AnimParameter as AnimParameter
+from Infernux.core import AssetFile as AssetFile
 from Infernux.core import AssetManager as AssetManager
+from Infernux.core import SandboxPath as SandboxPath
 from Infernux.core import TextureRef as TextureRef
+from Infernux.core import RenderTextureRef as RenderTextureRef
 from Infernux.core import ShaderRef as ShaderRef
 from Infernux.core import AudioClipRef as AudioClipRef
 from Infernux.core import AnimationClipRef as AnimationClipRef
 from Infernux.core import AnimStateMachineRef as AnimStateMachineRef
 from Infernux.core import RenderEffectRef as RenderEffectRef
+from Infernux.core import DataAssetRef as DataAssetRef
 # Debug — class only (use Debug.log / Debug.log_warning / …)
 from Infernux.debug import Debug as Debug
 # Submodules
@@ -175,7 +201,6 @@ from Infernux.batch import batch_read as batch_read
 from Infernux.batch import batch_write as batch_write
 # JIT helpers (lazy-loaded via __getattr__ at runtime)
 from Infernux import jit as jit
+from Infernux import compute as compute
 from Infernux.jit import JIT_AVAILABLE as JIT_AVAILABLE
-from Infernux.jit import ensure_jit_runtime as ensure_jit_runtime
-from Infernux.jit import njit as njit
 from Infernux.jit import warmup as warmup

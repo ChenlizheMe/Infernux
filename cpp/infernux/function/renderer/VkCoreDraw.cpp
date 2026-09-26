@@ -10,6 +10,7 @@
 #include "InxError.h"
 #include "InxVkCoreModular.h"
 #include "ProfileConfig.h"
+#include "RendererSelection.h"
 #include "SceneRenderGraph.h"
 #include "vk/DescriptorBindTrace.h"
 #include "vk/RhiVulkanTypes.h"
@@ -20,6 +21,7 @@
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxMesh/InxMesh.h>
 #include <function/scene/LightingData.h>
 
 #include <SDL3/SDL.h>
@@ -29,6 +31,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -52,6 +55,21 @@ struct alignas(16) ShadowPassUniformData
 };
 
 static_assert(sizeof(ShadowPassUniformData) == 224);
+
+VkIndexType ToVkIndexType(MeshIndexFormat format)
+{
+    if (format == MeshIndexFormat::UInt16)
+        return VK_INDEX_TYPE_UINT16;
+    if (format == MeshIndexFormat::UInt32)
+        return VK_INDEX_TYPE_UINT32;
+    throw std::logic_error("Vulkan draw received an unresolved mesh index format");
+}
+
+bool IsPackagedPlayerRuntime()
+{
+    const char *playerMode = std::getenv("_INFERNUX_PLAYER_MODE");
+    return playerMode != nullptr && std::strcmp(playerMode, "1") == 0;
+}
 
 } // namespace
 
@@ -140,6 +158,8 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     const bool separateComputeBatch = !asyncCompute && frameComputeHasWork && partitionedCompute;
 
     const bool composedFrame = static_cast<bool>(m_frameSubmissionBuilder);
+    m_frameComputeReadTicket = {};
+    m_frameComputeReadStages = 0;
     if (composedFrame) {
         if (!EnsureGuiRenderGraph(imageIndex))
             return;
@@ -236,15 +256,15 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         }
 
         vk::RenderGraph &guiGraph = GetGuiRenderGraph(imageIndex);
-        const auto guiRange =
-            m_frameSubmission.AppendRenderGraph(guiGraph, {setupWork}, {}, [this](VkCommandBuffer commandBuffer) {
+        const auto guiRange = m_frameSubmission.AppendRenderGraph(
+            guiGraph, {setupWork}, {}, [this, imageIndex](VkCommandBuffer commandBuffer) {
 #if INFERNUX_FRAME_PROFILE
                 m_gpuTimestampQueries.EndRegion(commandBuffer, m_composedFrameTimestampRegion,
                                                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
                 m_composedFrameTimestampRegion = {};
                 m_gpuTimestampQueries.FinishFrame(m_currentFrame);
 #endif
-                return true;
+                return RecordPresentationReadback(commandBuffer, imageIndex);
             });
         if (guiRange.Empty()) {
             INXLOG_ERROR("Swapchain GUI RenderGraph produced no submission work");
@@ -376,6 +396,29 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
     externalSync.imageAvailableStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     externalSync.uploadTimeline = m_resourceManager.GetUploadTimelineSemaphore();
     externalSync.uploadTimelineValue = m_resourceManager.GetRequiredUploadTimelineValue();
+    rhi::SubmissionTicket residentWrite = m_frameComputeReadTicket;
+    VkPipelineStageFlags residentReadStages = m_frameComputeReadStages;
+    for (const auto &[objectId, buffers] : m_perObjectBuffers) {
+        (void)objectId;
+        if (!buffers.residentVertexBuffer)
+            continue;
+        const auto write = buffers.residentVertexBuffer->GetLastWriteSubmission();
+        if (write.IsValid() && (!residentWrite.IsValid() || write.serial > residentWrite.serial))
+            residentWrite = write;
+        if (write.IsValid())
+            residentReadStages |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+    }
+    m_frameSubmissionTelemetry.residentComputeWriteSerial = residentWrite.serial;
+    m_frameSubmissionTelemetry.latestBackgroundComputeSerial = m_computeQueue.LastSubmission().completionTicket.serial;
+    m_frameSubmissionTelemetry.residentComputeWaitPending = false;
+    if (residentWrite.IsValid()) {
+        const auto compute = m_computeQueue.DependencyFor(residentWrite);
+        externalSync.backgroundComputeTimeline = compute.completionTimeline;
+        externalSync.backgroundComputeTimelineValue = compute.completionTimelineValue;
+        externalSync.backgroundComputeStages =
+            residentReadStages != 0 ? residentReadStages : VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
+        m_frameSubmissionTelemetry.residentComputeWaitPending = compute.completionTimeline != VK_NULL_HANDLE;
+    }
     externalSync.renderFinished = m_backend.Presentation().GetRenderFinishedSemaphore(imageIndex);
     externalSync.completionFence = m_backend.Queues().GetGraphicsFrameFence(frameSlot);
     externalSync.completionEpoch = m_backend.Queues().GetFrameCompletionEpoch(frameSlot);
@@ -467,6 +510,8 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
         // consumes the same exported indirect buffers.
         m_previousFrameCompletionTimeline = executeResult.completionTimeline;
         m_previousFrameCompletionTimelineValue = executeResult.completionTimelineValue;
+        m_computeQueue.SetPreviousGraphicsCompletion(m_previousFrameCompletionTimeline,
+                                                     m_previousFrameCompletionTimelineValue);
     }
 #if INFERNUX_FRAME_PROFILE
     if (submitResult == VK_SUCCESS) {
@@ -542,7 +587,9 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
         const auto bufferIt = m_perObjectBuffers.find(drawCall.objectId);
         if (bufferIt != m_perObjectBuffers.end()) {
             m_drawListMetadata.push_back({drawCall.objectId, material, queue, bufferIt->second.vertexBuffer,
-                                          bufferIt->second.indexBuffer, bufferIt->second.indexCount});
+                                          bufferIt->second.indexBuffer, bufferIt->second.indexCount,
+                                          bufferIt->second.residentVertexBuffer, bufferIt->second.residentVertexHandle,
+                                          bufferIt->second.indexFormat});
         } else {
             m_drawListMetadata.push_back({drawCall.objectId, material, queue, {}, {}, 0});
         }
@@ -587,7 +634,8 @@ void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls
         if (bufferIt != m_perObjectBuffers.end()) {
             m_shadowListMetadata.push_back({drawCall.objectId, material, material ? material->GetRenderQueue() : 2000,
                                             bufferIt->second.vertexBuffer, bufferIt->second.indexBuffer,
-                                            bufferIt->second.indexCount});
+                                            bufferIt->second.indexCount, bufferIt->second.residentVertexBuffer,
+                                            bufferIt->second.residentVertexHandle, bufferIt->second.indexFormat});
         } else {
             m_shadowListMetadata.push_back(
                 {drawCall.objectId, material, material ? material->GetRenderQueue() : 2000, {}, {}, 0});
@@ -638,7 +686,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                                          int queueMax, const std::string &sortMode, const std::string &overrideMaterial,
                                          const std::string &passTag,
                                          const MaterialPassPipelineDescriptor *pipelineDescriptor,
-                                         GraphMaterialFilter materialFilter)
+                                         GraphMaterialFilter materialFilter, const RendererSelection *selection,
+                                         uint64_t excludedObjectId, bool requireSourceDepthWrite)
 {
     const MaterialPassPipelineDescriptor activePass =
         pipelineDescriptor ? *pipelineDescriptor : m_materialPipelineManager.GetDefaultPassPipelineDescriptor();
@@ -662,7 +711,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
 #endif
 
     // Fast early-out when no draw calls are staged
-    if (drawCalls().empty())
+    if (drawCalls().empty() || (selection && selection->Size() == 0))
         return;
 
     if (!m_drawQueueValuesOverflow) {
@@ -699,7 +748,10 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     // Resolve override material (if specified)
     InxMaterial *overrideMatRaw = nullptr;
     std::shared_ptr<InxMaterial> overrideMatOwner; // keeps alive during this scope
-    if (!overrideMaterial.empty()) {
+    if (selection) {
+        overrideMatOwner = selection->Material();
+        overrideMatRaw = overrideMatOwner.get();
+    } else if (!overrideMaterial.empty()) {
         auto &registry = AssetRegistry::Instance();
         overrideMatOwner = registry.GetBuiltinMaterial(overrideMaterial);
         if (!overrideMatOwner)
@@ -719,7 +771,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     const bool skyboxPass = passTag == "__infernux_internal_skybox";
     const uint64_t materialPublicationGeneration = m_materialPipelineManager.GetPublicationGeneration();
     auto staticFilterCache = m_staticFilteredListCaches.end();
-    if (overrideMaterial.empty() && sortMode != "back_to_front") {
+    if (!selection && excludedObjectId == 0 && !requireSourceDepthWrite && overrideMaterial.empty() &&
+        sortMode != "back_to_front") {
         staticFilterCache =
             std::find_if(m_staticFilteredListCaches.begin(), m_staticFilteredListCaches.end(),
                          [&](const StaticFilteredListCache &cache) {
@@ -750,6 +803,12 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const size_t drawCallIndex = hasCachedSkyboxIndices ? m_skyboxDrawCallIndices[candidateIndex] : candidateIndex;
         ++filterCandidateCount;
         const DrawCall &dc = activeDrawCalls[drawCallIndex];
+        if (excludedObjectId != 0 && dc.objectId == excludedObjectId)
+            continue;
+        const auto *parameters =
+            selection ? selection->Find(dc.identity) : (overrideMatRaw ? nullptr : &dc.parameterBlock);
+        if (selection && !parameters)
+            continue;
         const DrawListMetadata *metadata = hasListMetadata ? &m_drawListMetadata[drawCallIndex] : nullptr;
         const InxMaterial *expectedMaterial = dc.material ? dc.material.get() : m_cachedDefaultLit.get();
         const uint64_t requiredIndexEnd = static_cast<uint64_t>(dc.indexStart) + dc.indexCount;
@@ -763,8 +822,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         // moving LineRenderer trails flicker on every growth frame.
         uint32_t indexCountClamp = 0;
         if (metadata && requiredIndexEnd > metadata->indexCapacity) {
-            if (dc.indexStart == 0 && dc.vertexStart == 0 && metadata->indexCapacity > 0 && metadata->vertexBuffer &&
-                metadata->indexBuffer) {
+            if (dc.indexStart == 0 && dc.vertexStart == 0 && metadata->indexCapacity > 0 &&
+                metadata->HasVertexBuffer() && metadata->indexBuffer) {
                 indexCountClamp = static_cast<uint32_t>(metadata->indexCapacity);
             } else {
                 metadata = nullptr;
@@ -781,6 +840,11 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             overrideMatRaw ? overrideMatRaw : (metadata ? metadata->material : materialOwner->get());
         if (!material)
             continue;
+        // The semantic Depth target forces depth-write on. During alternate
+        // scene-depth replay, exclude sources whose original Forward pipeline
+        // only wrote color, or they would become new (incorrect) occluders.
+        if (requireSourceDepthWrite && !material->GetRenderState().depthWriteEnable)
+            continue;
 
         // Filtering describes which source renderers participate in the pass.
         // An override material only changes how an accepted renderer is drawn;
@@ -796,11 +860,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             if (const MaterialRenderData *committed =
                     m_materialPipelineManager.GetRenderData(material->GetMaterialKey()))
                 stages = committed->programKey.stages;
-            const ShaderProgramArtifact *artifact = m_shaderCache.FindProgramArtifact(stages);
-            if (!artifact && m_shaderProgramArtifactResolver) {
-                m_shaderProgramArtifactResolver(*materialOwner);
-                artifact = m_shaderCache.FindProgramArtifact(stages);
-            }
+            const ShaderProgramArtifact *artifact =
+                ResolveShaderProgramArtifact(*materialOwner, stages, ShaderProgramDomain::Mesh);
             const bool deferredCompatible = artifact && artifact->FindVariant(ShaderCompileTarget::GBuffer);
             if ((materialFilter == GraphMaterialFilter::DeferredCompatible && !deferredCompatible) ||
                 (materialFilter == GraphMaterialFilter::DeferredUnsupported && deferredCompatible))
@@ -829,28 +890,38 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
 
         // Material + mesh hash for grouping optimization
         size_t matHash = std::hash<void *>{}(static_cast<void *>(material));
+        if (parameters && *parameters) {
+            const size_t parameterHash = std::hash<const void *>{}(parameters->get());
+            matHash ^= parameterHash + 0x9e3779b9u + (matHash << 6u) + (matHash >> 2u);
+        }
         const DrawListMetadata *bufferLease =
-            metadata && metadata->vertexBuffer && metadata->indexBuffer ? metadata : nullptr;
+            metadata && metadata->HasVertexBuffer() && metadata->indexBuffer ? metadata : nullptr;
         if (!bufferLease) {
             const auto bufferIt = m_perObjectBuffers.find(dc.objectId);
-            if (bufferIt != m_perObjectBuffers.end() && bufferIt->second.vertexBuffer && bufferIt->second.indexBuffer) {
+            if (bufferIt != m_perObjectBuffers.end() && bufferIt->second.HasVertexBuffer() &&
+                bufferIt->second.indexBuffer) {
                 if (requiredIndexEnd <= bufferIt->second.indexCount) {
-                    fallbackBufferLeases.push_back({dc.objectId, material, queue, bufferIt->second.vertexBuffer,
-                                                    bufferIt->second.indexBuffer, bufferIt->second.indexCount});
+                    fallbackBufferLeases.push_back(
+                        {dc.objectId, material, queue, bufferIt->second.vertexBuffer, bufferIt->second.indexBuffer,
+                         bufferIt->second.indexCount, bufferIt->second.residentVertexBuffer,
+                         bufferIt->second.residentVertexHandle, bufferIt->second.indexFormat});
                     bufferLease = &fallbackBufferLeases.back();
                 } else if (dc.indexStart == 0 && dc.vertexStart == 0 && bufferIt->second.indexCount > 0) {
                     // Same stale-lease fallback as the metadata path above.
-                    fallbackBufferLeases.push_back({dc.objectId, material, queue, bufferIt->second.vertexBuffer,
-                                                    bufferIt->second.indexBuffer, bufferIt->second.indexCount});
+                    fallbackBufferLeases.push_back(
+                        {dc.objectId, material, queue, bufferIt->second.vertexBuffer, bufferIt->second.indexBuffer,
+                         bufferIt->second.indexCount, bufferIt->second.residentVertexBuffer,
+                         bufferIt->second.residentVertexHandle, bufferIt->second.indexFormat});
                     bufferLease = &fallbackBufferLeases.back();
                     indexCountClamp = static_cast<uint32_t>(bufferIt->second.indexCount);
                 }
             }
         }
-        const VkBuffer vb = bufferLease ? bufferLease->vertexBuffer->GetBuffer() : VK_NULL_HANDLE;
+        const VkBuffer vb = bufferLease ? bufferLease->GetVertexHandle() : VK_NULL_HANDLE;
         const VkBuffer ib = bufferLease ? bufferLease->indexBuffer->GetBuffer() : VK_NULL_HANDLE;
 
-        m_eligibleScratch.push_back({&dc, sortKey, matHash, vb, ib, materialOwner, material, indexCountClamp});
+        m_eligibleScratch.push_back({&dc, sortKey, matHash, vb, ib, materialOwner, material, indexCountClamp,
+                                     parameters, bufferLease ? bufferLease->indexFormat : MeshIndexFormat::UInt32});
     }
 
     // A stable static publication already owns a sorted, fully resolved list.
@@ -915,7 +986,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             const uint32_t drawIndexCount =
                 m_eligibleScratch[i].indexCountClamp ? m_eligibleScratch[i].indexCountClamp : draw.indexCount;
             if (m_eligibleScratch[i].materialHash != firstMatHash || m_eligibleScratch[i].material != firstMaterial ||
+                m_eligibleScratch[i].ParameterIdentity() != m_eligibleScratch[0].ParameterIdentity() ||
                 m_eligibleScratch[i].vertexBuf != firstVB || m_eligibleScratch[i].indexBuf != firstIB ||
+                m_eligibleScratch[i].indexFormat != m_eligibleScratch[0].indexFormat ||
                 draw.indexStart != firstDraw.indexStart || drawIndexCount != firstIndexCount ||
                 draw.vertexStart != firstDraw.vertexStart) {
                 uniformBatch = false;
@@ -943,7 +1016,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                     return a.materialHash < b.materialHash;
                 if (a.vertexBuf != b.vertexBuf)
                     return a.vertexBuf < b.vertexBuf;
-                return a.indexBuf < b.indexBuf;
+                if (a.indexBuf != b.indexBuf)
+                    return a.indexBuf < b.indexBuf;
+                return static_cast<uint32_t>(a.indexFormat) < static_cast<uint32_t>(b.indexFormat);
             };
             if (!std::is_sorted(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp)) {
                 std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp);
@@ -959,7 +1034,9 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                     return a.materialHash < b.materialHash;
                 if (a.vertexBuf != b.vertexBuf)
                     return a.vertexBuf < b.vertexBuf;
-                return a.indexBuf < b.indexBuf;
+                if (a.indexBuf != b.indexBuf)
+                    return a.indexBuf < b.indexBuf;
+                return static_cast<uint32_t>(a.indexFormat) < static_cast<uint32_t>(b.indexFormat);
             };
             if (!std::is_sorted(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp)) {
                 std::sort(m_eligibleScratch.begin(), m_eligibleScratch.end(), cmp);
@@ -967,7 +1044,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         }
     } // size() > 1
 
-    if (!reusedStaticFilter && overrideMaterial.empty() && sortMode != "back_to_front" &&
+    if (!reusedStaticFilter && !selection && overrideMaterial.empty() && sortMode != "back_to_front" &&
         m_eligibleScratch.size() >= 256 &&
         std::all_of(m_eligibleScratch.begin(), m_eligibleScratch.end(), [](const SortableDrawCall &entry) {
             return entry.dc && entry.dc->isStatic && entry.dc->skinBoneMatrices == nullptr &&
@@ -1200,6 +1277,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
     InxMaterial *currentMaterialRaw = nullptr;
     VkBuffer currentVertexBuffer = VK_NULL_HANDLE;
     VkBuffer currentIndexBuffer = VK_NULL_HANDLE;
+    MeshIndexFormat currentIndexFormat = MeshIndexFormat::UInt32;
     uint64_t issuedDraws = 0;
 
     struct ResolvedMaterialPass
@@ -1251,7 +1329,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const ShaderStagePair requestedStages{owner->GetVertShaderName(), owner->GetFragShaderName()};
         const ShaderProgramArtifact *requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
         if (!requestedArtifact && m_shaderProgramArtifactResolver) {
-            m_shaderProgramArtifactResolver(owner);
+            m_shaderProgramArtifactResolver(owner, ShaderProgramDomain::Mesh);
             requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
         }
         if (requestedArtifact && requestedArtifact->domain != ShaderProgramDomain::Mesh) {
@@ -1291,8 +1369,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             // so resolving from the mutable asset fields would mix two ABIs.
             const ShaderStagePair &stages = forward->programKey.stages;
             const ShaderProgramArtifact *artifact = m_shaderCache.FindProgramArtifact(stages);
-            if (!artifact && m_shaderProgramArtifactResolver) {
-                m_shaderProgramArtifactResolver(owner);
+            if (!artifact && m_shaderProgramArtifactResolver && stages == requestedStages) {
+                m_shaderProgramArtifactResolver(owner, ShaderProgramDomain::Mesh);
                 artifact = m_shaderCache.FindProgramArtifact(stages);
             }
             if (!artifact || !artifact->FindVariant(activePass.target)) {
@@ -1427,8 +1505,10 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             const bool batchingAllowed =
                 allowBatching || (batchFirst.allowTransparentInstancing && dc.allowTransparentInstancing);
             if (batchingAllowed && entry.material == currentMaterialRaw && entry.vertexBuf == currentVertexBuffer &&
+                entry.ParameterIdentity() == eligibleDraws[batchFirstInstance].ParameterIdentity() &&
                 entry.indexBuf == currentIndexBuffer && dc.indexStart == batchIndexStart &&
-                effectiveIndexCount == batchIndexCount && dc.vertexStart == batchVertexStart) {
+                entry.indexFormat == currentIndexFormat && effectiveIndexCount == batchIndexCount &&
+                dc.vertexStart == batchVertexStart) {
                 ++batchInstanceCount;
                 continue;
             }
@@ -1439,20 +1519,18 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
         const std::shared_ptr<InxMaterial> *matOwner = entry.materialOwner;
         InxMaterial *matRaw = matOwner->get();
         ResolvedMaterialPass resolved = resolveCachedMaterialPass(*matOwner);
-        // SkyboxPass owns synthetic cube geometry whose vertices are meaningful
-        // only to a skybox shader (translation-free view and far-plane depth).
-        // Drawing that cube with Error/DefaultLit exposes its interior as a
-        // giant box around the camera. Semantic sky draws therefore fail
-        // closed until their own pipeline is ready; ordinary scene geometry
-        // keeps the visible error/default fallback behavior.
-        if (!resolved.IsValid() && !skyboxPass && errorMaterial) {
+        // Gizmo line topology, icon alpha masks, and sky vertices are meaningful
+        // only with their dedicated shader. DefaultLit can turn icons into solid
+        // quads and cannot draw line handles correctly during shader publication.
+        const bool dedicatedMaterial = skyboxPass || RenderDomainRequiresDedicatedMaterial(dc.identity.domain);
+        if (!resolved.IsValid() && !dedicatedMaterial && errorMaterial) {
             resolved = resolveCachedMaterialPass(errorMaterial);
             if (resolved.IsValid()) {
                 matOwner = &errorMaterial;
                 matRaw = errorMaterial.get();
             }
         }
-        if (!resolved.IsValid() && !skyboxPass && defaultMaterial) {
+        if (!resolved.IsValid() && !dedicatedMaterial && defaultMaterial) {
             resolved = resolveCachedMaterialPass(defaultMaterial);
             if (resolved.IsValid()) {
                 matOwner = &defaultMaterial;
@@ -1500,9 +1578,43 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             }
         }
 
+        // Resolve pending textures above before deciding readiness. A default
+        // white descriptor is Vulkan-valid but is not the requested icon alpha
+        // mask. Dedicated draws stay unpublished on both pending and failed
+        // first publication; an existing complete descriptor remains visible
+        // during hot replacement.
+        if (dedicatedMaterial &&
+            m_materialPipelineManager.HasUnresolvedExplicitTextureProperties(matRaw->GetMaterialKey())) {
+            emitBatch();
+            continue;
+        }
+
+        if (entry.ParameterIdentity() && matRaw == entry.material) {
+            MaterialDescriptorSet *rendererDescriptor =
+                m_materialPipelineManager.GetDescriptorManager().GetOrCreateRendererDescriptorSet(
+                    *matRaw, *resolved.program, *entry.parameters);
+            if (!rendererDescriptor || !rendererDescriptor->isValid ||
+                rendererDescriptor->descriptorSet == VK_NULL_HANDLE) {
+                emitBatch();
+                continue;
+            }
+            resolved.descriptorSet = rendererDescriptor->descriptorSet;
+        }
+
         VkPipeline pipeline = resolved.pipeline;
         VkPipelineLayout pipelineLayout = resolved.layout;
         VkDescriptorSet descriptorSet = resolved.descriptorSet;
+
+        const bool requiresMaterialBuffer =
+            std::any_of(resolved.program->GetDescriptorBindings().begin(),
+                        resolved.program->GetDescriptorBindings().end(), [](const MergedDescriptorBinding &binding) {
+                            return binding.set == 0 && binding.type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                        });
+        if (requiresMaterialBuffer &&
+            !m_materialPipelineManager.GetDescriptorManager().IsDescriptorSetComplete(descriptorSet)) {
+            emitBatch();
+            continue;
+        }
 
         if (descriptorSet == VK_NULL_HANDLE) {
             static int warnCount = 0;
@@ -1539,8 +1651,10 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 allowBatching || (batchFirst.allowTransparentInstancing && dc.allowTransparentInstancing);
             canExtendBatch = batchingAllowed && pipeline == currentPipeline && descriptorSet == currentDescriptorSet &&
                              matRaw == currentMaterialRaw && vb == currentVertexBuffer &&
+                             entry.ParameterIdentity() == eligibleDraws[batchFirstInstance].ParameterIdentity() &&
                              entry.indexBuf == currentIndexBuffer && dc.indexStart == batchIndexStart &&
-                             effectiveIndexCount == batchIndexCount && dc.vertexStart == batchVertexStart;
+                             entry.indexFormat == currentIndexFormat && effectiveIndexCount == batchIndexCount &&
+                             dc.vertexStart == batchVertexStart;
         }
 
         if (canExtendBatch) {
@@ -1639,8 +1753,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                         pipelineLayout, ShaderProgram::BindlessTextureSet, 1, &bindlessSet, 0, nullptr);
 
                     const auto *textureIndices =
-                        m_materialPipelineManager.GetDescriptorManager().GetBindlessTextureIndices(
-                            matRaw->GetMaterialKey());
+                        m_materialPipelineManager.GetDescriptorManager().GetBindlessTextureIndices(descriptorSet);
                     rhiDevice.MarkBindlessTexturesUsed(
                         textureIndices && !textureIndices->empty() ? textureIndices->data() : nullptr,
                         textureIndices ? textureIndices->size() : 0);
@@ -1654,9 +1767,10 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
             vkCmdBindVertexBuffers(cmdBuf, 0, 1, vertBuffers, vbOffsets);
             currentVertexBuffer = vb;
         }
-        if (entry.indexBuf != currentIndexBuffer) {
-            vkCmdBindIndexBuffer(cmdBuf, entry.indexBuf, 0, VK_INDEX_TYPE_UINT32);
+        if (entry.indexBuf != currentIndexBuffer || entry.indexFormat != currentIndexFormat) {
+            vkCmdBindIndexBuffer(cmdBuf, entry.indexBuf, 0, ToVkIndexType(entry.indexFormat));
             currentIndexBuffer = entry.indexBuf;
+            currentIndexFormat = entry.indexFormat;
         }
 
         // Start new batch
@@ -1795,14 +1909,16 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             if (renderQueue < queueMin || renderQueue > queueMax)
                 continue;
             const DrawListMetadata *bufferLease =
-                metadata && metadata->vertexBuffer && metadata->indexBuffer ? metadata : nullptr;
+                metadata && metadata->HasVertexBuffer() && metadata->indexBuffer ? metadata : nullptr;
             if (!bufferLease) {
                 const auto bufferIt = m_perObjectBuffers.find(dc.objectId);
-                if (bufferIt != m_perObjectBuffers.end() && bufferIt->second.vertexBuffer &&
+                if (bufferIt != m_perObjectBuffers.end() && bufferIt->second.HasVertexBuffer() &&
                     bufferIt->second.indexBuffer && requiredIndexEnd <= bufferIt->second.indexCount) {
                     fallbackBufferLeases.push_back({dc.objectId, dc.material.get(), renderQueue,
                                                     bufferIt->second.vertexBuffer, bufferIt->second.indexBuffer,
-                                                    bufferIt->second.indexCount});
+                                                    bufferIt->second.indexCount, bufferIt->second.residentVertexBuffer,
+                                                    bufferIt->second.residentVertexHandle,
+                                                    bufferIt->second.indexFormat});
                     bufferLease = &fallbackBufferLeases.back();
                 }
             }
@@ -1830,8 +1946,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             const VkDescriptorSet shadowMatDesc = resources.descriptorSet;
             if (pip == VK_NULL_HANDLE || shadowMatDesc == VK_NULL_HANDLE)
                 continue;
-            m_shadowDrawScratch.push_back({&dc, bufferLease->vertexBuffer->GetBuffer(),
-                                           bufferLease->indexBuffer->GetBuffer(), pip, shadowMatDesc, dc.worldBounds});
+            m_shadowDrawScratch.push_back({&dc, bufferLease->GetVertexHandle(), bufferLease->indexBuffer->GetBuffer(),
+                                           pip, shadowMatDesc, dc.worldBounds, bufferLease->indexFormat});
         }
 
 #if INFERNUX_FRAME_PROFILE
@@ -1863,6 +1979,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 return va < vb_b;
             if (a.indexBuf != b.indexBuf)
                 return a.indexBuf < b.indexBuf;
+            if (a.indexFormat != b.indexFormat)
+                return static_cast<uint32_t>(a.indexFormat) < static_cast<uint32_t>(b.indexFormat);
             if (a.dc->indexStart != b.dc->indexStart)
                 return a.dc->indexStart < b.dc->indexStart;
             return a.dc->indexCount < b.dc->indexCount;
@@ -1921,8 +2039,9 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 const ShadowDraw &draw = m_shadowDrawScratch[index];
                 if (draw.shadowPipeline != first.shadowPipeline ||
                     draw.shadowMaterialDescSet != first.shadowMaterialDescSet || draw.vertexBuf != first.vertexBuf ||
-                    draw.indexBuf != first.indexBuf || draw.dc->indexStart != first.dc->indexStart ||
-                    draw.dc->indexCount != first.dc->indexCount || draw.dc->vertexStart != first.dc->vertexStart) {
+                    draw.indexBuf != first.indexBuf || draw.indexFormat != first.indexFormat ||
+                    draw.dc->indexStart != first.dc->indexStart || draw.dc->indexCount != first.dc->indexCount ||
+                    draw.dc->vertexStart != first.dc->vertexStart) {
                     m_shadowScratchUniformBatch = false;
                     break;
                 }
@@ -1961,7 +2080,8 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                cached.worldBounds.max.x == draw.worldBounds.max.x &&
                cached.worldBounds.max.y == draw.worldBounds.max.y &&
                cached.worldBounds.max.z == draw.worldBounds.max.z && cached.vertexBuffer == current.vertexBuf &&
-               cached.indexBuffer == current.indexBuf && cached.pipeline == current.shadowPipeline &&
+               cached.indexBuffer == current.indexBuf && cached.indexFormat == current.indexFormat &&
+               cached.pipeline == current.shadowPipeline &&
                cached.materialDescriptor == current.shadowMaterialDescSet && cached.indexStart == draw.indexStart &&
                cached.indexCount == draw.indexCount && cached.vertexStart == draw.vertexStart;
     };
@@ -1974,6 +2094,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         state.worldBounds = draw.worldBounds;
         state.vertexBuffer = current.vertexBuf;
         state.indexBuffer = current.indexBuf;
+        state.indexFormat = current.indexFormat;
         state.pipeline = current.shadowPipeline;
         state.materialDescriptor = current.shadowMaterialDescSet;
         state.indexStart = draw.indexStart;
@@ -2082,6 +2203,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         const Frustum &shadowFrustum = shadowFrustums[viewIndex];
         VkBuffer currentVertexBuffer = VK_NULL_HANDLE;
         VkBuffer currentIndexBuffer = VK_NULL_HANDLE;
+        MeshIndexFormat currentIndexFormat = MeshIndexFormat::UInt32;
         // Per-cascade frustum cull into a compact index list, then upload
         // model matrices for visible objects and batch by (pipeline, VB, IB, submesh).
         // Directional cascades must not cull against the light-space near
@@ -2324,7 +2446,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
             const VkBuffer vb = sd.vertexBuf;
 
             bool canExtend = batchCount > 0 && sd.shadowPipeline == batchPipeline && vb == currentVertexBuffer &&
-                             sd.indexBuf == currentIndexBuffer &&
+                             sd.indexBuf == currentIndexBuffer && sd.indexFormat == currentIndexFormat &&
                              sd.shadowMaterialDescSet == batchShadowMaterialDescSet &&
                              sd.dc->indexStart == batchIdxStart && sd.dc->indexCount == batchIdxCount &&
                              sd.dc->vertexStart == batchVtxStart;
@@ -2347,9 +2469,10 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 vkCmdBindVertexBuffers(cmdBuf, 0, 1, &vb, offsets);
                 currentVertexBuffer = vb;
             }
-            if (sd.indexBuf != currentIndexBuffer) {
-                vkCmdBindIndexBuffer(cmdBuf, sd.indexBuf, 0, VK_INDEX_TYPE_UINT32);
+            if (sd.indexBuf != currentIndexBuffer || sd.indexFormat != currentIndexFormat) {
+                vkCmdBindIndexBuffer(cmdBuf, sd.indexBuf, 0, ToVkIndexType(sd.indexFormat));
                 currentIndexBuffer = sd.indexBuf;
+                currentIndexFormat = sd.indexFormat;
             }
 
             batchStart = vi;
@@ -2873,6 +2996,8 @@ void InxVkCoreModular::PumpPendingMeshUploads()
             auto &registry = AssetRegistry::Instance();
             if (!registry.IsLoaded(pending->first.assetGuid) ||
                 registry.GetAssetVersion(pending->first.assetGuid) != pending->first.runtimeVersion) {
+                m_assetMeshViewKeys.erase(
+                    {pending->first.assetGuid, pending->first.runtimeVersion, pending->first.geometryView});
                 pending = m_pendingSharedMeshBuffers.erase(pending);
                 continue;
             }
@@ -2883,21 +3008,127 @@ void InxVkCoreModular::PumpPendingMeshUploads()
         buffers.indexBuffer = pending->second.indexUpload->GetBuffer();
         buffers.vertexCount = pending->second.vertexCount;
         buffers.indexCount = pending->second.indexCount;
+        buffers.indexFormat = pending->second.indexFormat;
         PublishSharedMeshBuffers(pending->first, std::move(buffers));
         pending = m_pendingSharedMeshBuffers.erase(pending);
         ++m_completedMeshUploadCount;
     }
 }
 
-void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<Vertex> &vertices,
-                                           const std::vector<uint32_t> &indices, bool forceUpdate,
-                                           const std::string &assetGuid, uint64_t runtimeVersion)
+void InxVkCoreModular::QueueSharedMeshUpload(const SharedMeshKey &key, const std::vector<Vertex> &vertices,
+                                             const std::vector<uint32_t> &indices)
 {
-    if (vertices.empty() || indices.empty())
+    if (vertices.empty() || indices.empty() || vertices.size() != key.vertexCount || indices.size() != key.indexCount)
+        throw std::invalid_argument("Shared mesh upload requires non-empty geometry matching its identity");
+    if (!key.assetGuid.empty()) {
+        const AssetMeshViewIdentity identity{key.assetGuid, key.runtimeVersion, key.geometryView};
+        const auto [published, inserted] = m_assetMeshViewKeys.emplace(identity, key);
+        if (!inserted && !(published->second == key))
+            throw std::logic_error("Asset mesh view identity changed inside one runtime generation");
+    }
+    if (m_sharedMeshBuffers.find(key) != m_sharedMeshBuffers.end() ||
+        m_pendingSharedMeshBuffers.find(key) != m_pendingSharedMeshBuffers.end())
         return;
-    if (assetGuid.empty() != (runtimeVersion == 0))
-        throw std::invalid_argument("Mesh GPU identity requires GUID and runtime version together");
+    PendingSharedMeshBuffers uploads;
+    uploads.vertexUpload = m_resourceManager.BeginBufferUpload(
+        {vertices.data(), vertices.size() * sizeof(Vertex), rhi::BufferUsage::Vertex});
+    if (key.indexFormat == MeshIndexFormat::UInt16) {
+        std::vector<uint16_t> packed(indices.begin(), indices.end());
+        uploads.indexUpload = m_resourceManager.BeginBufferUpload(
+            {packed.data(), packed.size() * sizeof(uint16_t), rhi::BufferUsage::Index});
+    } else {
+        uploads.indexUpload = m_resourceManager.BeginBufferUpload(
+            {indices.data(), indices.size() * sizeof(uint32_t), rhi::BufferUsage::Index});
+    }
+    uploads.vertexCount = vertices.size();
+    uploads.indexCount = indices.size();
+    uploads.indexFormat = key.indexFormat;
+    ++m_submittedMeshUploadCount;
+    if (uploads.vertexUpload->IsAsync() || uploads.indexUpload->IsAsync())
+        ++m_asyncMeshUploadCount;
+    if (!m_pendingSharedMeshBuffers.emplace(key, std::move(uploads)).second)
+        throw std::logic_error("Shared mesh upload identity was published concurrently");
+}
 
+void InxVkCoreModular::QueueHierarchyCompanionView(const std::string &assetGuid, uint64_t runtimeVersion,
+                                                   MeshGeometryView currentView)
+{
+    if (assetGuid.empty())
+        return;
+    const MeshGeometryView companionView = currentView == MeshGeometryView::MergedModelSpace
+                                               ? MeshGeometryView::NodeLocal
+                                               : MeshGeometryView::MergedModelSpace;
+    const AssetMeshViewIdentity identity{assetGuid, runtimeVersion, companionView};
+    if (const auto known = m_assetMeshViewKeys.find(identity); known != m_assetMeshViewKeys.end()) {
+        if (m_sharedMeshBuffers.find(known->second) != m_sharedMeshBuffers.end() ||
+            m_pendingSharedMeshBuffers.find(known->second) != m_pendingSharedMeshBuffers.end())
+            return;
+        m_assetMeshViewKeys.erase(known);
+    }
+    auto &registry = AssetRegistry::Instance();
+    if (!registry.IsLoaded(assetGuid) || registry.GetAssetVersion(assetGuid) != runtimeVersion)
+        return;
+    const uint8_t companionBit = companionView == MeshGeometryView::MergedModelSpace ? uint8_t{1} : uint8_t{2};
+    if ((registry.GetMeshGpuViewResidencyMask(assetGuid, runtimeVersion) & companionBit) != 0)
+        return;
+    const auto mesh = registry.GetAsset<InxMesh>(assetGuid);
+    if (!mesh)
+        return;
+    const auto source = mesh->GetModelSourceGeometry();
+    if (!source)
+        return;
+    const auto geometry = companionView == MeshGeometryView::NodeLocal ? source : mesh->GetGeometrySnapshot();
+    if (!geometry || geometry->vertices.empty() || geometry->indices.empty())
+        throw std::logic_error("Hierarchical model CPU geometry was released before both GPU views became resident");
+    const MeshIndexFormat format =
+        ResolveMeshIndexFormat(mesh->GetIndexFormat(), geometry->vertices.size(), geometry->indices);
+    const SharedMeshKey key{
+        assetGuid, 0, runtimeVersion, geometry->vertices.size(), geometry->indices.size(), format, companionView};
+    QueueSharedMeshUpload(key, geometry->vertices, geometry->indices);
+}
+
+void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<Vertex> &vertices,
+                                           const std::vector<uint32_t> &indices, MeshIndexFormat requestedIndexFormat,
+                                           bool forceUpdate, const std::string &assetGuid, uint64_t runtimeVersion,
+                                           MeshGeometryView geometryView)
+{
+    if (!assetGuid.empty() && runtimeVersion == 0)
+        throw std::invalid_argument("Mesh GPU identity requires GUID and runtime version together");
+    if (vertices.empty() || indices.empty()) {
+        // Read/Write-disabled Player assets intentionally discard CPU staging
+        // after their first authoritative upload. Rebind that exact resident
+        // generation; never reconstruct it via a hidden GPU readback.
+        if (assetGuid.empty())
+            return;
+        auto object = m_perObjectBuffers.find(objectId);
+        if (object != m_perObjectBuffers.end() && object->second.sharedKey.assetGuid == assetGuid &&
+            object->second.sharedKey.runtimeVersion == runtimeVersion &&
+            object->second.sharedKey.geometryView == geometryView) {
+            object->second.ensuredOnFrame = m_ensureFrameCounter;
+            if (auto shared = m_sharedMeshBuffers.find(object->second.sharedKey); shared != m_sharedMeshBuffers.end())
+                shared->second.lastUsedFrame = m_ensureFrameCounter;
+            return;
+        }
+        const AssetMeshViewIdentity identity{assetGuid, runtimeVersion, geometryView};
+        const auto known = m_assetMeshViewKeys.find(identity);
+        if (known == m_assetMeshViewKeys.end())
+            throw std::runtime_error("Mesh GPU generation has no published geometry view identity");
+        const auto shared = m_sharedMeshBuffers.find(known->second);
+        if (shared == m_sharedMeshBuffers.end())
+            throw std::runtime_error("Mesh CPU geometry was released before its GPU generation became resident");
+        PerObjectBuffers binding;
+        binding.vertexBuffer = shared->second.vertexBuffer;
+        binding.indexBuffer = shared->second.indexBuffer;
+        binding.vertexCount = shared->second.vertexCount;
+        binding.indexCount = shared->second.indexCount;
+        binding.indexFormat = shared->second.indexFormat;
+        binding.sharedKey = shared->first;
+        binding.ensuredOnFrame = m_ensureFrameCounter;
+        m_perObjectBuffers[objectId] = std::move(binding);
+        shared->second.lastUsedFrame = m_ensureFrameCounter;
+        ++m_objectBufferRevision;
+        return;
+    }
     auto objectIt = m_perObjectBuffers.find(objectId);
     if (objectIt != m_perObjectBuffers.end()) {
         // A second camera can carry the same one-shot force flag in its copied
@@ -2908,48 +3139,64 @@ void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<
     }
     if (objectIt != m_perObjectBuffers.end() && !forceUpdate) {
         // Fast path: if data pointers AND sizes match, content hasn't changed
-        if (objectIt->second.lastVertexPtr == vertices.data() && objectIt->second.lastIndexPtr == indices.data() &&
-            objectIt->second.vertexCount == vertices.size() && objectIt->second.indexCount == indices.size()) {
-            objectIt->second.ensuredOnFrame = m_ensureFrameCounter;
-            return;
+        const bool generationMatches =
+            (runtimeVersion == 0 || objectIt->second.sharedKey.runtimeVersion == runtimeVersion) &&
+            (assetGuid.empty() || (objectIt->second.sharedKey.assetGuid == assetGuid &&
+                                   objectIt->second.sharedKey.geometryView == geometryView));
+        if (generationMatches && objectIt->second.lastVertexPtr == vertices.data() &&
+            objectIt->second.lastIndexPtr == indices.data() && objectIt->second.vertexCount == vertices.size() &&
+            objectIt->second.indexCount == indices.size()) {
+            if (requestedIndexFormat != MeshIndexFormat::Auto && objectIt->second.indexFormat != requestedIndexFormat)
+                forceUpdate = true;
+            else {
+                objectIt->second.ensuredOnFrame = m_ensureFrameCounter;
+                return;
+            }
         }
     }
 
-    // Asset-backed and built-in shared meshes already carry a generation-safe
-    // identity. Hashing every vertex again for every GameObject defeats that
-    // cache for large ordinary scenes (for example, 20k Cube renderers).
-    // Dynamic inline meshes have no such identity and still use content hash
-    // deduplication so pointer recycling cannot publish stale geometry.
-    const size_t vtxBytes = vertices.size() * sizeof(Vertex);
-    const size_t idxBytes = indices.size() * sizeof(uint32_t);
-    const size_t contentHash =
-        assetGuid.empty() ? HashMeshContent(vertices.data(), vtxBytes, indices.data(), idxBytes) : 0;
-    const SharedMeshKey sharedKey{assetGuid, runtimeVersion, contentHash, vertices.size(), indices.size()};
+    MeshIndexFormat indexFormat = MeshIndexFormat::UInt32;
+    if (!assetGuid.empty()) {
+        const AssetMeshViewIdentity identity{assetGuid, runtimeVersion, geometryView};
+        const auto known = m_assetMeshViewKeys.find(identity);
+        if (known != m_assetMeshViewKeys.end()) {
+            if (known->second.vertexCount != vertices.size() || known->second.indexCount != indices.size())
+                throw std::logic_error("Asset mesh geometry changed without publishing a new runtime generation");
+            indexFormat = known->second.indexFormat;
+            if (requestedIndexFormat != MeshIndexFormat::Auto && requestedIndexFormat != indexFormat)
+                throw std::logic_error("Asset mesh index format changed without publishing a new runtime generation");
+        } else {
+            indexFormat = ResolveMeshIndexFormat(requestedIndexFormat, vertices.size(), indices);
+        }
+    } else {
+        indexFormat = ResolveMeshIndexFormat(requestedIndexFormat, vertices.size(), indices);
+    }
 
-    // Check if object already maps to this exact content (pointer changed but content same)
-    if (objectIt != m_perObjectBuffers.end() && !forceUpdate) {
-        if (objectIt->second.sharedKey == sharedKey) {
-            objectIt->second.lastVertexPtr = vertices.data();
-            objectIt->second.lastIndexPtr = indices.data();
-            // Pointer identity is only a fast-path hint. RenderWorld frame
-            // publications may recycle equivalent CPU mesh storage, so a
-            // pointer change with identical content is still a live use of
-            // this object on the current ensure frame. Without this stamp the
-            // frame-end sweep removes the object, and it is recreated on the
-            // next frame, producing an appear/disappear cycle.
-            objectIt->second.ensuredOnFrame = m_ensureFrameCounter;
-            return;
+    // Asset meshes share their authoritative GUID generation. Runtime meshes
+    // instead use their owning draw object and a monotonic publication
+    // generation. Do not scan all vertex/index bytes to guess identity: a
+    // dynamic mesh already publishes an explicit dirty event, and hashing it
+    // adds an O(mesh size) CPU tax to every deformation frame.
+    uint64_t publicationVersion = runtimeVersion;
+    const uint64_t dynamicObjectId = assetGuid.empty() ? objectId : 0;
+    if (assetGuid.empty() && publicationVersion == 0) {
+        publicationVersion = 1;
+        if (objectIt != m_perObjectBuffers.end() && objectIt->second.sharedKey.assetGuid.empty() &&
+            objectIt->second.sharedKey.dynamicObjectId == objectId) {
+            if (objectIt->second.sharedKey.runtimeVersion == (std::numeric_limits<uint64_t>::max)())
+                throw std::overflow_error("Runtime mesh publication generation overflow");
+            publicationVersion = objectIt->second.sharedKey.runtimeVersion + 1;
         }
     }
+    const SharedMeshKey sharedKey{assetGuid,      dynamicObjectId, publicationVersion, vertices.size(),
+                                  indices.size(), indexFormat,     geometryView};
+
+    if (!assetGuid.empty())
+        QueueHierarchyCompanionView(assetGuid, runtimeVersion, geometryView);
 
     auto sharedIt = m_sharedMeshBuffers.find(sharedKey);
-    // NOTE: forceUpdate is intentionally NOT included in needsCreate.
-    // The content hash already guarantees correctness — if the hash matches
-    // an existing shared buffer, the GPU data is identical regardless of
-    // forceUpdate.  Including forceUpdate here caused a catastrophic bug:
-    // when the Scene view opened and ConsumeMeshBufferDirty() returned true
-    // for all objects, each object would create its own VkBuffer (replacing
-    // the shared entry), permanently destroying instancing (4 → 6000+ draws).
+    // Asset generations remain shared regardless of a copied one-shot dirty
+    // flag. Runtime generations are object-local and were advanced above.
     const bool needsCreate =
         (sharedIt == m_sharedMeshBuffers.end() || sharedIt->second.vertexCount != vertices.size() ||
          sharedIt->second.indexCount != indices.size() || !sharedIt->second.vertexBuffer ||
@@ -2957,20 +3204,10 @@ void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<
 
     if (needsCreate) {
         SharedMeshBuffers sharedBuffers;
+        QueueSharedMeshUpload(sharedKey, vertices, indices);
         auto pending = m_pendingSharedMeshBuffers.find(sharedKey);
-        if (pending == m_pendingSharedMeshBuffers.end()) {
-            PendingSharedMeshBuffers uploads;
-            uploads.vertexUpload = m_resourceManager.BeginBufferUpload(
-                {vertices.data(), vertices.size() * sizeof(Vertex), rhi::BufferUsage::Vertex});
-            uploads.indexUpload = m_resourceManager.BeginBufferUpload(
-                {indices.data(), indices.size() * sizeof(uint32_t), rhi::BufferUsage::Index});
-            uploads.vertexCount = vertices.size();
-            uploads.indexCount = indices.size();
-            ++m_submittedMeshUploadCount;
-            if (uploads.vertexUpload->IsAsync() || uploads.indexUpload->IsAsync())
-                ++m_asyncMeshUploadCount;
-            pending = m_pendingSharedMeshBuffers.emplace(sharedKey, std::move(uploads)).first;
-        }
+        if (pending == m_pendingSharedMeshBuffers.end())
+            throw std::logic_error("Shared mesh upload was neither pending nor resident");
 
         const bool vertexReady = m_resourceManager.TryPublishBufferUpload(pending->second.vertexUpload);
         const bool indexReady = m_resourceManager.TryPublishBufferUpload(pending->second.indexUpload);
@@ -2992,6 +3229,7 @@ void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<
         sharedBuffers.indexBuffer = pending->second.indexUpload->GetBuffer();
         sharedBuffers.vertexCount = pending->second.vertexCount;
         sharedBuffers.indexCount = pending->second.indexCount;
+        sharedBuffers.indexFormat = pending->second.indexFormat;
         m_pendingSharedMeshBuffers.erase(pending);
         ++m_completedMeshUploadCount;
 
@@ -3004,15 +3242,48 @@ void InxVkCoreModular::EnsureObjectBuffers(uint64_t objectId, const std::vector<
     objectBuffers.indexBuffer = sharedIt->second.indexBuffer;
     objectBuffers.vertexCount = sharedIt->second.vertexCount;
     objectBuffers.indexCount = sharedIt->second.indexCount;
+    objectBuffers.indexFormat = sharedIt->second.indexFormat;
     objectBuffers.sharedKey = sharedKey;
     objectBuffers.lastVertexPtr = vertices.data();
     objectBuffers.lastIndexPtr = indices.data();
     objectBuffers.ensuredOnFrame = m_ensureFrameCounter;
 
+    if (objectIt != m_perObjectBuffers.end() && objectIt->second.residentVertexBuffer)
+        --m_residentVertexBufferCount;
     m_perObjectBuffers[objectId] = std::move(objectBuffers);
     ++m_objectBufferRevision;
     sharedIt->second.lastUsedFrame = m_ensureFrameCounter;
     (void)TrimMeshGpuBudget();
+}
+
+void InxVkCoreModular::BindObjectVertexBuffer(uint64_t objectId, const std::shared_ptr<rhi::ComputeBuffer> &buffer)
+{
+    if (!buffer)
+        throw std::invalid_argument("Resident mesh vertex buffer must not be null");
+    auto object = m_perObjectBuffers.find(objectId);
+    if (object == m_perObjectBuffers.end() || !object->second.indexBuffer || object->second.vertexCount == 0)
+        throw std::logic_error("Resident mesh vertex buffer requires published mesh topology");
+    if (buffer->GetHost().device.GetDeviceId() != m_backend.Device().GetDeviceId())
+        throw std::invalid_argument("Resident mesh vertex buffer belongs to another rendering device");
+    const uint64_t requiredBytes = static_cast<uint64_t>(object->second.vertexCount) * sizeof(Vertex);
+    const auto &desc = buffer->GetDesc();
+    if (desc.scalarType != rhi::ComputeScalarType::Float32 || desc.lanes != 1 ||
+        buffer->GetByteSize() < requiredBytes || buffer->GetByteSize() % sizeof(Vertex) != 0)
+        throw std::invalid_argument(
+            "Resident mesh vertex buffer must use canonical Vertex storage with capacity >= vertex_count");
+
+    const VkBuffer native = m_backend.Device().GetRhiDevice().Resolve(buffer->GetBuffer());
+    if (native == VK_NULL_HANDLE)
+        throw std::runtime_error("Resident mesh vertex buffer has no Vulkan allocation");
+    if (object->second.residentVertexBuffer == buffer && object->second.residentVertexHandle == native)
+        return;
+    if (!object->second.residentVertexBuffer)
+        ++m_residentVertexBufferCount;
+    object->second.residentVertexBuffer = buffer;
+    object->second.residentVertexHandle = native;
+    object->second.ensuredOnFrame = m_ensureFrameCounter;
+    ++m_objectBufferRevision;
+    m_shadowScratchValid = false;
 }
 
 void InxVkCoreModular::CleanupUnusedBuffers(const std::vector<DrawCall> &activeDrawCalls)
@@ -3030,6 +3301,8 @@ void InxVkCoreModular::CleanupUnusedBuffersByIds(const std::unordered_set<uint64
     bool anyRemoved = false;
     for (auto it = m_perObjectBuffers.begin(); it != m_perObjectBuffers.end();) {
         if (activeIds.find(it->first) == activeIds.end()) {
+            if (it->second.residentVertexBuffer)
+                --m_residentVertexBufferCount;
             auto shared = m_sharedMeshBuffers.find(it->second.sharedKey);
             if (shared != m_sharedMeshBuffers.end())
                 shared->second.lastUsedFrame = m_ensureFrameCounter;
@@ -3041,6 +3314,7 @@ void InxVkCoreModular::CleanupUnusedBuffersByIds(const std::unordered_set<uint64
     }
     if (anyRemoved)
         ++m_objectBufferRevision;
+    RetireUnusedRuntimeMeshBuffers();
     (void)TrimMeshGpuBudget();
 }
 
@@ -3055,6 +3329,8 @@ size_t InxVkCoreModular::CleanupUnusedBuffersByFrameStamp()
     bool anyRemoved = false;
     for (auto it = m_perObjectBuffers.begin(); it != m_perObjectBuffers.end();) {
         if (it->second.ensuredOnFrame != m_ensureFrameCounter) {
+            if (it->second.residentVertexBuffer)
+                --m_residentVertexBufferCount;
             auto shared = m_sharedMeshBuffers.find(it->second.sharedKey);
             if (shared != m_sharedMeshBuffers.end())
                 shared->second.lastUsedFrame = m_ensureFrameCounter;
@@ -3068,6 +3344,7 @@ size_t InxVkCoreModular::CleanupUnusedBuffersByFrameStamp()
     if (anyRemoved)
         ++m_objectBufferRevision;
 
+    RetireUnusedRuntimeMeshBuffers();
     if (anyRemoved)
         (void)TrimMeshGpuBudget();
 
@@ -3077,6 +3354,52 @@ size_t InxVkCoreModular::CleanupUnusedBuffersByFrameStamp()
     }
 
     return m_perObjectBuffers.size();
+}
+
+void InxVkCoreModular::RetireUnusedRuntimeMeshBuffers()
+{
+    // Runtime geometry has no asset to reload. Once neither objects nor draw
+    // snapshots retain it, an old deformation is not useful cache content.
+    for (auto entry = m_sharedMeshBuffers.begin(); entry != m_sharedMeshBuffers.end();) {
+        const auto &buffers = entry->second;
+        if (entry->first.dynamicObjectId != 0 && buffers.vertexBuffer.use_count() == 1 &&
+            buffers.indexBuffer.use_count() == 1) {
+            SharedMeshBuffers retired = std::move(entry->second);
+            entry = m_sharedMeshBuffers.erase(entry);
+            RetireSharedMeshBuffers(std::move(retired), false);
+        } else {
+            ++entry;
+        }
+    }
+}
+
+void InxVkCoreModular::InvalidateMeshCache(const std::string &meshGuid)
+{
+    if (meshGuid.empty())
+        throw std::invalid_argument("Mesh GPU invalidation requires an asset identity");
+    for (auto entry = m_sharedMeshBuffers.begin(); entry != m_sharedMeshBuffers.end();) {
+        if (entry->first.assetGuid != meshGuid) {
+            ++entry;
+            continue;
+        }
+        SharedMeshBuffers retired = std::move(entry->second);
+        entry = m_sharedMeshBuffers.erase(entry);
+        RetireSharedMeshBuffers(std::move(retired), false);
+    }
+    for (auto entry = m_pendingSharedMeshBuffers.begin(); entry != m_pendingSharedMeshBuffers.end();) {
+        if (entry->first.assetGuid == meshGuid)
+            entry = m_pendingSharedMeshBuffers.erase(entry);
+        else
+            ++entry;
+    }
+    for (auto entry = m_assetMeshViewKeys.begin(); entry != m_assetMeshViewKeys.end();) {
+        if (entry->first.assetGuid == meshGuid)
+            entry = m_assetMeshViewKeys.erase(entry);
+        else
+            ++entry;
+    }
+    for (auto &entry : m_objectBufferBindingCache)
+        entry.valid = false;
 }
 
 void InxVkCoreModular::PublishSharedMeshBuffers(const SharedMeshKey &key, SharedMeshBuffers buffers)
@@ -3104,6 +3427,35 @@ void InxVkCoreModular::PublishSharedMeshBuffers(const SharedMeshKey &key, Shared
     (void)inserted;
     if (!didInsert)
         throw std::logic_error("Shared mesh cache rejected a unique key");
+    if (!key.assetGuid.empty()) {
+        auto &registry = AssetRegistry::Instance();
+        registry.MarkMeshGpuViewResident(key.assetGuid, key.runtimeVersion, key.geometryView);
+        // A packaged Player retains immutable GPU storage as the authoritative
+        // render copy. Hierarchical assets release only after both merged and
+        // node-local view identities have been published for this generation.
+        if (IsPackagedPlayerRuntime())
+            (void)registry.ReleaseMeshCpuGeometry(key.assetGuid, key.runtimeVersion);
+    }
+    // Published asset generations are not reusable content-cache entries.
+    // Existing draws retain their leases; retire superseded cache ownership
+    // through the same GPU completion queue used by ordinary eviction.
+    if (!key.assetGuid.empty()) {
+        for (auto entry = m_sharedMeshBuffers.begin(); entry != m_sharedMeshBuffers.end();) {
+            if (entry->first.assetGuid == key.assetGuid && entry->first.runtimeVersion < key.runtimeVersion) {
+                SharedMeshBuffers retired = std::move(entry->second);
+                entry = m_sharedMeshBuffers.erase(entry);
+                RetireSharedMeshBuffers(std::move(retired), false);
+            } else {
+                ++entry;
+            }
+        }
+        for (auto entry = m_assetMeshViewKeys.begin(); entry != m_assetMeshViewKeys.end();) {
+            if (entry->first.assetGuid == key.assetGuid && entry->first.runtimeVersion < key.runtimeVersion)
+                entry = m_assetMeshViewKeys.erase(entry);
+            else
+                ++entry;
+        }
+    }
 }
 
 void InxVkCoreModular::RetireSharedMeshBuffers(SharedMeshBuffers buffers, bool eviction)
@@ -3209,6 +3561,9 @@ GpuEvictionCandidate InxVkCoreModular::PeekOldestMeshGpuEvictable() const
 {
     auto candidate = m_sharedMeshBuffers.end();
     for (auto entry = m_sharedMeshBuffers.begin(); entry != m_sharedMeshBuffers.end(); ++entry) {
+        if (!entry->first.assetGuid.empty() &&
+            AssetRegistry::Instance().IsMeshGpuResidencyRequired(entry->first.assetGuid, entry->first.runtimeVersion))
+            continue;
         if (!entry->second.vertexBuffer || !entry->second.indexBuffer || entry->second.vertexBuffer.use_count() != 1 ||
             entry->second.indexBuffer.use_count() != 1 || entry->second.lastUsedFrame >= m_ensureFrameCounter)
             continue;
@@ -3224,6 +3579,9 @@ uint64_t InxVkCoreModular::EvictOldestMeshGpu()
 {
     auto candidate = m_sharedMeshBuffers.end();
     for (auto entry = m_sharedMeshBuffers.begin(); entry != m_sharedMeshBuffers.end(); ++entry) {
+        if (!entry->first.assetGuid.empty() &&
+            AssetRegistry::Instance().IsMeshGpuResidencyRequired(entry->first.assetGuid, entry->first.runtimeVersion))
+            continue;
         if (!entry->second.vertexBuffer || !entry->second.indexBuffer || entry->second.vertexBuffer.use_count() != 1 ||
             entry->second.indexBuffer.use_count() != 1 || entry->second.lastUsedFrame >= m_ensureFrameCounter)
             continue;
@@ -3254,6 +3612,9 @@ size_t InxVkCoreModular::TrimMeshGpuBudget()
     while (m_meshGpuResidentBytes > m_meshGpuBudgetBytes) {
         auto candidate = m_sharedMeshBuffers.end();
         for (auto entry = m_sharedMeshBuffers.begin(); entry != m_sharedMeshBuffers.end(); ++entry) {
+            if (!entry->first.assetGuid.empty() && AssetRegistry::Instance().IsMeshGpuResidencyRequired(
+                                                       entry->first.assetGuid, entry->first.runtimeVersion))
+                continue;
             if (!entry->second.vertexBuffer || !entry->second.indexBuffer ||
                 entry->second.vertexBuffer.use_count() != 1 || entry->second.indexBuffer.use_count() != 1 ||
                 entry->second.lastUsedFrame >= m_ensureFrameCounter)

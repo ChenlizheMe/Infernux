@@ -1,0 +1,9 @@
+# Two triangles meeting at a right angle, no authored normals.
+o SmoothingCorner
+v 0 0 0
+v 1 0 0
+v 0 1 0
+v 0 0 1
+s 1
+f 1 2 3
+f 1 4 2

@@ -153,7 +153,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeli
 
     if not isinstance(definition, PipelineDefinition):
         raise TypeError("pipeline compiler requires a PipelineDefinition")
-    graph.set_msaa_samples(definition.frame.msaa)
+    msaa_samples = graph.set_msaa_samples(definition.frame.msaa)
     color_format = Format.RGBA16_SFLOAT if definition.frame.hdr else Format.RGBA8_UNORM
     camera_color = graph.create_texture("color", format=color_format, camera_target=True)
     scene_scratch = graph.create_texture("_scene_composite", format=color_format)
@@ -194,15 +194,18 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeli
                     sort_mode="front_to_back",
                     material_pass="depth",
                 )
+        geometry_buffers = {"color": camera_color, "depth": depth}
+        if graph.needs_geometry_buffer("light_list"):
+            geometry_buffers["light_list"] = graph.create_view_light_list()
         geometry_result = pipeline.geometry_stage(
             graph,
             "geometry",
-            buffers={"color": camera_color, "depth": depth},
+            buffers=geometry_buffers,
             queue_range=(
                 opaque_domain.queue.as_tuple() if opaque_domain is not None
                 else (0, 2999)
             ),
-            msaa_samples=definition.frame.msaa,
+            msaa_samples=msaa_samples,
             clear=True,
         )
         motion = geometry_result.sample("motion") if geometry_result.has("motion") else None
@@ -245,7 +248,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeli
                 motion_draw,
                 shadow_map,
                 stages,
-                definition.frame.msaa,
+                msaa_samples,
             )
             scene.composite(domain_image.base, label=stable_id)
             pending_scene_overlays.extend(
@@ -270,7 +273,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeli
                 graph,
                 scene,
                 color_format,
-                definition.frame.msaa,
+                msaa_samples,
             )
             _flush_route_contributions(scene, pending_scene_overlays)
             continue
@@ -523,6 +526,7 @@ def _compile_route(
             depth,
             motion,
             motion_draw,
+            shadow_map,
         )
         original_color = None
         if policy is RoutePolicy.ADDITIVE_EXTRACT:
@@ -641,6 +645,7 @@ def _draw_deferred_route(
     depth,
     motion,
     motion_draw,
+    shadow_map,
 ):
     """Rasterize one opaque route into the canonical GBuffer and light it."""
     from Infernux.rendergraph.graph import Format
@@ -677,6 +682,10 @@ def _draw_deferred_route(
                 geometry_pass.write_color(emission, slot=3)
                 geometry_pass.write_color(object_data, slot=4)
                 geometry_pass.write_depth(depth)
+                if shadow_map is not None:
+                    # Publish the View's shadow image for the per-view lighting
+                    # descriptor and retain the shadow caster in this graph.
+                    geometry_pass.set_texture("shadowMap", shadow_map)
                 geometry_pass.draw_renderers(
                     queue_range=selector.as_tuple(),
                     sort_mode="front_to_back",

@@ -238,16 +238,26 @@ def _resolve_path_to_guid(path_str):
     return adb.get_guid_from_path(path_str) or ""
 
 
+def _texture_display_name(database, path):
+    if "::subtex:" in path:
+        metadata = database.get_meta_by_path(path)
+        if metadata is not None:
+            return metadata.get_string("resource_name")
+    return os.path.basename(path)
+
+
 def _resolve_texture_display(prop):
     """Return display text for a texture property's GUID."""
     import os
     tex_guid = prop.get("guid", "")
     if not isinstance(tex_guid, str) or not tex_guid:
         return t("igui.none")
+    if tex_guid in {"white", "black", "normal"}:
+        return t("igui.none")
     adb = _get_asset_database()
     tex_path = adb.get_path_from_guid(tex_guid)
     if tex_path:
-        return os.path.basename(tex_path)
+        return _texture_display_name(adb, tex_path)
     return f"{t('material.missing_texture')} ({tex_guid[:8]}...)"
 
 
@@ -263,11 +273,12 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
         database_generation = getattr(adb, "query_generation", -1)
         cache_key = (id(adb), int(database_generation or 0), tex_guid)
         if reference_cache.get("key") != cache_key:
-            tex_path = adb.get_path_from_guid(tex_guid) if tex_guid else ""
+            builtin = tex_guid in {"white", "black", "normal"}
+            tex_path = "" if builtin else (adb.get_path_from_guid(tex_guid) if tex_guid else "")
             reference_cache["key"] = cache_key
             reference_cache["path"] = tex_path or ""
             reference_cache["display"] = (
-                os.path.basename(tex_path) if tex_path else (
+                t("igui.none") if builtin else _texture_display_name(adb, tex_path) if tex_path else (
                     f"{t('material.missing_texture')} ({tex_guid[:8]}...)"
                     if tex_guid else t("igui.none")
                 )
@@ -283,7 +294,7 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
 
     def _assign_texture(payload):
         nonlocal changed
-        guid, path = _project_texture_guid_and_path(payload)
+        guid, path = _project_texture_guid_and_path(payload, allow_render_texture=True)
         if not guid:
             logging.getLogger(__name__).warning(
                 "Texture must belong to the current project's Assets folder: %s", payload)
@@ -306,9 +317,8 @@ def _render_texture2d_property(ctx, prop, prop_name, wid_prefix, plw,
         ctx,
         f"{wid_prefix}_{prop_name}_tex",
         display, "Texture",
-        asset_type="Texture",
+        asset_type="Texture.Sampled",
         clickable=True,
-        accept="TEXTURE_FILE",
         on_assign=_assign_texture,
         on_clear=_on_tex_clear,
         ping_path=_texture_path() or None,
@@ -440,12 +450,11 @@ _SURFACE_BATCH_SCHEMA = 2
 
 
 def _shader_value_token(value):
-    """Return a stable, value-only key for a serialized shader reference."""
+    """Return the durable identity key for a serialized shader reference."""
     if isinstance(value, dict):
         return (
             str(value.get("guid", "") or ""),
             str(value.get("shader_id", "") or ""),
-            str(value.get("path_hint", "") or ""),
             str(value.get("builtin", "") or ""),
         )
     return (type(value).__name__, str(value or ""))
@@ -1356,26 +1365,27 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
         nonlocal changed, requires_deserialize, requires_pipeline_refresh, change_key
         old_val = shaders.get(shader_key, "")
         ext = ".vert" if shader_key == "vertex" else ".frag"
-        if isinstance(new_value, dict):
-            new_value = (
-                new_value.get("path_hint")
-                or new_value.get("guid")
-                or new_value.get("builtin")
-                or ""
-            )
         new_ref = shader_utils.make_shader_reference(new_value, ext)
         if not new_ref["guid"] and not new_ref["shader_id"]:
             return
-        shaders[shader_key] = new_ref
-        if new_ref != old_val:
+        stored_ref = {
+            "guid": str(new_ref.get("guid") or ""),
+            "shader_id": str(new_ref.get("shader_id") or ""),
+        }
+        old_identity = {
+            "guid": str(old_val.get("guid") or "") if isinstance(old_val, dict) else "",
+            "shader_id": shader_utils.shader_ref_id(old_val),
+        }
+        shaders[shader_key] = stored_ref
+        if stored_ref != old_identity:
             _bump_material_schema_revision(state)
         changed = True
         change_key = f"shader.{shader_key}"
         requires_deserialize = True
         requires_pipeline_refresh = True
-        if new_ref != old_val:
+        if stored_ref != old_identity:
             other_id = shader_utils.shader_ref_id(shaders.get(other_key, ""))
-            new_id = shader_utils.shader_ref_id(new_ref)
+            new_id = shader_utils.shader_ref_id(stored_ref)
             vert_id, frag_id = ((new_id, other_id) if shader_key == "vertex"
                                 else (other_id, new_id))
             shader_utils.sync_all_shader_properties(

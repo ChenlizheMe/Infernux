@@ -91,7 +91,7 @@
       "required": ["component_counts", "lifecycle_callbacks", "mutation_domains", "workloads", "scenario_groups", "timing_fields", "counter_slots", "timing_split"],
       "properties": {
         "component_counts": {"const": [0, 1, 100, 1000, 10000]},
-        "lifecycle_callbacks": {"const": ["awake", "start", "on_enable", "fixed_update", "physics_callback", "update", "late_update", "on_disable", "on_destroy"]},
+        "lifecycle_callbacks": {"const": ["awake", "start", "on_enable", "fixed_update", "physics_pre_step", "physics_callback", "physics_post_step", "update", "late_update", "on_disable", "on_destroy"]},
         "mutation_domains": {"const": ["component_data", "transform_local", "transform_world", "rigidbody", "hierarchy", "render_extraction"]},
         "workloads": {"const": ["no_op", "cds_field", "transform", "coroutine", "exception", "batch", "jit"]},
         "scenario_groups": {

@@ -20,14 +20,17 @@ UI 按钮组件。用户点击的地方——程序员 Debug 的地方。
 |------|------|------|
 | label | `str` |  |
 | font_size | `float` |  |
-| font_path | `str` |  |
+| font | `FontAssetInfo | None` |  |
+| fallback_fonts | `list[FontAssetInfo | None]` |  |
 | label_color | `list` |  |
+| text_material | `Material | None` |  |
 | text_align_h | `TextAlignH` |  |
 | text_align_v | `TextAlignV` |  |
 | line_height | `float` |  |
 | letter_spacing | `float` |  |
-| texture_path | `str` |  |
+| background_texture | `Texture | RenderTexture | None` |  |
 | background_color | `list` |  |
+| background_material | `Material | None` |  |
 | on_click_entries | `List[UIEventEntry]` |  |
 | on_click | `UIEvent` | 点击事件。 *(只读)* |
 

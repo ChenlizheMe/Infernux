@@ -2,9 +2,12 @@
 #include <algorithm>
 #include <core/log/InxLog.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/scene/MeshRenderer.h>
 #include <function/scene/Scene.h>
+#include <function/scene/SceneManager.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <limits>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -21,6 +24,13 @@ static constexpr glm::vec3 COLOR_X_DEFAULT{0.92f, 0.30f, 0.30f};
 static constexpr glm::vec3 COLOR_Y_DEFAULT{0.30f, 0.92f, 0.38f};
 static constexpr glm::vec3 COLOR_Z_DEFAULT{0.32f, 0.48f, 0.94f};
 static constexpr glm::vec3 COLOR_HIGHLIGHT{1.0f, 0.92f, 0.18f};
+// Rect Tool mirrors the editor's neutral text hierarchy and amber interaction
+// state.  Its frame stays quiet over scene content, handles carry one step more
+// contrast, and only the part under interaction receives the warm highlight.
+static constexpr glm::vec3 COLOR_RECT_EDGE{0.55f, 0.55f, 0.55f};
+static constexpr glm::vec3 COLOR_RECT_POINT{0.84f, 0.84f, 0.84f};
+static constexpr glm::vec3 COLOR_RECT_HOVER{1.0f, 0.718f, 0.302f};
+static constexpr glm::vec3 COLOR_RECT_CENTER_HOVER{0.70f, 0.62f, 0.46f};
 
 // ============================================================================
 // Construction
@@ -370,6 +380,9 @@ void EditorTools::BuildScaleHandleMeshes()
     glm::vec3 xColor = (m_highlightedAxis == HandleAxis::X) ? COLOR_HIGHLIGHT : COLOR_X_DEFAULT;
     glm::vec3 yColor = (m_highlightedAxis == HandleAxis::Y) ? COLOR_HIGHLIGHT : COLOR_Y_DEFAULT;
     glm::vec3 zColor = (m_highlightedAxis == HandleAxis::Z) ? COLOR_HIGHLIGHT : COLOR_Z_DEFAULT;
+    glm::vec3 xyColor = (m_highlightedAxis == HandleAxis::XY) ? COLOR_HIGHLIGHT : glm::vec3(0.95f, 0.78f, 0.30f);
+    glm::vec3 xzColor = (m_highlightedAxis == HandleAxis::XZ) ? COLOR_HIGHLIGHT : glm::vec3(0.92f, 0.42f, 0.42f);
+    glm::vec3 yzColor = (m_highlightedAxis == HandleAxis::YZ) ? COLOR_HIGHLIGHT : glm::vec3(0.42f, 0.92f, 0.76f);
     glm::vec3 centerColor = (m_highlightedAxis == HandleAxis::Center) ? COLOR_HIGHLIGHT : COLOR_CENTER_DEFAULT;
 
     m_arrowXVerts.clear();
@@ -387,18 +400,54 @@ void EditorTools::BuildScaleHandleMeshes()
     BuildCylinder(m_arrowZVerts, m_arrowZInds, shaftRadius, shaftLength, segments, zColor);
     BuildCube(m_arrowZVerts, m_arrowZInds, cubeHalf, shaftLength + cubeHalf, zColor);
 
-    // Scale tool keeps only the three axis handles + center cube (no planes).
     m_planeXYVerts.clear();
     m_planeXYInds.clear();
+    BuildPlaneQuad(m_planeXYVerts, m_planeXYInds, glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f),
+                   glm::vec3(0.0f, 1.0f, 0.0f), PLANE_OFFSET, PLANE_SIZE, xyColor);
+
     m_planeXZVerts.clear();
     m_planeXZInds.clear();
+    BuildPlaneQuad(m_planeXZVerts, m_planeXZInds, glm::vec3(0.0f), glm::vec3(1.0f, 0.0f, 0.0f),
+                   glm::vec3(0.0f, 0.0f, 1.0f), PLANE_OFFSET, PLANE_SIZE, xzColor);
+
     m_planeYZVerts.clear();
     m_planeYZInds.clear();
+    BuildPlaneQuad(m_planeYZVerts, m_planeYZInds, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f),
+                   glm::vec3(0.0f, 0.0f, 1.0f), PLANE_OFFSET, PLANE_SIZE, yzColor);
 
     m_centerCubeVerts.clear();
     m_centerCubeInds.clear();
     BuildCube(m_centerCubeVerts, m_centerCubeInds, CENTER_CUBE_HALF, 0.0f, centerColor);
 
+    m_meshesBuilt = true;
+}
+
+void EditorTools::BuildRectHandleMeshes()
+{
+    const bool centerHovered = m_highlightedAxis == HandleAxis::RectCenter;
+    for (std::size_t i = 0; i < m_rectHandleVerts.size(); ++i) {
+        auto &verts = m_rectHandleVerts[i];
+        auto &inds = m_rectHandleInds[i];
+        verts.clear();
+        inds.clear();
+        const auto handle = static_cast<HandleAxis>(static_cast<int>(HandleAxis::RectLeft) + static_cast<int>(i));
+        const glm::vec3 color =
+            handle == m_highlightedAxis
+                ? COLOR_RECT_HOVER
+                : (centerHovered ? COLOR_RECT_CENTER_HOVER : (i < 4 ? COLOR_RECT_EDGE : COLOR_RECT_POINT));
+        BuildCube(verts, inds, 0.5f, 0.0f, color);
+    }
+    for (std::size_t i = 0; i < m_rectMidpointVerts.size(); ++i) {
+        auto &verts = m_rectMidpointVerts[i];
+        auto &inds = m_rectMidpointInds[i];
+        verts.clear();
+        inds.clear();
+        const auto handle = static_cast<HandleAxis>(static_cast<int>(HandleAxis::RectLeft) + static_cast<int>(i));
+        const glm::vec3 color = handle == m_highlightedAxis
+                                    ? COLOR_RECT_HOVER
+                                    : (centerHovered ? COLOR_RECT_CENTER_HOVER : COLOR_RECT_POINT);
+        BuildCube(verts, inds, 0.5f, 0.0f, color);
+    }
     m_meshesBuilt = true;
 }
 
@@ -417,6 +466,9 @@ void EditorTools::RebuildActiveMeshes()
         break;
     case ToolMode::Scale:
         BuildScaleHandleMeshes();
+        break;
+    case ToolMode::Rect:
+        BuildRectHandleMeshes();
         break;
     default:
         m_meshesBuilt = true;
@@ -439,12 +491,186 @@ void EditorTools::SetHighlightedAxis(HandleAxis axis)
 // GetDrawCalls — produce draw calls for active axis/plane handles
 // ============================================================================
 
+EditorTools::RectFrame EditorTools::ResolveRectFrame(GameObject *object, const glm::vec3 &cameraPos)
+{
+    m_rectFrame = {};
+    if (!object || !object->IsActiveInHierarchy())
+        return m_rectFrame;
+
+    if (m_rectFrameOverrideObjectId == object->GetID() && m_rectFrameOverride.valid) {
+        m_rectFrame = m_rectFrameOverride;
+        return m_rectFrame;
+    }
+
+    Transform *transform = object->GetTransform();
+    if (!transform)
+        return m_rectFrame;
+
+    MeshRenderer *renderer = object->GetComponent<MeshRenderer>();
+    glm::vec3 boundsMin(-0.5f);
+    glm::vec3 boundsMax(0.5f);
+    if (renderer) {
+        boundsMin = renderer->GetLocalBoundsMin();
+        boundsMax = renderer->GetLocalBoundsMax();
+    }
+
+    std::array<glm::vec3, 3> axes = {
+        glm::vec3(1.0f, 0.0f, 0.0f),
+        glm::vec3(0.0f, 1.0f, 0.0f),
+        glm::vec3(0.0f, 0.0f, 1.0f),
+    };
+    std::array<float, 3> halfExtents{};
+    glm::vec3 center(0.0f);
+
+    // A transform-only parent uses the visible bounds of its descendants when
+    // they exist.  This is an editor reference range, not a serialized size on
+    // Empty/Camera/Light.  A leaf without renderers keeps the explicit unit
+    // reference box below.
+    bool usedDescendantBounds = false;
+    if (!renderer && !object->GetChildren().empty()) {
+        std::array<float, 3> projectedMin = {
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::max(),
+            std::numeric_limits<float>::max(),
+        };
+        std::array<float, 3> projectedMax = {
+            std::numeric_limits<float>::lowest(),
+            std::numeric_limits<float>::lowest(),
+            std::numeric_limits<float>::lowest(),
+        };
+        if (m_localMode) {
+            const glm::mat4 world = transform->GetWorldMatrix();
+            for (int axis = 0; axis < 3; ++axis) {
+                const glm::vec3 column(world[axis]);
+                const float length = glm::length(column);
+                if (length > 1.0e-6f)
+                    axes[axis] = column / length;
+            }
+        }
+
+        std::vector<GameObject *> pending;
+        pending.reserve(object->GetChildCount());
+        for (const auto &child : object->GetChildren())
+            pending.push_back(child.get());
+        while (!pending.empty()) {
+            GameObject *candidate = pending.back();
+            pending.pop_back();
+            if (!candidate || !candidate->IsActiveInHierarchy())
+                continue;
+            if (MeshRenderer *childRenderer = candidate->GetComponent<MeshRenderer>()) {
+                glm::vec3 worldMin;
+                glm::vec3 worldMax;
+                childRenderer->GetWorldBounds(worldMin, worldMax);
+                for (int x = 0; x < 2; ++x) {
+                    for (int y = 0; y < 2; ++y) {
+                        for (int z = 0; z < 2; ++z) {
+                            const glm::vec3 point(x ? worldMax.x : worldMin.x, y ? worldMax.y : worldMin.y,
+                                                  z ? worldMax.z : worldMin.z);
+                            for (int axis = 0; axis < 3; ++axis) {
+                                const float projection = glm::dot(point, axes[axis]);
+                                projectedMin[axis] = std::min(projectedMin[axis], projection);
+                                projectedMax[axis] = std::max(projectedMax[axis], projection);
+                            }
+                        }
+                    }
+                }
+                usedDescendantBounds = true;
+            }
+            for (const auto &child : candidate->GetChildren())
+                pending.push_back(child.get());
+        }
+
+        if (usedDescendantBounds) {
+            center = glm::vec3(0.0f);
+            for (int axis = 0; axis < 3; ++axis) {
+                const float middle = (projectedMin[axis] + projectedMax[axis]) * 0.5f;
+                center += axes[axis] * middle;
+                halfExtents[axis] = std::max((projectedMax[axis] - projectedMin[axis]) * 0.5f, 0.001f);
+            }
+        }
+    }
+
+    const bool useWorldBounds = !m_localMode || (renderer && renderer->IsVertexBufferWorldSpace());
+    if (!usedDescendantBounds && useWorldBounds) {
+        glm::vec3 worldMin;
+        glm::vec3 worldMax;
+        if (renderer) {
+            renderer->GetWorldBounds(worldMin, worldMax);
+        } else {
+            const glm::mat4 world = transform->GetWorldMatrix();
+            worldMin = glm::vec3(std::numeric_limits<float>::max());
+            worldMax = glm::vec3(std::numeric_limits<float>::lowest());
+            for (int x = 0; x < 2; ++x) {
+                for (int y = 0; y < 2; ++y) {
+                    for (int z = 0; z < 2; ++z) {
+                        const glm::vec3 local(x ? boundsMax.x : boundsMin.x, y ? boundsMax.y : boundsMin.y,
+                                              z ? boundsMax.z : boundsMin.z);
+                        const glm::vec3 point = glm::vec3(world * glm::vec4(local, 1.0f));
+                        worldMin = glm::min(worldMin, point);
+                        worldMax = glm::max(worldMax, point);
+                    }
+                }
+            }
+        }
+        center = (worldMin + worldMax) * 0.5f;
+        const glm::vec3 extent = glm::max((worldMax - worldMin) * 0.5f, glm::vec3(0.001f));
+        halfExtents = {extent.x, extent.y, extent.z};
+    } else if (!usedDescendantBounds) {
+        const glm::mat4 world = transform->GetWorldMatrix();
+        const glm::vec3 localCenter = (boundsMin + boundsMax) * 0.5f;
+        const glm::vec3 localExtent = glm::max((boundsMax - boundsMin) * 0.5f, glm::vec3(0.001f));
+        center = glm::vec3(world * glm::vec4(localCenter, 1.0f));
+        for (int axis = 0; axis < 3; ++axis) {
+            const glm::vec3 column(world[axis]);
+            const float length = std::max(glm::length(column), 0.001f);
+            axes[axis] = column / length;
+            halfExtents[axis] = std::max(localExtent[axis] * length, 0.001f);
+        }
+    }
+
+    glm::vec3 view = cameraPos - center;
+    if (glm::dot(view, view) < 1.0e-8f)
+        view = glm::vec3(0.0f, 0.0f, 1.0f);
+    else
+        view = glm::normalize(view);
+
+    constexpr std::array<std::array<int, 2>, 3> planeAxes = {{{0, 1}, {0, 2}, {1, 2}}};
+    float bestFacing = -1.0f;
+    int bestPlane = 0;
+    for (int plane = 0; plane < static_cast<int>(planeAxes.size()); ++plane) {
+        const auto &pair = planeAxes[plane];
+        const glm::vec3 normal = glm::normalize(glm::cross(axes[pair[0]], axes[pair[1]]));
+        const float facing = std::abs(glm::dot(normal, view));
+        if (facing > bestFacing) {
+            bestFacing = facing;
+            bestPlane = plane;
+        }
+    }
+
+    const int uIndex = planeAxes[bestPlane][0];
+    const int vIndex = planeAxes[bestPlane][1];
+    glm::vec3 axisU = axes[uIndex];
+    glm::vec3 axisV = axes[vIndex];
+    if (glm::dot(glm::cross(axisU, axisV), view) < 0.0f)
+        axisV = -axisV;
+
+    m_rectFrame.center = center;
+    m_rectFrame.axisU = axisU;
+    m_rectFrame.axisV = axisV;
+    m_rectFrame.halfU = halfExtents[uIndex];
+    m_rectFrame.halfV = halfExtents[vIndex];
+    m_rectFrame.axisUIndex = uIndex;
+    m_rectFrame.axisVIndex = vIndex;
+    m_rectFrame.valid = true;
+    return m_rectFrame;
+}
+
 DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, uint64_t selectedObjId,
                                          Scene *activeScene, const glm::vec3 &cameraPos)
 {
     DrawCallResult result;
 
-    if (m_mode == ToolMode::None || selectedObjId == 0 || !activeScene) {
+    if (m_mode == ToolMode::None || selectedObjId == 0) {
         return result;
     }
 
@@ -452,7 +678,15 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         RebuildActiveMeshes();
     }
 
-    GameObject *selectedObj = activeScene->FindByID(selectedObjId);
+    // All additively loaded scenes form one editor world.  The active scene
+    // controls creation/save context; it must not gate tools for a selection
+    // owned by another loaded scene.
+    GameObject *selectedObj = SceneManager::Instance().FindRuntimeObjectByID(selectedObjId);
+    // Preview/test scenes may be intentionally detached from SceneManager but
+    // still invoke the renderer with an explicit owner.  Registered additive
+    // scenes remain the primary lookup so active-scene focus never gates tools.
+    if (!selectedObj && activeScene)
+        selectedObj = activeScene->FindByID(selectedObjId);
     if (!selectedObj || !selectedObj->IsActiveInHierarchy()) {
         return result;
     }
@@ -463,6 +697,88 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
     }
 
     glm::vec3 objPos = transform->GetPosition();
+
+    if (m_mode == ToolMode::Rect) {
+        const RectFrame frame = ResolveRectFrame(selectedObj, cameraPos);
+        if (!frame.valid)
+            return result;
+        const glm::vec3 &center = frame.center;
+        const glm::vec3 &axisX = frame.axisU;
+        const glm::vec3 &axisY = frame.axisV;
+        const float halfWidth = frame.halfU;
+        const float halfHeight = frame.halfV;
+        const glm::vec3 axisZ = glm::normalize(glm::cross(axisX, axisY));
+
+        glm::mat4 orientation(1.0f);
+        orientation[0] = glm::vec4(axisX, 0.0f);
+        orientation[1] = glm::vec4(axisY, 0.0f);
+        orientation[2] = glm::vec4(axisZ, 0.0f);
+
+        const float distance = glm::length(cameraPos - center);
+        const float thickness = std::max(distance * 0.0036f * m_handleSize, 0.008f);
+        const float cornerSize = thickness * 2.4f;
+        const bool dirty = m_meshDirty;
+        m_meshDirty = false;
+
+        const std::array<glm::vec3, 8> offsets = {
+            -axisX * halfWidth,
+            axisX * halfWidth,
+            -axisY * halfHeight,
+            axisY * halfHeight,
+            -axisX * halfWidth - axisY * halfHeight,
+            axisX * halfWidth - axisY * halfHeight,
+            -axisX * halfWidth + axisY * halfHeight,
+            axisX * halfWidth + axisY * halfHeight,
+        };
+        const std::array<glm::vec3, 8> sizes = {
+            glm::vec3(thickness, halfHeight * 2.0f + thickness, thickness),
+            glm::vec3(thickness, halfHeight * 2.0f + thickness, thickness),
+            glm::vec3(halfWidth * 2.0f + thickness, thickness, thickness),
+            glm::vec3(halfWidth * 2.0f + thickness, thickness, thickness),
+            glm::vec3(cornerSize),
+            glm::vec3(cornerSize),
+            glm::vec3(cornerSize),
+            glm::vec3(cornerSize),
+        };
+        const std::array<uint64_t, 8> objectIds = {
+            RECT_LEFT_ID,        RECT_RIGHT_ID,        RECT_BOTTOM_ID,   RECT_TOP_ID,
+            RECT_BOTTOM_LEFT_ID, RECT_BOTTOM_RIGHT_ID, RECT_TOP_LEFT_ID, RECT_TOP_RIGHT_ID,
+        };
+
+        for (std::size_t i = 0; i < objectIds.size(); ++i) {
+            DrawCall dc;
+            dc.indexStart = 0;
+            dc.indexCount = static_cast<uint32_t>(m_rectHandleInds[i].size());
+            dc.worldMatrix = glm::translate(glm::mat4(1.0f), center + offsets[i] + axisZ * thickness * 0.55f) *
+                             orientation * glm::scale(glm::mat4(1.0f), sizes[i]);
+            dc.material = material;
+            dc.objectId = objectIds[i];
+            dc.identity = RenderProxyHandle::Synthetic(RenderDomain::EditorTool, dc.objectId).MakeDrawIdentity();
+            dc.meshVertices = &m_rectHandleVerts[i];
+            dc.meshIndices = &m_rectHandleInds[i];
+            dc.forceBufferUpdate = dirty;
+            result.drawCalls.push_back(dc);
+
+            if (i < 4) {
+                DrawCall midpoint;
+                midpoint.indexStart = 0;
+                midpoint.indexCount = static_cast<uint32_t>(m_rectMidpointInds[i].size());
+                midpoint.worldMatrix =
+                    glm::translate(glm::mat4(1.0f), center + offsets[i] + axisZ * thickness * 0.68f) * orientation *
+                    glm::scale(glm::mat4(1.0f), glm::vec3(cornerSize * 0.82f));
+                midpoint.material = material;
+                midpoint.objectId = objectIds[i];
+                midpoint.identity =
+                    RenderProxyHandle::Synthetic(RenderDomain::EditorTool, EDITOR_TOOL_BASE_ID | (40 + i))
+                        .MakeDrawIdentity();
+                midpoint.meshVertices = &m_rectMidpointVerts[i];
+                midpoint.meshIndices = &m_rectMidpointInds[i];
+                midpoint.forceBufferUpdate = dirty;
+                result.drawCalls.push_back(midpoint);
+            }
+        }
+        return result;
+    }
 
     float dist = glm::length(cameraPos - objPos);
     float scale = dist * 0.15f * m_handleSize;
@@ -557,7 +873,7 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         result.drawCalls.push_back(dc);
     }
 
-    if (m_mode == ToolMode::Translate) {
+    if (m_mode == ToolMode::Translate || m_mode == ToolMode::Scale) {
         DrawCall xyDc;
         xyDc.indexStart = 0;
         xyDc.indexCount = static_cast<uint32_t>(m_planeXYInds.size());
@@ -621,8 +937,14 @@ DrawCallResult EditorTools::GetDrawCalls(std::shared_ptr<InxMaterial> material, 
         return glm::dot(delta, delta);
     };
 
-    std::stable_sort(result.drawCalls.begin(), result.drawCalls.end(),
-                     [&](const DrawCall &a, const DrawCall &b) { return depthKey(a) > depthKey(b); });
+    // The three rotation rings share one exact pivot and intersect each other.
+    // Sorting their vertex-derived centroids lets tiny floating-point changes
+    // reverse the winner at those intersections from one frame to the next.
+    // Preserve the authored X/Y/Z order for a stable overlay instead.
+    if (m_mode != ToolMode::Rotate) {
+        std::stable_sort(result.drawCalls.begin(), result.drawCalls.end(),
+                         [&](const DrawCall &a, const DrawCall &b) { return depthKey(a) > depthKey(b); });
+    }
 
     return result;
 }

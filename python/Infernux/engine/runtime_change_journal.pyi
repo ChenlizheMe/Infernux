@@ -27,9 +27,11 @@ class RuntimeChangeDomain(str, Enum):
 class RuntimeFrameBarrier(str, Enum):
     SAFE_POINT: RuntimeFrameBarrier
     FIXED_SCRIPT: RuntimeFrameBarrier
+    PHYSICS_PRE_SCRIPT: RuntimeFrameBarrier
     TRANSFORM_TO_PHYSICS: RuntimeFrameBarrier
     PHYSICS_SIMULATION: RuntimeFrameBarrier
     PHYSICS_TO_TRANSFORM: RuntimeFrameBarrier
+    PHYSICS_POST_SCRIPT: RuntimeFrameBarrier
     TRANSFORM_RESOLVE: RuntimeFrameBarrier
     UPDATE_SCRIPT: RuntimeFrameBarrier
     LATE_SCRIPT: RuntimeFrameBarrier

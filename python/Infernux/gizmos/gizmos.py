@@ -25,7 +25,15 @@ then the GizmosCollector packs everything and uploads to C++ in one batch.
 from __future__ import annotations
 
 import math
+import time
+from dataclasses import dataclass
+from functools import wraps
+from itertools import count
 from typing import Tuple, Optional, List
+import numpy as np
+
+from Infernux.compute import Buffer, buffer, index, kernel, launch
+from Infernux.lib import is_frame_profile_enabled as _is_frame_profile_enabled
 
 from Infernux.components._gizmo_ids import (
     ICON_KIND_CAMERA,
@@ -36,6 +44,129 @@ from Infernux.components._gizmo_ids import (
 
 # Type alias for 3-component tuples
 Vec3 = Tuple[float, float, float]
+_GEOMETRY_PROFILE_COMPILED = bool(_is_frame_profile_enabled())
+
+
+def _profile_geometry_helper(method):
+    """Time the outer public Gizmo helper without double-counting nested helpers."""
+
+    if not _GEOMETRY_PROFILE_COMPILED:
+        return method
+
+    @wraps(method)
+    def wrapped(cls, *args, **kwargs):
+        if not cls._geometry_profile_active:
+            return method(cls, *args, **kwargs)
+        outermost = cls._geometry_profile_depth == 0
+        cls._geometry_profile_depth += 1
+        if outermost:
+            started = time.perf_counter()
+        try:
+            return method(cls, *args, **kwargs)
+        finally:
+            cls._geometry_profile_depth -= 1
+            if outermost:
+                cls._geometry_build_ms += (time.perf_counter() - started) * 1000.0
+
+    return wrapped
+
+
+@kernel
+def _resident_line_vertex_scalar_kernel(domain, positions, vertices, red, green, blue):
+    """Expand scalar ``(N, 3)`` positions into the canonical Vertex stream."""
+    i = index(domain)
+    vertices[i, 0] = positions[i, 0]
+    vertices[i, 1] = positions[i, 1]
+    vertices[i, 2] = positions[i, 2]
+    vertices[i, 3] = 0.0
+    vertices[i, 4] = 1.0
+    vertices[i, 5] = 0.0
+    vertices[i, 6] = 1.0
+    vertices[i, 7] = 0.0
+    vertices[i, 8] = 0.0
+    vertices[i, 9] = 1.0
+    vertices[i, 10] = red
+    vertices[i, 11] = green
+    vertices[i, 12] = blue
+    for lane in range(13, 25):
+        vertices[i, lane] = 0.0
+
+
+@kernel
+def _resident_line_vertex_vector3_kernel(domain, positions, vertices, red, green, blue):
+    """Expand a one-dimensional vector3 position buffer into Vertex data."""
+    i = index(domain)
+    vertices[i, 0] = positions[i][0]
+    vertices[i, 1] = positions[i][1]
+    vertices[i, 2] = positions[i][2]
+    vertices[i, 3] = 0.0
+    vertices[i, 4] = 1.0
+    vertices[i, 5] = 0.0
+    vertices[i, 6] = 1.0
+    vertices[i, 7] = 0.0
+    vertices[i, 8] = 0.0
+    vertices[i, 9] = 1.0
+    vertices[i, 10] = red
+    vertices[i, 11] = green
+    vertices[i, 12] = blue
+    for lane in range(13, 25):
+        vertices[i, lane] = 0.0
+
+
+@dataclass(slots=True)
+class _ResidentLineState:
+    identity: int
+    indices: np.ndarray
+    domain: Buffer
+    vertices: Buffer
+
+    def close(self) -> None:
+        self.domain.close()
+        self.vertices.close()
+
+
+@kernel
+def _resident_wire_sphere_scalar_kernel(domain, centers, center_indices, unit_positions,
+                                        positions, unit_count, radius):
+    i = index(domain)
+    center_slot = i // unit_count
+    unit_slot = i - center_slot * unit_count
+    center_index = center_indices[center_slot]
+    positions[i, 0] = centers[center_index, 0] + unit_positions[unit_slot, 0] * radius
+    positions[i, 1] = centers[center_index, 1] + unit_positions[unit_slot, 1] * radius
+    positions[i, 2] = centers[center_index, 2] + unit_positions[unit_slot, 2] * radius
+
+
+@kernel
+def _resident_wire_sphere_vector3_kernel(domain, centers, center_indices, unit_positions,
+                                         positions, unit_count, radius):
+    i = index(domain)
+    center_slot = i // unit_count
+    unit_slot = i - center_slot * unit_count
+    center_index = center_indices[center_slot]
+    positions[i, 0] = centers[center_index][0] + unit_positions[unit_slot, 0] * radius
+    positions[i, 1] = centers[center_index][1] + unit_positions[unit_slot, 1] * radius
+    positions[i, 2] = centers[center_index][2] + unit_positions[unit_slot, 2] * radius
+
+
+@dataclass(slots=True)
+class _ResidentWireSphereState:
+    source_indices: np.ndarray
+    domain: Buffer
+    center_indices: Buffer
+    unit_positions: Buffer
+    positions: Buffer
+    line_indices: np.ndarray
+    unit_count: int
+
+    def close(self) -> None:
+        self.domain.close()
+        self.center_indices.close()
+        self.unit_positions.close()
+        self.positions.close()
+
+
+_resident_identity = count(1)
 
 # Try to import C++ gizmo geometry helpers (available after engine build)
 try:
@@ -64,9 +195,15 @@ class Gizmos:
     # ---- Per-frame accumulation buffers ----
     # Each entry: (vertex_list, index_list, world_matrix_16_floats)
     _draw_batches: List[Tuple[List[List[float]], List[int], List[float]]] = []
+    # (state, current world matrix); state owns immutable topology and a
+    # canonical GPU Vertex stream derived directly from the source buffer.
+    _resident_draw_batches: list[tuple[_ResidentLineState, List[float]]] = []
 
     # Icon entries: (position_vec3, object_id_int, color_vec3, icon_kind_int)
     _icon_entries: List[Tuple[Vec3, int, Tuple[float, float, float], int]] = []
+    _geometry_profile_active = False
+    _geometry_profile_depth = 0
+    _geometry_build_ms = 0.0
 
     # ---- Internal ----
     _identity_matrix: List[float] = [
@@ -75,6 +212,7 @@ class Gizmos:
         0, 0, 1, 0,
         0, 0, 0, 1,
     ]
+    _identity_matrix_key = tuple(_identity_matrix)
 
     @classmethod
     def _begin_frame(cls):
@@ -82,17 +220,28 @@ class Gizmos:
         cls.color = (1.0, 1.0, 1.0)
         cls.matrix = None
         cls._draw_batches.clear()
+        cls._resident_draw_batches.clear()
         cls._icon_entries.clear()
+        cls._geometry_profile_active = False
+        cls._geometry_profile_depth = 0
+        cls._geometry_build_ms = 0.0
 
     @classmethod
     def _current_matrix(cls) -> List[float]:
         return cls.matrix if cls.matrix is not None else cls._identity_matrix
+
+    @classmethod
+    def _snapshot_matrix(cls) -> List[float]:
+        # The identity is immutable engine state. Custom matrices remain
+        # snapshots because scripts may edit their matrix after a draw call.
+        return cls._identity_matrix if cls.matrix is None else list(cls.matrix)
 
     # ====================================================================
     # Primitive: line
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_line(cls, start: Vec3, end: Vec3):
         """Draw a single line segment from *start* to *end*."""
         c = cls.color
@@ -101,13 +250,83 @@ class Gizmos:
             [end[0], end[1], end[2], c[0], c[1], c[2]],
         ]
         indices = [0, 1]
-        cls._draw_batches.append((verts, indices, list(cls._current_matrix())))
+        cls._draw_batches.append((verts, indices, cls._snapshot_matrix()))
+
+    @classmethod
+    @_profile_geometry_helper
+    def draw_lines(cls, positions, indices):
+        """Draw indexed line pairs in one batch from NumPy arrays.
+
+        Positions have shape (N,3); integer indices have shape (L,2). Inputs
+        are captured at the call, with the current color and world matrix.
+        """
+        if isinstance(positions, Buffer):
+            cls._draw_resident_lines(positions, indices)
+            return
+        if not isinstance(positions, np.ndarray) or positions.ndim != 2 or positions.shape[1] != 3:
+            raise TypeError("Gizmo positions must be a NumPy array or GPU inx.buffer with shape (N,3)")
+        if not isinstance(indices, np.ndarray) or indices.ndim != 2 or indices.shape[1] != 2 or indices.dtype.kind not in 'iu':
+            raise TypeError("Gizmo indices must be an integer NumPy array with shape (L,2)")
+        if not len(indices):
+            return
+        if indices.min() < 0 or indices.max() >= len(positions):
+            raise ValueError("Gizmo line index is outside the position array")
+        vertices = np.empty((len(positions),6),dtype=np.float32)
+        vertices[:,:3] = positions
+        vertices[:,3:] = cls.color
+        cls._draw_batches.append((vertices, indices.astype(np.uint32,copy=True).ravel(),
+                                  cls._snapshot_matrix()))
+
+    @classmethod
+    def _draw_resident_lines(cls, positions: Buffer, indices) -> None:
+        if positions.device != "gpu":
+            raise TypeError("Resident Gizmo positions require a GPU inx.buffer")
+        if positions.dtype == "vector3":
+            position_count = positions.shape[0]
+        elif positions.dtype in {"float", "float32"} and len(positions.shape) == 2 and positions.shape[1] == 3:
+            position_count = positions.shape[0]
+        else:
+            raise TypeError("Resident Gizmo positions must use vector3 or float32 shape (N,3)")
+        if not isinstance(indices, np.ndarray) or indices.ndim != 2 or indices.shape[1] != 2 or indices.dtype.kind not in "iu":
+            raise TypeError("Gizmo indices must be an integer NumPy array with shape (L,2)")
+        if not len(indices):
+            return
+        if indices.min() < 0 or indices.max() >= position_count:
+            raise ValueError("Gizmo line index is outside the position buffer")
+
+        states = getattr(positions, "_gizmo_line_states", None)
+        if states is None:
+            states = {}
+            positions._gizmo_line_states = states
+        key = id(indices)
+        state = states.get(key)
+        if state is None or state.indices is not indices:
+            state = _ResidentLineState(
+                identity=next(_resident_identity),
+                indices=indices,
+                domain=buffer(shape=position_count, dtype=np.int32, device="gpu"),
+                vertices=buffer(shape=(position_count, 25), dtype=np.float32, device="gpu"),
+            )
+            states[key] = state
+            positions._retain_dependent(state)
+        red, green, blue = (float(value) for value in cls.color)
+        position_kernel = (
+            _resident_line_vertex_vector3_kernel
+            if positions.dtype == "vector3"
+            else _resident_line_vertex_scalar_kernel
+        )
+        launch(
+            position_kernel,
+            params=(state.domain, positions, state.vertices, red, green, blue),
+        )
+        cls._resident_draw_batches.append((state, cls._snapshot_matrix()))
 
     # ====================================================================
     # Primitive: ray
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_ray(cls, origin: Vec3, direction: Vec3):
         """Draw a ray from *origin* in *direction* (magnitude = length)."""
         end = (
@@ -122,6 +341,7 @@ class Gizmos:
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_icon(cls, position: Vec3, object_id: int,
                   color: Optional[Tuple[float, float, float]] = None,
                   icon_kind: int = ICON_KIND_DEFAULT):
@@ -144,6 +364,7 @@ class Gizmos:
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_wire_cube(cls, center: Vec3, size: Vec3):
         """Draw a wireframe axis-aligned box centered at *center* with *size*."""
         hx, hy, hz = size[0] * 0.5, size[1] * 0.5, size[2] * 0.5
@@ -170,30 +391,24 @@ class Gizmos:
 
         c = cls.color
         verts = [[p[0], p[1], p[2], c[0], c[1], c[2]] for p in corners]
-        cls._draw_batches.append((verts, edges, list(cls._current_matrix())))
+        cls._draw_batches.append((verts, edges, cls._snapshot_matrix()))
 
     # ====================================================================
     # Primitive: wire sphere
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_wire_sphere(cls, center: Vec3, radius: float, segments: int = 24):
         """Draw a wireframe sphere as three axis-aligned circles."""
         c = cls.color
         cx, cy, cz = center
-        mat = list(cls._current_matrix())
+        mat = cls._snapshot_matrix()
 
         if _HAS_CPP_GIZMOS:
             vert_flat, vert_count, idx_flat = _cpp_wire_sphere(
                 cx, cy, cz, radius, segments, c[0], c[1], c[2])
-            # Convert numpy arrays to nested lists for batch storage
-            verts = []
-            for i in range(vert_count):
-                off = i * 6
-                verts.append([vert_flat[off], vert_flat[off+1], vert_flat[off+2],
-                              vert_flat[off+3], vert_flat[off+4], vert_flat[off+5]])
-            indices = idx_flat.tolist()
-            cls._draw_batches.append((verts, indices, mat))
+            cls._draw_batches.append((vert_flat.reshape(vert_count, 6), idx_flat, mat))
             return
 
         verts = []
@@ -224,11 +439,91 @@ class Gizmos:
 
         cls._draw_batches.append((verts, indices, mat))
 
+    @classmethod
+    @_profile_geometry_helper
+    def draw_wire_spheres(cls, centers: Buffer, radius: float, segments: int = 24,
+                          center_indices: np.ndarray | None = None) -> None:
+        """Draw many wire spheres directly from resident GPU centers.
+
+        Unit-circle topology is authored once for the center set. Each frame a
+        compute pass expands positions on the GPU, then the ordinary resident
+        line path renders that buffer without a synchronization readback.
+        """
+        if not isinstance(centers, Buffer) or centers.device != "gpu":
+            raise TypeError("Resident wire spheres require a GPU inx.buffer")
+        if centers.dtype == "vector3":
+            center_count = centers.shape[0]
+        elif centers.dtype in {"float", "float32"} and len(centers.shape) == 2 and centers.shape[1] == 3:
+            center_count = centers.shape[0]
+        else:
+            raise TypeError("Resident wire sphere centers must use vector3 or float32 shape (N,3)")
+        if not isinstance(segments, int) or segments < 3:
+            raise ValueError("Resident wire sphere segments must be at least 3")
+        states = getattr(centers, "_gizmo_wire_sphere_states", None)
+        if states is None:
+            states = {}
+            centers._gizmo_wire_sphere_states = states
+        use_all_centers = center_indices is None
+        if center_indices is not None:
+            if not isinstance(center_indices, np.ndarray) or center_indices.ndim != 1 or center_indices.dtype.kind not in "iu":
+                raise TypeError("Resident wire sphere center_indices must be a one-dimensional integer NumPy array")
+            if not len(center_indices):
+                return
+            if center_indices.min() < 0 or center_indices.max() >= center_count:
+                raise ValueError("Resident wire sphere center index is outside the center buffer")
+        key = (("all", center_count) if use_all_centers else id(center_indices), segments)
+        state = states.get(key)
+        if state is None or (not use_all_centers and state.source_indices is not center_indices):
+            if use_all_centers:
+                center_indices = np.arange(center_count, dtype=np.int32)
+            angle = np.arange(segments, dtype=np.float32) * (2.0 * np.pi / segments)
+            cosine, sine = np.cos(angle), np.sin(angle)
+            unit = np.zeros((segments * 3, 3), dtype=np.float32)
+            unit[0:segments, 1] = cosine
+            unit[0:segments, 2] = sine
+            unit[segments:segments * 2, 0] = cosine
+            unit[segments:segments * 2, 2] = sine
+            unit[segments * 2:, 0] = cosine
+            unit[segments * 2:, 1] = sine
+            unit_edges = np.empty((segments * 3, 2), dtype=np.uint32)
+            for axis in range(3):
+                begin = axis * segments
+                unit_edges[begin:begin + segments, 0] = np.arange(begin, begin + segments, dtype=np.uint32)
+                unit_edges[begin:begin + segments, 1] = begin + np.roll(np.arange(segments, dtype=np.uint32), -1)
+            expanded_edges = (
+                unit_edges[None, :, :] +
+                np.arange(len(center_indices), dtype=np.uint32)[:, None, None] * len(unit)
+            ).reshape(-1, 2)
+            expanded_count = len(center_indices) * len(unit)
+            state = _ResidentWireSphereState(
+                source_indices=center_indices,
+                domain=buffer(shape=expanded_count, dtype=np.int32, device="gpu"),
+                center_indices=buffer(shape=len(center_indices), dtype=np.int32, device="gpu", data=center_indices),
+                unit_positions=buffer(shape=unit.shape, dtype=np.float32, device="gpu", data=unit),
+                positions=buffer(shape=(expanded_count, 3), dtype=np.float32, device="gpu"),
+                line_indices=np.ascontiguousarray(expanded_edges),
+                unit_count=len(unit),
+            )
+            states[key] = state
+            centers._retain_dependent(state)
+        sphere_kernel = (
+            _resident_wire_sphere_vector3_kernel
+            if centers.dtype == "vector3"
+            else _resident_wire_sphere_scalar_kernel
+        )
+        launch(
+            sphere_kernel,
+            params=(state.domain, centers, state.center_indices, state.unit_positions,
+                    state.positions, state.unit_count, float(radius)),
+        )
+        cls.draw_lines(state.positions, state.line_indices)
+
     # ====================================================================
     # Primitive: wire frustum
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_frustum(cls, position: Vec3, fov_deg: float, aspect: float,
                      near: float, far: float,
                      forward: Vec3 = (0, 0, -1),
@@ -288,19 +583,20 @@ class Gizmos:
 
         c = cls.color
         verts = [[p[0], p[1], p[2], c[0], c[1], c[2]] for p in corners]
-        cls._draw_batches.append((verts, edges, list(cls._current_matrix())))
+        cls._draw_batches.append((verts, edges, cls._snapshot_matrix()))
 
     # ====================================================================
     # Primitive: wire arc / circle
     # ====================================================================
 
     @classmethod
+    @_profile_geometry_helper
     def draw_wire_arc(cls, center: Vec3, normal: Vec3, radius: float,
                       start_angle_deg: float = 0.0, arc_deg: float = 360.0,
                       segments: int = 32):
         """Draw a wireframe arc (or full circle) in a plane defined by *normal*."""
         c = cls.color
-        mat = list(cls._current_matrix())
+        mat = cls._snapshot_matrix()
 
         if _HAS_CPP_GIZMOS:
             vert_flat, vert_count, idx_flat = _cpp_wire_arc(
@@ -310,13 +606,7 @@ class Gizmos:
                 c[0], c[1], c[2])
             if vert_count == 0:
                 return
-            verts = []
-            for i in range(vert_count):
-                off = i * 6
-                verts.append([vert_flat[off], vert_flat[off+1], vert_flat[off+2],
-                              vert_flat[off+3], vert_flat[off+4], vert_flat[off+5]])
-            indices = idx_flat.tolist()
-            cls._draw_batches.append((verts, indices, mat))
+            cls._draw_batches.append((vert_flat.reshape(vert_count, 6), idx_flat, mat))
             return
 
         # Build local basis from normal
@@ -363,7 +653,7 @@ class Gizmos:
                 indices.append(i - 1)
                 indices.append(i)
 
-        cls._draw_batches.append((verts, indices, list(cls._current_matrix())))
+        cls._draw_batches.append((verts, indices, cls._snapshot_matrix()))
 
     # ====================================================================
     # Utility: get packed data for upload
@@ -371,21 +661,25 @@ class Gizmos:
 
     @classmethod
     def _get_packed_data(cls):
-        """Pack all draw batches into flat ``array.array`` buffers for C++ upload.
+        """Pack all draw batches into contiguous typed buffers for C++ upload.
 
         Returns:
             ``(vert_buf, vert_count, idx_buf, desc_buf, desc_count)``
-            using stdlib ``array.array`` (no numpy), or ``None`` if empty.
+            using float32/uint32 NumPy arrays, or ``None`` if empty.
         """
         if not cls._draw_batches:
             return None
 
-        import array as _array
-
-        # Flatten all data into plain lists first, then convert once
-        all_verts = []
-        all_indices = []
-        all_descs = []
+        vertex_count = sum(len(vertices) for vertices, _, _ in cls._draw_batches)
+        index_count = sum(len(indices) for _, indices, _ in cls._draw_batches)
+        vertices_out = np.empty((vertex_count, 6), dtype=np.float32)
+        indices_out = np.empty(index_count, dtype=np.uint32)
+        # Vertex colour is already carried by each vertex.  The world matrix is
+        # therefore the only draw state that requires a separate descriptor.
+        # Immediate-mode helpers commonly emit dozens of adjacent lines under
+        # one matrix; keep them in one native draw instead of splitting the
+        # packed upload back into one GPU draw per helper call.
+        descriptor_rows = []
         vert_offset = 0
         idx_offset = 0
 
@@ -393,30 +687,37 @@ class Gizmos:
             n_verts = len(verts)
             n_indices = len(indices)
 
-            # Flatten vertex data: each v is [x,y,z,r,g,b]
-            for v in verts:
-                all_verts.extend(v)
-
-            # Offset indices
-            if vert_offset == 0:
-                all_indices.extend(indices)
+            vertices_out[vert_offset:vert_offset + n_verts] = verts
+            target_indices = indices_out[idx_offset:idx_offset + n_indices]
+            target_indices[:] = indices
+            target_indices += vert_offset
+            matrix_key = (
+                cls._identity_matrix_key if matrix is cls._identity_matrix
+                else tuple(matrix)
+            )
+            if descriptor_rows and descriptor_rows[-1][2] == matrix_key:
+                descriptor_rows[-1][1] += n_indices
             else:
-                all_indices.extend(idx + vert_offset for idx in indices)
-
-            # Descriptor: [indexStart, indexCount, worldMatrix(16)]
-            all_descs.append(float(idx_offset))
-            all_descs.append(float(n_indices))
-            all_descs.extend(matrix)
+                descriptor_rows.append([idx_offset, n_indices, matrix_key])
 
             vert_offset += n_verts
             idx_offset += n_indices
 
-        # Single array construction from complete lists
-        vert_buf = _array.array('f', all_verts)
-        idx_buf = _array.array('I', all_indices)
-        desc_buf = _array.array('f', all_descs)
+        descriptors = np.empty((len(descriptor_rows), 18), dtype=np.float32)
+        for row_index, (index_start, index_count, matrix) in enumerate(descriptor_rows):
+            descriptors[row_index, :2] = index_start, index_count
+            descriptors[row_index, 2:] = matrix
 
-        return vert_buf, vert_offset, idx_buf, desc_buf, len(cls._draw_batches)
+        return vertices_out.ravel(), vert_offset, indices_out, descriptors.ravel(), len(descriptor_rows)
+
+    @classmethod
+    def _get_resident_data(cls):
+        """Return native GPU line descriptors without reading their vertices."""
+        return [
+            (state.identity, state.vertices._native, state.vertices.shape[0],
+             np.ascontiguousarray(state.indices, dtype=np.uint32).reshape(-1), matrix)
+            for state, matrix in cls._resident_draw_batches
+        ]
 
     # ====================================================================
     # Utility: get packed icon data for upload

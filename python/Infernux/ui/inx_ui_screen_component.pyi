@@ -5,8 +5,10 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from Infernux.ui.inx_ui_component import InxUIComponent
-from Infernux.ui.enums import ScreenAlignH, ScreenAlignV
+from Infernux.ui.enums import ScreenAlignH, ScreenAlignV, UILayoutPosition, UILayoutSizing
 from Infernux.ui.ui_event_data import PointerEventData
+from Infernux.core.material import Material
+from Infernux.components import DrivenTransformProperties, GameObjectRef
 
 
 def clear_rect_cache(frame_id: object = ...) -> None:
@@ -23,11 +25,9 @@ class InxUIScreenComponent(InxUIComponent):
     Attributes:
         align_h: Horizontal anchor within parent (Left / Center / Right).
         align_v: Vertical anchor within parent (Top / Center / Bottom).
-        x: Horizontal offset from anchor in canvas pixels.
-        y: Vertical offset from anchor in canvas pixels.
         width: Width in canvas pixels (unrotated content size).
         height: Height in canvas pixels (unrotated content size).
-        rotation: Visual rotation in degrees (any angle).
+        Position and rotation are authored on the GameObject Transform.
         mirror_x: Mirror element horizontally.
         mirror_y: Mirror element vertically.
         lock_aspect_ratio: Preserve width/height ratio while resizing.
@@ -37,32 +37,58 @@ class InxUIScreenComponent(InxUIComponent):
     """
 
     _hide_transform_: bool
+    _driven_transform_properties_: DrivenTransformProperties
 
     align_h: ScreenAlignH
     align_v: ScreenAlignV
-    x: float
-    y: float
-    rotation: float
     mirror_x: bool
     mirror_y: bool
     width: float
     height: float
     lock_aspect_ratio: bool
+    layout_position: UILayoutPosition
+    width_sizing: UILayoutSizing
+    height_sizing: UILayoutSizing
+    min_width: float
+    min_height: float
+    max_width: float
+    max_height: float
+    layout_weight: float
     opacity: float
     corner_radius: float
+    material: Material | None
     raycast_target: bool
+    world_always_on_top: bool
+    world_ignored_occluder: GameObjectRef
+    world_billboard: bool
+    world_constant_screen_size: bool
+
+    def get_canvas(self): ...
+    def is_world_space(self) -> bool: ...
+    def world_ui_matrix(self) -> list[float]: ...
+
+    def get_effective_group_state(self) -> tuple[float, bool, bool]: ...
+    def is_effectively_interactable(self) -> bool: ...
+    def effectively_blocks_raycast(self) -> bool: ...
+    def get_effective_clip_rect(
+        self, canvas_width: float, canvas_height: float,
+    ) -> tuple[float, float, float, float] | None: ...
 
     # ------------------------------------------------------------------
     # Rect computation
     # ------------------------------------------------------------------
+
+    def get_resolved_size(self) -> tuple[float, float]:
+        """Effective local dimensions, including derived text sizing."""
+        ...
 
     def get_rect(
         self, canvas_width: Optional[float] = ..., canvas_height: Optional[float] = ...,
     ) -> Tuple[float, float, float, float]:
         """Return ``(x, y, w, h)`` of the *unrotated* content rect in canvas-space.
 
-        Position is parent-relative: ``x`` / ``y`` are offsets from the
-        parent UI element's top-left (or from the canvas origin).
+        Position is resolved from the GameObject Transform relative to the
+        parent UI element (or the canvas origin).
 
         Args:
             canvas_width: Reference canvas width in pixels.
@@ -114,7 +140,7 @@ class InxUIScreenComponent(InxUIComponent):
     ) -> None:
         """Move the element so the visual AABB top-left is at ``(vis_x, vis_y)``.
 
-        Keeps width/height/rotation unchanged; only adjusts x/y.
+        Keeps width/height/rotation unchanged; only adjusts Transform position.
         """
         ...
 

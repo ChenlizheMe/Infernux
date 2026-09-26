@@ -10,6 +10,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <queue>
 #include <tuple>
 #include <unordered_map>
@@ -78,6 +79,10 @@ class Infernux
         return m_exitRequested.load(std::memory_order_acquire);
     }
     void Cleanup();
+    [[nodiscard]] std::unique_ptr<rhi::ComputeHost> AcquireComputeHost();
+    [[nodiscard]] std::shared_ptr<rhi::RenderTexture> CreateRenderTexture(const rhi::RenderTextureDesc &description);
+    [[nodiscard]] std::shared_ptr<rhi::RenderTexture> LoadRenderTexture(const std::string &guid);
+    void RequireComputeHostsReleased() const;
 
     void InitHeadless(const std::string &projectPath, const std::string &builtinResourcePath = "");
 
@@ -167,6 +172,12 @@ class Infernux
     /// @return Ordered candidate GameObject IDs (nearest first), deduplicated.
     std::vector<uint64_t> PickSceneObjectIds(float screenX, float screenY, float viewportWidth, float viewportHeight);
 
+    /// @brief Return the icon owners whose rendered Scene-view quads contain
+    /// the cursor, nearest first. This lets asynchronous GPU mesh picking
+    /// preserve an intentional click on a component icon owned by a mesh.
+    std::vector<uint64_t> PickSceneIconObjectIds(float screenX, float screenY, float viewportWidth,
+                                                 float viewportHeight);
+
     /// @brief Lightweight gizmo-only handle proximity test (no scene raycast).
     /// Used every frame for hover highlighting — tests axis and plane handles.
     /// @return Gizmo handle ID, or 0 if not hovering any handle.
@@ -179,10 +190,10 @@ class Infernux
     /// @brief Set the highlighted gizmo handle. 0=None, 1=X, 2=Y, 3=Z, 4=XY, 5=XZ, 6=YZ.
     void SetEditorToolHighlight(int axis);
 
-    /// @brief Set the active tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale.
+    /// @brief Set the active tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale, 4=Rect.
     void SetEditorToolMode(int mode);
 
-    /// @brief Get the active tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale.
+    /// @brief Get the active tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale, 4=Rect.
     int GetEditorToolMode() const;
 
     /// @brief Set local coordinate mode for editor tools (gizmo aligns to object rotation).
@@ -368,6 +379,8 @@ class Infernux
 
     /// @brief Execute a pending Timeline cube preview render if one was queued this frame.
     void PumpTimelineCubePreviewIfDirty();
+    uint64_t RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take, float seconds,
+                                         int size, uint64_t dependencyRevision);
     /// Process queued material preview renders (returns uploads consumed).
     int PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown);
 
@@ -431,9 +444,12 @@ class Infernux
     [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages);
     [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages,
                                                                                    const std::string &vertexPath,
-                                                                                   const std::string &fragmentPath);
+                                                                                   const std::string &fragmentPath,
+                                                                                   bool requireCurrentSource = false);
     [[nodiscard]] LinkedShaderProgramPreparation
-    EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material);
+    EnsureLinkedShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material, bool requireCurrentSource = false);
+    [[nodiscard]] std::optional<ShaderProgramDomain>
+    InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &material) const;
 
     std::unordered_map<ShaderStagePair, LinkedShaderProgramCacheEntry, ShaderStagePairHash> m_linkedShaderProgramCache;
 
@@ -589,7 +605,6 @@ class Infernux
 
     // Selection tracking for outline updates
     uint64_t m_selectedObjectId = 0;
-    std::vector<uint64_t> m_cachedOutlineIds; ///< Last set of IDs passed to SetSelectionOutlines
 
     // ImGui ini file path — stored as std::filesystem::path so that
     // wide-char paths (e.g. Chinese usernames) work correctly on Windows.

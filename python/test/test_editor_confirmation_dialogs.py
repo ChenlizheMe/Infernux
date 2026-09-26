@@ -207,6 +207,31 @@ def test_exit_confirmation_saves_panels_sequentially():
         _close_document_view(second)
 
 
+def test_document_replacement_resolves_multiple_dirty_scenes_in_one_transaction():
+    first = "dirty_replace_first"
+    second = "dirty_replace_second"
+    completed: list[str] = []
+    first_document = _open_dirty_document(first, title="First Scene")
+    second_document = _open_dirty_document(second, title="Second Scene")
+    coordinator = _dirty_confirmation()
+    try:
+        assert coordinator.request_documents_replace(
+            (first_document.document_id, second_document.document_id),
+            lambda: completed.append("replace"),
+        )
+        assert coordinator.active_document_id == first_document.document_id
+
+        coordinator.choose_discard()
+        assert coordinator.active_document_id == second_document.document_id
+        coordinator.choose_discard()
+
+        assert completed == ["replace"]
+        assert coordinator.is_active is False
+    finally:
+        _close_document_view(first)
+        _close_document_view(second)
+
+
 def test_exit_prompts_once_for_a_document_with_two_views():
     from Infernux.engine.interaction import (
         DocumentCapability,

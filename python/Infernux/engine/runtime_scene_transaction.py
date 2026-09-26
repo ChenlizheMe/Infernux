@@ -94,6 +94,7 @@ class SceneDocumentTransaction:
         self._owner_thread_id = threading.get_ident()
         self._state = SceneDocumentTransactionState.CREATED
         self._ticket: Optional[_SceneDocumentReadTicket] = None
+        self._file_state = None
         self._asset_load_tickets: list[Any] = []
         self._linked_shader_ticket: Any = None
         self._linked_shader_preload_started = False
@@ -107,6 +108,7 @@ class SceneDocumentTransaction:
         self._error = ""
         self._failure_exception: Optional[BaseException] = None
         self._phase_timings_ms: dict[str, float] = {}
+        self._document_reconciliation_count = 0
 
     @property
     def state(self) -> SceneDocumentTransactionState:
@@ -154,6 +156,15 @@ class SceneDocumentTransaction:
             return self._document
         return copy.deepcopy(self._document)
 
+    @property
+    def file_state(self):
+        """Fingerprint of the exact bytes consumed by a path-backed read."""
+        return self._file_state
+
+    @property
+    def document_reconciliation_count(self) -> int:
+        return int(self._document_reconciliation_count)
+
     def _require_owner_thread(self) -> None:
         if threading.get_ident() != self._owner_thread_id:
             raise RuntimeError("SceneDocumentTransaction must run on its owner thread")
@@ -177,31 +188,52 @@ class SceneDocumentTransaction:
 
         InxComponent._clear_all_instances()
         BuiltinComponent._clear_cache()
-        scenes = [self._scene]
-        from Infernux.lib import SceneManager
-
-        persistent_scene = SceneManager.instance().get_runtime_persistent_scene()
-        if persistent_scene is not None and persistent_scene is not self._scene:
-            scenes.append(persistent_scene)
-        for scene in scenes:
+        for scene in self._resident_scenes():
             for game_object in scene.get_all_objects():
                 for component in game_object.get_py_components() or []:
                     component._set_game_object(game_object)
                     component._refresh_native_handle()
 
-    def _reconcile_persistent_python_registries(self) -> None:
-        """Restore only persistent components cleared by scene publication."""
-        if not self._clear_registries:
-            return
+    @staticmethod
+    def _resident_scenes() -> tuple[Any, ...]:
         from Infernux.lib import SceneManager
 
-        persistent_scene = SceneManager.instance().get_runtime_persistent_scene()
-        if persistent_scene is None or persistent_scene is self._scene:
+        manager = SceneManager.instance()
+        get_scene_at = getattr(manager, "get_scene_at", None)
+        if callable(get_scene_at):
+            scenes = [
+                get_scene_at(index)
+                for index in range(int(manager.scene_count))
+            ]
+        elif os.environ.get("INFERNUX_WEB_RUNTIME") == "1" or os.sys.platform == "emscripten":
+            active = manager.get_active_scene()
+            scenes = [active] if active is not None else []
+        else:
+            raise AttributeError("native SceneManager.get_scene_at is unavailable")
+        persistent_scene = manager.get_runtime_persistent_scene()
+        if persistent_scene is not None:
+            scenes.append(persistent_scene)
+        return tuple(scene for scene in scenes if scene is not None)
+
+    def _reconcile_resident_python_registries(self) -> None:
+        """Restore components from every resident Scene after publication.
+
+        Python component instances are tracked process-wide while Scene
+        ownership remains per World.  Replacing one Scene therefore clears
+        the shared index once, publishes the replacement, then reattaches the
+        untouched resident Scenes.  Treating only DontDestroyOnLoad as
+        resident made an additive load silently remove the first Scene from
+        the Python lifecycle index.
+        """
+        if not self._clear_registries:
             return
-        for game_object in persistent_scene.get_all_objects():
-            for component in game_object.get_py_components() or []:
-                component._set_game_object(game_object)
-                component._refresh_native_handle()
+        for scene in self._resident_scenes():
+            if scene is self._scene:
+                continue
+            for game_object in scene.get_all_objects():
+                for component in game_object.get_py_components() or []:
+                    component._set_game_object(game_object)
+                    component._refresh_native_handle()
 
     def _start_asset_preloads(self) -> None:
         from Infernux.lib import AssetRegistry
@@ -318,6 +350,15 @@ class SceneDocumentTransaction:
                     self._fail(self._ticket.error or "scene document read failed")
                     return True
                 document = self._ticket._take_document()
+                try:
+                    self._file_state = self._ticket.file_state
+                except AttributeError:
+                    # Older precompiled Web hosts do not expose the optional
+                    # file-state metadata.  Player scene loading does not use
+                    # it; native/editor hosts remain strict about the ABI.
+                    if os.environ.get("INFERNUX_WEB_RUNTIME") != "1" and os.sys.platform != "emscripten":
+                        raise
+                    self._file_state = None
                 if not isinstance(document, dict):
                     self._fail("native scene reader returned a non-object document")
                     return True
@@ -327,6 +368,16 @@ class SceneDocumentTransaction:
 
             if self._state is SceneDocumentTransactionState.DOCUMENT_READY:
                 assert self._document is not None
+                if isinstance(self._document, dict):
+                    from Infernux.engine.model_instance_sync import (
+                        reconcile_scene_document_model_instances,
+                    )
+
+                    self._document_reconciliation_count = (
+                        reconcile_scene_document_model_instances(
+                            self._document, self._asset_database
+                        )
+                    )
                 self._state = SceneDocumentTransactionState.RESOURCE_PREFLIGHTING
                 self._resource_preflight_started = time.perf_counter()
                 native_preflight = getattr(self._document, "_preflight_resource_dependencies", None)
@@ -361,8 +412,16 @@ class SceneDocumentTransaction:
 
             if self._state is SceneDocumentTransactionState.RESOURCES_READY:
                 from Infernux.engine.component_restore import preflight_scene_python_components
+                from Infernux.engine.model_instance_sync import (
+                    reconcile_scene_document_model_source_graphs,
+                )
 
                 assert self._document is not None
+                self._document_reconciliation_count += (
+                    reconcile_scene_document_model_source_graphs(
+                        self._document, self._asset_database
+                    )
+                )
                 self._state = SceneDocumentTransactionState.PREFLIGHTING
                 phase_started = time.perf_counter()
                 self._prepared_graph = preflight_scene_python_components(
@@ -403,16 +462,21 @@ class SceneDocumentTransaction:
                     return True
                 self._native_committed = True
                 phase_started = time.perf_counter()
+                object_id_remap = getattr(self._commit_token, "object_id_remap", None)
+                if object_id_remap is None and os.environ.get("INFERNUX_WEB_RUNTIME") != "1" and os.sys.platform != "emscripten":
+                    raise AttributeError("native scene commit token object_id_remap is unavailable")
                 publish_prepared_scene_python_components(
                     self._scene,
                     self._prepared_graph,
                     clear_registries=self._clear_registries,
+                    object_id_map=(dict(object_id_remap) if object_id_remap is not None else None),
+                    component_id_map=(dict(self._commit_token.component_id_remap)
+                                      if object_id_remap is not None else None),
                 )
-                # The active scene was registered while its prepared graph was
-                # attached. Only DontDestroyOnLoad objects were removed by the
-                # shared registry clear, so restore those without clearing and
-                # binding the new scene a second time.
-                self._reconcile_persistent_python_registries()
+                # The replacement was registered while its prepared graph was
+                # attached. Reattach the other resident Scenes without binding
+                # the replacement a second time.
+                self._reconcile_resident_python_registries()
                 self._phase_timings_ms["python_publish"] = (
                     time.perf_counter() - phase_started
                 ) * 1000.0
@@ -425,10 +489,12 @@ class SceneDocumentTransaction:
                     ) * 1000.0
                 phase_started = time.perf_counter()
                 from Infernux.components.particle_system import ParticleSystem
+                from Infernux.components.ref_wrappers import retiring_scene_references
 
                 ParticleSystem._begin_native_publication_batch()
                 try:
-                    self._commit_token.finalize()
+                    with retiring_scene_references(self._scene.world_id):
+                        self._commit_token.finalize()
                     ParticleSystem._end_native_publication_batch(commit=True)
                 except Exception:
                     ParticleSystem._end_native_publication_batch(commit=False)

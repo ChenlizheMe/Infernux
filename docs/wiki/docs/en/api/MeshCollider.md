@@ -26,6 +26,16 @@ A collider that uses a mesh shape.
 
 <!-- USER CONTENT END -->
 
+## Public Methods
+
+| Method | Description |
+|------|------|
+| `recook() → None` | Request collision rebuilding after visual mesh updates. |
+
+<!-- USER CONTENT START --> public_methods
+
+<!-- USER CONTENT END -->
+
 ## Example
 
 <!-- USER CONTENT START --> example

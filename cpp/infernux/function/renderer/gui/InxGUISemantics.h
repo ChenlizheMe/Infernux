@@ -48,6 +48,16 @@ struct InxGUISemanticSnapshot
     uint64_t inputSequence = 0;
     float mouseX = 0.0f;
     float mouseY = 0.0f;
+    // Geometry provenance for this exact UI publication. Engine editor captures
+    // are framebuffer pixels: pixel = (ui - displayOrigin) * framebufferScale.
+    bool desktopCoordinates = false;
+    float displayX = 0.0f;
+    float displayY = 0.0f;
+    float displayWidth = 0.0f;
+    float displayHeight = 0.0f;
+    float framebufferScaleX = 1.0f;
+    float framebufferScaleY = 1.0f;
+    float uiScale = 1.0f;
     bool wantsTextInput = false;
     bool dragDropActive = false;
     bool dragDropPreview = false;

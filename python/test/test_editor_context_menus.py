@@ -365,6 +365,16 @@ def test_project_menu_always_offers_inxpackage_import():
         assert entry.semantic_id == "project.context.import_inxpackage"
 
 
+def test_project_menu_offers_render_texture_through_asset_create_command():
+    from Infernux.engine.ui.core_context_menus import project_context_menu
+
+    entries = _flatten_menu_entries(project_context_menu(
+        lambda key: key, current_path="C:/Game/Assets"))
+    entry = next(item for item in entries if item.label == "project.create_render_texture")
+    assert entry.command_id == "asset.create"
+    assert entry.payload["kind"] == "render_texture"
+
+
 def test_native_hierarchy_and_project_menus_are_presentation_only():
     root = Path(__file__).resolve().parents[2]
     hierarchy = (

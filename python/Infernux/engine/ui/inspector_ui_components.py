@@ -3,22 +3,29 @@
 from __future__ import annotations
 
 import math
-import os
 import copy
 
-from Infernux.ui import UICanvas, UIText, UIImage, UIButton
+from Infernux.ui import UICanvas, UIFrame, UIText, UIImage, UIButton
 from Infernux.ui.enums import TextResizeMode
-from Infernux.ui.enums import RenderMode, TextAlignH, TextAlignV
-from Infernux.engine.project_context import get_project_root
-from Infernux.engine.path_utils import relative_path, resolved_path
-
+from Infernux.ui.enums import (
+    RenderMode,
+    TextAlignH,
+    TextAlignV,
+    UILayoutAlign,
+    UILayoutDirection,
+    UILayoutJustify,
+    UILayoutPosition,
+    UILayoutSizing,
+)
 from ._inspector_undo import (
+    _component_service,
     _record_property,
     _record_python_component_document_edit,
 )
-from .inspector_components import register_py_component_renderer
+from .inspector_components import _render_list_field, register_py_component_renderer
+from ._inspector_references import _render_asset_reference_field
+from Infernux.components.fields import FieldType, get_raw_field_value, get_serialized_fields
 from Infernux.engine.i18n import t
-from Infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
 from .inspector_utils import (
     field_label, max_label_w, render_compact_section_header,
     render_compact_section_title, _render_color_bar, render_inspector_checkbox,
@@ -72,34 +79,6 @@ def _render_color_field(ctx, comp, field_name: str, label: str, lw: float,
         _apply_if_changed(comp, field_name, cur[:4], new_color)
 
 
-def _render_texture_picker(ctx, comp, field_name: str, label: str, lw: float,
-                           imgui_id: str):
-    """Render a texture object-field picker and apply changes."""
-    IGUI = _igui()
-    tex_path = str(getattr(comp, field_name, "") or "")
-    display = os.path.basename(tex_path) if tex_path else t("igui.none")
-
-    def _assign(payload):
-        new_path = _project_asset_reference_path("Texture", payload)
-        if new_path != tex_path:
-            _apply_if_changed(comp, field_name, tex_path, new_path)
-
-    def _on_clear():
-        if tex_path:
-            _apply_if_changed(comp, field_name, tex_path, "")
-
-    field_label(ctx, label, lw)
-    IGUI.asset_reference_field(
-        ctx, imgui_id, display, "Texture",
-        asset_type="Texture", accept="TEXTURE_FILE",
-        on_assign=_assign, on_clear=_on_clear,
-        ping_path=tex_path or None,
-        has_value=bool(tex_path),
-        reference_value={"asset_type": "Texture", "path_hint": tex_path},
-    )
-    _record_field(ctx, comp, field_name, "object_field", label)
-
-
 def _get_serializable_raw_field(obj, field_name: str, default=None):
     data = object.__getattribute__(obj, "__dict__")
     if field_name in data:
@@ -109,17 +88,6 @@ def _get_serializable_raw_field(obj, field_name: str, default=None):
     if meta is not None:
         return meta.default
     return default
-
-
-def _project_asset_reference_path(asset_type: str, payload) -> str:
-    from Infernux.core.asset_reference_types import resolve_asset_reference_path
-
-    path = resolve_asset_reference_path(asset_type, payload)
-    root = get_project_root()
-    if not root:
-        return str(path).replace("\\", "/")
-    absolute = path if os.path.isabs(path) else os.path.join(root, path)
-    return relative_path(absolute, root)
 
 
 def _find_canvas(comp):
@@ -138,10 +106,12 @@ def _get_parent_rect(comp):
 
     canvas = _find_canvas(comp)
     if canvas is None:
+        # Canvas-free UI has no parent alignment rectangle. Its hierarchy is
+        # the ordinary Transform hierarchy, not an implicit layout surface.
         return None, None
 
-    cw = float(canvas.reference_width)
-    ch = float(canvas.reference_height)
+    cw = float(getattr(canvas, "reference_width", getattr(canvas, "width", 1.0)))
+    ch = float(getattr(canvas, "reference_height", getattr(canvas, "height", 1.0)))
     parent_go = getattr(comp.game_object, "get_parent", lambda: None)()
     while parent_go is not None:
         for py_comp in parent_go.get_py_components():
@@ -166,8 +136,23 @@ def _canvas_dims(comp):
 
 def _apply_visual_position(comp, vis_x, vis_y, canvas):
     """Move element so its visual AABB top-left is at (vis_x, vis_y), with undo."""
-    cw = float(canvas.reference_width)
-    ch = float(canvas.reference_height)
+    cw = float(getattr(canvas, "reference_width", getattr(canvas, "width", 1.0)))
+    ch = float(getattr(canvas, "reference_height", getattr(canvas, "height", 1.0)))
+    try_get_game_object = getattr(comp, "_try_get_game_object", None)
+    game_object = try_get_game_object() if callable(try_get_game_object) else None
+    if game_object is None and not callable(try_get_game_object):
+        game_object = getattr(comp, "game_object", None)
+    transform = getattr(game_object, "transform", None)
+    position = comp._local_position_for_visual_origin(vis_x, vis_y, cw, ch)
+    if transform is not None and position is not None:
+        _record_property(
+            transform,
+            "local_position",
+            transform.local_position,
+            position,
+            "Set UI Position",
+        )
+        return
     _record_python_component_document_edit(
         comp,
         lambda: comp.set_visual_position(vis_x, vis_y, cw, ch),
@@ -177,75 +162,55 @@ def _apply_visual_position(comp, vis_x, vis_y, canvas):
     )
 
 
-def _apply_size_with_undo(comp, width, height, canvas, resize_fn):
-    """Apply one layout resize as an atomic component document edit."""
-    cw = float(canvas.reference_width)
-    ch = float(canvas.reference_height)
-    _record_python_component_document_edit(
-        comp,
-        lambda: resize_fn(
-            comp,
-            float(width),
-            float(height),
-            cw,
-            ch,
-        ),
-        "Set Layout Size",
-        edit_key="layout_size",
-        validate=True,
-    )
-
-
 def _apply_size_preserve_top_left(comp, width, height, canvas):
-    """Update width/height while keeping the rotated top-left corner fixed."""
-    _apply_size_with_undo(comp, width, height, canvas,
-                          lambda c, w, h, cw, ch: c.set_size_preserve_corner(w, h, cw, ch, "top_left"))
+    """Resize geometry and its authoritative Transform as one undoable edit."""
+    width, height = float(width), float(height)
+    changes = [
+        (comp, "width", comp.width, width, "Set UI Width"),
+        (comp, "height", comp.height, height, "Set UI Height"),
+    ]
+    if canvas is not None:
+        from Infernux.lib import Vector3
+
+        cw, ch = float(canvas.reference_width), float(canvas.reference_height)
+        rx, ry, rw, rh = comp.get_rect(cw, ch)
+        fixed_x, fixed_y = comp.get_rotated_corners(cw, ch)[0]
+        offset_x, offset_y = comp._rotated_corner_offset(width, height, 0)
+        transform = comp.game_object.transform
+        position = transform.local_position
+        new_position = Vector3(
+            float(position.x) + fixed_x - offset_x + width * 0.5 - (rx + rw * 0.5),
+            float(position.y) - (fixed_y - offset_y + height * 0.5 - (ry + rh * 0.5)),
+            float(position.z),
+        )
+        changes.append((transform, "local_position", position, new_position, "Set UI Position"))
+    _component_service().execute_property_changes(changes, description="Set Layout Size")
 
 
 def _set_native_size(comp):
     """Resize UIImage/UIButton to the native pixel dimensions of its texture."""
-    tex_path = getattr(comp, "texture_path", "") or ""
-    if not tex_path:
+    if isinstance(comp, UIImage):
+        texture = comp.texture
+        if texture is None:
+            return
+        canvas, _, _ = _canvas_dims(comp)
+        _apply_size_preserve_top_left(comp, texture.width, texture.height, canvas)
         return
-    project_root = get_project_root()
-    if not project_root:
+    if not isinstance(comp, UIButton):
+        raise TypeError("native size is supported only for UIImage and UIButton")
+    texture = comp.background_texture
+    if texture is None:
         return
-    abs_path = resolved_path(os.path.join(project_root, tex_path))
-    if not os.path.isfile(abs_path):
-        return
-
-    try:
-        from .editor_services import EditorServices
-        svc = EditorServices.instance()
-        native = svc.native_engine if svc else None
-    except Exception:
-        native = None
-    if not native:
-        return
-
-    stamp = texture_stamp(abs_path, "ui_native_size")
-    if stamp == 0:
-        return
-
-    _, tex_w, tex_h = query_or_schedule_texture(
-        native,
-        f"ui_native_size|{resolved_path(tex_path)}",
-        abs_path,
-        int(stamp),
-        nearest=False,
-        srgb=False,
-        pump=True,
-    )
-    if tex_w <= 0 or tex_h <= 0:
-        return
-
     canvas, _, _ = _canvas_dims(comp)
-    w, h = float(tex_w), float(tex_h)
-    if canvas is not None:
-        _apply_size_preserve_top_left(comp, w, h, canvas)
-    else:
-        _apply_if_changed(comp, "width", comp.width, w)
-        _apply_if_changed(comp, "height", comp.height, h)
+    _apply_size_preserve_top_left(comp, texture.width, texture.height, canvas)
+
+
+def _has_native_size_texture(comp) -> bool:
+    if isinstance(comp, UIImage):
+        return comp._image_texture_source() is not None
+    if isinstance(comp, UIButton):
+        return comp._image_texture_source() is not None
+    return False
 
 
 def _align_component(comp, axis: str, mode: str):
@@ -254,8 +219,8 @@ def _align_component(comp, axis: str, mode: str):
     if canvas is None or parent_rect is None:
         return
 
-    cw = float(canvas.reference_width)
-    ch = float(canvas.reference_height)
+    cw = float(getattr(canvas, "reference_width", getattr(canvas, "width", 1.0)))
+    ch = float(getattr(canvas, "reference_height", getattr(canvas, "height", 1.0)))
     vis = comp.get_visual_rect(cw, ch)
     if vis is None:
         return
@@ -281,11 +246,40 @@ def _align_component(comp, axis: str, mode: str):
     _apply_visual_position(comp, vis_x, vis_y, canvas)
 
 
+def _rotate_component_90(comp):
+    """Rotate UI through the same native Transform used by every GameObject."""
+    current = float(comp.get_layout_rotation())
+    try_get_game_object = getattr(comp, "_try_get_game_object", None)
+    game_object = try_get_game_object() if callable(try_get_game_object) else None
+    if game_object is None and not callable(try_get_game_object):
+        game_object = getattr(comp, "game_object", None)
+    transform = getattr(game_object, "transform", None)
+    if transform is not None:
+        from Infernux.lib import Vector3
+
+        angles = transform.local_euler_angles
+        _record_property(
+            transform,
+            "local_euler_angles",
+            angles,
+            Vector3(float(angles.x), float(angles.y), current + 90.0),
+            "Rotate UI 90 Degrees",
+        )
+        return
+    _record_python_component_document_edit(
+        comp,
+        lambda: comp.set_layout_rotation(current + 90.0),
+        "Rotate UI 90 Degrees",
+        edit_key="ui_transform_rotation",
+        validate=True,
+    )
+
+
 def _render_common_position(ctx, comp):
     if not render_compact_section_header(ctx, t("ui_comp.location"), level="primary"):
         return
 
-    section_lw = max_label_w(ctx, [t("ui_comp.alignment"), t("ui_comp.position"), t("ui_comp.rotation")])
+    section_lw = max_label_w(ctx, [t("ui_comp.alignment")])
 
     # ── Alignment ──
     render_compact_section_title(ctx, t("ui_comp.alignment"), level="secondary")
@@ -316,36 +310,6 @@ def _render_common_position(ctx, comp):
     elif clicked == "bottom":
         _align_component(comp, "y", "bottom")
 
-    # ── Position (shows visual AABB position) ──
-    render_compact_section_title(ctx, t("ui_comp.position"), level="secondary")
-    canvas, cw, ch = _canvas_dims(comp)
-    if canvas is None:
-        ctx.label(t("ui_comp.no_canvas_context"))
-    else:
-        vis = comp.get_visual_rect(cw, ch)
-        if vis is None:
-            return
-        vis_x, vis_y, vis_w, vis_h = vis
-        new_x, new_y = ctx.vector2(
-            "Position",
-            float(vis_x),
-            float(vis_y),
-            1.0,
-            section_lw,
-            semantic_id=_field_semantic_id(ctx, comp, "position"),
-        )
-        _record_field(ctx, comp, "position", "vector", t("ui_comp.position"))
-        if float(new_x) != float(vis_x) or float(new_y) != float(vis_y):
-            _apply_visual_position(comp, float(new_x), float(new_y), canvas)
-
-    # ── Rotation ──
-    render_compact_section_title(ctx, t("ui_comp.rotation"), level="secondary")
-    field_label(ctx, t("ui_comp.rotation"), section_lw)
-    new_rot = ctx.drag_float("##ui_rotation", float(comp.rotation), 1.0, -3600.0, 3600.0)
-    _record_field(ctx, comp, "rotation", "drag_float", t("ui_comp.rotation"))
-    if float(new_rot) != float(comp.rotation):
-        _apply_if_changed(comp, "rotation", comp.rotation, float(new_rot))
-
     clicked = Theme.render_inline_button_row(
         ctx,
         "ui_rotation_row",
@@ -363,8 +327,7 @@ def _render_common_position(ctx, comp):
         semantic_base=_field_semantic_id(ctx, comp, "rotation_actions"),
     )
     if clicked == "rotate_90":
-        new_rot = float(comp.rotation) + 90.0
-        _apply_if_changed(comp, "rotation", comp.rotation, new_rot)
+        _rotate_component_90(comp)
     elif clicked == "mirror_x":
         _apply_if_changed(comp, "mirror_x", comp.mirror_x, not bool(comp.mirror_x))
     elif clicked == "mirror_y":
@@ -372,32 +335,20 @@ def _render_common_position(ctx, comp):
 
 
 def _sync_text_layout_from_ctx(ctx, text_comp: UIText):
-    text = getattr(text_comp, "text", "")
-    font_size = max(1.0, float(getattr(text_comp, "font_size", Theme.UI_DEFAULT_FONT_SIZE)))
-    wrap_width = float(text_comp.get_editor_wrap_width()) if hasattr(text_comp, "get_editor_wrap_width") else float(text_comp.get_wrap_width())
-    font_path = str(getattr(text_comp, "font_path", "") or "")
-    line_height = float(getattr(text_comp, "line_height", 1.2))
-    letter_spacing = float(getattr(text_comp, "letter_spacing", 0.0))
-    pad_x, pad_y = getattr(text_comp, "get_auto_size_padding", lambda: (0.0, 0.0))()
-    canvas = _find_canvas(text_comp)
-    if wrap_width > 0.0:
-        measured_w, measured_h = ctx.calc_text_size_wrapped(
-            text, font_size, wrap_width, font_path, line_height, letter_spacing
+    from Infernux.ui.ui_render_dispatch import resolve_text_layout
+
+    def measure(text, font_size, wrap_width, font_path, line_height, letter_spacing, fallback_font_paths=()):
+        if wrap_width > 0.0:
+            return ctx.calc_text_size_wrapped(
+                text, font_size, wrap_width, font_path, line_height, letter_spacing,
+                fallback_font_paths,
+            )
+        return ctx.calc_text_size(
+            text, font_size, font_path, line_height, letter_spacing,
+            fallback_font_paths,
         )
-    else:
-        measured_w, measured_h = ctx.calc_text_size(text, font_size, font_path, line_height, letter_spacing)
 
-    if canvas is None:
-        if text_comp.is_auto_width():
-            _apply_if_changed(text_comp, "width", text_comp.width, max(1.0, float(measured_w) + float(pad_x)))
-        elif text_comp.is_auto_height():
-            _apply_if_changed(text_comp, "height", text_comp.height, max(1.0, float(measured_h) + float(pad_y)))
-        return
-
-    if text_comp.is_auto_width():
-        _apply_size_preserve_top_left(text_comp, max(1.0, float(measured_w) + float(pad_x)), float(text_comp.height), canvas)
-    elif text_comp.is_auto_height():
-        _apply_size_preserve_top_left(text_comp, float(text_comp.width), max(1.0, float(measured_h) + float(pad_y)), canvas)
+    return resolve_text_layout(text_comp, measure, 1.0)
 
 
 def _set_text_resize_mode(ctx, text_comp: UIText, mode: TextResizeMode):
@@ -456,11 +407,79 @@ def _apply_layout_size_changes(ctx, comp, size_x, size_y, section_lw):
             _apply_size_preserve_top_left(comp, float(comp.width), target_h, canvas)
 
 
+def _render_layout_behavior(ctx, comp, section_lw):
+    if not hasattr(comp, "layout_position"):
+        return
+    render_compact_section_title(ctx, t("ui_comp.parent_layout"), level="secondary")
+
+    position_members = list(UILayoutPosition)
+    field_label(ctx, t("ui_comp.position_mode"), section_lw)
+    position_index = position_members.index(comp.layout_position)
+    new_position_index = ctx.combo(
+        "##ui_layout_position", position_index,
+        [member.name for member in position_members], -1,
+    )
+    _record_field(ctx, comp, "layout_position", "combo", t("ui_comp.position_mode"))
+    _apply_if_changed(
+        comp, "layout_position", comp.layout_position,
+        position_members[new_position_index],
+    )
+
+    sizing_members = list(UILayoutSizing)
+    field_label(ctx, t("ui_comp.width_sizing"), section_lw)
+    width_index = sizing_members.index(comp.width_sizing)
+    new_width_index = ctx.combo(
+        "##ui_width_sizing", width_index,
+        [member.name for member in sizing_members], -1,
+    )
+    _record_field(ctx, comp, "width_sizing", "combo", t("ui_comp.width_sizing"))
+    _apply_if_changed(comp, "width_sizing", comp.width_sizing, sizing_members[new_width_index])
+
+    field_label(ctx, t("ui_comp.height_sizing"), section_lw)
+    height_index = sizing_members.index(comp.height_sizing)
+    new_height_index = ctx.combo(
+        "##ui_height_sizing", height_index,
+        [member.name for member in sizing_members], -1,
+    )
+    _record_field(ctx, comp, "height_sizing", "combo", t("ui_comp.height_sizing"))
+    _apply_if_changed(comp, "height_sizing", comp.height_sizing, sizing_members[new_height_index])
+
+    field_label(ctx, t("ui_comp.min_size"), section_lw)
+    min_width, min_height = ctx.vector2(
+        "Min Size", float(comp.min_width), float(comp.min_height), 1.0, section_lw,
+        semantic_id=_field_semantic_id(ctx, comp, "min_size"),
+    )
+    _record_field(ctx, comp, "min_size", "vector", t("ui_comp.min_size"))
+    _apply_if_changed(comp, "min_width", comp.min_width, max(0.0, float(min_width)))
+    _apply_if_changed(comp, "min_height", comp.min_height, max(0.0, float(min_height)))
+
+    field_label(ctx, t("ui_comp.max_size"), section_lw)
+    max_width, max_height = ctx.vector2(
+        "Max Size", float(comp.max_width), float(comp.max_height), 1.0, section_lw,
+        semantic_id=_field_semantic_id(ctx, comp, "max_size"),
+    )
+    _record_field(ctx, comp, "max_size", "vector", t("ui_comp.max_size"))
+    _apply_if_changed(comp, "max_width", comp.max_width, max(0.0, float(max_width)))
+    _apply_if_changed(comp, "max_height", comp.max_height, max(0.0, float(max_height)))
+
+    if comp.width_sizing == UILayoutSizing.Fill or comp.height_sizing == UILayoutSizing.Fill:
+        field_label(ctx, t("ui_comp.layout_weight"), section_lw)
+        weight = ctx.drag_float(
+            "##ui_layout_weight", float(comp.layout_weight), 0.05, 0.001, 10000.0,
+        )
+        _record_field(ctx, comp, "layout_weight", "drag_float", t("ui_comp.layout_weight"))
+        _apply_if_changed(comp, "layout_weight", comp.layout_weight, max(0.001, float(weight)))
+
+
 def _render_common_layout(ctx, comp):
     if not render_compact_section_header(ctx, t("ui_comp.layout"), level="primary"):
         return
 
-    labels = [t("ui_comp.dimensions"), t("ui_comp.size"), t("ui_comp.modify")]
+    labels = [
+        t("ui_comp.dimensions"), t("ui_comp.size"), t("ui_comp.modify"),
+        t("ui_comp.position_mode"), t("ui_comp.width_sizing"),
+        t("ui_comp.height_sizing"), t("ui_comp.layout_weight"),
+    ]
     if isinstance(comp, UIText):
         labels.append(t("ui_comp.resizing"))
     section_lw = max_label_w(ctx, labels)
@@ -472,9 +491,9 @@ def _render_common_layout(ctx, comp):
     field_label(ctx, t("ui_comp.modify"), section_lw)
 
     # Build button list: Lock is always present;
-    # Set Native Size appears for UIImage / UIButton with texture_path.
+    # Set Native Size appears for UIImage / UIButton with a current texture.
     modify_buttons = [("lock", t("ui_comp.lock"))]
-    has_texture = bool(getattr(comp, "texture_path", "") or "")
+    has_texture = _has_native_size_texture(comp)
     if has_texture:
         modify_buttons.append(("native_size", t("ui_comp.set_native_size")))
 
@@ -494,16 +513,22 @@ def _render_common_layout(ctx, comp):
         _set_native_size(comp)
 
     field_label(ctx, t("ui_comp.size"), section_lw)
+    resolved_width, resolved_height = (
+        comp.get_resolved_size() if isinstance(comp, UIText)
+        else (float(comp.width), float(comp.height))
+    )
     size_x, size_y = ctx.vector2(
         "Size",
-        float(comp.width),
-        float(comp.height),
+        float(resolved_width),
+        float(resolved_height),
         1.0,
         section_lw,
         semantic_id=_field_semantic_id(ctx, comp, "size"),
     )
     _record_field(ctx, comp, "size", "vector", t("ui_comp.size"))
     _apply_layout_size_changes(ctx, comp, size_x, size_y, section_lw)
+
+    _render_layout_behavior(ctx, comp, section_lw)
 
     if isinstance(comp, UIText):
         render_compact_section_title(ctx, t("ui_comp.resizing"), level="secondary")
@@ -536,7 +561,28 @@ def _render_common_appearance(ctx, comp):
     if not render_compact_section_header(ctx, t("ui_comp.appearance"), level="primary"):
         return
 
-    section_lw = max_label_w(ctx, [t("ui_comp.opacity"), t("ui_comp.corner_radius")])
+    material_label = (
+        t("ui_comp.background_material")
+        if isinstance(comp, UIButton) else t("ui_comp.material")
+    )
+    section_lw = max_label_w(
+        ctx, [t("ui_comp.opacity"), t("ui_comp.corner_radius"), material_label]
+    )
+
+    from Infernux.components.fields import FieldType, get_raw_field_value
+    from ._inspector_references import _render_asset_reference_field
+
+    metadata = get_serialized_fields(type(comp))["material"]
+    _render_asset_reference_field(
+        ctx,
+        comp,
+        "material",
+        metadata,
+        get_raw_field_value(comp, "material"),
+        FieldType.MATERIAL,
+        section_lw,
+        label_override=material_label,
+    )
 
     field_label(ctx, t("ui_comp.opacity"), section_lw)
     opacity_pct = max(0.0, min(100.0, float(getattr(comp, "opacity", 1.0)) * 100.0))
@@ -571,38 +617,33 @@ def _render_common_appearance(ctx, comp):
 
 
 def _render_font_picker(ctx, comp, field_name: str, lw: float, imgui_id: str):
-    """Render the shared Font resource field and apply one Undo command."""
-    IGUI = _igui()
-    font_path = str(getattr(comp, field_name, "") or "")
-    changed = False
-
-    def _assign(payload):
-        nonlocal changed
-        new_path = _project_asset_reference_path("Font", payload)
-        if new_path != font_path:
-            _apply_if_changed(comp, field_name, font_path, new_path)
-            changed = True
-
-    def _clear():
-        nonlocal changed
-        if font_path:
-            _apply_if_changed(comp, field_name, font_path, "")
-            changed = True
-
-    IGUI.asset_reference_field(
-        ctx,
-        imgui_id,
-        os.path.basename(font_path) if font_path else t("ui_comp.default_font"),
-        "Font",
-        asset_type="Font",
-        on_assign=_assign,
-        on_clear=_clear,
-        ping_path=font_path or None,
-        has_value=bool(font_path),
-        reference_value={"asset_type": "Font", "path_hint": font_path},
+    """Render one GUID-backed Font resource field through shared Inspector logic."""
+    del imgui_id
+    metadata = get_serialized_fields(type(comp)).get(field_name)
+    if metadata is None or metadata.field_type != FieldType.ASSET:
+        raise ValueError(f"{type(comp).__name__}.{field_name} is not a Font asset field")
+    previous = get_raw_field_value(comp, field_name)
+    _render_asset_reference_field(
+        ctx, comp, field_name, metadata, previous, FieldType.ASSET, lw,
+        label_override=t("ui_comp.font"),
     )
-    _record_field(ctx, comp, field_name, "object_field", t("ui_comp.font"))
-    return changed
+    return previous != get_raw_field_value(comp, field_name)
+
+
+def _render_fallback_font_list(ctx, comp, *, on_change=None):
+    metadata = get_serialized_fields(type(comp)).get("fallback_fonts")
+    if metadata is None:
+        return
+    _render_list_field(
+        ctx,
+        comp,
+        "fallback_fonts",
+        metadata,
+        list(get_raw_field_value(comp, "fallback_fonts") or ()),
+        0.0,
+        display_name=t("ui_comp.fallback_fonts"),
+        on_change=on_change,
+    )
 
 
 def _render_text_alignment_row(ctx, comp, lw: float, imgui_id: str,
@@ -671,9 +712,14 @@ def _render_text_typography(ctx, text_comp: UIText):
         _apply_if_changed(text_comp, "text", current_text, new_text)
         _sync_text_layout_from_ctx(ctx, text_comp)
 
-    field_label(ctx, t("ui_comp.font"), section_lw)
-    if _render_font_picker(ctx, text_comp, "font_path", section_lw, "ui_text_font_path"):
+    if _render_font_picker(ctx, text_comp, "font", section_lw, "ui_text_font"):
         _sync_text_layout_from_ctx(ctx, text_comp)
+
+    def _set_text_fallbacks(comp, field_name, previous, value):
+        _record_property(comp, field_name, previous, value, "Set fallback fonts")
+        _sync_text_layout_from_ctx(ctx, comp)
+
+    _render_fallback_font_list(ctx, text_comp, on_change=_set_text_fallbacks)
 
     field_label(ctx, t("ui_comp.font_size"), section_lw)
     new_font_size = ctx.drag_float("##ui_text_font_size", text_comp.font_size, 0.5, 4.0, 1000000.0)
@@ -798,6 +844,75 @@ def _render_canvas_inspector(ctx, canvas: UICanvas):
             _apply_if_changed(canvas, "reference_pixels_per_unit", canvas.reference_pixels_per_unit, max(1.0, float(new_rppu)))
 
 
+def _render_frame_inspector(ctx, frame: UIFrame):
+    _render_common_position(ctx, frame)
+    _render_common_layout(ctx, frame)
+    _render_common_appearance(ctx, frame)
+
+    if render_compact_section_header(ctx, t("ui_comp.auto_layout"), level="primary"):
+        labels = [
+            t("ui_comp.direction"), t("ui_comp.gap"), t("ui_comp.padding"),
+            t("ui_comp.align_items"), t("ui_comp.justify_content"), t("ui_comp.clip_content"),
+        ]
+        lw = max_label_w(ctx, labels)
+
+        direction_members = list(UILayoutDirection)
+        field_label(ctx, t("ui_comp.direction"), lw)
+        direction_index = direction_members.index(frame.layout_direction)
+        new_direction_index = ctx.combo(
+            "##ui_frame_direction", direction_index,
+            [member.name for member in direction_members], -1,
+        )
+        _record_field(ctx, frame, "layout_direction", "combo", t("ui_comp.direction"))
+        _apply_if_changed(
+            frame, "layout_direction", frame.layout_direction,
+            direction_members[new_direction_index],
+        )
+
+        field_label(ctx, t("ui_comp.gap"), lw)
+        new_gap = ctx.drag_float("##ui_frame_gap", float(frame.gap), 1.0, 0.0, 100000.0)
+        _record_field(ctx, frame, "gap", "drag_float", t("ui_comp.gap"))
+        _apply_if_changed(frame, "gap", frame.gap, max(0.0, float(new_gap)))
+
+        field_label(ctx, t("ui_comp.padding"), lw)
+        left, top, right, bottom = ctx.vector4(
+            "Padding", float(frame.padding_left), float(frame.padding_top),
+            float(frame.padding_right), float(frame.padding_bottom), 1.0, lw,
+        )
+        _record_field(ctx, frame, "padding", "vector", t("ui_comp.padding"))
+        _apply_if_changed(frame, "padding_left", frame.padding_left, max(0.0, float(left)))
+        _apply_if_changed(frame, "padding_top", frame.padding_top, max(0.0, float(top)))
+        _apply_if_changed(frame, "padding_right", frame.padding_right, max(0.0, float(right)))
+        _apply_if_changed(frame, "padding_bottom", frame.padding_bottom, max(0.0, float(bottom)))
+
+        align_members = list(UILayoutAlign)
+        field_label(ctx, t("ui_comp.align_items"), lw)
+        align_index = align_members.index(frame.align_items)
+        new_align_index = ctx.combo(
+            "##ui_frame_align", align_index,
+            [member.name for member in align_members], -1,
+        )
+        _record_field(ctx, frame, "align_items", "combo", t("ui_comp.align_items"))
+        _apply_if_changed(frame, "align_items", frame.align_items, align_members[new_align_index])
+
+        justify_members = list(UILayoutJustify)
+        field_label(ctx, t("ui_comp.justify_content"), lw)
+        justify_index = justify_members.index(frame.justify_content)
+        new_justify_index = ctx.combo(
+            "##ui_frame_justify", justify_index,
+            [member.name for member in justify_members], -1,
+        )
+        _record_field(ctx, frame, "justify_content", "combo", t("ui_comp.justify_content"))
+        _apply_if_changed(
+            frame, "justify_content", frame.justify_content,
+            justify_members[new_justify_index],
+        )
+
+        new_clip = render_inspector_checkbox(ctx, t("ui_comp.clip_content"), bool(frame.clip_content))
+        _record_field(ctx, frame, "clip_content", "checkbox", t("ui_comp.clip_content"))
+        _apply_if_changed(frame, "clip_content", frame.clip_content, bool(new_clip))
+
+
 def _render_text_inspector(ctx, text_comp: UIText):
     _render_common_position(ctx, text_comp)
     _render_common_layout(ctx, text_comp)
@@ -816,8 +931,13 @@ def _render_image_fill(ctx, img_comp: UIImage):
 
     section_lw = max_label_w(ctx, [t("ui_comp.texture"), t("ui_comp.color")])
 
-    _render_texture_picker(ctx, img_comp, "texture_path", t("ui_comp.texture"),
-                           section_lw, "ui_image_texture")
+    from Infernux.components.fields import FieldType, get_raw_field_value
+    from ._inspector_references import _render_asset_reference_field
+    _render_asset_reference_field(
+        ctx, img_comp, "texture", get_serialized_fields(type(img_comp))["texture"],
+        get_raw_field_value(img_comp, "texture"), FieldType.ASSET, section_lw,
+        label_override=t("ui_comp.texture"),
+    )
 
     # ── Tint color ──
     _render_color_field(ctx, img_comp, "color", t("ui_comp.color"), section_lw,
@@ -832,6 +952,7 @@ def _render_image_inspector(ctx, img_comp: UIImage):
 
 
 register_py_component_renderer("UICanvas", _render_canvas_inspector)
+register_py_component_renderer("UIFrame", _render_frame_inspector)
 register_py_component_renderer("UIText", _render_text_inspector)
 register_py_component_renderer("UIImage", _render_image_inspector)
 
@@ -862,8 +983,8 @@ def _render_button_inspector(ctx, btn_comp: UIButton):
         _record_field(ctx, btn_comp, "label", "text_input", t("ui_comp.label"))
         _apply_if_changed(btn_comp, "label", btn_comp.label, new_label)
 
-        field_label(ctx, t("ui_comp.font"), lw)
-        _render_font_picker(ctx, btn_comp, "font_path", lw, "btn_font_path")
+        _render_font_picker(ctx, btn_comp, "font", lw, "btn_font")
+        _render_fallback_font_list(ctx, btn_comp)
 
         field_label(ctx, t("ui_comp.font_size"), lw)
         new_fs = ctx.drag_float("##btn_font_size", btn_comp.font_size, 0.5, 4.0, 256.0)
@@ -872,6 +993,21 @@ def _render_button_inspector(ctx, btn_comp: UIButton):
 
         _render_color_field(ctx, btn_comp, "label_color", t("ui_comp.label_color"), lw,
                             "##btn_label_color")
+
+        from Infernux.components.fields import FieldType, get_raw_field_value
+        from ._inspector_references import _render_asset_reference_field
+
+        metadata = get_serialized_fields(type(btn_comp))["text_material"]
+        _render_asset_reference_field(
+            ctx,
+            btn_comp,
+            "text_material",
+            metadata,
+            get_raw_field_value(btn_comp, "text_material"),
+            FieldType.MATERIAL,
+            lw,
+            label_override=t("ui_comp.text_material"),
+        )
 
         field_label(ctx, t("ui_comp.line_height"), lw)
         new_lh = ctx.drag_float("##btn_line_height", btn_comp.line_height, 0.01, 0.5, 5.0)
@@ -896,8 +1032,18 @@ def _render_button_inspector(ctx, btn_comp: UIButton):
     if render_compact_section_header(ctx, t("ui_comp.fill"), level="primary"):
         lw = max_label_w(ctx, [t("ui_comp.texture"), t("ui_comp.background")])
 
-        _render_texture_picker(ctx, btn_comp, "texture_path", t("ui_comp.texture"),
-                               lw, "btn_texture")
+        from Infernux.components.fields import FieldType, get_raw_field_value
+        from ._inspector_references import _render_asset_reference_field
+        _render_asset_reference_field(
+            ctx,
+            btn_comp,
+            "background_texture",
+            get_serialized_fields(type(btn_comp))["background_texture"],
+            get_raw_field_value(btn_comp, "background_texture"),
+            FieldType.ASSET,
+            lw,
+            label_override=t("ui_comp.texture"),
+        )
 
         _render_color_field(ctx, btn_comp, "background_color", t("ui_comp.background"), lw,
                             "##btn_bg_color", default=list(Theme.UI_DEFAULT_BUTTON_BG))
@@ -964,7 +1110,7 @@ def _render_onclick_arg_comp(ctx, btn_comp, entries, i, arg_index, spec, arg, lw
                              clone_entries_fn, resolve_go_fn):
     """Render a component On-Click argument field."""
     from Infernux.components.ref_wrappers import ComponentRef
-    from .inspector_components import render_object_field, _picker_scene_gameobjects, _create_component_ref_from_go
+    from .inspector_components import render_object_field, _picker_scene_components, _create_component_ref_from_go
 
     comp_ref = _get_serializable_raw_field(arg, "component")
     display = comp_ref.display_name if isinstance(comp_ref, ComponentRef) else t("igui.none")
@@ -1000,7 +1146,7 @@ def _render_onclick_arg_comp(ctx, btn_comp, entries, i, arg_index, spec, arg, lw
         clickable=False,
         accept_drag_type="HIERARCHY_GAMEOBJECT",
         on_drop_callback=comp_drop,
-        picker_scene_items=lambda filt, _ct=spec.component_type: _picker_scene_gameobjects(filt, required_component=_ct),
+        picker_scene_items=lambda filt, _ct=spec.component_type: _picker_scene_components(filt, required_component=_ct),
         on_pick=comp_pick,
         on_clear=comp_clear,
         on_ping=(

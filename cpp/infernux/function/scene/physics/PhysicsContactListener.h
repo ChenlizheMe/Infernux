@@ -16,9 +16,13 @@
 #include <glm/glm.hpp>
 
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
+#include <shared_mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Forward-declare Jolt BodyInterface for ResolveEvents parameter
@@ -135,6 +139,18 @@ class InxContactListener : public JPH::ContactListener
     /// wake-from-sleep duplicates.
     void InvalidatePairsForBody(uint32_t bodyId);
 
+    /// Reference-count a body pair that must not produce contacts. Multiple
+    /// joints may independently own the same pair.
+    void SetBodyPairIgnored(uint32_t bodyIdA, uint32_t bodyIdB, bool ignored);
+    void RemoveIgnoredPairsForBody(uint32_t bodyId);
+
+    /// Set the idempotent game-level policy for one exact Collider pair.
+    /// Unlike body-pair ownership used by joints, this preserves compound
+    /// subshape identity and is not reference counted.
+    void SetColliderPairIgnored(uint64_t componentIdA, uint64_t componentIdB, bool ignored);
+    [[nodiscard]] bool GetColliderPairIgnored(uint64_t componentIdA, uint64_t componentIdB) const;
+    void RemoveIgnoredPairsForCollider(uint64_t componentId);
+
     /// Get resolved events for dispatch.
     const std::vector<ContactEvent> &GetEvents() const
     {
@@ -142,6 +158,10 @@ class InxContactListener : public JPH::ContactListener
     }
 
     // -- JPH::ContactListener overrides --
+
+    JPH::ValidateResult OnContactValidate(const JPH::Body &inBody1, const JPH::Body &inBody2,
+                                          JPH::RVec3Arg inBaseOffset,
+                                          const JPH::CollideShapeResult &inCollisionResult) override;
 
     void OnContactAdded(const JPH::Body &inBody1, const JPH::Body &inBody2, const JPH::ContactManifold &inManifold,
                         JPH::ContactSettings &ioSettings) override;
@@ -181,6 +201,24 @@ class InxContactListener : public JPH::ContactListener
 
     static ContactPairKey MakePairKey(const ContactEvent &event);
 
+    struct ColliderPairKey
+    {
+        uint64_t first;
+        uint64_t second;
+
+        bool operator==(const ColliderPairKey &other) const
+        {
+            return first == other.first && second == other.second;
+        }
+    };
+
+    struct ColliderPairKeyHash
+    {
+        size_t operator()(const ColliderPairKey &key) const;
+    };
+
+    static ColliderPairKey MakeColliderPairKey(uint64_t componentIdA, uint64_t componentIdB);
+
     struct alignas(64) EventShard
     {
         std::mutex mutex;
@@ -200,6 +238,12 @@ class InxContactListener : public JPH::ContactListener
     };
     std::unordered_map<ContactPairKey, PairState, ContactPairKeyHash> m_contactPairs;
     uint8_t m_eventInterestMask = 0;
+
+    mutable std::shared_mutex m_ignoredPairMutex;
+    std::unordered_map<uint64_t, uint32_t> m_ignoredBodyPairs;
+    std::atomic_bool m_hasIgnoredBodyPairs{false};
+    std::unordered_set<ColliderPairKey, ColliderPairKeyHash> m_ignoredColliderPairs;
+    std::atomic_bool m_hasIgnoredColliderPairs{false};
 
     // m_contactPairs and m_events are main-thread only. Jolt worker callbacks
     // write exclusively to m_eventShards.

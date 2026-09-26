@@ -42,6 +42,7 @@ layout(location = 3) in vec3 inColor;
 layout(location = 4) in vec2 inTexCoord;
 layout(location = 5) in uvec4 inBoneIndices;
 layout(location = 6) in vec4 inBoneWeights;
+layout(location = 7) in vec2 inTexCoord1;
 
 struct VertexInput {
     vec3 position;
@@ -49,6 +50,7 @@ struct VertexInput {
     vec4 tangent;
     vec3 color;
     vec2 texCoord;
+    vec2 texCoord1;
 };
 
 struct InstanceAuxData {

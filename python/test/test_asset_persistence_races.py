@@ -235,7 +235,7 @@ def test_clean_scene_watcher_event_with_unchanged_identity_is_ignored(
     document = documents.create(
         DocumentKind.SCENE,
         "Course",
-        key=DocumentKey.resource(DocumentKind.SCENE, str(path)),
+        key=DocumentKey.asset(DocumentKind.SCENE, "scene-guid"),
         resource_path=str(path),
         controller=controller,
     )
@@ -289,7 +289,7 @@ def test_real_external_scene_change_reimports_and_reloads_current_disk(
     document = documents.create(
         DocumentKind.SCENE,
         "Course",
-        key=DocumentKey.resource(DocumentKind.SCENE, str(path)),
+        key=DocumentKey.asset(DocumentKind.SCENE, "scene-guid"),
         resource_path=str(path),
         controller=_Controller(),
     )
@@ -349,7 +349,7 @@ def test_dirty_scene_external_change_preserves_memory_and_enters_conflict(
     document = documents.create(
         DocumentKind.SCENE,
         "Course",
-        key=DocumentKey.resource(DocumentKind.SCENE, str(path)),
+        key=DocumentKey.asset(DocumentKind.SCENE, "scene-guid"),
         resource_path=str(path),
         controller=controller,
     )
@@ -501,20 +501,24 @@ def test_registered_and_unregistered_imports_share_external_publish(monkeypatch,
     published = []
 
     class _Documents:
-        def durable_resource_content_changed(self, value):
+        def durable_resource_content_changed(self, value, *, guid=""):
+            del guid
             return True
 
-        def preflight_external_resource_change(self, value):
+        def preflight_external_resource_change(self, value, *, guid=""):
+            del guid
             return value == resolved
 
-        def has_pending_external_change_preflight(self, value):
+        def has_pending_external_change_preflight(self, value, *, guid=""):
+            del guid
             return value == resolved
 
-        def publish_external_resource_change(self, value):
+        def publish_external_resource_change(self, value, *, guid=""):
+            del guid
             published.append(value)
 
-        def fail_external_resource_change(self, value, *, message=""):
-            del value, message
+        def fail_external_resource_change(self, value, *, guid="", message=""):
+            del value, guid, message
 
     result = SimpleNamespace(succeeded=True, error="")
     monkeypatch.setattr(

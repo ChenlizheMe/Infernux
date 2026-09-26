@@ -3,6 +3,7 @@
 import os
 
 from Infernux.debug import Debug
+from Infernux.core.asset_types import IMAGE_EXTENSIONS, MESH_EXTENSIONS
 from Infernux.graph.types import (
     AssetReference,
     BUILTIN_MESH_NAMES,
@@ -209,7 +210,7 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
                 except (TypeError, ValueError):
                     builtin_name = ""
             extensions = (
-                (".fbx", ".obj", ".gltf", ".glb", ".dae")
+                tuple(sorted(MESH_EXTENSIONS))
                 if is_mesh
                 else tuple(sorted(IMAGE_EXTENSIONS))
             )
@@ -604,11 +605,18 @@ def _mesh_asset_path(comp) -> str:
     guid = getattr(comp, 'mesh_asset_guid', '') or getattr(comp, 'source_model_guid', '') or ''
     path = _path_from_guid(guid)
     if path:
+        node_path = getattr(comp, "model_node_path", [])
+        if node_path:
+            from Infernux.lib._Infernux import make_model_mesh_reference
+            return make_model_mesh_reference(path, node_path)
         return path
-    return str(getattr(comp, 'source_model_path', '') or "")
+    return ""
 
 
 def _mesh_display_name(comp) -> str:
+    node_path = getattr(comp, "model_node_path", [])
+    if node_path:
+        return node_path[-1]
     try:
         if comp.has_inline_mesh():
             inline_name = getattr(comp, 'inline_mesh_name', '') or ''
@@ -627,9 +635,6 @@ def _mesh_display_name(comp) -> str:
     except Exception as exc:
         Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
 
-    source_path = getattr(comp, 'source_model_path', '') or ''
-    if source_path:
-        return os.path.basename(source_path)
     return "None"
 
 
@@ -658,6 +663,8 @@ def _guid_and_path_from_model_payload(payload):
     if not ref:
         return "", ""
 
+    from Infernux.lib._Infernux import split_model_mesh_reference
+    source, node_path = split_model_mesh_reference(ref)
     adb = _get_asset_database()
     if not adb:
         return "", ref
@@ -670,7 +677,7 @@ def _guid_and_path_from_model_payload(payload):
         Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
 
     try:
-        guid = adb.get_guid_from_path(ref) or ""
+        guid = adb.get_guid_from_path(source) or ""
         return guid, ref
     except Exception as exc:
         Debug.log(f"[Suppressed] {type(exc).__name__}: {exc}")
@@ -691,6 +698,23 @@ def _mesh_additional_picker_items(filter_text: str):
                 "path_hint": "",
             }))
 
+    import json
+    from Infernux.lib import ResourceType
+    from Infernux.lib._Infernux import make_model_mesh_reference
+    adb = _get_asset_database()
+    for guid in adb.get_all_guids():
+        meta = adb.get_meta_by_guid(guid)
+        if meta is None or meta.get_resource_type() != ResourceType.Mesh:
+            continue
+        manifest = meta.get_string("model_meshes") if meta.has_key("model_meshes") else ""
+        if not manifest:
+            continue
+        path = adb.get_path_from_guid(guid)
+        for entry in json.loads(manifest):
+            label = f"{os.path.basename(path)}/{entry['name']}"
+            if not filt or filt in label.lower():
+                items.append((label, {"asset_type": "Mesh", "guid": guid,
+                                     "path_hint": make_model_mesh_reference(path, entry['path'])}))
     return items
 
 
@@ -718,8 +742,6 @@ def _assign_primitive_mesh(comp, primitive_name: str) -> None:
     if getattr(comp, 'type_name', '') == 'SkinnedMeshRenderer':
         if hasattr(comp, 'set_source_model_guid'):
             comp.set_source_model_guid("")
-        if hasattr(comp, 'set_source_model_path'):
-            comp.set_source_model_path("")
     comp.set_primitive_mesh(primitive_type)
     _record_mesh_renderer_change(comp, old_document, f"Set Mesh {primitive_name}")
 
@@ -730,12 +752,11 @@ def _assign_model_mesh(comp, payload) -> None:
         Debug.log_warning(f"Mesh assignment failed: model is not registered ({path or payload})")
         return
 
-    old_document = comp.serialize_document()
-    if getattr(comp, 'type_name', '') == 'SkinnedMeshRenderer' and hasattr(comp, 'set_source_model_guid'):
-        comp.set_source_model_guid(guid)
-    elif hasattr(comp, 'set_mesh_asset_guid'):
-        comp.set_mesh_asset_guid(guid)
-    _record_mesh_renderer_change(comp, old_document, "Set Mesh")
+    from Infernux.engine.interaction import ComponentCommandService
+
+    from Infernux.lib._Infernux import split_model_mesh_reference
+    _, node_path = split_model_mesh_reference(path)
+    ComponentCommandService.require().assign_mesh_asset(comp, guid, node_path=node_path)
 
 
 def _clear_mesh(comp) -> None:
@@ -743,8 +764,6 @@ def _clear_mesh(comp) -> None:
     if getattr(comp, 'type_name', '') == 'SkinnedMeshRenderer':
         if hasattr(comp, 'set_source_model_guid'):
             comp.set_source_model_guid("")
-        if hasattr(comp, 'set_source_model_path'):
-            comp.set_source_model_path("")
     if hasattr(comp, 'clear_mesh_asset'):
         comp.clear_mesh_asset()
     _record_mesh_renderer_change(comp, old_document, "Clear Mesh")
@@ -799,11 +818,14 @@ def _set_material_slot_from_path(comp, slot_idx: int, material_path) -> None:
     adb = AssetRegistry.instance().get_asset_database()
     if not adb:
         return
-    supplied_guid = ""
     if isinstance(material_path, dict):
-        supplied_guid = str(material_path.get("guid") or "").strip()
-        material_path = str(material_path.get("path_hint") or "").strip()
-    guid = supplied_guid or adb.get_guid_from_path(str(material_path))
+        # Structured values already crossed the authoring boundary. Their GUID
+        # is authoritative; a stale display path must never recover identity.
+        guid = str(material_path.get("guid") or "").strip()
+    else:
+        # Raw picker/drop paths are explicit editor authoring input and are
+        # converted once, before they reach the component document.
+        guid = str(adb.get_guid_from_path(str(material_path)) or "").strip()
     if not guid:
         return
     guids = comp.get_material_guids()
@@ -815,6 +837,43 @@ def _clear_material_slot(comp, slot_idx: int) -> None:
     guids = comp.get_material_guids()
     old_guid = guids[slot_idx] or "" if slot_idx < len(guids) else ""
     _record_material_slot(comp, slot_idx, old_guid, "", f"Clear Material Slot {slot_idx}")
+
+
+def _save_mesh_asset_copy(mesh):
+    """Save geometry only; the renderer continues referencing its original asset."""
+    from Infernux.engine.interaction import EditorInteractionCore
+    from ._dialogs import save_file_dialog
+    from ._inspector_references import ping_asset_in_project
+
+    core = EditorInteractionCore.instance()
+    if core is None:
+        raise RuntimeError("Mesh authoring requires an active editor interaction core")
+    service = core.project_assets
+    destination = save_file_dialog(
+        title=t("inspector.mesh_save_copy"),
+        win32_filter="Infernux Mesh (*.inxmesh)\0*.inxmesh\0\0",
+        initial_dir=os.path.join(service.project_root, "Assets"),
+        default_filename="MeshCopy.inxmesh",
+        default_ext="inxmesh",
+        tk_filetypes=[("Infernux Mesh", "*.inxmesh")],
+    )
+    if not destination:
+        return None
+    saved = service.save_mesh_copy(mesh, destination)
+    ping_asset_in_project(saved)
+    return saved
+
+
+def _render_mesh_save_copy(ctx: InxGUIContext, comp):
+    # The static source format cannot preserve a model's skeletal companion.
+    mesh = comp.get_mesh_asset()
+    if mesh is None or mesh.has_skinned_data:
+        return
+    if ctx.button(f"{t('inspector.mesh_save_copy')}##mesh_copy_{comp.component_id}"):
+        try:
+            _save_mesh_asset_copy(mesh)
+        except (OSError, RuntimeError, ValueError) as exc:
+            Debug.log_error(f"{t('inspector.mesh_save_copy')}: {exc}")
 
 
 def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
@@ -837,6 +896,7 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
 
     mesh_field_id = f"mesh_field_{getattr(comp, 'component_id', id(comp))}"
     mesh_display = _mesh_display_name(comp)
+    _render_mesh_save_copy(ctx, comp)
 
     # Material slots
     mat_count = getattr(comp, 'material_count', 0) or 1
@@ -937,8 +997,13 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
                     ping_path=material_path or None,
                     has_value=bool(material_path),
                     reference_value=(
-                        {"asset_type": "Material", "path_hint": material_path}
-                        if material_path else None
+                        {
+                            "asset_type": "Material",
+                            "guid": str(material_guids[slot_idx] or ""),
+                        }
+                        if 0 <= slot_idx < len(material_guids)
+                        and material_guids[slot_idx]
+                        else None
                     ),
                 )
             if payload:
@@ -998,7 +1063,11 @@ def _render_mesh_renderer_materials(ctx: InxGUIContext, comp):
             ping_path=mat_path or None,
             has_value=bool(mat_path),
             reference_value=(
-                {"asset_type": "Material", "path_hint": mat_path}
-                if mat_path else None
+                {
+                    "asset_type": "Material",
+                    "guid": str(material_guids[slot_idx] or ""),
+                }
+                if slot_idx < len(material_guids) and material_guids[slot_idx]
+                else None
             ),
         )

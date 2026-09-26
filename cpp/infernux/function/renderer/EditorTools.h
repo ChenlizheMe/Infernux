@@ -1,6 +1,7 @@
 #pragma once
 
 #include "InxRenderStruct.h"
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -12,9 +13,10 @@ namespace infernux
 
 class Scene;
 class InxMaterial;
+class GameObject;
 
 /**
- * @brief Editor 3D manipulation tools (translate / rotate / scale handles).
+ * @brief Editor 3D manipulation tools (translate / rotate / scale / rect handles).
  *
  * Generates draw calls for the currently active 3D gizmo at the selected
  * object's position. The geometry is constructed once and cached; only the
@@ -37,13 +39,26 @@ class InxMaterial;
 class EditorTools
 {
   public:
+    struct RectFrame
+    {
+        glm::vec3 center{0.0f};
+        glm::vec3 axisU{1.0f, 0.0f, 0.0f};
+        glm::vec3 axisV{0.0f, 1.0f, 0.0f};
+        float halfU = 0.5f;
+        float halfV = 0.5f;
+        int axisUIndex = 0;
+        int axisVIndex = 1;
+        bool valid = false;
+    };
+
     /// Active tool mode
     enum class ToolMode
     {
         None,      ///< No tool active (Q)
         Translate, ///< Move tool (W)
         Rotate,    ///< Rotate tool (E)
-        Scale      ///< Scale tool (R)
+        Scale,     ///< Scale tool (R)
+        Rect       ///< Rect tool (T)
     };
 
     /// Which handle is being hovered/dragged
@@ -56,7 +71,16 @@ class EditorTools
         XY,
         XZ,
         YZ,
-        Center ///< Uniform scale cube at the gizmo origin (Scale tool only)
+        Center, ///< Uniform scale cube at the gizmo origin (Scale tool only)
+        RectLeft,
+        RectRight,
+        RectBottom,
+        RectTop,
+        RectBottomLeft,
+        RectBottomRight,
+        RectTopLeft,
+        RectTopRight,
+        RectCenter
     };
 
     EditorTools();
@@ -116,6 +140,27 @@ class EditorTools
     [[nodiscard]] DrawCallResult GetDrawCalls(std::shared_ptr<InxMaterial> material, uint64_t selectedObjId,
                                               Scene *activeScene, const glm::vec3 &cameraPos);
 
+    /// Resolve the object face that most directly faces the Scene camera.
+    /// Drawing, picking and dragging all consume this same authoritative frame.
+    [[nodiscard]] RectFrame ResolveRectFrame(GameObject *object, const glm::vec3 &cameraPos);
+    [[nodiscard]] const RectFrame &GetRectFrame() const
+    {
+        return m_rectFrame;
+    }
+    /// Supply an authoritative world-space frame for components whose visual
+    /// rectangle is not represented by a MeshRenderer (world UI, custom
+    /// editor surfaces, and future component-authored handles).
+    void SetRectFrameOverride(uint64_t objectId, const RectFrame &frame)
+    {
+        m_rectFrameOverrideObjectId = objectId;
+        m_rectFrameOverride = frame;
+    }
+    void ClearRectFrameOverride()
+    {
+        m_rectFrameOverrideObjectId = 0;
+        m_rectFrameOverride = {};
+    }
+
     // ====================================================================
     // Gizmo handle object IDs — used by both C++ and Python for identification
     // ====================================================================
@@ -128,6 +173,15 @@ class EditorTools
     static constexpr uint64_t XZ_PLANE_ID = EDITOR_TOOL_BASE_ID | 5;
     static constexpr uint64_t YZ_PLANE_ID = EDITOR_TOOL_BASE_ID | 6;
     static constexpr uint64_t CENTER_ID = EDITOR_TOOL_BASE_ID | 7;
+    static constexpr uint64_t RECT_LEFT_ID = EDITOR_TOOL_BASE_ID | 8;
+    static constexpr uint64_t RECT_RIGHT_ID = EDITOR_TOOL_BASE_ID | 9;
+    static constexpr uint64_t RECT_BOTTOM_ID = EDITOR_TOOL_BASE_ID | 10;
+    static constexpr uint64_t RECT_TOP_ID = EDITOR_TOOL_BASE_ID | 11;
+    static constexpr uint64_t RECT_BOTTOM_LEFT_ID = EDITOR_TOOL_BASE_ID | 12;
+    static constexpr uint64_t RECT_BOTTOM_RIGHT_ID = EDITOR_TOOL_BASE_ID | 13;
+    static constexpr uint64_t RECT_TOP_LEFT_ID = EDITOR_TOOL_BASE_ID | 14;
+    static constexpr uint64_t RECT_TOP_RIGHT_ID = EDITOR_TOOL_BASE_ID | 15;
+    static constexpr uint64_t RECT_CENTER_ID = EDITOR_TOOL_BASE_ID | 16;
 
     static constexpr float AXIS_LENGTH = 1.0f;
     /// Plane handles sit in the positive quadrant with one corner at the origin.
@@ -144,10 +198,14 @@ class EditorTools
     static constexpr int QUEUE_MAX = 32700;
 
   private:
+    uint64_t m_rectFrameOverrideObjectId = 0;
+    RectFrame m_rectFrameOverride{};
+
     // ---- Geometry builders ----
     void BuildTranslateHandleMeshes();
     void BuildRotateHandleMeshes();
     void BuildScaleHandleMeshes();
+    void BuildRectHandleMeshes();
     void RebuildActiveMeshes(); ///< Rebuild meshes for the current mode
 
     // Build a cylinder along +Y from y=0 to y=length
@@ -202,6 +260,11 @@ class EditorTools
     // Uniform scale cube at the origin (Scale tool)
     std::vector<Vertex> m_centerCubeVerts;
     std::vector<uint32_t> m_centerCubeInds;
+    std::array<std::vector<Vertex>, 8> m_rectHandleVerts;
+    std::array<std::vector<uint32_t>, 8> m_rectHandleInds;
+    std::array<std::vector<Vertex>, 4> m_rectMidpointVerts;
+    std::array<std::vector<uint32_t>, 4> m_rectMidpointInds;
+    RectFrame m_rectFrame;
 };
 
 } // namespace infernux

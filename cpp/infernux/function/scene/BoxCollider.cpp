@@ -22,7 +22,20 @@
 namespace infernux
 {
 
-INFERNUX_REGISTER_VALIDATED_COMPONENT("BoxCollider", BoxCollider)
+namespace
+{
+SemanticTypeDescriptor DescribeBoxCollider()
+{
+    auto type = Collider::DescribeSemanticType("BoxCollider", "infernux.component.box-collider", "Box Collider");
+    Collider::AddSemanticField(type, "size", "VEC3", nlohmann::json::array({1.0, 1.0, 1.0}), "box_collider.size",
+                               "box_collider.tooltip.size")["minimum"] = 0.001;
+    return type;
+}
+
+const bool registeredBoxCollider = ComponentFactory::Register(
+    "BoxCollider", [] { return std::make_unique<BoxCollider>(); }, BoxCollider::ValidateSerializedDocument,
+    BoxCollider::GetTypeConstraints(), DescribeBoxCollider);
+} // namespace
 
 void BoxCollider::SetSize(const glm::vec3 &size)
 {

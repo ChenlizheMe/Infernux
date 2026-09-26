@@ -4,15 +4,16 @@ engine objects and numpy arrays.
 
 Usage::
 
+    from Infernux import jit
     from Infernux.batch import batch_read, batch_write
 
     # Read world positions from a list of transforms → numpy (N, 3)
     positions = batch_read(transforms, 'position')
 
     # Run a JIT kernel
-    @njit(parallel=True)
+    @jit.compile
     def gravity(pos, dt):
-        for i in prange(len(pos)):
+        for i in range(len(pos)):
             pos[i, 1] -= 9.8 * dt
     gravity(positions, delta_time)
 

@@ -23,10 +23,22 @@ set(INFERNUX_OFFICIAL_PLUGIN_ARTIFACTS
     "${CMAKE_SOURCE_DIR}/python/Infernux/resources/infernux.mcp.inxpkg"
 )
 
+# The plugin builder imports the freshly linked native module.  On ELF hosts
+# the module's third-party shared libraries live in sibling target directories
+# in the build tree, so make that search path part of the build target itself;
+# callers should not have to export a machine-specific LD_LIBRARY_PATH.
+set(INFERNUX_OFFICIAL_PLUGIN_RUNTIME_ENV)
+if(UNIX AND NOT APPLE)
+    list(APPEND INFERNUX_OFFICIAL_PLUGIN_RUNTIME_ENV
+        "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:_Infernux>:$<TARGET_FILE_DIR:assimp>:$<TARGET_FILE_DIR:SDL3-shared>:$<TARGET_FILE_DIR:Jolt>"
+    )
+endif()
+
 add_custom_target(infernux_official_plugins ALL
     COMMAND ${CMAKE_COMMAND} -E env
         "PYTHONPATH=${CMAKE_SOURCE_DIR}/python"
         "INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        ${INFERNUX_OFFICIAL_PLUGIN_RUNTIME_ENV}
         "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/build_official_plugins.py"
         --source-root "${CMAKE_CURRENT_SOURCE_DIR}"

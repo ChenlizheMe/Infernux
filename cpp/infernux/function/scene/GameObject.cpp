@@ -286,7 +286,14 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
     if (newParent == m_parent)
         return;
 
+    // Reparenting must not transfer ownership across the offline-authoring
+    // boundary (including between two independently loaded Prefab contents).
+    if (newParent && m_scene && newParent->m_scene && m_scene != newParent->m_scene &&
+        (m_scene->IsPreview() || newParent->m_scene->IsPreview()))
+        throw std::invalid_argument("Cannot reparent across an isolated preview Scene boundary");
+
     bool wasActiveInHierarchy = IsActiveInHierarchy();
+    Scene *previousScene = m_scene;
 
     // Prevent circular reference
     if (newParent) {
@@ -297,6 +304,13 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
             ancestor = ancestor->m_parent;
         }
     }
+
+    auto prefabScope = [](GameObject *object) -> GameObject * {
+        while (object && !object->m_prefabRoot && !object->m_prefabSourceDocument)
+            object = object->m_parent;
+        return object;
+    };
+    const bool changesPrefabScope = prefabScope(m_parent) != prefabScope(newParent);
 
     // Cache world transform before reparenting
     glm::vec3 savedWorldPos;
@@ -320,6 +334,29 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
     if (!selfPtr) {
         // Should not happen unless object is in limbo state
         return;
+    }
+
+    if (changesPrefabScope) {
+        // Source IDs belong to one enclosing instance, not merely its asset
+        // GUID. Moving into another instance creates private outer members.
+        // Nested roots keep their own source namespace and all inner links.
+        auto retireOuterLinks = [](auto &&self, GameObject *object) -> void {
+            if (object->m_prefabRoot || object->m_prefabSourceDocument) {
+                if (object->m_prefabSourceDocument && object->m_prefabSourceDocument->contains("outer_source_id")) {
+                    auto baseline = *object->m_prefabSourceDocument;
+                    baseline.erase("outer_source_id");
+                    object->SetPrefabSourceDocument(baseline);
+                }
+                return;
+            }
+            object->m_prefabGuid.clear();
+            object->m_prefabSourceId = 0;
+            for (auto &component : object->m_components)
+                component->SetPrefabSourceID(0);
+            for (auto &child : object->m_children)
+                self(self, child.get());
+        };
+        retireOuterLinks(retireOuterLinks, this);
     }
 
     // 2. Attach to new owner
@@ -350,6 +387,12 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
 
     bool isActiveInHierarchy = IsActiveInHierarchy();
     HandleActiveStateChanged(wasActiveInHierarchy, isActiveInHierarchy);
+    // Child-to-child moves do not pass through Scene's root attach/detach
+    // methods. Publish the new ancestry/order for every hierarchy consumer.
+    if (m_scene)
+        m_scene->BumpStructureVersion();
+    if (previousScene && previousScene != m_scene)
+        previousScene->BumpStructureVersion();
 }
 
 std::vector<std::string> GameObject::GetAttachmentBlockers(const std::string &constraintTypeId,
@@ -631,8 +674,14 @@ Component *GameObject::AddPreparedPythonComponent(std::unique_ptr<Component> com
     Component *ptr = component.get();
     ptr->SetGameObject(this);
     auto *proxy = static_cast<PyComponentProxy *>(ptr);
+    const bool authoredEnabled = proxy->GetPyComponent().attr("enabled").cast<bool>();
     try {
         proxy->RebindPythonMirror();
+        // Rebind invokes the Python mirror hook; publish the authored Python
+        // enabled bit explicitly after that hook so a default native value
+        // cannot suppress Start/Update on the first Player frame.
+        ptr->m_enabled = authoredEnabled;
+        proxy->GetPyComponent().attr("enabled") = py::bool_(authoredEnabled);
     } catch (...) {
         proxy->InvalidatePythonMirrorBinding();
         ptr->SetGameObject(nullptr);
@@ -660,8 +709,22 @@ void GameObject::ActivatePreparedPythonComponent(Component *component)
     if (!m_scene || !IsActiveInHierarchy())
         return;
 
+    // Prepared records carry the authored enabled bit on the Python object.
+    // Reassert it at the lifecycle hand-off so binding hooks cannot leave a
+    // freshly loaded Player component disabled before Awake/Start.
+    auto *proxy = static_cast<PyComponentProxy *>(component);
+    const bool authoredEnabled = proxy->GetPyComponent().attr("enabled").cast<bool>();
+    component->m_enabled = authoredEnabled;
+    proxy->GetPyComponent().attr("enabled") = py::bool_(authoredEnabled);
     component->CallAwake();
-    if (m_scene->IsPlaying() && m_scene->HasStarted() && component->IsEnabled())
+    // Awake/binding hooks must not replace the authored activation state.
+    component->m_enabled = authoredEnabled;
+    proxy->GetPyComponent().attr("enabled") = py::bool_(authoredEnabled);
+    // Async Player scene publication can finish just before the scene's
+    // playing flag is raised.  HasStarted is the lifecycle safe-point that
+    // matters here; gate on it so the newly attached component cannot miss
+    // Start permanently.
+    if (m_scene->HasStarted() && component->IsEnabled())
         m_scene->QueueComponentStart(component);
 }
 
@@ -795,6 +858,7 @@ Component *GameObject::ReplacePythonComponent(Component *current, std::unique_pt
         // Preserve every externally observable native identity and lifecycle
         // bit. SetComponentID publishes the replacement in the registry before
         // the old proxy is destroyed, so handle resolution never has a gap.
+        auto *replacementProxy = static_cast<PyComponentProxy *>(replacement.get());
         replacement->SetGameObject(this);
         replacement->m_enabled = current->m_enabled;
         replacement->m_wasEnabled = current->m_wasEnabled;
@@ -804,7 +868,6 @@ Component *GameObject::ReplacePythonComponent(Component *current, std::unique_pt
         replacement->m_isBeingDestroyed = false;
         replacement->m_executionOrder = current->m_executionOrder;
         replacement->m_lifetimeGeneration = current->m_lifetimeGeneration;
-        auto *replacementProxy = static_cast<PyComponentProxy *>(replacement.get());
         try {
             replacementProxy->RebindPythonMirror();
         } catch (const std::exception &error) {
@@ -815,6 +878,7 @@ Component *GameObject::ReplacePythonComponent(Component *current, std::unique_pt
             return nullptr;
         }
         replacement->SetComponentID(current->GetComponentID());
+        replacement->SetPrefabSourceID(current->GetPrefabSourceID());
 
         Component *published = replacement.get();
         slot = std::move(replacement);
@@ -1028,6 +1092,44 @@ void GameObject::EditorUpdate(float deltaTime)
     }
 }
 
+const nlohmann::json &GameObject::GetPrefabSourceDocument() const
+{
+    static const nlohmann::json empty;
+    return m_prefabSourceDocument ? *m_prefabSourceDocument : empty;
+}
+
+void GameObject::SetPrefabSourceDocument(const nlohmann::json &document)
+{
+    if (document.is_null())
+        m_prefabSourceDocument.reset();
+    else if (document.is_object())
+        m_prefabSourceDocument = std::make_shared<const nlohmann::json>(document);
+    else
+        throw std::invalid_argument("Prefab source document must be an object or null");
+}
+
+void GameObject::SetModelSource(std::string guid, std::vector<std::string> path)
+{
+    if (guid.empty() && !path.empty())
+        throw std::invalid_argument("Model source path requires a source GUID");
+    for (const auto &part : path)
+        if (part.empty())
+            throw std::invalid_argument("Model source path must contain non-empty names");
+    m_modelSourceGuid = std::move(guid);
+    m_modelSourcePath = std::move(path);
+}
+
+void GameObject::ValidateModelSourceDocument(const nlohmann::json &document)
+{
+    if (!document.is_object() || document.size() != 2 || !document.contains("guid") || !document["guid"].is_string() ||
+        document["guid"].get_ref<const std::string &>().empty() || !document.contains("path") ||
+        !document["path"].is_array())
+        throw std::invalid_argument("GameObject.model_source requires a non-empty guid and a path array");
+    for (const auto &part : document["path"])
+        if (!part.is_string() || part.get_ref<const std::string &>().empty())
+            throw std::invalid_argument("GameObject.model_source.path must contain non-empty names");
+}
+
 nlohmann::json GameObject::SerializeDocument() const
 {
     json j;
@@ -1037,13 +1139,21 @@ nlohmann::json GameObject::SerializeDocument() const
     j["is_static"] = m_isStatic;
     j["tag"] = m_tag;
     j["layer"] = m_layer;
+    if (!m_modelSourceGuid.empty())
+        j["model_source"] = {{"guid", m_modelSourceGuid}, {"path", m_modelSourcePath}};
 
     // Prefab instance tracking (only serialize when set)
+    if (m_prefabSourceDocument && m_prefabRoot && !m_prefabGuid.empty()) {
+        j["prefab_source"] = *m_prefabSourceDocument;
+    }
     if (!m_prefabGuid.empty()) {
         j["prefab_guid"] = m_prefabGuid;
     }
     if (m_prefabRoot) {
         j["prefab_root"] = true;
+    }
+    if (m_prefabSourceId != 0) {
+        j["prefab_source_id"] = m_prefabSourceId;
     }
 
     j["transform"] = m_transform.SerializeDocument();
@@ -1103,6 +1213,7 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
         std::unordered_set<uint64_t> objectIds;
         std::unordered_set<uint64_t> componentIds;
         std::unordered_map<uint64_t, uint64_t> stagedToCommittedObjectId;
+        std::unordered_map<uint64_t, uint64_t> nativeComponentIdRemap;
         uint64_t rootObjectId = m_id;
         uint64_t rootTransformId = m_transform.GetComponentID();
 
@@ -1135,6 +1246,8 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
                     : (isRoot ? m_transform.GetComponentID() : object->m_transform.GetComponentID());
             if (!componentIds.insert(committedTransformId).second)
                 throw std::invalid_argument("ObjectGraph contains a duplicate component_id");
+            if (!preserveDocumentIds && transformDocument.contains("component_id"))
+                nativeComponentIdRemap.emplace(transformDocument["component_id"].get<uint64_t>(), committedTransformId);
             if (isRoot)
                 rootTransformId = committedTransformId;
             else
@@ -1158,6 +1271,8 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
                     preserveDocumentIds ? record.componentId : stagedComponent->GetComponentID();
                 if (!componentIds.insert(componentId).second)
                     throw std::invalid_argument("ObjectGraph contains a duplicate component_id");
+                if (!preserveDocumentIds)
+                    nativeComponentIdRemap.emplace(record.componentId, componentId);
                 componentAssignments.push_back({stagedComponent, componentId});
             }
             if (nativeComponentIndex != object->m_components.size())
@@ -1170,6 +1285,13 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
                 collectAssignments(object->m_children[index].get(), childDocuments[index], false);
         };
         collectAssignments(stagedRoot.get(), j, true);
+
+        if (!preserveDocumentIds) {
+            for (const auto &[component, componentId] : componentAssignments) {
+                (void)componentId;
+                component->RemapComponentReferences(nativeComponentIdRemap);
+            }
+        }
 
         if (targetScene) {
             for (const uint64_t objectId : objectIds) {
@@ -1200,6 +1322,8 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
             if (id == stagedToCommittedObjectId.end())
                 throw std::logic_error("pending Python component targets an unknown staged GameObject");
             pending.gameObjectId = id->second;
+            if (!preserveDocumentIds)
+                pending.fieldsDocument["__component_id__"] = Component::ReserveDocumentID();
         }
 
         Component::ReserveRegistry(Component::GetInstanceCount() + componentAssignments.size());
@@ -1258,6 +1382,10 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
         m_layer = stagedRoot->m_layer;
         m_prefabGuid = std::move(stagedRoot->m_prefabGuid);
         m_prefabRoot = stagedRoot->m_prefabRoot;
+        m_prefabSourceId = stagedRoot->m_prefabSourceId;
+        m_prefabSourceDocument = std::move(stagedRoot->m_prefabSourceDocument);
+        m_modelSourceGuid = std::move(stagedRoot->m_modelSourceGuid);
+        m_modelSourcePath = std::move(stagedRoot->m_modelSourcePath);
         m_parent = targetParent;
         m_scene = targetScene;
 
@@ -1303,6 +1431,18 @@ void GameObject::CollectAllDescendants(std::vector<GameObject *> &out) const
 
 std::unique_ptr<GameObject> GameObject::Clone(Scene *scene) const
 {
+    std::unordered_map<uint64_t, uint64_t> componentIdRemap;
+    std::vector<Component *> clonedComponents;
+    auto clone = CloneGraph(scene, componentIdRemap, clonedComponents);
+    for (Component *component : clonedComponents)
+        component->RemapComponentReferences(componentIdRemap);
+    return clone;
+}
+
+std::unique_ptr<GameObject> GameObject::CloneGraph(Scene *scene,
+                                                   std::unordered_map<uint64_t, uint64_t> &componentIdRemap,
+                                                   std::vector<Component *> &clonedComponents) const
+{
     auto obj = std::make_unique<GameObject>(m_name); // fresh ID
     obj->m_scene = scene;
     obj->m_active = m_active;
@@ -1311,9 +1451,15 @@ std::unique_ptr<GameObject> GameObject::Clone(Scene *scene) const
     obj->m_layer = m_layer;
     obj->m_prefabGuid = m_prefabGuid;
     obj->m_prefabRoot = m_prefabRoot;
+    obj->m_prefabSourceId = m_prefabSourceId;
+    obj->m_prefabSourceDocument = m_prefabSourceDocument;
+    obj->m_modelSourceGuid = m_modelSourceGuid;
+    obj->m_modelSourcePath = m_modelSourcePath;
 
     // Clone transform data (ECS store copy, no JSON)
     m_transform.CloneDataTo(obj->m_transform);
+    componentIdRemap.emplace(m_transform.GetComponentID(), obj->m_transform.GetComponentID());
+    clonedComponents.push_back(&obj->m_transform);
 
     // Clone components
     for (size_t componentIndex = 0; componentIndex < m_components.size(); ++componentIndex) {
@@ -1331,12 +1477,16 @@ std::unique_ptr<GameObject> GameObject::Clone(Scene *scene) const
                 pending.executionOrder = proxy->GetExecutionOrder();
                 pending.componentIndex = componentIndex;
                 pending.fieldsDocument = proxy->SerializePyFieldsDocument();
+                pending.fieldsDocument["__component_id__"] = Component::ReserveDocumentID();
                 scene->AddPendingPyComponent(std::move(pending));
             }
         } else {
             auto clonedComp = comp->Clone();
             if (clonedComp) {
+                clonedComp->SetPrefabSourceID(comp->GetPrefabSourceID());
                 clonedComp->SetGameObject(obj.get());
+                componentIdRemap.emplace(comp->GetComponentID(), clonedComp->GetComponentID());
+                clonedComponents.push_back(clonedComp.get());
                 obj->m_components.push_back(std::move(clonedComp));
             }
         }
@@ -1344,7 +1494,7 @@ std::unique_ptr<GameObject> GameObject::Clone(Scene *scene) const
 
     // Recursively clone children
     for (const auto &child : m_children) {
-        auto clonedChild = child->Clone(scene);
+        auto clonedChild = child->CloneGraph(scene, componentIdRemap, clonedComponents);
         if (clonedChild) {
             obj->AttachChild(std::move(clonedChild));
         }

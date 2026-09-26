@@ -5,7 +5,7 @@ Example::
     from Infernux.engine.prefab_manager import save_prefab, instantiate_prefab
 
     save_prefab(game_object, "/path/to/my.prefab")
-    go = instantiate_prefab(file_path="/path/to/my.prefab")
+    go = instantiate_prefab(guid="registered-prefab-guid", asset_database=database)
 """
 
 from __future__ import annotations
@@ -44,8 +44,9 @@ def instantiate_prefab(
     """Instantiate a prefab into the active scene.
 
     Args:
-        file_path: Path to the ``.prefab`` file.
-        guid: Asset GUID (alternative to *file_path*).
+        file_path: Editor-selected path, immediately resolved through
+            ``asset_database`` when one is supplied.
+        guid: Registered asset GUID and authoritative prefab identity.
         parent: Optional parent ``GameObject``.
         asset_database: Optional C++ ``AssetDatabase``.
 

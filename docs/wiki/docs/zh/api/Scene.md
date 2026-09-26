@@ -17,6 +17,7 @@
 | 名称 | 类型 | 描述 |
 |------|------|------|
 | name | `str` | 场景名称。 |
+| is_preview | `bool` |  *(只读)* |
 | structure_version | `int` |  *(只读)* |
 | temporal_discontinuity_revision | `int` |  *(只读)* |
 | world_id | `int` |  *(只读)* |

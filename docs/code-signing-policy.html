@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<!-- The English policy is authoritative; keep the required SignPath wording visible in both language sections. -->
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="The Infernux code signing policy: team roles, artifact boundaries, release approval, privacy, and removal.">
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <link rel="canonical" href="https://infernux-engine.com/code-signing-policy.html">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Infernux · 熔炉">
+    <meta property="og:title" content="Infernux code signing policy">
+    <meta property="og:description" content="Policy for official Infernux release signatures provided through SignPath Foundation.">
+    <meta property="og:url" content="https://infernux-engine.com/code-signing-policy.html">
+    <title>Infernux code signing policy</title>
+    <link rel="icon" type="image/png" href="assets/logo.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="assets/infernux-apple-touch-icon.png">
+    <link rel="manifest" href="site.webmanifest">
+    <link rel="stylesheet" href="css/fonts.css?v=1">
+    <link rel="stylesheet" href="css/style.css?v=20">
+    <link rel="stylesheet" href="css/docs-search.css?v=3">
+    <link rel="stylesheet" href="css/mission.css?v=2">
+    <link rel="stylesheet" href="css/start.css?v=3">
+    <link rel="stylesheet" href="css/fontawesome-subset.css?v=6.4.0">
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="site-header" role="banner">
+        <div class="mission-ribbon" aria-label="Engine identity strip">
+            <div class="mission-ribbon-inner">
+                <span class="mission-kicker" data-i18n="brand.ribbonKicker">Open-source engine · 0.4.0</span>
+                <span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span>
+                <span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span>
+            </div>
+        </div>
+        <nav class="navbar" aria-label="Primary navigation">
+            <div class="nav-container">
+                <a href="index.html" class="nav-logo">
+                    <span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
+                    <span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span>
+                </a>
+                <div class="nav-links" id="primary-navigation">
+                    <a href="start.html" class="nav-priority" data-i18n="nav.start">Start</a>
+                    <a href="learn.html" data-i18n="nav.learn">Learn</a>
+                    <a href="wiki/site/en/api/index.html" data-href-en="wiki/site/en/api/index.html" data-href-zh="wiki/site/zh/api/index.html" data-i18n="nav.api">API</a>
+                    <a href="roadmap.html" data-i18n="nav.roadmap">Roadmap</a>
+                    <a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a>
+                    <a href="download.html" data-i18n="nav.download">Download</a>
+                    <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a>
+                </div>
+                <div class="nav-right">
+                    <button class="theme-toggle" type="button" data-site-action="theme" title="Toggle theme" aria-label="Switch color theme" aria-pressed="false"><i class="fas fa-moon" id="theme-icon" aria-hidden="true"></i></button>
+                    <button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button>
+                    <button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button>
+                </div>
+            </div>
+        </nav>
+    </header>
+
+    <main class="page-shell start-page" id="main-content">
+        <div class="container">
+            <article data-page-language="en">
+                <header class="start-heading">
+                    <span class="mini-tag">Trust · Releases · Privacy</span>
+                    <h1>Code signing policy</h1>
+                    <p>This policy covers official Infernux release artifacts published from the <a href="https://github.com/ChenlizheMe/Infernux">ChenlizheMe/Infernux</a> repository. It does not cover community plugins, downstream builds, or games exported by engine users.</p>
+                    <p><strong>Free code signing provided by <a href="https://signpath.io/">SignPath.io</a>, certificate by <a href="https://signpath.org/">SignPath Foundation</a>.</strong></p>
+                </header>
+
+                <section class="start-section">
+                    <div class="start-step">01</div>
+                    <div><h2>Team roles</h2><ul><li>Committers and reviewers: <a href="https://github.com/ChenlizheMe">Lizhe Chen (@ChenlizheMe)</a></li><li>Approvers: <a href="https://github.com/ChenlizheMe">Lizhe Chen (@ChenlizheMe)</a></li></ul><p>Changes from people without commit access require maintainer review. Every release signing request requires a separate manual approval in SignPath.</p></div>
+                </section>
+
+                <section class="start-section">
+                    <div class="start-step">02</div>
+                    <div><h2>What may be signed</h2><p>Only official Infernux executables and installers built from this repository by the linked, origin-verifiable GitHub Actions build may receive the release signature. Build definitions are versioned with the source. Signed files identify the product as Infernux and use one consistent product version throughout a build.</p><p>Upstream open-source binaries may be included in a package, but are not re-signed as Infernux software. Test signatures are not published as trusted release signatures.</p></div>
+                </section>
+
+                <section class="start-section">
+                    <div class="start-step">03</div>
+                    <div><h2>Network and privacy disclosure</h2><p>The engine and editor do not upload project files, scenes, scripts, assets, or gameplay content to Infernux services by default.</p><p>Automatic update checks are enabled by default and can be disabled in Hub settings. Existing disabled preferences are preserved. The installed InfernuxHub requests the public Hub update catalog and release notices from <code>infernux-engine.com</code> at startup when checks are enabled. A manual update check requests the catalog. If the catalog cannot be reached, Hub may request the same document from <code>raw.githubusercontent.com</code>. Installing a Hub update requires confirmation. The Hub requests public release metadata from PyPI and GitHub when the user opens the engine installation workflow. Those services receive ordinary HTTPS request metadata, such as the client's IP address, user agent, and requested URL; no project content is included. See the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub Privacy Statement</a> and <a href="https://policies.python.org/pypi.org/Privacy-Notice/">PyPI privacy notice</a>.</p><p>Engine, build-support, and plugin downloads follow a user-selected install or update. Online documentation, network-capable plugins, MCP connections, exported games, and third-party software operate under their own configuration and privacy policies.</p></div>
+                </section>
+
+                <section class="start-section">
+                    <div class="start-step">04</div>
+                    <div><h2>Installation and removal</h2><p>Installing InfernuxHub is an explicit user action. It creates application files and a per-user uninstall entry; managed engines and build support are created only when the user installs them. On Windows, remove InfernuxHub through <strong>Settings &gt; Apps &gt; Installed apps</strong>. On Windows or Linux, the Hub can also be started with <code>--uninstall</code>. Projects and shared project records are preserved.</p></div>
+                </section>
+
+                <section class="start-next">
+                    <h2>Report a concern</h2>
+                    <a href="mailto:chenlizheme@outlook.com">Contact the Infernux maintainer</a>
+                    <a href="https://github.com/ChenlizheMe/Infernux/security/advisories/new">Submit a private security report</a>
+                    <a href="mailto:support@signpath.io">Report a certificate concern to SignPath</a>
+                    <a href="https://github.com/ChenlizheMe/Infernux/blob/master/CODE_SIGNING_POLICY.md">Read the repository policy</a>
+                    <p>Last updated: 2026-09-12.</p>
+                </section>
+            </article>
+
+            <article data-page-language="zh" lang="zh-CN" hidden>
+                <header class="start-heading">
+                    <span class="mini-tag">信任 · 发布 · 隐私</span>
+                    <h1>代码签名策略（Code signing policy）</h1>
+                    <p>本策略覆盖从 <a href="https://github.com/ChenlizheMe/Infernux">ChenlizheMe/Infernux</a> 仓库发布的 Infernux 官方制品，不覆盖社区插件、下游构建或用户使用引擎导出的游戏。</p>
+                    <p><strong>Free code signing provided by <a href="https://signpath.io/">SignPath.io</a>, certificate by <a href="https://signpath.org/">SignPath Foundation</a>.</strong></p>
+                </header>
+
+                <section class="start-section">
+                    <div class="start-step">01</div>
+                    <div><h2>团队职责</h2><ul><li>提交者及审核者（Committers and reviewers）：<a href="https://github.com/ChenlizheMe">Lizhe Chen（@ChenlizheMe）</a></li><li>签名批准者（Approvers）：<a href="https://github.com/ChenlizheMe">Lizhe Chen（@ChenlizheMe）</a></li></ul><p>没有提交权限的人所提交的改动，必须由维护者审核后才能合并。每一个发布签名请求都需要在 SignPath 中单独进行人工批准。</p></div>
+                </section>
+
+                <section class="start-section">
+                    <div class="start-step">02</div>
+                    <div><h2>可以签名的内容</h2><p>只有由已关联、可验证来源的 GitHub Actions 流程从本仓库构建的 Infernux 官方可执行文件和安装器，才可以获得发布签名。构建定义与源码一同接受版本控制。签名文件必须将产品标识为 Infernux，并在一次构建中使用一致的产品版本。</p><p>软件包可以携带上游开源二进制文件，但不会将其重新签名成 Infernux 软件。测试签名不会作为受信任的发布签名分发。</p></div>
+                </section>
+
+                <section class="start-section">
+                    <div class="start-step">03</div>
+                    <div><h2>联网与隐私说明</h2><p>引擎和编辑器默认不会向 Infernux 服务上传项目文件、场景、脚本、资产或玩法内容。</p><p>自动检查更新默认开启，可在 Hub 设置中关闭；用户已有的关闭选择会被保留。启用检查时，安装版 InfernuxHub 会在启动时向 <code>infernux-engine.com</code> 请求公开的 Hub 更新目录与发布通知；手动检查更新会请求更新目录。若目录无法访问，Hub 可以从 <code>raw.githubusercontent.com</code> 请求同一份文档。安装 Hub 更新前仍需用户确认。用户打开引擎安装流程时，Hub 还会向 PyPI 和 GitHub 请求公开的 Release 元数据。这些服务会收到普通 HTTPS 请求元数据，例如客户端 IP 地址、User-Agent 和所请求的网址，但不包含项目内容。详见 <a href="https://docs.github.com/zh/site-policy/privacy-policies/github-general-privacy-statement">GitHub 隐私声明</a>与 <a href="https://policies.python.org/pypi.org/Privacy-Notice/">PyPI 隐私声明</a>。</p><p>引擎、构建支持和插件只会在用户选择对应安装或更新操作后下载。在线文档、能够联网的插件、MCP 连接、导出的游戏及第三方软件遵循各自的配置和隐私策略。</p></div>
+                </section>
+
+                <section class="start-section">
+                    <div class="start-step">04</div>
+                    <div><h2>安装与卸载</h2><p>安装 InfernuxHub 是用户显式发起的操作。它会创建应用文件和当前用户的卸载入口；托管引擎与构建支持只在用户选择安装时创建。Windows 用户可以从<strong>设置 &gt; 应用 &gt; 已安装的应用</strong>卸载；Windows 和 Linux 也可以使用 <code>--uninstall</code> 启动 Hub。项目和共享项目记录会被保留。</p></div>
+                </section>
+
+                <section class="start-next">
+                    <h2>报告问题</h2>
+                    <a href="mailto:chenlizheme@outlook.com">联系 Infernux 维护者</a>
+                    <a href="https://github.com/ChenlizheMe/Infernux/security/advisories/new">私密提交安全问题</a>
+                    <a href="mailto:support@signpath.io">向 SignPath 报告证书问题</a>
+                    <a href="https://github.com/ChenlizheMe/Infernux/blob/master/CODE_SIGNING_POLICY-zh.md">阅读仓库中的策略</a>
+                    <p>最后更新：2026-09-12。</p>
+                </section>
+            </article>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Source fully open, architecture written down, and when something breaks you can chase it all the way to the bottom.</p></div>
+                <div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="start.html" data-i18n="nav.start">Start</a><a href="learn.html" data-i18n="nav.learn">Learn</a><a href="download.html" data-i18n="nav.download">Download</a><a href="code-signing-policy.html" aria-current="page">Code signing policy</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div>
+            </div>
+            <div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div>
+        </div>
+    </footer>
+    <script src="js/i18n.js?v=19"></script>
+    <script src="js/main.js?v=15"></script>
+    <script src="js/docs-search.js?v=6"></script>
+    <script src="js/bilingual-page.js?v=1"></script>
+</body>
+</html>

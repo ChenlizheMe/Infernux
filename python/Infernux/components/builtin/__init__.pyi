@@ -17,6 +17,8 @@ from .rigidbody import (
     CollisionDetectionMode as CollisionDetectionMode,
     RigidbodyInterpolation as RigidbodyInterpolation,
 )
+from .hinge_joint import HingeJoint as HingeJoint
+from .slider_joint import SliderJoint as SliderJoint
 from .audio_source import AudioSource as AudioSource
 from .audio_listener import AudioListener as AudioListener
 from .sprite_renderer import SpriteRenderer as SpriteRenderer
@@ -38,6 +40,8 @@ __all__ = [
     "RigidbodyConstraints",
     "CollisionDetectionMode",
     "RigidbodyInterpolation",
+    "HingeJoint",
+    "SliderJoint",
     "AudioSource",
     "AudioListener",
     "SpriteRenderer",

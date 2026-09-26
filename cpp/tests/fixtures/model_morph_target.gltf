@@ -1,0 +1,51 @@
+{
+  "asset": { "version": "2.0", "generator": "Infernux morph import fixture" },
+  "buffers": [
+    {
+      "byteLength": 80,
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA+AAAAAAAAAAAAAAAAAAABAAIAAAA="
+    }
+  ],
+  "bufferViews": [
+    { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 36, "byteLength": 36, "target": 34962 },
+    { "buffer": 0, "byteOffset": 72, "byteLength": 6, "target": 34963 }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "min": [0.0, 0.0, 0.0],
+      "max": [1.0, 1.0, 0.0]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "min": [0.0, 0.0, 0.0],
+      "max": [0.0, 0.0, 0.25]
+    },
+    { "bufferView": 2, "componentType": 5123, "count": 3, "type": "SCALAR" }
+  ],
+  "meshes": [
+    {
+      "name": "Face",
+      "weights": [0.4],
+      "extras": { "targetNames": ["Smile"] },
+      "primitives": [
+        {
+          "attributes": { "POSITION": 0 },
+          "indices": 2,
+          "mode": 4,
+          "targets": [{ "POSITION": 1 }]
+        }
+      ]
+    }
+  ],
+  "nodes": [{ "name": "Face", "mesh": 0 }],
+  "scenes": [{ "nodes": [0] }],
+  "scene": 0
+}

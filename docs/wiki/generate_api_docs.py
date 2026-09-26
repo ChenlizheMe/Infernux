@@ -1611,10 +1611,14 @@ PUBLIC_API_FUNCTIONS = {
     "add_component_menu",
     "execute_in_edit_mode",
     "disallow_multiple",
-    # ── JIT ──
-    "njit",
-    "warmup",
     # help_url, hide_field, icon → too trivial for standalone pages
+}
+
+# Function names are not globally unique. Keep module-specific APIs qualified so
+# similarly named functions (for example ``Infernux.compute.statistics``) cannot
+# silently share and overwrite a generated page.
+PUBLIC_API_FUNCTIONS_BY_MODULE = {
+    "Infernux.jit": {"compile", "statistics", "warmup"},
 }
 
 
@@ -1724,7 +1728,12 @@ def discover_modules(*, include_all: bool = False) -> Dict[str, ModuleInfo]:
                 mod.classes.append(ci)
 
         for fi in parsed.functions:
-            if not include_all and fi.name not in PUBLIC_API_FUNCTIONS:
+            module_functions = PUBLIC_API_FUNCTIONS_BY_MODULE.get(mod_name, set())
+            if (
+                not include_all
+                and fi.name not in PUBLIC_API_FUNCTIONS
+                and fi.name not in module_functions
+            ):
                 continue
             existing_names = {f.name for f in mod.functions}
             if fi.name not in existing_names:

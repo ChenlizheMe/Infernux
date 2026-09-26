@@ -54,7 +54,7 @@ endif()
 # List of known library directories to search
 # On Windows these use per-config subdirectories; on single-config
 # generators (Ninja) the libraries sit directly in the directory.
-if(WIN32)
+if(WIN32 AND NOT "@CMAKE_CONFIGURATION_TYPES@" STREQUAL "")
     set(LIB_SEARCH_DIRS
         "${BUILD_DIR}/external/${_CFG}"
         "${BUILD_DIR}/external/assimp/bin/${_CFG}"

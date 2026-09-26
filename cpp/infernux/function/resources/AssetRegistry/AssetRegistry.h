@@ -9,7 +9,9 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <glm/vec3.hpp>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -22,9 +24,11 @@ namespace infernux
 
 // Forward declarations — avoid pulling in heavy headers
 class InxMaterial;
+class InxMesh;
 class InxTexture;
 class AssetRegistry;
 struct TextureCpuData;
+enum class MeshGeometryView : uint8_t;
 
 struct AssetResidencyRecord
 {
@@ -209,6 +213,24 @@ class AssetRegistry
     /// Reload an already-loaded asset in-place from disk.
     bool ReloadAsset(const std::string &guid);
 
+    /// Publish position edits to a loaded mesh without importing or recooking.
+    /// Preserves its shared instance and topology; optional normals publish atomically.
+    void UpdateMeshPositions(const std::string &guid, size_t first, const std::vector<glm::vec3> &positions,
+                             const std::optional<std::vector<glm::vec3>> &normals = std::nullopt);
+
+    /// Create a transient Mesh in the same versioned registry used by imported assets.
+    /// Runtime Mesh identities exist for this engine lifetime and are not serialized as project assets.
+    [[nodiscard]] std::shared_ptr<InxMesh> CreateRuntimeMesh(const std::string &name);
+
+    /// Copy a loaded Mesh into an independently versioned transient Mesh.
+    [[nodiscard]] std::shared_ptr<InxMesh> CloneRuntimeMesh(const std::string &guid, const std::string &name);
+
+    /// Destroy a transient Mesh and invalidate every live renderer reference.
+    void DestroyRuntimeMesh(const std::string &guid);
+
+    /// Atomically replace a Mesh payload while preserving its registered identity.
+    void PublishMesh(const std::string &guid, InxMesh replacement);
+
     /// Evict the instance from cache (next Load will re-read from disk).
     void InvalidateAsset(const std::string &guid);
 
@@ -247,6 +269,16 @@ class AssetRegistry
     [[nodiscard]] bool IsLoaded(const std::string &guid) const;
     [[nodiscard]] ResourceType GetAssetType(const std::string &guid) const;
     [[nodiscard]] uint64_t GetAssetVersion(const std::string &guid) const;
+    /// Publish one immutable GPU geometry view for an exact asset generation.
+    /// Hierarchical models require both merged and node-local views before CPU
+    /// streams may be released.
+    void MarkMeshGpuViewResident(const std::string &guid, uint64_t runtimeVersion, MeshGeometryView view);
+    [[nodiscard]] uint8_t GetMeshGpuViewResidencyMask(const std::string &guid, uint64_t runtimeVersion) const;
+    [[nodiscard]] bool IsMeshGpuResidencyRequired(const std::string &guid, uint64_t runtimeVersion) const;
+    /// Player-only post-upload transition for non-readable Mesh assets. The
+    /// runtime version is not changed because published GPU buffers retain
+    /// that exact identity.
+    size_t ReleaseMeshCpuGeometry(const std::string &guid, uint64_t runtimeVersion);
     [[nodiscard]] std::string GetAssetRuntimeTypeName(const std::string &guid) const;
     [[nodiscard]] std::vector<std::string> GetAllLoadedGuids() const;
     [[nodiscard]] AssetResidencyRecord GetAssetResidency(const std::string &guid) const;
@@ -306,6 +338,12 @@ class AssetRegistry
     AssetEntryMap m_loadedAssets; // GUID → live instance
     std::unordered_map<std::string, uint64_t> m_assetMutationGenerations;
     std::unordered_map<std::string, uint64_t> m_assetRuntimeVersions;
+    struct MeshGpuViewResidency
+    {
+        uint64_t runtimeVersion = 0;
+        uint8_t mask = 0;
+    };
+    std::unordered_map<std::string, MeshGpuViewResidency> m_meshGpuViewResidency;
     std::unordered_map<std::string, ResourceType> m_assetRuntimeTypes;
     std::vector<std::weak_ptr<AssetLoadTicket>> m_pendingLoads;
     std::vector<std::weak_ptr<TextureUploadStagingTicket>> m_pendingTextureStagingLoads;
@@ -315,6 +353,7 @@ class AssetRegistry
     size_t m_totalCpuBytes = 0;
     size_t m_cpuBudgetBytes = 512ULL * 1024ULL * 1024ULL;
     uint64_t m_cpuEvictionCount = 0;
+    uint64_t m_runtimeMeshSerial = 0;
 };
 
 // =============================================================================

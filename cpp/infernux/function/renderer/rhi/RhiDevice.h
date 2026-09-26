@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <shared_mutex>
 #include <string_view>
@@ -34,6 +35,9 @@ enum class DeviceCapability : uint8_t
     TimelineSemaphore,
     Synchronization2,
     Submit2,
+    ShaderInt16,
+    ShaderInt64,
+    ShaderFloat64,
 };
 
 enum class DeviceCapabilityDiagnosticCode : uint8_t
@@ -98,6 +102,11 @@ struct DeviceCapabilityState final
     DeviceCapabilityStatus timelineSemaphore;
     DeviceCapabilityStatus synchronization2;
     DeviceCapabilityStatus submit2;
+    // Arithmetic capabilities only: neither 16-bit storage nor 64-bit atomics
+    // are implied by these shader scalar types.
+    DeviceCapabilityStatus shaderInt16;
+    DeviceCapabilityStatus shaderInt64;
+    DeviceCapabilityStatus shaderFloat64;
 
     [[nodiscard]] constexpr DeviceCapabilityStatus Get(DeviceCapability capability) const noexcept
     {
@@ -112,17 +121,23 @@ struct DeviceCapabilityState final
             return synchronization2;
         case DeviceCapability::Submit2:
             return submit2;
+        case DeviceCapability::ShaderInt16:
+            return shaderInt16;
+        case DeviceCapability::ShaderInt64:
+            return shaderInt64;
+        case DeviceCapability::ShaderFloat64:
+            return shaderFloat64;
         }
         return {};
     }
 };
 
-/// Stable shader-ABI fingerprint for the capabilities that affect descriptor
-/// set construction. It is intentionally small and backend-neutral: a shader
-/// cache must not reuse a program built for a different enabled contract.
+/// Stable shader-ABI key for enabled descriptor and arithmetic capabilities.
+/// The versioned prefix leaves the low byte clear for distinct feature bits;
+/// physical support alone does not change the compiled shader contract.
 [[nodiscard]] constexpr uint64_t ComputeDeviceShaderContractKey(const DeviceCapabilityState &state) noexcept
 {
-    uint64_t key = 0x494e585348414445ull; // "INXSHADER"
+    uint64_t key = 0x494e585348020000ull; // INXSH, contract version 2
     const bool bindless = state.bindless.IsEnabled();
     const bool dynamicRendering = state.dynamicRendering.IsEnabled();
     const bool synchronization2 = state.synchronization2.IsEnabled();
@@ -131,6 +146,9 @@ struct DeviceCapabilityState final
     key |= static_cast<uint64_t>(dynamicRendering) << 1u;
     key |= static_cast<uint64_t>(synchronization2) << 2u;
     key |= static_cast<uint64_t>(submit2) << 3u;
+    key |= static_cast<uint64_t>(state.shaderInt16.IsEnabled()) << 4u;
+    key |= static_cast<uint64_t>(state.shaderInt64.IsEnabled()) << 5u;
+    key |= static_cast<uint64_t>(state.shaderFloat64.IsEnabled()) << 6u;
     return key;
 }
 
@@ -141,6 +159,9 @@ struct DeviceCapabilityRequest final
     bool timelineSemaphore = false;
     bool synchronization2 = false;
     bool submit2 = false;
+    bool shaderInt16 = false;
+    bool shaderInt64 = false;
+    bool shaderFloat64 = false;
 };
 
 struct DeviceCapabilityCheck final
@@ -190,10 +211,13 @@ struct DeviceCapabilityCheck final
             return {DeviceCapabilityDiagnosticCode::NotEnabled, DeviceCapability::DescriptorIndexing};
     }
     const DeviceCapability requested[] = {DeviceCapability::DynamicRendering, DeviceCapability::TimelineSemaphore,
-                                          DeviceCapability::Synchronization2, DeviceCapability::Submit2};
+                                          DeviceCapability::Synchronization2, DeviceCapability::Submit2,
+                                          DeviceCapability::ShaderInt16,      DeviceCapability::ShaderInt64,
+                                          DeviceCapability::ShaderFloat64};
     const bool enabled[] = {request.dynamicRendering, request.timelineSemaphore, request.synchronization2,
-                            request.submit2};
-    for (size_t i = 0; i < 4; ++i) {
+                            request.submit2,          request.shaderInt16,       request.shaderInt64,
+                            request.shaderFloat64};
+    for (size_t i = 0; i < std::size(requested); ++i) {
         if (enabled[i]) {
             const auto result = CheckDeviceCapability(state, requested[i]);
             if (!result.IsSupported())
@@ -272,6 +296,21 @@ class Device
     [[nodiscard]] virtual ComputePipelineHandle CreateComputePipeline(const ComputePipelineDesc &desc) = 0;
 
     virtual bool WriteBuffer(BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize) = 0;
+    /// Borrow a host-visible range; this neither copies nor waits for GPU work.
+    /// Caller must retain the buffer, complete conflicting submissions before
+    /// mapping, and call UnmapBuffer with the same range/access before submitting
+    /// new work or releasing the buffer. Read/ReadWrite require Readback memory;
+    /// Write supports Upload and Readback memory. DeviceLocal cannot be mapped.
+    /// A null result means unsupported mapping or invalid handle/range/access.
+    [[nodiscard]] virtual void *MapBuffer(BufferHandle, uint64_t, uint64_t, BufferMapAccess)
+    {
+        return nullptr;
+    }
+    /// Publish CPU writes and end the borrow. Does not release the resource.
+    [[nodiscard]] virtual bool UnmapBuffer(BufferHandle, uint64_t, uint64_t, BufferMapAccess)
+    {
+        return false;
+    }
     /// Copy bytes from a host-visible readback buffer after the submission
     /// that populated it has completed. Device-local and upload buffers are
     /// intentionally rejected by concrete backends.

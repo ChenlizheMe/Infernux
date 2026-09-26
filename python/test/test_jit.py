@@ -1,6 +1,8 @@
-"""Tests for Infernux.jit public helpers and startup self-repair."""
+"""Tests for CPU HIR compilation and adaptive serial/parallel execution."""
 
 from __future__ import annotations
+
+import inspect
 
 import pytest
 import numpy as np
@@ -9,75 +11,550 @@ import Infernux.jit as jit
 import Infernux._jit_kernels as jit_kernels
 
 
-class TestEnsureJitRuntime:
-    def test_no_install_when_already_available(self, monkeypatch):
-        monkeypatch.setattr(jit, "JIT_AVAILABLE", True)
+@pytest.fixture(autouse=True)
+def jit_project_cache(tmp_path):
+    from Infernux.engine.project_context import using_project_root
 
-        def _unexpected(*_args, **_kwargs):
-            raise AssertionError("should not be called")
+    with using_project_root(str(tmp_path)):
+        yield
 
-        monkeypatch.setattr(jit, "_ensure_pip", _unexpected)
-        monkeypatch.setattr(jit, "_install_numba", _unexpected)
 
-        assert jit.ensure_jit_runtime() is True
+def _positive_value(value):
+    return value if value > 0.0 else 0.0
 
-    def test_respects_disable_env(self, monkeypatch):
-        monkeypatch.setattr(jit, "JIT_AVAILABLE", False)
-        monkeypatch.setattr(jit, "_has_module", lambda _name: False)
-        monkeypatch.setenv("INFERNUX_DISABLE_JIT_AUTOINSTALL", "1")
 
-        called = {"install": False}
+def _carried_branch(source, output, n):
+    value = 7
+    for i in range(n):
+        if source[i] > 0:
+            value = source[i]
+        output[i] = value
+    return output
 
-        def _install() -> bool:
-            called["install"] = True
-            return True
 
-        monkeypatch.setattr(jit, "_install_numba", _install)
+def _carried_previous(source, output, n):
+    value = 7
+    for i in range(n):
+        output[i] = value
+        value = source[i]
+    return output
 
-        assert jit.ensure_jit_runtime() is False
-        assert called["install"] is False
 
-    def test_installs_and_reloads_when_missing(self, monkeypatch):
-        monkeypatch.setattr(jit, "JIT_AVAILABLE", False)
-        monkeypatch.delenv("_INFERNUX_JIT_RUNTIME_CHECKED", raising=False)
-        monkeypatch.delenv("INFERNUX_DISABLE_JIT_AUTOINSTALL", raising=False)
+def _last_local(source, output, n):
+    value = 7
+    for i in range(n):
+        value = source[i]
+        output[i] = value
+    return value
 
-        state = {"installed": False}
 
-        def _has_module(_name: str) -> bool:
-            return state["installed"]
+def _last_index(source, output, n):
+    i = -1
+    for i in range(n):
+        output[i] = source[i]
+    return i
 
-        def _ensure_pip() -> bool:
-            return True
 
-        def _install_numba() -> bool:
-            state["installed"] = True
-            return True
+def _mutated_index(source, output, n):
+    for i in range(n):
+        i = 0
+        output[i] = source[i]
+    return output
 
-        def _reload() -> None:
-            jit.JIT_AVAILABLE = True
 
-        monkeypatch.setattr(jit, "_has_module", _has_module)
-        monkeypatch.setattr(jit, "_ensure_pip", _ensure_pip)
-        monkeypatch.setattr(jit, "_install_numba", _install_numba)
-        monkeypatch.setattr(jit, "_reload_jit_exports", _reload)
+def _mixed_reduction(source, output, n):
+    total = 1.0
+    for i in range(n):
+        total += source[i]
+        total *= 1.01
+    return total
 
-        assert jit.ensure_jit_runtime() is True
-        assert state["installed"] is True
+
+def _reset_reduction(source, output, n):
+    total = 1
+    for i in range(n):
+        total = 1
+        total += source[i]
+    return total
+
+
+@pytest.mark.parametrize("function", [
+    _carried_branch, _carried_previous, _last_local, _last_index, _mutated_index,
+    _mixed_reduction, _reset_reduction,
+])
+def test_scalar_flow_selects_legal_serial_code_before_any_execution(function):
+    compiled = jit.compile(function)
+    assert compiled.parallel is compiled.serial
+    with pytest.raises(ValueError, match="parallel_policy='required' rejected"):
+        jit.compile(function, parallel_policy="required")
+    for count in (0, 1, 257):
+        source = np.arange(count, dtype=np.int64) - count // 2
+        expected = np.full(count, -99, dtype=np.int64)
+        actual = expected.copy()
+        expected_result = function(source, expected, count)
+        result = compiled(source, actual, count)
+        np.testing.assert_array_equal(actual, expected)
+        np.testing.assert_array_equal(result, expected_result)
+
+
+def test_all_paths_define_private_scalar_can_still_run_parallel():
+    @jit.compile(parallel_policy="required")
+    def kernel(source, output):
+        for i in range(len(source)):
+            if source[i] > 0:
+                value = source[i]
+            else:
+                value = -source[i]
+            value = value * 2
+            output[i] = value
+
+    source = np.arange(257, dtype=np.int64) - 128
+    output = np.zeros_like(source)
+    assert kernel.parallel is not kernel.serial
+    kernel(source, output)
+    np.testing.assert_array_equal(output, np.abs(source) * 2)
+
+
+def test_repeated_conditional_reduction_runs_in_parallel():
+    @jit.compile(parallel_policy="required")
+    def kernel(source):
+        total = 1
+        for i in range(len(source)):
+            total += source[i]
+            if source[i] > 0:
+                total += 2
+        return total
+
+    assert kernel.parallel is not kernel.serial
+    for count in (0, 1, 257):
+        source = np.arange(count, dtype=np.int64) - count // 2
+        assert kernel(source) == 1 + source.sum() + 2 * np.count_nonzero(source > 0)
+
+
+@pytest.mark.parametrize("function", [
+    _carried_branch, _carried_previous, _last_local, _last_index,
+    _mutated_index, _mixed_reduction, _reset_reduction,
+])
+def test_player_source_embedding_uses_the_same_scalar_legality(function):
+    source = "from Infernux import jit\n@jit.compile\n" + inspect.getsource(function)
+    assert jit_kernels.build_auto_parallel_embedded_source(source) is None
+    with pytest.raises(ValueError, match="parallel_policy='required' rejected"):
+        jit_kernels.build_auto_parallel_embedded_source(
+            source.replace("@jit.compile\n", "@jit.compile(parallel_policy='required')\n")
+        )
+
+    # A safe sibling still gets a parallel clone. The unsafe function must not
+    # inherit one just because the module has an embedded parallel manifest.
+    source += "\n@jit.compile\ndef fill(output):\n    for i in range(len(output)):\n        output[i] = i\n"
+    embedded = jit_kernels.build_auto_parallel_embedded_source(source)
+    assert embedded is not None
+    namespace = {}
+    exec(compile(embedded, "<041-cooked-jit-module>", "exec"), namespace)
+    assert set(namespace["__infernux_jit_manifest__"]) == {"fill"}
+    compiled = namespace[function.__name__]
+    assert compiled.parallel is compiled.serial
+    source_data = np.arange(17, dtype=np.int64) - 8
+    expected = np.zeros_like(source_data)
+    actual = expected.copy()
+    expected_result = function(source_data, expected, len(source_data))
+    result = compiled(source_data, actual, len(source_data))
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(result, expected_result)
+
+
+class TestPublicJitCompile:
+    def test_direct_function_compile_preserves_explicit_backend_options(self):
+        def kernel(value):
+            return value * 2.0
+
+        compiled = jit.compile(kernel, auto_parallel=False, fastmath=True, boundscheck=True)
+        assert compiled.targetoptions["fastmath"] is True
+        assert compiled.targetoptions["boundscheck"] is True
+        assert compiled(3.0) == 6.0
+
+    @pytest.mark.parametrize("auto_parallel", [False, True])
+    def test_warm_calls_do_not_recompute_compiler_identity(self, monkeypatch, auto_parallel):
+        @jit.compile(auto_parallel=auto_parallel)
+        def kernel(value):
+            return value + 3
+
+        assert kernel(2) == 5
+
+        def unexpected_fingerprint(*args, **kwargs):
+            pytest.fail("warm calls must not rescan captured dependencies")
+
+        monkeypatch.setattr(jit_kernels, "compiler_fingerprint", unexpected_fingerprint)
+        assert kernel(4) == 7
+        assert kernel(6) == 9
+
+    @pytest.mark.parametrize("auto_parallel", [False, True])
+    @pytest.mark.parametrize("source", [
+        "def kernel(value): return value * FACTOR",
+        "def leaf(value): return value * FACTOR\n"
+        "def helper(value): return leaf(value)\n"
+        "def kernel(value): return helper(value)",
+    ])
+    def test_republished_module_constants_do_not_reuse_old_machine_code(self, auto_parallel, source):
+        def publish(factor):
+            namespace = {"__name__": "jit_publication_constants", "FACTOR": factor}
+            exec(source, namespace)
+            return jit.compile(auto_parallel=auto_parallel)(namespace["kernel"])
+
+        first = publish(2)
+        assert first(3) == 6
+        second = publish(5)
+        assert second(3) == 15
+        assert first(3) == 6
+
+    @pytest.mark.parametrize("auto_parallel", [False, True])
+    def test_republished_helper_body_selects_a_new_publication(self, auto_parallel):
+        def publish(increment):
+            namespace = {"__name__": "jit_helper_generation"}
+            exec(
+                f"def helper(value): return value + {increment}\n"
+                "def kernel(value): return helper(value)",
+                namespace,
+            )
+            return jit.compile(auto_parallel=auto_parallel)(namespace["kernel"])
+
+        first = publish(2)
+        assert first(3) == 5
+        second = publish(7)
+        assert second(3) == 10
+        # A dependency update publishes new code; it neither mutates nor
+        # redirects calls through the old specialization.
+        assert first(3) == 5
+
+    @pytest.mark.parametrize("auto_parallel", [False, True])
+    def test_republished_array_constant_tracks_data_hidden_by_numpy_repr(self, auto_parallel):
+        def publish(middle):
+            values = np.zeros(4096, dtype=np.float64)
+            values[2048] = middle
+            namespace = {"__name__": "jit_array_constants", "VALUES": values}
+            exec("def kernel(index): return VALUES[index]", namespace)
+            return jit.compile(auto_parallel=auto_parallel)(namespace["kernel"])
+
+        first = publish(2.0)
+        assert first(2048) == 2.0
+        second = publish(5.0)
+        assert second(2048) == 5.0
+        assert first(2048) == 2.0
+
+    @pytest.mark.parametrize("auto_parallel", [False, True])
+    def test_same_vector_retains_aliasing_between_positional_and_keyword_arguments(self, auto_parallel):
+        import Infernux as inx
+
+        @jit.compile(auto_parallel=auto_parallel)
+        def modify(first, second):
+            first.x += 2.0
+            second.x *= 3.0
+            return first.x
+
+        value = inx.vector3(1.0, 2.0, 3.0)
+        assert modify(value, second=value) == pytest.approx(9.0)
+        assert value.x == pytest.approx(9.0)
+
+    def test_serial_warmup_does_not_mutate_author_data(self):
+        import Infernux as inx
+
+        @jit.compile(auto_parallel=False)
+        def modify(values):
+            values[0] += 4.0
+
+        source = np.zeros(3, dtype=np.float32)
+        storage = inx.buffer(shape=3, dtype=np.float32, device="cpu", data=source)
+        jit.warmup(modify, source)
+        jit.warmup(modify, storage)
+        np.testing.assert_array_equal(source, np.zeros(3))
+        np.testing.assert_array_equal(storage.numpy(), np.zeros(3))
+        modify(storage)
+        assert storage.numpy()[0] == pytest.approx(4.0)
+
+    @pytest.mark.parametrize("auto_parallel", [False, True])
+    def test_vector_partial_writes_survive_runtime_error_without_replay(self, auto_parallel):
+        import Infernux as inx
+
+        @jit.compile(auto_parallel=auto_parallel)
+        def modify(value):
+            value.x += 2.0
+            raise ValueError("authored failure")
+
+        value = inx.vector3(1.0, 2.0, 3.0)
+        with pytest.raises(ValueError, match="authored failure"):
+            modify(value)
+        assert value.x == pytest.approx(3.0)
+
+    def test_failed_serial_warmup_preserves_inputs_and_propagates_error(self):
+        @jit.compile(auto_parallel=False)
+        def fail(values):
+            values[0] += 1.0
+            raise ValueError("warmup failure")
+
+        values = np.zeros(2, dtype=np.float32)
+        with pytest.raises(ValueError, match="warmup failure"):
+            jit.warmup(fail, values)
+        np.testing.assert_array_equal(values, [0.0, 0.0])
+
+    def test_legacy_numba_decorator_is_not_public(self):
+        import Infernux as inx
+
+        assert not hasattr(jit, "njit")
+        assert not hasattr(jit, "prange")
+        assert not hasattr(inx, "njit")
+
+    def test_defaults_to_engine_auto_parallel_policy(self, monkeypatch):
+        calls = []
+
+        def fake_njit(*args, **kwargs):
+            calls.append((args, kwargs))
+            if args:
+                return args[0]
+            return lambda fn: fn
+
+        monkeypatch.setattr(jit, "_njit", fake_njit)
+
+        @jit.compile
+        def direct(value):
+            return value + 1
+
+        @jit.compile(cache=True)
+        def configured(value):
+            return value * 2
+
+        assert direct(2) == 3 and configured(3) == 6
+        assert calls[0][1] == {"auto_parallel": True}
+        assert calls[1][1] == {"cache": True, "auto_parallel": True}
+
+    def test_rejects_non_callable_direct_argument(self):
+        with pytest.raises(TypeError, match="expects a callable"):
+            jit.compile(3)
+
+    def test_missing_cpu_runtime_is_an_error_not_a_python_fallback(self, monkeypatch):
+        monkeypatch.setattr(jit, "_BACKEND_JIT_AVAILABLE", False)
+        with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
+            jit.compile(lambda value: value)
+
+    def test_no_jit_runtime_rejects_uncooked_cpu_decorators(self, monkeypatch):
+        monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
+        monkeypatch.setattr(jit, "_BACKEND_JIT_AVAILABLE", False)
+
+        def direct(value):
+            return value + 1
+
+        with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
+            jit.compile(direct)
+        with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
+            jit.compile(cache=True, parallel_policy="required")
+        with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
+            jit.warmup(direct, 4)
+
+    def test_web_import_does_not_require_numpy(self, monkeypatch):
+        import builtins
+        import runpy
+        import sys
+        from types import SimpleNamespace
+
+        original_import = builtins.__import__
+
+        def import_without_numpy(name, *args, **kwargs):
+            if name == "numpy" or name.startswith("numpy."):
+                raise ModuleNotFoundError("NumPy is not bundled in this Web runtime")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", import_without_numpy)
+        monkeypatch.setitem(sys.modules, "Infernux._jit_kernels", SimpleNamespace(
+            JIT_AVAILABLE=False, njit=None, warmup=None))
+        monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
+        loaded = runpy.run_path(jit.__file__)
+        function = lambda value: value + 1
+        with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
+            loaded["compile"](function)
+
+    def test_cpu_buffer_is_direct_jit_storage_and_gpu_is_explicitly_rejected(self):
+        import Infernux as inx
+
+        values = inx.buffer(
+            shape=4,
+            dtype=inx.vector3,
+            device="cpu",
+            data=np.arange(12, dtype=np.float32).reshape(4, 3),
+        )
+
+        @jit.compile(auto_parallel=False)
+        def scale(items, factor):
+            for index in range(len(items)):
+                items[index, 0] *= factor
+            return items
+
+        assert scale(values, 2.0) is values
+        np.testing.assert_array_equal(
+            values.numpy(),
+            [[0, 1, 2], [6, 4, 5], [12, 7, 8], [18, 10, 11]],
+        )
+
+        gpu = object.__new__(inx.Buffer)
+        gpu._device = "gpu"
+        gpu._closed = False
+        with pytest.raises(RuntimeError, match="GPU buffers require"):
+            scale(gpu, 2.0)
+
+    def test_public_engine_vectors_use_typed_cpu_jit_values(self):
+        import Infernux as inx
+
+        @jit.compile(auto_parallel=False)
+        def move(value, amount):
+            value.x += amount
+            value.y *= 2.0
+            return value
+
+        source = inx.vector3(1.0, 2.0, 3.0)
+        result = move(source, 4.0)
+
+        assert isinstance(result, inx.vector3)
+        assert (result.x, result.y, result.z) == pytest.approx((5.0, 4.0, 3.0))
+        assert (source.x, source.y, source.z) == pytest.approx((5.0, 4.0, 3.0))
+
+        @jit.compile(auto_parallel=False)
+        def length_squared(value):
+            return value.x * value.x + value.y * value.y
+
+        assert length_squared(inx.vector2(3.0, 4.0)) == pytest.approx(25.0)
+
+    def test_public_cpu_jit_freezes_numeric_input_and_output_surface(self):
+        @jit.compile(auto_parallel=False)
+        def reduce_values(values):
+            total = 0.0
+            for index in range(len(values)):
+                total += _positive_value(values[index])
+            return total
+
+        values = np.asarray([-2.0, 1.5, 3.25], dtype=np.float32)
+        assert reduce_values(values) == pytest.approx(4.75)
+
+        with pytest.raises(TypeError, match="numeric scalars"):
+            reduce_values(object())
+        with pytest.raises(TypeError, match="object arrays"):
+            reduce_values(np.asarray([object()], dtype=object))
+
+        @jit.compile(auto_parallel=False)
+        def typed_list_result(value):
+            return [value]
+
+        with pytest.raises(TypeError, match="must return"):
+            typed_list_result(3)
 
 
 class TestAutoParallelNjit:
-    def test_no_jit_build_exposes_stable_serial_metadata(self, monkeypatch):
+    @pytest.mark.parametrize("policy", ["auto", "required"])
+    @pytest.mark.parametrize("failure", ["execution", "mismatch", "benchmark", "isolation"])
+    def test_warmup_failure_is_not_silently_published_as_serial(self, monkeypatch, policy, failure):
+        from Infernux.jit_runtime import StaticCostDecision
+
+        monkeypatch.setattr(jit_kernels, "static_cost_decision", lambda *args, **kwargs:
+                            StaticCostDecision("serial", "gray", 100, "requires measurement"))
+        calls = []
+
+        def serial(values):
+            calls.append("serial")
+            values[0] += 1
+            return values[0]
+
+        def parallel(values):
+            calls.append("parallel")
+            values[0] += 2 if failure == "mismatch" else 1
+            if failure == "execution":
+                raise ValueError("authored parallel failure")
+            return values[0]
+
+        if failure == "isolation":
+            def cannot_clone(*args, **kwargs):
+                raise TypeError("cannot isolate input")
+            monkeypatch.setattr(jit_kernels, "clone_call_arguments", cannot_clone)
+        if failure == "benchmark":
+            def failed_measurement(*args, **kwargs):
+                raise ValueError("measurement failed")
+            monkeypatch.setattr(jit_kernels, "_benchmark_callable", failed_measurement)
+
+        dispatcher = jit_kernels._build_auto_parallel_dispatcher(
+            serial, serial, parallel, parallel_policy=policy)
+        values = np.zeros(4)
+        error = {"execution": ValueError, "mismatch": RuntimeError,
+                 "benchmark": ValueError, "isolation": TypeError}[failure]
+        with pytest.raises(error):
+            dispatcher._infernux_warmup(values)
+        np.testing.assert_array_equal(values, np.zeros(4))
+        assert len(dispatcher.decisions) == 0
+        assert calls == ([] if failure == "isolation" else ["serial", "parallel"])
+
+    def test_legacy_serial_warmup_is_isolated_and_does_not_swallow_failures(self):
+        @jit_kernels.njit
+        def kernel(values):
+            values[0] += 1
+            raise ValueError("invalid warmup input")
+
+        values = np.zeros(4)
+        with pytest.raises(ValueError, match="invalid warmup input"):
+            jit_kernels.warmup(kernel, values)
+        np.testing.assert_array_equal(values, np.zeros(4))
+
+    def test_serial_only_hir_skips_parallel_signature_and_device_probes(self, monkeypatch):
+        calls = []
+
+        def serial(values):
+            calls.append(values)
+            values[0] += 1
+
+        dispatcher = jit_kernels._build_auto_parallel_dispatcher(
+            serial, serial, serial, diagnostic="loop-carried dependency")
+
+        def unexpected(*args, **kwargs):
+            pytest.fail("serial-only HIR has no parallel decision to probe")
+
+        monkeypatch.setattr(jit_kernels, "runtime_signature", unexpected)
+        monkeypatch.setattr(jit_kernels, "_numba_thread_count", unexpected)
+        monkeypatch.setattr(jit_kernels, "array_arguments_alias", unexpected)
+        values = np.zeros(2)
+        dispatcher._infernux_warmup(values)
+        np.testing.assert_array_equal(values, [0, 0])
+        dispatcher(values)
+        np.testing.assert_array_equal(values, [1, 0])
+        assert len(calls) == 2 and calls[0] is not values and calls[1] is values
+        assert dispatcher.selected_mode == "serial"
+        assert dispatcher.last_diagnostic == "loop-carried dependency"
+        assert len(dispatcher.decisions) == 0
+
+    def test_aliasing_cannot_reuse_an_independent_array_parallel_decision(self, monkeypatch):
+        from Infernux.jit_runtime import StaticCostDecision
+
+        monkeypatch.setattr(jit_kernels, "static_cost_decision", lambda *args, **kwargs:
+                            StaticCostDecision("parallel", "high", 10_000_000, "test workload"))
+        calls = []
+        serial = lambda *args: calls.append("serial")
+        parallel = lambda *args: calls.append("parallel")
+        dispatcher = jit_kernels._build_auto_parallel_dispatcher(serial, serial, parallel)
+        first, second = np.zeros(16), np.zeros(16)
+        dispatcher(first, second)
+        dispatcher(first, first)
+        dispatcher(first, first.view())
+        dispatcher(first, second)
+        assert calls == ["parallel", "serial", "serial", "parallel"]
+        dispatcher._infernux_warmup(first, first)
+        assert calls[-1] == "serial" and "alias" in dispatcher.last_diagnostic
+
+        required = jit_kernels._build_auto_parallel_dispatcher(serial, serial, parallel, parallel_policy="required")
+        with pytest.raises(ValueError, match="aliased"):
+            required(first, first)
+        with pytest.raises(ValueError, match="aliased"):
+            required._infernux_warmup(first, first)
+        assert len(calls) == 5
+
+    def test_internal_adapter_has_no_hidden_python_fallback(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", False)
 
-        @jit_kernels.njit(auto_parallel=True)
-        def kernel(value):
-            return value + 1
-
-        assert kernel(4) == 5
-        assert kernel.selected_mode == "serial"
-        assert kernel.serial is kernel.parallel is kernel
-        assert "unavailable" in kernel.last_diagnostic
+        with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
+            jit_kernels.njit(auto_parallel=True)(lambda value: value + 1)
+        with pytest.raises(RuntimeError, match="bundled Numba/llvmlite"):
+            jit_kernels.warmup(lambda value: value + 1, 1)
 
     @staticmethod
     def _fake_numba_njit(*factory_args, **factory_kwargs):
@@ -100,10 +577,10 @@ class TestAutoParallelNjit:
             _compiled.state = state
             return _compiled
 
-        if factory_args and callable(factory_args[0]) and len(factory_args) == 1 and not factory_kwargs:
-            return _compile(factory_args[0], mode="serial")
-
         mode = "parallel" if factory_kwargs.get("parallel") else "serial"
+
+        if factory_args and callable(factory_args[0]) and len(factory_args) == 1:
+            return _compile(factory_args[0], mode=mode)
 
         def _decorator(fn):
             return _compile(fn, mode=mode)
@@ -112,7 +589,6 @@ class TestAutoParallelNjit:
 
     def test_auto_parallel_builds_dual_variants(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
 
         @jit_kernels.njit(cache=True, auto_parallel=True)
@@ -131,7 +607,6 @@ class TestAutoParallelNjit:
 
     def test_warmup_can_pin_serial_variant(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
         monkeypatch.setattr(
             jit_kernels,
@@ -154,7 +629,6 @@ class TestAutoParallelNjit:
 
     def test_warmup_can_pin_parallel_after_compile_cost(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
         monkeypatch.setattr(
             jit_kernels,
@@ -175,7 +649,6 @@ class TestAutoParallelNjit:
 
     def test_parallel_runtime_failure_is_not_replayed_through_serial(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
 
         @jit_kernels.njit(
@@ -214,10 +687,10 @@ class TestAutoParallelNjit:
         assert rewritten(5) == 10
         assert used["prange"] is True
 
-    def test_embedded_source_supplies_parallel_impl_without_sidecar(self):
+    def test_public_compile_embedded_source_supplies_parallel_impl_without_sidecar(self):
         source = (
-            "from Infernux.jit import njit\n"
-            "@njit(auto_parallel=True)\n"
+            "from Infernux import jit\n"
+            "@jit.compile\n"
             "def burn(n):\n"
             "    total = 0\n"
             "    for i in range(n):\n"
@@ -229,6 +702,58 @@ class TestAutoParallelNjit:
         assert "__infernux_parallel_burn_" in embedded
         assert "_parallel_impl=" in embedded
         assert "__infernux_prange" in embedded
+
+    @pytest.mark.parametrize(("imports", "decorator"), [
+        ("import infernux as inx", "inx.jit.compile"),
+        ("import Infernux.jit as cpu", "cpu.compile"),
+        ("from Infernux import jit as cpu", "cpu.compile"),
+        ("from Infernux.jit import compile as optimize", "optimize"),
+    ])
+    def test_public_jit_compile_import_forms_embed_parallel_impl(self, imports, decorator):
+        source = (
+            f"{imports}\n@{decorator}(cache=True)\n"
+            "def fill(values):\n"
+            "    for i in range(len(values)):\n"
+            "        values[i] = i * 3\n"
+        )
+        assert jit_kernels.auto_parallel_declarations(source) == (("fill", "auto"),)
+        embedded = jit_kernels.build_auto_parallel_embedded_source(source)
+        assert embedded is not None
+        namespace = {}
+        exec(compile(embedded, "<cooked-jit-compile>", "exec"), namespace)
+        values = np.zeros(8, dtype=np.int32)
+        namespace["fill"](values)
+        np.testing.assert_array_equal(values, np.arange(8) * 3)
+        assert namespace["fill"].compiler_fingerprint == (
+            namespace["__infernux_jit_manifest__"]["fill"]["hir_fingerprint"]
+        )
+
+    def test_bare_public_jit_compile_decorator_embeds_parallel_impl(self):
+        source = (
+            "from Infernux import jit\n"
+            "@jit.compile\n"
+            "def fill(values):\n"
+            "    for i in range(len(values)):\n"
+            "        values[i] = i + 1\n"
+        )
+        embedded = jit_kernels.build_auto_parallel_embedded_source(source)
+        assert embedded is not None
+        namespace = {}
+        exec(compile(embedded, "<cooked-bare-jit-compile>", "exec"), namespace)
+        values = np.zeros(5, dtype=np.int32)
+        namespace["fill"](values)
+        np.testing.assert_array_equal(values, np.arange(5) + 1)
+
+    def test_public_jit_compile_can_explicitly_disable_auto_parallel_embedding(self):
+        source = (
+            "from Infernux import jit\n"
+            "@jit.compile(auto_parallel=False)\n"
+            "def fill(values):\n"
+            "    for i in range(len(values)):\n"
+            "        values[i] = i\n"
+        )
+        assert jit_kernels.auto_parallel_declarations(source) == ()
+        assert jit_kernels.build_auto_parallel_embedded_source(source) is None
 
     def test_try_build_auto_parallel_variant_rewrites_mult_reduction(self, monkeypatch):
         used = {"prange": False}
@@ -294,8 +819,8 @@ class TestAutoParallelNjit:
 
     def test_build_embedded_source_handles_mult_reduction(self):
         source = (
-            "from Infernux.jit import njit\n"
-            "@njit(auto_parallel=True)\n"
+            "from Infernux import jit\n"
+            "@jit.compile\n"
             "def product(n):\n"
             "    acc = 1\n"
             "    for i in range(1, n + 1):\n"
@@ -308,8 +833,8 @@ class TestAutoParallelNjit:
 
     def test_build_embedded_source_handles_indexed_store(self):
         source = (
-            "from Infernux.jit import njit\n"
-            "@njit(auto_parallel=True)\n"
+            "from Infernux import jit\n"
+            "@jit.compile\n"
             "def fill(arr):\n"
             "    for i in range(len(arr)):\n"
             "        arr[i] = i * 2\n"
@@ -331,7 +856,6 @@ class TestAutoParallelNjit:
 
     def test_required_policy_rejects_loop_carried_dependency(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
 
         with pytest.raises(ValueError, match="parallel_policy='required' rejected"):
@@ -342,7 +866,6 @@ class TestAutoParallelNjit:
 
     def test_warmup_decisions_are_per_shape_bucket(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
         monkeypatch.setattr(
             jit_kernels,
@@ -377,7 +900,6 @@ class TestAutoParallelNjit:
 
     def test_static_decision_skips_repeated_timing_for_decisive_shape(self, monkeypatch):
         monkeypatch.setattr(jit_kernels, "_HAS_NUMBA", True)
-        monkeypatch.setattr(jit_kernels, "_NUITKA_COMPILED", False)
         monkeypatch.setattr(jit_kernels, "_real_njit", self._fake_numba_njit)
         monkeypatch.setattr(
             jit_kernels,

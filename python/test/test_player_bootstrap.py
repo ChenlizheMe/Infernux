@@ -89,6 +89,7 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(
         }]},
     )
     session = PlayerRuntimeSession(
+        asset_database=object(),
         scheduler=types.SimpleNamespace(),
         scene_service=types.SimpleNamespace(bind_runtime_catalog=lambda _catalog: None),
     )
@@ -135,7 +136,7 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(
                 "_player_session": None,
                 "_prepare_player_asset_contract": lambda: None,
                 "_runtime_data_root": str(tmp_path),
-                "_player_asset_database": None,
+                "_player_asset_database": session.get_asset_database(),
                 "_player_runtime_manifest": manifest,
                 "_player_runtime_catalog": catalog,
             }
@@ -151,6 +152,10 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(
         with pytest.raises(PreloadObserved):
             run()
     finally:
+        from Infernux.core.assets import AssetManager
+
+        AssetManager.release_engine()
+        Application._unbind_engine(session)
         set_project_root(None)
 
 
@@ -376,26 +381,25 @@ def test_player_supervisor_scene_override_resolves_cooked_catalog_artifact(
 
     bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
     bootstrap.project_path = str(tmp_path)
-    bootstrap.scenes = [
-        "Assets/Scenes/Start.scene",
-        "Assets/Scenes/VoxelContinent.scene",
+    bootstrap.scene_guids = [
+        "start-guid",
+        "voxel-guid",
     ]
     bootstrap._runtime_manifest = Manifest()
     bootstrap.runtime_session = RuntimeSession()
     bootstrap._resolve_runtime_scene = lambda reference: (
         str(cooked)
-        if str(reference).replace("\\", "/")
-        == "Assets/Scenes/VoxelContinent.scene"
+        if reference == "voxel-guid"
         else None
     )
     monkeypatch.setenv(
-        "_INFERNUX_PLAYER_START_SCENE",
-        "Assets/Scenes/VoxelContinent.scene",
+        "_INFERNUX_PLAYER_START_SCENE_GUID",
+        "voxel-guid",
     )
 
     bootstrap._load_initial_scene()
 
-    assert loaded == [str(cooked)]
+    assert loaded == ["voxel-guid"]
 
 
 def test_player_supervisor_scene_override_requires_catalog_entry(
@@ -410,16 +414,16 @@ def test_player_supervisor_scene_override_requires_catalog_entry(
 
     bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
     bootstrap.project_path = str(tmp_path)
-    bootstrap.scenes = ["Assets/Scenes/Start.scene"]
+    bootstrap.scene_guids = ["start-guid"]
     bootstrap._runtime_manifest = Manifest()
     bootstrap.runtime_session = object()
     bootstrap._resolve_runtime_scene = lambda _reference: None
     monkeypatch.setenv(
-        "_INFERNUX_PLAYER_START_SCENE",
-        "Assets/Scenes/Missing.scene",
+        "_INFERNUX_PLAYER_START_SCENE_GUID",
+        "missing-guid",
     )
 
-    with pytest.raises(RuntimeError, match="not present in the runtime asset catalog"):
+    with pytest.raises(RuntimeError, match="not present in the BuildManifest"):
         bootstrap._load_initial_scene()
 
 
@@ -460,7 +464,7 @@ def test_player_build_manifest_is_required_and_strict(tmp_path):
                 "window_width": 1280,
                 "window_height": 720,
                 "window_resizable": True,
-                "scenes": ["RuntimeAssets/Main.inxscene"],
+                "scene_guids": ["main-scene-guid"],
                 "splash_items": [],
             }
         ),
@@ -482,7 +486,7 @@ def test_player_build_manifest_accepts_the_build_owned_contract(tmp_path):
         "window_width": 1280,
         "window_height": 720,
         "window_resizable": False,
-        "scenes": ["RuntimeAssets/Main.inxscene"],
+        "scene_guids": ["main-scene-guid"],
         "splash_items": [{"type": "image", "path": "Splash/intro.png"}],
     }
     (tmp_path / "BuildManifest.json").write_text(
@@ -493,16 +497,16 @@ def test_player_build_manifest_accepts_the_build_owned_contract(tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("scenes", "error_type", "message"),
+    ("scene_guids", "error_type", "message"),
     [
-        (None, TypeError, "scenes must contain non-empty strings"),
-        ([], ValueError, "scenes must not be empty"),
-        ([""], TypeError, "scenes must contain non-empty strings"),
-        ([7], TypeError, "scenes must contain non-empty strings"),
+        (None, TypeError, "scene_guids must contain non-empty strings"),
+        ([], ValueError, "scene_guids must not be empty"),
+        ([""], TypeError, "scene_guids must contain non-empty strings"),
+        ([7], TypeError, "scene_guids must contain non-empty strings"),
     ],
 )
 def test_player_build_manifest_rejects_invalid_scene_contract(
-    tmp_path, scenes, error_type, message
+    tmp_path, scene_guids, error_type, message
 ):
     import json
 
@@ -515,7 +519,7 @@ def test_player_build_manifest_rejects_invalid_scene_contract(
         "window_width": 1280,
         "window_height": 720,
         "window_resizable": True,
-        "scenes": scenes,
+        "scene_guids": scene_guids,
         "splash_items": [],
     }
     (tmp_path / "BuildManifest.json").write_text(
@@ -537,7 +541,7 @@ def test_player_build_manifest_rejects_absolute_or_parent_icon_paths(tmp_path):
         "window_width": 1280,
         "window_height": 720,
         "window_resizable": True,
-        "scenes": ["RuntimeAssets/Main.inxscene"],
+        "scene_guids": ["main-scene-guid"],
         "splash_items": [],
     }
     for icon_path in ("../icon.png", "/tmp/icon.png", "Branding//icon.png"):

@@ -41,6 +41,8 @@ from Infernux.renderstack._pipeline_common import (
     DEPTH_TEXTURE,
     MOTION_TEXTURE,
     NORMAL_TEXTURE,
+    SHADOW_MAP_TEXTURE,
+    LIGHT_LIST_BUFFER,
 )
 from Infernux.renderstack.render_pass import RenderPass
 from Infernux.renderstack._serialized_field_mixin import SerializedFieldCollectorMixin
@@ -203,12 +205,16 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
 
         Shader binding names remain stable, but their resources are selected
         from the current source-scoped result rather than global camera state.
+        An effect requiring ``shadow_map`` declares ``Texture2D shadowMap``
+        in its ShaderInfo Resources and reads the shadow producer of this View.
         """
         semantic_bindings = (
             ("_InxPassColor", COLOR_TEXTURE),
             ("_InxPassDepth", DEPTH_TEXTURE),
             ("_InxPassNormal", NORMAL_TEXTURE),
             ("_InxPassMotion", MOTION_TEXTURE),
+            ("shadowMap", SHADOW_MAP_TEXTURE),
+            ("lightList", LIGHT_LIST_BUFFER),
         )
         required = set(getattr(self, "requires", ())) | set(getattr(self, "modifies", ()))
         selected = tuple(

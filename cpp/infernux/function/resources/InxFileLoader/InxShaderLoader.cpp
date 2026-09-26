@@ -58,10 +58,10 @@ void CopyRuntimeInterface(const ShaderProgramInterfaceArtifact &source, ShaderPr
     target.alphaClipThresholdOffset = source.alphaClipThresholdOffset;
     target.properties.reserve(source.properties.size());
     for (const auto &property : source.properties) {
-        target.properties.push_back({property.schema.name, property.schema.type, property.schema.defaultValue,
-                                     property.schema.textureDefault, ToRuntimeStageMask(property.visibility),
-                                     property.schema.hdr, property.schema.range, property.bufferOffset,
-                                     property.textureSlot, property.byteSize, property.byteAlignment});
+        target.properties.push_back(
+            {property.schema.name, property.schema.type, property.schema.defaultValue, property.schema.textureDefault,
+             ToRuntimeStageMask(property.visibility), property.schema.hdr, property.schema.range, property.bufferOffset,
+             property.textureSlot, property.byteSize, property.byteAlignment, property.arrayCount});
     }
 }
 } // namespace
@@ -239,14 +239,8 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
                                ShaderStageVisibility stage, ShaderCompileTarget target, const std::string &stageName,
                                bool bindlessTextureABI, std::vector<std::string> &errors)
 {
-    // The depth-only Shadow fragment intentionally strips all surface
-    // resources unless its specialized alpha path needs them. The generated
-    // program and Vulkan reflection still validate that specialized layout;
-    // the linked full-material contract applies to Forward/GBuffer and to the
-    // deforming Shadow vertex stage.
-    if (target == ShaderCompileTarget::Shadow && stage == ShaderStageVisibility::Fragment && !bindlessTextureABI)
-        return;
-
+    // Shadow uses the same linked material layout at its own descriptor set,
+    // including bounded-texture surfaces and runtime alpha clipping.
     const uint32_t expectedSet = target == ShaderCompileTarget::Shadow
                                      ? 2u
                                      : (artifact.domain == ShaderProgramDomain::ParticleSprite
@@ -368,6 +362,145 @@ void ValidateReflectedMaterial(const ShaderReflection &reflection, const ShaderP
             errors.push_back(stageName + " texture '" + property.schema.name +
                              "' reflected at an unexpected descriptor binding");
         }
+    }
+}
+
+void ValidateReflectedUIStage(const ShaderReflection &reflection, const ShaderProgramInterfaceArtifact &artifact,
+                              ShaderStageVisibility stage, std::vector<std::string> &errors)
+{
+    const auto domain = artifact.domain;
+    const bool world = domain == ShaderProgramDomain::WorldUI;
+    const bool vertex = stage == ShaderStageVisibility::Vertex;
+    const std::string stageName = vertex ? "vertex" : "fragment";
+    auto requireIO = [&](const std::vector<ShaderIOVariable> &io, uint32_t location, VkFormat format,
+                         const char *kind) {
+        const auto found =
+            std::find_if(io.begin(), io.end(), [location](const auto &entry) { return entry.location == location; });
+        if (found == io.end() || found->format != format)
+            errors.push_back("UI " + stageName + " requires " + kind + " location " + std::to_string(location) +
+                             " with the fixed vertex interface format");
+    };
+    auto requireOptionalIO = [&](const std::vector<ShaderIOVariable> &io, uint32_t location, VkFormat format,
+                                 const char *kind) {
+        const auto found =
+            std::find_if(io.begin(), io.end(), [location](const auto &entry) { return entry.location == location; });
+        if (found != io.end() && found->format != format)
+            errors.push_back("UI " + stageName + " optional " + kind + " location " + std::to_string(location) +
+                             " has an incompatible fixed interface format");
+    };
+    auto hasOnlyLocations = [](const std::vector<ShaderIOVariable> &io, std::initializer_list<uint32_t> locations) {
+        return std::all_of(io.begin(), io.end(), [&](const auto &entry) {
+            return std::find(locations.begin(), locations.end(), entry.location) != locations.end();
+        });
+    };
+    if (vertex) {
+        requireIO(reflection.GetInputs(), 0, world ? VK_FORMAT_R32G32B32_SFLOAT : VK_FORMAT_R32G32_SFLOAT, "input");
+        requireIO(reflection.GetInputs(), 1, VK_FORMAT_R32G32_SFLOAT, "input");
+        requireIO(reflection.GetInputs(), 2, VK_FORMAT_R32G32B32A32_SFLOAT, "input");
+        if (world) {
+            requireIO(reflection.GetInputs(), 3, VK_FORMAT_R32G32_SFLOAT, "input");
+            requireIO(reflection.GetInputs(), 4, VK_FORMAT_R32G32B32_SFLOAT, "input");
+            requireIO(reflection.GetInputs(), 5, VK_FORMAT_R32G32_SFLOAT, "input");
+            requireIO(reflection.GetInputs(), 6, VK_FORMAT_R32_SFLOAT, "input");
+        }
+        requireIO(reflection.GetOutputs(), 0, VK_FORMAT_R32G32B32A32_SFLOAT, "output");
+        requireIO(reflection.GetOutputs(), 1, VK_FORMAT_R32G32_SFLOAT, "output");
+        if (world)
+            requireOptionalIO(reflection.GetOutputs(), 2, VK_FORMAT_R32G32_SFLOAT, "output");
+        if (!hasOnlyLocations(reflection.GetInputs(), world ? std::initializer_list<uint32_t>{0, 1, 2, 3, 4, 5, 6}
+                                                            : std::initializer_list<uint32_t>{0, 1, 2}) ||
+            !hasOnlyLocations(reflection.GetOutputs(),
+                              world ? std::initializer_list<uint32_t>{0, 1, 2} : std::initializer_list<uint32_t>{0, 1}))
+            errors.push_back("UI vertex declares locations outside the fixed UI vertex/varying ABI");
+    } else {
+        requireIO(reflection.GetInputs(), 0, VK_FORMAT_R32G32B32A32_SFLOAT, "input");
+        requireIO(reflection.GetInputs(), 1, VK_FORMAT_R32G32_SFLOAT, "input");
+        if (world)
+            requireOptionalIO(reflection.GetInputs(), 2, VK_FORMAT_R32G32_SFLOAT, "input");
+        requireIO(reflection.GetOutputs(), 0, VK_FORMAT_R32G32B32A32_SFLOAT, "output");
+        if (!hasOnlyLocations(reflection.GetInputs(), world ? std::initializer_list<uint32_t>{0, 1, 2}
+                                                            : std::initializer_list<uint32_t>{0, 1}) ||
+            !hasOnlyLocations(reflection.GetOutputs(), {0}))
+            errors.push_back("UI fragment declares locations outside the fixed UI varying/output ABI");
+    }
+    if (!reflection.GetStorageBuffers().empty() || !reflection.GetStorageImages().empty() ||
+        !reflection.GetUnsupportedDescriptorResources().empty())
+        errors.push_back("UI " + stageName + " declares descriptors outside the UI material ABI");
+    const bool usesMaterialBuffer =
+        std::any_of(artifact.properties.begin(), artifact.properties.end(), [&](const LinkedShaderProperty &property) {
+            return property.bufferOffset && HasVisibility(property.visibility, stage);
+        });
+    const auto &buffers = reflection.GetUniformBuffers();
+    if (usesMaterialBuffer && !buffers.empty()) {
+        if (buffers.size() != 1 || buffers[0].name != "MaterialProperties" || buffers[0].set != 1 ||
+            buffers[0].binding != 0 || buffers[0].size > artifact.materialBufferSize)
+            errors.push_back("UI " + stageName + " MaterialProperties must use the linked set 1 binding 0 ABI");
+        else
+            for (const auto &member : buffers[0].members) {
+                const auto property = std::find_if(
+                    artifact.properties.begin(), artifact.properties.end(), [&](const LinkedShaderProperty &candidate) {
+                        return candidate.schema.name == member.name && candidate.bufferOffset &&
+                               HasVisibility(candidate.visibility, stage);
+                    });
+                if (property == artifact.properties.end() || member.offset != *property->bufferOffset)
+                    errors.push_back("UI " + stageName + " material property '" + member.name +
+                                     "' differs from the linked buffer layout");
+            }
+    } else if (!buffers.empty()) {
+        errors.push_back("UI " + stageName + " declares an undeclared material UBO");
+    }
+    const auto &images = reflection.GetSampledImages();
+    const auto validImage = [](const SampledImageInfo &image) {
+        return image.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER && image.arraySize == 1 &&
+               !image.hasArrayDimension && !image.multisampled && image.dimension == ReflectedImageDimension::D2 &&
+               !image.arrayed;
+    };
+    const auto elementImage = std::find_if(images.begin(), images.end(), [](const SampledImageInfo &image) {
+        return image.set == 0 && image.binding == 0;
+    });
+    if (!vertex && (elementImage == images.end() || !validImage(*elementImage)))
+        errors.push_back("UI fragment requires one non-arrayed 2D engine image at set 0 binding 0");
+    for (const auto &image : images) {
+        if (!vertex && image.set == 0 && image.binding == 0) {
+            if (!validImage(image))
+                errors.push_back("UI fragment engine image must be a non-arrayed 2D image");
+            continue;
+        }
+        const auto property = std::find_if(artifact.properties.begin(), artifact.properties.end(),
+                                           [&](const LinkedShaderProperty &candidate) {
+                                               return candidate.schema.name == image.name && candidate.textureSlot &&
+                                                      HasVisibility(candidate.visibility, stage);
+                                           });
+        if (property == artifact.properties.end() || image.set != 1 || image.binding != 1 + *property->textureSlot ||
+            !validImage(image))
+            errors.push_back("UI " + stageName + " declares a texture outside the linked set 1 texture ABI");
+    }
+    const auto &push = reflection.GetPushConstants();
+    if (push.size() != 1 || push[0].offset != 0 || push[0].size != (world ? 128u : 64u)) {
+        errors.push_back("UI " + stageName + " push constants do not match the engine UI ABI");
+        return;
+    }
+    const auto requireMember = [&](const char *name, uint32_t offset, uint32_t size) {
+        const auto found = std::find_if(push[0].members.begin(), push[0].members.end(),
+                                        [name](const auto &member) { return member.name == name; });
+        if (found == push[0].members.end() || found->offset != offset || found->size != size)
+            errors.push_back("UI " + stageName + " push constant '" + name + "' has an invalid offset");
+    };
+    if (world) {
+        requireMember("viewProjection", 0, 64);
+        requireMember("materialColor", 64, 16);
+        requireMember("alphaClipThreshold", 80, 4);
+        requireMember("alphaClipEnabled", 84, 4);
+        requireMember("screenScale", 88, 8);
+        requireMember("cameraRight", 96, 16);
+        requireMember("cameraUp", 112, 16);
+    } else {
+        requireMember("scale", 0, 8);
+        requireMember("translate", 8, 8);
+        requireMember("encodeSample", 16, 4);
+        requireMember("materialColor", 32, 16);
+        requireMember("alphaClipThreshold", 48, 4);
+        requireMember("alphaClipEnabled", 52, 4);
     }
 }
 } // namespace
@@ -606,8 +739,8 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
     };
 
     static const std::unordered_map<std::string, std::string> typeMap = {
-        {"Float4", "vec4"}, {"Color", "vec4"}, {"Float3", "vec3"}, {"Float2", "vec2"},
-        {"Float", "float"}, {"Int", "int"},    {"Mat4", "mat4"},
+        {"Float4", "vec4"}, {"Color", "vec4"}, {"Float3", "vec3"},      {"Float2", "vec2"},      {"Float", "float"},
+        {"Int", "int"},     {"Mat4", "mat4"},  {"FloatArray", "float"}, {"Float4Array", "vec4"},
     };
 
     const ShaderInfoDocument shaderInfo = ParseShaderInfo(source);
@@ -694,9 +827,14 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
             else
                 desc.warnings.push_back(message);
         }
-        if (const auto layout = FindShaderLayoutDeclaration(source)) {
-            desc.errors.push_back(filePath + ":" + std::to_string(layout->line) + ":" + std::to_string(layout->column) +
-                                  ": ShaderInfo source must not declare layout(...); the stage linker owns Vulkan ABI");
+        const bool explicitUIInterface =
+            DescriptorHasCapability(desc, "ScreenUI") || DescriptorHasCapability(desc, "WorldUI");
+        if (!explicitUIInterface) {
+            if (const auto layout = FindShaderLayoutDeclaration(source)) {
+                desc.errors.push_back(
+                    filePath + ":" + std::to_string(layout->line) + ":" + std::to_string(layout->column) +
+                    ": ShaderInfo source must not declare layout(...); the stage linker owns Vulkan ABI");
+            }
         }
     }
 
@@ -916,6 +1054,36 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                                           const ShaderProgramInterfaceArtifact *linkedInterface,
                                           const std::string &deferredShadingRegistry) const
 {
+    if (linkedInterface && (linkedInterface->domain == ShaderProgramDomain::ScreenUI ||
+                            linkedInterface->domain == ShaderProgramDomain::WorldUI)) {
+        if (target != ShaderCompileTarget::Forward)
+            return {};
+        // UI stages own geometry and push constants. Material declarations are
+        // generated from the same linked offsets and slots consumed by Vulkan.
+        const ShaderStageVisibility stage =
+            desc.isVertexShader ? ShaderStageVisibility::Vertex : ShaderStageVisibility::Fragment;
+        std::string declarations;
+        const bool hasBuffer =
+            std::any_of(linkedInterface->properties.begin(), linkedInterface->properties.end(),
+                        [&](const LinkedShaderProperty &property) {
+                            return property.bufferOffset && HasVisibility(property.visibility, stage);
+                        });
+        if (hasBuffer)
+            declarations += "\nlayout(std140, set = 1, binding = 0) uniform MaterialProperties {\n" +
+                            GlslStageInterfaceEmitter::EmitMaterialBlockMembers(*linkedInterface) + "} material;\n";
+        declarations += GlslStageInterfaceEmitter::EmitTextureDeclarations(*linkedInterface, stage, 1, 1);
+        if (declarations.empty())
+            return resolvedSource;
+        const auto version = resolvedSource.find("#version");
+        if (version == std::string::npos)
+            throw std::runtime_error("UI shader requires a #version declaration");
+        const auto lineEnd = resolvedSource.find('\n', version);
+        if (lineEnd == std::string::npos)
+            throw std::runtime_error("UI shader requires source after #version");
+        std::string generated = resolvedSource;
+        generated.insert(lineEnd + 1, declarations);
+        return generated;
+    }
     const auto hasCapability = [&](std::string_view capability) { return DescriptorHasCapability(desc, capability); };
     const bool particleSpriteDomain =
         DescriptorHasCapability(desc, "ParticleSprite") ||
@@ -926,8 +1094,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     const bool requestsEngineGlobals = hasCapability("EngineGlobals");
     const bool particleBindlessTarget =
         !particleSpriteDomain || target == ShaderCompileTarget::Forward || target == ShaderCompileTarget::ForwardPlus;
-    const bool shadowAlphaClipTarget = target == ShaderCompileTarget::Shadow && desc.isFragmentShader &&
-                                       desc.surfaceOptions.alphaClip != "off" && !desc.surfaceOptions.alphaClip.empty();
+    const bool shadowAlphaClipTarget =
+        target == ShaderCompileTarget::Shadow && desc.isFragmentShader && desc.hasSurfaceFunc && !desc.hasMainFunc;
     const bool bindlessTextureABI =
         hasCapability("BindlessTextures") && IsBindlessTextureABIEnabled() && desc.isFragmentShader &&
         (target != ShaderCompileTarget::Shadow || shadowAlphaClipTarget) && particleBindlessTarget;
@@ -980,7 +1148,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // Shadow alpha-clip needs
     // texture samplers, MaterialProperties UBO, and user surface() code
     // so it can sample alpha and discard transparent fragments.
-    bool shadowNeedsAlphaClip = false;
+    const bool shadowNeedsAlphaClip = shadowAlphaClipTarget;
     if (target != ShaderCompileTarget::Shadow && target != ShaderCompileTarget::GBuffer &&
         target != ShaderCompileTarget::BaseColor) {
         needsLightingUBO = needsLightingUBO || desc.NeedsLightingUBO();
@@ -992,10 +1160,6 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         if (target == ShaderCompileTarget::GBuffer) {
             hasGBufferTarget = true;
         }
-    }
-    if (target == ShaderCompileTarget::Shadow && desc.surfaceOptions.alphaClip != "off" &&
-        !desc.surfaceOptions.alphaClip.empty()) {
-        shadowNeedsAlphaClip = true;
     }
 
     // ================================================================
@@ -1021,6 +1185,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         result << "#define INX_BASE_COLOR_PASS 1\n";
     if (deferredLightingDomain) {
         result << "#define INX_DEFERRED_LIGHTING_PASS 1\n";
+        result << "#define INX_FORWARD_PLUS_PASS 1\n";
+    } else if (fullscreenDomain && needsLightingUBO) {
         result << "#define INX_FORWARD_PLUS_PASS 1\n";
     }
     // Every geometry surface may use camera helpers, including an Unlit
@@ -1062,6 +1228,13 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     // ================================================================
     if (!userHasLayoutDecls && deferredLightingDomain && desc.isFragmentShader) {
         result << "\n// Canonical per-view lighting resources for deferred evaluation\n";
+        result << LoadTemplate("lighting_ubo.glsl") << "\n";
+        result << LoadTemplate("forward_plus_lighting.glsl") << "\n";
+        result << "uint _inx_ObjectLayerMask = 0xffffffffu;\n";
+    }
+    if (!userHasLayoutDecls && fullscreenDomain && !deferredLightingDomain && desc.isFragmentShader &&
+        needsLightingUBO) {
+        result << "\n// Canonical camera-local lighting resources for fullscreen evaluation\n";
         result << LoadTemplate("lighting_ubo.glsl") << "\n";
         result << LoadTemplate("forward_plus_lighting.glsl") << "\n";
         result << "uint _inx_ObjectLayerMask = 0xffffffffu;\n";
@@ -1248,8 +1421,18 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             const size_t binding = index + (passBuffersDomain ? 4u : 0u);
             if (resource.type == "Texture2D")
                 result << "layout(set = 0, binding = " << binding << ") uniform sampler2D " << resource.name << ";\n";
+            else if (resource.type == "Texture3D")
+                result << "layout(set = 0, binding = " << binding << ") uniform sampler3D " << resource.name << ";\n";
             else if (resource.type == "Texture2DUInt")
                 result << "layout(set = 0, binding = " << binding << ") uniform usampler2D " << resource.name << ";\n";
+            else if (resource.type == "Texture2DMS")
+                result << "layout(set = 0, binding = " << binding << ") uniform sampler2DMS " << resource.name << ";\n";
+            else if (resource.type == "Texture2DMSUInt")
+                result << "layout(set = 0, binding = " << binding << ") uniform usampler2DMS " << resource.name
+                       << ";\n";
+            else if (resource.type == "BufferUInt")
+                result << "layout(std430, set = 0, binding = " << binding << ") readonly buffer InxBuffer" << binding
+                       << " { uint data[]; } " << resource.name << ";\n";
         }
     }
 
@@ -1466,69 +1649,14 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
     if (hasSurfaceFunc && !hasMainFunc && desc.isFragmentShader && (desc.hasExplicitType || !userHasLayoutDecls)) {
         if (target == ShaderCompileTarget::Shadow) {
             if (shadowNeedsAlphaClip) {
-                // Shadow pass with alpha clip: minimal fragment that only
-                // fetches the first (albedo/diffuse) texture for alpha.
-                // Running the full surface() would sample ALL textures
-                // (normal, roughness, emission, …) which is pure waste
-                // for a depth-only pass.  We duplicate only the alpha-
-                // relevant logic: UV remap from displayScale/uvRect, then
-                // a single texture() fetch.
-                //
-                // For shaders that rely on complex surface() logic for
-                // alpha (procedural cutout, multi-texture blending) this
-                // fast path may be inaccurate; authors can override by
-                // providing an explicit main() in the shader source.
-                if (!desc.textureProperties.empty()) {
-                    const std::string &alphaTex = desc.textureProperties[0].name;
-                    result << "\nvoid main() {\n";
-                    // Check for displayScale/uvRect properties — sprite shaders
-                    // use them to remap UVs for aspect-fit sub-rects.
-                    bool hasDisplayScale = false, hasUvRect = false;
-                    for (const auto &p : desc.properties) {
-                        if (p.name == "displayScale")
-                            hasDisplayScale = true;
-                        if (p.name == "uvRect")
-                            hasUvRect = true;
-                    }
-                    if (hasDisplayScale) {
-                        result << "    vec2 dScale = material.displayScale.xy;\n";
-                        result << "    vec2 tc = (v_TexCoord - 0.5) / max(dScale, vec2(1e-6)) + 0.5;\n";
-                        result << "    if (tc.x < 0.0 || tc.x > 1.0 || tc.y < 0.0 || tc.y > 1.0) discard;\n";
-                    } else {
-                        result << "    vec2 tc = v_TexCoord;\n";
-                    }
-                    if (hasUvRect) {
-                        result << "    vec2 uv = material.uvRect.xy + tc * material.uvRect.zw;\n";
-                    } else {
-                        result << "    vec2 uv = tc;\n";
-                    }
-                    if (bindlessTextureABI) {
-                        result << "    float alpha = inxSampleBindlessTexture(_InxMaterialTextureIndices." << alphaTex
-                               << ", uv).a";
-                    } else {
-                        result << "    float alpha = texture(" << alphaTex << ", uv).a";
-                    }
-                    // Multiply by baseColor.a if the material has a baseColor property
-                    for (const auto &p : desc.properties) {
-                        if (p.name == "baseColor") {
-                            result << " * material.baseColor.a";
-                            break;
-                        }
-                    }
-                    result << ";\n";
-                    result << "    if (material._AlphaClipThreshold > 0.0 && alpha < material._AlphaClipThreshold) "
-                              "discard;\n";
-                    result << "}\n";
-                } else {
-                    // No textures — fallback to full surface() path
-                    result << "\nvoid main() {\n";
-                    result << "    SurfaceData s = InitSurfaceData();\n";
-                    result << "    s.normalWS = normalize(v_Normal);\n";
-                    result << "    surface(s);\n";
-                    result << "    if (material._AlphaClipThreshold > 0.0 && s.alpha < material._AlphaClipThreshold) "
-                              "discard;\n";
-                    result << "}\n";
-                }
+                // AlphaClip is a material value, not a shader capability.
+                // Execute the authored surface; never guess an alpha texture
+                // by its name or position. Opaque materials skip the work.
+                std::string mainTpl = LoadTemplate("surface_main_shadow.glsl");
+                ReplacePlaceholder(mainTpl, "${SURFACE_CALL}",
+                                   linkedInterface ? GlslStageInterfaceEmitter::EmitSurfaceCall(*linkedInterface)
+                                                   : "    surface(s);");
+                result << "\n" << mainTpl << "\n";
             } else {
                 // Shadow pass: depth-only, minimal fragment shader
                 result << "\nvoid main() {\n";
@@ -1966,9 +2094,8 @@ InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, co
     const bool particleBindlessTarget = interfaceArtifact.domain != ShaderProgramDomain::ParticleSprite ||
                                         target == ShaderCompileTarget::Forward ||
                                         target == ShaderCompileTarget::ForwardPlus;
-    const bool shadowAlphaClipTarget = target == ShaderCompileTarget::Shadow &&
-                                       fragmentDescriptor.surfaceOptions.alphaClip != "off" &&
-                                       !fragmentDescriptor.surfaceOptions.alphaClip.empty();
+    const bool shadowAlphaClipTarget =
+        target == ShaderCompileTarget::Shadow && fragmentDescriptor.hasSurfaceFunc && !fragmentDescriptor.hasMainFunc;
     const bool bindlessTextureABI =
         DescriptorHasCapability(fragmentDescriptor, "BindlessTextures") && IsBindlessTextureABIEnabled() &&
         (target != ShaderCompileTarget::Shadow || shadowAlphaClipTarget) && particleBindlessTarget;
@@ -1989,8 +2116,13 @@ InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, co
 
     ShaderReflection vertexReflection;
     ShaderReflection fragmentReflection;
+    const bool uiDomain = interfaceArtifact.domain == ShaderProgramDomain::ScreenUI ||
+                          interfaceArtifact.domain == ShaderProgramDomain::WorldUI;
     if (!vertexReflection.Reflect(compilation.vertexSpirv, VK_SHADER_STAGE_VERTEX_BIT)) {
         compilation.errors.push_back("failed to reflect linked vertex SPIR-V");
+    } else if (uiDomain) {
+        ValidateReflectedUIStage(vertexReflection, interfaceArtifact, ShaderStageVisibility::Vertex,
+                                 compilation.errors);
     } else {
         ValidateReflectedVaryings(vertexReflection.GetOutputs(), compilation.interfaceArtifact, "vertex",
                                   compilation.errors);
@@ -1999,6 +2131,9 @@ InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, co
     }
     if (!fragmentReflection.Reflect(compilation.fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT)) {
         compilation.errors.push_back("failed to reflect linked fragment SPIR-V");
+    } else if (uiDomain) {
+        ValidateReflectedUIStage(fragmentReflection, interfaceArtifact, ShaderStageVisibility::Fragment,
+                                 compilation.errors);
     } else {
         ValidateReflectedVaryings(fragmentReflection.GetInputs(), compilation.interfaceArtifact, "fragment",
                                   compilation.errors);

@@ -16,6 +16,25 @@ def _native_sources(directory: Path) -> list[Path]:
     return sorted((*directory.rglob("*.h"), *directory.rglob("*.cpp")))
 
 
+def test_deferred_owner_tasks_survive_skipped_presentation_frames() -> None:
+    """Owner maintenance is not conditional on a presentable swapchain."""
+    source = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+    draw = _function_body(source, "void InxRenderer::DrawFrame()")
+    assert draw.count("m_postDrawCallback();") == 1
+    for condition in (
+        "if (m_view->NeedsSurfaceRecreation() && !m_view->IsApplicationInBackground())",
+        "if (m_view->IsMinimized())",
+        "if (CheckAndApplyMsaaRequest(false,",
+        "if (CheckAndApplyMsaaRequest(true,",
+    ):
+        branch = _function_body(draw, condition)
+        assert branch.index("runDeferredTasks();") < branch.index("return;")
+        if "CheckAndApplyMsaaRequest" in condition:
+            assert branch.index("sceneManager.EndFrame();") < branch.index("runDeferredTasks();")
+    # Four skipped-draw paths plus the ordinary, completed submission path.
+    assert draw.count("runDeferredTasks();") == 5
+
+
 def _function_body(source: str, signature: str) -> str:
     """Return one C++ function body, including nested lambda/class braces."""
 
@@ -480,12 +499,22 @@ def test_scene_render_target_depth_is_sampleable_across_pipeline_switches() -> N
     device_header = (VULKAN_BACKEND / "VkDeviceContext.h").read_text(encoding="utf-8")
     device_source = (VULKAN_BACKEND / "VkDeviceContext.cpp").read_text(encoding="utf-8")
 
-    create_depth = _function_body(
-        target_source, "void SceneRenderTarget::CreateDepthAttachment"
+    initialize = _function_body(
+        target_source, "bool SceneRenderTarget::Initialize"
     )
-    assert "FindSampledDepthFormat" in create_depth
-    assert "VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT" in create_depth
-    assert "VK_IMAGE_USAGE_SAMPLED_BIT" in create_depth
+    assert "FindSampledDepthFormat" in initialize
+    assert "description.sampledDepth = true" in initialize
+    assert "rhi::RenderTexture(device, identity, description).Acquire()" in initialize
+    texture_source = (RENDERER / "rhi" / "RhiRenderTexture.cpp").read_text(encoding="utf-8")
+    allocate = _function_body(texture_source, "RenderTexture::PrepareGeneration(")
+    assert re.search(
+        r"auto\s+depthFeatures\s*=\s*FormatFeature::DepthStencilAttachment",
+        allocate,
+    )
+    assert "depthFeatures |= FormatFeature::Sampled" in allocate
+    assert "image.usage = TextureUsageFlags::DepthStencilAttachment" in allocate
+    assert "if (description.sampledDepth)" in allocate
+    assert "image.usage = image.usage | TextureUsageFlags::Sampled" in allocate
 
     assert "FindSampledDepthFormat() const" in device_header
     sampled_format = _function_body(
@@ -564,16 +593,17 @@ def test_imgui_display_shader_is_compiled_from_the_current_source() -> None:
     shader = (
         RENDERER / "gui" / "backend" / "infernux_imgui_frag.frag"
     ).read_text(encoding="utf-8")
-    backend_patch = (ROOT / "cmake" / "patch_imgui_vulkan_backend.py").read_text(
+    backend = (ROOT / "external" / "imgui" / "backends" / "imgui_impl_vulkan.cpp").read_text(
         encoding="utf-8"
     )
 
     assert "Vulkan_GLSLANG_VALIDATOR_EXECUTABLE" in external_cmake
     assert "INFERNUX_IMGUI_FRAGMENT_SOURCE" in external_cmake
     assert "INFERNUX_IMGUI_FRAGMENT_HEADER" in external_cmake
+    assert 'INFERNUX_IMGUI_VULKAN_BACKEND "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp"' in external_cmake
     assert "linear_to_srgb" in shader
     assert "sampled.rgb = linear_to_srgb(sampled.rgb);" in shader
-    assert 'include "infernux_imgui_frag.u32"' in backend_patch
+    assert '#include "infernux_imgui_frag.u32"' in backend
 
 
 def test_completed_async_uploads_retain_timeline_dependency_until_publication() -> None:
@@ -602,6 +632,20 @@ def test_runtime_screen_ui_uses_dynamic_rendering_with_msaa_resolve() -> None:
     assert "CreateVulkanRenderPasses" not in graph_compile
     assert "attachment.resolveImageView" in graph_compile
     assert "VK_RESOLVE_MODE_AVERAGE_BIT" in graph_compile
+
+
+def test_world_ui_empty_texture_coverage_cannot_write_depth() -> None:
+    screen_ui = (RENDERER / "gui" / "InxScreenUIRenderer.cpp").read_text(encoding="utf-8")
+
+    world_fragment = screen_ui.split('constexpr const char *kWorldFragmentShader', 1)[1]
+    world_fragment = world_fragment.split(')glsl";', 1)[0]
+    shade = "outColor = inColor * texture(uiTexture, inUV) * pc.materialColor;"
+    coverage = "|| outColor.a <= 0.0"
+    assert shade in world_fragment
+    assert coverage in world_fragment
+    assert world_fragment.index(shade) < world_fragment.index(
+        coverage
+    )
 
 
 def test_per_view_descriptor_publication_only_waits_for_its_frame_slot() -> None:
@@ -828,8 +872,13 @@ def test_msaa_retirement_helpers_defer_destruction_without_idle_waits() -> None:
     assert "retirementSerial" in retire_target
 
     assert retire_target.index("RetireAfter(retirementSerial") < retire_target.index(
-        "m_imguiDescriptorSet = VK_NULL_HANDLE"
+        "ClearBorrowedHandles()"
     )
+    assert "attachments = std::move(m_attachments)" in retire_target
+    assert "outline = std::move(m_outlineAttachments)" in retire_target
+    clear = _function_body(target_source, "void SceneRenderTarget::ClearBorrowedHandles")
+    assert "m_imguiDescriptorSet = VK_NULL_HANDLE" in clear
+    assert "RemoveTexture" not in clear and "Destroy" not in clear
     assert "if (waitForIdle && !m_core->IsShuttingDown())" in cleanup_outline
     assert "WaitIdle" in cleanup_outline
 
@@ -1044,8 +1093,13 @@ def test_game_camera_stack_owns_one_render_graph_per_camera() -> None:
     assert "m_gameRenderGraphs" in header
     assert "EnsureGameRenderGraph(class Camera *camera)" in header
     assert "for (Camera *gameCam : FindGameCamerasCached())" in source
-    assert "appendView(graph, false, gameView, cameraDependency, &cameraFinal)" in source
-    assert "cameraDependency = cameraFinal" in source
+    assert "m_gameRenderGraphs.find(cameraId)" in source
+    assert "m_gameRenderGraphs.emplace(cameraId, std::move(graph))" in source
+    assert "for (const auto index : m_viewSchedule.order)" in source
+    assert "for (const auto producer : m_viewSchedule.predecessors[index])" in source
+    assert "dependencies.push_back(viewFinals[producer])" in source
+    assert "appendView(view.graph, view.scene, view.graph->GetCachedView(), dependencies, &viewFinals[index])" in source
+    assert "RenderViewSchedule::Build(accesses)" in source
 
 
 def test_render_graph_rebuild_preserves_compatible_material_pipelines() -> None:
@@ -1134,6 +1188,23 @@ def test_touch_events_wake_the_frame_loop_and_request_ui_refresh() -> None:
         assert event_name in process_one
 
 
+def test_desktop_occlusion_does_not_suspend_render_target_capture() -> None:
+    view_header = (
+        ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.h"
+    ).read_text(encoding="utf-8")
+    view_source = (
+        ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp"
+    ).read_text(encoding="utf-8")
+
+    # SDL_WINDOW_OCCLUDED is a compositor hint, not a minimized state. Keeping
+    # a sticky event-driven boolean here strands Scene/Game/Editor captures in
+    # PendingGpu even though the editor and MCP command channel still respond.
+    assert "SDL_GetWindowFlags(m_window)" in view_header
+    assert "WindowVisibility::Occluded" in view_header
+    assert "m_isMinimized" not in view_header
+    assert "m_isMinimized" not in view_source
+
+
 def test_play_mode_supports_an_explicit_frame_cap() -> None:
     view_header = (
         ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.h"
@@ -1172,16 +1243,18 @@ def test_mobile_lifecycle_suspends_and_rebinds_vulkan_presentation() -> None:
 
     assert "SDL_AddEventWatch(&InxView::WatchApplicationEvents" in view
     assert "SDL_EVENT_WILL_ENTER_BACKGROUND" in view
-    assert "m_applicationInBackground.store(true" in view
+    assert "m_applicationInBackground.exchange(true" in view
     assert "m_surfaceRecreationPending.store(true" in view
     assert "SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED" in view
     assert "m_hasCreatedSurface.load" in view
     assert "NeedsSurfaceRecreation()" in renderer
     assert "RecreatePresentationSurface" in renderer
-    assert core.index("m_backend.Presentation().Destroy()") < core.index(
+    suspend = _function_body(core, "void InxVkCoreModular::SuspendPresentationSurface")
+    recreate = _function_body(core, "bool InxVkCoreModular::RecreatePresentationSurface")
+    assert suspend.index("presentation.Destroy()") < suspend.index(
         "SDL_Vulkan_DestroySurface"
     )
-    assert core.index("SDL_Vulkan_DestroySurface") < core.index(
+    assert recreate.index("SuspendPresentationSurface()") < recreate.index(
         "createSurface(m_instance"
     )
 

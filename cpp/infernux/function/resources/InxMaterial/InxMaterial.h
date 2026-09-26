@@ -1,5 +1,7 @@
 #pragma once
 
+#include "MaterialProperty.h"
+
 #include <array>
 #include <core/types/InxFwdType.h>
 #include <core/types/ShaderAssetReference.h>
@@ -25,9 +27,16 @@ namespace infernux
 
 // Forward declarations
 class MeshRenderer;
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
 class ShaderProgram;
 struct MaterialUBOLayout;
+#endif
 struct ShaderProgramArtifact;
+namespace rhi
+{
+class RenderTexture;
+class ComputeBuffer;
+} // namespace rhi
 
 /**
  * @brief Shader stage type for the material system
@@ -234,38 +243,6 @@ struct RenderState
 };
 
 /**
- * @brief Material property types
- */
-enum class MaterialPropertyType
-{
-    Float,
-    Float2,
-    Float3,
-    Float4,
-    Int,
-    Mat4,
-    Texture2D,
-    Color // = 7: vec4 colour, identical storage to Float4
-};
-
-/**
- * @brief A single material property value
- */
-using MaterialPropertyValue = std::variant<float, glm::vec2, glm::vec3, glm::vec4, int, glm::mat4, std::string>;
-
-/**
- * @brief Material property descriptor
- */
-struct MaterialProperty
-{
-    std::string name;
-    MaterialPropertyType type;
-    MaterialPropertyValue value;
-    bool hdr = false;
-    std::optional<std::array<double, 2>> range;
-};
-
-/**
  * @brief InxMaterial - Material definition for rendering
  *
  * A material in Infernux consists of:
@@ -288,7 +265,7 @@ class InxMaterial
     InxMaterial() = default;
     InxMaterial(const std::string &name);
     InxMaterial(const std::string &name, const std::string &shaderName);
-    ~InxMaterial() = default;
+    ~InxMaterial();
 
     // Copying creates a distinct runtime material identity.
     InxMaterial(const InxMaterial &other);
@@ -304,6 +281,8 @@ class InxMaterial
     }
     void SetName(const std::string &name)
     {
+        if (m_name != name)
+            ++m_version;
         m_name = name;
     }
 
@@ -499,6 +478,8 @@ class InxMaterial
     }
     void SetPassTag(const std::string &tag)
     {
+        if (m_passTag != tag)
+            ++m_version;
         m_passTag = tag;
     }
 
@@ -526,20 +507,22 @@ class InxMaterial
     /// @brief Set the entire override bitmask.
     void SetRenderStateOverrides(uint32_t overrides)
     {
+        if (m_renderStateOverrides != overrides)
+            ++m_version;
         m_renderStateOverrides = overrides;
     }
 
     /// @brief Mark a specific render-state field as user-overridden.
     void MarkOverride(RenderStateOverride flag)
     {
-        m_renderStateOverrides |= static_cast<uint32_t>(flag);
+        SetRenderStateOverrides(m_renderStateOverrides | static_cast<uint32_t>(flag));
         m_pipelineDirty = true;
     }
 
     /// @brief Clear a specific override (revert to shader default on next apply).
     void ClearOverride(RenderStateOverride flag)
     {
-        m_renderStateOverrides &= ~static_cast<uint32_t>(flag);
+        SetRenderStateOverrides(m_renderStateOverrides & ~static_cast<uint32_t>(flag));
         m_pipelineDirty = true;
     }
 
@@ -560,11 +543,47 @@ class InxMaterial
     void SetColor(const std::string &name, const glm::vec4 &color);
     void SetInt(const std::string &name, int value);
     void SetMatrix(const std::string &name, const glm::mat4 &matrix);
+    void SetFloatArray(const std::string &name, const std::vector<float> &values);
+    void SetVector4Array(const std::string &name, const std::vector<glm::vec4> &values);
     void SetTextureGuid(const std::string &name, const std::string &textureGuid);
+    /// Override sampling for one Texture2D binding without changing the shared
+    /// Texture asset.  Passing an all-Inherit state removes the override.
+    void SetTextureSampler(const std::string &name, const MaterialTextureSampler &sampler);
+    [[nodiscard]] const MaterialTextureSampler *GetTextureSampler(const std::string &name) const noexcept;
+    void ClearTextureSampler(const std::string &name);
+    /// Runtime sampled output; authored texture GUIDs remain unchanged on disk.
+    void SetRenderTexture(const std::string &name, std::shared_ptr<rhi::RenderTexture> texture);
+    /// Bind a runtime GPU-resident storage buffer declared by shader reflection.
+    /// Buffer references are not serialized; the material keeps the resource alive.
+    void SetBuffer(const std::string &name, std::shared_ptr<rhi::ComputeBuffer> buffer);
+    [[nodiscard]] std::shared_ptr<rhi::ComputeBuffer> GetBuffer(const std::string &name) const;
+    [[nodiscard]] const auto &GetBuffers() const noexcept
+    {
+        return m_buffers;
+    }
+    [[nodiscard]] std::shared_ptr<rhi::RenderTexture> GetRenderTexture(const std::string &name) const;
+    [[nodiscard]] const auto &GetRenderTextures() const noexcept
+    {
+        return m_renderTextures;
+    }
+    [[nodiscard]] bool NeedsTextureAssetResolution() const noexcept
+    {
+        return m_textureAssetsPending;
+    }
+    [[nodiscard]] bool HasRuntimeTextureOverride(const std::string &name) const
+    {
+        return m_runtimeTextureOverrides.count(name) != 0;
+    }
+    [[nodiscard]] std::string GetTextureDependencyOwner() const
+    {
+        return "material-textures:" + std::to_string(m_runtimeId);
+    }
+    void PublishTextureAssets(std::unordered_map<std::string, std::shared_ptr<rhi::RenderTexture>> textures);
+    void InvalidateTextureAssets(const std::string &guid, bool deleted);
 
-    /// Validate a Texture asset GUID or builtin white/black/normal token.
+    /// Validate a Texture/RenderTexture asset GUID or builtin white/black/normal token.
     /// Empty input explicitly clears the property; paths and missing assets fail.
-    static std::string RequireTextureGuid(const std::string &textureGuid);
+    static std::string RequireTextureGuid(const std::string &textureGuid, bool allowRenderTexture = false);
     void ClearTexture(const std::string &name);
     bool RemoveProperty(const std::string &name);
 
@@ -614,8 +633,8 @@ class InxMaterial
     {
         if (!m_guid.empty())
             return m_guid;
-        if (!m_filePath.empty())
-            return m_filePath;
+        // A source path is provenance, not identity: separate embedded/runtime
+        // material instances can originate from the same model and slot.
         return "runtime-material:" + std::to_string(m_runtimeId);
     }
 
@@ -627,20 +646,19 @@ class InxMaterial
     // + bolt-on shadow pipeline design.
     // ========================================================================
 
-    /// Per-pass shader publication plus backend-owned Vulkan state when the
-    /// Vulkan material runtime is compiled.
+    /// Per-pass shader publication and Vulkan pipeline state. This is kept
+    /// out of backend-neutral material documents, so WebGPU builds do not
+    /// inherit Vulkan shader/reflection types through InxMaterial.
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     struct PassPipeline
     {
-#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout layout = VK_NULL_HANDLE;
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-#endif
         std::shared_ptr<const ShaderProgram> shaderProgram;
     };
 
     /// Access per-pass pipeline data by compile target.
-#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     void SetPassPipeline(ShaderCompileTarget target, VkPipeline pipeline)
     {
         PassPipeline_(target).pipeline = pipeline;
@@ -667,7 +685,6 @@ class InxMaterial
     {
         return PassPipeline_(target).descriptorSet;
     }
-#endif
 
     void SetPassShaderProgram(ShaderCompileTarget target, std::shared_ptr<const ShaderProgram> program)
     {
@@ -699,13 +716,9 @@ class InxMaterial
     /// Check if a specific pass variant has a valid pipeline.
     [[nodiscard]] bool HasPassPipeline(ShaderCompileTarget target) const
     {
-#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
         return PassPipeline_(target).pipeline != VK_NULL_HANDLE;
-#else
-        (void)target;
-        return false;
-#endif
     }
+#endif
 
     // ========================================================================
     // Serialization
@@ -806,9 +819,15 @@ class InxMaterial
 
     // Material properties
     std::unordered_map<std::string, MaterialProperty> m_properties;
+    std::unordered_map<std::string, MaterialTextureSampler> m_textureSamplers;
+    std::unordered_map<std::string, std::shared_ptr<rhi::RenderTexture>> m_renderTextures;
+    std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_buffers;
+    std::unordered_set<std::string> m_runtimeTextureOverrides;
+    bool m_textureAssetsPending = true;
     std::vector<std::string> m_shaderPropertyOrder;
 
-    // Multi-pass pipeline storage
+    // Vulkan-only multi-pass pipeline storage.
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
     // Indexed by ShaderCompileTarget: 0=Forward, 1=GBuffer, 2=Shadow
     PassPipeline m_passPipelines[static_cast<int>(ShaderCompileTarget::Count)];
 
@@ -822,6 +841,7 @@ class InxMaterial
     {
         return m_passPipelines[static_cast<int>(target)];
     }
+#endif
 
 // Per-material Vulkan UBO. WebGPU and other backends own their material
 // buffers through their backend runtime rather than storing foreign handles in
@@ -842,6 +862,9 @@ class InxMaterial
     // Monotonic version counter — bumped on every property/state change.
     // Python Inspector can poll this instead of full serialize() each frame.
     uint64_t m_version = 0;
+    // Shader-default hydration and texture publication invalidate GPU caches,
+    // but do not turn an imported default into an authored material override.
+    uint64_t m_derivedVersion = 0;
 
     // True when the backing .mat file has been deleted from disk.
     // All holders should release or ignore a deleted material.
@@ -925,6 +948,10 @@ class InxMaterial
     [[nodiscard]] uint64_t GetVersion() const
     {
         return m_version;
+    }
+    [[nodiscard]] uint64_t GetAuthoredVersion() const
+    {
+        return m_version - m_derivedVersion;
     }
 };
 

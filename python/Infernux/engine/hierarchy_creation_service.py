@@ -109,9 +109,12 @@ class HierarchyCreationService:
             ("rendering.sprite_renderer", "Sprite Renderer", "Rendering"),
             ("effect.particle_system", "Particle System", "Effect"),
             ("ui.canvas", "Canvas", "UI"),
+            ("ui.frame", "Frame", "UI"),
             ("ui.image", "Image", "UI"),
             ("ui.text", "Text", "UI"),
             ("ui.button", "Button", "UI"),
+            ("ui.progress_bar", "Progress Bar", "UI"),
+            ("ui.slider", "Slider", "UI"),
         ]
         for kind, label, category in defaults:
             cls.register_create_kind(kind, label, category=category)
@@ -166,8 +169,8 @@ class HierarchyCreationService:
 
         parent_id = int(parent_id or 0)
         effective_parent_id = parent_id
-        if kind in {"ui.image", "ui.text", "ui.button"}:
-            effective_parent_id = self._find_canvas_parent_id(scene, parent_id)
+        if kind in {"ui.frame", "ui.image", "ui.text", "ui.button", "ui.progress_bar", "ui.slider"}:
+            effective_parent_id = self._find_ui_parent_id(scene, parent_id)
 
         if effective_parent_id:
             parent = scene.find_by_id(effective_parent_id)
@@ -385,12 +388,20 @@ class HierarchyCreationService:
             return self._create_particle_system(scene)
         if kind == "ui.canvas":
             return self._create_ui_canvas(scene)
+        if kind == "ui.frame":
+            return self._create_ui_frame(scene, parent_id)
         if kind == "ui.text":
             return self._create_ui_text(scene, parent_id)
         if kind == "ui.image":
             return self._create_ui_image(scene, parent_id)
         if kind == "ui.button":
             return self._create_ui_button(scene, parent_id)
+        if kind == "ui.progress_bar":
+            from Infernux.ui import UIProgressBar
+            return self._create_ui_value_control(scene, "Progress Bar", UIProgressBar)
+        if kind == "ui.slider":
+            from Infernux.ui import UISlider
+            return self._create_ui_value_control(scene, "Slider", UISlider)
         raise ValueError(f"Unknown hierarchy create kind: {kind}")
 
     def _create_primitive(self, scene, kind: str):
@@ -462,9 +473,22 @@ class HierarchyCreationService:
             text = UITextCls()
             text.align_h = ScreenAlignH.Center
             text.align_v = ScreenAlignV.Center
-            text.x = -80.0
-            text.y = -20.0
             obj.add_py_component(text)
+            invalidate_canvas_cache()
+        return obj
+
+    def _create_ui_frame(self, scene, parent_id: int):
+        from Infernux.ui import UIFrame as UIFrameCls
+        from Infernux.ui.enums import ScreenAlignH, ScreenAlignV
+        from Infernux.ui.ui_canvas_utils import invalidate_canvas_cache
+        obj = scene.create_game_object("Frame")
+        if obj:
+            frame = UIFrameCls()
+            frame.width = 320.0
+            frame.height = 180.0
+            frame.align_h = ScreenAlignH.Center
+            frame.align_v = ScreenAlignV.Center
+            obj.add_py_component(frame)
             invalidate_canvas_cache()
         return obj
 
@@ -479,8 +503,6 @@ class HierarchyCreationService:
             image.height = 100.0
             image.align_h = ScreenAlignH.Center
             image.align_v = ScreenAlignV.Center
-            image.x = -50.0
-            image.y = -50.0
             obj.add_py_component(image)
             invalidate_canvas_cache()
         return obj
@@ -496,30 +518,34 @@ class HierarchyCreationService:
             button.height = 40.0
             button.align_h = ScreenAlignH.Center
             button.align_v = ScreenAlignV.Center
-            button.x = -80.0
-            button.y = -20.0
             obj.add_py_component(button)
             invalidate_canvas_cache()
         return obj
 
-    def _find_canvas_parent_id(self, scene, parent_id: int) -> int:
+    def _create_ui_value_control(self, scene, name: str, component_type):
+        from Infernux.ui.enums import ScreenAlignH, ScreenAlignV
+        from Infernux.ui.ui_canvas_utils import invalidate_canvas_cache
+        obj = scene.create_game_object(name)
+        if obj:
+            component = component_type()
+            component.width = 240.0
+            component.height = 24.0
+            component.align_h = ScreenAlignH.Center
+            component.align_v = ScreenAlignV.Center
+            obj.add_py_component(component)
+            invalidate_canvas_cache()
+        return obj
+
+    def _find_ui_parent_id(self, scene, parent_id: int) -> int:
         from Infernux.ui import UICanvas
 
-        candidate_ids = []
         if parent_id:
-            candidate_ids.append(int(parent_id))
+            return int(parent_id)
         selection = self._selection_service
         if selection is not None:
             selected_id = int(selection.primary_scene_object_id() or 0)
-            if selected_id and selected_id not in candidate_ids:
-                candidate_ids.append(selected_id)
-
-        for candidate_id in candidate_ids:
-            current = scene.find_by_id(candidate_id)
-            while current is not None:
-                if any(isinstance(comp, UICanvas) for comp in _get_py_components_safe(current)):
-                    return int(current.id)
-                current = current.get_parent()
+            if selected_id:
+                return selected_id
 
         canvases = [
             obj
@@ -604,12 +630,18 @@ class HierarchyCreationService:
             return "Create Particle System"
         if kind == "ui.canvas":
             return "Create Canvas"
+        if kind == "ui.frame":
+            return "Create Frame"
         if kind == "ui.text":
             return "Create Text"
         if kind == "ui.image":
             return "Create Image"
         if kind == "ui.button":
             return "Create Button"
+        if kind == "ui.progress_bar":
+            return "Create Progress Bar"
+        if kind == "ui.slider":
+            return "Create Slider"
         return "Create GameObject"
 
     def _serialize_created(self, obj, kind: str, *, selected: bool) -> dict[str, Any]:

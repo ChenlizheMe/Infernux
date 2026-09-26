@@ -98,3 +98,92 @@ def test_comparison_rejects_different_scenes_with_matching_motion():
     result = compare_trajectories(baseline, candidate, tolerance=1e-4)
     assert result["status"] == "failed"
     assert result["differences"][0]["path"] == "scene"
+
+
+@pytest.mark.parametrize("level, expected", [
+    ("LOG", "passed"), ("WARNING", "passed"),
+    ("ERROR", "failed"), ("ASSERT", "failed"), ("EXCEPTION", "failed"),
+])
+def test_smoke_report_rejects_logged_errors_even_after_requested_frames(
+    tmp_path, monkeypatch, level, expected,
+):
+    from datetime import datetime
+    from Infernux.debug import DebugConsole, LogEntry, LogType
+    from scripts.acceptance import headless_project_smoke as smoke
+
+    scene = tmp_path / "Assets" / "Main.scene"
+    scene.parent.mkdir()
+    scene.write_text("{}", encoding="utf-8")
+    report = tmp_path / "report.json"
+    report.write_text('{"status": "passed", "stale": true}', encoding="utf-8")
+    monkeypatch.setattr(smoke.sys, "argv", [
+        "smoke", str(tmp_path), "--scene", "Assets/Main.scene", "--play-frames", "12",
+        "--trajectory-output", str(report),
+    ])
+    state = smoke._State(active=True, played_frames=12, trajectory=[])
+    monkeypatch.setattr(smoke, "_State", lambda **kwargs: state)
+    console = DebugConsole.instance()
+    removed = []
+    original_remove = console.remove_listener
+
+    def remove(callback):
+        removed.append(callback)
+        original_remove(callback)
+
+    monkeypatch.setattr(console, "remove_listener", remove)
+
+    def run(*args, **kwargs):
+        console.log(LogEntry("lifecycle failure", LogType[level], datetime.now(), "trace"))
+        # Clearing the Console UI must not erase acceptance evidence.
+        console.clear()
+
+    monkeypatch.setattr(smoke, "run_headless", run)
+    assert smoke.main() == (0 if expected == "passed" else 1)
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["status"] == expected
+    assert "stale" not in payload
+    assert len(removed) == 1
+    if expected == "failed":
+        assert payload["runtime_errors"] == [{
+            "type": level, "message": "lifecycle failure", "stack_trace": "trace",
+        }]
+    else:
+        assert payload["runtime_errors"] == []
+
+
+def test_smoke_writes_failure_report_when_runtime_raises(tmp_path, monkeypatch):
+    from scripts.acceptance import headless_project_smoke as smoke
+
+    scene = tmp_path / "Main.scene"
+    scene.write_text("{}", encoding="utf-8")
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(smoke.sys, "argv", [
+        "smoke", str(tmp_path), "--scene", "Main.scene", "--trajectory-output", str(report),
+    ])
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("scene commit rejected")
+
+    monkeypatch.setattr(smoke, "run_headless", fail)
+    assert smoke.main() == 1
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["error"] == "RuntimeError: scene commit rejected"
+
+
+def test_smoke_accepts_absolute_scene_path(tmp_path, monkeypatch):
+    """MCP callers may pass an AssetDatabase-resolved absolute scene path."""
+    from scripts.acceptance import headless_project_smoke as smoke
+
+    scene = tmp_path / "Assets" / "Main.scene"
+    scene.parent.mkdir()
+    scene.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(smoke.sys, "argv", [
+        "smoke", str(tmp_path), "--scene", str(scene), "--play-frames", "1",
+    ])
+    monkeypatch.setattr(smoke, "run_headless", lambda *args, **kwargs: None)
+
+    # The no-op runner intentionally cannot complete the lifecycle, but the
+    # absolute path must reach the runner instead of being rejected as a
+    # fabricated <project>/<absolute-path> FileNotFoundError.
+    assert smoke.main() == 1

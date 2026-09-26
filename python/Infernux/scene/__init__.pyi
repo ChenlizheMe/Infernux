@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import ClassVar, Union, Optional, List
 
 from Infernux.lib import TagLayerManager as TagLayerManager
 
 
 class GameObjectQuery:
-    """Static methods for finding GameObjects in the active scene."""
+    """Static methods for finding GameObjects across loaded scenes."""
 
     @staticmethod
     def find(name: str) -> Optional[object]:
@@ -47,6 +48,11 @@ class LayerMask:
         ...
 
 
+class LoadSceneMode(Enum):
+    SINGLE: ClassVar[LoadSceneMode]
+    ADDITIVE: ClassVar[LoadSceneMode]
+
+
 class SceneManager:
     """Manages scene loading, unloading, and queries."""
 
@@ -58,27 +64,43 @@ class SceneManager:
         """Get the currently active scene."""
         ...
     @staticmethod
-    def get_scene_by_name(name: str) -> Optional[str]:
-        """Get a scene path by its name."""
+    def get_scene_by_name(name: str) -> Optional[object]:
+        """Get a loaded scene by its name."""
         ...
     @staticmethod
-    def get_scene_by_build_index(build_index: int) -> Optional[str]:
-        """Get a scene path by its build index."""
+    def get_scene_by_world_id(world_id: int) -> Optional[object]:
+        """Get a loaded scene by its stable runtime World identity."""
         ...
     @staticmethod
-    def get_scene_at(index: int) -> Optional[str]:
-        """Get a scene path by its index in the scene list."""
+    def get_scene_by_build_index(build_index: int) -> Optional[object]:
+        """Get a loaded scene corresponding to a build-list entry."""
         ...
     @staticmethod
-    def load_scene(scene: Union[int, str]) -> bool:
+    def get_scene_at(index: int) -> Optional[object]:
+        """Get a scene by index in the loaded-scene list."""
+        ...
+    @staticmethod
+    def set_active_scene(scene: object) -> None:
+        """Select which loaded scene receives newly authored objects."""
+        ...
+    @staticmethod
+    def unload_scene(scene: object) -> None:
+        """Unload one resident scene."""
+        ...
+    @staticmethod
+    def move_game_object_to_scene(game_object: object, destination: object) -> None:
+        """Move a root hierarchy to another loaded Scene without cloning it."""
+        ...
+    @staticmethod
+    def load_scene(scene: Union[int, str], mode: LoadSceneMode = ...) -> bool:
         """Load a scene by file path or build index."""
         ...
     @staticmethod
-    def wait_for_load_scene(scene: Union[int, str]) -> bool:
+    def wait_for_load_scene(scene: Union[int, str], mode: LoadSceneMode = ...) -> bool:
         """Prepare a scene asynchronously and switch when it is ready."""
         ...
     @staticmethod
-    def prepare_scene(scene: Union[int, str]) -> bool:
+    def prepare_scene(scene: Union[int, str], mode: LoadSceneMode = ...) -> bool:
         """Prepare a scene asynchronously without publishing it."""
         ...
     @staticmethod
@@ -99,7 +121,11 @@ class SceneManager:
         ...
     @staticmethod
     def get_scene_count() -> int:
-        """Get the total number of scenes in the build."""
+        """Get the number of currently loaded scenes."""
+        ...
+    @staticmethod
+    def get_scene_count_in_build_settings() -> int:
+        """Get the number of scenes available through Build Settings."""
         ...
     @staticmethod
     def get_scene_name(build_index: int) -> Optional[str]:
@@ -126,6 +152,7 @@ class SceneManager:
 __all__ = [
     "GameObjectQuery",
     "LayerMask",
+    "LoadSceneMode",
     "TagLayerManager",
     "SceneManager",
 ]

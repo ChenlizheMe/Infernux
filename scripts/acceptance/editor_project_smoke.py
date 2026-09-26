@@ -8,12 +8,30 @@ import os
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from Infernux import release_engine
 from Infernux.engine.path_utils import resolved_path, same_path
 from Infernux.host.commands import MainThreadCommandQueue
 from Infernux.host.editor import EditorAutomationHost
+
+
+_FATAL_PATTERNS = (
+    "Validation Error",
+    "VUID-",
+    "CRASH:",
+    "Traceback (most recent call last)",
+    "[ERROR]",
+    "X Error of failed request",
+    "VK_ERROR_DEVICE_LOST",
+    "device lost",
+    "Aborted",
+    "SIGABRT",
+    "Segmentation fault",
+    "SIGSEGV",
+    "segfault",
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -23,6 +41,25 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--play-seconds", type=float, default=5.0)
     parser.add_argument("--startup-timeout", type=float, default=60.0)
     parser.add_argument("--transition-timeout", type=float, default=30.0)
+    parser.add_argument(
+        "--discard-initial-untitled",
+        action="store_true",
+        help=(
+            "Explicitly discard the pathless Untitled Scene created while bootstrapping "
+            "a fresh acceptance project before opening --scene. This is intended only "
+            "for disposable generated fixtures; saved or path-backed Scenes are never discarded."
+        ),
+    )
+    parser.add_argument(
+        "--capture",
+        action="append",
+        choices=("scene", "game", "editor"),
+        default=[],
+        help=(
+            "Capture an engine-owned render target while Play Mode is active. "
+            "May be repeated; files are written under the project's persistent data root."
+        ),
+    )
     parser.add_argument(
         "--dialog-timeout",
         type=float,
@@ -39,6 +76,14 @@ def _parser() -> argparse.ArgumentParser:
         default="",
         help="Choose this destination through the Editor's native save dialog",
     )
+    parser.add_argument(
+        "--process-log",
+        default="",
+        help=(
+            "Editor stdout/stderr log to scan after shutdown. On Linux a regular "
+            "file attached to stdout is discovered automatically."
+        ),
+    )
     return parser
 
 
@@ -51,6 +96,50 @@ def _emit(event: str, **payload: object) -> None:
         ),
         flush=True,
     )
+
+
+def _log_start(path: Path) -> int:
+    return path.stat().st_size if path.is_file() else 0
+
+
+def _new_log_text(path: Path, start_size: int) -> str:
+    if not path.is_file():
+        return ""
+    with path.open("rb") as stream:
+        stream.seek(min(start_size, path.stat().st_size))
+        return stream.read().decode("utf-8", errors="replace")
+
+
+def _fatal_lines(text: str) -> list[str]:
+    return [
+        line
+        for line in text.splitlines()
+        if any(pattern.casefold() in line.casefold() for pattern in _FATAL_PATTERNS)
+    ]
+
+
+def _stdout_log_path() -> Path | None:
+    """Return a redirected stdout file on Linux without inventing a log path."""
+
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        target = os.readlink("/proc/self/fd/1")
+    except OSError:
+        return None
+    if not os.path.isabs(target):
+        return None
+    path = Path(target).resolve()
+    return path if path.is_file() else None
+
+
+def _acceptance_logs(project: str, process_log: str) -> list[Path]:
+    paths = [Path(project) / "Logs" / "engine.log"]
+    explicit = str(process_log or os.environ.get("INFERNUX_EDITOR_SMOKE_LOG", "")).strip()
+    process_path = Path(resolved_path(explicit)) if explicit else _stdout_log_path()
+    if process_path is not None and process_path not in paths:
+        paths.append(process_path)
+    return paths
 
 
 def _wait_until(
@@ -84,6 +173,47 @@ def _require_dialog_path(result: dict[str, object], expected_path: str) -> str:
     return selected_path
 
 
+def _scene_manager_ready(manager: object) -> bool:
+    """Return whether the editor's deferred initial scene load has settled.
+
+    ``SceneFileManager.open_scene`` rejects requests while its deferred load is
+    active. The automation host can observe the project document before that
+    load reaches the owner safe point, so checking only ``project-info`` races
+    with the manager. A new project legitimately settles on an unsaved
+    ``Untitled Scene`` with no path; once loading is false that state is ready
+    for the requested scene to replace it.
+    """
+
+    if isinstance(manager, dict):
+        is_loading = manager.get("is_loading", True)
+    else:
+        is_loading = getattr(manager, "is_loading", True)
+    return not bool(is_loading)
+
+
+def _project_has_active_scene(project_info: object) -> bool:
+    """Return whether native bootstrap has published any active Scene."""
+
+    if not isinstance(project_info, dict):
+        return False
+    active_scene = project_info.get("active_scene")
+    return isinstance(active_scene, dict) and bool(
+        str(active_scene.get("name", "") or "").strip()
+    )
+
+
+def _is_pathless_initial_scene(manager: object) -> bool:
+    """Return whether the settled editor document is the bootstrap Untitled Scene."""
+
+    if isinstance(manager, dict):
+        is_loading = manager.get("is_loading", True)
+        current_scene_path = manager.get("current_scene_path", "")
+    else:
+        is_loading = getattr(manager, "is_loading", True)
+        current_scene_path = getattr(manager, "current_scene_path", "")
+    return not bool(is_loading) and not str(current_scene_path or "").strip()
+
+
 def _run_smoke(
     project: str,
     scene_path: str,
@@ -91,9 +221,12 @@ def _run_smoke(
     play_seconds: float,
     startup_timeout: float,
     transition_timeout: float,
+    discard_initial_untitled: bool,
     dialog_timeout: float,
     native_open_dialog: str,
     native_save_dialog: str,
+    capture_sources: tuple[str, ...],
+    outcome: dict[str, object],
 ) -> None:
     queue = MainThreadCommandQueue.instance()
     try:
@@ -119,7 +252,7 @@ def _run_smoke(
             return run("project-info", lambda: host.project_info(project))
 
         _wait_until(
-            lambda: project_info().get("active_scene", {}).get("path"),
+            lambda: _project_has_active_scene(project_info()),
             timeout=startup_timeout,
             label="initial scene",
         )
@@ -129,15 +262,70 @@ def _run_smoke(
         manager = run("scene-manager", SceneFileManager.instance)
         if manager is None:
             raise RuntimeError("SceneFileManager is unavailable")
-        if not same_path(manager.current_scene_path or "", scene_path):
+
+        def scene_manager_state() -> dict[str, object]:
+            # SceneFileManager is owner-thread state.  Never read its mutable
+            # properties directly from this worker thread while deferred loads
+            # are being published; queue every snapshot through the host.
+            return dict(
+                run(
+                    "scene-manager-state",
+                    lambda: {
+                        "is_loading": bool(manager.is_loading),
+                        "current_scene_path": str(manager.current_scene_path or ""),
+                    },
+                )
+            )
+
+        _wait_until(
+            lambda: _scene_manager_ready(scene_manager_state()),
+            timeout=startup_timeout,
+            label="initial scene deferred load",
+        )
+        current_scene_path = str(scene_manager_state().get("current_scene_path", ""))
+        if not same_path(current_scene_path, scene_path):
             accepted = run("open-scene", lambda: manager.open_scene(scene_path))
             if not accepted:
-                raise RuntimeError(f"Editor rejected scene open: {scene_path}")
+                initial_state = scene_manager_state()
+                if not (
+                    discard_initial_untitled
+                    and _is_pathless_initial_scene(initial_state)
+                ):
+                    raise RuntimeError(f"Editor rejected scene open: {scene_path}")
+
+                # open_scene() has already opened the normal unsaved-changes
+                # transaction. The command-line flag is the caller's explicit
+                # authorization to answer Discard for this disposable,
+                # pathless bootstrap document. Never bypass the transaction or
+                # mark a document clean behind the editor's back.
+                from Infernux.engine.ui.dirty_panel_confirmation import (
+                    DirtyPanelConfirmationCoordinator,
+                )
+
+                def discard_bootstrap_document() -> bool:
+                    coordinator = DirtyPanelConfirmationCoordinator.instance()
+                    if not coordinator.is_active:
+                        return False
+                    coordinator.choose_discard()
+                    return True
+
+                discarded = run(
+                    "discard-initial-untitled",
+                    discard_bootstrap_document,
+                )
+                if not discarded:
+                    raise RuntimeError(
+                        "Editor did not present an unsaved pathless Untitled Scene to discard"
+                    )
+
+            def requested_scene_ready() -> bool:
+                state = scene_manager_state()
+                return _scene_manager_ready(state) and same_path(
+                    str(state.get("current_scene_path", "")), scene_path
+                )
+
             _wait_until(
-                lambda: (
-                    not manager.is_loading
-                    and same_path(manager.current_scene_path or "", scene_path)
-                ),
+                requested_scene_ready,
                 timeout=startup_timeout,
                 label="requested scene",
             )
@@ -199,6 +387,52 @@ def _run_smoke(
         if float(played.get("total_play_time", 0.0)) <= 0.0:
             raise RuntimeError(f"Play Mode clock did not advance: {played!r}")
 
+        if capture_sources:
+            from Infernux.application import Application
+
+            persistent_root = run("persistent-data-path", Application.persistent_data_path)
+            scene_name = os.path.splitext(os.path.basename(scene_path))[0]
+            capture_root = os.path.join(persistent_root, "AcceptanceCaptures")
+            for source in capture_sources:
+                output_path = os.path.join(capture_root, f"{scene_name}-{source}.png")
+                capture_id = run(
+                    f"capture-{source}",
+                    lambda source=source, output_path=output_path: (
+                        Application.request_render_target_capture(source, output_path)
+                    ),
+                )
+                snapshot = _wait_until(
+                    lambda capture_id=capture_id: (
+                        status
+                        if str(
+                            (
+                                status := run(
+                                    "capture-status",
+                                    lambda capture_id=capture_id: (
+                                        Application.query_render_target_capture(capture_id)
+                                    ),
+                                )
+                            ).get("status", "")
+                        )
+                        in {"completed", "failed", "cancelled", "source_expired"}
+                        else None
+                    ),
+                    timeout=transition_timeout,
+                    label=f"{source} render-target capture",
+                )
+                if str(snapshot.get("status")) != "completed":
+                    raise RuntimeError(f"{source} capture failed: {snapshot!r}")
+                if not os.path.isfile(output_path):
+                    raise RuntimeError(f"{source} capture did not write {output_path!r}")
+                _emit(
+                    "capture",
+                    source=source,
+                    path=resolved_path(output_path),
+                    width=int(snapshot.get("width", 0)),
+                    height=int(snapshot.get("height", 0)),
+                    pixel_origin=str(snapshot.get("pixel_origin", "")),
+                )
+
         exited = run(
             "exit-play",
             lambda: host.runtime_transition("exit_play_mode"),
@@ -215,17 +449,17 @@ def _run_smoke(
             timeout=transition_timeout,
             label="Edit Mode restore",
         )
-        _emit(
-            "passed",
-            project=project,
-            scene=scene_path,
-            play_seconds=float(played.get("total_play_time", 0.0)),
-            enter_timings_ms=playing.get("transition_timings_ms", {}),
-            exit_timings_ms=editing.get("transition_timings_ms", {}),
-        )
+        outcome["passed"] = {
+            "project": project,
+            "scene": scene_path,
+            "play_seconds": float(played.get("total_play_time", 0.0)),
+            "enter_timings_ms": playing.get("transition_timings_ms", {}),
+            "exit_timings_ms": editing.get("transition_timings_ms", {}),
+        }
         run("close", host.request_editor_close)
     except BaseException as exc:
-        _emit("failed", error=f"{type(exc).__name__}: {exc}")
+        outcome["error"] = f"{type(exc).__name__}: {exc}"
+        _emit("worker-failed", error=outcome["error"])
         try:
             queue.run_sync(
                 "editor-smoke.close-after-failure",
@@ -234,20 +468,27 @@ def _run_smoke(
             )
         except BaseException:
             pass
-        os._exit(1)
 
 
 def main() -> int:
     args = _parser().parse_args()
     project = resolved_path(args.project)
-    scene_relative = str(args.scene).replace("\\", "/")
-    scene_path = resolved_path(os.path.join(project, *scene_relative.split("/")))
+    scene_argument = os.path.expandvars(os.path.expanduser(str(args.scene)))
+    if os.path.isabs(scene_argument):
+        scene_path = resolved_path(scene_argument)
+    else:
+        scene_relative = scene_argument.replace("\\", "/")
+        scene_path = resolved_path(os.path.join(project, *scene_relative.split("/")))
     if not os.path.isdir(project):
         raise FileNotFoundError(project)
     if not os.path.isfile(scene_path):
         raise FileNotFoundError(scene_path)
     if args.play_seconds <= 0:
         raise ValueError("--play-seconds must be positive")
+
+    log_paths = _acceptance_logs(project, args.process_log)
+    log_starts = {path: _log_start(path) for path in log_paths}
+    outcome: dict[str, object] = {}
 
     worker = threading.Thread(
         target=_run_smoke,
@@ -256,6 +497,7 @@ def main() -> int:
             "play_seconds": args.play_seconds,
             "startup_timeout": args.startup_timeout,
             "transition_timeout": args.transition_timeout,
+            "discard_initial_untitled": bool(args.discard_initial_untitled),
             "dialog_timeout": args.dialog_timeout,
             "native_open_dialog": resolved_path(args.native_open_dialog)
             if args.native_open_dialog
@@ -263,12 +505,37 @@ def main() -> int:
             "native_save_dialog": resolved_path(args.native_save_dialog)
             if args.native_save_dialog
             else "",
+            "capture_sources": tuple(dict.fromkeys(args.capture)),
+            "outcome": outcome,
         },
         name="InfernuxEditorProjectSmoke",
         daemon=True,
     )
     worker.start()
-    release_engine(project)
+    try:
+        release_engine(project)
+    except BaseException as exc:
+        outcome.setdefault("error", f"{type(exc).__name__}: {exc}")
+    worker.join(timeout=max(args.transition_timeout, 5.0))
+    if worker.is_alive():
+        outcome.setdefault("error", "Editor smoke worker did not stop after engine shutdown")
+
+    fatal_records = [
+        {"path": str(path), "lines": _fatal_lines(_new_log_text(path, log_starts[path]))}
+        for path in log_paths
+    ]
+    fatal_records = [record for record in fatal_records if record["lines"]]
+    if fatal_records:
+        outcome.setdefault("error", "Editor emitted fatal diagnostics")
+    if "error" in outcome:
+        _emit("failed", error=outcome["error"], fatal_logs=fatal_records)
+        return 1
+
+    passed = outcome.get("passed")
+    if not isinstance(passed, dict):
+        _emit("failed", error="Editor smoke completed without a success result")
+        return 1
+    _emit("passed", **passed)
     return 0
 
 

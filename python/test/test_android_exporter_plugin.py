@@ -37,6 +37,10 @@ def _write_android_numpy_wheel(prefix: Path, *, abi: str = "x86_64") -> Path:
             "numpy/random/_examples/numba/extending.py",
             "raise RuntimeError('runtime package must not ship NumPy examples')\n",
         )
+        archive.writestr("numpy/_core/tests/test_runtime.py", "raise AssertionError\n")
+        archive.writestr("numpy/testing/__init__.py", "raise AssertionError\n")
+        archive.writestr("numpy/typing/tests/test_typing.py", "raise AssertionError\n")
+        archive.writestr("numpy/f2py/__init__.py", "raise AssertionError\n")
         archive.writestr(
             "numpy-2.5.2.dist-info/WHEEL",
             "Wheel-Version: 1.0\n"
@@ -134,10 +138,48 @@ def _write_native_payload(root: Path, *, abi: str) -> Path:
     (root / abi / "Player.inxmanifest").write_text(json.dumps({
         "engine_version": "0.4.0", "platform": "android", "abi": abi,
         "python_abi": "cp313", "minimum_api": 26, "configuration": "Release",
+        "native_libraries": list(payload.NATIVE_LIBRARIES),
     }), encoding="utf-8")
     java = root / "java/org/libsdl/app/SDLActivity.java"
     java.parent.mkdir(parents=True)
-    java.write_text("// SDL fixture", encoding="utf-8")
+    java.write_text(
+        """class SDLActivity extends Activity {
+    static class ShowTextInputTask implements Runnable {
+        public void run() {
+            mTextEdit.setVisibility(View.VISIBLE);
+            mTextEdit.requestFocus();
+            InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+            imm.showSoftInput(mTextEdit, 0);
+
+            if (imm.isAcceptingText()) {
+                onNativeScreenKeyboardShown();
+            }
+        }
+    }
+}
+""",
+        encoding="utf-8",
+    )
+    (java.parent / "SDLInputConnection.java").write_text(
+        """class SDLInputConnection extends BaseInputConnection {
+    public boolean sendKeyEvent(KeyEvent event) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_ENTER) {
+            if (SDLActivity.onNativeSoftReturnKey()) {
+                return true;
+            }
+        }
+        return super.sendKeyEvent(event);
+    }
+    public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+        while (beforeLength-- > 0) {
+            nativeGenerateScancodeForUnichar('\\b');
+        }
+        return true;
+    }
+}
+""",
+        encoding="utf-8",
+    )
     return root
 
 
@@ -152,14 +194,25 @@ def test_android_native_payload_stages_without_build_tools(monkeypatch, tmp_path
     native.mkdir(parents=True)
     (native / "libInfernuxOld.so").write_bytes(b"stale")
     (native / "libpython3.13.so").write_bytes(b"Hub-owned")
+    (source / "x86_64/jniLibs/libInfernuxOld.so").write_bytes(b"stale source")
     (source / "x86_64/jniLibs/libmain.so.meta").write_bytes(b"editor-only")
     module.stage_native_payload(source, staging, abi="x86_64")
     assert {p.name for p in native.iterdir()} == set(module.NATIVE_LIBRARIES) | {"libpython3.13.so"}
     assert (native / "libpython3.13.so").read_bytes() == b"Hub-owned"
     assert (staging / "app/src/main/java/org/libsdl/app/SDLActivity.java").is_file()
+    input_connection = staging / "app/src/main/java/org/libsdl/app/SDLInputConnection.java"
+    input_text = input_connection.read_text(encoding="utf-8")
+    assert "if (keyCode == KeyEvent.KEYCODE_DEL)" in input_text
+    assert "SDLActivity.onNativeKeyDown(keyCode)" in input_text
+    activity_text = (staging / "app/src/main/java/org/libsdl/app/SDLActivity.java").read_text(encoding="utf-8")
+    assert "imm.restartInput(mTextEdit);" in activity_text
+    assert "mTextEdit.post(() ->" in activity_text
 
 
-@pytest.mark.parametrize("failure", ["abi", "engine", "missing_library", "missing_java"])
+@pytest.mark.parametrize("failure", [
+    "abi", "engine", "missing_library", "missing_asset_runtime",
+    "missing_manifest_asset_runtime", "missing_java",
+])
 def test_android_native_payload_rejects_incomplete_or_incompatible_plugin(monkeypatch, tmp_path, failure):
     _android_module(monkeypatch)
     module = importlib.import_module("infernux_android.native_payload")
@@ -172,6 +225,10 @@ def test_android_native_payload_rejects_incomplete_or_incompatible_plugin(monkey
         document["engine_version"] = "0.3.7"
     elif failure == "missing_library":
         (source / "x86_64/jniLibs/libmain.so").unlink()
+    elif failure == "missing_asset_runtime":
+        (source / "x86_64/jniLibs/libInfernuxAssetRuntime.so").unlink()
+    elif failure == "missing_manifest_asset_runtime":
+        document["native_libraries"].remove("libInfernuxAssetRuntime.so")
     else:
         (source / "java/org/libsdl/app/SDLActivity.java").unlink()
     manifest.write_text(json.dumps(document), encoding="utf-8")
@@ -188,7 +245,7 @@ def test_android_exporter_contributes_only_vulkan_targets(monkeypatch):
         "android-arm64",
     ]
     assert {target.capabilities.graphics_api for target in targets} == {"vulkan"}
-    assert all(not target.capabilities.numba for target in targets)
+    assert all(not target.capabilities.cpu_jit for target in targets)
 
 
 def test_android_build_cache_is_project_owned_by_default(monkeypatch, tmp_path):
@@ -364,6 +421,97 @@ def test_android_exporter_doctor_validates_target_python_runtime(
     assert report.details["python_prefix"] == str(prefix.resolve())
 
 
+def test_android_compute_aot_is_requested_from_shared_cook(monkeypatch, tmp_path):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    platform_cook = importlib.import_module("Infernux.engine.platform_content_cook")
+    project = tmp_path / "project"
+    captured = {}
+    request = BuildRequest(
+        str(project),
+        "android-arm64",
+        str(tmp_path / "output"),
+        BuildProfile(options={"build_settings": {}}),
+    )
+    cooked = platform_cook.PlatformContentCookResult(
+        "TestGame",
+        tmp_path / "cooked",
+        {},
+    )
+    cooked.data_directory.mkdir(parents=True)
+    (cooked.data_directory / "Content.inxpkg").write_bytes(b"content")
+    (cooked.data_directory / "AssetCatalog.inxcat").write_bytes(b"catalog")
+    (cooked.data_directory / "PackageIndex.inxmanifest").write_text(
+        "INFERNUX_PLAYER_PACKAGE_INDEX\n", encoding="ascii"
+    )
+    def cook(*args, **kwargs):
+        captured.update(kwargs)
+        return cooked
+    monkeypatch.setattr(platform_cook, "cook_platform_content", cook)
+    monkeypatch.setattr(platform_cook, "read_cooked_player_icon", lambda *args, **kwargs: b"icon")
+    monkeypatch.setattr(exporter_module, "_stage_android_launcher_icons", lambda *args: None)
+
+    exporter_module._cook_player_content(
+        request,
+        tmp_path / "staging",
+        tmp_path / "engine-package",
+        "arm64-v8a",
+    )
+
+    assert captured["gpu_compute_aot"] is True
+
+
+@pytest.mark.parametrize(
+    "import_source, missing_package",
+    [
+        ("import numba as nb\n", "numba"),
+        ("from llvmlite import binding\n", "llvmlite"),
+    ],
+)
+def test_android_rejects_direct_jit_imports_in_selected_sources(
+    monkeypatch, tmp_path, import_source, missing_package
+):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    platform_cook = importlib.import_module("Infernux.engine.platform_content_cook")
+    selected = tmp_path / "Assets" / "Scripts" / "Gameplay.py"
+    selected.parent.mkdir(parents=True)
+    selected.write_text(import_source, encoding="utf-8")
+    cooked = platform_cook.PlatformContentCookResult(
+        "TestGame", tmp_path / "cooked", {}, (selected,)
+    )
+    cooked.data_directory.mkdir()
+    monkeypatch.setattr(platform_cook, "cook_platform_content", lambda *args, **kwargs: cooked)
+    request = BuildRequest(
+        str(tmp_path / "project"), "android-arm64", str(tmp_path / "output"),
+        BuildProfile(options={"build_settings": {}}),
+    )
+
+    with pytest.raises(ValueError, match=rf"{missing_package}.*Android runtime has no CPU JIT"):
+        exporter_module._cook_player_content(
+            request, tmp_path / "staging", tmp_path / "engine-package", "arm64-v8a"
+        )
+    assert not (tmp_path / "staging/app/src/main/assets/player").exists()
+
+
+def test_android_jit_import_scan_uses_only_selected_sources(monkeypatch, tmp_path):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+    selected = tmp_path / "Assets" / "Scripts" / "Gameplay.py"
+    selected.parent.mkdir(parents=True)
+    selected.write_text(
+        "import infernux as inx\n"
+        "@inx.jit.compile(parallel_policy='required')\n"
+        "def update(value):\n    return value + 1\n",
+        encoding="utf-8",
+    )
+    editor_only = tmp_path / "Assets" / "Editor" / "Bake.py"
+    editor_only.parent.mkdir(parents=True)
+    editor_only.write_text("import numba\n", encoding="utf-8")
+
+    exporter_module._reject_android_jit_imports((selected,))
+
+
 def test_android_exporter_doctor_rejects_wrong_runtime_abi(monkeypatch, tmp_path):
     module = _android_module(monkeypatch)
     for name, value in _toolchain(tmp_path).items():
@@ -438,8 +586,12 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     gradle = (project / "app/build.gradle").read_text(encoding="utf-8")
     doctor = importlib.import_module("infernux_android.doctor")
     assert f'buildToolsVersion "{doctor.ANDROID_BUILD_TOOLS}"' in gradle
+    assert 'applicationId "com.infernux.infernuxplayer"' in gradle
     root_gradle = (project / "build.gradle").read_text(encoding="utf-8")
     host_source = (PLUGIN_EDITOR.parents[1] / "native/main.cpp").read_text(encoding="utf-8")
+    host_cmake = (PLUGIN_EDITOR.parents[1] / "native/CMakeLists.txt").read_text(
+        encoding="utf-8"
+    )
     activity = (
         project
         / "app/src/main/java/com/infernux/bootstrap/InfernuxActivity.java"
@@ -470,25 +622,31 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert "android:windowSplashScreenAnimatedIcon" in splash_style
     assert "android:windowSplashScreenBackground" in splash_style
     assert "Infernux Player" in strings
-    assert "if (mScreenKeyboardShown)" in activity
+    assert "if (isKeyboardVisible())" in activity
     assert "registerOnBackInvokedCallback" in activity
     assert "OnBackInvokedDispatcher.PRIORITY_OVERLAY" in activity
     assert "this::dispatchInfernuxBack" in activity
+    assert "public void onBackPressed() {\n        dispatchInfernuxBack();" in activity
     assert "sendCommand(COMMAND_TEXTEDIT_HIDE, null)" in activity
-    assert "onNativeKeyDown(KeyEvent.KEYCODE_BACK)" in activity
-    assert "onNativeKeyUp(KeyEvent.KEYCODE_BACK)" in activity
+    assert "onNativeKeyDown(KeyEvent.KEYCODE_ESCAPE)" in activity
+    assert "onNativeKeyUp(KeyEvent.KEYCODE_ESCAPE)" in activity
     back_handler = activity.split("private void dispatchInfernuxBack()", 1)[1].split(
         "private File prepareVersionedAssets", 1
     )[0]
-    assert back_handler.index("if (mScreenKeyboardShown)") < back_handler.index(
-        "onNativeKeyDown(KeyEvent.KEYCODE_BACK)"
+    assert back_handler.index("if (isKeyboardVisible())") < back_handler.index(
+        "onNativeKeyDown(KeyEvent.KEYCODE_ESCAPE)"
     )
     assert "onNativeKeyboardFocusLost();\n            return;" in back_handler
+    assert "KeyEvent.KEYCODE_BACK" not in back_handler
+    assert back_handler.count("onNativeKeyDown(KeyEvent.KEYCODE_ESCAPE)") == 1
+    assert back_handler.count("onNativeKeyUp(KeyEvent.KEYCODE_ESCAPE)") == 1
     assert "super.onBackPressed()" not in activity
     assert "setOnApplyWindowInsetsListener" in activity
     assert "setWindowInsetsAnimationCallback" in activity
     assert "DISPATCH_MODE_CONTINUE_ON_SUBTREE" in activity
     assert "WindowInsets.Type.ime()" in activity
+    assert "lastPublishedKeyboardInset" in activity
+    assert "mScreenKeyboardShown" not in activity
     assert "WindowInsets.Type.systemBars()" in activity
     assert 'Os.setenv("INFERNUX_ANDROID_KEYBOARD_INSET"' in activity
     assert 'Os.setenv("INFERNUX_ANDROID_KEYBOARD_INSET_KNOWN", "1"' in activity
@@ -496,6 +654,16 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert 'Os.setenv("INFERNUX_PLAYER_RENDER_SCALE", scaleText' in activity
     assert "getDisplayMetrics().densityDpi" in activity
     assert "INFERNUX_ANDROID_RESOLUTION_SCALING" in activity
+    assert "new InfernuxSurface(context)" in activity
+    surface_destroy = activity.split(
+        "public void surfaceDestroyed(SurfaceHolder holder)", 1
+    )[1].split("super.surfaceDestroyed(holder);", 1)[0]
+    assert surface_destroy.index("SDLActivity.handleNativeState();") < (
+        surface_destroy.index("nativeWaitForPresentationSuspended();")
+    )
+    assert "AndroidPresentationLifecycle::WaitForPresentationSuspended()" in host_source
+    assert "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE" in host_source
+    assert '"${CMAKE_SOURCE_DIR}/cpp/infernux"' in host_cmake
     assert "INFERNUX_PLAYER_FPS_CAP" not in activity
     assert 'Os.setenv("INFERNUX_PRESENT_MODE", "fifo"' in activity
     assert 'Os.setenv("INFERNUX_MAX_FRAMES_IN_FLIGHT", "2"' in activity
@@ -533,6 +701,21 @@ def test_android_host_template_disables_opengl_and_configures_vulkan(
     assert "cmake" not in gradle
     assert "@INFERNUX_" not in gradle + root_gradle
     assert "@ANDROID_" not in gradle + root_gradle
+
+
+@pytest.mark.parametrize(
+    ("game_name", "application_id"),
+    [
+        ("Infernux041Labv2", "com.infernux.infernux041labv2"),
+        ("Runner Long", "com.infernux.runnerlong"),
+        ("123 Demo", "com.infernux.game123demo"),
+    ],
+)
+def test_android_application_id_is_project_owned(monkeypatch, game_name, application_id):
+    _android_module(monkeypatch)
+    exporter_module = importlib.import_module("infernux_android.exporter")
+
+    assert exporter_module._android_application_id(game_name) == application_id
 
 
 def test_android_launcher_icons_are_generated_from_the_cooked_project_icon(
@@ -846,6 +1029,10 @@ def test_android_python_runtime_staging_is_exact_and_versioned(monkeypatch, tmp_
     (stdlib / "encodings" / "__init__.py").write_text("fixture\n", encoding="utf-8")
     (stdlib / "removed.py").write_text("removed later\n", encoding="utf-8")
     (stdlib / "__pycache__" / "ignored.pyc").write_bytes(b"ignored")
+    (stdlib / "pydoc_data").mkdir()
+    (stdlib / "pydoc_data" / "topics.py").write_text("ignored\n", encoding="utf-8")
+    (stdlib / "lib-dynload").mkdir()
+    (stdlib / "lib-dynload" / "_testcapi.so").write_bytes(b"ignored")
     (prefix / "lib" / "libpython3.13.so").write_bytes(b"python")
     (prefix / "lib" / "libssl_python.so").write_bytes(b"ssl")
     _write_android_numpy_wheel(prefix)
@@ -884,6 +1071,12 @@ def test_android_python_runtime_staging_is_exact_and_versioned(monkeypatch, tmp_
     assert (stale_native / "libengine.so").is_file()
     assert (stale_assets / "site-packages/numpy/__init__.py").is_file()
     assert not (stale_assets / "site-packages/numpy/random/_examples").exists()
+    assert not (stale_assets / "site-packages/numpy/_core/tests").exists()
+    assert not (stale_assets / "site-packages/numpy/testing").exists()
+    assert not (stale_assets / "site-packages/numpy/typing/tests").exists()
+    assert not (stale_assets / "site-packages/numpy/f2py").exists()
+    assert not (stale_assets / "lib/python3.13/pydoc_data").exists()
+    assert not (stale_assets / "lib/python3.13/lib-dynload/_testcapi.so").exists()
     assert len(first_identity.strip()) == 64
 
     (stdlib / "encodings" / "__init__.py").write_text(
@@ -979,6 +1172,9 @@ def test_android_engine_staging_excludes_desktop_runtime_payloads(
     for path in excluded:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"desktop-only")
+    vendor = package / "_compiler/taichi/_vendor/taichi/__init__.py"
+    vendor.parent.mkdir(parents=True)
+    vendor.write_text("raise AssertionError('compiler must not ship')\n", encoding="utf-8")
     staging = tmp_path / "staging"
     request = BuildRequest(
         str(tmp_path / "project"),
@@ -1002,9 +1198,10 @@ def test_android_engine_staging_excludes_desktop_runtime_payloads(
     assert not (destination / "resources/project_templates").exists()
     assert not (destination / "test").exists()
     assert not (destination / "engine/platform_player_bootstrap.pyi").exists()
+    assert not (destination / "_compiler/taichi/_vendor").exists()
 
 
-def test_android_python_runtime_identity_tracks_layout_contract(monkeypatch, tmp_path):
+def test_android_python_runtime_identity_tracks_packaging_policy(monkeypatch, tmp_path):
     _android_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_android.exporter")
     prefix = tmp_path / "python-prefix"
@@ -1021,11 +1218,7 @@ def test_android_python_runtime_identity_tracks_layout_contract(monkeypatch, tmp
         "3.13",
         "x86_64",
     )
-    monkeypatch.setattr(
-        exporter_module,
-        "_ANDROID_PYTHON_RUNTIME_LAYOUT",
-        exporter_module._ANDROID_PYTHON_RUNTIME_LAYOUT + 1,
-    )
+    monkeypatch.setattr(exporter_module, "_ANDROID_STDLIB_IGNORES", ("changed-policy",))
     second = exporter_module._python_runtime_identity(
         prefix,
         stdlib,

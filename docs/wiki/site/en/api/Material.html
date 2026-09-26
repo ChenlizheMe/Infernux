@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/en/api/njit.html" class="">njit</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/compile.html" class="">compile</a><a href="/wiki/site/en/api/statistics.html" class="">statistics</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -578,12 +578,16 @@ class in <b>Infernux.core</b>
 <td>Save the material to a file.</td>
 </tr>
 <tr>
+<td><code>set_matrix(name: str, value: Any) → None</code></td>
+<td>Set a NumPy (4,4) matrix indexed as [row, column].</td>
+</tr>
+<tr>
 <td><code>set_param(name: str, value: Any) → None</code></td>
 <td>Set a non-texture material property using type/shape dispatch.</td>
 </tr>
 <tr>
 <td><code>set_texture(name: str, value: Any) → None</code></td>
-<td>Set a texture property from GUID, path, Texture, or None.</td>
+<td>Bind a texture asset or builtin.</td>
 </tr>
 <tr>
 <td><code>flush() → None</code></td>

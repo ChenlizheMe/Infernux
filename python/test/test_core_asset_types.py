@@ -271,6 +271,17 @@ class TestTextureImportSettings:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestAudioImportSettings:
+    def test_streaming_and_legacy_load_type(self):
+        settings = AudioImportSettings(load_type="streaming")
+        assert settings == settings.copy() == AudioImportSettings.from_dict(settings.to_dict())
+        old = settings.to_dict()
+        del old["load_type"]
+        assert AudioImportSettings.from_dict(old).load_type == "decompress_on_load"
+        assert settings != AudioImportSettings()
+        old["load_type"] = "automatic_guess"
+        with pytest.raises(ValueError, match="load_type"):
+            AudioImportSettings.from_dict(old)
+
     def test_defaults(self):
         s = AudioImportSettings()
         assert s.force_mono is False
@@ -297,10 +308,180 @@ class TestAudioImportSettings:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestMeshImportSettings:
+    @pytest.mark.parametrize("invalid", [-1, 176, True, "30", float("inf"), float("nan")])
+    def test_normal_smoothing_range(self, invalid):
+        document = MeshImportSettings().to_dict()
+        document["normal_smoothing_angle"] = invalid
+        with pytest.raises(ValueError, match="normal_smoothing_angle"):
+            MeshImportSettings.from_dict(document)
+
+    def test_smoothing_requires_the_complete_current_contract(self):
+        document = MeshImportSettings(normal_smoothing_angle=30).to_dict()
+        assert MeshImportSettings.from_dict(document).normal_smoothing_angle == 30
+        del document["normal_smoothing_angle"]
+        with pytest.raises(ValueError, match="complete current field set"):
+            MeshImportSettings.from_dict(document)
+
+    def test_defaults_and_inspector_project_native_schema(self):
+        from Infernux.core.asset_types import mesh_import_settings_schema
+        from Infernux.engine.ui import asset_details_renderer as inspector
+
+        schema = mesh_import_settings_schema()
+        defaults = MeshImportSettings().to_dict()
+        assert defaults == {item["name"]: item["default"] for item in schema["fields"]}
+        inspector._ensure_categories()
+        fields = inspector._categories["mesh"].editable_fields
+        custom_fields = {
+            "rig_root_node", "skeleton_definition_guid", "skeleton_definition_id",
+            "exposed_bones", "humanoid_bone_overrides",
+        }
+        model_fields = [item for item in schema["fields"] if item["type"] not in {
+            "material_remaps", "animation_clips", "animation_clip_extras"
+        } and item["name"] not in custom_fields]
+        assert [item.key for item in fields] == [item["name"] for item in model_fields]
+        for actual, declared in zip(fields, model_fields):
+            assert actual.label == declared["label"]
+            assert actual.field_type.value == {"bool": "checkbox", "float": "float", "int": "int", "enum": "combo"}[declared["type"]]
+        for page in ("model", "rig", "animation"):
+            assert [item.key for item in inspector._model_page_fields(page)] == [
+                item["name"] for item in schema["fields"]
+                if item["page"] == page
+                and item["type"] not in {"animation_clips", "animation_clip_extras"}
+                and item["name"] not in custom_fields
+            ]
+        # Authoring clients cannot change the next client's contract or defaults.
+        schema["fields"][0]["default"] = -7
+        assert mesh_import_settings_schema()["fields"][0]["default"] == defaults["scale_factor"]
+        assert MeshImportSettings().to_dict() == defaults
+
+    def test_welding_round_trip_and_incomplete_sidecar_rejection(self):
+        settings = MeshImportSettings(weld_vertices=False)
+        assert MeshImportSettings.from_dict(settings.to_dict()) == settings
+        copied = settings.copy()
+        copied.weld_vertices = True
+        assert copied != settings
+        assert not settings.weld_vertices
+        incomplete = settings.to_dict()
+        del incomplete["weld_vertices"]
+        with pytest.raises(ValueError, match="complete current field set"):
+            MeshImportSettings.from_dict(incomplete)
+
+    def test_hierarchy_order_and_visibility_are_authoring_flags(self):
+        settings = MeshImportSettings(sort_hierarchy_by_name=True, import_visibility=False)
+        assert MeshImportSettings.from_dict(settings.to_dict()) == settings
+        incomplete = settings.to_dict()
+        del incomplete["sort_hierarchy_by_name"], incomplete["import_visibility"]
+        with pytest.raises(ValueError, match="complete current field set"):
+            MeshImportSettings.from_dict(incomplete)
+
+    def test_blend_shape_import_is_explicit_and_current_only(self):
+        settings = MeshImportSettings(import_blend_shapes=False)
+        assert settings.to_dict()["import_blend_shapes"] is False
+        assert MeshImportSettings.from_dict(settings.to_dict()).import_blend_shapes is False
+        incomplete = settings.to_dict()
+        del incomplete["import_blend_shapes"]
+        with pytest.raises(ValueError, match="complete current field set"):
+            MeshImportSettings.from_dict(incomplete)
+
+    @pytest.mark.parametrize("level", ["off", "low", "medium", "high"])
+    def test_mesh_compression_schema_is_round_trippable_and_current_only(self, level):
+        settings = MeshImportSettings(mesh_compression=level)
+        assert MeshImportSettings.from_dict(settings.to_dict()).mesh_compression == level
+        incomplete = settings.to_dict()
+        del incomplete["mesh_compression"]
+        with pytest.raises(ValueError, match="complete current field set"):
+            MeshImportSettings.from_dict(incomplete)
+
+    def test_mesh_compression_rejects_unknown_levels(self):
+        document = MeshImportSettings().to_dict()
+        document["mesh_compression"] = "maximum"
+        with pytest.raises(ValueError, match="mesh_compression"):
+            MeshImportSettings.from_dict(document)
+
+    @pytest.mark.parametrize("index_format", ["auto", "uint16", "uint32"])
+    def test_index_format_schema_is_round_trippable_and_current_only(self, index_format):
+        settings = MeshImportSettings(index_format=index_format)
+        assert MeshImportSettings.from_dict(settings.to_dict()).index_format == index_format
+        incomplete = settings.to_dict()
+        del incomplete["index_format"]
+        with pytest.raises(ValueError, match="complete current field set"):
+            MeshImportSettings.from_dict(incomplete)
+
+    def test_index_format_rejects_unknown_values(self):
+        document = MeshImportSettings().to_dict()
+        document["index_format"] = "uint8"
+        with pytest.raises(ValueError, match="index_format"):
+            MeshImportSettings.from_dict(document)
+
+    @pytest.mark.parametrize("key", ["sort_hierarchy_by_name", "import_visibility"])
+    @pytest.mark.parametrize("invalid", [0, 1, None, "false"])
+    def test_hierarchy_flags_reject_non_boolean_values(self, key, invalid):
+        document = MeshImportSettings().to_dict()
+        document[key] = invalid
+        with pytest.raises(TypeError, match=key):
+            MeshImportSettings.from_dict(document)
+
+    @pytest.mark.parametrize("invalid", [0, 1, None, "false"])
+    def test_welding_rejects_non_boolean_flags(self, invalid):
+        document = MeshImportSettings().to_dict()
+        document["weld_vertices"] = invalid
+        with pytest.raises(TypeError, match="weld_vertices"):
+            MeshImportSettings.from_dict(document)
+
     def test_defaults(self):
         s = MeshImportSettings()
         assert s.scale_factor == 1.0
-        assert s.generate_normals is True
+        assert s.normal_mode == "import"
+        assert s.tangent_mode == "import"
+        assert s.normal_smoothing_source == "angle"
+
+    @pytest.mark.parametrize("source", ["angle", "source"])
+    def test_normal_smoothing_source_round_trip(self, source):
+        settings = MeshImportSettings(normal_smoothing_source=source)
+        assert MeshImportSettings.from_dict(settings.to_dict()).normal_smoothing_source == source
+
+    @pytest.mark.parametrize("invalid", [True, 1, None, "fallback"])
+    def test_normal_smoothing_source_rejects_invalid_values(self, invalid):
+        document = MeshImportSettings().to_dict()
+        document["normal_smoothing_source"] = invalid
+        with pytest.raises(ValueError, match="normal_smoothing_source"):
+            MeshImportSettings.from_dict(document)
+
+    @pytest.mark.parametrize("mode", ["import", "calculate", "none", "source_only"])
+    def test_basis_modes_round_trip(self, mode):
+        settings = MeshImportSettings(normal_mode=mode, tangent_mode=mode)
+        assert MeshImportSettings.from_dict(settings.to_dict()) == settings
+
+    def test_basis_algorithms_require_current_fields(self):
+        settings = MeshImportSettings()
+        assert settings.tangent_algorithm == "mikktspace"
+        incomplete = settings.to_dict()
+        del incomplete["tangent_algorithm"], incomplete["normal_weighting"]
+        with pytest.raises(ValueError, match="complete current field set"):
+            MeshImportSettings.from_dict(incomplete)
+
+    @pytest.mark.parametrize("key", ["normal_weighting", "tangent_algorithm"])
+    @pytest.mark.parametrize("invalid", [True, 4, None, "auto"])
+    def test_basis_algorithms_reject_invalid_values(self, key, invalid):
+        document = MeshImportSettings().to_dict()
+        document[key] = invalid
+        with pytest.raises(ValueError, match=key):
+            MeshImportSettings.from_dict(document)
+
+    @pytest.mark.parametrize("generate", [True, False])
+    def test_obsolete_basis_flags_do_not_replace_current_fields(self, generate):
+        document = MeshImportSettings().to_dict()
+        del document["normal_mode"], document["tangent_mode"]
+        document.update(generate_normals=generate, generate_tangents=generate)
+        with pytest.raises(ValueError, match="complete current field set"):
+            MeshImportSettings.from_dict(document)
+
+    @pytest.mark.parametrize("invalid", [True, 1, None, "auto"])
+    def test_basis_modes_reject_invalid_values(self, invalid):
+        document = MeshImportSettings().to_dict()
+        document["normal_mode"] = invalid
+        with pytest.raises(ValueError, match="normal_mode"):
+            MeshImportSettings.from_dict(document)
 
     def test_to_dict_round_trip(self):
         s = MeshImportSettings(scale_factor=1.0, flip_uvs=True)
@@ -327,6 +508,19 @@ class TestMeshImportSettings:
         assert s == c
         c.optimize_mesh = True
         assert s.optimize_mesh is False
+
+    @pytest.mark.parametrize("invalid", ["legacy", "", 1, True, None])
+    def test_rig_choices_are_authoritative(self, invalid):
+        data = MeshImportSettings().to_dict()
+        data["rig_type"] = invalid
+        with pytest.raises(ValueError):
+            MeshImportSettings.from_dict(data)
+
+    def test_removed_fields_do_not_trigger_version_fallback(self):
+        data = MeshImportSettings().to_dict()
+        del data["rig_type"], data["import_animations"]
+        with pytest.raises(ValueError, match="complete current field set"):
+            MeshImportSettings.from_dict(data)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

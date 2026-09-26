@@ -210,7 +210,7 @@ def test_runtime_catalog_uses_mesh_as_deterministic_alias_for_mesh_and_skin():
         {
             "mesh": {
                 "$type": "asset_ref",
-                "guid": "",
+                "guid": source_guid,
                 "path_hint": source_path,
             }
         }

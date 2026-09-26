@@ -19,6 +19,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <initializer_list>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -31,6 +32,7 @@ enum class AssetEvent;
 // dereference it in the header (only in Collider.cpp which includes Rigidbody.h).
 class Rigidbody;
 struct PhysicsBodyPoseUpdate;
+struct SemanticTypeDescriptor;
 
 /**
  * @brief Abstract base class for Collider components.
@@ -48,6 +50,14 @@ class Collider : public Component
         constraints.satisfiedTypes = {"Collider"};
         return constraints;
     }
+
+    /// Build the authoritative semantic declaration shared by each concrete
+    /// collider type. Concrete geometry fields are appended by the derived type.
+    [[nodiscard]] static SemanticTypeDescriptor DescribeSemanticType(std::string typeName, std::string readableId,
+                                                                     std::string displayName);
+    static nlohmann::json &AddSemanticField(SemanticTypeDescriptor &type, std::string fieldId, std::string valueType,
+                                            nlohmann::json defaultValue, std::string displayNameKey,
+                                            std::string tooltip);
 
     using ECSHandle = PhysicsECSStore::ColliderHandle;
 

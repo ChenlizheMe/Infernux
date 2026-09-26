@@ -316,6 +316,29 @@ class Debug:
     """
     
     @staticmethod
+    def _caller_location() -> tuple[str, int]:
+        """Return the first frame outside the Debug implementation.
+
+        A fixed stack offset works only for direct ``Debug.log`` calls. Public
+        helpers such as ``log_suppressed`` add another frame and previously
+        made Console navigation jump back into ``debug.py``. Walking the tiny
+        logging stack gives every public entry point the real call site.
+        """
+        import sys
+
+        frame = sys._getframe(1)
+        while frame is not None:
+            filename = _sanitize_text(frame.f_code.co_filename)
+            # Every Debug wrapper lives in this module and therefore shares
+            # this exact globals dictionary.  Compare module ownership rather
+            # than inventing a second filesystem-identity implementation;
+            # path identity belongs exclusively to engine.path_utils.
+            if frame.f_globals is not globals():
+                return filename, int(frame.f_lineno)
+            frame = frame.f_back
+        return "", 0
+
+    @staticmethod
     def _create_entry(message: Any, log_type: LogType, 
                       context: Any = None, include_trace: bool = False,
                       internal: bool = False,
@@ -335,13 +358,10 @@ class Debug:
             # Skip frames from Debug class itself
             stack_trace = _sanitize_text(''.join(traceback.format_stack()[:-2]))
         
-        # If caller did NOT supply an explicit source, auto-detect from
-        # the call stack (frame 2: _create_entry → log* → caller).
+        # If caller did NOT supply an explicit source, find the first frame
+        # outside this module. This remains correct for aliases and helpers.
         if not source_file:
-            import sys
-            frame = sys._getframe(2)
-            source_file = _sanitize_text(frame.f_code.co_filename)
-            source_line = frame.f_lineno
+            source_file, source_line = Debug._caller_location()
         else:
             source_file = _sanitize_text(source_file)
         

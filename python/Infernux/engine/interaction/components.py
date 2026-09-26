@@ -262,11 +262,51 @@ class ComponentCommandService:
         )
 
         text = description or f"Set {type(component).__name__}.{field}"
+        from Infernux.components.builtin_component import BuiltinComponent, CppProperty
+
+        native_property = getattr(type(component), field, None) if isinstance(component, BuiltinComponent) else None
         if self._is_python_serialized_field(component, field):
             transaction = make_python_component_property_transaction(
                 (component,),
                 field,
                 description=text,
+            )
+        elif isinstance(native_property, CppProperty) and native_property.schema is not None:
+            transaction = make_attribute_property_transaction(
+                (component,), field, schema=native_property.schema, normalize=native_property.normalize_value,
+                validate_target=native_property.validate_value, description=text,
+            )
+        elif getattr(component, "type_name", "") == "Transform":
+            from Infernux.field_schema import get_native_field_schemas
+            from Infernux.components.fields import FieldType
+            from Infernux.components.value_codec import VALUE_CODECS
+
+            schemas = get_native_field_schemas("native:infernux.Transform")
+            schema = next(
+                (
+                    candidate
+                    for candidate in schemas
+                    if field
+                    in (
+                        candidate.attributes["field_id"],
+                        candidate.attributes["serialized_name"],
+                    )
+                ),
+                None,
+            )
+            if schema is None:
+                raise ValueError(f"Transform field {field!r} is not declared writable")
+            attribute = str(schema.attributes["field_id"])
+            kind = FieldType[schema.value_type.removeprefix("FieldType.")]
+
+            def normalize(candidate):
+                encoded = VALUE_CODECS.encode(candidate, schema.property_path)
+                if encoded is None and not schema.attributes["nullable"]:
+                    raise ValueError(f"{schema.property_path} is not nullable")
+                return VALUE_CODECS.decode(encoded, kind, schema.property_path)
+
+            transaction = make_attribute_property_transaction(
+                (component,), attribute, schema=schema, normalize=normalize, description=text,
             )
         else:
             transaction = make_attribute_property_transaction(
@@ -328,6 +368,31 @@ class ComponentCommandService:
             for target, field, old_value, _new_value, _item_description in changes:
                 setattr(target, str(field), copy.deepcopy(old_value))
         return False
+
+    def assign_mesh_asset(
+        self, component: Any, asset_guid: str, *, node_path=None, origin: Optional[ActionOrigin] = None,
+    ) -> bool:
+        """Assign a model as one aggregate edit, preserving source state in Undo."""
+        from Infernux.lib import ResourceType
+        from Infernux.core.assets import AssetManager
+
+        kind = getattr(component, "type_name", "")
+        if kind not in ("MeshRenderer", "SkinnedMeshRenderer"):
+            raise ValueError("mesh assignment requires a mesh renderer")
+        metadata = AssetManager.require_asset_database().get_meta_by_guid(asset_guid)
+        if metadata is None or metadata.get_resource_type() != ResourceType.Mesh:
+            raise ValueError("mesh assignment requires a registered Mesh asset GUID")
+        setter = (component.set_source_model_guid if kind == "SkinnedMeshRenderer"
+                  else component.set_mesh_asset_guid)
+        if node_path:
+            if kind != "MeshRenderer":
+                raise ValueError("A local model mesh is static geometry; use MeshRenderer, or assign the complete rig")
+            edit = lambda: component.set_model_mesh(asset_guid, list(node_path))
+        else:
+            edit = lambda: setter(asset_guid)
+        return self.edit_document(
+            component, edit, description="Set Mesh", origin=origin,
+        ).changed
 
     def edit_document(
         self,

@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/zh/api/njit.html" class="">njit</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/zh/api/compile.html" class="">compile</a><a href="/wiki/site/zh/api/statistics.html" class="">statistics</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -379,27 +379,43 @@
 <td>获取当前活动场景。</td>
 </tr>
 <tr>
-<td><code>static SceneManager.get_scene_by_name(name: str) → Optional[str]</code></td>
-<td>Get a scene path by its name.</td>
+<td><code>static SceneManager.get_scene_by_name(name: str) → Optional[object]</code></td>
+<td>Get a loaded scene by its name.</td>
 </tr>
 <tr>
-<td><code>static SceneManager.get_scene_by_build_index(build_index: int) → Optional[str]</code></td>
-<td>Get a scene path by its build index.</td>
+<td><code>static SceneManager.get_scene_by_world_id(world_id: int) → Optional[object]</code></td>
+<td>Get a loaded scene by its stable runtime World identity.</td>
 </tr>
 <tr>
-<td><code>static SceneManager.get_scene_at(index: int) → Optional[str]</code></td>
+<td><code>static SceneManager.get_scene_by_build_index(build_index: int) → Optional[object]</code></td>
+<td>Get a loaded scene corresponding to a build-list entry.</td>
+</tr>
+<tr>
+<td><code>static SceneManager.get_scene_at(index: int) → Optional[object]</code></td>
 <td>按索引获取已加载的场景。</td>
 </tr>
 <tr>
-<td><code>static SceneManager.load_scene(scene: Union[int, str]) → bool</code></td>
+<td><code>static SceneManager.set_active_scene(scene: object) → None</code></td>
+<td>设置当前活动场景。</td>
+</tr>
+<tr>
+<td><code>static SceneManager.unload_scene(scene: object) → None</code></td>
+<td>Unload one resident scene.</td>
+</tr>
+<tr>
+<td><code>static SceneManager.move_game_object_to_scene(game_object: object, destination: object) → None</code></td>
+<td>Move a root hierarchy to another loaded Scene without cloning it.</td>
+</tr>
+<tr>
+<td><code>static SceneManager.load_scene(scene: Union[int, str], mode: LoadSceneMode = ...) → bool</code></td>
 <td>按名称或路径加载场景。</td>
 </tr>
 <tr>
-<td><code>static SceneManager.wait_for_load_scene(scene: Union[int, str]) → bool</code></td>
+<td><code>static SceneManager.wait_for_load_scene(scene: Union[int, str], mode: LoadSceneMode = ...) → bool</code></td>
 <td>Prepare a scene asynchronously and switch when it is ready.</td>
 </tr>
 <tr>
-<td><code>static SceneManager.prepare_scene(scene: Union[int, str]) → bool</code></td>
+<td><code>static SceneManager.prepare_scene(scene: Union[int, str], mode: LoadSceneMode = ...) → bool</code></td>
 <td>Prepare a scene asynchronously without publishing it.</td>
 </tr>
 <tr>
@@ -421,6 +437,10 @@
 <tr>
 <td><code>static SceneManager.get_scene_count() → int</code></td>
 <td>获取已加载的场景数量。</td>
+</tr>
+<tr>
+<td><code>static SceneManager.get_scene_count_in_build_settings() → int</code></td>
+<td>Get the number of scenes available through Build Settings.</td>
 </tr>
 <tr>
 <td><code>static SceneManager.get_scene_name(build_index: int) → Optional[str]</code></td>

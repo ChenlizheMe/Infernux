@@ -248,49 +248,37 @@ def test_attribute_property_transactions_merge_continuous_edits():
 
 
 def test_python_component_multi_edit_is_one_atomic_document_action():
+    from Infernux.components import InxComponent
     from Infernux.engine.interaction import (
         make_python_component_property_transaction,
     )
     from Infernux.engine.undo import UndoManager
 
-    class ProbeComponent:
-        type_name = "ProbeComponent"
+    class ProbeComponent(InxComponent):
+        speed: float = 1.0
+        _validate_count: int = 0
 
-        def __init__(self, component_id, speed):
-            self.component_id = component_id
-            self.speed = speed
-            self.validate_count = 0
+        def on_validate(self):
+            self._validate_count += 1
 
-        def _serialize_fields_document(self):
-            return {
-                "__type_name__": type(self).__name__,
-                "__component_id__": self.component_id,
-                "speed": self.speed,
-            }
-
-        def _deserialize_fields_document(self, document):
-            self.speed = float(document["speed"])
-
-        def _call_on_validate(self):
-            self.validate_count += 1
-
-    first = ProbeComponent(1, 1.0)
-    second = ProbeComponent(2, 2.0)
+    first = ProbeComponent()
+    second = ProbeComponent()
+    second.speed = 2.0
     previous = UndoManager._instance
     manager = UndoManager()
     try:
         transaction = make_python_component_property_transaction(
-            (first, second), "speed", value_type="float", description="Set Speed"
+            (first, second), "speed", description="Set Speed"
         )
         transaction.commit_or_raise(4.0)
 
         assert (first.speed, second.speed) == (4.0, 4.0)
-        assert (first.validate_count, second.validate_count) == (1, 1)
+        assert (first._validate_count, second._validate_count) == (1, 1)
         assert len(manager.action_journal.applied_entries()) == 1
 
         manager.undo()
         assert (first.speed, second.speed) == (1.0, 2.0)
-        assert (first.validate_count, second.validate_count) == (2, 2)
+        assert (first._validate_count, second._validate_count) == (2, 2)
     finally:
         UndoManager._instance = previous
 
@@ -317,7 +305,6 @@ def test_serialized_field_assignment_is_storage_not_an_implicit_editor_command()
         make_python_component_property_transaction(
             (component,),
             "speed",
-            value_type="float",
             description="Set Speed",
         ).commit_or_raise(3.0)
 
@@ -327,6 +314,140 @@ def test_serialized_field_assignment_is_storage_not_an_implicit_editor_command()
         assert component.speed == 2.0
     finally:
         UndoManager._instance = previous
+
+
+def test_python_property_schema_comes_from_the_field_declaration():
+    from Infernux.components import InxComponent, serialized_field
+    from Infernux.components.fields import get_field_schema
+    from Infernux.engine.interaction import make_python_component_property_transaction
+    from Infernux.engine.undo import UndoManager
+
+    class ReadOnlyProbe(InxComponent):
+        speed = serialized_field(1.0, readonly=True)
+
+    component = ReadOnlyProbe()
+    previous = UndoManager._instance
+    manager = UndoManager()
+    try:
+        transaction = make_python_component_property_transaction((component,), "speed")
+        assert transaction.handle.schema is get_field_schema(ReadOnlyProbe, "speed")
+        assert transaction.handle.schema.attributes["default"] == 1.0
+        assert transaction.handle.schema.attributes["field_id"] == "speed"
+        assert transaction.value_type == "FieldType.FLOAT"
+        assert transaction.read_only
+        assert transaction.commit(2.0).value == "rejected"
+        assert component.speed == 1.0
+        assert manager.action_journal.applied_entries() == ()
+    finally:
+        UndoManager._instance = previous
+
+
+def test_python_property_transaction_requires_a_declared_field():
+    from Infernux.components import InxComponent
+    from Infernux.engine.interaction import make_python_component_property_transaction
+
+    class Probe(InxComponent):
+        _runtime_only: float = 1.0
+
+    with pytest.raises(KeyError, match="_runtime_only"):
+        make_python_component_property_transaction((Probe(),), "_runtime_only")
+
+
+def test_python_property_transaction_normalizes_declared_enum_and_undo():
+    from enum import Enum
+    from Infernux.components import InxComponent, serialized_field
+    from Infernux.engine.interaction import make_python_component_property_transaction
+    from Infernux.engine.undo import UndoManager
+
+    class Mode(Enum):
+        WALK = 1
+        RUN = 2
+
+    class Probe(InxComponent):
+        mode = serialized_field(Mode.WALK)
+
+    component = Probe()
+    previous = UndoManager._instance
+    manager = UndoManager()
+    try:
+        transaction = make_python_component_property_transaction((component,), "mode")
+        transaction.commit_or_raise("RUN")
+        assert component.mode is Mode.RUN
+        assert len(manager.action_journal.applied_entries()) == 1
+        manager.undo()
+        assert component.mode is Mode.WALK
+        manager.redo()
+        assert component.mode is Mode.RUN
+        assert transaction.commit("missing").value == "rejected"
+        assert component.mode is Mode.RUN
+    finally:
+        UndoManager._instance = previous
+
+
+@pytest.mark.parametrize("surface", ["transaction", "command", "inspector"])
+def test_python_field_edit_surfaces_share_range_and_no_change_semantics(surface):
+    from Infernux.components import InxComponent, get_serialized_fields, serialized_field
+    from Infernux.engine.interaction import (
+        ComponentCommandService, make_python_component_property_transaction,
+    )
+    from Infernux.engine.ui.inspector_components import _commit_python_component_field
+    from Infernux.engine.undo import UndoManager
+
+    class RangeProbe(InxComponent):
+        speed = serialized_field(1.0, range=(0.0, 5.0))
+
+    component = RangeProbe()
+    previous = UndoManager._instance
+    manager = UndoManager()
+    previous_service = ComponentCommandService._instance
+    service = ComponentCommandService()
+    try:
+        def edit(value):
+            if surface == "transaction":
+                return make_python_component_property_transaction(
+                    (component,), "speed"
+                ).commit_or_raise(value)
+            if surface == "command":
+                return service.set_field(component, "speed", value)
+            return _commit_python_component_field(
+                (component,), "speed", get_serialized_fields(RangeProbe)["speed"], value
+            )
+
+        edit(50.0)
+        assert component.speed == 5.0
+        assert len(manager.action_journal.applied_entries()) == 1
+        journal_entry = manager.action_journal.applied_entries()[0]
+        action_time = journal_entry.action.timestamp
+        edit(99.0)
+        assert manager.action_journal.applied_entries()[0].action.timestamp == action_time
+        for invalid in (True, "3", float("nan")):
+            with pytest.raises(RuntimeError):
+                edit(invalid)
+            assert component.speed == 5.0
+        manager.undo()
+        assert component.speed == 1.0
+        manager.redo()
+        assert component.speed == 5.0
+    finally:
+        ComponentCommandService._instance = previous_service
+        UndoManager._instance = previous
+
+
+def test_python_multi_edit_respects_readonly_on_every_target():
+    from Infernux.components import InxComponent, serialized_field
+    from Infernux.engine.interaction import make_python_component_property_transaction
+
+    class Writable(InxComponent):
+        speed = serialized_field(1.0)
+
+    class ReadOnly(InxComponent):
+        speed = serialized_field(2.0, readonly=True)
+
+    first, second = Writable(), ReadOnly()
+    transaction = make_python_component_property_transaction((first, second), "speed")
+    assert transaction.read_only
+    assert transaction.commit(4.0).value == "rejected"
+    assert (first.speed, second.speed) == (1.0, 2.0)
 
 
 def test_serialized_field_layer_has_no_editor_undo_or_dirty_hook():

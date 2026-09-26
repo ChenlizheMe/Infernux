@@ -184,6 +184,11 @@ class MaterialPipelineManager
         return m_descriptorManager.HasPendingTextureProperties(materialName);
     }
 
+    [[nodiscard]] bool HasUnresolvedExplicitTextureProperties(const std::string &materialName) const
+    {
+        return m_descriptorManager.HasUnresolvedExplicitTextureProperties(materialName);
+    }
+
     /**
      * @brief Bind a texture to a material
      */
@@ -238,6 +243,7 @@ class MaterialPipelineManager
     void InvalidateMaterialsUsingShader(const std::string &shaderId);
 
     void InvalidateMaterialsUsingProgramPair(const ShaderStagePair &stages);
+    [[nodiscard]] bool HasMaterialProgramOwner(const ShaderProgramKey &key) const;
 
     /**
      * @brief Refresh descriptor publications for materials referencing a texture.

@@ -24,7 +24,12 @@ from Infernux.input import Input, KeyCode, TouchPhase
 from Infernux.engine.ui.viewport_utils import capture_viewport_info
 from Infernux.ui.ui_event_data import PointerType
 from Infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame
-from Infernux.ui.ui_canvas_utils import collect_sorted_runtime_canvases
+from Infernux.engine.runtime_screen_ui import (
+    collect_runtime_ui_input_surfaces,
+    map_runtime_ui_pointer,
+    map_runtime_ui_pointers,
+)
+from Infernux.engine.runtime_mouse_events import MouseEventDispatcher
 
 
 def _player_render_scale() -> float:
@@ -35,6 +40,73 @@ def _player_render_scale() -> float:
     if not math.isfinite(scale):
         return 1.0
     return max(0.25, min(1.0, scale))
+
+
+class _FrameProfileWindow:
+    """Collect native simulation work only while Player frame profiling is enabled."""
+
+    def __init__(self):
+        self._last_runtime_frame = None
+        self._start_runtime_frame = None
+        self._start_fixed_time = None
+        self._start_scheduler_counters = None
+        self._fixed_steps = 0
+
+    def sample(self, scene_manager, scheduler) -> None:
+        frame = int(scene_manager.runtime_frame_count)
+        if self._last_runtime_frame is None or frame < self._last_runtime_frame:
+            self._last_runtime_frame = frame
+            self._start_runtime_frame = frame
+            self._start_fixed_time = float(scene_manager.fixed_time)
+            self._start_scheduler_counters = scheduler.profiler_snapshot()
+            self._fixed_steps = 0
+            return
+        if frame == self._last_runtime_frame:
+            return
+        self._fixed_steps += int(scene_manager.get_last_frame_profile()["fixed_steps"])
+        self._last_runtime_frame = frame
+
+    def finish(self, scene_manager, scheduler) -> dict:
+        frame = int(scene_manager.runtime_frame_count)
+        fixed_time = float(scene_manager.fixed_time)
+        phases = scheduler.phase_plan_snapshot()
+        counters = scheduler.profiler_snapshot()
+        counter_names = (
+            "native_frame_begins",
+            "native_frame_ends",
+            "native_barriers",
+            "native_barriers_without_frame",
+            "native_phase_dispatches",
+            "phase_dispatches",
+            "phase_errors",
+        )
+        result = {
+            "runtime_frame_count": frame,
+            "runtime_frames_window": frame - self._start_runtime_frame,
+            "fixed_steps_window": self._fixed_steps,
+            "fixed_seconds_window": fixed_time - self._start_fixed_time,
+            "fixed_seconds_total": fixed_time,
+            "fixed_time_step": float(scene_manager.get_fixed_time_step()),
+            "playing": bool(scene_manager.is_playing()),
+            "paused": bool(scene_manager.is_paused()),
+            "time_scale": float(scene_manager.time_scale),
+            "scheduler_phase_counts": {
+                phase: len(components) for phase, components in phases.items()
+            },
+            "scheduler_plan_has_work": any(phases.values()),
+            "scheduler_counters": {
+                name: counters.get(name, 0) for name in counter_names
+            },
+            "scheduler_counters_window": {
+                name: counters.get(name, 0) - self._start_scheduler_counters.get(name, 0)
+                for name in counter_names
+            },
+        }
+        self._start_runtime_frame = frame
+        self._start_fixed_time = fixed_time
+        self._start_scheduler_counters = counters
+        self._fixed_steps = 0
+        return result
 
 
 class PlayerGUI(InxGUIRenderable):
@@ -51,6 +123,8 @@ class PlayerGUI(InxGUIRenderable):
         self._last_h = 0
         self._render_scale = _player_render_scale()
         self._ui_event_processor = UIEventProcessor()
+        self._mouse_event_dispatcher = MouseEventDispatcher()
+        self._has_shared_scene_query = False
         self._last_frame_time = time.time()
         self._control = control_channel
         self._activate_play = activate_play
@@ -59,6 +133,7 @@ class PlayerGUI(InxGUIRenderable):
         self._profile_frames = os.environ.get(
             "_INFERNUX_PLAYER_PROFILE_FRAMES", ""
         ).strip() == "1"
+        self._profile_window = _FrameProfileWindow() if self._profile_frames else None
         self._next_profile_time = time.monotonic() + 2.0
 
         # Splash
@@ -109,6 +184,9 @@ class PlayerGUI(InxGUIRenderable):
             return
 
         # ── Normal game mode ──────────────────────────────────────────
+        # Component start() may create Game-relative RenderTextures. Publish
+        # the actual output resolution before activating project lifecycle.
+        self._prepare_game_target(vp_w, vp_h)
         self.begin_play_when_ready()
         visible = ctx.begin_window("##PlayerFullscreen", True, flags)
         if visible:
@@ -173,17 +251,25 @@ class PlayerGUI(InxGUIRenderable):
                 native.confirm_close()
                 return
 
-            if self._profile_frames and time.monotonic() >= self._next_profile_time:
-                self._next_profile_time = time.monotonic() + 2.0
+            if self._profile_frames:
                 try:
+                    from Infernux.lib import SceneManager
+
+                    scene_manager = SceneManager.instance()
+                    scheduler = self._engine.get_runtime_execution_scheduler()
+                    self._profile_window.sample(scene_manager, scheduler)
+                    if time.monotonic() < self._next_profile_time:
+                        return
+                    self._next_profile_time = time.monotonic() + 2.0
                     from Infernux.engine.player_bootstrap import _plog
 
                     snapshot = dict(native.renderer_frame_snapshot) if native else {}
+                    snapshot.update(self._profile_window.finish(scene_manager, scheduler))
                     _plog(f"[FrameProfile] {snapshot}")
                 except Exception as exc:
                     Debug.log_suppressed("player_gui.frame_profile", exc)
 
-    def _render_game(self, ctx: InxGUIContext, vp_w: float, vp_h: float):
+    def _prepare_game_target(self, vp_w: float, vp_h: float):
         display_w = max(1, int(vp_w))
         display_h = max(1, int(vp_h))
         target_w = max(1, int(display_w * self._render_scale))
@@ -194,6 +280,12 @@ class PlayerGUI(InxGUIRenderable):
             self._last_w = target_w
             self._last_h = target_h
 
+    def _render_game(self, ctx: InxGUIContext, vp_w: float, vp_h: float):
+        display_w = max(1, int(vp_w))
+        display_h = max(1, int(vp_h))
+        self._prepare_game_target(vp_w, vp_h)
+        target_w, target_h = self._last_w, self._last_h
+
         game_tex = self._engine.get_game_texture_id()
         if game_tex == 0:
             ctx.label("Waiting for camera...")
@@ -202,6 +294,7 @@ class PlayerGUI(InxGUIRenderable):
         ctx.image(game_tex, float(display_w), float(display_h), 0.0, 0.0, 1.0, 1.0)
         vp = capture_viewport_info(ctx)
         Input.set_game_viewport_origin(vp.image_min_x, vp.image_min_y)
+        Input.set_game_viewport_size(float(display_w), float(display_h))
 
         # ESC safety: allow user to unlock cursor even if scripts forgot
         cursor_locked = Input.is_cursor_locked()
@@ -213,65 +306,106 @@ class PlayerGUI(InxGUIRenderable):
         # The standalone Player owns the entire window. Touchscreen contacts
         # do not define an ImGui mouse-hover state, so UI dispatch must not be
         # gated by the desktop hover bit.
-        self._process_ui_events(display_w, display_h)
+        mouse_frame = Input.get_game_mouse_frame_state(0)
+        scene_hit = self._process_ui_events(display_w, display_h, mouse_frame=mouse_frame)
+        self._process_mouse_events(display_w, display_h, scene_hit=scene_hit, mouse_frame=mouse_frame)
 
-    def _process_ui_events(self, game_w: int, game_h: int):
+    def pointer_debug_state(self) -> dict:
+        """Return the last runtime UI pointer transition for Player diagnostics."""
+        return self._ui_event_processor.debug_state()
+
+    def _process_mouse_events(self, game_w: int, game_h: int, *, scene_hit=None, mouse_frame=None) -> None:
+        dispatcher = getattr(self, "_mouse_event_dispatcher", None)
+        if dispatcher is None:
+            return
+        from Infernux.lib import SceneManager
+        scene = SceneManager.instance().get_active_scene()
+        camera = scene.effective_game_camera if scene is not None else None
+        if camera is None:
+            dispatcher.reset()
+            return
+        x, y, _sx, _sy, held, down, up = Input.get_game_mouse_frame_state(0) if mouse_frame is None else mouse_frame
+        if scene_hit is None and not self._has_shared_scene_query:
+            dispatcher.process(camera, (x, y), (float(game_w), float(game_h)), button_state=(held, down, up))
+        else:
+            dispatcher.process(camera, (x, y), (float(game_w), float(game_h)), hit=scene_hit,
+                               button_state=(held, down, up))
+
+    def _process_ui_events(self, game_w: int, game_h: int, *, mouse_frame=None):
         """Convert mouse and every active touch to independent UI pointers."""
         from Infernux.lib import SceneManager
 
         scene = SceneManager.instance().get_active_scene()
         if scene is None:
-            return
+            self._has_shared_scene_query = False
+            return None
 
         persistent_scene = SceneManager.instance().get_runtime_persistent_scene()
-        canvases = collect_sorted_runtime_canvases(
-            scene, persistent_scene, allow_stale_empty=True
-        )
-        if not canvases:
+        surfaces = collect_runtime_ui_input_surfaces(scene, persistent_scene)
+        if not surfaces:
             self._ui_event_processor.reset()
-            return
+            # With no world UI there is no second consumer to share a ray
+            # with; the dispatcher keeps its direct closest-hit path.
+            self._has_shared_scene_query = False
+            return None
 
-        gx, gy, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = Input.get_game_mouse_frame_state(0)
+        camera = scene.effective_game_camera
 
-        def canvas_positions(screen_x: float, screen_y: float):
-            positions = []
-            for canvas in canvases:
-                ref_w = float(canvas.reference_width)
-                ref_h = float(canvas.reference_height)
-                if ref_w < 1 or ref_h < 1:
-                    positions.append((0.0, 0.0))
-                    continue
-                scale_x, scale_y, _ = canvas.compute_scale(
-                    float(game_w), float(game_h)
-                )
-                positions.append(
-                    (
-                        screen_x / max(scale_x, 1e-6),
-                        screen_y / max(scale_y, 1e-6),
-                    )
-                )
-            return tuple(positions)
+        gx, gy, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = (
+            Input.get_game_mouse_frame_state(0) if mouse_frame is None else mouse_frame
+        )
+
+        mouse_positions, scene_hit = map_runtime_ui_pointer(
+            surfaces, camera, gx, gy, game_w, game_h,
+            include_scene_hit=True,
+        )
+        self._has_shared_scene_query = True
 
         pointers = [
             UIPointerFrame(
                 pointer_id=-1,
                 pointer_type=PointerType.Mouse,
-                canvas_positions=canvas_positions(gx, gy),
+                canvas_positions=mouse_positions,
                 down=mouse_down,
                 up=mouse_up,
                 held=mouse_held,
                 scroll_delta=(scroll_x, scroll_y),
             )
         ]
-        for touch in Input.touches:
-            touch_x = float(touch.normalized_position[0]) * float(game_w)
-            touch_y = (1.0 - float(touch.normalized_position[1])) * float(game_h)
+        touches = tuple(Input.touches)
+        touch_points = tuple(
+            (
+                float(touch.normalized_position[0]) * float(game_w),
+                (1.0 - float(touch.normalized_position[1])) * float(game_h),
+            )
+            for touch in touches
+        )
+        touch_positions = map_runtime_ui_pointers(
+            surfaces, camera, touch_points, game_w, game_h
+        )
+        same_frame_terminal = tuple(
+            touch.began_this_frame and touch.phase in (TouchPhase.ENDED, TouchPhase.CANCELED)
+            for touch in touches
+        )
+        begin_positions = ()
+        if any(same_frame_terminal):
+            begin_points = tuple(
+                (
+                    float(touch.begin_normalized_position[0]) * float(game_w),
+                    (1.0 - float(touch.begin_normalized_position[1])) * float(game_h),
+                )
+                for touch in touches
+            )
+            begin_positions = map_runtime_ui_pointers(
+                surfaces, camera, begin_points, game_w, game_h
+            )
+        for index, (touch, positions) in enumerate(zip(touches, touch_positions)):
             pointers.append(
                 UIPointerFrame(
                     pointer_id=int(touch.finger_id),
                     pointer_type=PointerType.Touch,
-                    canvas_positions=canvas_positions(touch_x, touch_y),
-                    down=touch.phase is TouchPhase.BEGAN,
+                    canvas_positions=positions,
+                    down=touch.phase is TouchPhase.BEGAN or same_frame_terminal[index],
                     up=touch.phase in (TouchPhase.ENDED, TouchPhase.CANCELED),
                     held=touch.phase
                     in (
@@ -280,10 +414,12 @@ class PlayerGUI(InxGUIRenderable):
                         TouchPhase.STATIONARY,
                     ),
                     canceled=touch.phase is TouchPhase.CANCELED,
+                    press_canvas_positions=(begin_positions[index] if same_frame_terminal[index] else ()),
                 )
             )
 
         from Infernux.timing import Time
         dt = Time.unscaled_delta_time
 
-        self._ui_event_processor.process_pointers(canvases, pointers, dt)
+        self._ui_event_processor.process_pointers(surfaces, pointers, dt)
+        return scene_hit

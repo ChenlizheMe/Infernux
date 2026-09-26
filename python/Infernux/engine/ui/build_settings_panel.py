@@ -16,10 +16,8 @@ import copy
 from collections import deque
 from Infernux.engine.path_utils import (
     is_path_within,
-    portable_path,
     relative_path,
     resolved_path,
-    same_path,
 )
 from typing import Dict, List, Optional
 
@@ -290,7 +288,7 @@ class BuildSettingsPanel(EditorPanel):
         self._build_target = data["build_target"]
         self._android_artifact = data["android_artifact"]
         self._game_name = data["game_name"]
-        self._scenes = list(data["scenes"])
+        self._scenes = list(data["scene_guids"])
         self._output_dir = data["output_dir"]
         self._icon_guid = data["icon_guid"]
         self._display_mode_idx = _DISPLAY_MODE_KEYS.index(data["display_mode"])
@@ -299,7 +297,6 @@ class BuildSettingsPanel(EditorPanel):
         self._window_resizable = data["window_resizable"]
         self._debug_mode = data["debug_mode"]
         self._lto = data["lto"]
-        self._enable_jit = data["enable_jit"]
         self._splash_items = list(data["splash_items"])
 
     def _capture_build_settings(self) -> dict:
@@ -307,7 +304,7 @@ class BuildSettingsPanel(EditorPanel):
             "build_target": self._build_target,
             "android_artifact": self._android_artifact,
             "game_name": self._game_name,
-            "scenes": self._scenes,
+            "scene_guids": self._scenes,
             "output_dir": self._output_dir,
             "icon_guid": self._icon_guid,
             "display_mode": _DISPLAY_MODE_KEYS[self._display_mode_idx],
@@ -316,7 +313,6 @@ class BuildSettingsPanel(EditorPanel):
             "window_resizable": self._window_resizable,
             "debug_mode": self._debug_mode,
             "lto": self._lto,
-            "enable_jit": self._enable_jit,
             "splash_items": self._splash_items,
         })
 
@@ -649,18 +645,12 @@ class BuildSettingsPanel(EditorPanel):
         if new_lto != self._lto:
             self._lto = new_lto
             self._save()
+        # JIT is selected from the target platform and authored script
+        # capabilities by the exporter. It is deliberately not a packaging
+        # checkbox: users should not be able to produce a Player whose
+        # runtime backend contradicts its platform.
         ctx.same_line(0, _metric(ctx, 20.0))
-        new_jit = ctx.checkbox(t("build.enable_jit") + "##enable_jit", self._enable_jit)
-        ctx.record_semantic_item(
-            "checkbox",
-            t("build.enable_jit"),
-            True,
-            "build_settings.enable_jit",
-            bool_value=new_jit,
-        )
-        if new_jit != self._enable_jit:
-            self._enable_jit = new_jit
-            self._save()
+        ctx.label(t("build.jit_runtime_automatic"))
         if not self._game_name:
             ctx.same_line()
             ctx.push_style_color(ImGuiCol.Text, 0.5, 0.5, 0.5, 1.0)
@@ -1055,19 +1045,23 @@ class BuildSettingsPanel(EditorPanel):
         remove_idx: Optional[int] = None
         swap_pair: Optional[tuple] = None
 
-        for i, scene_path in enumerate(self._scenes):
-            name = os.path.splitext(os.path.basename(scene_path))[0]
-            root = get_project_root() or ""
-            absolute_scene = resolved_path(
-                scene_path
-                if os.path.isabs(scene_path) or not root
-                else os.path.join(root, scene_path)
+        for i, scene_guid in enumerate(self._scenes):
+            scene_path = str(
+                self.services.asset_database.get_path_from_guid(scene_guid) or ""
             )
-            try:
-                rel = relative_path(absolute_scene, root) if root else scene_path
-            except ValueError:
-                # Windows cannot compute a relative path across drive letters.
-                rel = absolute_scene
+            name = (
+                os.path.splitext(os.path.basename(scene_path))[0]
+                if scene_path
+                else scene_guid
+            )
+            root = get_project_root() or ""
+            absolute_scene = resolved_path(scene_path) if scene_path else ""
+            rel = scene_guid
+            if absolute_scene:
+                try:
+                    rel = relative_path(absolute_scene, root) if root else absolute_scene
+                except ValueError:
+                    rel = absolute_scene
 
             # Use a fixed row height so selectable and buttons align
             row_h = _metric(ctx, 24.0)
@@ -1077,7 +1071,7 @@ class BuildSettingsPanel(EditorPanel):
                 name,
                 True,
                 f"build_settings.scene.{i}.row",
-                string_value=portable_path(rel),
+                string_value=scene_guid,
             )
 
             # Drag source — reorder
@@ -1739,9 +1733,9 @@ class BuildSettingsPanel(EditorPanel):
         def _prepare_and_start(catalog):
             try:
                 request = self._make_build_request(catalog, target_id)
+                _start_worker(request)
             except Exception as exc:
                 return _fail_preflight(exc)
-            _start_worker(request)
             return True
 
         # A modal is deliberately presented before catalog work begins.  It
@@ -1792,12 +1786,15 @@ class BuildSettingsPanel(EditorPanel):
                 f"Build scene must be inside the project Assets folder: {path}"
             )
             return
-        stored_path = relative_path(abs_path, root).replace("\\", "/")
-        for existing in self._scenes:
-            existing_path = resolved_path(
-                existing if os.path.isabs(existing) else os.path.join(root, existing)
+        scene_guid = str(
+            self.services.asset_database.get_guid_from_path(abs_path) or ""
+        ).strip()
+        if not scene_guid:
+            Debug.log_warning(
+                f"Build scene has not been imported into the Asset Database: {path}"
             )
-            if same_path(existing_path, abs_path):
-                return
-        self._scenes.append(stored_path)
+            return
+        if scene_guid in self._scenes:
+            return
+        self._scenes.append(scene_guid)
         self._save()

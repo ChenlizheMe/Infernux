@@ -9,36 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import os
-import sys
 from typing import TypeAlias
 
 PathLike: TypeAlias = str | os.PathLike[str]
-
-
-def _expand_windows_long_path(path: str) -> str:
-    if sys.platform != "win32" or not path:
-        return path
-
-    import ctypes
-
-    candidate = path
-    suffix: list[str] = []
-    while candidate and not os.path.exists(candidate):
-        parent, name = os.path.split(candidate)
-        if parent == candidate:
-            break
-        suffix.append(name)
-        candidate = parent
-
-    buffer = ctypes.create_unicode_buffer(32768)
-    length = ctypes.windll.kernel32.GetLongPathNameW(candidate, buffer, len(buffer))
-    if not length or length >= len(buffer):
-        return path
-
-    resolved = buffer.value
-    for name in reversed(suffix):
-        resolved = os.path.join(resolved, name)
-    return resolved
 
 
 def lexical_path(path: PathLike) -> str:
@@ -53,8 +26,12 @@ def resolved_path(path: PathLike) -> str:
     if not path:
         return ""
     lexical = lexical_path(path)
-    resolved = os.path.realpath(lexical)
-    return os.path.normpath(_expand_windows_long_path(resolved))
+    # CPython's Windows realpath implementation already resolves reparse
+    # points, expands 8.3 names, and preserves a non-existent suffix after the
+    # nearest existing ancestor.  Repeating that work through
+    # GetLongPathNameW made this identity primitive perform another filesystem
+    # query on every call, which is especially costly during plugin discovery.
+    return os.path.normpath(os.path.realpath(lexical))
 
 
 def path_key(path: PathLike) -> str:
@@ -93,6 +70,30 @@ def is_path_within(path: PathLike, root: PathLike, *, allow_root: bool = True) -
     """Return whether *path* resolves inside *root* using path components."""
     candidate = path_key(path)
     parent = path_key(root)
+    if not candidate or not parent:
+        return False
+    try:
+        inside = os.path.commonpath((candidate, parent)) == parent
+    except ValueError:
+        return False
+    return inside and (allow_root or candidate != parent)
+
+
+def is_lexical_path_within(
+    path: PathLike,
+    root: PathLike,
+    *,
+    allow_root: bool = True,
+) -> bool:
+    """Return whether *path* is lexically below *root* without following links.
+
+    This is for capability code that already owns a canonical root and must
+    compare an opened handle's final path against that immutable spelling. It
+    must not be used as a substitute for :func:`is_path_within` when aliases
+    have not already been rejected or resolved.
+    """
+    candidate = lexical_path_key(path)
+    parent = lexical_path_key(root)
     if not candidate or not parent:
         return False
     try:

@@ -85,8 +85,29 @@ def test_surface_passes_fall_back_to_geometric_normal():
 
 def test_gizmo_icon_shader_applies_component_vertex_tint():
     from pathlib import Path
+    import re
 
     source = Path("python/Infernux/resources/shaders/gizmo_icon.frag").read_text(
         encoding="utf-8"
     )
     assert "texColor.rgb * v_Color * material.baseColor.rgb" in source
+    # The 256 px built-in art is rendered at about 40 px in Scene view. Its
+    # ordinary trilinear LOD blurs the narrow strokes, so keep a modest bias
+    # toward a finer mip without resorting to jagged nearest filtering.
+    sampled_lod = re.search(r"texture\s*\(\s*texSampler\s*,\s*v_TexCoord\s*,\s*(-?\d+(?:\.\d+)?)\s*\)", source)
+    assert sampled_lod is not None
+    assert -1.5 <= float(sampled_lod.group(1)) <= -0.25
+
+
+def test_gizmo_vertex_uses_the_draw_list_instance_transform():
+    from pathlib import Path
+
+    shader_root = Path("python/Infernux/resources/shaders")
+    gizmo_vertex = (shader_root / "gizmo.vert").read_text(encoding="utf-8")
+    mesh_vertex = (shader_root / "_templates/vertex_main.glsl").read_text(
+        encoding="utf-8"
+    )
+
+    assert "instanceModels[gl_InstanceIndex]" in gizmo_vertex
+    assert "instanceModels[gl_InstanceIndex]" in mesh_vertex
+    assert "pc.model * vec4(inPosition" not in gizmo_vertex

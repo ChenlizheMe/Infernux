@@ -5,14 +5,19 @@ Implements a classic deferred shading pipeline with a GBuffer pass
 that writes multiple render targets (albedo, normals, material props),
 followed by a fullscreen lighting pass, then transparent forward pass.
 
-GBuffer layout (MRT)::
+Private GBuffer layout (MRT)::
 
     Slot 0 — Base Color         (RGBA16_SFLOAT)
-    Slot 1 — World Normals      (RGBA16_SFLOAT)
+    Slot 1 — World Normals      (RGBA16_SFLOAT, alpha = smoothness)
     Slot 2 — Material Params    (RGBA8_UNORM)
     Slot 3 — Emission           (RGBA16_SFLOAT)
     Slot 4 — Object Metadata    (RG32_UINT)
     Depth  — Scene depth        (D32_SFLOAT)
+
+The public ``normal`` PassResult is generated only when requested. Its RGB is
+the current View's encoded world normal and its alpha is opaque geometry
+coverage (1 where visible, 0 in the cleared background). Deferred-compatible
+and Deferred-unsupported geometry are published in separate source revisions.
 
 Topology::
 
@@ -43,10 +48,12 @@ from enum import IntEnum
 from typing import TYPE_CHECKING
 
 from Infernux.renderstack.render_pipeline import RenderPipeline
+from Infernux.renderstack.geometry_buffers import geometry_buffer
 from Infernux.renderstack._platform_quality import effective_shadow_resolution
 from Infernux.components.fields import serialized_field
 from Infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
+    LIGHT_LIST_BUFFER,
     DEPTH_TEXTURE,
     DEFERRED_GBUFFER_CLEAR_COLOR,
     DEFERRED_LIGHTING_CLEAR_COLOR,
@@ -57,7 +64,9 @@ from Infernux.renderstack._pipeline_common import (
     GBUFFER_NORMAL_TEXTURE,
     GBUFFER_OBJECT_TEXTURE,
     GBUFFER_RESOURCES,
+    NORMAL_TEXTURE,
     SHADOW_MAP_TEXTURE,
+    add_normal_buffer_pass,
     add_shadow_caster_pass,
     add_skybox_pass,
     add_standard_post_process_section,
@@ -112,6 +121,18 @@ class DefaultDeferredPipeline(RenderPipeline):
         header="Shadows",
     )
 
+    @geometry_buffer(NORMAL_TEXTURE, dependencies={DEPTH_TEXTURE})
+    def _provide_deferred_normal(self, context):
+        # The GBuffer normal's alpha stores smoothness. Replaying the same
+        # visible geometry publishes the public normal's 0/1 coverage alpha.
+        return add_normal_buffer_pass(
+            context.graph,
+            source=context.source,
+            depth=context.sample(DEPTH_TEXTURE),
+            queue_range=context.queue_range,
+            material_filter="deferred_compatible",
+        )
+
     # ------------------------------------------------------------------
     # RenderPipeline interface
     # ------------------------------------------------------------------
@@ -127,7 +148,8 @@ class DefaultDeferredPipeline(RenderPipeline):
             → Transparent (forward) → after_transparent
         """
         # Deferred pipeline does not support MSAA on GBuffer
-        graph.set_msaa_samples(1)
+        if graph.set_msaa_samples(1) != 1:
+            raise ValueError("Default Deferred requires a single-sample Camera target")
 
         shadow_res = effective_shadow_resolution(self.shadow_resolution)
 
@@ -161,18 +183,21 @@ class DefaultDeferredPipeline(RenderPipeline):
                 material_filter="deferred_compatible",
             )
 
+        geometry_buffers = {
+            "color": graph.get_texture(COLOR_TEXTURE),
+            "base_color": graph.get_texture(GBUFFER_ALBEDO_TEXTURE),
+            "depth": graph.get_texture(DEPTH_TEXTURE),
+            "shadow_map": graph.get_texture(SHADOW_MAP_TEXTURE),
+            "material": graph.get_texture(GBUFFER_MATERIAL_TEXTURE),
+            "emission": graph.get_texture(GBUFFER_EMISSION_TEXTURE),
+            "object": graph.get_texture(GBUFFER_OBJECT_TEXTURE),
+        }
+        if graph.needs_geometry_buffer(LIGHT_LIST_BUFFER):
+            geometry_buffers[LIGHT_LIST_BUFFER] = graph.create_view_light_list()
         current = self.geometry_stage(
             graph,
             "gbuffer",
-            buffers={
-                "color": graph.get_texture(COLOR_TEXTURE),
-                "base_color": graph.get_texture(GBUFFER_ALBEDO_TEXTURE),
-                "normal": graph.get_texture(GBUFFER_NORMAL_TEXTURE),
-                "depth": graph.get_texture(DEPTH_TEXTURE),
-                "material": graph.get_texture(GBUFFER_MATERIAL_TEXTURE),
-                "emission": graph.get_texture(GBUFFER_EMISSION_TEXTURE),
-                "object": graph.get_texture(GBUFFER_OBJECT_TEXTURE),
-            },
+            buffers=geometry_buffers,
             queue_range=opaque_queue_range(),
             clear=True,
         )
@@ -218,9 +243,20 @@ class DefaultDeferredPipeline(RenderPipeline):
                 material_filter="deferred_unsupported",
             )
 
-        current = graph.derive_pass_result(
-            "opaque_lighting", current, {"color": graph.get_texture(COLOR_TEXTURE)}
-        )
+        opaque_buffers = {"color": graph.get_texture(COLOR_TEXTURE)}
+        if current.has(NORMAL_TEXTURE):
+            # Preserve the after_gbuffer result (including user normal writes),
+            # then replace only visible DeferredUnsupported pixels against the
+            # final opaque depth. Untouched pixels retain their coverage alpha.
+            opaque_buffers[NORMAL_TEXTURE] = add_normal_buffer_pass(
+                graph,
+                source="opaque_lighting",
+                depth=graph.get_texture(DEPTH_TEXTURE),
+                queue_range=opaque_queue_range(),
+                material_filter="deferred_unsupported",
+                initial_normal=current.sample(NORMAL_TEXTURE),
+            )
+        current = graph.derive_pass_result("opaque_lighting", current, opaque_buffers)
         with graph.pass_result(current):
             resources = result_resources(current)
             graph.injection_point("after_opaque", resources=resources)

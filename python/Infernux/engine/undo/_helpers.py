@@ -12,6 +12,22 @@ def _get_active_scene():
     return SceneManager.instance().get_active_scene()
 
 
+def _get_scene_by_world_id(world_id: int):
+    from Infernux.lib import SceneManager
+
+    return SceneManager.instance().get_scene_by_world_id(int(world_id or 0))
+
+
+def _find_runtime_object(object_id: int):
+    from Infernux.lib import SceneManager
+
+    return SceneManager.instance().find_runtime_object_by_id(int(object_id or 0))
+
+
+def _scene_world_id(scene) -> int:
+    return int(getattr(scene, "world_id", 0) or 0) if scene is not None else 0
+
+
 def _safe_attr(target: Any, name: str, default=None):
     try:
         return getattr(target, name, default)
@@ -53,10 +69,7 @@ def _resolve_target(stored_ref: Any, game_object_id: int,
                     comp_type_name: str) -> Any:
     if not game_object_id or not comp_type_name:
         return stored_ref
-    scene = _get_active_scene()
-    if not scene:
-        return None
-    obj = scene.find_by_id(game_object_id)
+    obj = _find_runtime_object(game_object_id)
     if obj is None:
         return None
     if comp_type_name == "GameObject":
@@ -128,12 +141,12 @@ def _bump_inspector_values(snapshot_baseline: int | None = None):
 
 
 def _require_scene_object(object_id: int, label: str):
-    scene = _get_active_scene()
-    if not scene:
-        raise RuntimeError(f"[Undo] {label}: no scene")
-    obj = scene.find_by_id(object_id)
+    obj = _find_runtime_object(object_id)
     if not obj:
         raise RuntimeError(f"[Undo] {label}: object {object_id} not found")
+    scene = getattr(obj, "scene", None)
+    if scene is None:
+        raise RuntimeError(f"[Undo] {label}: object {object_id} has no owning scene")
     return scene, obj
 
 
@@ -201,6 +214,13 @@ def _invalidate_canvas_caches(go):
 
 
 def _preserve_ui_world_position(obj, new_parent):
+    """Capture a screen UI rect and return its post-reparent restore step.
+
+    The target parent must already own the object when the returned callback
+    runs: layout conversion reads the current parent hierarchy.  Native
+    ``set_parent`` preserves the ordinary world Transform; this extra step is
+    only needed when both sides use Canvas-space layout metrics.
+    """
     from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent, clear_rect_cache
     from Infernux.ui import UICanvas
 
@@ -210,7 +230,7 @@ def _preserve_ui_world_position(obj, new_parent):
             ui_comp = comp
             break
     if ui_comp is None:
-        return
+        return lambda: None
 
     def _find_canvas(go):
         while go is not None:
@@ -222,7 +242,7 @@ def _preserve_ui_world_position(obj, new_parent):
 
     old_canvas = _find_canvas(obj.get_parent() or obj)
     if old_canvas is None:
-        return
+        return lambda: None
     old_cw = float(old_canvas.reference_width)
     old_ch = float(old_canvas.reference_height)
     old_abs_x, old_abs_y, _w, _h = ui_comp.get_rect(old_cw, old_ch)
@@ -231,20 +251,9 @@ def _preserve_ui_world_position(obj, new_parent):
     ncw = float(new_canvas.reference_width) if new_canvas is not None else old_cw
     nch = float(new_canvas.reference_height) if new_canvas is not None else old_ch
 
-    if new_parent is not None:
-        new_parent_ui = None
-        for c in new_parent.get_py_components():
-            if isinstance(c, InxUIScreenComponent):
-                new_parent_ui = c
-                break
-        if new_parent_ui is not None:
-            npx, npy, npw, nph = new_parent_ui.get_rect(ncw, nch)
-        else:
-            npx, npy, npw, nph = 0.0, 0.0, ncw, nch
-    else:
-        npx, npy, npw, nph = 0.0, 0.0, ncw, nch
+    def _restore():
+        clear_rect_cache(-1)
+        if new_canvas is not None:
+            ui_comp._set_layout_rect_origin(old_abs_x, old_abs_y, ncw, nch)
 
-    anchor_x, anchor_y = ui_comp._anchor_origin(npw, nph)
-    ui_comp.x = old_abs_x - npx - anchor_x
-    ui_comp.y = old_abs_y - npy - anchor_y
-    clear_rect_cache(-1)
+    return _restore

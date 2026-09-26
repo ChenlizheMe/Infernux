@@ -3,6 +3,7 @@
 #include "ImGuiVulkanExtensions.h"
 #include "InxGUIContext.h"
 #include "InxGUISemantics.h"
+#include "InxTextLayout.h"
 #include <function/editor/EditorTheme.h>
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/TextureUploadBuilder.h>
@@ -23,6 +24,7 @@
 #include <limits>
 #include <memory>
 #include <platform/input/InputManager.h>
+#include <platform/window/EditorDisplayScale.h>
 #include <stdexcept>
 #include <string>
 
@@ -46,10 +48,7 @@ EditorDpiState &GetEditorDpiState()
 
 float RequireDisplayScale(SDL_Window *window)
 {
-    const float scale = SDL_GetWindowDisplayScale(window);
-    if (!std::isfinite(scale) || scale <= 0.0f)
-        throw std::runtime_error("SDL reported an invalid display scale");
-    return scale;
+    return ResolveEditorDisplayScale(SDL_GetWindowDisplayScale(window), SDL_GetWindowPixelDensity(window));
 }
 
 class ImGuiBuildFrameGuard
@@ -147,7 +146,8 @@ void InxGUI::Init(SDL_Window *window)
     m_window_ptr = window;
     GetEditorDpiState() = {};
 
-    // Detect display DPI scale (e.g. 2.0 for 200% Windows scaling)
+    // Authored UI units -> SDL window units. The SDL backend owns the separate
+    // window -> framebuffer conversion, for both drawing and font rasterization.
     m_dpiScale = RequireDisplayScale(window);
     InxGUIContext::s_dpiScale = m_dpiScale;
     INXLOG_DEBUG("Display scale: ", m_dpiScale);
@@ -286,14 +286,15 @@ void InxGUI::ReloadGUIFont()
         return;
 
     ImGuiIO &io = ImGui::GetIO();
+    textlayout::ClearFontCache();
     io.Fonts->Clear();
 
-    // Scale font size by display DPI (e.g. 14px * 2.0 = 28px on 200% display)
+    // Font size is in the same window units as layout and hit testing. ImGui
+    // 1.92's renderer separately rasterizes at the viewport framebuffer density.
     float scaledSize = dpiState.fontSize * m_dpiScale;
     INXLOG_DEBUG("Loading font at ", scaledSize, "px (base ", dpiState.fontSize, " x scale ", m_dpiScale, ")");
 
     ImFontConfig fontConfig;
-    fontConfig.FontDataOwnedByAtlas = false;
 
     // Since ImGui 1.92+ with RendererHasTextures, glyph ranges are no longer
     // needed. Glyphs are loaded on-demand at any requested size, so the atlas
@@ -303,6 +304,11 @@ void InxGUI::ReloadGUIFont()
         INXLOG_WARN("InxGUI::ReloadGUIFont(): Failed to load font from ", dpiState.fontPath);
         return;
     }
+
+    // Clear() may restore the previous current font's size into FontSizeBase
+    // (ImGui 1.92 UpdateCurrentFontSize). Publishing the new font alone then
+    // leaves layout/text at that old size on a warm DPI or font-size change.
+    ImGui::GetStyle().FontSizeBase = scaledSize;
 
     // Font texture is now created automatically by the backend
     // No need to manually call ImGui_ImplVulkan_CreateFontsTexture()
@@ -539,7 +545,7 @@ void InxGUI::BuildFrameInternal()
     // synthetic mouse release lands on the same widget as its press.
     float syntheticMouseX = 0.0f;
     float syntheticMouseY = 0.0f;
-    if (InputManager::Instance().GetSyntheticMousePositionForFrame(syntheticMouseX, syntheticMouseY)) {
+    if (InputManager::Instance().GetSyntheticMousePosition(syntheticMouseX, syntheticMouseY)) {
         ImGui::GetIO().AddMousePosEvent(syntheticMouseX, syntheticMouseY);
     }
     ImGui::NewFrame();
@@ -598,6 +604,27 @@ void InxGUI::BuildFrameInternal()
         ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
         bool needsDefaultLayout = (ImGui::DockBuilderGetNode(dockspaceId) == nullptr);
 
+        // The dedicated, non-resizable toolbar must fit the same font and
+        // authored padding used by ToolbarPanel. Update before DockSpace so
+        // its Scene sibling is repositioned in this frame, without rebuilding
+        // the user's layout or touching floating/merged toolbar windows.
+        const float toolbarHeight =
+            ImGui::GetFontSize() +
+            2.0f * ((EditorTheme::TOOLBAR_FRAME_PAD.y + EditorTheme::TOOLBAR_WIN_PAD.y) * m_dpiScale +
+                    ImGui::GetStyle().WindowBorderSize);
+        if (ImGuiWindow *toolbarWindow = ImGui::FindWindowByName("###toolbar")) {
+            ImGuiDockNode *node = ImGui::DockBuilderGetNode(toolbarWindow->DockId);
+            const ImGuiDockNodeFlags fixedToolbar = ImGuiDockNodeFlags_NoTabBar | ImGuiDockNodeFlags_NoResize;
+            if (node && node->IsLeafNode() && node->Windows.Size == 1 && node->ParentNode &&
+                node->ParentNode->SplitAxis == ImGuiAxis_Y && ImGui::DockNodeGetRootNode(node)->ID == dockspaceId &&
+                (node->LocalFlags & fixedToolbar) == fixedToolbar && std::abs(node->Size.y - toolbarHeight) > 0.5f) {
+                node->Size.y = node->SizeRef.y = toolbarHeight;
+                node->AuthorityForSize = ImGuiDataAuthority_DockNode;
+                node->WantLockSizeOnce = true;
+                ImGui::MarkIniSettingsDirty();
+            }
+        }
+
         ImGui::DockSpace(dockspaceId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
 
         // Setup default Unity-style layout only when no saved layout exists.
@@ -632,7 +659,7 @@ void InxGUI::BuildFrameInternal()
             ImGui::DockBuilderSplitNode(dockCenterTop, ImGuiDir_Up, 0.04f, &dockToolbar, &dockScene);
 
             // Set a fixed size for the toolbar node so it doesn't stretch
-            ImGui::DockBuilderSetNodeSize(dockToolbar, ImVec2(viewport->WorkSize.x, 36));
+            ImGui::DockBuilderSetNodeSize(dockToolbar, ImVec2(viewport->WorkSize.x, toolbarHeight));
 
             // Hide tab bar on toolbar node — it should be locked in place
             ImGuiDockNode *toolbarNode = ImGui::DockBuilderGetNode(dockToolbar);
@@ -1115,6 +1142,31 @@ uint64_t InxGUI::GetImGuiTextureId(const std::string &name)
         return reinterpret_cast<uint64_t>(it->second.descriptorSet);
     }
     return 0;
+}
+
+uint64_t InxGUI::PublishRenderTextureForImGui(const std::shared_ptr<rhi::RenderTexture> &texture)
+{
+    const auto sampled = texture->Acquire()->sampledColor;
+    const std::string name = "RenderTextureUI/" + sampled->GetSourceId();
+    const auto id = PublishTextureViewForImGui(name, sampled);
+    m_textures_umap.at(name).renderTexture = texture;
+    return id;
+}
+
+bool InxGUI::ImGuiTextureNeedsDisplayEncoding(uint64_t textureId) const
+{
+    const auto descriptor = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(textureId));
+    const auto name = m_textureNamesByDescriptor.find(descriptor);
+    return name != m_textureNamesByDescriptor.end() && m_textures_umap.at(name->second).requiresDisplayEncoding;
+}
+
+std::shared_ptr<rhi::RenderTexture> InxGUI::ResolveImGuiRenderTexture(uint64_t textureId) const
+{
+    const auto descriptor = reinterpret_cast<VkDescriptorSet>(static_cast<uintptr_t>(textureId));
+    const auto name = m_textureNamesByDescriptor.find(descriptor);
+    if (name == m_textureNamesByDescriptor.end())
+        return nullptr;
+    return m_textures_umap.at(name->second).renderTexture.lock();
 }
 
 bool InxGUI::TouchImGuiTextureId(uint64_t textureId)

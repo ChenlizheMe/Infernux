@@ -160,24 +160,39 @@ def _cancel_layout_epoch(class_id: int, reference) -> None:
 
 
 def _class_key(cls) -> str:
-    fields = getattr(cls, "_serialized_fields_", {})
-    layout = []
-    for name, metadata in sorted(fields.items()):
-        field_type_value = getattr(metadata, "field_type", None)
-        if field_type_value is None or not is_cds_backed(field_type_value):
-            continue
-        field_type = getattr(getattr(metadata, "field_type", None), "name", "")
-        layout.append((name, field_type))
+    layout = [
+        (name, metadata.field_type.name)
+        for name, metadata in sorted(_numeric_fields(cls).items())
+    ]
     revision = hashlib.sha256(repr(layout).encode("utf-8")).hexdigest()[:16]
     return f"{cls._get_type_guid()}@{revision}"
 
 
 def _numeric_fields(cls) -> dict[str, object]:
+    from .fields import get_serialized_fields
+
+    if not getattr(cls, "_uses_component_data_store", True):
+        return {}
     return {
         name: metadata
-        for name, metadata in getattr(cls, "_serialized_fields_", {}).items()
+        for name, metadata in get_serialized_fields(cls).items()
         if is_cds_backed(metadata.field_type)
     }
+
+
+def prepare_numeric_descriptors(cls) -> None:
+    """Keep per-concrete-class storage bindings off shared base descriptors.
+
+    Metadata still comes from the inherited declaration. This runs at class
+    preparation, including for candidates before their native layout exists.
+    """
+    from .fields import SerializedFieldDescriptor
+
+    for name, metadata in _numeric_fields(cls).items():
+        if name not in cls.__dict__:
+            descriptor = _descriptor(cls, name)
+            if isinstance(descriptor, SerializedFieldDescriptor):
+                setattr(cls, name, SerializedFieldDescriptor(metadata))
 
 
 def _descriptor(cls, name: str):
@@ -207,16 +222,16 @@ class CDSSchemaPublication:
     prepare every live instance before exposing any part of the new layout.
     """
 
-    def __init__(self, component_types: Iterable[type]) -> None:
+    def __init__(self, component_types: Iterable[type], *, private_layout_types: Iterable[type] = ()) -> None:
         self._lib = _get_lib()
         self._types = tuple(dict.fromkeys(component_types))
+        self._private_layout_types = frozenset(private_layout_types)
         self._transaction_id: Optional[int] = None
         self._entries: dict[type, _PreparedClassPublication] = {}
         self._registry_before: dict[str, tuple[bool, object]] = {}
         self._descriptor_before: list[tuple[object, tuple[object, object, object]]] = []
         self._retired_keys: set[str] = set()
         self._retired_epoch_holds: list[tuple[int, object]] = []
-        self._allocated_slots: list[tuple[_PreparedClassPublication, tuple[int, int]]] = []
         self._sealed = False
         self._native_committed = False
         self._native_finalized = False
@@ -261,7 +276,7 @@ class CDSSchemaPublication:
                 )
                 self._entries[component_type] = entry
                 continue
-            if existing is not None:
+            if existing is not None and component_type not in self._private_layout_types:
                 class_id, field_map = existing
                 entry = _PreparedClassPublication(
                     component_type,
@@ -310,7 +325,8 @@ class CDSSchemaPublication:
     def retire_published_layout(self, component_type: type) -> None:
         """Stage an old layout retirement without releasing its native slots."""
         key = _class_key(component_type)
-        if key in {entry.key for entry in self._entries.values()}:
+        replacement = next((entry for entry in self._entries.values() if entry.key == key), None)
+        if replacement is not None and replacement.reused:
             return
         self._registry_before.setdefault(
             key,
@@ -321,7 +337,10 @@ class CDSSchemaPublication:
             reference = _retain_layout_epoch(int(previous[0]), component_type)
             if reference is not None:
                 self._retired_epoch_holds.append((int(previous[0]), reference))
-        self._retired_keys.add(key)
+        # A private replacement with the same shape keeps this key, but its
+        # previous storage generation still belongs to the retiring epoch.
+        if replacement is None:
+            self._retired_keys.add(key)
 
     def reserve(self, component_type: type, capacity: int) -> None:
         entry = self.entry(component_type)
@@ -345,29 +364,6 @@ class CDSSchemaPublication:
                 entry.candidate_id,
             )
         )
-        self._allocated_slots.append((entry, slot))
-        return slot
-
-    def migrate_slot(
-        self,
-        component_type: type,
-        source_class_id: int,
-        source_slot: tuple[int, int],
-        field_map: Iterable[tuple[int, int]],
-    ) -> tuple[int, int]:
-        entry = self.entry(component_type)
-        if entry.candidate_id is None:
-            raise RuntimeError("CDS slot migration requires a prepared numeric layout")
-        slot = tuple(
-            self._lib._cds_schema_migrate_slot(
-                self._transaction_id,
-                entry.candidate_id,
-                int(source_class_id),
-                source_slot,
-                tuple(field_map),
-            )
-        )
-        self._allocated_slots.append((entry, slot))
         return slot
 
     def set_value(
@@ -535,9 +531,11 @@ class CDSSchemaPublication:
 
 def prepare_schema_publication(
     component_types: Iterable[type],
+    *,
+    private_layout_types: Iterable[type] = (),
 ) -> CDSSchemaPublication:
     """Prepare one private multi-class schema transaction for an owner safe point."""
-    return CDSSchemaPublication(component_types)
+    return CDSSchemaPublication(component_types, private_layout_types=private_layout_types)
 
 
 def register_class(cls) -> Optional[int]:
@@ -557,30 +555,22 @@ def register_class(cls) -> Optional[int]:
 def publish_class(cls) -> Optional[int]:
     """Register a class during owner commit, bypassing candidate deferral."""
     key = _class_key(cls)
-    if key in _class_registry:
-        return _class_registry[key][0]
-
-    fields_meta = getattr(cls, '_serialized_fields_', {})
-    if not fields_meta:
-        return None
-
-    numeric_fields = {}
-    for fname, meta in fields_meta.items():
-        if is_cds_backed(meta.field_type):
-            numeric_fields[fname] = meta
-
+    numeric_fields = _numeric_fields(cls)
     if not numeric_fields:
         return None
 
-    lib = _get_lib()
-    class_id = lib._cds_register_class(key)
-    field_map = {}
-    for fname, meta in numeric_fields.items():
-        tc = cds_type_code(meta.field_type)
-        fid = lib._cds_register_field(class_id, fname, tc)
-        field_map[fname] = (fid, tc)
-
-    _class_registry[key] = (class_id, field_map)
+    existing = _class_registry.get(key)
+    if existing is not None:
+        class_id, field_map = existing
+    else:
+        lib = _get_lib()
+        class_id = lib._cds_register_class(key)
+        field_map = {}
+        for fname, meta in numeric_fields.items():
+            tc = cds_type_code(meta.field_type)
+            fid = lib._cds_register_field(class_id, fname, tc)
+            field_map[fname] = (fid, tc)
+        _class_registry[key] = (class_id, field_map)
 
     # Stamp CDS metadata on each numeric descriptor for fast __get__/__set__.
     for fname, (fid, tc) in field_map.items():

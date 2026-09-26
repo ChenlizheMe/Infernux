@@ -9,10 +9,10 @@
  *     only physics colliders. We therefore combine collider hits with a
  *     lightweight MeshRenderer bounds test.
  *   - Component icon billboards (lights, cameras, particles, etc.) are
- *     pickable via a screen-space proximity test ranked at the billboard
- *     sphere entry, so they compete equally with nearby mesh AABBs.
- *   - Gizmo handles (translate/rotate/scale) are picked via a dedicated
- *     lightweight `PickGizmoAxis()` that tests both axes and plane squares.
+ *     picked against their projected Scene-view
+ * quads.
+ *   - Gizmo handles (translate/rotate/scale) are picked via a dedicated lightweight `PickGizmoAxis()` that
+ * tests both axes and plane squares.
  *
  * Contains: CollectIconHits,
  *           Infernux::PickSceneObjectId, Infernux::PickSceneObjectIds,
@@ -28,6 +28,8 @@
 #include <function/renderer/EditorTools.h>
 #include <function/renderer/GizmosDrawCallBuffer.h>
 #include <function/renderer/InxRenderer.h>
+#include <function/renderer/SceneIconPicking.h>
+#include <function/renderer/SceneRenderGraph.h>
 #include <function/scene/MeshRenderer.h>
 #include <function/scene/SceneRenderBridge.h>
 #include <function/scene/physics/PhysicsWorld.h>
@@ -44,33 +46,49 @@ namespace infernux
 // Shared picking helpers
 // ----------------------------------
 
-/// Collect all icon hits within icon radius, appending to `hits`.
-static void CollectIconHits(InxRenderer *rendererPtr, const glm::vec3 &rayOrigin, const glm::vec3 &rayDirection,
+/// Collect icon hits using the same projected quad size as the render pass.
+static void CollectIconHits(InxRenderer *rendererPtr, const glm::vec2 &screenPoint, const glm::vec2 &displayedSize,
+                            const glm::vec3 &rayOrigin, const glm::vec3 &rayDirection, Camera *camera,
                             std::vector<std::pair<float, uint64_t>> &hits)
 {
-    if (!rendererPtr)
+    if (!rendererPtr || !camera || displayedSize.x <= 0.0f || displayedSize.y <= 0.0f)
         return;
     GizmosDrawCallBuffer *buf = rendererPtr->GetGizmosDrawCallBuffer();
     if (!buf || !buf->HasIconData())
         return;
 
     const auto &icons = buf->GetIconEntries();
+
+    // Icon billboards are submitted with the Scene RenderGraph's cached
+    // camera matrices.  Reading the live Camera matrices here can disagree
+    // for one or more frames while the graph is rebuilding, after a resize,
+    // or when temporal jitter is active; the icon is then visible at one
+    // pixel location but its pick quad is tested at another.  Reuse the
+    // exact matrices used for submission whenever that cache is available.
+    glm::mat4 cameraToWorld = camera->GetCameraToWorldMatrix();
+    glm::mat4 view = camera->GetViewMatrix();
+    glm::mat4 projection = camera->GetProjectionMatrix();
+    if (SceneRenderGraph *graph = rendererPtr->GetSceneRenderGraph(); graph && graph->HasCachedCameraVP()) {
+        view = graph->GetCachedView();
+        projection = graph->GetCachedProj();
+        cameraToWorld = glm::inverse(view);
+    }
+    uint32_t renderHeight = static_cast<uint32_t>(displayedSize.y);
+    if (SceneRenderGraph *graph = rendererPtr->GetSceneRenderGraph()) {
+        const uint32_t graphHeight = graph->GetRenderViewContext().height;
+        if (graphHeight != 0)
+            renderHeight = graphHeight;
+    }
+    const float displayScale = rendererPtr->GetDisplayScale();
     for (const auto &icon : icons) {
-        float t = glm::dot(icon.position - rayOrigin, rayDirection);
+        const float t = glm::dot(icon.position - rayOrigin, rayDirection);
         if (t < 0.0f)
             continue;
-        glm::vec3 closestOnRay = rayOrigin + rayDirection * t;
-        float dist = glm::length(closestOnRay - icon.position);
-        float camDist = glm::length(icon.position - rayOrigin);
-        float iconRadius =
-            std::max(camDist * GizmosDrawCallBuffer::ICON_SIZE_FACTOR, GizmosDrawCallBuffer::ICON_MIN_WORLD_SIZE);
-        if (dist >= iconRadius)
+        const auto projected =
+            ProjectSceneIcon(icon.position, cameraToWorld, view, projection, renderHeight, displayScale, displayedSize);
+        if (!projected || !SceneIconContains(*projected, screenPoint))
             continue;
-        // Rank icons by the ray's entry into the screen-space billboard
-        // sphere. Using the center put particle/light icons behind nearby
-        // mesh AABBs, so a click on the icon selected the cube behind it.
-        const float halfChord = std::sqrt(std::max(0.0f, iconRadius * iconRadius - dist * dist));
-        hits.emplace_back(std::max(0.0f, t - halfChord), icon.objectId);
+        hits.emplace_back(t, icon.objectId);
     }
 }
 
@@ -141,6 +159,69 @@ static uint64_t TestGizmoAxes(const glm::vec3 &rayOrigin, const glm::vec3 &rayDi
 {
     EditorTools::ToolMode toolMode = tools->GetToolMode();
     glm::vec3 objPos = selTransform->GetPosition();
+
+    if (toolMode == EditorTools::ToolMode::Rect) {
+        GameObject *object = selTransform->GetGameObject();
+        const auto frame = tools->ResolveRectFrame(object, camera->GetTransform()->GetPosition());
+        if (!frame.valid)
+            return 0;
+        const glm::vec3 &center = frame.center;
+        const glm::vec3 &axisX = frame.axisU;
+        const glm::vec3 &axisY = frame.axisV;
+        const float halfWidth = frame.halfU;
+        const float halfHeight = frame.halfV;
+
+        const glm::vec3 normal = glm::normalize(glm::cross(axisX, axisY));
+        const float denominator = glm::dot(rayDirection, normal);
+        if (std::abs(denominator) < kEpsilon)
+            return 0;
+        const float planeT = glm::dot(center - rayOrigin, normal) / denominator;
+        if (planeT < 0.0f)
+            return 0;
+        const glm::vec3 relative = rayOrigin + rayDirection * planeT - center;
+        const float u = glm::dot(relative, axisX);
+        const float v = glm::dot(relative, axisY);
+        const float distance = glm::length(rayOrigin - center);
+        const float worldPerPixel =
+            (2.0f * distance * std::tan(glm::radians(camera->GetFieldOfView()) * 0.5f)) / viewportHeight;
+        const float threshold = std::max(9.0f * worldPerPixel, 0.008f);
+
+        struct RectCandidate
+        {
+            float u;
+            float v;
+            uint64_t id;
+        };
+        const RectCandidate corners[4] = {
+            {-halfWidth, -halfHeight, EditorTools::RECT_BOTTOM_LEFT_ID},
+            {halfWidth, -halfHeight, EditorTools::RECT_BOTTOM_RIGHT_ID},
+            {-halfWidth, halfHeight, EditorTools::RECT_TOP_LEFT_ID},
+            {halfWidth, halfHeight, EditorTools::RECT_TOP_RIGHT_ID},
+        };
+        float best = threshold * 1.35f;
+        uint64_t picked = 0;
+        for (const auto &corner : corners) {
+            const float d = glm::length(glm::vec2(u - corner.u, v - corner.v));
+            if (d < best) {
+                best = d;
+                picked = corner.id;
+            }
+        }
+        if (picked != 0)
+            return picked;
+        if (std::abs(u + halfWidth) <= threshold && std::abs(v) <= halfHeight + threshold)
+            return EditorTools::RECT_LEFT_ID;
+        if (std::abs(u - halfWidth) <= threshold && std::abs(v) <= halfHeight + threshold)
+            return EditorTools::RECT_RIGHT_ID;
+        if (std::abs(v + halfHeight) <= threshold && std::abs(u) <= halfWidth + threshold)
+            return EditorTools::RECT_BOTTOM_ID;
+        if (std::abs(v - halfHeight) <= threshold && std::abs(u) <= halfWidth + threshold)
+            return EditorTools::RECT_TOP_ID;
+        if (std::abs(u) < halfWidth && std::abs(v) < halfHeight)
+            return EditorTools::RECT_CENTER_ID;
+        return 0;
+    }
+
     float camDist = glm::length(rayOrigin - objPos);
     float scale = camDist * 0.15f * tools->GetHandleSize();
     if (scale < 0.01f)
@@ -263,8 +344,8 @@ static uint64_t TestGizmoAxes(const glm::vec3 &rayOrigin, const glm::vec3 &rayDi
             }
         }
 
-        // Plane handles are Translate-only; Scale uses axes + center cube.
-        if (toolMode == EditorTools::ToolMode::Translate) {
+        // Translate and Scale share the three two-axis plane handles.
+        if (toolMode == EditorTools::ToolMode::Translate || toolMode == EditorTools::ToolMode::Scale) {
             struct PlaneCandidate
             {
                 glm::vec3 axisU;
@@ -325,15 +406,11 @@ uint64_t Infernux::PickGizmoAxis(float screenX, float screenY, float viewportWid
     if (!tools || tools->GetToolMode() == EditorTools::ToolMode::None || m_selectedObjectId == 0)
         return 0;
 
-    Scene *scene = SceneManager::Instance().GetActiveScene();
-    if (!scene)
-        return 0;
-
     Camera *camera = SceneRenderBridge::Instance().GetEditorCamera();
     if (!camera)
         return 0;
 
-    GameObject *selObj = scene->FindByID(m_selectedObjectId);
+    GameObject *selObj = SceneManager::Instance().FindRuntimeObjectByID(m_selectedObjectId);
     if (!selObj || !selObj->IsActiveInHierarchy() || !selObj->GetTransform())
         return 0;
 
@@ -404,7 +481,7 @@ uint64_t Infernux::PickSceneObjectId(float screenX, float screenY, float viewpor
         bool gizmoTestActive = tools && tools->GetToolMode() != EditorTools::ToolMode::None && m_selectedObjectId != 0;
 
         if (gizmoTestActive) {
-            GameObject *selObj = scene->FindByID(m_selectedObjectId);
+            GameObject *selObj = SceneManager::Instance().FindRuntimeObjectByID(m_selectedObjectId);
             if (selObj && selObj->IsActiveInHierarchy() && selObj->GetTransform()) {
                 uint64_t gizmoId =
                     TestGizmoAxes(rayOrigin, rayDirection, tools, selObj->GetTransform(), camera, viewportHeight);
@@ -420,7 +497,8 @@ uint64_t Infernux::PickSceneObjectId(float screenX, float screenY, float viewpor
     // =========================================================================
     if (m_renderer) {
         std::vector<std::pair<float, uint64_t>> iconHits;
-        CollectIconHits(m_renderer.get(), rayOrigin, rayDirection, iconHits);
+        CollectIconHits(m_renderer.get(), {screenX, screenY}, {viewportWidth, viewportHeight}, rayOrigin, rayDirection,
+                        camera, iconHits);
         for (const auto &[dist, objId] : iconHits) {
             if (dist < closestDistance) {
                 closestDistance = dist;
@@ -476,14 +554,15 @@ std::vector<uint64_t> Infernux::PickSceneObjectIds(float screenX, float screenY,
     CollectMeshRendererHits(rayOrigin, rayDirection, hits);
 
     // Icon candidates
-    CollectIconHits(m_renderer.get(), rayOrigin, rayDirection, hits);
+    CollectIconHits(m_renderer.get(), {screenX, screenY}, {viewportWidth, viewportHeight}, rayOrigin, rayDirection,
+                    camera, hits);
 
     if (hits.empty()) {
         return orderedIds;
     }
 
     std::sort(hits.begin(), hits.end(), [](const std::pair<float, uint64_t> &a, const std::pair<float, uint64_t> &b) {
-        return a.first < b.first;
+        return std::tie(a.first, a.second) < std::tie(b.first, b.second);
     });
 
     std::unordered_set<uint64_t> seen;
@@ -498,6 +577,33 @@ std::vector<uint64_t> Infernux::PickSceneObjectIds(float screenX, float screenY,
     }
 
     return orderedIds;
+}
+
+std::vector<uint64_t> Infernux::PickSceneIconObjectIds(float screenX, float screenY, float viewportWidth,
+                                                       float viewportHeight)
+{
+    if (!CheckEngineValid("pick scene icons") || !m_renderer || viewportWidth <= 0.0f || viewportHeight <= 0.0f)
+        return {};
+
+    Camera *camera = SceneRenderBridge::Instance().GetEditorCamera();
+    if (!camera)
+        return {};
+
+    const auto [rayOrigin, rayDirection] =
+        camera->ScreenPointToRay(glm::vec2(screenX, screenY), viewportWidth, viewportHeight);
+    std::vector<std::pair<float, uint64_t>> hits;
+    CollectIconHits(m_renderer.get(), {screenX, screenY}, {viewportWidth, viewportHeight}, rayOrigin, rayDirection,
+                    camera, hits);
+    std::sort(hits.begin(), hits.end(),
+              [](const auto &a, const auto &b) { return std::tie(a.first, a.second) < std::tie(b.first, b.second); });
+    std::vector<uint64_t> ids;
+    std::unordered_set<uint64_t> seen;
+    for (const auto &[distance, objectId] : hits) {
+        (void)distance;
+        if (objectId != 0 && seen.insert(objectId).second)
+            ids.push_back(objectId);
+    }
+    return ids;
 }
 
 // ============================================================================
@@ -537,6 +643,33 @@ void Infernux::SetEditorToolHighlight(int axis)
     case 7:
         ha = EditorTools::HandleAxis::Center;
         break;
+    case 8:
+        ha = EditorTools::HandleAxis::RectLeft;
+        break;
+    case 9:
+        ha = EditorTools::HandleAxis::RectRight;
+        break;
+    case 10:
+        ha = EditorTools::HandleAxis::RectBottom;
+        break;
+    case 11:
+        ha = EditorTools::HandleAxis::RectTop;
+        break;
+    case 12:
+        ha = EditorTools::HandleAxis::RectBottomLeft;
+        break;
+    case 13:
+        ha = EditorTools::HandleAxis::RectBottomRight;
+        break;
+    case 14:
+        ha = EditorTools::HandleAxis::RectTopLeft;
+        break;
+    case 15:
+        ha = EditorTools::HandleAxis::RectTopRight;
+        break;
+    case 16:
+        ha = EditorTools::HandleAxis::RectCenter;
+        break;
     default:
         ha = EditorTools::HandleAxis::None;
         break;
@@ -563,11 +696,17 @@ void Infernux::SetEditorToolMode(int mode)
     case 3:
         tm = EditorTools::ToolMode::Scale;
         break;
+    case 4:
+        tm = EditorTools::ToolMode::Rect;
+        break;
     default:
         tm = EditorTools::ToolMode::None;
         break;
     }
     tools->SetToolMode(tm);
+    // Switching into Rect changes how selection is presented even though the
+    // selected object itself is unchanged.
+    m_renderer->RequestFullSpeedFrame();
 }
 
 int Infernux::GetEditorToolMode() const
@@ -585,6 +724,8 @@ int Infernux::GetEditorToolMode() const
         return 2;
     case EditorTools::ToolMode::Scale:
         return 3;
+    case EditorTools::ToolMode::Rect:
+        return 4;
     default:
         return 0;
     }

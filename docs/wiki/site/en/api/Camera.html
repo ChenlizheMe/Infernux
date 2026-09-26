@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/en/api/njit.html" class="">njit</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/compile.html" class="">compile</a><a href="/wiki/site/en/api/statistics.html" class="">statistics</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -358,14 +358,119 @@ class in <b>Infernux.components.builtin</b>
 </thead>
 <tbody>
 <tr>
+<td>target_texture</td>
+<td><code>RenderTexture | RenderTextureRef | None</code></td>
+<td>Output owner, unresolved asset reference, or None for the screen.</td>
+</tr>
+<tr>
+<td>projection_matrix</td>
+<td><code>NDArray[np.float32]</code></td>
+<td></td>
+</tr>
+<tr>
+<td>view_matrix</td>
+<td><code>NDArray[np.float32]</code></td>
+<td></td>
+</tr>
+<tr>
+<td>camera_to_world_matrix</td>
+<td><code>NDArray[np.float32]</code></td>
+<td><em>(read-only)</em></td>
+</tr>
+<tr>
+<td>has_custom_view_matrix</td>
+<td><code>bool</code></td>
+<td><em>(read-only)</em></td>
+</tr>
+<tr>
+<td>invert_culling</td>
+<td><code>bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td>has_custom_projection_matrix</td>
+<td><code>bool</code></td>
+<td><em>(read-only)</em></td>
+</tr>
+<tr>
 <td>projection_mode</td>
 <td><code>int</code></td>
-<td>The projection mode (0 = Perspective, 1 = Orthographic).</td>
+<td>The projection mode (Perspective or Orthographic).</td>
 </tr>
 <tr>
 <td>field_of_view</td>
 <td><code>float</code></td>
 <td>The vertical field of view in degrees.</td>
+</tr>
+<tr>
+<td>use_physical_properties</td>
+<td><code>bool</code></td>
+<td>Use physical lens and sensor properties for perspective projection.</td>
+</tr>
+<tr>
+<td>iso</td>
+<td><code>int</code></td>
+<td>Physical camera sensor sensitivity.</td>
+</tr>
+<tr>
+<td>shutter_speed</td>
+<td><code>float</code></td>
+<td>Physical camera exposure time in seconds.</td>
+</tr>
+<tr>
+<td>aperture</td>
+<td><code>float</code></td>
+<td>Physical camera aperture in f-stops.</td>
+</tr>
+<tr>
+<td>focus_distance</td>
+<td><code>float</code></td>
+<td>Physical camera focus-plane distance.</td>
+</tr>
+<tr>
+<td>blade_count</td>
+<td><code>int</code></td>
+<td>Physical camera diaphragm blade count.</td>
+</tr>
+<tr>
+<td>curvature</td>
+<td><code>Vector2</code></td>
+<td>Minimum and maximum aperture used for diaphragm curvature.</td>
+</tr>
+<tr>
+<td>barrel_clipping</td>
+<td><code>float</code></td>
+<td>Optical-vignetting cat-eye strength.</td>
+</tr>
+<tr>
+<td>anamorphism</td>
+<td><code>float</code></td>
+<td>Physical camera sensor stretch.</td>
+</tr>
+<tr>
+<td>focal_length</td>
+<td><code>float</code></td>
+<td>Physical camera focal length in millimetres.</td>
+</tr>
+<tr>
+<td>sensor_type</td>
+<td><code>CameraSensorType</code></td>
+<td>Derived sensor-size preset; Custom preserves the authored sensor size.</td>
+</tr>
+<tr>
+<td>sensor_size</td>
+<td><code>Any</code></td>
+<td>Physical camera sensor size in millimetres (width, height).</td>
+</tr>
+<tr>
+<td>lens_shift</td>
+<td><code>Any</code></td>
+<td>Physical camera lens shift in normalized sensor units.</td>
+</tr>
+<tr>
+<td>gate_fit</td>
+<td><code>Any</code></td>
+<td></td>
 </tr>
 <tr>
 <td>orthographic_size</td>
@@ -395,7 +500,7 @@ class in <b>Infernux.components.builtin</b>
 <tr>
 <td>culling_mask</td>
 <td><code>int</code></td>
-<td>The layer mask used for culling objects. <em>(read-only)</em></td>
+<td>The layer mask used for culling objects.</td>
 </tr>
 <tr>
 <td>clear_flags</td>
@@ -443,6 +548,26 @@ class in <b>Infernux.components.builtin</b>
 </thead>
 <tbody>
 <tr>
+<td><code>set_clip_planes(near_clip: float, far_clip: float) → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>reset_view_matrix() → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>reset_history() → None</code></td>
+<td>Discard this camera's accumulated history before its next render.</td>
+</tr>
+<tr>
+<td><code>reset_projection_matrix() → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>calculate_oblique_matrix(clip_plane: ArrayLike) → NDArray[np.float32]</code></td>
+<td></td>
+</tr>
+<tr>
 <td><code>screen_to_world_point(x: float, y: float, depth: float = ...) → Optional[Tuple[float, float, float]]</code></td>
 <td>Convert a screen-space point to world coordinates.</td>
 </tr>
@@ -451,7 +576,7 @@ class in <b>Infernux.components.builtin</b>
 <td>Convert a world-space point to screen coordinates.</td>
 </tr>
 <tr>
-<td><code>screen_point_to_ray(x: float, y: float) → Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]</code></td>
+<td><code>screen_point_to_ray(x: float, y: float, viewport_width: Optional[float] = ..., viewport_height: Optional[float] = ...) → Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]</code></td>
 <td>Cast a ray from a screen-space point into the scene.</td>
 </tr>
 <tr>

@@ -10,6 +10,7 @@ from .selection import SelectionChange, SelectionService
 from .clipboard import ClipboardChange, ClipboardDomain, ClipboardItem, ClipboardOperation, ClipboardPayload, ClipboardService
 from .commands import CommandContext, CommandResult, CommandSource, CommandStatus, EditorCommand, EditorCommandRegistry
 from .shortcuts import KeyChord, ShortcutBinding, ShortcutEvent, ShortcutModifier, ShortcutPhase, ShortcutRouteResult, ShortcutRouteStatus, ShortcutRouter, ShortcutScope
+from .handles import EditorHandleContext, EditorHandleKind, EditorHandleProvider, EditorHandleRegistry, EditorHandleSnapshot, HandleRegistration, register_handle_provider
 from .command_palette import COMMAND_PALETTE_CONTEXT_ID, COMMAND_PALETTE_MODAL_ID, CommandPaletteEntry, CommandPaletteService
 from .history import HistoryEntrySnapshot, HistoryModel, HistorySnapshot
 from .shortcut_profiles import DEFAULT_PROFILE_ID, DEFAULT_PROFILE_NAME, SHORTCUT_PROFILES_SCHEMA, ShortcutBindingSnapshot, ShortcutOverrideSnapshot, ShortcutProfileDiff, ShortcutProfileDiffKind, ShortcutProfileModel, ShortcutProfileSnapshot, ShortcutProfilesSnapshot
@@ -36,8 +37,6 @@ from .external_drops import ExternalDropDecision, ExternalDropStatus, ExternalDr
 from .scene_objects import SceneObjectCommandService
 from .asset_mutations import AssetContentChange, AssetMutation, AssetMutationChange, AssetMutationKind, AssetMutationNotification, AssetMutationService, AssetRelocationChange, AssetRelocationPlan, iter_asset_mutations
 from .asset_content import (
-    AssetReferenceContentPatch,
-    AssetReferenceRelocationPlanner,
     AssetRenameContentRegistry,
     AssetRenameTransform,
 )

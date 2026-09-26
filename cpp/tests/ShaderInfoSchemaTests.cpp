@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -28,7 +29,12 @@ std::string ReadText(const std::string &path)
 void RequireCompiles(infernux::InxShaderLoader &compiler, const std::string &source, const std::string &path)
 {
     infernux::InxResourceMeta metadata;
-    compiler.CreateMeta(source.data(), source.size(), path, metadata);
+    // Virtual sources share the declared shader root. Resolving a bare test
+    // filename against CTest's working directory would recursively index the
+    // entire build tree, including unrelated caches and junctions.
+    const auto sourcePath =
+        (std::filesystem::u8path(INFERNUX_TEST_SHADER_ROOT) / std::filesystem::u8path(path)).generic_u8string();
+    compiler.CreateMeta(source.data(), source.size(), sourcePath, metadata);
     const auto compiled = compiler.Compile(source.c_str(), source.size(), metadata);
     if (!compiled || compiled->empty()) {
         std::cerr << "Structured shader compilation failed for " << path << '\n';
@@ -51,7 +57,11 @@ void RequireLinkedProgramCompiles(infernux::InxShaderLoader &compiler, const std
 } // namespace
 
 int main()
-{
+try {
+#ifdef _WIN32
+    // Keep failed assertions in the CI log instead of a desktop CRT dialog.
+    _set_error_mode(_OUT_TO_STDERR);
+#endif
     const std::string richSource = R"(
 // ShaderInfo { Name "Ignored/InComment" }
 ShaderInfo
@@ -419,6 +429,92 @@ void surface(out SurfaceData s) {
 )";
     RequireCompiles(compiler, fragmentSource, "StructuredUnlit.frag");
 
+    const std::string multisampledSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/MultisampledInputs"
+    Capabilities [Fullscreen]
+    Resources { Texture2DMS colorSamples Texture2DMSUInt ownerSamples Texture2D regularColor }
+    Outputs { Float4 outColor }
+}
+void main() {
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    uint owner = texelFetch(ownerSamples, pixel, gl_SampleID).r;
+    outColor = texelFetch(colorSamples, pixel, gl_SampleID) +
+        texture(regularColor, gl_SamplePosition) * float(owner);
+}
+)";
+    const auto multisampledSchema = infernux::ParseShaderInfo(multisampledSource);
+    assert(multisampledSchema.IsValid());
+    assert(multisampledSchema.resources[0].type == "Texture2DMS");
+    assert(multisampledSchema.resources[1].type == "Texture2DMSUInt");
+    RequireCompiles(compiler, multisampledSource, "MultisampledInputs.frag");
+
+    const std::string storageInputSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/StorageInput"
+    Capabilities [Fullscreen]
+    Resources { BufferUInt values Texture2D sourceTexture }
+    Outputs { Float4 outColor }
+}
+void main() {
+    outColor = vec4(float(values.data[0]) / 255.0) * texture(sourceTexture, vec2(0.5));
+}
+)";
+    const auto storageSchema = infernux::ParseShaderInfo(storageInputSource);
+    assert(storageSchema.IsValid() && storageSchema.resources.size() == 2);
+    assert(storageSchema.resources[0].type == "BufferUInt");
+    const auto storageGlsl = compiler.PrepareAuthoredStageGlsl(storageInputSource, "StorageInput.frag");
+    assert(storageGlsl.find("readonly buffer InxBuffer0") != std::string::npos);
+    assert(storageGlsl.find("uniform sampler2D sourceTexture") != std::string::npos);
+    RequireCompiles(compiler, storageInputSource, "StorageInput.frag");
+
+    const std::string volumeInputSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/VolumeInput"
+    Capabilities [Fullscreen]
+    Resources { Texture3D density }
+    Outputs { Float4 outColor }
+}
+void main() {
+    outColor = texture(density, vec3(0.5, 0.5, 0.5));
+}
+)";
+    const auto volumeSchema = infernux::ParseShaderInfo(volumeInputSource);
+    assert(volumeSchema.IsValid() && volumeSchema.resources.size() == 1);
+    assert(volumeSchema.resources[0].type == "Texture3D");
+    const auto volumeGlsl = compiler.PrepareAuthoredStageGlsl(volumeInputSource, "VolumeInput.frag");
+    assert(volumeGlsl.find("uniform sampler3D density") != std::string::npos);
+    RequireCompiles(compiler, volumeInputSource, "VolumeInput.frag");
+
+    const std::string fullscreenLightingSource = R"(
+#version 450
+ShaderInfo {
+    Name "Tests/FullscreenLighting"
+    Capabilities [Fullscreen]
+    Imports ["Lighting"]
+    Requires [Lighting]
+    Outputs { Float4 outColor }
+}
+void main() {
+    Light mainLight = getMainLight(vec3(0.0), vec3(0.0, 1.0, 0.0), 0.0);
+    outColor = vec4(lighting.ambientColor.rgb +
+                    mainLight.color * mainLight.attenuation * mainLight.shadow, 1.0);
+}
+)";
+    const auto fullscreenLightingSchema = infernux::ParseShaderInfo(fullscreenLightingSource);
+    assert(fullscreenLightingSchema.IsValid());
+    const auto fullscreenLightingGlsl =
+        compiler.PrepareAuthoredStageGlsl(fullscreenLightingSource, "FullscreenLighting.frag");
+    assert(fullscreenLightingGlsl.find("set = 1, binding = 0") != std::string::npos);
+    assert(fullscreenLightingGlsl.find("set = 1, binding = 4") != std::string::npos);
+    assert(fullscreenLightingGlsl.find("CanonicalLightBuffer") != std::string::npos);
+    assert(fullscreenLightingGlsl.find("ForwardPlusTileMaskBuffer") != std::string::npos);
+    assert(fullscreenLightingGlsl.find("INX_SHADING_CAMERA_POSITION lighting.cameraPos.xyz") != std::string::npos);
+    RequireCompiles(compiler, fullscreenLightingSource, "FullscreenLighting.frag");
+
     const auto invalid =
         infernux::ParseShaderInfo("ShaderInfo { UnexpectedField 2 Properties { Float x = 1.0 Float x = 2.0 } }");
     assert(!invalid.IsValid());
@@ -448,4 +544,7 @@ void main() { outColor = vec4(1.0); }
 
     std::cout << "ShaderInfo schema tests passed\n";
     return 0;
+} catch (const std::exception &error) {
+    std::cerr << "ShaderInfo schema regression failed: " << error.what() << '\n';
+    return 1;
 }

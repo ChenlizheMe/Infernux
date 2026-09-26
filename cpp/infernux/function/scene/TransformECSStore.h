@@ -313,7 +313,10 @@ class TransformECSStore
     //
     // The cache also covers local properties for write-tracking consistency.
 
-    void BeginFrameCache(Scene *scene);
+    /// Begin the one World-wide transform cache used by every loaded Scene.
+    /// Scene activation selects authoring/render policy; it is not a
+    /// simulation or Transform execution boundary.
+    void BeginFrameCache();
     /// Commit cached writes. Returns true when at least one physics-authored
     /// pose was published; callers use this to invalidate render-only caches
     /// once per frame without feeding those poses back into physics.
@@ -366,7 +369,7 @@ class TransformECSStore
   private:
     TransformECSStore() = default;
 
-    [[nodiscard]] bool IsSlotInScene(size_t index, const Scene *scene) const;
+    void SyncAllWorldMatrices();
     void SyncObjectWorldMatrices(GameObject *obj);
     void EnsureFrameCacheSlot(uint32_t slotIndex);
     void MarkFrameCacheDirty(uint32_t slotIndex, uint8_t bits);
@@ -413,7 +416,6 @@ class TransformECSStore
     std::vector<uint32_t> m_fcDirtyIndices;
     uint64_t m_frameCacheSerial = 0;
     bool m_frameCacheActive = false;
-    Scene *m_fcScene = nullptr; // scene pointer for EndFrameCache sync
     bool m_fcPublishedPhysicsPose = false;
     InvalidationObserver m_invalidationObserver;
 };

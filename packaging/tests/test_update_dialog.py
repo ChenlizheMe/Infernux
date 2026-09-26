@@ -81,6 +81,23 @@ def test_update_check_completion_is_emitted_after_no_update(monkeypatch):
     assert completed == [True]
 
 
+def test_manual_check_during_startup_receives_the_in_flight_result(monkeypatch):
+    _app()
+    window = _window()
+    controller = update_dialog.UpdateController(window)
+    observed = []
+    controller.thread = SimpleNamespace(isRunning=lambda: True)
+    controller._silent_check = True
+    controller._completion_pending = True
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: observed.append("shown"))
+
+    controller.check(silent=False)
+    controller._checked(_up_to_date())
+
+    controller.thread = None
+    assert observed == ["shown"]
+
+
 def test_unsupported_hub_offers_the_platform_installer(monkeypatch):
     _app()
     window = _window()
@@ -157,6 +174,26 @@ def test_available_update_quits_after_success(monkeypatch):
     assert observed == {"quit": True, "question": True}
     assert finished == [True]
     assert window.isHidden()
+
+
+def test_automatic_update_check_requires_consent_before_downloading(monkeypatch):
+    _app()
+    window = _window()
+    controller = update_dialog.UpdateController(window)
+    controller._silent_check = True
+    controller._completion_pending = True
+    observed = []
+    result = HubUpdateCheck(
+        HubUpdateStatus.UPDATE_AVAILABLE, "0.4.0", "0.4.1",
+        update=SimpleNamespace(target_version="0.4.1"),
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args: observed.append("asked") or QMessageBox.No)
+    monkeypatch.setattr(window.install_queue, "submit", lambda *_args: observed.append("downloaded"))
+
+    controller._checked(result)
+
+    assert observed == ["asked"]
+    assert controller._update_job is None
 
 
 def test_staged_update_waits_for_other_installations(monkeypatch):

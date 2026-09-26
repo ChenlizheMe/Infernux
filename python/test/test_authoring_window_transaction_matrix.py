@@ -35,10 +35,37 @@ class _IOTicket:
         return self.status != "pending"
 
 
+class _AssetDatabase:
+    def __init__(self) -> None:
+        self._guids_by_path: dict[str, str] = {}
+        self._paths_by_guid: dict[str, str] = {}
+
+    def register(self, path: str, guid: str) -> None:
+        normalized_path = str(path)
+        normalized_guid = str(guid)
+        self._guids_by_path[normalized_path] = normalized_guid
+        self._paths_by_guid[normalized_guid] = normalized_path
+
+    def get_guid_from_path(self, path: str) -> str:
+        return self._guids_by_path.get(str(path), "")
+
+    def get_path_from_guid(self, guid: str) -> str:
+        return self._paths_by_guid.get(str(guid), "")
+
+
 class _MatrixAuthoringView:
-    def __init__(self, *, title: str, path: str) -> None:
+    def __init__(
+        self,
+        *,
+        title: str,
+        path: str,
+        asset_database: _AssetDatabase,
+        published_guid: str,
+    ) -> None:
         self.title = title
         self.path = path
+        self.asset_database = asset_database
+        self.published_guid = published_guid
         self.value = 1
         self.saved_snapshot = self.capture_authoring_snapshot()
 
@@ -59,6 +86,7 @@ class _MatrixAuthoringView:
     def publish_authoring_save_snapshot(self, snapshot) -> str:
         self.title = snapshot.title
         self.path = snapshot.target_path
+        self.asset_database.register(snapshot.target_path, self.published_guid)
         self.saved_snapshot = copy.deepcopy(snapshot.payload)
         return ""
 
@@ -94,6 +122,7 @@ def test_authoring_window_save_close_and_history_matrix(
     view_id,
     extension,
 ):
+    from Infernux.core.assets import AssetManager
     import Infernux.engine.interaction.authoring_documents as persistence
 
     io_tickets: list[_IOTicket] = []
@@ -108,12 +137,22 @@ def test_authoring_window_save_close_and_history_matrix(
     undo = UndoManager()
     source = str(tmp_path / f"Source{extension}")
     target = str(tmp_path / f"SavedCopy{extension}")
-    view = _MatrixAuthoringView(title="Source", path=source)
+    source_guid = f"{kind.value}-source-guid"
+    published_guid = f"{kind.value}-saved-guid"
+    asset_database = _AssetDatabase()
+    asset_database.register(source, source_guid)
+    monkeypatch.setattr(AssetManager, "_asset_database", asset_database)
+    view = _MatrixAuthoringView(
+        title="Source",
+        path=source,
+        asset_database=asset_database,
+        published_guid=published_guid,
+    )
     controller = AuthoringDocumentController(view)
     document = registry.create(
         kind,
         "Source",
-        key=DocumentKey.resource(kind, source),
+        key=DocumentKey.asset(kind, source_guid),
         resource_path=source,
         revision=1,
         saved_revision=0,
@@ -133,6 +172,7 @@ def test_authoring_window_save_close_and_history_matrix(
     io_tickets[-1].status = "succeeded"
     assert controller.poll_pending_writes() == 1
     assert document.resource_path == target
+    assert document.key == DocumentKey.asset(kind, published_guid)
     assert not document.is_dirty
 
     # Every authoring kind records model edits in the same global history.

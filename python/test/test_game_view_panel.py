@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from Infernux.engine.ui.game_view_panel import (
     GameViewPanel,
     _GAME_UI_BUTTON_SEMANTIC_PREFIX,
@@ -26,6 +28,46 @@ class _Engine:
         return 1
 
 
+def test_mouse_route_uses_live_play_manager_and_newly_focused_panel(monkeypatch):
+    import Infernux.lib as lib
+    import Infernux.engine.ui.game_view_panel as module
+    import Infernux.engine.runtime_screen_ui as ui
+    from Infernux.physics import Physics
+
+    camera = SimpleNamespace(culling_mask=1, screen_point_to_ray=lambda *args: (1, 2))
+    scene = SimpleNamespace(
+        effective_game_camera=camera,
+        # A render stack does not multiply pointer queries: input belongs to
+        # the one effective output camera for this Game View.
+        active_game_cameras=(object(), object(), camera, object()),
+    )
+    monkeypatch.setattr(lib, 'SceneManager', SimpleNamespace(instance=lambda: SimpleNamespace(
+        get_active_scene=lambda: scene)))
+    monkeypatch.setattr(ui, 'collect_runtime_ui_input_surfaces', lambda *args: ())
+    panel = GameViewPanel(engine=_Engine())
+    panel.set_play_mode_manager(SimpleNamespace(is_playing=True))
+    panel._was_focused = False  # Focus was acquired during this frame.
+    panel._display_scale = .5
+    monkeypatch.setattr(module.ClosablePanel, 'get_active_view_id', lambda: panel.window_id)
+    monkeypatch.setattr(module.Input, 'is_cursor_locked', lambda: False)
+    monkeypatch.setattr(module.Input, 'get_game_mouse_frame_state', lambda _: (10, 20, 0, 0, True, True, False))
+    hits = []
+    hit = SimpleNamespace(game_object=object())
+    monkeypatch.setattr(Physics, 'raycast', lambda *args, **kwargs: hits.append(args) or hit)
+    calls = []
+    panel._ui_event_processor = SimpleNamespace(reset=lambda: None, process=lambda *args: None)
+    panel._mouse_event_dispatcher = SimpleNamespace(
+        process=lambda *args, **kwargs: calls.append((args, kwargs)),
+        reset=lambda: calls.append('reset'))
+    panel._process_ui_events(1920, 1080)
+    assert hits == [(1, 2)]
+    assert calls == [((camera, (20, 40), (1920., 1080.)), dict(hit=hit, button_state=(True, True, False)))]
+    panel.set_play_mode_manager(SimpleNamespace(is_playing=False))
+    panel._process_ui_events(1920, 1080)
+    assert calls[-1] == 'reset'
+    assert len(hits) == 1
+
+
 class _RenderActivationEngine(_Engine):
     def __init__(self) -> None:
         super().__init__()
@@ -33,6 +75,52 @@ class _RenderActivationEngine(_Engine):
 
     def set_game_camera_enabled(self, enabled: bool) -> None:
         self.game_camera_enabled.append(bool(enabled))
+
+
+@pytest.mark.parametrize('transition', ['hidden', 'disabled', 'stopped', 'unfocused'])
+def test_game_input_departure_cancels_ui_and_mouse_capture(monkeypatch, transition):
+    import Infernux.engine.ui.game_view_panel as module
+    from Infernux.acceptance import RuntimeAcceptance
+
+    panel = GameViewPanel(engine=_RenderActivationEngine())
+    resets = []
+    panel._ui_event_processor = SimpleNamespace(reset=lambda: resets.append('ui'))
+    panel._mouse_event_dispatcher = SimpleNamespace(reset=lambda: resets.append('mouse'))
+    panel.set_play_mode_manager(SimpleNamespace(is_playing=transition != 'stopped'))
+    monkeypatch.setattr(module.Input, 'is_cursor_locked', lambda: False)
+    monkeypatch.setattr(module.ClosablePanel, 'get_active_view_id', lambda: 'scene_view' if transition == 'unfocused' else panel.window_id)
+    monkeypatch.setattr(RuntimeAcceptance, 'is_active', classmethod(lambda cls: False))
+    if transition == 'hidden':
+        panel._on_not_visible(None)
+    elif transition == 'disabled':
+        panel.on_disable()
+    else:
+        panel._route_game_input(None, 1920, 1080, False, False, ())
+    assert sorted(resets) == ['mouse', 'ui']
+
+
+def test_ui_exit_failure_still_releases_mouse_capture():
+    panel = GameViewPanel(engine=_RenderActivationEngine())
+    resets = []
+    def fail():
+        raise ValueError('author exit failed')
+    panel._ui_event_processor = SimpleNamespace(reset=fail)
+    panel._mouse_event_dispatcher = SimpleNamespace(reset=lambda: resets.append('mouse'))
+    with pytest.raises(ValueError, match='author exit failed'):
+        panel._reset_pointer_input()
+    assert resets == ['mouse']
+
+
+def test_game_output_preparation_uses_saved_render_pixels_before_visibility(monkeypatch):
+    engine = _Engine()
+    panel = GameViewPanel(engine=engine)
+    monkeypatch.setattr(panel, '_load_resolution_settings', lambda: None)
+    panel._selected_resolution_idx = len(panel._RESOLUTION_PRESETS) - 1
+    panel._custom_width, panel._custom_height = 641, 401
+    panel._display_scale = 0.2
+    panel.prepare_render_target()
+    assert engine.resizes == [(641, 401)]
+    assert (panel._last_game_width, panel._last_game_height) == (641, 401)
 
 
 class _Context:
@@ -285,6 +373,24 @@ def test_hidden_game_view_disables_rendering_without_runtime_acceptance(monkeypa
 
     assert engine.game_camera_enabled == [False]
     assert panel._game_camera_was_enabled is False
+
+
+def test_disabling_game_view_releases_game_focus_and_cursor(monkeypatch):
+    import Infernux.engine.ui.game_view_panel as module
+
+    focus_calls: list[bool] = []
+    lock_calls: list[bool] = []
+    monkeypatch.setattr(module.Input, "set_game_focused", focus_calls.append)
+    monkeypatch.setattr(module.Input, "set_cursor_locked", lock_calls.append)
+
+    engine = _RenderActivationEngine()
+    panel = GameViewPanel(engine=engine)
+    panel._game_camera_was_enabled = True
+    panel._set_game_render_active(False)
+
+    assert focus_calls == [False]
+    assert lock_calls == [False]
+    assert engine.game_camera_enabled == [False]
 
 
 def test_game_texture_handle_is_retained_across_unrelated_scene_revisions(monkeypatch):

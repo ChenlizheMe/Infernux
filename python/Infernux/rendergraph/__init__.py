@@ -37,14 +37,18 @@ Usage::
     scene_graph.apply_python_graph(graph.build())
 """
 
-from .graph import BufferHandle, RenderGraph, RenderPassBuilder, TextureHandle, Format
+from .graph import BufferHandle, RenderGraph, RenderPassBuilder, TextureHandle, Format, DepthCompare
+from .renderer_selection import RendererSelection, DrawParameterBlock
 from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
 
 __all__ = [
     "RenderGraph",
+    "RendererSelection",
+    "DrawParameterBlock",
     "RenderPassBuilder",
     "TextureHandle",
     "BufferHandle",
     "Format",
+    "DepthCompare",
     "DefaultForwardPipeline",
 ]

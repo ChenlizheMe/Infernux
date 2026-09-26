@@ -138,32 +138,16 @@ class Material:
 
     @staticmethod
     def _load_embedded_model_material_slot(model_path: str, slot: int, virtual_path: str) -> Optional["Material"]:
-        """Build a DefaultLit material from Assimp-extracted slot data (FBX inline materials)."""
-        from Infernux.lib import AssetRegistry, InxMaterial
+        """Use the same source conversion as model rendering and material extraction."""
+        from Infernux.lib import AssetRegistry
 
         mesh = AssetRegistry.instance().load_mesh(model_path)
         if mesh is None:
             return None
-        slots = mesh.get_material_slot_data()
-        if slot >= len(slots):
+        if slot >= len(mesh.get_material_slot_data()):
             return None
-        slot_data = slots[slot]
-        native = InxMaterial.create_default_lit()
+        native = mesh.create_material_copy(slot)
         native.is_builtin = False
-        base_color = slot_data["base_color"]
-        emission_color = slot_data["emission_color"]
-        native.set_color("baseColor", tuple(float(value) for value in base_color))
-        native.set_color(
-            "emissionColor", tuple(float(value) for value in emission_color)
-        )
-        native.set_float("metallic", float(slot_data["metallic"]))
-        native.set_float("smoothness", float(slot_data["smoothness"]))
-        names = mesh.material_slot_names
-        native.name = (
-            str(names[slot])
-            if slot < len(names) and names[slot]
-            else f"EmbeddedMaterial_{slot}"
-        )
         native.file_path = virtual_path
         return Material.from_native(native)
 
@@ -534,6 +518,14 @@ class Material:
         self._native.set_texture_guid(name, texture_guid)
         self._auto_save()
 
+    def set_matrix(self, name: str, value):
+        """Set a matrix from a NumPy (4,4) array indexed [row, column].
+
+        Camera matrices can be passed directly, with no transpose or flatten.
+        """
+        self._native.set_matrix(name, value)
+        self._auto_save()
+
     def set_param(self, name: str, value):
         """Set a non-texture material property using type/shape dispatch.
 
@@ -546,13 +538,22 @@ class Material:
         self._auto_save()
 
     def set_texture(self, name: str, value):
-        """Set a texture property from a GUID, builtin token, texture object, or None.
+        """Bind a RenderTexture, texture asset, builtin token, or None.
 
         Supported values:
             - ``None``: clears the texture
             - texture asset GUID string or builtin texture token
             - object with a non-empty ``guid``
+            - imported ``RenderTexture``: saved by GUID like a texture asset
+            - runtime-created ``RenderTexture``: unsaved override of the asset slot
         """
+        from .render_texture import RenderTexture
+        if isinstance(value, RenderTexture):
+            if value.guid:
+                self.set_texture_guid(name, value.guid)
+            else:
+                self._native._set_render_texture(name, value._native)
+            return
         self._native.set_texture(name, value)
         self._auto_save()
 

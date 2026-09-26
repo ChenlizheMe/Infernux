@@ -112,9 +112,66 @@ static void ValidateForceMode(ForceMode mode)
     throw std::invalid_argument("unsupported force mode");
 }
 
+SemanticTypeDescriptor DescribeRigidbody()
+{
+    SemanticTypeDescriptor type;
+    type.typeGuid = "native:infernux.Rigidbody";
+    type.readableId = "infernux.component.rigidbody";
+    type.owner = "engine:native";
+    type.origin = "native";
+    type.displayName = "Rigidbody";
+    type.runtimeProfiles = {"editor", "player", "headless"};
+    const auto add = [&](const char *name, const char *kind, nlohmann::json initial) -> nlohmann::json & {
+        type.fields.push_back({std::string("Rigidbody.") + name,
+                               std::string("FieldType.") + kind,
+                               false,
+                               {{"field_id", name},
+                                {"serialized_name", name},
+                                {"serialized", true},
+                                {"hidden", false},
+                                {"nullable", false},
+                                {"storage_kind", "native_property"},
+                                {"display_name_key", std::string("rigidbody.") + name},
+                                {"tooltip", std::string("rigidbody.tooltip.") + name},
+                                {"default", std::move(initial)}}});
+        return type.fields.back().attributes;
+    };
+    const auto enumeration = [&](const char *name, const char *enumName, std::initializer_list<const char *> names,
+                                 std::initializer_list<const char *> labels) {
+        nlohmann::json members = nlohmann::json::array();
+        size_t value = 0;
+        for (const char *member : names)
+            members.push_back({{"name", member}, {"value", value++}});
+        auto &attributes = add(name, "ENUM", {{"$type", "enum"}, {"enum_type", enumName}, {"name", *names.begin()}});
+        attributes["enum"] = {{"type_id", std::string("native:infernux.") + enumName},
+                              {"members", std::move(members)},
+                              {"labels", labels}};
+    };
+
+    add("mass", "FLOAT", 1.0)["range"] = {0.001, 1000.0};
+    add("drag", "FLOAT", 0.0)["range"] = {0.0, 100.0};
+    add("angular_drag", "FLOAT", 0.05)["range"] = {0.0, 100.0};
+    add("use_gravity", "BOOL", true);
+    add("is_kinematic", "BOOL", false);
+    add("constraints", "INT", 0)["flags_type"] = "native:infernux.RigidbodyConstraints";
+    enumeration(
+        "collision_detection_mode", "CollisionDetectionMode", {"Discrete", "Continuous", "ContinuousDynamic"},
+        {"rigidbody.collision.discrete", "rigidbody.collision.continuous", "rigidbody.collision.continuous_dynamic"});
+    enumeration("interpolation", "RigidbodyInterpolation", {"None", "Interpolate"},
+                {"rigidbody.interpolation.none", "rigidbody.interpolation.interpolate"});
+    add("max_angular_velocity", "FLOAT", 7.0)["range"] = {0.0, 1000.0};
+    add("max_linear_velocity", "FLOAT", 500.0)["range"] = {0.0, 10000.0};
+    return type;
+}
+
 } // namespace
 
-INFERNUX_REGISTER_VALIDATED_COMPONENT("Rigidbody", Rigidbody)
+namespace
+{
+const bool registeredRigidbody = ComponentFactory::Register(
+    "Rigidbody", [] { return std::make_unique<Rigidbody>(); }, Rigidbody::ValidateSerializedDocument,
+    Rigidbody::GetTypeConstraints(), DescribeRigidbody);
+} // namespace
 
 // ============================================================================
 // Shared helpers
@@ -603,6 +660,11 @@ glm::vec3 Rigidbody::GetWorldCenterOfMass() const
 {
     uint32_t bid = GetPrimaryBodyId(GetGameObject());
     return (bid != 0xFFFFFFFF) ? PhysicsWorld::Instance().GetBodyCenterOfMassPosition(bid) : glm::vec3(0.0f);
+}
+
+PhysicsBodyMotionState Rigidbody::GetMotionState() const
+{
+    return PhysicsWorld::Instance().GetBodyMotionState(GetPrimaryBodyId(GetGameObject()));
 }
 
 glm::vec3 Rigidbody::GetPosition() const

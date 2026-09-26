@@ -250,7 +250,7 @@ class UIEditorAlignmentMixin:
         Only active for non-rotated elements (rotation makes edge snapping
         ambiguous).  Returns adjusted (new_w, new_h).
         """
-        rot = float(elem.rotation) % 360.0
+        rot = float(elem.get_layout_rotation()) % 360.0
         if abs(rot) > 0.5:
             self._active_alignment_guides = []
             return new_w, new_h

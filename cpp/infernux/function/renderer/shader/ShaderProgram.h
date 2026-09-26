@@ -63,6 +63,11 @@ struct MaterialUBOLayout
 class ShaderProgram
 {
   public:
+    // Authoritative graphics parameter domains. They are separate ABI
+    // spaces, not similarly named dictionaries with fallback precedence.
+    static constexpr uint32_t MaterialDescriptorSet = 0;
+    static constexpr uint32_t ViewDescriptorSet = 1;
+    static constexpr uint32_t EngineDescriptorSet = 2;
     static constexpr uint32_t BindlessTextureSet = 3;
     static constexpr uint32_t BindlessTextureBinding = 0;
     static constexpr uint32_t MaterialTextureIndexBinding = 15;
@@ -393,6 +398,9 @@ class ShaderProgramCache
     uint64_t m_deviceContractKey = 0;
     std::unordered_map<ShaderProgramVariantKey, ShaderProgramPublication, ShaderProgramVariantKeyHash> m_programs;
     std::unordered_set<ShaderProgramVariantKey, ShaderProgramVariantKeyHash> m_failedPrograms;
+    // Publications can outlive their cache entries through materials and
+    // frame retirement. The device owns their Vulkan handles until shutdown.
+    std::vector<std::weak_ptr<ShaderProgram>> m_devicePrograms;
 };
 
 } // namespace infernux

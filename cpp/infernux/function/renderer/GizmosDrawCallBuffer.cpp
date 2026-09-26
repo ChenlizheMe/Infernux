@@ -1,15 +1,44 @@
 #include "GizmosDrawCallBuffer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <core/config/MathConstants.h>
 #include <core/log/InxLog.h>
 #include <cstring>
+#include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <glm/glm.hpp>
 #include <unordered_set>
 
 namespace infernux
 {
+namespace
+{
+bool SameVertex(const Vertex &left, const Vertex &right) noexcept
+{
+    return std::memcmp(&left.pos, &right.pos, sizeof(left.pos)) == 0 &&
+           std::memcmp(&left.normal, &right.normal, sizeof(left.normal)) == 0 &&
+           std::memcmp(&left.tangent, &right.tangent, sizeof(left.tangent)) == 0 &&
+           std::memcmp(&left.color, &right.color, sizeof(left.color)) == 0 &&
+           std::memcmp(&left.texCoord, &right.texCoord, sizeof(left.texCoord)) == 0 &&
+           std::memcmp(&left.texCoord1, &right.texCoord1, sizeof(left.texCoord1)) == 0 &&
+           std::memcmp(&left.boneIndices, &right.boneIndices, sizeof(left.boneIndices)) == 0 &&
+           std::memcmp(&left.boneWeights, &right.boneWeights, sizeof(left.boneWeights)) == 0;
+}
+
+bool SameVertices(const std::vector<Vertex> &left, const std::vector<Vertex> &right) noexcept
+{
+    return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(),
+                                                     [](const Vertex &a, const Vertex &b) { return SameVertex(a, b); });
+}
+
+void AdvanceRevision(uint64_t &revision) noexcept
+{
+    ++revision;
+    if (revision == 0)
+        revision = 1;
+}
+} // namespace
 
 // ============================================================================
 // SetData — replace buffer contents with a fresh frame of gizmo geometry
@@ -18,10 +47,71 @@ namespace infernux
 void GizmosDrawCallBuffer::SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indices,
                                    std::vector<DrawDescriptor> descriptors)
 {
-    m_vertices = std::move(vertices);
-    m_indices = std::move(indices);
+    bool sameLayout = descriptors.size() == m_descriptors.size();
+    for (size_t i = 0; sameLayout && i < descriptors.size(); ++i) {
+        sameLayout = descriptors[i].indexStart == m_descriptors[i].indexStart &&
+                     descriptors[i].indexCount == m_descriptors[i].indexCount;
+    }
+    const bool sameGeometry = sameLayout && indices == m_indices && SameVertices(vertices, m_vertices);
+    if (!sameGeometry) {
+        m_vertices = std::move(vertices);
+        m_indices = std::move(indices);
+        m_slicesDirty = true;
+        AdvanceRevision(m_cpuGeometryRevision);
+    }
+    // World matrices are draw parameters, not mesh content. They remain live
+    // without forcing a vertex/index upload when topology is unchanged.
     m_descriptors = std::move(descriptors);
-    m_slicesDirty = true;
+}
+
+void GizmosDrawCallBuffer::SetResidentData(std::vector<ResidentDrawDescriptor> descriptors)
+{
+    std::unordered_set<uint64_t> active;
+    active.reserve(descriptors.size());
+    m_residentOrder.clear();
+    m_residentOrder.reserve(descriptors.size());
+
+    for (auto &descriptor : descriptors) {
+        if (descriptor.identity == 0 || descriptor.vertexCount == 0 || !descriptor.vertexBuffer)
+            throw std::invalid_argument("Resident Gizmo draw requires identity, vertices, and a GPU buffer");
+        if (descriptor.vertexBuffer->GetByteSize() != static_cast<uint64_t>(descriptor.vertexCount) * sizeof(Vertex))
+            throw std::invalid_argument("Resident Gizmo vertex buffer does not use the canonical Vertex layout");
+        if (!active.insert(descriptor.identity).second)
+            throw std::invalid_argument("Resident Gizmo identities must be unique within a frame");
+
+        auto found = m_residentDraws.find(descriptor.identity);
+        if (found == m_residentDraws.end()) {
+            if (descriptor.indices.empty())
+                throw std::invalid_argument("A new resident Gizmo draw requires immutable line topology");
+            if (*std::max_element(descriptor.indices.begin(), descriptor.indices.end()) >= descriptor.vertexCount)
+                throw std::out_of_range("Resident Gizmo line index is outside the vertex buffer");
+            ResidentDraw draw;
+            draw.vertexBuffer = std::move(descriptor.vertexBuffer);
+            draw.topologyVertices.resize(descriptor.vertexCount);
+            draw.indices = std::move(descriptor.indices);
+            std::memcpy(&draw.worldMatrix, descriptor.worldMatrix, sizeof(descriptor.worldMatrix));
+            found = m_residentDraws.emplace(descriptor.identity, std::move(draw)).first;
+        } else {
+            if (found->second.topologyVertices.size() != descriptor.vertexCount)
+                throw std::logic_error("Resident Gizmo topology changed without a new identity");
+            found->second.vertexBuffer = std::move(descriptor.vertexBuffer);
+            std::memcpy(&found->second.worldMatrix, descriptor.worldMatrix, sizeof(descriptor.worldMatrix));
+        }
+        m_residentOrder.push_back(descriptor.identity);
+    }
+
+    for (auto it = m_residentDraws.begin(); it != m_residentDraws.end();) {
+        if (active.find(it->first) == active.end())
+            it = m_residentDraws.erase(it);
+        else
+            ++it;
+    }
+}
+
+bool GizmosDrawCallBuffer::HasResidentTopology(uint64_t identity, uint32_t vertexCount) const
+{
+    const auto found = m_residentDraws.find(identity);
+    return found != m_residentDraws.end() && found->second.topologyVertices.size() == vertexCount;
 }
 
 // ============================================================================
@@ -30,17 +120,25 @@ void GizmosDrawCallBuffer::SetData(std::vector<Vertex> vertices, std::vector<uin
 
 void GizmosDrawCallBuffer::Clear()
 {
+    ClearCpuData();
+
+    m_residentDraws.clear();
+    m_residentOrder.clear();
+
+    m_iconEntries.clear();
+    m_iconGeometryStates.clear();
+}
+
+void GizmosDrawCallBuffer::ClearCpuData()
+{
+    if (!m_vertices.empty() || !m_indices.empty() || !m_descriptors.empty())
+        AdvanceRevision(m_cpuGeometryRevision);
     m_vertices.clear();
     m_indices.clear();
     m_descriptors.clear();
     m_slicedVertices.clear();
     m_slicedIndices.clear();
     m_slicesDirty = true;
-
-    m_iconEntries.clear();
-    m_iconSlicedVertices.clear();
-    m_iconSlicedIndices.clear();
-    m_iconSlicesDirty = true;
 }
 
 // ============================================================================
@@ -49,7 +147,7 @@ void GizmosDrawCallBuffer::Clear()
 
 bool GizmosDrawCallBuffer::HasData() const
 {
-    return !m_descriptors.empty();
+    return !m_descriptors.empty() || !m_residentOrder.empty();
 }
 
 // ============================================================================
@@ -115,12 +213,12 @@ void GizmosDrawCallBuffer::RebuildSlices() const
 DrawCallResult GizmosDrawCallBuffer::GetDrawCalls(std::shared_ptr<InxMaterial> gizmoMaterial) const
 {
     DrawCallResult result;
-    if (m_descriptors.empty())
+    if (m_descriptors.empty() && m_residentOrder.empty())
         return result;
 
     RebuildSlices();
 
-    result.drawCalls.reserve(m_descriptors.size());
+    result.drawCalls.reserve(m_descriptors.size() + m_residentOrder.size());
 
     for (size_t i = 0; i < m_descriptors.size(); ++i) {
         const auto &desc = m_descriptors[i];
@@ -140,8 +238,26 @@ DrawCallResult GizmosDrawCallBuffer::GetDrawCalls(std::shared_ptr<InxMaterial> g
         dc.identity = RenderProxyHandle::Synthetic(RenderDomain::ComponentGizmo, dc.objectId).MakeDrawIdentity();
         dc.meshVertices = &m_slicedVertices[i];
         dc.meshIndices = &m_slicedIndices[i];
-        dc.forceBufferUpdate = true; // Immediate-mode: data changes every frame
+        dc.meshRuntimeVersion = m_cpuGeometryRevision;
 
+        result.drawCalls.push_back(dc);
+    }
+
+    for (const uint64_t identity : m_residentOrder) {
+        const auto found = m_residentDraws.find(identity);
+        if (found == m_residentDraws.end())
+            continue;
+        const ResidentDraw &draw = found->second;
+        DrawCall dc;
+        dc.indexStart = 0;
+        dc.indexCount = static_cast<uint32_t>(draw.indices.size());
+        dc.worldMatrix = draw.worldMatrix;
+        dc.material = gizmoMaterial;
+        dc.objectId = OBJECT_ID_PREFIX | (identity & 0x00000000FFFFFFFFULL);
+        dc.identity = RenderProxyHandle::Synthetic(RenderDomain::ComponentGizmo, dc.objectId).MakeDrawIdentity();
+        dc.meshVertices = &draw.topologyVertices;
+        dc.meshIndices = &draw.indices;
+        dc.meshVertexBuffer = draw.vertexBuffer;
         result.drawCalls.push_back(dc);
     }
 
@@ -155,15 +271,12 @@ DrawCallResult GizmosDrawCallBuffer::GetDrawCalls(std::shared_ptr<InxMaterial> g
 void GizmosDrawCallBuffer::SetIconData(std::vector<IconEntry> entries)
 {
     m_iconEntries = std::move(entries);
-    m_iconSlicesDirty = true;
 }
 
 void GizmosDrawCallBuffer::ClearIcons()
 {
     m_iconEntries.clear();
-    m_iconSlicedVertices.clear();
-    m_iconSlicedIndices.clear();
-    m_iconSlicesDirty = true;
+    m_iconGeometryStates.clear();
 }
 
 bool GizmosDrawCallBuffer::HasIconData() const
@@ -171,8 +284,24 @@ bool GizmosDrawCallBuffer::HasIconData() const
     return !m_iconEntries.empty();
 }
 
+float GizmosDrawCallBuffer::ComputeIconHalfWorldSize(const glm::vec3 &iconPosition, const glm::vec3 &cameraPosition,
+                                                     const glm::vec3 &cameraForward, const glm::mat4 &projection,
+                                                     uint32_t viewportHeight, float dpiScale)
+{
+    // CameraToWorld may come from a Transform or an explicit view-matrix
+    // override. Their third basis columns can have opposite signs, while the
+    // billboard's projected size depends on axial distance in either case.
+    const float viewDepth = std::max(std::abs(glm::dot(iconPosition - cameraPosition, cameraForward)), 0.1f);
+    const bool perspective = std::abs(projection[3][3]) < 0.5f;
+    const float focalScale = std::max(std::abs(projection[1][1]), 1.0e-4f);
+    const float pixelHalfSize = ICON_HALF_SIZE_PIXELS * std::max(dpiScale, 0.1f);
+    return 2.0f * pixelHalfSize * (perspective ? viewDepth : 1.0f) / (std::max(viewportHeight, 1u) * focalScale);
+}
+
 DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &materials, const glm::vec3 &cameraPos,
-                                                      const glm::vec3 &cameraRight, const glm::vec3 &cameraUp) const
+                                                      const glm::vec3 &cameraRight, const glm::vec3 &cameraUp,
+                                                      const glm::mat4 &projection, uint32_t viewportHeight,
+                                                      float dpiScale) const
 {
     DrawCallResult result;
     if (m_iconEntries.empty())
@@ -191,23 +320,13 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &mater
         billboardUp = glm::normalize(billboardUp);
     }
 
-    // Rebuild billboard geometry if entries changed
-    if (m_iconSlicesDirty) {
-        m_iconSlicedVertices.clear();
-        m_iconSlicedIndices.clear();
-        m_iconSlicedVertices.resize(m_iconEntries.size());
-        m_iconSlicedIndices.resize(m_iconEntries.size());
-        m_iconSlicesDirty = false;
-    }
-
     result.drawCalls.reserve(m_iconEntries.size());
-    std::vector<float> iconDistances;
-    iconDistances.reserve(m_iconEntries.size());
-    std::vector<std::string> iconMaterialNames;
-    iconMaterialNames.reserve(m_iconEntries.size());
+    std::unordered_set<uint64_t> activeIconObjects;
+    activeIconObjects.reserve(m_iconEntries.size());
 
     for (size_t i = 0; i < m_iconEntries.size(); ++i) {
         const auto &icon = m_iconEntries[i];
+        activeIconObjects.insert(icon.objectId);
 
         // Compute billboard orientation
         glm::vec3 toCamera = cameraPos - icon.position;
@@ -220,10 +339,12 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &mater
         } else {
             toCamera /= distance; // normalize
         }
-        iconDistances.push_back(distance);
 
-        // Constant angular size
-        float worldSize = std::max(distance * ICON_SIZE_FACTOR, ICON_MIN_WORLD_SIZE);
+        // A projected pixel size remains stable across viewport resize, FOV,
+        // perspective/orthographic cameras and monitor DPI changes.
+        const glm::vec3 cameraForward = glm::normalize(glm::cross(billboardRight, billboardUp));
+        const float worldSize =
+            ComputeIconHalfWorldSize(icon.position, cameraPos, cameraForward, projection, viewportHeight, dpiScale);
 
         glm::vec3 topLeft = icon.position + billboardUp * worldSize - billboardRight * worldSize;
         glm::vec3 topRight = icon.position + billboardUp * worldSize + billboardRight * worldSize;
@@ -240,18 +361,22 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &mater
             return v;
         };
 
-        auto &verts = m_iconSlicedVertices[i];
-        verts.clear();
-        verts.push_back(makeVertex(topLeft, glm::vec2(0.0f, 0.0f)));
-        verts.push_back(makeVertex(topRight, glm::vec2(1.0f, 0.0f)));
-        verts.push_back(makeVertex(bottomRight, glm::vec2(1.0f, 1.0f)));
-        verts.push_back(makeVertex(bottomLeft, glm::vec2(0.0f, 1.0f)));
+        std::vector<Vertex> nextVertices;
+        nextVertices.reserve(4);
+        nextVertices.push_back(makeVertex(topLeft, glm::vec2(0.0f, 0.0f)));
+        nextVertices.push_back(makeVertex(topRight, glm::vec2(1.0f, 0.0f)));
+        nextVertices.push_back(makeVertex(bottomRight, glm::vec2(1.0f, 1.0f)));
+        nextVertices.push_back(makeVertex(bottomLeft, glm::vec2(0.0f, 1.0f)));
 
-        auto &indices = m_iconSlicedIndices[i];
-        indices = {0, 1, 2, 0, 2, 3};
+        IconGeometryState &geometry = m_iconGeometryStates[icon.objectId];
+        if (!SameVertices(geometry.vertices, nextVertices)) {
+            geometry.vertices = std::move(nextVertices);
+            AdvanceRevision(geometry.revision);
+        }
+        if (geometry.indices.empty())
+            geometry.indices = {0, 1, 2, 0, 2, 3};
 
         const std::shared_ptr<InxMaterial> &iconMaterial = materials.Resolve(icon.iconKind);
-        iconMaterialNames.push_back(iconMaterial ? iconMaterial->GetName() : std::string("<null>"));
         if (!iconMaterial) {
             continue;
         }
@@ -261,39 +386,26 @@ DrawCallResult GizmosDrawCallBuffer::GetIconDrawCalls(const IconMaterials &mater
         dc.indexCount = 6;
         dc.worldMatrix = glm::mat4(1.0f); // identity — vertices are in world space
         dc.material = iconMaterial;
-        dc.objectId = ICON_ID_PREFIX | icon.objectId; // prefixed to avoid buffer collision
+        // The billboard owns a renderer-private buffer identity, while picking
+        // must publish the real GameObject identity.  Mixing the two lets an
+        // icon click select the synthetic draw itself; the selection/outline
+        // path can then render the icon with editor highlight data instead of
+        // its authored white texture.
+        dc.objectId = ICON_ID_PREFIX | (icon.objectId & 0x00000000FFFFFFFFULL);
+        dc.pickingObjectId = icon.objectId;
         dc.identity = RenderProxyHandle::Synthetic(RenderDomain::ComponentGizmo, dc.objectId).MakeDrawIdentity();
-        dc.meshVertices = &m_iconSlicedVertices[i];
-        dc.meshIndices = &m_iconSlicedIndices[i];
-        dc.forceBufferUpdate = true;
+        dc.meshVertices = &geometry.vertices;
+        dc.meshIndices = &geometry.indices;
+        dc.meshRuntimeVersion = geometry.revision;
 
         result.drawCalls.push_back(dc);
     }
 
-    static size_t s_lastIconEntryCount = static_cast<size_t>(-1);
-    static size_t s_lastBuiltIconDrawCallCount = static_cast<size_t>(-1);
-    if (s_lastIconEntryCount != m_iconEntries.size() || s_lastBuiltIconDrawCallCount != result.drawCalls.size()) {
-        // INXLOG_INFO("GizmoIcons: built ", result.drawCalls.size(), " draw call(s) from ", m_iconEntries.size(),
-        //             " icon entr", (m_iconEntries.size() == 1 ? "y" : "ies"), " cameraPos=", cameraPos.x, ",",
-        //             cameraPos.y, ",", cameraPos.z);
-        for (size_t i = 0; i < m_iconEntries.size(); ++i) {
-            const auto &icon = m_iconEntries[i];
-            const char *kindName = "default";
-            if (icon.iconKind == ICON_KIND_CAMERA) {
-                kindName = "camera";
-            } else if (icon.iconKind == ICON_KIND_LIGHT) {
-                kindName = "light";
-            } else if (icon.iconKind == ICON_KIND_PARTICLE) {
-                kindName = "particle";
-            }
-            // INXLOG_INFO("GizmoIcons: entry[", i, "] kind=", kindName, " objectId=", icon.objectId,
-            //             " pos=", icon.position.x, ",", icon.position.y, ",", icon.position.z,
-            //             " distance=", (i < iconDistances.size() ? iconDistances[i] : -1.0f),
-            //             " material=", (i < iconMaterialNames.size() ? iconMaterialNames[i] :
-            //             std::string("<missing>")));
-        }
-        s_lastIconEntryCount = m_iconEntries.size();
-        s_lastBuiltIconDrawCallCount = result.drawCalls.size();
+    for (auto state = m_iconGeometryStates.begin(); state != m_iconGeometryStates.end();) {
+        if (activeIconObjects.find(state->first) == activeIconObjects.end())
+            state = m_iconGeometryStates.erase(state);
+        else
+            ++state;
     }
 
     return result;

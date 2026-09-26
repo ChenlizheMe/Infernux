@@ -11,10 +11,21 @@ methods, and panel/manager references live on the bootstrap instance.
 
 
 _PROJECT_SUBRESOURCE_TOKENS = {
+    "::subtex:": "subtexture",
+    "::submesh:": "submesh",
     "::submat:": "submaterial",
     "::subbone:": "subbone",
     "::subanim:": "subanimation",
 }
+
+
+def _selection_asset_database():
+    try:
+        from Infernux.core.assets import AssetManager
+
+        return AssetManager.require_asset_database()
+    except (AttributeError, RuntimeError):
+        return None
 
 
 def _project_selection_target(path: str):
@@ -22,33 +33,48 @@ def _project_selection_target(path: str):
     from Infernux.engine.interaction import SelectionTarget
 
     value = str(path or "")
+    asset_path = value
+    identifier = ""
+    sub_kind = ""
     for token, sub_kind in _PROJECT_SUBRESOURCE_TOKENS.items():
         base, separator, identifier = value.partition(token)
         if separator and base and identifier:
-            return SelectionTarget.asset_subresource(
-                base,
-                identifier,
-                sub_kind=sub_kind,
-            )
-    return SelectionTarget.asset(value)
+            asset_path = base
+            break
+    database = _selection_asset_database()
+    guid = str(database.get_guid_from_path(asset_path) or "").strip() if database else ""
+    if not guid:
+        return None
+    if identifier and sub_kind:
+        return SelectionTarget.asset_subresource(guid, identifier, sub_kind=sub_kind)
+    return SelectionTarget.asset(guid)
 
 
 def _project_path_for_target(target) -> str:
     """Rebuild the Project row path from a typed selection target."""
     from Infernux.engine.interaction import SelectionDomain
 
+    guid = (
+        target.document_id
+        if target.domain is SelectionDomain.ASSET_SUBRESOURCE
+        else target.target_id
+    )
+    database = _selection_asset_database()
+    asset_path = str(database.get_path_from_guid(guid) or "").strip() if database else ""
     if target.domain is SelectionDomain.ASSET:
-        return target.target_id
+        return asset_path
     if target.domain is not SelectionDomain.ASSET_SUBRESOURCE:
         return ""
     token = {
+        "subtexture": "::subtex:",
+        "submesh": "::submesh:",
         "submaterial": "::submat:",
         "subbone": "::subbone:",
         "subanimation": "::subanim:",
     }.get(target.sub_kind)
     if not token:
-        return target.document_id
-    return f"{target.document_id}{token}{target.target_id}"
+        return asset_path
+    return f"{asset_path}{token}{target.target_id}" if asset_path else ""
 
 
 class BootstrapSelectionMixin:
@@ -204,32 +230,32 @@ class BootstrapSelectionMixin:
             SelectionTarget,
             iter_asset_mutations,
         )
-        from Infernux.engine.path_utils import same_path
-
         selection = SelectionService.instance()
         snapshot = selection.snapshot
         if snapshot.domain is not SelectionDomain.ASSET_SUBRESOURCE:
             return
         for mutation in iter_asset_mutations(change):
-            changed_path = mutation.path
-            asset_path = (
-                changed_path[:-5]
-                if changed_path.lower().endswith(".meta")
-                else changed_path
-            )
+            asset_guid = str(mutation.guid or "").strip()
+            if not asset_guid:
+                continue
             scoped = tuple(
                 target
                 for target in selection.snapshot.targets
                 if target.sub_kind == "sprite_frame"
-                and same_path(target.document_id, asset_path)
+                and target.document_id.casefold() == asset_guid.casefold()
             )
             if not scoped:
                 continue
 
             valid_ids: set[str] = set()
-            asset_exists = (
-                os.path.isfile(asset_path)
-                and mutation.kind is not AssetMutationKind.DELETED
+            database = _selection_asset_database()
+            asset_path = (
+                str(database.get_path_from_guid(asset_guid) or "").strip()
+                if database is not None
+                else ""
+            )
+            asset_exists = bool(asset_path and os.path.isfile(asset_path)) and (
+                mutation.kind is not AssetMutationKind.DELETED
             )
             if asset_exists:
                 try:
@@ -249,11 +275,11 @@ class BootstrapSelectionMixin:
             selection.reconcile(
                 lambda target: not (
                     target.sub_kind == "sprite_frame"
-                    and same_path(target.document_id, asset_path)
+                    and target.document_id.casefold() == asset_guid.casefold()
                     and target.target_id not in valid_ids
                 ),
                 fallback=(
-                    SelectionTarget.asset(asset_path) if asset_exists else None
+                    SelectionTarget.asset(asset_guid) if asset_exists else None
                 ),
                 fallback_owner_id="inspector",
                 reason="asset_subresource_invalidated",
@@ -290,11 +316,7 @@ class BootstrapSelectionMixin:
 
         if self.project_panel is None:
             return False
-        raw_path = (
-            target.document_id
-            if target.domain is SelectionDomain.ASSET_SUBRESOURCE
-            else target.target_id
-        )
+        raw_path = _project_path_for_target(target)
         project_root = get_project_root()
         if project_root and not os.path.isabs(str(raw_path or "")):
             raw_path = os.path.join(project_root, str(raw_path))
@@ -386,10 +408,10 @@ class BootstrapSelectionMixin:
         import os
 
         from Infernux.engine.interaction import (
+            DocumentIdentityKind,
             DocumentOpenResult,
             DocumentOpenStatus,
         )
-        from Infernux.engine.path_utils import same_path
         from Infernux.engine.scene_manager import SceneFileManager
 
         registry = self.interaction_core.documents
@@ -407,7 +429,11 @@ class BootstrapSelectionMixin:
                 message=f"Prefab resource is unavailable: {path or locator.title}",
             )
         if scene_files.is_prefab_mode:
-            if not same_path(scene_files.prefab_mode_path or "", path):
+            if (
+                locator.key_hint.identity_kind is not DocumentIdentityKind.ASSET_GUID
+                or str(scene_files.prefab_mode_guid or "").casefold()
+                != locator.key_hint.identity.casefold()
+            ):
                 return DocumentOpenResult(
                     DocumentOpenStatus.FAILED,
                     message="another Prefab document is currently active",
@@ -849,8 +875,15 @@ class BootstrapSelectionMixin:
             SelectionTarget,
         )
 
-        targets = tuple(_project_selection_target(path) for path in paths if path)
+        targets = tuple(
+            target
+            for path in paths
+            if path
+            if (target := _project_selection_target(path)) is not None
+        )
         primary = _project_selection_target(primary_path) if primary_path else None
+        if primary not in targets:
+            primary = targets[-1] if targets else None
         snapshot = SelectionSnapshot.create(
             targets,
             owner_id="project" if targets else "",

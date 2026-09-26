@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import zipfile
 from pathlib import Path
@@ -19,6 +20,21 @@ def _module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _write_player_apk(apk: Path, entry_point: str) -> None:
+    manifest = {
+        "product": {
+            "entry_points": [entry_point],
+            "single_entry_point": True,
+        }
+    }
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr(
+            "assets/player/Fixture_Data/Player.inxmanifest",
+            json.dumps(manifest),
+        )
+        archive.writestr("lib/arm64-v8a/libmain.so", b"arm")
 
 
 def test_device_parser_and_physical_preference():
@@ -64,6 +80,55 @@ def test_apk_abi_inventory(tmp_path: Path):
         archive.writestr("assets/player.inxpack", b"content")
 
     assert module.apk_abis(apk) == frozenset({"arm64-v8a", "x86_64"})
+
+
+def test_player_identity_is_read_from_current_apk_manifest(tmp_path: Path):
+    module = _module()
+    apk = tmp_path / "player.apk"
+    component = (
+        "com.infernux.infernux041labv2/"
+        "com.infernux.bootstrap.InfernuxActivity"
+    )
+    _write_player_apk(apk, component)
+
+    assert module.resolve_player_identity(
+        apk, package=None, activity=None
+    ) == ("com.infernux.infernux041labv2", component)
+
+
+def test_explicit_player_identity_must_match_current_apk_manifest(tmp_path: Path):
+    module = _module()
+    apk = tmp_path / "player.apk"
+    _write_player_apk(
+        apk,
+        "com.infernux.fixture/com.infernux.bootstrap.InfernuxActivity",
+    )
+
+    with pytest.raises(ValueError, match="does not match Player.inxmanifest"):
+        module.resolve_player_identity(
+            apk,
+            package="com.infernux.different",
+            activity=None,
+        )
+
+
+def test_explicit_package_is_required_when_apk_has_no_player_manifest(tmp_path: Path):
+    module = _module()
+    apk = tmp_path / "player.apk"
+    with zipfile.ZipFile(apk, "w") as archive:
+        archive.writestr("lib/arm64-v8a/libmain.so", b"arm")
+
+    with pytest.raises(FileNotFoundError, match="no Player.inxmanifest"):
+        module.resolve_player_identity(apk, package=None, activity=None)
+
+    assert module.resolve_player_identity(
+        apk,
+        package="com.infernux.explicit",
+        activity=None,
+    ) == (
+        "com.infernux.explicit",
+        "com.infernux.explicit/com.infernux.bootstrap.InfernuxActivity",
+    )
 
 
 @pytest.mark.parametrize(
@@ -214,6 +279,8 @@ def test_smoke_parser_accepts_gameplay_ready_gate():
     )
 
     assert arguments.expect_ready_log == "BALANCE 040 //"
+    assert arguments.package is None
+    assert arguments.activity is None
     assert arguments.serial is None
     assert arguments.max_surface_creations is None
     assert arguments.max_abandoned_buffers == 8
@@ -230,12 +297,13 @@ def test_smoke_parser_accepts_gameplay_ready_gate():
 def test_required_runtime_logs_wait_for_every_marker(monkeypatch):
     module = _module()
     logs = iter(("LINE_READY", "LINE_READY\nPARTICLE_READY\nANIMATION_READY"))
+    pids = iter(("321", "322"))
 
     class FakeAdb:
         def run(self, *arguments, **options):
             assert options == {"check": False}
-            if arguments == ("shell", "pidof", "com.infernux.bootstrap"):
-                return "321"
+            if arguments == ("shell", "pidof", "com.infernux.fixture"):
+                return next(pids)
             assert arguments == ("logcat", "-d", "-v", "brief")
             return next(logs)
 
@@ -243,13 +311,84 @@ def test_required_runtime_logs_wait_for_every_marker(monkeypatch):
 
     log = module._wait_for_required_logs(
         FakeAdb(),
-        "com.infernux.bootstrap",
+        "com.infernux.fixture",
         "321",
         ("LINE_READY", "PARTICLE_READY", "ANIMATION_READY"),
         5.0,
     )
 
     assert "ANIMATION_READY" in log
+
+
+def test_surface_destroy_wait_is_observed_before_resume(monkeypatch):
+    module = _module()
+    logs = iter(
+        (
+            "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE",
+            "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE\n"
+            "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE",
+        )
+    )
+
+    class FakeAdb:
+        def run(self, *arguments, **options):
+            assert arguments == ("logcat", "-d", "-v", "brief")
+            assert options == {"check": False}
+            return next(logs)
+
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    log = module._wait_for_log_count(
+        FakeAdb(),
+        "INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE",
+        2,
+        5.0,
+    )
+
+    assert log.count("INFERNUX_ANDROID_SURFACE_DESTROY_WAIT_COMPLETE") == 2
+
+
+def test_surface_creation_is_observed_before_next_suspend(monkeypatch):
+    module = _module()
+    logs = iter(
+        (
+            "INFERNUX_VULKAN_SURFACE extent=2400x1080",
+            "INFERNUX_VULKAN_SURFACE extent=2400x1080\n"
+            "INFERNUX_VULKAN_SURFACE extent=2400x1080",
+        )
+    )
+
+    class FakeAdb:
+        def run(self, *arguments, **options):
+            assert arguments == ("logcat", "-d", "-v", "brief")
+            assert options == {"check": False}
+            return next(logs)
+
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    log = module._wait_for_surface_creation(FakeAdb(), 2, 5.0)
+
+    assert len(module.vulkan_surface_extents(log)) == 2
+
+
+def test_wait_for_player_pid_accepts_a_legal_activity_restart(monkeypatch):
+    module = _module()
+
+    class FakeAdb:
+        def run(self, *arguments, **options):
+            assert arguments == ("shell", "pidof", "com.infernux.fixture")
+            assert options == {"check": False}
+            return "322"
+
+    assert (
+        module._wait_for_player_pid(
+            FakeAdb(),
+            "com.infernux.fixture",
+            expected="321",
+            timeout=0.1,
+        )
+        == "322"
+    )
 
 
 @pytest.mark.parametrize(
@@ -275,7 +414,7 @@ def test_wait_for_player_ignores_transient_adb_transport_output(monkeypatch):
     class FakeAdb:
         def run(self, *arguments, **options):
             assert options == {"check": False}
-            if arguments == ("shell", "pidof", "com.infernux.bootstrap"):
+            if arguments == ("shell", "pidof", "com.infernux.fixture"):
                 return next(pids)
             assert arguments == ("logcat", "-d", "-v", "brief")
             return "INFERNUX_ANDROID_HOST_READY"
@@ -284,7 +423,7 @@ def test_wait_for_player_ignores_transient_adb_transport_output(monkeypatch):
 
     pid, log = module._wait_for_player(
         FakeAdb(),
-        "com.infernux.bootstrap",
+        "com.infernux.fixture",
         "INFERNUX_ANDROID_HOST_READY",
         5.0,
     )
@@ -302,6 +441,14 @@ I/SDL: INFERNUX_VULKAN_SURFACE requested=2712x1220 current=2712x1220 extent=2712
 """
 
     assert module.vulkan_surface_extents(log) == ((1220, 2712), (2712, 1220))
+
+
+def test_surface_release_race_diagnostics_are_fatal():
+    module = _module()
+
+    assert "buffers were freed while being dequeued" in module._FATAL_PATTERNS
+    assert "getSlotFromBufferLocked: unknown buffer" in module._FATAL_PATTERNS
+    assert "queueBuffer failed: Invalid argument" in module._FATAL_PATTERNS
 
 
 def test_touch_gesture_is_injected_as_distinct_frame_phases(monkeypatch):
@@ -354,7 +501,7 @@ def test_input_focus_requires_the_player_current_focus():
     states = iter(
         (
             "mCurrentFocus=Window{123 u0 com.miui.home/.Launcher}",
-            "mCurrentFocus=Window{456 u0 com.infernux.bootstrap/.InfernuxActivity}",
+            "mCurrentFocus=Window{456 u0 com.infernux.fixture/.InfernuxActivity}",
         )
     )
 
@@ -364,7 +511,7 @@ def test_input_focus_requires_the_player_current_focus():
             assert options == {"check": False}
             return next(states)
 
-    module._wait_for_input_focus(FakeAdb(), "com.infernux.bootstrap")
+    module._wait_for_input_focus(FakeAdb(), "com.infernux.fixture")
 
 
 def test_smoke_parser_allows_manual_session_to_remain_running():
@@ -390,7 +537,10 @@ def test_apk_install_stages_the_complete_package_before_package_manager():
         "def parse_devices(", 1
     )[0]
 
-    assert 'arguments = ["install", "--no-streaming"]' in install_apk
+    assert (
+        'arguments = ["install", "--no-streaming", "-r", "-t", str(apk)]'
+        in install_apk
+    )
 
 
 def test_emulator_install_skips_physical_oem_ui_automation(monkeypatch, tmp_path: Path):
@@ -414,7 +564,6 @@ def test_emulator_install_skips_physical_oem_ui_automation(monkeypatch, tmp_path
     approved = module.install_apk(
         FakeAdb(),
         apk,
-        replace=True,
         approve_oem_prompt=False,
     )
 
@@ -456,18 +605,21 @@ def test_signature_mismatch_never_uninstalls_the_existing_game(tmp_path, monkeyp
             pytest.fail(f"Unexpected device mutation after failed update: {args}")
 
     def reject_update(*args, **kwargs):
-        installs.append(kwargs["replace"])
+        installs.append((args, kwargs))
         raise RuntimeError("INSTALL_FAILED_UPDATE_INCOMPATIBLE")
 
     monkeypatch.setattr(module, "Adb", FakeAdb)
     monkeypatch.setattr(module, "unlock_device", lambda adb: None)
     monkeypatch.setattr(module, "apk_abis", lambda apk: {"arm64-v8a"})
     monkeypatch.setattr(module, "install_apk", reject_update)
-    arguments = module._parser().parse_args([str(tmp_path / "player.apk")])
+    arguments = module._parser().parse_args(
+        [str(tmp_path / "player.apk"), "--package", "com.infernux.fixture"]
+    )
 
     with pytest.raises(RuntimeError, match="INSTALL_FAILED_UPDATE_INCOMPATIBLE"):
         module.run_smoke(arguments)
-    assert installs == [True]
+    assert len(installs) == 1
+    assert installs[0][1] == {"approve_oem_prompt": True}
 
 
 def test_hyperos_usb_install_approval_is_narrowly_detected():

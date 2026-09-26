@@ -75,6 +75,15 @@ from .shortcuts import (
     ShortcutRouter,
     ShortcutScope,
 )
+from .handles import (
+    EditorHandleContext,
+    EditorHandleKind,
+    EditorHandleProvider,
+    EditorHandleRegistry,
+    EditorHandleSnapshot,
+    HandleRegistration,
+    register_handle_provider,
+)
 from .command_palette import (
     COMMAND_PALETTE_CONTEXT_ID,
     COMMAND_PALETTE_MODAL_ID,
@@ -157,8 +166,6 @@ from .asset_mutations import (
     iter_asset_mutations,
 )
 from .asset_content import (
-    AssetReferenceContentPatch,
-    AssetReferenceRelocationPlanner,
     AssetRenameContentRegistry,
     AssetRenameTransform,
 )
@@ -286,8 +293,6 @@ __all__ = [
     "iter_asset_mutations",
     "AssetRenameContentRegistry",
     "AssetRenameTransform",
-    "AssetReferenceContentPatch",
-    "AssetReferenceRelocationPlanner",
     "CloseCoordinator",
     "CloseIntent",
     "CloseIntentKind",
@@ -350,6 +355,13 @@ __all__ = [
     "ShortcutRouteStatus",
     "ShortcutRouter",
     "ShortcutScope",
+    "EditorHandleContext",
+    "EditorHandleKind",
+    "EditorHandleProvider",
+    "EditorHandleRegistry",
+    "EditorHandleSnapshot",
+    "HandleRegistration",
+    "register_handle_provider",
     "COMMAND_PALETTE_CONTEXT_ID",
     "COMMAND_PALETTE_MODAL_ID",
     "CommandPaletteEntry",

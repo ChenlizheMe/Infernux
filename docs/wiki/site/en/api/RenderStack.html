@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/en/api/njit.html" class="">njit</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/compile.html" class="">compile</a><a href="/wiki/site/en/api/statistics.html" class="">statistics</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -439,7 +439,7 @@ class in <b>Infernux.renderstack</b>
 <td>Mark the render graph as dirty, triggering a rebuild.</td>
 </tr>
 <tr>
-<td><code>build_graph() → Any</code></td>
+<td><code>build_graph(output_samples: int = 0) → Any</code></td>
 <td>Build and return the render graph description.</td>
 </tr>
 <tr>

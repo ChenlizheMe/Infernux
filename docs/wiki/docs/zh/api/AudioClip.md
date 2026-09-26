@@ -30,6 +30,7 @@
 |------|------|------|
 | native | `CppAudioClip` | The underlying C++ AudioClip object. *(只读)* |
 | is_loaded | `bool` | Whether the audio data is loaded in memory. *(只读)* |
+| is_streaming | `bool` | Whether playback uses file-backed bounded read-ahead. *(只读)* |
 | duration | `float` | 时长（秒）。 *(只读)* |
 | sample_count | `int` | Total number of audio samples. *(只读)* |
 | sample_rate | `int` | 采样率。 *(只读)* |

@@ -47,6 +47,7 @@ layout(location = 3) in vec3 inColor;
 layout(location = 4) in vec2 inTexCoord;
 layout(location = 5) in uvec4 inBoneIndices;
 layout(location = 6) in vec4 inBoneWeights;
+layout(location = 7) in vec2 inTexCoord1;
 
 // Unified varyings — must match fragment_varyings.glsl for interface compatibility
 layout(location = 0) out vec3 v_WorldPos;
@@ -56,6 +57,7 @@ layout(location = 3) out vec3 v_Color;
 layout(location = 4) out vec2 v_TexCoord;
 layout(location = 5) out float v_ViewDepth;
 layout(location = 6) out vec4 v_LineColor;
+layout(location = 7) out vec2 v_TexCoord1;
 
 // Vertex input structure (same as forward — user vertex() functions work unchanged)
 struct VertexInput {
@@ -64,4 +66,5 @@ struct VertexInput {
     vec4 tangent;
     vec3 color;
     vec2 texCoord;
+    vec2 texCoord1;
 };

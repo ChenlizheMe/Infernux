@@ -16,8 +16,8 @@ AudioSource owns ``track_count`` tracks. Assign each track with
 then call ``play(index)``. ``play_on_awake`` only auto-plays track 0.
 
 For transient SFX, prefer ``play_one_shot(clip, volume_scale)`` rather than
-creating temporary AudioSource objects. Sources are spatialized; for "2D"
-audio, place the AudioSource on/near the AudioListener's GameObject.
+creating temporary AudioSource objects. Set ``spatial_blend`` to 0 for
+channel-preserving 2D audio and to 1 for a point-source 3D signal.
 
 <!-- USER CONTENT START --> description
 **Status:** Preview · **Verified with:** 0.4.0
@@ -29,16 +29,19 @@ AudioSource owns 1–16 tracks; `play_on_awake` starts only track 0. Use pooled 
 
 | Name | Type | Description |
 |------|------|------|
+| priority | `int` |  |
+| rejected_one_shot_count | `int` |  *(read-only)* |
 | track_count | `int` | Number of audio tracks on this source, valid range 1..16. |
 | volume | `float` | The overall volume of the audio source. |
 | pitch | `float` | The pitch multiplier of the audio source. |
 | mute | `bool` | Whether the audio source is muted. |
 | loop | `bool` | Whether all tracks loop when they reach the end. |
 | play_on_awake | `bool` | Whether track 0 plays automatically during component start. |
+| spatial_blend | `float` | Blend between stereo 2D (0) and point-source 3D (1). |
 | min_distance | `float` | Distance where 3D attenuation begins. |
 | max_distance | `float` | Distance where 3D attenuation reaches minimum volume. |
 | one_shot_pool_size | `int` | The maximum number of concurrent one-shot sounds. |
-| output_bus | `str` | Output mixer/audio bus name. |
+| output_bus | `str` | Output bus: Master, Music, SFX, Ambience, or UI. |
 | is_playing | `bool` | Whether track 0 is currently playing (convenience). *(read-only)* |
 | is_paused | `bool` | Whether track 0 is currently paused (convenience). *(read-only)* |
 | game_object_id | `int` | The ID of the GameObject this component is attached to. *(read-only)* |
@@ -57,6 +60,8 @@ AudioSource owns 1–16 tracks; `play_on_awake` starts only track 0. Use pooled 
 | `set_track_clip_by_guid(track_index: int, guid: str) → None` | Assign an audio clip to a track by asset GUID. |
 | `set_track_volume(track_index: int, volume: float) → None` | Set the volume of the specified track. |
 | `get_track_volume(track_index: int) → float` | Return the volume of the specified track. |
+| `get_track_time(track_index: int = 0) → float` | Clip seconds of the next mixed sample; output buffering can lag. |
+| `set_track_time(track_index: int, seconds: float) → None` | Seek within the loaded clip, preserving playing/paused state. |
 | `play(track_index: int = ...) → None` | Start playback on the specified zero-based track. |
 | `stop(track_index: int = ...) → None` | Stop playback on the specified zero-based track. |
 | `play_one_shot(clip: Any, volume_scale: float = ...) → None` | Play a transient clip using the source's pooled one-shot voices. |
@@ -66,6 +71,7 @@ AudioSource owns 1–16 tracks; `play_on_awake` starts only track 0. Use pooled 
 | `stop_all() → None` | Stop playback on all tracks and pooled one-shot voices. |
 | `is_track_playing(track_index: int) → bool` | Return whether the specified track is currently playing. |
 | `is_track_paused(track_index: int) → bool` | Return whether the specified track is currently paused. |
+| `is_track_virtual(track_index: int = 0) → bool` | Playback advances without occupying a physical mixing voice. |
 | `serialize() → str` | Serialize the component to a JSON string. |
 | `deserialize(json_str: str) → bool` | Deserialize the component from a JSON string. |
 

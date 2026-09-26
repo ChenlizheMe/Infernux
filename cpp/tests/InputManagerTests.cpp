@@ -50,6 +50,34 @@ int main()
     auto &input = InputManager::Instance();
     input.ResetAll();
 
+    // Native cursor polling must not steal hover between remote move and click.
+    float syntheticX = 0.0f, syntheticY = 0.0f;
+    assert(!input.GetSyntheticMousePosition(syntheticX, syntheticY));
+    input.SetSyntheticMousePosition(123.0f, 456.0f);
+    input.BeginFrame();
+    input.BeginFrame();
+    assert(input.GetSyntheticMousePosition(syntheticX, syntheticY));
+    assert(syntheticX == 123.0f && syntheticY == 456.0f);
+    input.ReleaseSyntheticMousePosition();
+    assert(!input.GetSyntheticMousePosition(syntheticX, syntheticY));
+    input.SetSyntheticMousePosition(3.0f, 4.0f);
+    input.ResetAll();
+    assert(!input.GetSyntheticMousePosition(syntheticX, syntheticY));
+
+    input.SetCursorVisible(false);
+    assert(!input.IsCursorVisible());
+    input.SetCursorConfined(true);
+    assert(input.IsCursorConfined());
+    input.SetCursorLocked(true);
+    assert(input.IsCursorLocked());
+    input.SetCursorLocked(false);
+    input.SetCursorConfined(false);
+    input.SetCursorVisible(true);
+    assert(!input.IsCursorLocked());
+    assert(!input.IsCursorConfined());
+    assert(input.IsCursorVisible());
+    assert(!input.WarpCursor(10.0f, 20.0f));
+
     const uint64_t previousFrame = input.GetFrameIndex();
     input.BeginFrame();
     assert(input.GetFrameIndex() == previousFrame + 1);
@@ -127,6 +155,9 @@ int main()
     assert(input.GetTouchCount() == 2);
     assert(input.GetTouch(0).fingerId == 101);
     assert(input.GetTouch(0).phase == TouchPhase::Began);
+    assert(input.GetTouch(0).beganThisFrame);
+    assert(input.GetTouch(0).beginX == 0.25f);
+    assert(input.GetTouch(0).beginY == 0.75f);
     assert(input.GetTouch(0).pressure == 0.6f);
     assert(input.GetTouch(0).isPrimary);
     assert(input.GetTouch(1).fingerId == 202);
@@ -135,6 +166,7 @@ int main()
     input.BeginFrame();
     assert(input.GetTouchCount() == 2);
     assert(input.GetTouch(0).phase == TouchPhase::Stationary);
+    assert(!input.GetTouch(0).beganThisFrame);
     input.ProcessSDLEvent(TouchEvent(SDL_EVENT_FINGER_MOTION, 3, 101, 0.30f, 0.70f, 0.05f, -0.05f, 0.7f, 139456789));
     assert(input.GetTouch(0).phase == TouchPhase::Moved);
     assert(input.GetTouch(0).deltaX == 0.05f);
@@ -159,6 +191,19 @@ int main()
         invalidTouchRejected = true;
     }
     assert(invalidTouchRejected);
+
+    // A press and release in one frame retains its initial location so UI
+    // dispatch can replay both transitions without treating a drag as a tap.
+    input.BeginFrame();
+    input.ProcessTouchEvent(3, 303, 1000, 0, 0.25f, 0.75f, 0.0f, 0.0f, 0.6f, TouchPhase::Began);
+    input.ProcessTouchEvent(3, 303, 2000, 0, 0.80f, 0.20f, 0.55f, -0.55f, 0.0f, TouchPhase::Ended);
+    assert(input.GetTouchCount() == 1);
+    assert(input.GetTouch(0).phase == TouchPhase::Ended);
+    assert(input.GetTouch(0).beganThisFrame);
+    assert(input.GetTouch(0).beginX == 0.25f);
+    assert(input.GetTouch(0).beginY == 0.75f);
+    input.BeginFrame();
+    assert(input.GetTouchCount() == 0);
 
     // SDL compatibility mouse events generated from touch must not create a
     // second gameplay action beside the first-class touch stream.

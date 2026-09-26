@@ -7,6 +7,7 @@
 #include "GpuResidency.h"
 #include "InxRenderStruct.h"
 #include "ProfileConfig.h"
+#include "RenderViewSchedule.h"
 #include "ScenePickingTypes.h"
 #include "particle/ParticleGpuViewDiagnostics.h"
 #include "rhi/RhiDescriptors.h"
@@ -18,12 +19,14 @@
 #include <functional>
 #include <glm/glm.hpp>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace infernux
 {
+enum class ShaderProgramDomain : uint8_t;
 // ============================================================================
 // Forward declarations for private subsystem types.
 // Full definitions are in InxRenderer.cpp. Keeping them out of this header
@@ -43,6 +46,12 @@ class InxGUIRenderable;
 class InxMaterial;
 class InxMesh;
 class InxVkCoreModular;
+namespace rhi
+{
+class ComputeHost;
+class RenderTexture;
+struct RenderTextureDesc;
+} // namespace rhi
 class InxView;
 class OutlineRenderer;
 struct ParticleProgramBootstrap;
@@ -56,6 +65,7 @@ class TransientResourcePool;
 class InxGUIContext;
 class InxScreenUIRenderer;
 struct ShaderProgramArtifact;
+struct ShaderStagePair;
 struct ShaderProgramKey;
 namespace vk
 {
@@ -152,6 +162,9 @@ struct RendererFrameTelemetrySnapshot
     uint32_t submissionTransferBatchCount = 0;
     uint32_t submissionCrossQueueDependencyCount = 0;
     uint32_t submissionUnorderedComputeGraphicsPairCount = 0;
+    uint64_t submissionResidentComputeWriteSerial = 0;
+    uint64_t submissionLatestBackgroundComputeSerial = 0;
+    bool submissionResidentComputeWaitPending = false;
     double gameRenderMs = 0.0;
     double gameOnlyFrameMs = 0.0;
     double sceneUpdateMs = 0.0;
@@ -211,6 +224,8 @@ struct RendererFramePerformanceSnapshot
     uint64_t lastFrame = 0;
     size_t sampleCount = 0;
     size_t droppedSampleCount = 0;
+    size_t targetSampleCount = 0;
+    bool active = false;
     UIPerformanceMetricStats frame;
     UIPerformanceMetricStats gameOnly;
     UIPerformanceMetricStats render;
@@ -224,6 +239,22 @@ class InxRenderer
   public:
     InxRenderer();
     ~InxRenderer();
+    [[nodiscard]] std::unique_ptr<rhi::ComputeHost> AcquireComputeHost();
+    [[nodiscard]] std::shared_ptr<rhi::RenderTexture> CreateRenderTexture(const rhi::RenderTextureDesc &description,
+                                                                          const std::string &assetGuid = {});
+    [[nodiscard]] std::shared_ptr<rhi::RenderTexture> LoadRenderTexture(const std::string &guid);
+    void ReconfigureImportedRenderTexture(const std::string &guid, const rhi::RenderTextureDesc &description);
+    void PrepareMaterialTextureAssets(const std::shared_ptr<InxMaterial> &material);
+    bool InvalidateMaterialTextureAssets(const std::string &owner, const std::string &guid, bool deleted);
+    uint64_t GetRenderTextureUITextureId(const std::shared_ptr<rhi::RenderTexture> &texture);
+    [[nodiscard]] bool HasComputeHostLeases() const noexcept
+    {
+        return m_computeHostLeases != 0;
+    }
+    [[nodiscard]] size_t GetComputeHostLeaseCount() const noexcept
+    {
+        return m_computeHostLeases;
+    }
 
     InxRenderer(const InxRenderer &) = delete;
     InxRenderer &operator=(const InxRenderer &) = delete;
@@ -260,6 +291,7 @@ class InxRenderer
     void WaitForGpuIdle();
     [[nodiscard]] size_t GetPendingMeshUploadCount() const;
     [[nodiscard]] uint64_t GetSubmittedMeshUploadCount() const;
+    [[nodiscard]] size_t GetResidentMeshVertexBufferCount() const;
     [[nodiscard]] uint64_t GetCompletedMeshUploadCount() const;
     [[nodiscard]] uint64_t GetAsyncMeshUploadCount() const;
     [[nodiscard]] size_t GetPendingTextureCpuLoadCount() const;
@@ -284,6 +316,8 @@ class InxRenderer
     [[nodiscard]] size_t GetMeshGpuCacheEntryCount() const;
     [[nodiscard]] size_t GetRetiredMeshGpuLeaseCount() const;
     [[nodiscard]] uint64_t GetMeshGpuEvictionCount() const;
+    [[nodiscard]] MeshIndexFormat GetObjectMeshIndexFormat(uint64_t objectId) const;
+    [[nodiscard]] uint64_t GetObjectMeshIndexBufferBytes(uint64_t objectId) const;
     void SetMeshGpuBudgetBytes(uint64_t bytes);
     [[nodiscard]] size_t TrimMeshGpuBudget();
     [[nodiscard]] GpuResidencySnapshot GetGpuResidencySnapshot() const;
@@ -291,7 +325,7 @@ class InxRenderer
     /// currently advancing DrawFrame(). Never waits for a queue or device.
     void PollGpuCompletions();
     [[nodiscard]] RendererFrameTelemetrySnapshot GetFrameTelemetrySnapshot();
-    [[nodiscard]] uint64_t BeginFramePerformanceWindow();
+    [[nodiscard]] uint64_t BeginFramePerformanceWindow(size_t sampleCount = 240);
     [[nodiscard]] RendererFramePerformanceSnapshot GetFramePerformanceWindow() const;
     [[nodiscard]] uint64_t RequestGpuParticleViewDiagnostics(bool gameView, uint64_t graphInstanceId,
                                                              uint64_t cameraComponentId = 0);
@@ -306,10 +340,18 @@ class InxRenderer
     void LoadShader(const char *name, const std::vector<char> &code, const char *type);
     void SetShaderAssetResolver(std::function<bool(const std::string &, const std::string &)> resolver);
     bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
+    void InvalidateUIMaterialProgram(const ShaderStagePair &stages);
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
-    ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material);
-    void SetShaderProgramArtifactResolver(std::function<void(const std::shared_ptr<InxMaterial> &)> resolver);
+    ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material,
+                                 std::optional<ShaderProgramDomain> expectedDomain);
+    void SetShaderProgramArtifactResolver(
+        std::function<void(const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain>)> resolver);
+    void SetMaterialShaderDomainInspector(
+        std::function<std::optional<ShaderProgramDomain>(const std::shared_ptr<InxMaterial> &)> inspector);
+    [[nodiscard]] bool CanPreviewMaterialOnMesh(const std::shared_ptr<InxMaterial> &material) const;
+    void SetUIMaterialShaderValidator(
+        std::function<bool(const std::shared_ptr<InxMaterial> &, ShaderProgramDomain)> validator);
     bool HasShader(const std::string &name, const std::string &type) const;
 
     /// @brief Store shader render-state annotations (forwarded to InxVkCoreModular)
@@ -392,7 +434,8 @@ class InxRenderer
     uint64_t GetSceneTextureId() const;
     void ResizeSceneRenderTarget(uint32_t width, uint32_t height);
     [[nodiscard]] std::shared_ptr<vk::ImageReadbackTicket> RequestRenderTargetReadback(bool gameView);
-    [[nodiscard]] uint64_t RequestCapture(CaptureSource source, const std::string &outputPath);
+    [[nodiscard]] uint64_t RequestCapture(CaptureSource source, const std::string &outputPath,
+                                          uint64_t cameraComponentId = 0);
     [[nodiscard]] CaptureSnapshot QueryCapture(uint64_t captureId) const;
     [[nodiscard]] bool CancelCapture(uint64_t captureId);
     [[nodiscard]] uint64_t RequestScenePick(float x, float y, float viewportWidth, float viewportHeight);
@@ -446,6 +489,8 @@ class InxRenderer
 
     /// Currently-published live mesh preview descriptor id (0 when absent).
     [[nodiscard]] uint64_t GetMeshPreviewDisplayTextureId() const;
+    uint64_t RenderModelAnimationPreview(const std::shared_ptr<InxMesh> &mesh, const std::string &take, float seconds,
+                                         int size, uint64_t dependencyRevision);
 
     // Refresh all materials using a specific shader
     bool RefreshMaterialsUsingShader(const std::string &shaderId);
@@ -455,6 +500,9 @@ class InxRenderer
 
     // Invalidate cached GPU texture and force materials to re-resolve it
     void InvalidateTextureCache(const std::string &texturePath);
+
+    // Retire all GPU generations for a deleted Mesh asset identity.
+    void InvalidateMeshCache(const std::string &meshGuid);
 
     // Remove pipeline render data for a specific material (releases shared_ptr)
     void RemoveMaterialPipeline(const std::string &materialName);
@@ -648,10 +696,13 @@ class InxRenderer
     void RequestExternalWake();
 
   private:
+    [[nodiscard]] bool ShouldDrawSelectionOutline() const;
     void UpdateParticleCollisionScene();
     void ConsumeSceneTemporalDiscontinuity();
     void InvalidateGpuViewStateForSceneBoundary();
     void RecreateSceneRenderGraph();
+    void EnsureScreenUIRenderer();
+    void ConfigureScreenUIMaterialResolver(InxScreenUIRenderer &renderer);
 
     InxAppMetadata m_appMetadata;
     InxAppMetadata m_rendererMetadata;
@@ -670,7 +721,12 @@ class InxRenderer
     uint64_t m_frameCount = 0;
 
     std::unique_ptr<InxVkCoreModular> m_vkCore;
-    std::function<void(const std::shared_ptr<InxMaterial> &)> m_shaderProgramArtifactResolver;
+    size_t m_computeHostLeases = 0;
+    std::function<void(const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain>)>
+        m_shaderProgramArtifactResolver;
+    std::function<std::optional<ShaderProgramDomain>(const std::shared_ptr<InxMaterial> &)>
+        m_materialShaderDomainInspector;
+    std::function<bool(const std::shared_ptr<InxMaterial> &, ShaderProgramDomain)> m_uiMaterialShaderValidator;
     std::unique_ptr<InxGUI> m_gui;
     std::unique_ptr<InxView> m_view;
     bool m_guiPlayerMode = false;
@@ -687,6 +743,7 @@ class InxRenderer
         uint64_t id = 0;
         CaptureSource source = CaptureSource::Game;
         uint64_t sourceGeneration = 0;
+        uint64_t cameraComponentId = 0;
     };
     [[nodiscard]] bool HasPendingCapture(CaptureSource source) const;
     void SubmitPendingCaptureReadbacks();
@@ -721,8 +778,29 @@ class InxRenderer
     // This keeps camera matrices, shadows, Forward+ lists, particles and
     // temporal history isolated while Camera.depth determines execution order.
     std::unique_ptr<SceneRenderTarget> m_gameRenderTarget;
+    // Relative targets follow Game render pixels, never editor zoom/DPI or the
+    // last Camera drawn. Registration must not extend the resource lifetime.
+    std::vector<std::weak_ptr<rhi::RenderTexture>> m_relativeRenderTextures;
+    struct ImportedRenderTexture;
+    std::unordered_map<std::string, std::weak_ptr<ImportedRenderTexture>> m_assetRenderTextures;
+    void ResizeRelativeRenderTextures(uint32_t width, uint32_t height);
     std::unordered_map<uint64_t, std::unique_ptr<SceneRenderGraph>> m_gameRenderGraphs;
     SceneRenderGraph *m_gameRenderGraph = nullptr; ///< Representative graph for legacy single-view queries.
+    struct ScheduledView
+    {
+        SceneRenderGraph *graph;
+        uint64_t viewId;
+        uint64_t accessRevision;
+        bool scene;
+        bool operator==(const ScheduledView &other) const
+        {
+            return graph == other.graph && viewId == other.viewId && accessRevision == other.accessRevision &&
+                   scene == other.scene;
+        }
+    };
+    std::vector<ScheduledView> m_scheduledViews, m_nextScheduledViews;
+    RenderViewSchedule m_viewSchedule;
+    void UpdateViewSchedule(bool sceneActive, bool gameActive);
     std::unique_ptr<InxScreenUIRenderer> m_screenUIRenderer;
     bool m_gameCameraEnabled = false;
     bool m_sceneViewVisible = false; ///< Default false; Python editor sets true via SetSceneViewVisible()
@@ -732,7 +810,6 @@ class InxRenderer
     double m_prepareFrameMs = 0.0;   ///< PrepareFrame (collect/cull) (ms)
     double m_gameOnlyFrameMs = 0.0;  ///< Sum of game-only phases (ms)
 
-    static constexpr size_t FRAME_PERFORMANCE_HISTORY_SIZE = 240;
     struct FramePerformanceSample
     {
         uint64_t frame = 0;
@@ -743,11 +820,9 @@ class InxRenderer
         double guiMs = 0.0;
         double prepareMs = 0.0;
     };
-    std::array<FramePerformanceSample, FRAME_PERFORMANCE_HISTORY_SIZE> m_framePerformanceHistory{};
+    std::vector<FramePerformanceSample> m_framePerformanceHistory;
     bool m_framePerformanceWindowActive = false;
-    size_t m_framePerformanceWriteIndex = 0;
-    size_t m_framePerformanceSampleCount = 0;
-    size_t m_framePerformanceDroppedSampleCount = 0;
+    size_t m_framePerformanceSampleLimit = 0;
     void RecordFramePerformanceSample(double frameMs);
 
     static constexpr size_t UI_PERFORMANCE_HISTORY_SIZE = 240;
@@ -768,6 +843,8 @@ class InxRenderer
     class Camera *m_cachedGameCamera = nullptr;
     std::vector<class Camera *> m_cachedGameCameras;
     bool m_gameCameraCacheValid = false;
+    uint64_t m_cachedCameraActiveWorld = 0;
+    std::vector<std::pair<uint64_t, uint64_t>> m_cachedCameraSceneVersions;
 
     // Scriptable render pipeline (nullptr = default C++ path)
     std::shared_ptr<RenderPipelineCallback> m_renderPipeline;
@@ -820,6 +897,8 @@ class InxRenderer
     /// @brief Per-frame camera stack and per-camera RenderGraph ownership.
     const std::vector<class Camera *> &FindGameCamerasCached();
     SceneRenderGraph *EnsureGameRenderGraph(class Camera *camera);
+    bool HasActiveGameViews();
+    bool ShouldRenderGameCamera(const class Camera *camera) const;
 
     /// Callback invoked once per frame BEFORE GUI::BuildFrame().
     /// Used by Python to tick DeferredTaskRunner so that scene-mutating

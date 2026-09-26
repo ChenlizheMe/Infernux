@@ -166,14 +166,12 @@ def test_runtime_asset_catalog_never_falls_back_to_source_discovery(tmp_path):
         records,
     )
 
-    assert catalog.resolve_scene("Assets/Scenes/Main.scene") == str(scene)
-    assert catalog.resolve_scene(str(scene)) == str(scene)
-    assert catalog.resolve_scene(str(unlisted)) is None
-    assert catalog.resolve_scene(tmp_path.parent / "Outside.scene") is None
+    assert catalog.resolve_scene("scene-guid") == str(scene)
+    assert catalog.resolve_scene("missing-guid") is None
     assert catalog.artifact_ids_for_guid("scene-guid") == ("content:scene-main",)
 
 
-def test_runtime_asset_catalog_resolves_source_scene_alias_to_cooked_document(tmp_path):
+def test_runtime_asset_catalog_resolves_scene_guid_to_cooked_document(tmp_path):
     from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
 
     cooked = (
@@ -214,8 +212,10 @@ def test_runtime_asset_catalog_resolves_source_scene_alias_to_cooked_document(tm
         str(tmp_path), catalog, records
     )
 
-    assert runtime_catalog.resolve_scene("Assets/Scenes/Main.scene") == str(cooked)
-    assert runtime_catalog.resolve_scene(str(cooked)) == str(cooked)
+    assert runtime_catalog.resolve_scene("scene-guid") == str(cooked)
+    assert runtime_catalog.source_path_for_guid("scene-guid") == "Assets/Scenes/Main.scene"
+    assert runtime_catalog.resolve_scene("Assets/Scenes/Main.scene") is None
+    assert runtime_catalog.resolve_scene(str(cooked)) is None
 
 
 def test_runtime_asset_catalog_resolves_any_source_alias_to_cooked_payload(tmp_path):
@@ -253,9 +253,18 @@ def test_runtime_asset_catalog_resolves_any_source_alias_to_cooked_payload(tmp_p
         str(tmp_path), catalog, records
     )
 
-    assert runtime_catalog.resolve_asset("Assets/Data/Voxel.npy") == str(cooked)
-    assert runtime_catalog.resolve_asset(str(cooked)) == str(cooked)
-    assert runtime_catalog.resolve_asset("Assets/Data/Missing.npy") is None
+    assert runtime_catalog.resolve_guid("cache-guid") == str(cooked)
+    assert runtime_catalog.resolve_guid("missing-guid") is None
+    assert runtime_catalog.resolve_package("Assets/Data/Voxel.npy") is None
+    assert runtime_catalog.query_asset_guids("Assets/Data/Voxel.npy") == ("cache-guid",)
+    assert runtime_catalog.query_asset_guids("cache-guid") == ("cache-guid",)
+    assert runtime_catalog.source_extension_for_guid("cache-guid") == ".npy"
+    assert runtime_catalog.query_asset_guids("Assets/Data") == ("cache-guid",)
+    assert runtime_catalog.query_asset_guids("Assets/Data/*.npy") == ("cache-guid",)
+    assert runtime_catalog.query_asset_guids("Assets/Data/**/*.npy") == ("cache-guid",)
+    with pytest.raises(ValueError, match="Assets-relative"):
+        runtime_catalog.query_asset_guids("*.npy")
+    assert runtime_catalog.query_asset_guids("Assets/Data/Missing.npy") == ()
 
 
 def test_player_scene_service_requires_catalog_membership(tmp_path):
@@ -275,10 +284,10 @@ def test_player_scene_service_requires_catalog_membership(tmp_path):
     )
     service = PlayerSceneService()
 
-    assert service.request_load(str(scene)) is False
+    assert service.request_load("scene-guid") is False
     service.bind_runtime_catalog(catalog)
-    assert service.request_load(str(unlisted)) is False
-    assert service.request_load(str(scene)) is True
+    assert service.request_load("missing-guid") is False
+    assert service.request_load("scene-guid") is True
     service.cancel_pending_load()
 
 
@@ -350,6 +359,53 @@ def test_player_scene_service_can_hold_and_activate_prepared_load(monkeypatch):
     assert service.activate_prepared_load() is True
     service.process_pending_load()
     assert calls == ["start", "commit"]
+
+
+def test_player_scene_service_publishes_prepared_additive_target(monkeypatch):
+    from Infernux.engine.player_scene import PlayerSceneService
+
+    calls = []
+    target_scene = object()
+
+    class Transaction:
+        status = "reading"
+        succeeded = True
+        error = ""
+
+        def start(self):
+            calls.append("start")
+
+        def poll(self):
+            calls.append("commit")
+            self.status = "completed"
+            return True
+
+    service = PlayerSceneService()
+    monkeypatch.setattr(
+        service,
+        "_validated_scene_path",
+        lambda _path: "C:/Game/Content/Additive.scene",
+    )
+    monkeypatch.setattr(
+        service,
+        "_new_additive_transaction",
+        lambda _path: (Transaction(), target_scene),
+    )
+    monkeypatch.setattr(
+        service,
+        "_publish_completed_additive_scene",
+        lambda path, scene: calls.append(("publish_additive", path, scene)),
+    )
+
+    assert service.request_prepared_load("Additive", mode="additive") is True
+    service.process_pending_load()
+
+    assert calls == [
+        "start",
+        "commit",
+        ("publish_additive", "C:/Game/Content/Additive.scene", target_scene),
+    ]
+    assert service.is_load_pending is False
 
 
 def test_player_prepared_load_advances_one_phase_per_frame(monkeypatch):

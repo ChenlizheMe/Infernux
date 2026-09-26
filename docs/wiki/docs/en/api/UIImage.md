@@ -8,20 +8,19 @@ class in <b>Infernux.ui</b>
 
 ## Description
 
-Screen-space image element rendered from a texture asset.
+Screen or world image using a texture asset or live camera output.
 
-Inherits ``x``, ``y``, ``width``, ``height``, ``opacity``,
-``corner_radius``, ``rotation``, ``mirror_x``, ``mirror_y``
-from ``InxUIScreenComponent``.
+Position and rotation come from the GameObject Transform. The component
+inherits size, opacity, corner radius and mirroring fields.
 
 Attributes:
-    texture_path: Path to texture asset (drag from Project panel).
+    texture: Imported Texture/RenderTexture, or a runtime RenderTexture override.
     color: Tint color as ``[R, G, B, A]`` (0–1 each).
 
 Example::
 
     img = game_object.add_component(UIImage)
-    img.texture_path = "Assets/Textures/logo.png"
+    img.texture = texture_asset
     img.color = [1.0, 1.0, 1.0, 0.8]
 
 <!-- USER CONTENT START --> description
@@ -32,7 +31,7 @@ Example::
 
 | Name | Type | Description |
 |------|------|------|
-| texture_path | `str` |  |
+| texture | `Texture | RenderTexture | None` |  |
 | color | `list` |  |
 
 <!-- USER CONTENT START --> properties

@@ -16,7 +16,15 @@ Usage::
 """
 
 from .gizmos import Gizmos
-from .collector import GizmosCollector
+
+
+def __getattr__(name):
+    # Author scripts may import the drawing API in Players. Scene collection
+    # belongs to the Editor and is loaded only when explicitly requested.
+    if name == "GizmosCollector":
+        from .collector import GizmosCollector
+        return GizmosCollector
+    raise AttributeError(name)
 
 __all__ = [
     "Gizmos",

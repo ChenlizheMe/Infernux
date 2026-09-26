@@ -11,6 +11,142 @@ from Infernux.components import InxComponent
 from Infernux.components._cds_bridge import get_class_id
 
 
+def test_inherited_numeric_fields_share_the_declared_native_layout():
+    from Infernux.components._cds_bridge import get_class_info
+
+    class Base(InxComponent):
+        speed: float = 2.0
+
+    parent = Base()
+
+    class Derived(Base):
+        count: int = 3
+
+    class Sibling(Base):
+        offset: float = 4.0
+
+    children = [Derived(), Derived()]
+    sibling = Sibling()
+    try:
+        class_id, fields = get_class_info(Derived)
+        assert set(fields) == {"speed", "count"}
+        field_id, type_code = fields["speed"]
+        assert lib._cds_get(class_id, field_id, children[0]._cds_slot, type_code) == 2.0
+        batch_write(children, np.asarray([7.0, 8.0], dtype=np.float32), "speed")
+        assert [child.speed for child in children] == [7.0, 8.0]
+        children[0].speed = 9.0
+        np.testing.assert_array_equal(batch_read(children, "speed"), [9.0, 8.0])
+        assert children[0]._serialize_fields_document()["speed"] == 9.0
+        assert parent.speed == 2.0 and sibling.speed == 2.0
+        parent.speed = 11.0
+        assert batch_read([parent], "speed")[0] == 11.0
+        assert "speed" not in Derived._serialized_fields_  # Still declared by Base.
+        assert Base.speed is not Derived.speed and Base.speed is not Sibling.speed
+    finally:
+        for value in [parent, sibling, *children]:
+            value._call_on_destroy()
+
+
+def test_repeated_layout_registration_binds_new_descriptors():
+    from Infernux.components._cds_bridge import get_class_info
+
+    class Repeated(InxComponent):
+        value: float = 2.0
+
+    old = Repeated()
+    old_class = Repeated
+
+    class Repeated(InxComponent):
+        value: float = 3.0
+
+    new = Repeated()
+    try:
+        assert get_class_id(old_class) == get_class_id(Repeated)
+        class_id, fields = get_class_info(Repeated)
+        field_id, type_code = fields["value"]
+        assert lib._cds_get(class_id, field_id, new._cds_slot, type_code) == 3.0
+        batch_write([new], np.asarray([8.0], dtype=np.float32), "value")
+        assert new.value == 8.0 and old.value == 2.0
+    finally:
+        old._call_on_destroy()
+        new._call_on_destroy()
+
+
+def test_inherited_candidate_publication_and_rollback_preserve_live_parent():
+    from Infernux.components._cds_bridge import prepare_schema_publication
+    from Infernux.components._component_registration import candidate_component_registration_scope
+
+    class Base(InxComponent):
+        speed: float = 2.0
+
+    parent = Base()
+    publication = None
+    try:
+        parent.speed = 11.0
+        parent_binding = Base.speed._cds_class_id
+        with candidate_component_registration_scope():
+            class Candidate(Base):
+                count: int = 3
+
+        assert Candidate.speed is not Base.speed
+        assert Candidate.speed.metadata is Base.speed.metadata
+        assert Candidate.speed._cds_class_id is None
+        assert get_class_id(Candidate) is None
+        publication = prepare_schema_publication([Candidate])
+        entry = publication.entry(Candidate)
+        assert set(entry.field_map) == {"speed", "count"}
+        slot = publication.allocate_slot(Candidate)
+        publication.set_value(Candidate, "speed", slot, 23.0)
+        publication.set_value(Candidate, "count", slot, 5)
+        publication.seal()
+        assert Candidate.speed._cds_class_id is None
+        publication.commit()
+        field_id, type_code = entry.field_map["speed"]
+        assert Candidate.speed._cds_class_id == entry.class_id
+        assert lib._cds_get(entry.class_id, field_id, slot, type_code) == 23.0
+        assert Base.speed._cds_class_id == parent_binding
+        assert batch_read([parent], "speed")[0] == 11.0
+
+        publication.rollback()
+        assert Candidate.speed._cds_class_id is None
+        assert Base.speed._cds_class_id == parent_binding
+        assert batch_read([parent], "speed")[0] == parent.speed == 11.0
+    finally:
+        if publication is not None and not publication.rolled_back:
+            publication.rollback()
+        parent._call_on_destroy()
+
+
+def test_deep_inheritance_and_numeric_override_use_concrete_layouts():
+    from Infernux.components._cds_bridge import get_class_info
+
+    class Base(InxComponent):
+        value: float = 2.5
+
+    class Middle(Base):
+        pass
+
+    class Leaf(Middle):
+        pass
+
+    class Override(Middle):
+        value: int = 7
+
+    instances = [Base(), Middle(), Leaf(), Override()]
+    try:
+        for instance, expected in zip(instances, [2.5, 2.5, 2.5, 7]):
+            assert instance.value == expected
+            assert batch_read([instance], "value")[0] == expected
+        assert len({get_class_id(type(instance)) for instance in instances}) == 4
+        assert get_class_info(Leaf)[1]["value"][1] != get_class_info(Override)[1]["value"][1]
+        instances[2].value = 9.5
+        assert batch_read([instances[2]], "value")[0] == 9.5
+        assert [instance.value for instance in instances] == [2.5, 2.5, 9.5, 7]
+    finally:
+        for instance in instances:
+            instance._call_on_destroy()
+
+
 def test_cds_generational_handles_reject_stale_access():
     class_id = lib._cds_register_class("python.tests:GenerationalHandle")
     field_id = lib._cds_register_field(class_id, "value", 0)

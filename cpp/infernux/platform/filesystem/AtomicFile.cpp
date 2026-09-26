@@ -26,6 +26,15 @@ namespace infernux
 namespace
 {
 
+uint64_t HashBytes(std::string_view bytes, uint64_t hash = 1469598103934665603ull) noexcept
+{
+    for (unsigned char byte : bytes) {
+        hash ^= byte;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
 uint64_t HashFileContents(const std::filesystem::path &path)
 {
     std::ifstream file(path, std::ios::in | std::ios::binary);
@@ -36,10 +45,7 @@ uint64_t HashFileContents(const std::filesystem::path &path)
     while (file) {
         file.read(buffer, sizeof(buffer));
         const auto count = file.gcount();
-        for (std::streamsize index = 0; index < count; ++index) {
-            hash ^= static_cast<unsigned char>(buffer[index]);
-            hash *= 1099511628211ull;
-        }
+        hash = HashBytes(std::string_view(buffer, static_cast<size_t>(count)), hash);
     }
     if (!file.eof())
         throw std::runtime_error("failed while reading file for state capture");
@@ -202,6 +208,29 @@ AtomicFileState CaptureAtomicFileState(const std::string &path)
     state.modifiedNs = static_cast<int64_t>(modified.time_since_epoch().count());
     state.contentHash = HashFileContents(target);
     return state;
+}
+
+AtomicTextFileSnapshot ReadTextFileSnapshot(const std::string &path)
+{
+    const auto target = ToFsPath(path);
+    std::ifstream input(target, std::ios::binary);
+    if (!input)
+        throw std::runtime_error("failed to open document file: " + path);
+    input.seekg(0, std::ios::end);
+    const auto size = input.tellg();
+    if (size < 0)
+        throw std::runtime_error("failed to measure document file: " + path);
+    AtomicTextFileSnapshot snapshot;
+    snapshot.content.resize(static_cast<size_t>(size));
+    input.seekg(0, std::ios::beg);
+    if (!snapshot.content.empty() && !input.read(snapshot.content.data(), static_cast<std::streamsize>(size)))
+        throw std::runtime_error("failed to read complete document file: " + path);
+    const auto modified = std::filesystem::last_write_time(target);
+    // Even if an atomic replacement happened after opening the stream, the
+    // hash/size describe the consumed bytes, never a second read of the path.
+    snapshot.state = {true, static_cast<uint64_t>(snapshot.content.size()),
+                      static_cast<int64_t>(modified.time_since_epoch().count()), HashBytes(snapshot.content)};
+    return snapshot;
 }
 
 bool IsTransientReplaceError(const std::error_code &error)

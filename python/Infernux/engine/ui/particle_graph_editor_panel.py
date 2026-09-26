@@ -24,7 +24,7 @@ from Infernux.core.asset_reference_types import (
 )
 from Infernux.debug import Debug
 from Infernux.engine.i18n import t
-from Infernux.engine.path_utils import resolved_path, same_path
+from Infernux.engine.path_utils import resolved_path
 from Infernux.engine.interaction import (
     GraphActionDiff,
     GraphElementKind,
@@ -431,7 +431,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             guid = ""
         if guid:
             return DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, guid)
-        return DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, normalized)
+        return DocumentKey.session(DocumentKind.PARTICLE_GRAPH)
 
     def _replace_particle_document(self, *, resource_path: str, dirty: bool) -> None:
         from Infernux.engine.interaction import (
@@ -472,18 +472,14 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         if document_id != self.document_id:
             raise ValueError("Particle Graph restore capture targeted another document")
         self._sync_model_to_asset()
-        return {
-            "asset": self._asset.to_dict(),
-            "file_path": self._file_path,
-        }
+        return {"asset": self._asset.to_dict()}
 
     def restore_document_restore_state(self, state: dict) -> None:
-        if not isinstance(state, dict) or set(state) != {"asset", "file_path"}:
+        if not isinstance(state, dict) or set(state) != {"asset"}:
             raise ValueError("Particle Graph document restore state is invalid")
         self._asset = ParticleGraphAsset.from_dict(copy.deepcopy(state["asset"]))
-        self._file_path = (
-            resolved_path(state["file_path"]) if state["file_path"] else ""
-        )
+        document = self._particle_document()
+        self._file_path = resolved_path(document.resource_path) if document else ""
         self._emitter_index = min(
             max(0, self._emitter_index), len(self._asset.emitters) - 1
         )
@@ -495,10 +491,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         state,
         error: Exception,
     ) -> bool:
-        del error
-        path = str(state.get("file_path", "")) if isinstance(state, dict) else ""
-        if path and os.path.isfile(path):
-            return self.open_document_resource_immediate(path)
+        del state, error
         self._asset = ParticleGraphAsset()
         self._file_path = ""
         self._emitter_index = 0
@@ -3097,12 +3090,11 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         destination_path: str,
         guid: str,
     ) -> None:
-        del guid
+        del source_path, guid
         if document_id != self.document_id:
             return
-        if self._file_path and same_path(self._file_path, source_path):
-            self._file_path = resolved_path(destination_path)
-            self._persist_panel_state()
+        self._file_path = resolved_path(destination_path)
+        self._persist_panel_state()
 
     def _save_to(self, file_path: str, *, ticket_id: str = "") -> bool:
         active_ticket_id = ticket_id or self._pending_save_ticket_id

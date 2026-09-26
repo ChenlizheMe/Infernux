@@ -181,17 +181,18 @@ void InputManager::BeginFrame()
         touch.phase = TouchPhase::Stationary;
         touch.deltaX = 0.0f;
         touch.deltaY = 0.0f;
+        touch.beganThisFrame = false;
     }
     m_droppedFiles.clear();
-    m_hasSyntheticMousePositionThisFrame = false;
     m_syntheticInputThisFrame = false;
+    m_syntheticKeyDown.fill(0);
 
     // Re-apply relative mouse mode for the current window/focus state without
     // disturbing persistent capture flags. Editor capture is released on
     // explicit end or focus loss, not once per frame.
 #if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
     RefreshScreenState();
-    ApplyRelativeMouseMode();
+    ApplyCursorState();
 #endif
 }
 
@@ -229,6 +230,14 @@ void InputManager::ProcessPointerButtonEvent(int button, bool pressed)
 
 void InputManager::ProcessPointerMotionEvent(float x, float y, float deltaX, float deltaY)
 {
+    if (m_warpMotionPending) {
+        m_warpMotionPending = false;
+        if (std::abs(x - m_warpTargetX) <= 1.0f && std::abs(y - m_warpTargetY) <= 1.0f) {
+            m_mouseX = x;
+            m_mouseY = y;
+            return;
+        }
+    }
     m_mouseX = x;
     m_mouseY = y;
     m_mouseDX += deltaX;
@@ -354,6 +363,11 @@ void InputManager::ProcessTouchEvent(uint64_t touchId, uint64_t fingerId, uint64
     touch->contactWidth = contactWidth;
     touch->contactHeight = contactHeight;
     touch->isPrimary = touch->isPrimary || isPrimary;
+    if (phase == TouchPhase::Began) {
+        touch->beganThisFrame = true;
+        touch->beginX = x;
+        touch->beginY = y;
+    }
     touch->cancelReason = phase == TouchPhase::Canceled ? cancelReason : std::string{};
     touch->phase = phase;
 }
@@ -365,6 +379,9 @@ void InputManager::ProcessFocusEvent(bool focused)
             m_screenState.focused = true;
             ++m_screenState.revision;
         }
+#if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
+        ApplyCursorState();
+#endif
         return;
     }
     StopTextInput();
@@ -375,7 +392,7 @@ void InputManager::ProcessFocusEvent(bool focused)
         ++m_screenState.revision;
     }
 #if !defined(INFERNUX_INPUT_SEMANTIC_HOST)
-    ApplyRelativeMouseMode();
+    ApplyCursorState();
 #endif
 }
 
@@ -426,7 +443,22 @@ bool InputManager::StartTextInput()
     m_textInputActive = true;
     return true;
 #else
-    if (m_window == nullptr || !SDL_StartTextInput(m_window))
+    if (m_window == nullptr)
+        return false;
+#if defined(__ANDROID__)
+    // An explicit text-input request needs the software editor even when an
+    // emulator or attached physical keyboard makes SDL_HasKeyboard() true.
+    SDL_SetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD, "1");
+    const char *screenKeyboardHint = SDL_GetHint(SDL_HINT_ENABLE_SCREEN_KEYBOARD);
+    SDL_Log("INFERNUX_ANDROID_TEXT_INPUT_SDL_REQUEST keyboard=%d hint=%s", SDL_HasKeyboard(),
+            screenKeyboardHint != nullptr ? screenKeyboardHint : "unset");
+#endif
+    const bool started = SDL_StartTextInput(m_window);
+#if defined(__ANDROID__)
+    SDL_Log("INFERNUX_ANDROID_TEXT_INPUT_SDL_RESULT started=%d active=%d error=%s", started,
+            SDL_TextInputActive(m_window), started ? "none" : SDL_GetError());
+#endif
+    if (!started)
         return false;
     m_textInputActive = true;
     return true;
@@ -595,22 +627,27 @@ void InputManager::ProcessSDLEvent(const SDL_Event &event)
     }
 }
 
-void InputManager::SetSyntheticMousePositionForFrame(float x, float y)
+void InputManager::SetSyntheticMousePosition(float x, float y)
 {
     m_mouseX = x;
     m_mouseY = y;
     m_syntheticMouseX = x;
     m_syntheticMouseY = y;
-    m_hasSyntheticMousePositionThisFrame = true;
+    m_hasSyntheticMousePosition = true;
 }
 
-bool InputManager::GetSyntheticMousePositionForFrame(float &x, float &y) const
+bool InputManager::GetSyntheticMousePosition(float &x, float &y) const
 {
-    if (!m_hasSyntheticMousePositionThisFrame)
+    if (!m_hasSyntheticMousePosition)
         return false;
     x = m_syntheticMouseX;
     y = m_syntheticMouseY;
     return true;
+}
+
+void InputManager::ReleaseSyntheticMousePosition()
+{
+    m_hasSyntheticMousePosition = false;
 }
 
 void InputManager::MarkSyntheticInputForFrame()
@@ -635,7 +672,14 @@ void InputManager::TrackSyntheticEvent(const SDL_Event &event)
     };
 
     if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
-        setHeld(m_syntheticKeys, static_cast<int>(event.key.scancode), event.type == SDL_EVENT_KEY_DOWN);
+        const int scancode = static_cast<int>(event.key.scancode);
+        const bool pressed = event.type == SDL_EVENT_KEY_DOWN;
+        const bool wasHeld = scancode >= 0 && scancode < static_cast<int>(m_syntheticKeys.size())
+                                 ? m_syntheticKeys[static_cast<size_t>(scancode)] != 0
+                                 : false;
+        setHeld(m_syntheticKeys, scancode, pressed);
+        if (pressed && !wasHeld && scancode >= 0 && scancode < static_cast<int>(m_syntheticKeyDown.size()))
+            m_syntheticKeyDown[static_cast<size_t>(scancode)] = 1;
         return;
     }
     if (event.type != SDL_EVENT_MOUSE_BUTTON_DOWN && event.type != SDL_EVENT_MOUSE_BUTTON_UP)
@@ -679,7 +723,7 @@ bool InputManager::GetKeyDown(int scancode) const
 {
     if (scancode < 0 || scancode >= INPUT_MAX_KEYS)
         return false;
-    return m_keyDown[scancode] != 0;
+    return m_keyDown[scancode] != 0 || m_syntheticKeyDown[scancode] != 0;
 }
 
 bool InputManager::GetKeyUp(int scancode) const
@@ -761,15 +805,17 @@ void InputManager::ResetAll()
     m_editorMouseDX = m_editorMouseDY = 0.f;
     m_scrollX = m_scrollY = 0.f;
     m_syntheticMouseX = m_syntheticMouseY = 0.f;
-    m_hasSyntheticMousePositionThisFrame = false;
+    m_hasSyntheticMousePosition = false;
     m_syntheticInputThisFrame = false;
     m_syntheticKeys.fill(0);
+    m_syntheticKeyDown.fill(0);
     m_syntheticMouseButtons.fill(0);
     m_syntheticHeldCount = 0;
     m_inputString.clear();
     m_touches.clear();
     m_accelerationEvents.clear();
     m_droppedFiles.clear();
+    m_warpMotionPending = false;
 }
 
 void InputManager::ResetPhysicalInputForFocusLoss()
@@ -872,8 +918,9 @@ const char *InputManager::ScancodeToName(int scancode)
 void InputManager::SetWindow(SDL_Window *window)
 {
     m_window = window;
+    m_warpMotionPending = false;
     RefreshScreenState();
-    ApplyRelativeMouseMode();
+    ApplyCursorState();
 }
 
 void InputManager::RefreshScreenState()
@@ -921,7 +968,53 @@ void InputManager::SetCursorLocked(bool locked)
         return;
 
     m_cursorLocked = locked;
-    ApplyRelativeMouseMode();
+    if (locked)
+        m_warpMotionPending = false;
+    ApplyCursorState();
+}
+
+void InputManager::SetCursorVisible(bool visible)
+{
+    if (visible == m_cursorVisible)
+        return;
+
+    m_cursorVisible = visible;
+    ApplyCursorState();
+}
+
+void InputManager::SetCursorConfined(bool confined)
+{
+    if (confined == m_cursorConfined)
+        return;
+
+    m_cursorConfined = confined;
+    ApplyCursorState();
+}
+
+bool InputManager::WarpCursor(float x, float y)
+{
+#if defined(INFERNUX_INPUT_SEMANTIC_HOST)
+    (void)x;
+    (void)y;
+    return false;
+#else
+    // A confined cursor is owned by the window manager. Do not issue a
+    // competing absolute warp while confinement is active; callers must
+    // release confinement first, matching the visible/non-relative warp
+    // contract exposed by the Python API.
+    if (!m_window || m_cursorLocked || m_cursorConfined || m_editorMouseCaptured)
+        return false;
+
+    const float targetX = std::clamp(x, 0.0f, static_cast<float>(std::max(0, m_screenState.logicalWidth - 1)));
+    const float targetY = std::clamp(y, 0.0f, static_cast<float>(std::max(0, m_screenState.logicalHeight - 1)));
+    m_mouseX = targetX;
+    m_mouseY = targetY;
+    m_warpTargetX = targetX;
+    m_warpTargetY = targetY;
+    m_warpMotionPending = true;
+    SDL_WarpMouseInWindow(m_window, targetX, targetY);
+    return true;
+#endif
 }
 
 void InputManager::SetEditorMouseCapture(bool captured)
@@ -932,7 +1025,7 @@ void InputManager::SetEditorMouseCapture(bool captured)
     m_editorMouseDX = 0.f;
     m_editorMouseDY = 0.f;
     m_editorMouseCaptured = captured;
-    ApplyRelativeMouseMode();
+    ApplyCursorState();
 }
 
 std::pair<float, float> InputManager::ConsumeEditorMouseDelta()
@@ -943,36 +1036,35 @@ std::pair<float, float> InputManager::ConsumeEditorMouseDelta()
     return delta;
 }
 
-void InputManager::ApplyRelativeMouseMode()
+void InputManager::ApplyCursorState()
 {
 #if defined(INFERNUX_INPUT_SEMANTIC_HOST)
-    // Browser and other semantic hosts own pointer-lock policy in their window
-    // adapter. The engine only preserves the requested logical state here.
+    // Browser and other semantic hosts own pointer-lock, visibility, and
+    // confinement policy in their window adapter. Preserve the requested
+    // logical state for that adapter.
     return;
 #else
     const bool relativeMouseEnabled = m_cursorLocked || m_editorMouseCaptured;
 
     if (!m_window) {
-        if (relativeMouseEnabled) {
-            INXLOG_WARN("InputManager::ApplyRelativeMouseMode — no window set, ignoring");
-        }
         return;
     }
 
-    if (!relativeMouseEnabled) {
-        SDL_SetWindowRelativeMouseMode(m_window, false);
-        return;
-    }
-
-    // Never keep SDL in relative mouse mode while the editor window is not the
-    // active input target, otherwise alt-tab can leave the OS cursor captured.
     const Uint64 windowFlags = SDL_GetWindowFlags(m_window);
-    if ((windowFlags & SDL_WINDOW_INPUT_FOCUS) == 0) {
+    const bool focused = (windowFlags & SDL_WINDOW_INPUT_FOCUS) != 0;
+    if (!focused) {
         SDL_SetWindowRelativeMouseMode(m_window, false);
+        SDL_SetWindowMouseGrab(m_window, false);
+        SDL_ShowCursor();
         return;
     }
 
-    SDL_SetWindowRelativeMouseMode(m_window, true);
+    SDL_SetWindowRelativeMouseMode(m_window, relativeMouseEnabled);
+    SDL_SetWindowMouseGrab(m_window, relativeMouseEnabled || m_cursorConfined);
+    if (relativeMouseEnabled || !m_cursorVisible)
+        SDL_HideCursor();
+    else
+        SDL_ShowCursor();
 #endif
 }
 

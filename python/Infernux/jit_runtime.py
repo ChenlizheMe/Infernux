@@ -2,8 +2,8 @@
 
 The frontend owns legality while this module owns stable identities, bounded
 process caches, runtime signature buckets, and side-effect-safe comparison.
-It deliberately has no dependency on Numba so it is also usable by build
-tools and by the pure-Python fallback.
+It deliberately has no dependency on Numba so build tools can derive the same
+publication identities without loading the compiler backend.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 import ast
+import dis
 import hashlib
 import inspect
 import json
@@ -22,7 +23,6 @@ from typing import Any, Generic, Iterator, MutableMapping, TypeVar
 
 _K = TypeVar("_K")
 _V = TypeVar("_V")
-
 
 class BoundedLRU(Generic[_K, _V]):
     """Small LRU used for compiled dispatchers and per-signature decisions."""
@@ -82,6 +82,16 @@ def _stable_value(value: Any, *, depth: int = 0) -> Any:
         return value
     if isinstance(value, bytes):
         return {"bytes_sha256": hashlib.sha256(value).hexdigest(), "size": len(value)}
+    numpy = sys.modules.get("numpy")
+    if numpy is not None and isinstance(value, numpy.ndarray):
+        # Numba embeds captured arrays as constants. This is a compile-boundary
+        # identity, never a hash of invocation arguments or a per-frame check.
+        return {
+            "array_dtype": value.dtype.descr,
+            "shape": value.shape,
+            "strides": value.strides,
+            "data": _stable_value(value.tobytes(order="A"), depth=depth + 1),
+        }
     if isinstance(value, (tuple, list)):
         return [_stable_value(item, depth=depth + 1) for item in value]
     if isinstance(value, (set, frozenset)):
@@ -111,6 +121,70 @@ def _stable_value(value: Any, *, depth: int = 0) -> Any:
     }
 
 
+def _compiler_environment(fn: Any) -> list[dict[str, Any]]:
+    """Describe authored helper dependencies once, including recursive graphs."""
+    functions = [fn]
+    indices = {id(fn): 0}
+    nodes = []
+
+    def capture(value):
+        if inspect.isfunction(value):
+            identity = id(value)
+            if identity not in indices:
+                indices[identity] = len(functions)
+                functions.append(value)
+            return {"function_ref": indices[identity]}
+        return _stable_value(value)
+
+    for function in functions:
+        code = getattr(function, "__code__", None)
+        closure = {}
+        cells = {}
+        if code is not None:
+            for name, cell in zip(code.co_freevars, function.__closure__ or ()):
+                try:
+                    value = cell.cell_contents
+                except ValueError:
+                    closure[name] = {"empty_cell": True}
+                else:
+                    cells[name] = value
+                    closure[name] = capture(value)
+        globals_map = getattr(function, "__globals__", {})
+        # Module identity alone misses e.g. settings.GRAVITY. Track only static
+        # attribute chains the function reads, without walking entire modules
+        # or invoking user-defined attribute hooks during publication.
+        attributes = {}
+        value = None
+        path = ""
+        if code is not None:
+            for instruction in dis.get_instructions(code):
+                if instruction.opname == "LOAD_GLOBAL":
+                    path = instruction.argval
+                    value = globals_map.get(path)
+                elif instruction.opname == "LOAD_DEREF":
+                    path = instruction.argval
+                    value = cells.get(path)
+                elif instruction.opname in {"LOAD_ATTR", "LOAD_METHOD"} and inspect.ismodule(value):
+                    path += "." + instruction.argval
+                    value = vars(value).get(instruction.argval)
+                    attributes[path] = capture(value)
+                else:
+                    value = None
+        nodes.append({
+            "function": _stable_value(function),
+            "defaults": _stable_value(getattr(function, "__defaults__", None)),
+            "kwdefaults": _stable_value(getattr(function, "__kwdefaults__", None)),
+            "closure": closure,
+            "module_attributes": attributes,
+            "globals": {
+                name: capture(globals_map[name])
+                for name in (code.co_names if code is not None else ())
+                if name in globals_map
+            },
+        })
+    return nodes
+
+
 def compiler_fingerprint(fn: Any, options: MutableMapping[str, Any] | None = None) -> str:
     """Return a stable compiler/cache identity for a Python kernel."""
 
@@ -121,27 +195,6 @@ def compiler_fingerprint(fn: Any, options: MutableMapping[str, Any] | None = Non
         source_ast = ast.dump(ast.parse(inspect.cleandoc(source)), include_attributes=False)
     except (OSError, TypeError, IndentationError, SyntaxError):
         source_ast = None
-
-    closure_values: tuple[Any, ...] = ()
-    closure = getattr(fn, "__closure__", None)
-    if closure:
-        collected: list[Any] = []
-        for cell in closure:
-            try:
-                collected.append(cell.cell_contents)
-            except ValueError:
-                collected.append({"empty_cell": True})
-        closure_values = tuple(collected)
-
-    dependency_values: dict[str, Any] = {}
-    globals_map = getattr(fn, "__globals__", {})
-    if code is not None:
-        for name in code.co_names:
-            if name not in globals_map:
-                continue
-            value = globals_map[name]
-            if callable(value) and getattr(value, "__module__", None) == getattr(fn, "__module__", None):
-                dependency_values[name] = value
 
     runtime_versions: dict[str, Any] = {
         "python": tuple(sys.version_info[:3]),
@@ -166,7 +219,6 @@ def compiler_fingerprint(fn: Any, options: MutableMapping[str, Any] | None = Non
         runtime_versions["numba_threading_layer"] = "uninitialized"
 
     payload = {
-        "compiler_revision": 1,
         "module": getattr(fn, "__module__", ""),
         "qualname": getattr(fn, "__qualname__", getattr(fn, "__name__", "")),
         "source_ast": source_ast,
@@ -175,8 +227,7 @@ def compiler_fingerprint(fn: Any, options: MutableMapping[str, Any] | None = Non
         "names": tuple(code.co_names) if code is not None else (),
         "defaults": _stable_value(getattr(fn, "__defaults__", None)),
         "kwdefaults": _stable_value(getattr(fn, "__kwdefaults__", None)),
-        "closure": _stable_value(closure_values),
-        "dependencies": _stable_value(dependency_values),
+        "environment": _compiler_environment(fn),
         "annotations": _stable_value(getattr(fn, "__annotations__", {})),
         "options": _stable_value(dict(options or {})),
         "runtime": runtime_versions,
@@ -311,27 +362,115 @@ def static_cost_decision(
     return StaticCostDecision(mode, confidence, work_units, reason)
 
 
+def array_arguments_alias(args: tuple[Any, ...], kwargs: dict[str, Any], *,
+                          parameter_names=(), safe_pairs=frozenset()) -> bool:
+    """Whether storage overlap invalidates the publication's parallel proof.
+
+    This inspects layout, never array contents. Equal-layout aliases may use
+    HIR-proven parameter pairs; shifted, reinterpreted or internally overlapping
+    views cannot use that proof. Ordinary strided and reversed arrays are valid
+    when each logical element occupies distinct bytes.
+    """
+    import numpy as np
+
+    arrays = [(parameter_names[index] if index < len(parameter_names) else index, value)
+              for index, value in enumerate(args) if isinstance(value, np.ndarray)]
+    arrays.extend((name, value) for name, value in kwargs.items() if isinstance(value, np.ndarray))
+    for _name, value in arrays:
+        if value.size == 0 or value.flags.c_contiguous or value.flags.f_contiguous:
+            continue
+        span = value.itemsize
+        for stride, extent in sorted((abs(stride), extent)
+                                     for stride, extent in zip(value.strides, value.shape) if extent > 1):
+            if stride < span:
+                return True
+            span += stride * (extent - 1)
+    for index, (left_name, left) in enumerate(arrays):
+        for right_name, right in arrays[index + 1:]:
+            if not np.may_share_memory(left, right):
+                continue
+            if ((left_name, right_name) not in safe_pairs or left.dtype != right.dtype
+                    or left.shape != right.shape or left.strides != right.strides
+                    or left.ctypes.data != right.ctypes.data):
+                return True
+    return False
+
+
 def clone_call_arguments(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    """Clone common Numba values so validation never mutates live game state."""
+    """Isolate preparation data, preserving shared identities and ndarray views."""
+    import numpy as np
+
+    memo: dict[int, Any] = {}
+    array_roots: dict[int, Any] = {}
 
     def clone(value: Any) -> Any:
         if value is None or isinstance(value, (bool, int, float, complex, str, bytes)):
             return value
+        identity = id(value)
+        if identity in memo:
+            return memo[identity]
+        if isinstance(value, np.ndarray):
+            if value.dtype.hasobject:
+                raise TypeError("cannot isolate object-array contents for compute preparation")
+            if not value.size:
+                # Empty reversed views may have an offset outside their empty
+                # owner. There are no bytes to alias; retain the exact layout.
+                copied = np.ndarray(value.shape, dtype=value.dtype, buffer=bytearray(), strides=value.strides)
+                memo[identity] = copied
+                return copied
+            root = value
+            owner = value
+            # NumPy stride-trick views insert a non-ndarray owner between the
+            # view and its allocation. Preserve their strides and aliases too.
+            while (owner := getattr(owner, "base", None)) is not None:
+                if isinstance(owner, np.ndarray):
+                    root = owner
+            if id(root) not in array_roots:
+                if any(np.may_share_memory(root, other) for other in array_roots.values()):
+                    raise TypeError("cannot isolate overlapping arrays with independent storage owners")
+                array_roots[id(root)] = root
+            if not (root.flags.c_contiguous or root.flags.f_contiguous):
+                raise TypeError("cannot isolate ndarray views of a non-contiguous storage owner")
+            if root is value:
+                copied = value.copy(order="K")
+            else:
+                copied = np.ndarray(
+                    value.shape, dtype=value.dtype, buffer=clone(root),
+                    offset=value.ctypes.data - root.ctypes.data, strides=value.strides,
+                )
+            copied.flags.writeable = value.flags.writeable
+            memo[identity] = copied
+            return copied
         if isinstance(value, tuple):
-            return tuple(clone(item) for item in value)
+            copied = tuple(clone(item) for item in value)
+            memo[identity] = copied
+            return copied
         if isinstance(value, list):
-            return [clone(item) for item in value]
+            copied = []
+            memo[identity] = copied
+            copied.extend(clone(item) for item in value)
+            return copied
         if isinstance(value, dict):
-            return {clone(key): clone(item) for key, item in value.items()}
+            copied = {}
+            memo[identity] = copied
+            copied.update((clone(key), clone(item)) for key, item in value.items())
+            return copied
         copier = getattr(value, "copy", None)
         if callable(copier):
             copied = copier()
             if copied is value:
                 raise TypeError(f"cannot isolate mutable argument {type(value).__qualname__}")
+            memo[identity] = copied
             return copied
         raise TypeError(f"cannot isolate argument {type(value).__qualname__}")
 
-    return tuple(clone(value) for value in args), {name: clone(value) for name, value in kwargs.items()}
+    try:
+        return tuple(clone(value) for value in args), {name: clone(value) for name, value in kwargs.items()}
+    finally:
+        # The recursive closure can await cyclic GC. It must not keep original
+        # sample arrays or returned clones alive past this preparation call.
+        array_roots.clear()
+        memo.clear()
 
 
 def values_equivalent(left: Any, right: Any, *, rtol: float = 1e-6, atol: float = 1e-8) -> bool:
@@ -396,10 +535,71 @@ class DispatchDecision:
     samples: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class CpuPassTiming:
+    pipeline: str
+    name: str
+    total_ms: float
+
+
+@dataclass(frozen=True, slots=True)
+class CpuOptimizationReport:
+    """Observed optimization evidence for one published specialization.
+
+    This is deliberately a report of facts emitted by the compiler result,
+    rather than a hand-written list of passes that we intend to run.  In
+    particular, ``python_object_access_eliminated`` is only true for a
+    nopython result (Numba's object mode flag is false); it is never inferred
+    from the requested optimization level.  A cache hit can therefore still
+    report the nopython proof while exposing no cold pass timings.
+    """
+
+    nopython: bool
+    python_object_access_eliminated: bool
+    native_lowering_observed: bool
+    observed_passes: tuple[str, ...]
+    llvm_pass_timings_observed: bool
+    evidence: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CpuSpecializationStatistics:
+    implementation: str
+    signature: str
+    preparation_ms: float
+    preparation_succeeded: bool
+    cache_hit: bool
+    optimization_level: str
+    object_mode: bool
+    pipeline_timings: tuple[CpuPassTiming, ...]
+    mapped_bytes: int | None
+    peak_mapped_bytes: int | None
+    optimization_report: CpuOptimizationReport | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CpuCompilationStatistics:
+    function_name: str
+    selected_mode: str
+    last_diagnostic: str
+    decisions: tuple[tuple[str, DispatchDecision], ...]
+    specializations: tuple[CpuSpecializationStatistics, ...]
+    specialization_limit_per_implementation: int
+    memory_statistics_available: bool
+    owned_engine_count: int
+    reachable_engine_count: int
+    owned_mapped_bytes: int | None
+    reachable_mapped_bytes: int | None
+
+
 __all__ = [
     "BoundedLRU",
     "DispatchDecision",
     "StaticCostDecision",
+    "CpuOptimizationReport",
+    "CpuPassTiming",
+    "CpuSpecializationStatistics",
+    "CpuCompilationStatistics",
     "calls_equivalent",
     "clone_call_arguments",
     "compiler_fingerprint",

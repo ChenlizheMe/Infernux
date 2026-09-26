@@ -27,3 +27,18 @@ def test_editor_automation_creates_assets_through_interaction_service(monkeypatc
 
     assert result == "Assets/Scripts/Player.py"
     assert calls == [("script", "Assets/Scripts", "Player", ".py", "component")]
+
+
+def test_editor_automation_additive_load_uses_authoring_scene_manager(monkeypatch):
+    from Infernux.engine.play_mode import PlayModeManager
+    from Infernux.engine.scene_manager import SceneFileManager
+
+    calls = []
+    manager = SimpleNamespace(
+        load_scene_additive_immediate=lambda path: calls.append(path) or True
+    )
+    monkeypatch.setattr(PlayModeManager, "instance", staticmethod(lambda: None))
+    monkeypatch.setattr(SceneFileManager, "instance", staticmethod(lambda: manager))
+
+    assert EditorAutomationHost().load_additive_scene("Assets/Scenes/World.scene")
+    assert calls == ["Assets/Scenes/World.scene"]

@@ -9,6 +9,9 @@ CPYTHON_URL="https://www.python.org/ftp/python/${CPYTHON_VERSION}/Python-${CPYTH
 DAWN_REVISION="31e25af254ab572c77054edec4946d2244e184dd"
 DAWN_SHA256="b439c354642fa7f19249e62b0e58fc7e4810442e2740998b586f9901eed58d68"
 DAWN_URL="https://codeload.github.com/google/dawn/tar.gz/${DAWN_REVISION}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+dawn_dependency_lock="$script_dir/dawn_dependencies.lock.json"
+dawn_dependency_hydrator="$script_dir/hydrate_dawn_dependencies.py"
 
 usage() {
     echo "Usage: $0 <toolchain-root>" >&2
@@ -37,6 +40,7 @@ emsdk_root="$toolchain_root/emsdk"
 cpython_root="$sources/Python-${CPYTHON_VERSION}"
 dawn_source="$sources/dawn-${DAWN_REVISION}"
 tint_build="$builds/dawn-tint-${DAWN_REVISION}"
+dawn_dependency_audit="$toolchain_root/dawn-dependencies-${DAWN_REVISION}.json"
 mkdir -p "$downloads" "$sources" "$builds"
 
 fetch_and_verify() {
@@ -113,16 +117,59 @@ fi
 
 dawn_archive="$downloads/dawn-${DAWN_REVISION}.tar.gz"
 fetch_and_verify "$DAWN_URL" "$DAWN_SHA256" "$dawn_archive"
-if [[ ! -f "$dawn_source/CMakeLists.txt" ]]; then
+dawn_dependencies_complete() {
+    local root="$1"
+    [[ -d "$root" ]] || return 1
+    python3 "$dawn_dependency_hydrator" \
+        --dawn-root "$root" \
+        --lock "$dawn_dependency_lock" \
+        --verify-only
+}
+
+if ! dawn_dependencies_complete "$dawn_source"; then
+    if [[ -e "$dawn_source" ]]; then
+        quarantine_root="$sources/.quarantine"
+        quarantine_path="$quarantine_root/dawn-${DAWN_REVISION}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+        mkdir -p "$quarantine_root"
+        mv -- "$dawn_source" "$quarantine_path"
+        echo "Quarantined incomplete Dawn cache: $quarantine_path" >&2
+    fi
     staging="$(mktemp -d "$sources/.dawn-${DAWN_REVISION}.XXXXXX")"
     cleanup_dawn_staging() {
         rm -rf -- "$staging"
     }
     trap cleanup_dawn_staging EXIT
     tar -xzf "$dawn_archive" -C "$staging" --strip-components=1
-    python3 "$staging/tools/fetch_dawn_dependencies.py" --directory "$staging"
+    hydrate_arguments=(
+        python3 "$dawn_dependency_hydrator"
+        --dawn-root "$staging"
+        --lock "$dawn_dependency_lock"
+        --audit-manifest "$dawn_dependency_audit"
+    )
+    if [[ -n "${INFERNUX_DAWN_OFFICIAL_SNAPSHOT_DIR:-}" ]]; then
+        hydrate_arguments+=(
+            --snapshot-dir "$INFERNUX_DAWN_OFFICIAL_SNAPSHOT_DIR"
+        )
+    fi
+    if ! "${hydrate_arguments[@]}"; then
+        echo "Dawn dependency hydration failed; staging preserved: $staging" >&2
+        trap - EXIT
+        exit 1
+    fi
+    if ! dawn_dependencies_complete "$staging"; then
+        echo "Dawn dependency hydration is incomplete: $staging" >&2
+        trap - EXIT
+        exit 1
+    fi
     mv "$staging" "$dawn_source"
     trap - EXIT
+fi
+if [[ ! -f "$dawn_dependency_audit" ]]; then
+    python3 "$dawn_dependency_hydrator" \
+        --dawn-root "$dawn_source" \
+        --lock "$dawn_dependency_lock" \
+        --audit-manifest "$dawn_dependency_audit" \
+        --verify-only
 fi
 
 cmake -S "$dawn_source" -B "$tint_build" -G Ninja \
@@ -165,7 +212,9 @@ for path in \
     "$wasm_root/python.wasm" \
     "$wasm_root/python.data" \
     "$wasm_root/libpython3.13.a" \
-    "$tint_build/tint"; do
+    "$tint_build/tint" \
+    "$dawn_dependency_lock" \
+    "$dawn_dependency_audit"; do
     if [[ ! -f "$path" ]]; then
         echo "Web toolchain output is missing: $path" >&2
         exit 1
@@ -173,14 +222,22 @@ for path in \
 done
 
 python3 - "$toolchain_root/infernux-web-toolchain.json" \
-    "$emsdk_root" "$cpython_root" "$tint_build/tint" <<'PY'
+    "$emsdk_root" "$cpython_root" "$tint_build/tint" \
+    "$dawn_dependency_lock" "$dawn_dependency_audit" <<'PY'
 import hashlib
 import json
 import os
 import sys
 from pathlib import Path
 
-manifest_path, emsdk_root, cpython_root, tint_path = map(Path, sys.argv[1:])
+(
+    manifest_path,
+    emsdk_root,
+    cpython_root,
+    tint_path,
+    dawn_dependency_lock,
+    dawn_dependency_audit,
+) = map(Path, sys.argv[1:])
 files = {
     "emcc": emsdk_root / "upstream/emscripten/emcc",
     "emdawn_port": emsdk_root / "upstream/emscripten/tools/ports/emdawnwebgpu.py",
@@ -188,6 +245,8 @@ files = {
     "python_data": cpython_root / "builddir/emscripten-browser/python.data",
     "python_library": cpython_root / "builddir/emscripten-browser/libpython3.13.a",
     "tint": tint_path,
+    "dawn_dependency_lock": dawn_dependency_lock,
+    "dawn_dependency_audit": dawn_dependency_audit,
 }
 payload = {
     "schema": "infernux.web_toolchain",

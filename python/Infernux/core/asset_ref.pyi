@@ -64,6 +64,11 @@ class TextureRef(AssetRefBase):
     ...
 
 
+class RenderTextureRef(AssetRefBase):
+    """Reference to an imported RenderTexture description."""
+    ...
+
+
 class ShaderRef(AssetRefBase):
     """Reference to a Shader asset."""
     ...
@@ -71,6 +76,11 @@ class ShaderRef(AssetRefBase):
 
 class AudioClipRef(AssetRefBase):
     """Reference to an AudioClip asset."""
+    ...
+
+
+class DataAssetRef(AssetRefBase):
+    """Reference to one shared typed DataAsset."""
     ...
 
 

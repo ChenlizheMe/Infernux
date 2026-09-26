@@ -26,6 +26,16 @@
 
 <!-- USER CONTENT END -->
 
+## 公共方法
+
+| 方法 | 描述 |
+|------|------|
+| `recook() → None` | Request collision rebuilding after visual mesh updates. |
+
+<!-- USER CONTENT START --> public_methods
+
+<!-- USER CONTENT END -->
+
 ## 示例
 
 <!-- USER CONTENT START --> example

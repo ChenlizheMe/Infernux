@@ -37,6 +37,7 @@ _ICONS = (
     "tool_move",
     "tool_rotate",
     "tool_scale",
+    "tool_rect",
 )
 
 

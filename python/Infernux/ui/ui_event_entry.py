@@ -32,27 +32,6 @@ LIFECYCLE_METHODS: frozenset[str] = frozenset({
 })
 
 
-class UIEventEntry(SerializableObject):
-    """One persistent on-click binding: target GO → component → method."""
-
-    target: GameObjectRef = serialized_field(
-        default=None, field_type=FieldType.GAME_OBJECT,
-        tooltip="Target GameObject",
-    )
-    component_name: str = serialized_field(
-        default="", tooltip="Component type name on the target",
-    )
-    method_name: str = serialized_field(
-        default="", tooltip="Public method to invoke",
-    )
-    arguments: list = serialized_field(
-        default=[], field_type=FieldType.LIST,
-        element_type=FieldType.SERIALIZABLE_OBJECT,
-        element_class=None,
-        tooltip="Persistent method arguments",
-    )
-
-
 class UIEventArgument(SerializableObject):
     """Persistent argument payload for one reflected button-event parameter."""
 
@@ -72,7 +51,25 @@ class UIEventArgument(SerializableObject):
     )
 
 
-UIEventEntry._serialized_fields_["arguments"].element_class = UIEventArgument
+class UIEventEntry(SerializableObject):
+    """One persistent on-click binding: target GO → component → method."""
+
+    target: GameObjectRef = serialized_field(
+        default=None, field_type=FieldType.GAME_OBJECT,
+        tooltip="Target GameObject",
+    )
+    component_name: str = serialized_field(
+        default="", tooltip="Component type name on the target",
+    )
+    method_name: str = serialized_field(
+        default="", tooltip="Public method to invoke",
+    )
+    arguments: list = serialized_field(
+        default=[], field_type=FieldType.LIST,
+        element_type=FieldType.SERIALIZABLE_OBJECT,
+        element_class=UIEventArgument,
+        tooltip="Persistent method arguments",
+    )
 
 
 def _get_serializable_raw_field(obj, field_name: str, default=None):

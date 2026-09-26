@@ -9,6 +9,7 @@
 
 namespace infernux
 {
+struct ShaderProgramArtifact;
 
 enum class ShaderStageVisibility : uint8_t
 {
@@ -54,6 +55,8 @@ enum class ShaderLinkDiagnosticCode : uint8_t
     LocationLimitExceeded,
     TextureBindingLimitExceeded,
     PropertyContractMismatch,
+    DomainMismatch,
+    UnsupportedUIProperty,
 };
 
 struct ShaderLinkDiagnostic
@@ -94,6 +97,7 @@ struct LinkedShaderProperty
     std::optional<uint32_t> textureSlot;
     uint32_t byteSize = 0;
     uint32_t byteAlignment = 0;
+    uint32_t arrayCount = 1;
 };
 
 struct ShaderProgramInterfaceArtifact
@@ -102,7 +106,7 @@ struct ShaderProgramInterfaceArtifact
     ShaderStageReference fragment;
     ShaderProgramDomain domain = ShaderProgramDomain::Mesh;
     std::string shadingModel;
-    uint32_t firstUserVaryingLocation = 7;
+    uint32_t firstUserVaryingLocation = 8; ///< 0-7 are engine varyings, including secondary/lightmap UV
     uint32_t materialBufferSize = 0;
     std::optional<uint32_t> alphaClipThresholdOffset;
     std::vector<LinkedShaderVarying> varyings;
@@ -117,7 +121,7 @@ struct ShaderProgramInterfaceArtifact
 
 struct ShaderStageLinkOptions
 {
-    uint32_t firstUserVaryingLocation = 7;
+    uint32_t firstUserVaryingLocation = 8;
     // Location 15 is reserved for engine pass data such as the picking ID.
     uint32_t maximumVaryingLocations = 15;
     uint32_t maximumMaterialTextures = 12;
@@ -126,6 +130,10 @@ struct ShaderStageLinkOptions
 class ShaderStageLinker final
 {
   public:
+    [[nodiscard]] static bool IsUIStagePair(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment);
+    [[nodiscard]] static bool ShouldPrewarmSceneMaterial(const ShaderDescriptor &vertex,
+                                                         const ShaderDescriptor &fragment);
+    [[nodiscard]] static bool ShouldPublishScenePrewarmArtifact(const ShaderProgramArtifact &artifact) noexcept;
     [[nodiscard]] static ShaderProgramInterfaceArtifact
     Link(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment, const ShaderStageLinkOptions &options = {});
 };

@@ -34,6 +34,10 @@ void RegisterInputBindings(py::module_ &m)
         .def_readonly("contact_width", &TouchState::contactWidth, "Normalized contact width")
         .def_readonly("contact_height", &TouchState::contactHeight, "Normalized contact height")
         .def_readonly("is_primary", &TouchState::isPrimary, "True for the platform's primary contact")
+        .def_readonly("began_this_frame", &TouchState::beganThisFrame,
+                      "True if this contact began during the current input frame")
+        .def_readonly("begin_x", &TouchState::beginX, "Normalized horizontal position at contact start")
+        .def_readonly("begin_y", &TouchState::beginY, "Normalized vertical position at contact start")
         .def_readonly("cancel_reason", &TouchState::cancelReason, "Reason supplied for a canceled contact")
         .def_property_readonly("phase", [](const TouchState &touch) {
             switch (touch.phase) {
@@ -150,6 +154,16 @@ void RegisterInputBindings(py::module_ &m)
              "Lock/unlock cursor (hides cursor and captures relative mouse movement)")
         .def_property_readonly("is_cursor_locked", &InputManager::IsCursorLocked,
                                "True when cursor is locked (relative mouse mode)")
+        .def("set_cursor_visible", &InputManager::SetCursorVisible, py::arg("visible"),
+             "Show or hide the cursor independently from relative mouse mode")
+        .def_property_readonly("is_cursor_visible", &InputManager::IsCursorVisible,
+                               "Requested cursor visibility when relative mouse mode is inactive")
+        .def("set_cursor_confined", &InputManager::SetCursorConfined, py::arg("confined"),
+             "Confine or release the visible cursor without enabling relative mouse mode")
+        .def_property_readonly("is_cursor_confined", &InputManager::IsCursorConfined,
+                               "True when visible cursor confinement is requested")
+        .def("warp_cursor", &InputManager::WarpCursor, py::arg("x"), py::arg("y"),
+             "Warp the visible cursor in logical window coordinates; false when unsupported")
         .def("set_editor_mouse_capture", &InputManager::SetEditorMouseCapture, py::arg("captured"),
              "Enable or disable editor-only Scene view mouse capture without marking gameplay cursor lock")
         .def("consume_editor_mouse_delta", &InputManager::ConsumeEditorMouseDelta,

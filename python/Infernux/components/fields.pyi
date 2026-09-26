@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 if TYPE_CHECKING:
     from .component import InxComponent
+    from Infernux.field_schema import FieldSchema
 
 _T = TypeVar("_T")
 
@@ -123,6 +124,7 @@ class FieldMetadata:
     setter: Optional[Callable] = ...
     hidden: bool = ...
     former_names: tuple[str, ...] = ...
+    field_id: Optional[str] = ...
 
 
 class SerializedFieldDescriptor:
@@ -171,6 +173,7 @@ def resolve_annotation(annotation: Any) -> Optional[FieldMetadata]:
 def serialized_field(
     default: _T = ...,
     *,
+    default_factory: Optional[Callable[[], _T]] = ...,
     field_type: Optional[FieldType] = ...,
     element_type: Optional[FieldType] = ...,
     element_class: Optional[Type] = ...,
@@ -194,11 +197,13 @@ def serialized_field(
     hdr: bool = ...,
     curve_non_negative: bool = ...,
     hidden: bool = ...,
+    field_id: Optional[str] = ...,
 ) -> _T:
     """Mark a field as serialized and inspector-visible.
 
     Args:
         default: Default value for the field.
+        default_factory: SerializableObject type for an independent nested default.
         field_type: Explicit field type (auto-detected if not provided).
         element_type: For LIST fields, the element FieldType.
         element_class: For LIST fields, the SerializableObject subclass for elements.
@@ -297,6 +302,7 @@ def list_field(
     element_type: FieldType,
     element_class: Optional[Type] = ...,
     component_type: Optional[str] = ...,
+    asset_type: Optional[str] = ...,
     default: Optional[list] = ...,
     tooltip: str = ...,
     readonly: bool = ...,
@@ -311,6 +317,7 @@ def list_field(
         element_type: FieldType of each list element.
         element_class: For SERIALIZABLE_OBJECT elements, the concrete class.
         component_type: For COMPONENT elements, the target type name.
+        asset_type: For ASSET elements, the required registered asset type.
     """
     ...
 
@@ -344,6 +351,11 @@ def component_list_field(
 
 def get_serialized_fields(component_class: Type[InxComponent]) -> Dict[str, FieldMetadata]:
     """Get all serialized fields from a component class (including inherited)."""
+    ...
+
+
+def get_field_schema(component_class: type, field_name: str) -> FieldSchema:
+    """Cached immutable declaration projection, invalidated with field metadata on reload."""
     ...
 
 

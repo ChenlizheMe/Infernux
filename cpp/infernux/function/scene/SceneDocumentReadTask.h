@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <nlohmann/json.hpp>
+#include <platform/filesystem/AtomicFile.h>
 #include <string>
 
 namespace infernux
@@ -29,6 +30,7 @@ class SceneDocumentReadTicket
     [[nodiscard]] bool RanOnWorker() const noexcept;
     [[nodiscard]] std::string GetStatusName() const;
     [[nodiscard]] std::string GetError() const;
+    [[nodiscard]] std::optional<AtomicFileState> GetFileState() const;
     bool Cancel();
     nlohmann::json TakeDocument();
 
@@ -41,6 +43,7 @@ class SceneDocumentReadTicket
         std::atomic<uint64_t> workerThread{0};
         mutable std::mutex mutex;
         nlohmann::json document;
+        std::optional<AtomicFileState> fileState;
         std::string error;
     };
 

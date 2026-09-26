@@ -113,6 +113,12 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self._report_progress("Creating managers\u2026")
         self._create_managers()
 
+        # Authoring operations are engine Host capabilities. Transports such
+        # as MCP discover and invoke this registry but do not own its lifetime.
+        from Infernux.host import install_editor_operations
+
+        install_editor_operations(self.project_path)
+
         self._report_progress("Preloading project plugins\u2026")
         self._load_plugins()
 
@@ -357,6 +363,8 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         native = engine.get_native_engine() if engine else None
         if native:
             tb.is_show_grid = lambda: native.is_show_grid()
+        if engine:
+            tb.is_show_gizmos = lambda: engine.is_show_gizmos()
 
         def _sync_camera():
             cam = engine.editor_camera if engine else None
@@ -461,7 +469,11 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         if path:
             import os
             from Infernux.core.asset_types import asset_category_from_extension
-            if "::submat:" in path:
+            if "::subtex:" in path:
+                cat = "texture"
+            elif "::submesh:" in path:
+                cat = "mesh"
+            elif "::submat:" in path:
                 cat = "material"
             elif "::subanim:" in path:
                 cat = "animclip3d"
@@ -477,7 +489,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             document_id = self.scene_file_manager.document_id
             if document_id:
                 for view in (self.scene_view, self.game_view, self.ui_editor):
-                    view.bind_document(document_id)
+                    view.bind_document(document_id, preserve_previous=True)
             from Infernux.engine.interaction import SelectionService
             SelectionService.instance().clear(
                 reason="scene_changed",

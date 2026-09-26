@@ -312,23 +312,26 @@ class UndoManager:
         )
         return recorded
 
-    def undo(self) -> None:
+    def undo(self, *, defer: bool = False) -> None:
+        """Request replay; GUI callers defer it to the owner-thread safe point."""
         if self._pending_replay is not None:
             return
         entry = self._journal.peek_undo()
         if entry is None:
             return
         self._pending_replay = _PendingReplay("undo", entry)
-        self.process_pending_replay()
+        if not defer:
+            self.process_pending_replay()
 
-    def redo(self) -> None:
+    def redo(self, *, defer: bool = False) -> None:
         if self._pending_replay is not None:
             return
         entry = self._journal.peek_redo()
         if entry is None:
             return
         self._pending_replay = _PendingReplay("redo", entry)
-        self.process_pending_replay()
+        if not defer:
+            self.process_pending_replay()
 
     def process_pending_replay(self) -> ContextRestoreStatus:
         """Advance one Undo/Redo replay after queued editor lifecycle work."""
@@ -619,7 +622,7 @@ class UndoManager:
             self._fire_state_changed()
 
     @staticmethod
-    def _active_scene_revision_target():
+    def _scene_revision_target_for_world(world_id: int = 0):
         try:
             from Infernux.engine.interaction import DocumentRegistry
             from Infernux.engine.scene_manager import SceneFileManager
@@ -628,8 +631,13 @@ class UndoManager:
             if scene_files is None:
                 return None
             registry = DocumentRegistry.instance()
-            document = registry.get(scene_files.document_id)
-            locator = registry.locate(scene_files.document_id)
+            document_id = (
+                scene_files.document_id_for_scene(world_id)
+                if int(world_id or 0) > 0
+                else scene_files.document_id
+            )
+            document = registry.get(document_id)
+            locator = registry.locate(document_id)
             if document is None or locator is None:
                 return None
             return document, locator
@@ -647,17 +655,16 @@ class UndoManager:
                 return None
         except (AttributeError, ImportError, RuntimeError):
             pass
-        target = self._active_scene_revision_target()
-        if target is None:
-            return None
-        document, locator = target
+        targets = [target for world_id in dict.fromkeys(cmd.scene_world_ids())
+                   if (target := self._scene_revision_target_for_world(world_id)) is not None]
         try:
             from Infernux.engine.interaction import FocusService
 
             source_view_id = FocusService.instance().snapshot.active_view_id
         except (AttributeError, ImportError, RuntimeError):
             source_view_id = ""
-        return locator, int(document.revision), str(source_view_id or "")
+        return tuple((locator, int(document.revision), str(source_view_id or ""))
+                     for document, locator in targets)
 
     @staticmethod
     def _bind_scene_revision(cmd: UndoCommand, target):
@@ -666,25 +673,23 @@ class UndoManager:
         from Infernux.engine.interaction import DocumentRegistry
         from Infernux.engine.undo._document_commands import DocumentRevisionCommand
 
-        locator, before_revision, source_view_id = target
         registry = DocumentRegistry.instance()
-        document = registry.resolve_locator(locator)
-        if document is None or document.stable_id != locator.stable_id:
-            raise RuntimeError("scene command changed its owning document during execution")
-        if document.revision != before_revision:
-            raise RuntimeError(
-                "scene command changed DocumentRegistry revision outside UndoManager"
+        # Validate every owner before changing any revision cursor.
+        for locator, before_revision, _source_view_id in target:
+            document = registry.resolve_locator(locator)
+            if document is None or document.stable_id != locator.stable_id:
+                raise RuntimeError("scene command changed its owning document during execution")
+            if document.revision != before_revision:
+                raise RuntimeError(
+                    "scene command changed DocumentRegistry revision outside UndoManager"
+                )
+        for locator, before_revision, source_view_id in target:
+            document = registry.resolve_locator(locator)
+            after_revision = registry.mark_changed(document.document_id, view_id=source_view_id)
+            cmd = DocumentRevisionCommand(
+                cmd, locator, before_revision, after_revision,
             )
-        after_revision = registry.mark_changed(
-            document.document_id,
-            view_id=source_view_id,
-        )
-        return DocumentRevisionCommand(
-            cmd,
-            locator,
-            before_revision,
-            after_revision,
-        )
+        return cmd
 
     def _fire_state_changed(self) -> None:
         if self._on_state_changed:

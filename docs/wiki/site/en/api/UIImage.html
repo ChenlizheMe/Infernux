@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/en/api/njit.html" class="">njit</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/compile.html" class="">compile</a><a href="/wiki/site/en/api/statistics.html" class="">statistics</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -340,16 +340,15 @@ class in <b>Infernux.ui</b>
 
 <p><strong>Inherits from:</strong> <code>InxUIScreenComponent</code></p>
 <h2 id="description">Description<a class="headerlink" href="#description" title="Permanent link">&para;</a></h2>
-<p>Screen-space image element rendered from a texture asset.</p>
-<p>Inherits <code>x</code>, <code>y</code>, <code>width</code>, <code>height</code>, <code>opacity</code>,
-<code>corner_radius</code>, <code>rotation</code>, <code>mirror_x</code>, <code>mirror_y</code>
-from <code>InxUIScreenComponent</code>.</p>
+<p>Screen or world image using a texture asset or live camera output.</p>
+<p>Position and rotation come from the GameObject Transform. The component
+inherits size, opacity, corner radius and mirroring fields.</p>
 <p>Attributes:
-    texture_path: Path to texture asset (drag from Project panel).
+    texture: Imported Texture/RenderTexture, or a runtime RenderTexture override.
     color: Tint color as <code>[R, G, B, A]</code> (0–1 each).</p>
 <p>Example::</p>
 <div class="language-text highlight"><pre><span></span><code>img = game_object.add_component(UIImage)
-img.texture_path = "Assets/Textures/logo.png"
+img.texture = texture_asset
 img.color = [1.0, 1.0, 1.0, 0.8]
 </code></pre></div>
 <!-- USER CONTENT START -->
@@ -367,8 +366,8 @@ img.color = [1.0, 1.0, 1.0, 0.8]
 </thead>
 <tbody>
 <tr>
-<td>texture_path</td>
-<td><code>str</code></td>
+<td>texture</td>
+<td><code>Texture | RenderTexture | None</code></td>
 <td></td>
 </tr>
 <tr>

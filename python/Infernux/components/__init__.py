@@ -36,6 +36,8 @@ from .builtin import (
     RigidbodyConstraints,
     CollisionDetectionMode,
     RigidbodyInterpolation,
+    HingeJoint,
+    SliderJoint,
     AudioSource,
     AudioListener,
     SpriteRenderer,
@@ -105,6 +107,11 @@ from .decorators import (
     HelpURL,
     Icon,
 )
+from .transform_authoring import (
+    DrivenTransformProperties,
+    drives_transform,
+    DrivesTransform,
+)
 from .spirit_animator import SpiritAnimator
 from .skeletal_animator import SkeletalAnimator
 from .timeline_action import TimelineAction
@@ -137,6 +144,8 @@ __all__ = [
     "RigidbodyConstraints",
     "CollisionDetectionMode",
     "RigidbodyInterpolation",
+    "HingeJoint",
+    "SliderJoint",
     "AudioSource",
     "AudioListener",
     "SpriteRenderer",
@@ -201,6 +210,9 @@ __all__ = [
     "AddComponentMenu",
     "HelpURL",
     "Icon",
+    "DrivenTransformProperties",
+    "drives_transform",
+    "DrivesTransform",
     # Animation
     "ParticleSystem",
     "ParticleBoundsMode",

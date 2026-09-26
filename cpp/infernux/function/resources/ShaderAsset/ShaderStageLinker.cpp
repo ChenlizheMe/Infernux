@@ -1,10 +1,12 @@
 #include "ShaderStageLinker.h"
+#include <core/types/ShaderProgramArtifact.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <cstring>
 #include <limits>
+#include <nlohmann/json.hpp>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -101,6 +103,27 @@ std::optional<PropertyLayout> GetPropertyLayout(std::string_view type)
     return std::nullopt;
 }
 
+uint32_t PropertyArrayCount(const ShaderProperty &property)
+{
+    if (property.type != "FloatArray" && property.type != "Float4Array")
+        return 1;
+    const auto value = nlohmann::json::parse(property.defaultValue, nullptr, false);
+    if (!value.is_array() || value.empty())
+        return 0;
+    if (property.type == "FloatArray")
+        return std::all_of(value.begin(), value.end(), [](const auto &element) { return element.is_number(); })
+                   ? static_cast<uint32_t>(value.size())
+                   : 0;
+    return std::all_of(value.begin(), value.end(),
+                       [](const auto &element) {
+                           return element.is_array() && element.size() == 4 &&
+                                  std::all_of(element.begin(), element.end(),
+                                              [](const auto &component) { return component.is_number(); });
+                       })
+               ? static_cast<uint32_t>(value.size())
+               : 0;
+}
+
 bool SameRange(const std::optional<std::array<double, 2>> &lhs, const std::optional<std::array<double, 2>> &rhs)
 {
     if (lhs.has_value() != rhs.has_value())
@@ -193,16 +216,32 @@ void AssignPropertyLayout(ShaderProgramInterfaceArtifact &artifact, bool include
             continue;
         }
 
-        const auto layout = GetPropertyLayout(property.schema.type);
+        const uint32_t arrayCount = PropertyArrayCount(property.schema);
+        if ((property.schema.type == "FloatArray" || property.schema.type == "Float4Array") && arrayCount == 0) {
+            artifact.diagnostics.push_back(MakeDiagnostic(
+                ShaderLinkDiagnosticCode::PropertyContractMismatch,
+                "material array property '" + property.schema.name + "' requires a non-empty numeric default array",
+                HasVisibility(property.visibility, ShaderStageVisibility::Vertex) ? artifact.vertex.filePath
+                                                                                  : artifact.fragment.filePath,
+                property.schema.source));
+            continue;
+        }
+        std::optional<PropertyLayout> layout;
+        if (property.schema.type == "FloatArray" || property.schema.type == "Float4Array")
+            layout = PropertyLayout{16, 16u * arrayCount};
+        else
+            layout = GetPropertyLayout(property.schema.type);
         if (!layout)
             continue;
         bufferCursor = AlignUp(bufferCursor, layout->alignment);
         property.bufferOffset = bufferCursor;
         property.byteAlignment = layout->alignment;
         property.byteSize = layout->size;
+        property.arrayCount = arrayCount;
         bufferCursor += layout->size;
         signature = HashNumber(signature, *property.bufferOffset);
         signature = HashNumber(signature, property.byteSize);
+        signature = HashNumber(signature, property.arrayCount);
     }
     if (includeAlphaClipThreshold) {
         bufferCursor = AlignUp(bufferCursor, 4);
@@ -246,14 +285,68 @@ bool ShaderProgramInterfaceArtifact::IsValid() const noexcept
     });
 }
 
+bool ShaderStageLinker::IsUIStagePair(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment)
+{
+    const auto uiStage = [](const ShaderDescriptor &stage) {
+        return HasCapability(stage, "ScreenUI") || HasCapability(stage, "WorldUI");
+    };
+    return uiStage(vertex) || uiStage(fragment);
+}
+
+bool ShaderStageLinker::ShouldPrewarmSceneMaterial(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment)
+{
+    return !IsUIStagePair(vertex, fragment);
+}
+
+bool ShaderStageLinker::ShouldPublishScenePrewarmArtifact(const ShaderProgramArtifact &artifact) noexcept
+{
+    return artifact.domain != ShaderProgramDomain::ScreenUI && artifact.domain != ShaderProgramDomain::WorldUI;
+}
+
 ShaderProgramInterfaceArtifact ShaderStageLinker::Link(const ShaderDescriptor &vertex, const ShaderDescriptor &fragment,
                                                        const ShaderStageLinkOptions &options)
 {
     ShaderProgramInterfaceArtifact artifact;
     artifact.vertex = {vertex.shaderId, vertex.filePath};
     artifact.fragment = {fragment.shaderId, fragment.filePath};
-    artifact.domain =
-        HasCapability(vertex, "ParticleSprite") ? ShaderProgramDomain::ParticleSprite : ShaderProgramDomain::Mesh;
+    const auto stageDomain = [](const ShaderDescriptor &stage) {
+        if (HasCapability(stage, "ScreenUI"))
+            return ShaderProgramDomain::ScreenUI;
+        if (HasCapability(stage, "WorldUI"))
+            return ShaderProgramDomain::WorldUI;
+        if (HasCapability(stage, "ParticleSprite"))
+            return ShaderProgramDomain::ParticleSprite;
+        return ShaderProgramDomain::Mesh;
+    };
+    artifact.domain = stageDomain(vertex);
+    const auto fragmentDomain = stageDomain(fragment);
+    if ((artifact.domain == ShaderProgramDomain::ScreenUI || artifact.domain == ShaderProgramDomain::WorldUI ||
+         fragmentDomain == ShaderProgramDomain::ScreenUI || fragmentDomain == ShaderProgramDomain::WorldUI) &&
+        artifact.domain != fragmentDomain) {
+        artifact.diagnostics.push_back(
+            MakeDiagnostic(ShaderLinkDiagnosticCode::DomainMismatch,
+                           "vertex and fragment ShaderInfo Capabilities must declare the same program domain",
+                           fragment.filePath, {}, vertex.filePath));
+    }
+    if (artifact.domain == ShaderProgramDomain::ScreenUI || artifact.domain == ShaderProgramDomain::WorldUI) {
+        const auto incompatibleCapability = [](const ShaderDescriptor &stage) {
+            return HasCapability(stage, "BindlessTextures") || HasCapability(stage, "ParticleSprite") ||
+                   (HasCapability(stage, "ScreenUI") && HasCapability(stage, "WorldUI"));
+        };
+        if (incompatibleCapability(vertex) || incompatibleCapability(fragment)) {
+            artifact.diagnostics.push_back(
+                MakeDiagnostic(ShaderLinkDiagnosticCode::UnsupportedUIProperty,
+                               "UI ShaderInfo Capabilities cannot combine ScreenUI/WorldUI with BindlessTextures, "
+                               "ParticleSprite, or another UI domain",
+                               fragment.filePath, {}));
+        }
+        if (!vertex.hasMainFunc || !fragment.hasMainFunc || !vertex.outputs.empty() || !fragment.inputs.empty()) {
+            artifact.diagnostics.push_back(
+                MakeDiagnostic(ShaderLinkDiagnosticCode::MissingEntryPoint,
+                               "UI shader stages require explicit main() and fixed engine vertex/varying locations",
+                               fragment.filePath, {}));
+        }
+    }
     artifact.shadingModel = fragment.shadingModel;
     artifact.firstUserVaryingLocation = options.firstUserVaryingLocation;
 
@@ -404,7 +497,9 @@ ShaderProgramInterfaceArtifact ShaderStageLinker::Link(const ShaderDescriptor &v
     std::unordered_map<std::string, size_t> propertyIndices;
     AppendStageProperties(artifact, vertex, ShaderStageVisibility::Vertex, propertyIndices);
     AppendStageProperties(artifact, fragment, ShaderStageVisibility::Fragment, propertyIndices);
-    AssignPropertyLayout(artifact, fragment.hasSurfaceFunc, options.maximumMaterialTextures);
+    const bool uiDomain =
+        artifact.domain == ShaderProgramDomain::ScreenUI || artifact.domain == ShaderProgramDomain::WorldUI;
+    AssignPropertyLayout(artifact, !uiDomain && fragment.hasSurfaceFunc, options.maximumMaterialTextures);
 
     uint64_t compatibility = FnvOffset;
     compatibility = HashNumber(compatibility, static_cast<uint8_t>(artifact.domain));

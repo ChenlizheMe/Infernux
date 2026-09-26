@@ -8,10 +8,15 @@
  * and raycast queries. Integrated with SceneManager::FixedUpdate.
  */
 
+#include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <memory>
+#include <optional>
+#include <shared_mutex>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -20,7 +25,8 @@
 namespace infernux
 {
 class InxContactListener;
-}
+struct ContactEvent;
+} // namespace infernux
 
 // Forward-declare Jolt types to avoid Jolt.h leak into every TU
 namespace JPH
@@ -30,6 +36,7 @@ class TempAllocatorImpl;
 class Body;
 class BodyID;
 class Shape;
+class Constraint;
 } // namespace JPH
 
 namespace infernux
@@ -47,17 +54,74 @@ struct PhysicsBodyPoseUpdate
     glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
 };
 
+/// Solver state read under one body lock. Translation locks are world-axis masks.
+struct PhysicsBodyMotionState
+{
+    glm::vec3 position{0.0f};
+    glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 centerOfMass{0.0f};
+    glm::vec3 linearVelocity{0.0f};
+    glm::vec3 angularVelocity{0.0f};
+    glm::vec3 inverseMass{0.0f};
+    glm::mat3 inverseInertia{0.0f};
+};
+
+struct PhysicsPenetrationResult
+{
+    glm::vec3 direction{0.0f}; ///< Unit direction that separates A from B.
+    float distance = 0.0f;
+    glm::vec3 pointA{0.0f};
+    glm::vec3 pointB{0.0f};
+};
+
+/// Actual velocity-solver impulse from the most recent fixed step. The
+/// impulse points from body A toward body B and is opt-in.
+struct ContactImpulse
+{
+    uint32_t bodyIdA = 0xFFFFFFFF;
+    uint32_t bodyIdB = 0xFFFFFFFF;
+    uint32_t subShapeIdA = 0;
+    uint32_t subShapeIdB = 0;
+    glm::vec3 contactPoint{0.0f};
+    glm::vec3 contactNormal{0.0f};
+    glm::vec3 impulse{0.0f};
+};
+
 /**
  * @brief Result of a physics raycast (Unity: RaycastHit).
  */
 struct RaycastHit
 {
-    glm::vec3 point{0.0f};            ///< World-space hit point
-    glm::vec3 normal{0.0f};           ///< Surface normal at hit
-    float distance = 0.0f;            ///< Distance from ray origin
-    uint32_t bodyId = 0xFFFFFFFF;     ///< Hit Jolt body id (index+sequence)
-    GameObject *gameObject = nullptr; ///< Hit GameObject
-    Collider *collider = nullptr;     ///< Hit Collider component
+    glm::vec3 point{0.0f};               ///< World-space hit point
+    glm::vec3 normal{0.0f};              ///< Surface normal at hit
+    float distance = 0.0f;               ///< Distance from ray origin
+    uint32_t bodyId = 0xFFFFFFFF;        ///< Hit Jolt body id (index+sequence)
+    uint32_t subShapeId = 0;             ///< Jolt sub-shape identity inside the body
+    uint32_t triangleIndex = 0xFFFFFFFF; ///< Cooked triangle index for non-convex mesh hits
+    GameObject *gameObject = nullptr;    ///< Hit GameObject
+    Collider *collider = nullptr;        ///< Hit Collider component
+    // Stable numeric identities captured while the published query epoch
+    // is held.  Batch bindings must use these rather than dereferencing the
+    // raw convenience pointers after the native query boundary has ended.
+    uint64_t gameObjectId = 0;
+    uint64_t colliderId = 0;
+};
+
+/// Optional diagnostic counters for one RaycastBatch call. Timings inside
+/// parallel workers are summed CPU time; dispatchWallNs is caller wall time.
+/// A null profile pointer keeps the hot path free of clock reads.
+struct RaycastBatchProfile
+{
+    uint64_t snapshotSyncNs = 0;
+    uint64_t snapshotLockWaitNs = 0;
+    uint64_t dispatchWallNs = 0;
+    uint64_t joltQueryCpuNs = 0;
+    uint64_t narrowPhaseCpuNs = 0;
+    uint64_t sortFilterCpuNs = 0;
+    uint64_t hitPublishCpuNs = 0;
+    uint64_t broadphaseCandidates = 0;
+    uint64_t narrowphaseHits = 0;
+    uint64_t publishedHits = 0;
 };
 
 /**
@@ -81,8 +145,9 @@ class PhysicsWorld
     ///   4. Jolt globals (Factory, registered types) torn down.
     /// Idempotent: subsequent calls are no-ops.
     void Shutdown();
-    [[nodiscard]] size_t GetBodyCount() const noexcept
+    [[nodiscard]] size_t GetBodyCount() const
     {
+        std::shared_lock lock(m_querySnapshotMutex);
         return m_bodyToCollider.size();
     }
 
@@ -106,6 +171,31 @@ class PhysicsWorld
     [[nodiscard]] size_t GetLastDynamicCCDSplitCount() const
     {
         return m_lastDynamicCCDSplitCount;
+    }
+
+    /// Enable the engine contact stream used by custom solvers and tooling.
+    /// When enabled, resolved collision/trigger events remain available after
+    /// the fixed step through GetContactEvents(). Callback dispatch is still
+    /// independent and follows the normal component interest mask.
+    void SetContactEventStreamEnabled(bool enabled, bool includeTriggers = false);
+
+    [[nodiscard]] bool IsContactEventStreamEnabled() const noexcept
+    {
+        return m_contactEventStreamEnabled;
+    }
+
+    /// Resolved events from the most recent completed fixed step. The buffer
+    /// is replaced at the next step; callers must consume it before then.
+    [[nodiscard]] const std::vector<ContactEvent> &GetContactEvents() const;
+
+    void SetContactImpulseStreamEnabled(bool enabled);
+    [[nodiscard]] bool IsContactImpulseStreamEnabled() const noexcept
+    {
+        return m_contactImpulseStreamEnabled;
+    }
+    [[nodiscard]] const std::vector<ContactImpulse> &GetContactImpulses() const
+    {
+        return m_contactImpulses;
     }
 
     // ========================================================================
@@ -211,6 +301,20 @@ class PhysicsWorld
     /// Set max linear velocity (m/s).
     void SetBodyMaxLinearVelocity(uint32_t bodyId, float maxVel);
 
+    /// Create a world-space hinge between body A and body B, or body A and
+    /// the fixed world when body B is invalid. Limits are radians.
+    uint64_t CreateHingeConstraint(uint32_t bodyIdA, uint32_t bodyIdB, const glm::vec3 &worldAnchor,
+                                   const glm::vec3 &worldAxis, bool useLimits, float minimumAngle, float maximumAngle,
+                                   bool enableCollision);
+    /// Create a prismatic constraint that permits only translation along one
+    /// world-space axis. Limits are metres relative to the creation pose.
+    uint64_t CreateSliderConstraint(uint32_t bodyIdA, uint32_t bodyIdB, const glm::vec3 &worldAnchor,
+                                    const glm::vec3 &worldAxis, bool useLimits, float minimumDistance,
+                                    float maximumDistance, bool enableCollision);
+    void DestroyConstraint(uint64_t constraintId);
+    [[nodiscard]] float GetHingeConstraintAngle(uint64_t constraintId) const;
+    [[nodiscard]] float GetSliderConstraintPosition(uint64_t constraintId) const;
+
     // ---- Kinematic move ----
 
     /// Speed cap for transform-driven body moves (gizmo drags, kinematic
@@ -265,6 +369,10 @@ class PhysicsWorld
     [[nodiscard]] glm::vec3 GetBodyPosition(uint32_t bodyId) const;
     [[nodiscard]] glm::quat GetBodyRotation(uint32_t bodyId) const;
     [[nodiscard]] glm::vec3 GetBodyCenterOfMassPosition(uint32_t bodyId) const;
+    [[nodiscard]] PhysicsBodyMotionState GetBodyMotionState(uint32_t bodyId) const;
+    [[nodiscard]] std::optional<PhysicsPenetrationResult>
+    ComputePenetration(const Collider &a, const glm::vec3 &positionA, const glm::quat &rotationA, const Collider &b,
+                       const glm::vec3 &positionB, const glm::quat &rotationB) const;
 
     /// Get the world-space inertia tensor on the body's allowed angular subspace.
     /// Frozen axes and invalid/static bodies produce zero rows and columns.
@@ -277,6 +385,51 @@ class PhysicsWorld
     /// Cast a ray and return the closest hit.  Returns true if hit.
     bool Raycast(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance, RaycastHit &outHit,
                  uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)), bool queryTriggers = true) const;
+
+    /// Cast a contiguous batch of XYZ float rays against one stable world epoch.
+    /// The owner thread first publishes pending authoring state; worker callers
+    /// consume the last complete published epoch. Large batches fan out through
+    /// the engine JobSystem. Fixed-step and collider mutation publication wait
+    /// until the batch releases its epoch.
+    /// Every input row produces one mask entry and one initialized result row;
+    /// caller-owned storage must contain @p count elements.
+    void RaycastBatch(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
+                      RaycastHit *outHits, uint8_t *outHitMask, uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                      bool queryTriggers = true, uint64_t *outQueryGeneration = nullptr,
+                      RaycastBatchProfile *outProfile = nullptr) const;
+
+    /// Publish pending authored collider state only when called by the physics
+    /// owner thread. Worker threads deliberately consume the last complete
+    /// query epoch and never touch SceneManager-owned authoring state.
+    /// @return true when owner-thread synchronization was performed.
+    bool PrepareRaycastBatchQuery() const;
+
+    /// Consume the last complete published query epoch without touching
+    /// SceneManager. Call PrepareRaycastBatchQuery first on the owner thread;
+    /// background workers call this method directly.
+    void RaycastBatchPublished(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
+                               RaycastHit *outHits, uint8_t *outHitMask,
+                               uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)), bool queryTriggers = true,
+                               uint64_t *outQueryGeneration = nullptr, RaycastBatchProfile *outProfile = nullptr,
+                               bool directionsNormalized = false) const;
+
+    /// Monotonic identity of the currently published query world. The value
+    /// changes whenever body membership, pose, layer/trigger state, or a
+    /// collider shape changes. Query consumers can retain this token with
+    /// their results instead of inferring validity from object counts.
+    [[nodiscard]] uint64_t GetQueryGeneration() const noexcept
+    {
+        return m_queryGeneration.load(std::memory_order_acquire);
+    }
+
+    /// Cast a ray against one authored Collider sub-shape. Unlike a world
+    /// query, this intentionally ignores layer, trigger and pair filters.
+    bool RaycastCollider(const Collider &collider, const glm::vec3 &origin, const glm::vec3 &direction,
+                         float maxDistance, RaycastHit &outHit) const;
+
+    /// Return the closest world-space point on one primitive Collider. A point
+    /// already inside the collider is returned unchanged.
+    [[nodiscard]] glm::vec3 ClosestPointOnCollider(const Collider &collider, const glm::vec3 &point) const;
 
     /// Cast a ray and return all hits.
     std::vector<RaycastHit> RaycastAll(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance,
@@ -302,6 +455,13 @@ class PhysicsWorld
     std::vector<Collider *> OverlapCapsule(const glm::vec3 &point0, const glm::vec3 &point1, float radius,
                                            uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
                                            bool queryTriggers = true) const;
+
+    /// Return Rigidbody components whose resident Jolt body bounds intersect
+    /// the supplied world-space AABB. This is a broad-phase candidate query:
+    /// callers perform their own exact contact test against the body shape.
+    std::vector<Rigidbody *> QueryRigidbodiesInBounds(const glm::vec3 &minimum, const glm::vec3 &maximum,
+                                                      uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                                                      bool queryTriggers = false) const;
 
     // ========================================================================
     // Shape cast queries (Unity: Physics.SphereCast / BoxCast)
@@ -331,9 +491,16 @@ class PhysicsWorld
 
     /// Resolve a specific subshape hit/contact back to the owning Collider.
     Collider *ResolveColliderForSubShape(uint32_t bodyId, uint32_t subShapeIdValue) const;
+    Collider *ResolveColliderForSubShape(const JPH::Body &body, uint32_t bodyId, uint32_t subShapeIdValue) const;
 
     /// Rebind a body lookup entry to another collider on the same body.
     void RebindBodyCollider(uint32_t bodyId, Collider *collider);
+
+    /// Runtime-only collision policy for one exact Collider pair. This is
+    /// separate from joint-owned whole-body suppression.
+    void SetColliderPairIgnored(Collider *colliderA, Collider *colliderB, bool ignored);
+    [[nodiscard]] bool GetColliderPairIgnored(const Collider *colliderA, const Collider *colliderB) const;
+    void RemoveIgnoredPairsForCollider(const Collider *collider);
 
     /// Ensure all Colliders in the given scene have registered bodies
     /// and their transforms are up to date. Call before editor-mode raycasts.
@@ -353,6 +520,34 @@ class PhysicsWorld
     }
 
   private:
+    // Callers must hold m_querySnapshotMutex exclusively. Keeping the lock at
+    // the public-operation boundary lets compound mutations publish as one
+    // query epoch without recursively locking std::shared_mutex.
+    void SetBodyPositionUnlocked(uint32_t bodyId, const glm::vec3 &pos, const glm::quat &rot);
+    void MoveBodyKinematicUnlocked(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot,
+                                   float deltaTime, float maxSpeed);
+
+    struct QueryColliderIdentity
+    {
+        Collider *collider = nullptr;
+        GameObject *gameObject = nullptr;
+        uint64_t colliderId = 0;
+        uint64_t gameObjectId = 0;
+        bool isTrigger = false;
+    };
+
+    /// Rebuild immutable application identity/trigger data while holding the
+    /// query epoch write lock. Query workers never dereference mutable
+    /// Collider or GameObject state.
+    void PublishBodyQueryIdentitiesUnlocked(uint32_t bodyId);
+    [[nodiscard]] const QueryColliderIdentity *ResolvePublishedQueryIdentity(const JPH::Body &body, uint32_t bodyId,
+                                                                             uint32_t subShapeIdValue) const;
+
+    bool RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance, RaycastHit &outHit,
+                        uint32_t layerMask, bool queryTriggers, bool queryEpochHeld = false,
+                        RaycastBatchProfile *profile = nullptr, bool directionNormalized = false,
+                        uint64_t queryGeneration = 0) const;
+
     PhysicsWorld() = default;
     ~PhysicsWorld();
     PhysicsWorld(const PhysicsWorld &) = delete;
@@ -370,6 +565,7 @@ class PhysicsWorld
 
     [[nodiscard]] float FindEarliestDynamicCCDFraction(float deltaTime) const;
     [[nodiscard]] float FindEarliestStaticCCDFraction(float deltaTime) const;
+    void SetConstraintPairSuppressed(uint32_t bodyIdA, uint32_t bodyIdB, bool suppressed);
 
     /// Stop tracked kinematic-move bodies that did not receive a new target
     /// since the previous Step(), and restore temporarily-kinematic statics.
@@ -388,6 +584,35 @@ class PhysicsWorld
 
     // Mapping: Jolt body index → Collider*
     std::unordered_map<uint32_t, Collider *> m_bodyToCollider;
+    // Compound bodies publish their Collider set with the Jolt shape. Raycast
+    // hit publication can resolve sub-shapes without allocating a fresh
+    // GameObject component list for every ray.
+    std::unordered_map<uint32_t, std::vector<Collider *>> m_bodyColliders;
+    std::unordered_map<uint32_t, std::vector<QueryColliderIdentity>> m_bodyQueryIdentities;
+    // Queries acquire the read side after SceneManager has published pending
+    // transforms.  Fixed steps and every operation that changes query-visible
+    // body membership, pose, layer, sensor or shape acquire the write side.
+    // This turns query_generation into an epoch boundary rather than a
+    // best-effort before/after race detector.
+    mutable std::shared_mutex m_querySnapshotMutex;
+    std::atomic<uint64_t> m_queryGeneration{1};
+    std::thread::id m_ownerThreadId{};
+
+    enum class ConstraintKind : uint8_t
+    {
+        Hinge,
+        Slider,
+    };
+    struct ConstraintRecord
+    {
+        JPH::Constraint *constraint = nullptr;
+        uint32_t bodyIdA = 0xFFFFFFFF;
+        uint32_t bodyIdB = 0xFFFFFFFF;
+        bool ignoresCollision = false;
+        ConstraintKind kind = ConstraintKind::Hinge;
+    };
+    std::unordered_map<uint64_t, ConstraintRecord> m_constraints;
+    uint64_t m_nextConstraintId = 1;
 
     // Dense active-body union produced by the latest completed Step().
     std::vector<uint32_t> m_poseReadbackBodyIds;
@@ -411,6 +636,10 @@ class PhysicsWorld
 
     // Contact listener for collision/trigger callbacks
     std::unique_ptr<InxContactListener> m_contactListener;
+    bool m_contactEventStreamEnabled = false;
+    bool m_contactEventStreamIncludeTriggers = false;
+    bool m_contactImpulseStreamEnabled = false;
+    std::vector<ContactImpulse> m_contactImpulses;
 };
 
 } // namespace infernux

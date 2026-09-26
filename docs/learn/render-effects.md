@@ -170,7 +170,7 @@ The current editing rules are authoritative:
 | `modifies` | Read and write; it also counts as a requirement |
 | `creates` | A new semantic resource published for later work |
 
-RenderStack collects `requires ∪ modifies` from all enabled slots before the pipeline is built. This lets the pipeline produce optional geometry buffers such as normals or motion only when an effect asks for them. At the mount point, the `EffectStage` contract decides which handles enter the local bus. An effect that needs depth or motion must bind and check those stage-local handles; an unavailable handle produces a stage-and-slot compile diagnostic in the built-in implementations.
+RenderStack collects `requires ∪ modifies` from all enabled slots before the pipeline is built. This lets the pipeline produce optional geometry buffers such as normals, motion, or the read-only camera-local `light_list` only when an effect asks for them. At the mount point, the `EffectStage` contract decides which handles enter the local bus. An effect that needs depth, motion, or `light_list` must bind and check those stage-local handles; an unavailable handle produces a stage-and-slot compile diagnostic in the built-in implementations. `light_list` is a native per-frame view resource, not a writable/imported project buffer.
 
 Keep the declaration in sync with `setup_passes()`. Declaring `modifies = {"color"}` does not write color by itself; the implementation must publish the replacement handle to the bus.
 

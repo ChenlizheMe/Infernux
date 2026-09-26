@@ -124,14 +124,13 @@ void MaterialPipelineManager::Initialize(VmaAllocator allocator, VkDevice device
     m_shaderProgramCache->Initialize(device);
     m_shaderProgramCache->SetDeviceContractKey(m_shaderDeviceContractKey);
 
-    // Plumb the descriptor-indexing decision through to BOTH the layouts
-    // (created lazily by ShaderProgram::CreateDescriptorSetLayouts on shader
-    // load) AND the pool (created here in Initialize). Setting the static
-    // flag before Initialize() guarantees the very first ShaderProgram and
-    // the descriptor pool agree on whether UPDATE_AFTER_BIND is on, which
-    // Vulkan validation requires.
-    ShaderProgram::SetUpdateAfterBindEnabled(descriptorIndexingEnabled);
-    m_descriptorManager.SetUpdateAfterBindEnabled(descriptorIndexingEnabled);
+    // Material descriptors are immutable copy-on-write publications. Keeping
+    // set 0 in the ordinary persistent arena avoids requiring optional
+    // per-descriptor-type UPDATE_AFTER_BIND features (notably storage buffers
+    // on mobile GPUs) without weakening live-update correctness.
+    (void)descriptorIndexingEnabled;
+    ShaderProgram::SetUpdateAfterBindEnabled(false);
+    m_descriptorManager.SetUpdateAfterBindEnabled(false);
     m_descriptorManager.Initialize(allocator, device, physicalDevice, descriptorManager);
     m_descriptorManager.SetRetirementQueue(deletionQueue);
 
@@ -425,6 +424,27 @@ MaterialPipelineManager::GetDefaultPassPipelineDescriptorFor(VkSampleCountFlagBi
 
 bool MaterialPipelineManager::IsMaterialDescriptorSetCompatible(const ShaderProgram &forward, const ShaderProgram &pass)
 {
+    const auto hasSameUniformLayout = [](const MaterialUBOLayout *lhs, const MaterialUBOLayout *rhs) {
+        if (!lhs || !rhs)
+            return lhs == rhs;
+        if (lhs->binding != rhs->binding || lhs->size != rhs->size || lhs->members.size() != rhs->members.size())
+            return false;
+        for (const auto &member : lhs->members) {
+            const auto other = std::find_if(rhs->members.begin(), rhs->members.end(),
+                                            [&](const UniformMember &value) { return value.name == member.name; });
+            if (other == rhs->members.end() || other->offset != member.offset || other->size != member.size ||
+                other->arraySize != member.arraySize || other->format != member.format)
+                return false;
+        }
+        return true;
+    };
+
+    if (!hasSameUniformLayout(forward.GetMaterialUBOLayout(), pass.GetMaterialUBOLayout()) ||
+        !hasSameUniformLayout(forward.GetVertexMaterialUBOLayout(), pass.GetVertexMaterialUBOLayout()) ||
+        forward.UsesBindlessTextureABI() != pass.UsesBindlessTextureABI() ||
+        !hasSameUniformLayout(forward.GetBindlessTextureIndexLayout(), pass.GetBindlessTextureIndexLayout()))
+        return false;
+
     std::vector<const MergedDescriptorBinding *> forwardBindings;
     std::vector<const MergedDescriptorBinding *> passBindings;
     for (const auto &binding : forward.GetDescriptorBindings()) {
@@ -700,6 +720,10 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     }
 
     RenderState effectiveState = renderState;
+    if (pipelineDesc.invertCulling)
+        effectiveState.frontFace = effectiveState.frontFace == MaterialFrontFace::Clockwise
+                                       ? MaterialFrontFace::CounterClockwise
+                                       : MaterialFrontFace::Clockwise;
     if (pipelineDesc.target != ShaderCompileTarget::Forward &&
         pipelineDesc.target != ShaderCompileTarget::ForwardPlus) {
         effectiveState.blendEnable = false;
@@ -936,6 +960,20 @@ void MaterialPipelineManager::InvalidateMaterialsUsingProgramPair(const ShaderSt
         RemoveRenderData(name);
 
     INXLOG_INFO("Invalidated ", materialsToRemove.size(), " materials using shader program '", stages.ToString(), "'");
+}
+
+bool MaterialPipelineManager::HasMaterialProgramOwner(const ShaderProgramKey &key) const
+{
+    for (const auto &[name, data] : m_renderDataMap) {
+        (void)name;
+        if (data && data->programKey == key)
+            return true;
+    }
+    for (const auto &[passKey, data] : m_passRenderDataMap) {
+        if (data && passKey.programKey.program == key)
+            return true;
+    }
+    return false;
 }
 
 uint32_t MaterialPipelineManager::RefreshMaterialsUsingTexture(const std::string &textureGuid)

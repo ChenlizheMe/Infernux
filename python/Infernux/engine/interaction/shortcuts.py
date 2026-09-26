@@ -15,6 +15,7 @@ from .commands import (
 )
 from .contexts import FocusService
 from .modals import ModalService
+from ._contributions import current_owner
 
 
 class ShortcutModifier(IntFlag):
@@ -182,6 +183,7 @@ class ShortcutRouter:
         self._focus = focus
         self._modals = modals
         self._bindings: dict[str, ShortcutBinding] = {}
+        self._owners: dict[str, str] = {}
         self._revision = 0
         self._route_revision = 0
         self._last_event: Optional[ShortcutEvent] = None
@@ -219,14 +221,28 @@ class ShortcutRouter:
         existing = self._bindings.get(binding.binding_id)
         if existing is not None and not replace:
             raise ValueError(f"shortcut binding already registered: {binding.binding_id}")
+        owner = current_owner.get()
+        if existing is not None and self._owners[binding.binding_id] != owner:
+            raise ValueError(f"shortcut binding belongs to another contributor: {binding.binding_id}")
         self._bindings[binding.binding_id] = binding
+        self._owners[binding.binding_id] = owner
         self._revision += 1
 
     def unregister(self, binding_id: str) -> bool:
         if self._bindings.pop(str(binding_id or "").strip(), None) is None:
             return False
+        self._owners.pop(str(binding_id or "").strip())
         self._revision += 1
         return True
+
+    def unregister_owner(self, owner: str) -> int:
+        """Remove preload registrations; binding.owner_id remains input focus."""
+        if not owner:
+            raise ValueError("contribution owner must not be empty")
+        identifiers = tuple(key for key, value in self._owners.items() if value == owner)
+        for identifier in identifiers:
+            self.unregister(identifier)
+        return len(identifiers)
 
     def conflicts_for(self, binding: ShortcutBinding) -> tuple[ShortcutBinding, ...]:
         return tuple(
@@ -373,6 +389,7 @@ class ShortcutRouter:
     def clear(self) -> None:
         if self._bindings:
             self._bindings.clear()
+            self._owners.clear()
             self._revision += 1
         self._last_event = None
         self._last_result = None

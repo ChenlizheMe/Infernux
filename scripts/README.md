@@ -11,7 +11,7 @@ runtime code stays in `cpp/` and `python/`; Hub application code stays in
 | `build/` | Build wrappers needed by a specific host toolchain | `cmake_build.py` |
 | `docs/` | Maintainer entry points that orchestrate documentation tools | `update_api_docs.bat` |
 | `maintenance/` | Safe local workspace housekeeping | `clean_workspace.ps1` |
-| `release/` | Hub, installer, wheel, and GitHub Release orchestration | `release_hub.bat` |
+| `release/` | Local Hub, installer, and wheel builds; official publication runs in GitHub Actions | `release_hub.bat` |
 | `setup/` | Clone bootstrap and the supported Python 3.13 Conda environment | `configure_development.ps1` / `configure_development.sh` |
 
 Run every command from the repository root. The entry points resolve the root
@@ -60,8 +60,11 @@ Release-candidate artifacts and JSON smoke results can be bound to one source
 commit with `build_evidence_manifest.py`. Every `--artifact` and `--result`
 uses `ID=PATH`; paths must live below `--root`, directory hashes are stable over
 sorted relative file names, and `--require-clean` rejects an uncommitted source
-tree. The manifest timestamp comes from the source commit rather than wall-clock
-time so the same release inputs reproduce the same provenance record.
+tree. Add `--require-passed` for a release gate that rejects any acceptance
+result whose status is not `passed` (older reports without a `success` field are
+accepted; an explicit `success: false` is rejected). The manifest timestamp
+comes from the source commit rather than wall-clock time so the same release
+inputs reproduce the same provenance record.
 
 Android CPython prefixes are accepted only when they carry a complete
 `infernux-android-python.json` provenance manifest. After preparing a prefix,
@@ -84,3 +87,21 @@ platform code out of the engine package, and records key output hashes in
 `infernux-web-toolchain.json`. Install `glslangValidator` separately through the
 host package manager because it is a system shader compiler rather than part of
 the cached Web toolchain.
+
+Dawn dependency identities are pinned in
+`setup/dawn_dependencies.lock.json`. Fifteen dependencies are fetched from the
+canonical GitHub repositories named by Dawn's DEPS file. The four
+Chromium-vendored dependencies must be prepared from their official
+`chromium.googlesource.com` repositories and supplied through
+`INFERNUX_DAWN_OFFICIAL_SNAPSHOT_DIR`. CI uses
+`setup/prepare_dawn_official_snapshots.py` to create and cache this directory
+from the locked commits; an offline release build may provide the same
+directory from a trusted host. It must contain one
+uncompressed, Git-worktree `.tar` per dependency plus `manifest.json`; the
+manifest records `schema: infernux.dawn_official_snapshots`, `version: 1`, the
+locked Dawn revision, and for every archive its dependency `path`, filename,
+SHA-256, official source URL, commit, and tree. The setup fails before placing
+any dependency if any of the four snapshots is missing, unsafe to extract, or
+does not match the lock. It never substitutes a community mirror. Invalid
+cached repositories are moved into the toolchain root's quarantine directories
+rather than deleted.

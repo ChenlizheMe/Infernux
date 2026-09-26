@@ -2,6 +2,7 @@
 
 #include "Component.h"
 #include "function/renderer/InxRenderStruct.h"
+#include "function/renderer/RendererParameterBlock.h"
 #include <cstdint>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRef.h>
@@ -9,12 +10,20 @@
 #include <function/resources/InxMesh/InxMesh.h>
 #include <glm/glm.hpp>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace infernux
 {
+
+namespace rhi
+{
+class ComputeBuffer;
+}
 
 /**
  * @brief Reference to a mesh resource for rendering.
@@ -31,6 +40,11 @@ struct MeshRef
         return meshId != 0;
     }
 };
+
+/// Derive standard rendering attributes from authored triangle topology.
+/// Equal positions are not welded; UV/hard-edge splits remain authoritative.
+void RecalculateMeshNormals(std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices);
+void RecalculateMeshTangents(std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices);
 
 /**
  * @brief MeshRenderer component for rendering 3D meshes.
@@ -89,6 +103,16 @@ class MeshRenderer : public Component
     /// @brief Set mesh from inline vertex/index data (for primitives)
     void SetMesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices);
 
+    /// Replace visual geometry without automatically recooking colliders.
+    /// Existing drawable renderers use the render-content invalidation path.
+    void SetProceduralMesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices);
+
+    /// Rebuild CPU-resident inline attributes. Resident compute meshes derive
+    /// these attributes on the GPU instead of forcing a readback.
+    void RecalculateInlineNormals();
+    void RecalculateInlineTangents();
+    void RecalculateInlineBounds();
+
     /// @brief Set mesh from shared static primitive data (zero-copy).
     /// The referenced vectors must outlive this MeshRenderer.
     void SetSharedPrimitiveMesh(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
@@ -122,6 +146,9 @@ class MeshRenderer : public Component
 
     /// @brief Invalidate or reconnect material slots without changing GUIDs.
     void OnMaterialAssetEvent(const std::string &guid, AssetEvent event);
+
+    /// Republish an effective renderer-local texture after its asset generation changes.
+    void OnParameterTextureAssetEvent(const std::string &guid, AssetEvent event);
 
     /// @brief Get the mesh asset reference
     [[nodiscard]] const AssetRef<InxMesh> &GetMeshAssetRef() const
@@ -183,6 +210,37 @@ class MeshRenderer : public Component
         return m_sharedIndices ? *m_sharedIndices : m_inlineIndices;
     }
 
+    /// Monotonic identity for runtime geometry publication. Rendering uses
+    /// this instead of hashing the complete vertex/index payload.
+    [[nodiscard]] uint64_t GetInlineMeshVersion() const noexcept
+    {
+        return m_inlineMeshVersion;
+    }
+
+    /// Bind canonical interleaved Vertex storage owned by inx.buffer. The
+    /// authored mesh continues to own topology and all initial attributes;
+    /// compute may update the resident stream in place without CPU readback.
+    void SetVertexBuffer(std::shared_ptr<rhi::ComputeBuffer> buffer, const glm::vec3 &boundsMin,
+                         const glm::vec3 &boundsMax, bool worldSpace = false);
+    void ClearVertexBuffer();
+    [[nodiscard]] const std::shared_ptr<rhi::ComputeBuffer> &GetVertexBuffer() const noexcept
+    {
+        return m_vertexBuffer;
+    }
+    [[nodiscard]] bool HasVertexBuffer() const noexcept
+    {
+        return static_cast<bool>(m_vertexBuffer);
+    }
+    [[nodiscard]] bool IsVertexBufferWorldSpace() const noexcept
+    {
+        return m_vertexBuffer && m_vertexBufferWorldSpace;
+    }
+    /// Allocated canonical-Vertex slots in the resident stream.  The effective
+    /// draw count remains the authored mesh's vertex count; spare slots allow
+    /// compute workloads to keep one allocation while their active range
+    /// changes within an explicitly chosen capacity.
+    [[nodiscard]] size_t GetVertexBufferCapacity() const noexcept;
+
     // ========================================================================
     // Materials (multi-slot, submesh-indexed)
     // ========================================================================
@@ -227,6 +285,24 @@ class MeshRenderer : public Component
     void SyncMaterialSlotsToMesh();
 
     // ========================================================================
+    // Per-renderer material parameters
+    // ========================================================================
+
+    /// Publish one parameter override for a material slot. The value type must
+    /// exactly match the shader-reflected material property type. Persistent
+    /// values are serialized; runtime values live only for this component
+    /// lifetime and take precedence over persistent values.
+    void SetParameter(uint32_t slot, const std::string &name, MaterialPropertyValue value, bool persistent = false,
+                      const std::string &owner = "script");
+    [[nodiscard]] const MaterialProperty *GetParameter(uint32_t slot, const std::string &name,
+                                                       bool persistentOnly = false,
+                                                       const std::string &owner = "") const;
+    [[nodiscard]] bool RemoveParameter(uint32_t slot, const std::string &name, bool persistent = false,
+                                       const std::string &owner = "script");
+    void ClearParameters(uint32_t slot, bool persistent = false, const std::string &owner = "script");
+    [[nodiscard]] std::shared_ptr<const RendererParameterBlock> GetParameterBlock(uint32_t slot = 0) const;
+
+    // ========================================================================
     // Rendering flags
     // ========================================================================
 
@@ -241,10 +317,7 @@ class MeshRenderer : public Component
     }
 
     /// @brief Set which submesh to render (-1 = all, >= 0 = specific submesh).
-    void SetSubmeshIndex(int32_t index)
-    {
-        m_submeshIndex = index;
-    }
+    void SetSubmeshIndex(int32_t index);
 
     /// @brief Get the mesh pivot offset (pre-transform to re-center submesh geometry).
     [[nodiscard]] const glm::vec3 &GetMeshPivotOffset() const
@@ -253,10 +326,7 @@ class MeshRenderer : public Component
     }
 
     /// @brief Set the mesh pivot offset (used to re-center submesh geometry around the transform).
-    void SetMeshPivotOffset(const glm::vec3 &offset)
-    {
-        m_meshPivotOffset = offset;
-    }
+    void SetMeshPivotOffset(const glm::vec3 &offset);
 
     /// @brief Get the node group filter (-1 = render all nodes, >= 0 = specific node group).
     [[nodiscard]] int32_t GetNodeGroup() const
@@ -266,6 +336,28 @@ class MeshRenderer : public Component
 
     /// @brief Set which node group to render (-1 = all, >= 0 = specific node group).
     void SetNodeGroup(int32_t group);
+
+    /// Imported hierarchy instances consume node-local geometry; ordinary mesh
+    /// assignments retain the merged model-space view. Persisted with the binding.
+    void SetModelNodePath(std::vector<std::string> path);
+    [[nodiscard]] const std::vector<std::string> &GetModelNodePath() const noexcept
+    {
+        return m_modelNodePath;
+    }
+    /// Stable imported subresource identity used to reconcile DCC renames.
+    void SetModelSubresourceId(std::string id)
+    {
+        m_modelSubresourceId = std::move(id);
+    }
+    [[nodiscard]] const std::string &GetModelSubresourceId() const noexcept
+    {
+        return m_modelSubresourceId;
+    }
+    [[nodiscard]] bool IsModelNodeLocal() const noexcept
+    {
+        return !m_modelNodePath.empty();
+    }
+    [[nodiscard]] std::shared_ptr<const MeshGeometry> GetAssetGeometry() const;
 
     [[nodiscard]] bool CastsShadows() const
     {
@@ -317,7 +409,18 @@ class MeshRenderer : public Component
     /// already expressed in world space.
     [[nodiscard]] virtual glm::mat4 ResolveRenderWorldMatrix(const glm::mat4 &objectWorldMatrix) const
     {
-        return objectWorldMatrix;
+        return IsVertexBufferWorldSpace() ? glm::mat4(1.0f) : objectWorldMatrix;
+    }
+
+    /// Resolve the transform applied to authored bounds. World-space resident
+    /// vertices bypass the render transform, but their conservative bounds
+    /// remain attached to the GameObject pose captured when the buffer was
+    /// bound. This keeps culling, picking and editor tools on the same moving
+    /// Transform anchor without reading vertex data back from the GPU.
+    [[nodiscard]] virtual glm::mat4 ResolveBoundsWorldMatrix(const glm::mat4 &objectWorldMatrix) const
+    {
+        return IsVertexBufferWorldSpace() ? objectWorldMatrix * m_vertexBufferWorldBoundsAnchorInverse
+                                          : objectWorldMatrix;
     }
 
     /// Refresh transform-dependent procedural data before render extraction.
@@ -330,7 +433,7 @@ class MeshRenderer : public Component
     void ComputeLocalBoundsFromInlineVertices();
 
     /// @brief Recompute local bounds for a specific node group.
-    void UpdateBoundsForNodeGroup(const std::shared_ptr<InxMesh> &mesh);
+    void UpdateBoundsForMeshSelection(const std::shared_ptr<InxMesh> &mesh);
 
     // ========================================================================
     // Serialization
@@ -351,20 +454,43 @@ class MeshRenderer : public Component
         return true;
     }
 
-    /// Replace derived procedural geometry without changing renderer
-    /// membership. This keeps per-frame edits on the render-content fast path.
-    void SetProceduralMesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices);
-
   private:
-    /// Populate otherwise-empty renderer slots from material data embedded in
-    /// the imported mesh. This is a renderer invariant rather than a Python
-    /// binding convenience so scene restore, Player and Web builds agree.
+    /// Populate empty slots and refresh untouched imported defaults. Explicit
+    /// assignments and authored material edits survive model reimport.
     void ApplyEmbeddedMaterialsFromMesh(const std::shared_ptr<InxMesh> &mesh);
+    void ResolveModelNodeBinding();
+    [[nodiscard]] bool IsUnmodifiedEmbeddedMaterial(size_t slot) const;
 
     MeshRef m_mesh;
 
     // Material slots — one per submesh, GUID-based, resolved via AssetRegistry
+    struct RuntimeParameterEntry
+    {
+        MaterialProperty property;
+        uint64_t writeRevision = 0;
+    };
+    using RuntimeParameterLayer = std::unordered_map<std::string, RuntimeParameterEntry>;
+    using RuntimeParameterOwners = std::unordered_map<std::string, RuntimeParameterLayer>;
+
     std::vector<AssetRef<InxMaterial>> m_materials;
+    // Imported defaults are derived data. An explicit assignment or a material
+    // edit becomes an authored override; untouched defaults follow reimport.
+    struct ImportedMaterialState
+    {
+        std::string guid;
+        uint64_t authoredVersion = 0;
+    };
+    std::vector<std::optional<ImportedMaterialState>> m_embeddedMaterialVersions;
+    std::vector<std::unordered_map<std::string, MaterialProperty>> m_persistentParameters;
+    std::vector<RuntimeParameterOwners> m_runtimeParameters;
+    std::vector<std::shared_ptr<const RendererParameterBlock>> m_parameterBlocks;
+    std::unordered_set<std::string> m_parameterTextureDependencies;
+    uint64_t m_runtimeParameterWriteRevision = 0;
+    uint64_t m_parameterRevision = 0;
+
+    void EnsureParameterSlot(uint32_t slot);
+    void PublishParameterSlot(uint32_t slot);
+    void RefreshParameterTextureDependencies();
 
     // Mesh asset reference (for model-file meshes managed by AssetRegistry)
     AssetRef<InxMesh> m_meshAsset;
@@ -378,9 +504,17 @@ class MeshRenderer : public Component
     const std::vector<uint32_t> *m_sharedIndices = nullptr;
     bool m_useInlineMesh = false;
     std::string m_inlineMeshName; // display name for inline (primitive) meshes
+    uint64_t m_inlineMeshVersion = 1;
+    // Runtime-only GPU vertex storage is deliberately absent from scene
+    // serialization and cloning. Scripts recreate it for each Play lifetime.
+    std::shared_ptr<rhi::ComputeBuffer> m_vertexBuffer;
+    bool m_vertexBufferWorldSpace = false;
+    glm::mat4 m_vertexBufferWorldBoundsAnchorInverse{1.0f};
 
-    int32_t m_submeshIndex = -1;       // -1 = render all submeshes, >= 0 = single submesh
-    int32_t m_nodeGroup = -1;          // -1 = render all node groups, >= 0 = specific node group
+    int32_t m_submeshIndex = -1; // -1 = render all submeshes, >= 0 = single submesh
+    int32_t m_nodeGroup = -1;    // -1 = render all node groups, >= 0 = specific node group
+    std::vector<std::string> m_modelNodePath;
+    std::string m_modelSubresourceId;
     glm::vec3 m_meshPivotOffset{0.0f}; // Pre-transform to re-center submesh geometry
 
     bool m_castShadows = true;

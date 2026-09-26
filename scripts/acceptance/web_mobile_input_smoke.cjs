@@ -2,7 +2,24 @@
 
 const fs = require("fs");
 const path = require("path");
-const { chromium } = require("playwright");
+
+// Validate engine selection before loading optional browser dependencies.  A
+// malformed CI invocation must report its actionable configuration error even
+// on machines that do not have Playwright installed.
+const preflightBrowserEngine = (
+  process.env.INFERNUX_WEB_BROWSER_ENGINE?.trim() || "chromium"
+).toLowerCase();
+if (!["chromium", "firefox"].includes(preflightBrowserEngine)) {
+  throw new Error(
+    "INFERNUX_WEB_BROWSER_ENGINE must be 'chromium' or 'firefox'",
+  );
+}
+const preflightCdpIndex = process.argv.indexOf("--cdp-endpoint");
+if (preflightCdpIndex >= 0 && preflightBrowserEngine !== "chromium") {
+  throw new Error("--cdp-endpoint is only supported by the Chromium engine");
+}
+
+const { chromium, firefox } = require("playwright");
 const { PNG } = require("pngjs");
 
 function writeJsonAtomic(outputPath, payload) {
@@ -14,11 +31,11 @@ function writeJsonAtomic(outputPath, payload) {
   fs.renameSync(temporary, resolved);
 }
 
-function resolveBrowserExecutable() {
+function resolveBrowserExecutable(browserEngine) {
   if (process.env.INFERNUX_WEB_BROWSER) {
     return process.env.INFERNUX_WEB_BROWSER;
   }
-  if (process.platform !== "win32") {
+  if (browserEngine !== "chromium" || process.platform !== "win32") {
     return undefined;
   }
 
@@ -37,9 +54,7 @@ function resolveBrowserExecutable() {
   return candidates.find((candidate) => fs.existsSync(candidate));
 }
 
-async function activateCanvas(page, canvasBox, cdpEndpoint) {
-  const x = canvasBox.x + canvasBox.width * 0.5;
-  const y = canvasBox.y + canvasBox.height * 0.5;
+async function tapCanvasPoint(page, x, y, cdpEndpoint) {
   if (!cdpEndpoint) {
     await page.touchscreen.tap(x, y);
     return;
@@ -58,6 +73,15 @@ async function activateCanvas(page, canvasBox, cdpEndpoint) {
   } finally {
     await session.detach();
   }
+}
+
+async function activateCanvas(page, canvasBox, cdpEndpoint) {
+  await tapCanvasPoint(
+    page,
+    canvasBox.x + canvasBox.width * 0.5,
+    canvasBox.y + canvasBox.height * 0.5,
+    cdpEndpoint,
+  );
 }
 
 async function readCanvasFrame(canvas) {
@@ -180,7 +204,7 @@ async function main() {
       "[--capture-only --fixed-delta N --pause-after-frame N] " +
       "[--device-scale-factor N] " +
       "[--verify-particle-bloom] [--verify-native-multitouch] " +
-      "[--verify-mobile-ime]",
+      "[--verify-mobile-ime] [--verify-fixture-ui-click]",
     );
   }
   const argumentValue = (name, fallback = "") => {
@@ -246,6 +270,27 @@ async function main() {
   const verifyParticleBloom = process.argv.includes("--verify-particle-bloom");
   const verifyNativeMultitouch = process.argv.includes("--verify-native-multitouch");
   const verifyMobileIme = process.argv.includes("--verify-mobile-ime");
+  const verifyFixtureUiClick = process.argv.includes("--verify-fixture-ui-click");
+  if (captureOnly && verifyFixtureUiClick) {
+    throw new Error("--verify-fixture-ui-click requires interactive acceptance mode");
+  }
+  const browserEngine = (
+    process.env.INFERNUX_WEB_BROWSER_ENGINE?.trim() || "chromium"
+  ).toLowerCase();
+  if (!["chromium", "firefox"].includes(browserEngine)) {
+    throw new Error(
+      "INFERNUX_WEB_BROWSER_ENGINE must be 'chromium' or 'firefox'",
+    );
+  }
+  if (cdpEndpoint && browserEngine !== "chromium") {
+    throw new Error("--cdp-endpoint is only supported by the Chromium engine");
+  }
+  if (browserEngine !== "chromium" && (movementTouch || verifyNativeMultitouch)) {
+    throw new Error(
+      "--movement-touch and --verify-native-multitouch require the Chromium " +
+      "CDP input path; use keyboard and generic pointer checks for Firefox",
+    );
+  }
   if (verifyMobileIme && !cdpEndpoint) {
     throw new Error("--verify-mobile-ime requires a physical browser through --cdp-endpoint");
   }
@@ -327,7 +372,7 @@ async function main() {
       pages[0] ||
       await contexts[0].newPage();
   } else {
-    const executablePath = resolveBrowserExecutable();
+    const executablePath = resolveBrowserExecutable(browserEngine);
     const configuredBrowserChannel =
       process.env.INFERNUX_WEB_BROWSER_CHANNEL?.trim();
     if (
@@ -337,6 +382,11 @@ async function main() {
     ) {
       throw new Error(
         "INFERNUX_WEB_BROWSER_CHANNEL must be 'chromium' or 'msedge'",
+      );
+    }
+    if (browserEngine !== "chromium" && configuredBrowserChannel) {
+      throw new Error(
+        "INFERNUX_WEB_BROWSER_CHANNEL only applies to the Chromium engine",
       );
     }
     const browserArgs = [
@@ -351,20 +401,28 @@ async function main() {
       "--use-gpu-in-tests",
       "--enable-accelerated-2d-canvas",
     ];
-    const browserSelection = configuredBrowserChannel
-      ? { channel: configuredBrowserChannel }
-      : executablePath
-        ? { executablePath }
-      // Playwright's explicit Chromium channel selects the full browser and
-      // its new headless implementation. The legacy headless shell can
-      // destroy a SwiftShader WebGPU device after the first rendered frame.
-        : { channel: "chromium" };
-    browser = await chromium.launch({
-      ...browserSelection,
-      headless: true,
-      timeout: 30000,
-      args: browserArgs,
-    });
+    if (browserEngine === "firefox") {
+      browser = await firefox.launch({
+        ...(executablePath ? { executablePath } : {}),
+        headless: true,
+        timeout: 30000,
+      });
+    } else {
+      const browserSelection = configuredBrowserChannel
+        ? { channel: configuredBrowserChannel }
+        : executablePath
+          ? { executablePath }
+        // Playwright's explicit Chromium channel selects the full browser and
+        // its new headless implementation. The legacy headless shell can
+        // destroy a SwiftShader WebGPU device after the first rendered frame.
+          : { channel: "chromium" };
+      browser = await chromium.launch({
+        ...browserSelection,
+        headless: true,
+        timeout: 30000,
+        args: browserArgs,
+      });
+    }
     page = await browser.newPage({
       viewport: { width: viewportWidth, height: viewportHeight },
       deviceScaleFactor,
@@ -576,6 +634,8 @@ async function main() {
         ]),
       );
       const result = {
+        browserEngine,
+        browserVersion: browser.version(),
         state: await canvas.getAttribute("data-infernux-state"),
         captureOnly: true,
         fixedDeltaSeconds: fixedDelta,
@@ -1052,6 +1112,45 @@ async function main() {
       return contextMenu.defaultPrevented;
     }, !verifyMobileIme);
     await page.waitForTimeout(1000);
+    let fixtureUiClick = null;
+    if (verifyFixtureUiClick) {
+      // The fixture button occupies (512,260)..(768,324) in its 1280x720
+      // reference canvas. The live canvas stays centered as its aspect changes.
+      const scale = Math.sqrt(
+        (canvasBox.width / 1280) * (canvasBox.height / 720),
+      );
+      const x = canvasBox.x + canvasBox.width * 0.5;
+      const y = canvasBox.y + canvasBox.height * 0.5 + (292 - 360) * scale;
+      if (x >= canvasBox.x + canvasBox.width ||
+          y >= canvasBox.y + canvasBox.height) {
+        throw new Error("Fixture UI button is outside the Web Player canvas");
+      }
+      await tapCanvasPoint(page, x, y, cdpEndpoint);
+      try {
+        await page.waitForFunction(() => {
+          const diagnostics = JSON.parse(
+            document.querySelector("#canvas")?.dataset.infernuxDiagnostics || "[]",
+          );
+          return diagnostics.some((item) =>
+            item.includes("INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY")
+          );
+        }, null, { timeout: 10000 });
+      } catch (error) {
+        const diagnosticTail = await page.evaluate(() => JSON.parse(
+          document.querySelector("#canvas")?.dataset.infernuxDiagnostics || "[]",
+        ).slice(-100));
+        throw new Error(JSON.stringify({
+          phase: "fixture-ui-click",
+          point: { x, y },
+          canvasBox,
+          diagnosticTail,
+          pageErrors,
+          consoleErrors,
+          cause: String(error),
+        }));
+      }
+      fixtureUiClick = { x, y, marker: "INFERNUX_PLATFORM_FIXTURE_UI_CLICK_READY" };
+    }
     const frameAfterInput = skipFrameChecks ? null : await measureCanvasFrame(canvas);
     const result = await page.evaluate((contract) => {
       const canvas = document.querySelector("#canvas");
@@ -1141,6 +1240,8 @@ async function main() {
       orders: requiredDiagnosticOrders,
       forbidden: forbiddenDiagnostics,
     });
+    result.browserEngine = browserEngine;
+    result.browserVersion = browser.version();
     result.frameBeforeActivation = frameBeforeActivation;
     result.sceneFrame = sceneFrame;
     result.shadowDifference = shadowDifference;
@@ -1155,6 +1256,7 @@ async function main() {
     result.gameplayMovement = gameplayMovement;
     result.nativeMultitouch = nativeMultitouch;
     result.mobileIme = mobileIme;
+    result.fixtureUiClick = fixtureUiClick;
     if (captureFramePath) result.captureFramePath = captureFramePath;
     const frameIsVisible = (frame) => frame && (
       frame.nonBlackRatio >= 0.1 &&

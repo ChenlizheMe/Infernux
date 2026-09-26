@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import math
 
-from Infernux.components.builtin.collider import Collider
+from Infernux.components.builtin.collider import Collider, _native_collider_properties
 from Infernux.components.builtin_component import CppProperty
-from Infernux.components.fields import FieldType
 
 
 class CylinderCollider(Collider):
@@ -14,29 +13,10 @@ class CylinderCollider(Collider):
 
     _cpp_type_name = "CylinderCollider"
 
-    radius = CppProperty(
-        "radius",
-        FieldType.FLOAT,
-        default=0.5,
-        tooltip="Radius of the cylinder collider",
-        range=(0.001, 100000.0),
-        slider=False,
-    )
-    height = CppProperty(
-        "height",
-        FieldType.FLOAT,
-        default=1.0,
-        tooltip="Total height of the cylinder",
-        range=(0.001, 100000.0),
-        slider=False,
-    )
-    direction = CppProperty(
-        "direction",
-        FieldType.INT,
-        default=1,
-        tooltip="Local cylinder axis: 0=X, 1=Y, 2=Z",
-        range=(0, 2),
-    )
+    center, is_trigger, physic_material = _native_collider_properties(_cpp_type_name)
+    radius = CppProperty.from_native(_cpp_type_name, "radius")
+    height = CppProperty.from_native(_cpp_type_name, "height")
+    direction = CppProperty.from_native(_cpp_type_name, "direction")
 
     def on_draw_gizmos_selected(self):
         from Infernux.gizmos import Gizmos

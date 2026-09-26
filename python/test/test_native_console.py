@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -68,6 +69,20 @@ class TestNativeConsolePanel:
         assert panel.get_info_count() == 0
         assert panel.get_warning_count() == 0
         assert panel.get_error_count() == 0
+
+    def test_projected_console_selection_owns_a_native_selection_set(self):
+        panel = ConsolePanel()
+        panel.log_from_python(LogLevel.Info, "selected")
+        uid = panel._get_visible_log_snapshot(1)[0]["uid"]
+
+        panel.set_selection_snapshot(uid)
+        assert panel._selected_uid == uid
+        assert panel._selected_uids == [uid]
+        assert panel.has_selected_entry()
+
+        panel.clear()
+        assert panel._selected_uids == []
+        assert not panel.has_selected_entry()
 
     def test_remove_entries_from_source_is_selective(self, tmp_path):
         panel = ConsolePanel()
@@ -170,6 +185,29 @@ class TestNativeConsolePanel:
         assert "std::to_string" in render_row
         assert "char label[" not in render_row
 
+    def test_console_ctrl_selection_and_combined_detail_are_native(self):
+        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(encoding="utf-8")
+        render_row = source[
+            source.index("void ConsolePanel::RenderRow") : source.index("const ImVec4 &ConsolePanel::LevelColor")
+        ]
+
+        assert "ImGui::GetIO().KeyCtrl" in render_row
+        assert "ToggleLocalSelection(ve.uid)" in render_row
+        assert "SelectedVisibleIndices()" in source
+        assert 'detailText += "\\n" + log.sourceFile + ":"' in source
+
+    def test_console_filter_rebuild_resets_virtual_scroll_immediately(self):
+        source = Path("cpp/infernux/function/editor/ConsolePanel.cpp").read_text(encoding="utf-8")
+        render = source[
+            source.index("void ConsolePanel::OnRenderContent") : source.index("void ConsolePanel::PreRender")
+        ]
+
+        assert "m_resetScrollToTop = true" in source
+        assert "ImGui::SetScrollY(0.0f)" in source
+        assert "scrollY = 0.0f" in source
+        assert "if (!wrapOptions)" in source
+        assert render.index("RenderToolbar(ctx)") < render.index("EnsureCache()") < render.index("RenderBody(ctx)")
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Debug → C++ bridge
@@ -187,6 +225,14 @@ class TestDebugBridge:
     def test_debug_error_reaches_native(self, native_console):
         Debug.log_error("bridge error")
         assert native_console.get_error_count() == 1
+
+    def test_debug_source_location_reaches_native_console(self, native_console):
+        source_line = sys._getframe().f_lineno + 1
+        Debug.log("native source location")
+
+        entry = native_console._get_visible_log_snapshot(1)[0]
+        assert Path(entry["source_file"]).resolve() == Path(__file__).resolve()
+        assert entry["source_line"] == source_line
 
     def test_debug_exception_reaches_native(self, native_console):
         try:

@@ -1535,6 +1535,12 @@ int main()
     assert(runtime.RecordUpdate(encoder, 7, 10, 1.0f / 60.0f, graphSpawnGroup));
     assert(trace.constants.size() == 1 && trace.constants[0].aliveReadSlot == 0u &&
            trace.constants[0].aliveWriteSlot == 1u && trace.indirectOffsets == std::vector<uint64_t>({0u}));
+    // The ordinary update path is sized by the GPU-owned live-count indirect
+    // arguments. It neither dispatches the complete capacity from the CPU nor
+    // reads the live list back merely to learn how much work remains.
+    assert(trace.dispatches.empty() &&
+           trace.indirectBuffers == std::vector<rhi::BufferHandle>({runtime.AliveDispatchBuffer()}) &&
+           device.readbacks == 0u);
     runtime.PublishAliveWrite();
     assert(runtime.AliveReadSlot() == 1 && runtime.AliveWriteSlot() == 0);
     assert(runtime.AdoptCompatibleRevision(fusedRuntime));
@@ -2592,6 +2598,12 @@ int main()
         const rhi::GraphicsCommandEncoder meshEncoder(&meshTrace, &meshGraphicsDispatch);
         assert(meshRenderer.RecordDraw(meshEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
         assert(meshTrace.indirectBuffers == std::vector<rhi::BufferHandle>({indirectBuffer}));
+        // Simulation/rendering writes instance attributes and indirect counts
+        // into GPU-resident buffers. The mesh output consumes the exact same
+        // handles; normal frames do not materialize either stream on the CPU.
+        assert(meshRenderer.InstanceBuffer() == runtime.InstanceBuffer() &&
+               meshRenderer.RenderIndexBuffer() == runtime.RenderIndexBuffer() && meshDevice.readbacks == 0u &&
+               device.readbacks == 0u);
         assert(meshDevice.graphicsPipelineDescs.size() == 1 &&
                meshDevice.graphicsPipelineDescs[0].raster.cullMode == rhi::CullMode::Back &&
                meshDevice.graphicsPipelineDescs[0].raster.frontFace == rhi::FrontFace::Clockwise);

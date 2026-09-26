@@ -66,6 +66,112 @@ def test_default_editor_and_game_ui_font_size_is_18px():
     assert inspect.signature(Engine.set_gui_font).parameters["font_size"].default == 18
 
 
+def test_direct_ui_resize_makes_layout_axes_authoritative():
+    from Infernux.engine.ui.ui_rect_manipulation import (
+        layout_snapshot,
+        prepare_layout_resize,
+    )
+    from Infernux.ui import UIText
+    from Infernux.ui.enums import TextResizeMode, UILayoutSizing
+
+    text = UIText()
+    text.width_sizing = UILayoutSizing.Fill
+    text.height_sizing = UILayoutSizing.Hug
+    text.resize_mode = TextResizeMode.AutoWidth
+    before = layout_snapshot(text)
+
+    prepare_layout_resize(text, width=True, height=False)
+
+    assert before["width_sizing"] == UILayoutSizing.Fill
+    assert before["height_sizing"] == UILayoutSizing.Hug
+    assert text.width_sizing == UILayoutSizing.Fixed
+    assert text.height_sizing == UILayoutSizing.Hug
+    assert text.resize_mode == TextResizeMode.FixedSize
+
+
+def test_shared_layout_size_commit_updates_only_touched_axes():
+    from Infernux.engine.ui.ui_rect_manipulation import apply_layout_size
+    from Infernux.ui import UIText
+    from Infernux.ui.enums import TextResizeMode, UILayoutSizing
+
+    text = UIText()
+    text.width = 120.0
+    text.height = 48.0
+    text.width_sizing = UILayoutSizing.Fill
+    text.height_sizing = UILayoutSizing.Hug
+    text.resize_mode = TextResizeMode.AutoHeight
+
+    apply_layout_size(text, width=260.0)
+
+    assert text.width == 260.0
+    assert text.height == 48.0
+    assert text.width_sizing == UILayoutSizing.Fixed
+    assert text.height_sizing == UILayoutSizing.Hug
+    assert text.resize_mode == TextResizeMode.FixedSize
+
+
+def test_button_render_color_consumes_selectable_state_tint():
+    from Infernux.ui import UIButton
+    from Infernux.ui.ui_render_dispatch import _get_button_bg
+    from Infernux.ui.ui_selectable import SelectionState
+
+    button = UIButton()
+    button.background_color = [0.8, 0.5, 0.25, 0.75]
+    button.normal_color = [1.0, 0.5, 0.25, 1.0]
+    button.highlighted_color = [0.25, 1.0, 0.5, 0.8]
+    button.pressed_color = [0.5, 0.25, 1.0, 0.4]
+
+    assert _get_button_bg(button) == pytest.approx([0.8, 0.25, 0.0625, 0.75])
+    button._current_state = SelectionState.Highlighted
+    assert _get_button_bg(button) == pytest.approx([0.2, 0.5, 0.125, 0.6])
+    button._current_state = SelectionState.Pressed
+    assert _get_button_bg(button) == pytest.approx([0.4, 0.125, 0.25, 0.3])
+
+
+
+def test_ui_material_slots_use_normal_material_assets_and_button_has_two_slots():
+    from Infernux.components.fields import get_serialized_fields
+    from Infernux.ui import UIButton, UIText
+    from Infernux.ui.ui_render_dispatch import _get_button_bg, _get_label_attrs
+
+    class Material:
+        _texture_assets_pending = False
+
+        def __init__(self, guid, color):
+            self.guid = guid
+            self.name = guid
+            self.native = self
+            self._color = color
+
+        def get_version(self):
+            return 1
+
+        def _get_render_texture(self, name):
+            return None
+
+        def has_property(self, name):
+            return name == "baseColor"
+
+        def get_color(self, name):
+            assert name == "baseColor"
+            return self._color
+
+    background = Material("background-material", (0.5, 0.25, 1.0, 0.8))
+    label = Material("text-material", (0.25, 1.0, 0.5, 0.5))
+    button = UIButton()
+    button.background_color = [0.8, 0.4, 0.2, 1.0]
+    button.label_color = [1.0, 0.5, 0.25, 1.0]
+    button.background_material = background
+    button.text_material = label
+
+    assert button.material is background
+    assert _get_button_bg(button) == pytest.approx([0.4, 0.1, 0.2, 0.8])
+    _text, text_color, _attrs = _get_label_attrs(button, 1.0)
+    assert text_color == pytest.approx([0.25, 0.5, 0.125, 0.5])
+    assert {"material", "text_material"} <= set(get_serialized_fields(UIButton))
+    assert "material" in get_serialized_fields(UIText)
+
+
 def test_engine_gui_registration_forwards_overlay_priority():
     from types import SimpleNamespace
 
@@ -661,7 +767,7 @@ class TestWindowManager:
             document = _reset_editor_interaction_state.create(
                 DocumentKind.PARTICLE_GRAPH,
                 "Smoke",
-                key=DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, str(path)),
+                key=DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
                 resource_path=str(path),
                 revision=1,
                 saved_revision=0,
@@ -672,7 +778,11 @@ class TestWindowManager:
 
             manager.on_asset_mutation(
                 AssetContentChange(
-                    AssetMutation(AssetMutationKind.DELETED, str(path)),
+                    AssetMutation(
+                        AssetMutationKind.DELETED,
+                        str(path),
+                        guid="particle-guid",
+                    ),
                     1,
                 )
             )
@@ -2487,31 +2597,23 @@ class TestIGUIFilters:
 
 
 class TestUICanvasRaycast:
-    class _GameObject:
-        def __init__(self, active):
-            self.active_in_hierarchy = active
-
-    class _Element:
-        def __init__(self, active):
-            self.game_object = TestUICanvasRaycast._GameObject(active)
-            self.raycast_target = True
-            self.enabled = True
-
-        @staticmethod
-        def get_visual_rect(_ref_w, _ref_h):
-            return 0.0, 0.0, 100.0, 100.0
-
-        @staticmethod
-        def contains_point(_x, _y, _ref_w, _ref_h, _tolerance):
-            return True
-
-    def test_inactive_hierarchy_does_not_receive_raycast(self):
-        from Infernux.ui import UICanvas
+    def test_inactive_hierarchy_does_not_receive_raycast(self, scene):
+        from Infernux.ui import UICanvas, UIButton
 
         canvas = UICanvas()
-        visible = self._Element(True)
-        hidden_on_top = self._Element(False)
-        canvas._get_elements = lambda: [visible, hidden_on_top]
+        root = scene.create_game_object('Canvas')
+        root.add_py_component(canvas)
+        controls = []
+        for index in range(2):
+            obj = scene.create_game_object(f'Button {index}')
+            obj.set_parent(root)
+            button = UIButton()
+            obj.add_py_component(button)
+            button.width = button.height = 100
+            button.set_rect(0, 0, 100, 100, 1920, 1080)
+            controls.append(button)
+        visible, hidden_on_top = controls
+        hidden_on_top.game_object.active = False
 
         assert canvas.raycast(50.0, 50.0) is visible
         assert canvas.raycast_all(50.0, 50.0) == [visible]
@@ -2666,11 +2768,16 @@ class TestUICanvasCollectionCache:
         assert scene.root_queries == 1
 
 
-def test_screen_ui_rect_cache_survives_frames_and_invalidates_on_geometry_change(monkeypatch):
-    from Infernux.ui import UIText
+def test_screen_ui_rect_cache_survives_frames_and_invalidates_on_geometry_change(scene, monkeypatch):
+    from Infernux.ui import UICanvas, UIText
     from Infernux.ui.inx_ui_screen_component import clear_rect_cache
 
     element = UIText()
+    root = scene.create_game_object('Rect cache Canvas')
+    root.add_py_component(UICanvas())
+    child = scene.create_game_object('Rect cache Text')
+    child.set_parent(root)
+    child.add_py_component(element)
     calls = 0
     def counted_parent_rect(width, height):
         nonlocal calls
@@ -2691,24 +2798,40 @@ def test_screen_ui_rect_cache_survives_frames_and_invalidates_on_geometry_change
 
 def test_runtime_ui_packet_cache_reuses_static_text_and_tracks_mutation(monkeypatch):
     import Infernux.ui.ui_render_dispatch as dispatch_module
+    from Infernux.ui.ui_command_packets import UICommandPackets
     from Infernux.ui import UIText
 
     class Renderer:
         def __init__(self):
             self.text_calls = []
+            self.recording = None
+
+        def begin_command_packet(self):
+            self.recording = []
+
+        def end_command_packet(self):
+            packet, self.recording = self.recording, None
+            return tuple(packet)
+
+        def abort_command_packet(self):
+            self.recording = None
+
+        def append_command_packets(self, packets):
+            for packet in packets:
+                self.text_calls.extend(packet)
 
         def add_text(self, *args):
-            self.text_calls.append(args)
+            self.recording.append(args)
 
     element = UIText()
     renderer = Renderer()
     extract_calls = 0
     original_extract = dispatch_module.extract_common
 
-    def counted_extract(value):
+    def counted_extract(value, **kwargs):
         nonlocal extract_calls
         extract_calls += 1
-        return original_extract(value)
+        return original_extract(value, **kwargs)
 
     monkeypatch.setattr(dispatch_module, "extract_common", counted_extract)
     kwargs = {
@@ -2726,54 +2849,212 @@ def test_runtime_ui_packet_cache_reuses_static_text_and_tracks_mutation(monkeypa
         "get_tex_id": lambda _path: 0,
     }
 
-    assert dispatch_module.dispatch(element, "runtime", **kwargs)
-    assert dispatch_module.dispatch(element, "runtime", **kwargs)
+    renderer.measure_text = lambda *_: (160.0, 40.0)
+    packets = UICommandPackets()
+    def draw(current, target):
+        assert dispatch_module.dispatch(current, "runtime", **{**kwargs, "renderer": target})
+    packets.submit_elements((element,), renderer, draw)
+    packets.submit_elements((element,), renderer, draw)
+    packets.flush(renderer)
     assert extract_calls == 1
     assert len(renderer.text_calls) == 2
 
     element.text = "Updated"
-    assert dispatch_module.dispatch(element, "runtime", **kwargs)
+    packets.submit_elements((element,), renderer, draw)
+    packets.flush(renderer)
     assert extract_calls == 2
     assert renderer.text_calls[-1][5] == "Updated"
 
 
-def test_runtime_ui_revision_is_stable_and_tracks_visual_state():
+def test_runtime_text_packet_tracks_parent_group_alpha(scene):
+    from Infernux.ui import UIText, UIGroup
+    from Infernux.ui.ui_render_dispatch import dispatch
+
+    parent = scene.create_game_object("Text group")
+    group = UIGroup()
+    parent.add_py_component(group)
+    child = scene.create_game_object("Text")
+    child.set_parent(parent)
+    text = UIText()
+    child.add_py_component(text)
+    packets = []
+
+    class Renderer:
+        def add_text(self, *args):
+            packets.append(args)
+
+    renderer = Renderer()
+    for alpha in (1., .25, .5):
+        group.alpha = alpha
+        dispatch(text, "runtime", renderer=renderer, ui_list=0,
+                 sx=0., sy=0., sw=100., sh=40., ref_w=1920., ref_h=1080.,
+                 scale_x=1., scale_y=1., text_scale=1., get_tex_id=lambda _: 0)
+        assert packets[-1][9] == pytest.approx(alpha)
+
+
+def test_text_overflow_clip_reaches_runtime_draw_packet():
+    import Infernux.ui.ui_render_dispatch as dispatch_module
+    from Infernux.ui import UIText, TextOverflow
+
+    class Renderer:
+        def __init__(self):
+            self.text_calls = []
+
+        def add_text(self, *args):
+            self.text_calls.append(args)
+
+    element = UIText()
+    element.overflow = TextOverflow.Clip
+    renderer = Renderer()
+    assert dispatch_module.dispatch(
+        element,
+        "runtime",
+        renderer=renderer,
+        ui_list=0,
+        sx=10.0,
+        sy=20.0,
+        sw=160.0,
+        sh=40.0,
+        ref_w=1920.0,
+        ref_h=1080.0,
+        scale_x=1.0,
+        scale_y=1.0,
+        text_scale=1.0,
+        get_tex_id=lambda _path: 0,
+    )
+    assert renderer.text_calls[-1][-1] is True
+
+
+def test_explicit_fallback_font_chain_reaches_runtime_draw_packet(monkeypatch):
+    import Infernux.ui.ui_render_dispatch as dispatch_module
+    from Infernux.application import Application
+    from Infernux.core.asset_ref import create_asset_ref
+    from Infernux.engine.project_context import set_runtime_asset_resolver
+    from Infernux.ui import UIText, TextOverflow
+
+    class Renderer:
+        def __init__(self):
+            self.text_calls = []
+
+        def add_text(self, *args):
+            self.text_calls.append(args)
+
+    element = UIText()
+    element.overflow = TextOverflow.Clip
+    paths = {
+        "font-cjk": "Assets/Fonts/CJK.ttf",
+        "font-emoji": "Assets/Fonts/Emoji.ttf",
+    }
+    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
+    set_runtime_asset_resolver(lambda guid: paths.get(guid))
+    element.fallback_fonts = [
+        create_asset_ref("Font", guid=guid, path_hint="stale/path.ttf")
+        for guid in paths
+    ]
+    renderer = Renderer()
+    try:
+        assert dispatch_module.dispatch(
+            element,
+            "runtime",
+            renderer=renderer,
+            ui_list=0,
+            sx=10.0,
+            sy=20.0,
+            sw=160.0,
+            sh=40.0,
+            ref_w=1920.0,
+            ref_h=1080.0,
+            scale_x=1.0,
+            scale_y=1.0,
+            text_scale=1.0,
+            get_tex_id=lambda _path: 0,
+        )
+    finally:
+        set_runtime_asset_resolver(None)
+    assert renderer.text_calls[-1][-2] is True
+    assert renderer.text_calls[-1][-1] == [
+        "Assets/Fonts/CJK.ttf",
+        "Assets/Fonts/Emoji.ttf",
+    ]
+
+
+def test_text_font_guids_resolve_through_active_player_catalog(monkeypatch):
+    import Infernux.ui.ui_render_dispatch as dispatch_module
+    from Infernux.application import Application
+    from Infernux.core.asset_ref import create_asset_ref
+    from Infernux.engine.project_context import set_runtime_asset_resolver
+    from Infernux.ui import UIText
+
+    resolved = {
+        "font-primary": "Player/Library/Artifacts/Blob/primary.ttf",
+        "font-cjk": "Player/Library/Artifacts/Blob/cjk.ttf",
+    }
+    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
+    set_runtime_asset_resolver(lambda guid: resolved.get(guid))
+    try:
+        element = UIText()
+        element.font = create_asset_ref(
+            "Font", guid="font-primary", path_hint="Assets/Fonts/Old.ttf"
+        )
+        element.fallback_fonts = [
+            create_asset_ref(
+                "Font", guid="font-cjk", path_hint="Assets/Fonts/OldCJK.ttf"
+            )
+        ]
+        attrs = dispatch_module._extract_text_attrs(element)
+    finally:
+        set_runtime_asset_resolver(None)
+
+    assert attrs["font_path"] == resolved["font-primary"]
+    assert attrs["fallback_font_paths"] == [resolved["font-cjk"]]
+
+
+@pytest.mark.parametrize("component_type", ["UIText", "UIButton"])
+def test_ui_font_fields_serialize_guid_references_and_ignore_path_schema(component_type):
+    from Infernux.core.asset_ref import create_asset_ref
+    from Infernux.ui import UIButton, UIText
+
+    component = {"UIText": UIText, "UIButton": UIButton}[component_type]()
+    component.font = create_asset_ref(
+        "Font", guid="font-primary", path_hint="Assets/Fonts/Primary.ttf"
+    )
+    component.fallback_fonts = [
+        create_asset_ref(
+            "Font", guid="font-cjk", path_hint="Assets/Fonts/CJK.ttf"
+        )
+    ]
+
+    document = component._serialize_fields_document()
+    assert document["font"] == {
+        "$type": "asset_ref",
+        "asset_type": "Font",
+        "guid": "font-primary",
+    }
+    assert document["fallback_fonts"][0]["guid"] == "font-cjk"
+    assert "path_hint" not in document["fallback_fonts"][0]
+    assert "font_path" not in document
+    assert "fallback_font_paths" not in document
+
+    component._deserialize_fields_document({
+        "font_path": "Assets/Fonts/Old.ttf",
+        "fallback_font_paths": ["Assets/Fonts/OldFallback.ttf"],
+    })
+    assert component._serialize_fields_document() == document
+
+
+def test_runtime_ui_revision_is_stable_and_tracks_visual_state(scene):
     from Infernux.ui.ui_render_dispatch import runtime_ui_revision
     from Infernux.ui.ui_render_revision import mark_runtime_ui_dirty
+    from Infernux.ui import UICanvas, UIButton
 
-    class GameObject:
-        active_in_hierarchy = True
-
-    class Element:
-        game_object = GameObject()
-        enabled = True
-        _ui_render_revision = 3
-        _current_state = "normal"
-
-    class Canvas:
-        game_object = GameObject()
-        enabled = True
-        render_mode = 1
-        sort_order = 0
-        reference_width = 1920
-        reference_height = 1080
-        ui_scale_mode = 1
-        screen_match_mode = 0
-        match_width_or_height = 0.5
-        pixel_perfect = False
-
-        def __init__(self, element):
-            self._element = element
-
-        def _get_elements(self):
-            return [self._element]
-
-    class Scene:
-        structure_version = 7
-
-    element = Element()
-    scene = Scene()
-    canvases = [Canvas(element)]
+    owner = scene.create_game_object("Canvas")
+    canvas = UICanvas()
+    owner.add_py_component(canvas)
+    button = scene.create_game_object("Button")
+    button.set_parent(owner)
+    element = UIButton()
+    button.add_py_component(element)
+    canvases = [canvas]
 
     first = runtime_ui_revision(scene, canvases, 1280, 720, 2)
     assert runtime_ui_revision(scene, canvases, 1280, 720, 2) == first
@@ -2783,7 +3064,6 @@ def test_runtime_ui_revision_is_stable_and_tracks_visual_state():
     assert runtime_ui_revision(scene, canvases, 1280, 720, 2) != first
 
     element._current_state = "normal"
-    element._ui_render_revision += 1
     mark_runtime_ui_dirty()
     assert runtime_ui_revision(scene, canvases, 1280, 720, 2) != first
 
@@ -2808,21 +3088,23 @@ def test_canvas_reference_resolution_scales_without_center_crop():
     assert portrait_width * portrait_scale_x == pytest.approx(824.0)
     assert portrait_height * portrait_scale_y == pytest.approx(1830.0)
 
-def test_ui_scalar_reassignment_does_not_invalidate_runtime_commands():
+def test_ui_scalar_reassignment_does_not_invalidate_runtime_commands(monkeypatch):
     from Infernux.ui import UIText
     from Infernux.ui.ui_render_revision import get_runtime_ui_revision
+    from Infernux.ui import ui_render_revision
 
     text = UIText()
     initial_global = get_runtime_ui_revision()
-    initial_local = getattr(text, "_ui_render_revision", 0)
+    invalidated = []
+    monkeypatch.setattr(ui_render_revision, '_invalidate_ui_command_groups', invalidated.append)
 
     text.text = text.text
     assert get_runtime_ui_revision() == initial_global
-    assert getattr(text, "_ui_render_revision", 0) == initial_local
+    assert invalidated == []
 
     text.text = "Changed"
     assert get_runtime_ui_revision() == initial_global + 1
-    assert text._ui_render_revision == initial_local + 1
+    assert invalidated == [text]
 
 
 def test_persistent_event_combo_preserves_temporarily_unresolved_method():
@@ -2981,8 +3263,8 @@ class TestPanelFocusEvents:
             def __init__(self):
                 self.bound = []
 
-            def bind_document(self, document_id):
-                self.bound.append(document_id)
+            def bind_document(self, document_id, **options):
+                self.bound.append((document_id, options))
 
         bootstrap = EditorBootstrap.__new__(EditorBootstrap)
         bootstrap.scene_file_manager = SceneFiles()
@@ -3001,9 +3283,10 @@ class TestPanelFocusEvents:
         finally:
             SelectionService._instance = previous_selection
 
-        assert bootstrap.scene_view.bound == ["scene-document"]
-        assert bootstrap.game_view.bound == ["scene-document"]
-        assert bootstrap.ui_editor.bound == ["scene-document"]
+        expected = [("scene-document", {"preserve_previous": True})]
+        assert bootstrap.scene_view.bound == expected
+        assert bootstrap.game_view.bound == expected
+        assert bootstrap.ui_editor.bound == expected
 
     def test_document_binding_projects_focus_without_user_history(self):
         from Infernux.engine.interaction import (
@@ -3036,6 +3319,28 @@ class TestPanelFocusEvents:
         finally:
             DocumentRegistry._instance = previous_registry
             FocusService._instance = previous_focus
+
+    def test_loaded_document_switch_detaches_view_without_retiring_previous_document(self):
+        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from Infernux.engine.ui.closable_panel import ClosablePanel
+
+        previous_registry = DocumentRegistry._instance
+        registry = DocumentRegistry()
+        try:
+            scene_a = registry.create(DocumentKind.SCENE, "Scene A")
+            scene_b = registry.create(DocumentKind.SCENE, "Scene B")
+            panel = ClosablePanel("Scene", "scene_view")
+            panel.bind_document(scene_a.document_id)
+
+            panel.bind_document(scene_b.document_id, preserve_previous=True)
+
+            assert registry.get(scene_a.document_id) is scene_a
+            assert registry.get(scene_b.document_id) is scene_b
+            assert registry.document_for_view("scene_view") is scene_b
+            assert not scene_a.view_ids
+            assert scene_b.view_ids == {"scene_view"}
+        finally:
+            DocumentRegistry._instance = previous_registry
 
     def test_closable_panel_publishes_focus_only_through_focus_service(self):
         from Infernux.engine.ui.closable_panel import ClosablePanel
@@ -3488,6 +3793,10 @@ class TestSceneViewPicking:
             def get_active_scene():
                 return Scene()
 
+            @staticmethod
+            def find_runtime_object_by_id(object_id):
+                return Scene.find_by_id(object_id)
+
         monkeypatch.setattr(infernux_lib, "SceneManager", SceneManager)
 
         assert picking._has_mesh_pick_geometry(42) is True
@@ -3551,6 +3860,55 @@ class TestSceneViewPicking:
         assert probe._engine.requests == [(10.0, 12.0, 100.0, 80.0)]
         assert probe._pending_scene_pick["cpu_id"] == 42
         assert probe._pending_scene_pick["cpu_candidates"] == [42]
+
+    def test_world_ui_pick_is_not_overwritten_by_delayed_geometry_pick(self):
+        from Infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
+
+        class Context:
+            @staticmethod
+            def is_mouse_button_clicked(_button):
+                return True
+
+            @staticmethod
+            def is_key_down(_key):
+                return False
+
+        class Viewport:
+            width = 100.0
+            height = 80.0
+
+        class Engine:
+            def __init__(self):
+                self.requests = []
+
+            def request_scene_object_pick(self, *args):
+                self.requests.append(args)
+                return 7
+
+        class PickingProbe(SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._box_select_active = False
+                self._pending_scene_pick = None
+                self._last_world_ui_pick_ids = (42,)
+                self.picked = []
+                self._on_object_picked = lambda object_id, ctrl: self.picked.append(
+                    (object_id, ctrl)
+                )
+
+            def _pick_scene_object(self, _ctx, _viewport):
+                self._last_world_ui_pick_ids = (42,)
+                return 42
+
+        probe = PickingProbe()
+        probe._handle_picking_and_selection(
+            Context(), Viewport(), gizmo_consumed=False, overlay_hovered=False,
+            is_scene_hovered=True, play_border_clr=None,
+        )
+
+        assert probe.picked == [(42, False)]
+        assert probe._pending_scene_pick is None
+        assert probe._engine.requests == []
 
     def test_scene_click_defers_mesh_selection_until_gpu_refinement(self, monkeypatch):
         from Infernux.engine.ui import _scene_view_picking as picking
@@ -3616,6 +3974,104 @@ class TestSceneViewPicking:
             assert probe.picked == [(42, False)]
         finally:
             selection.apply_snapshot(previous, record_history=False)
+
+    def test_scene_icon_owner_with_mesh_selects_without_gpu_overwrite(self, monkeypatch):
+        from Infernux.engine.ui import _scene_view_picking as picking
+
+        class Context:
+            @staticmethod
+            def is_mouse_button_clicked(_button):
+                return True
+
+            @staticmethod
+            def is_key_down(_key):
+                return False
+
+        class Viewport:
+            width = 100.0
+            height = 80.0
+
+        class Engine:
+            def __init__(self):
+                self.requests = []
+
+            def request_scene_object_pick(self, *args):
+                self.requests.append(args)
+                return 7
+
+        class PickingProbe(picking.SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._box_select_active = False
+                self._pending_scene_pick = None
+                self._pick_cycle_candidates = [42, 7]
+                self._pick_cycle_index = 0
+                self._last_scene_icon_pick_ids = (42,)
+                self.picked = []
+                self._on_object_picked = lambda object_id, ctrl: self.picked.append((object_id, ctrl))
+
+            def _pick_scene_object(self, _ctx, _viewport):
+                self._last_scene_icon_pick_ids = (42,)
+                return 42
+
+        monkeypatch.setattr(picking, "_has_mesh_pick_geometry", lambda object_id: object_id == 42)
+        probe = PickingProbe()
+        probe._handle_picking_and_selection(
+            Context(), Viewport(), gizmo_consumed=False, overlay_hovered=False,
+            is_scene_hovered=True, play_border_clr=None,
+        )
+        assert probe.picked == [(42, False)]
+        assert probe._engine.requests == []
+        assert probe._pending_scene_pick is None
+
+    def test_scene_icon_precedes_conservative_mesh_bounds_at_same_pixel(self):
+        from Infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
+
+        class Context:
+            @staticmethod
+            def get_mouse_pos_x():
+                return 421.0
+
+            @staticmethod
+            def get_mouse_pos_y():
+                return 130.0
+
+        class Viewport:
+            image_min_x = 0.0
+            image_min_y = 0.0
+            width = 975.0
+            height = 587.0
+
+            @staticmethod
+            def mouse_local(ctx):
+                return ctx.get_mouse_pos_x(), ctx.get_mouse_pos_y()
+
+        class Engine:
+            @staticmethod
+            def pick_scene_icon_object_ids(*_args):
+                return [411]
+
+            @staticmethod
+            def pick_scene_object_ids(*_args):
+                # Large imported-mesh AABBs cross this pixel even though the
+                # light icon is the visible editor overlay under the cursor.
+                return [290, 291, 292, 293, 294, 411]
+
+            @staticmethod
+            def screen_to_world_ray(*_args):
+                return None
+
+        class PickingProbe(SceneViewPickingMixin):
+            def __init__(self):
+                self._engine = Engine()
+                self._pick_cycle_candidates = []
+                self._pick_cycle_index = -1
+                self._pick_cycle_last_mouse = (-100.0, -100.0)
+                self._pick_cycle_last_viewport = (0, 0)
+
+        probe = PickingProbe()
+        assert probe._pick_scene_object(Context(), Viewport()) == 411
+        assert probe._pick_cycle_candidates == [411, 290, 291, 292, 293, 294]
 
     def test_deferred_mesh_selection_falls_back_when_gpu_pick_fails(self):
         from Infernux.engine.ui import _scene_view_picking as picking
@@ -3822,6 +4278,10 @@ class TestSceneViewPicking:
         from Infernux.engine.interaction import SelectionService
 
         class Engine:
+            @staticmethod
+            def pick_scene_icon_object_ids(*_args):
+                return []
+
             @staticmethod
             def pick_scene_object_ids(*_args):
                 return [7, 99]
@@ -4061,6 +4521,10 @@ class TestSceneViewPicking:
 
         class Engine:
             @staticmethod
+            def pick_scene_icon_object_ids(*_args):
+                return []
+
+            @staticmethod
             def pick_scene_object_ids(*_args):
                 return [42, 7]
 
@@ -4100,6 +4564,26 @@ class TestSceneViewPicking:
         assert probe._pick_scene_object(Context(), Viewport()) == 99
         assert probe._pick_cycle_candidates == [42, 99, 7]
         assert probe._pick_scene_object(Context(), Viewport()) == 7
+
+    def test_new_spot_does_not_keep_a_selected_non_particle_background(self, monkeypatch):
+        from Infernux.engine.ui import _scene_view_picking as picking
+
+        probe = picking.SceneViewPickingMixin()
+        probe._pick_cycle_candidates = [211]
+        probe._pick_cycle_index = 0
+        probe._pick_cycle_last_mouse = (10.0, 10.0)
+        probe._pick_cycle_last_viewport = (100, 80)
+
+        monkeypatch.setattr(
+            picking.SceneViewPickingMixin,
+            "_current_scene_pick_id",
+            staticmethod(lambda: 211),
+        )
+        monkeypatch.setattr(picking, "_owns_particle_system", lambda _object_id: False)
+
+        assert probe._cycle_pick_candidates(
+            [212, 211], 40.0, 40.0, 100.0, 80.0
+        ) == 212
 
 
 class TestEditorPanelVisibilityLifecycle:
@@ -4214,6 +4698,7 @@ def test_ui_editor_nudge_executes_before_recording_and_replays_through_history()
 
     from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
     from Infernux.engine.undo import UndoManager
+    from Infernux.lib import Vector3
 
     class ProbePanel(UIEditorPanel):
         def __init__(self, element):
@@ -4226,18 +4711,109 @@ def test_ui_editor_nudge_executes_before_recording_and_replays_through_history()
 
     previous_manager = UndoManager.instance()
     manager = UndoManager()
-    panel = ProbePanel(SimpleNamespace(x=12.0, y=24.0))
+    transform = SimpleNamespace(local_position=Vector3(12.0, -24.0, 3.0))
+    game_object = SimpleNamespace(transform=transform)
+    panel = ProbePanel(SimpleNamespace(_try_get_game_object=lambda: game_object))
     try:
         assert panel.command_nudge_selected(-1, 10)
-        assert (panel.element.x, panel.element.y) == (11.0, 34.0)
+        assert tuple(transform.local_position) == pytest.approx((11.0, -34.0, 3.0))
         assert manager.undo_description == "Nudge UI Element"
 
         manager.undo()
-        assert (panel.element.x, panel.element.y) == (12.0, 24.0)
+        assert tuple(transform.local_position) == pytest.approx((12.0, -24.0, 3.0))
         manager.redo()
-        assert (panel.element.x, panel.element.y) == (11.0, 34.0)
+        assert tuple(transform.local_position) == pytest.approx((11.0, -34.0, 3.0))
     finally:
         UndoManager._instance = previous_manager
+
+
+def test_ui_reparent_preserves_canvas_rect_after_parent_change_and_undo_redo(
+    scene, monkeypatch,
+):
+    from Infernux.engine.undo import ReparentCommand
+    from Infernux.engine.undo import _structural_commands
+    from Infernux.ui import UICanvas, UIFrame, UIImage
+
+    canvas_a_object = scene.create_game_object("Canvas A")
+    canvas_a = UICanvas()
+    canvas_a.reference_width = 1000
+    canvas_a.reference_height = 500
+    canvas_a_object.add_py_component(canvas_a)
+
+    canvas_b_object = scene.create_game_object("Canvas B")
+    canvas_b = UICanvas()
+    canvas_b.reference_width = 2400
+    canvas_b.reference_height = 1350
+    canvas_b_object.add_py_component(canvas_b)
+
+    parent_a_object = scene.create_game_object("Parent A")
+    parent_a_object.set_parent(canvas_a_object, False)
+    parent_a = UIFrame()
+    parent_a_object.add_py_component(parent_a)
+    parent_a.set_rect(120.0, 70.0, 420.0, 230.0, 1000.0, 500.0)
+
+    parent_b_object = scene.create_game_object("Parent B")
+    parent_b_object.set_parent(canvas_b_object, False)
+    parent_b = UIFrame()
+    parent_b_object.add_py_component(parent_b)
+    parent_b.set_rect(760.0, 410.0, 680.0, 360.0, 2400.0, 1350.0)
+
+    child_object = scene.create_game_object("Image")
+    child_object.set_parent(parent_a_object, False)
+    child = UIImage()
+    child_object.add_py_component(child)
+    child.set_rect(205.0, 126.0, 96.0, 54.0, 1000.0, 500.0)
+    expected_rect = child.get_rect(1000.0, 500.0)
+
+    monkeypatch.setattr(
+        _structural_commands, "_find_runtime_object", scene.find_by_id,
+    )
+    monkeypatch.setattr(
+        _structural_commands, "_get_scene_by_world_id", lambda _world_id: scene,
+    )
+    command = ReparentCommand(
+        child_object.id, parent_a_object.id, parent_b_object.id,
+    )
+
+    command.execute()
+    assert child_object.get_parent() is parent_b_object
+    assert child.get_rect(2400.0, 1350.0) == pytest.approx(expected_rect)
+
+    command.undo()
+    assert child_object.get_parent() is parent_a_object
+    assert child.get_rect(1000.0, 500.0) == pytest.approx(expected_rect)
+
+    command.redo()
+    assert child_object.get_parent() is parent_b_object
+    assert child.get_rect(2400.0, 1350.0) == pytest.approx(expected_rect)
+
+
+def test_ui_editor_rotation_geometry_reads_transform_authority(scene):
+    from Infernux.engine.ui._ui_editor_alignment import UIEditorAlignmentMixin
+    from Infernux.engine.ui._ui_editor_geometry import UIEditorGeometryMixin
+    from Infernux.lib import Vector3
+    from Infernux.ui import UIImage
+
+    owner = scene.create_game_object("Rotated UI")
+    image = UIImage()
+    owner.add_py_component(image)
+    owner.transform.local_euler_angles = Vector3(0.0, 0.0, 37.0)
+
+    geometry = UIEditorGeometryMixin()
+    geometry._zoom = 1.0
+    geometry._pan_x = 0.0
+    geometry._pan_y = 0.0
+    oriented = geometry._get_oriented_box_screen(
+        image, 1920.0, 1080.0, 0.0, 0.0,
+    )
+    assert len(oriented["corners"]) == 4
+
+    alignment = UIEditorAlignmentMixin()
+    alignment._active_alignment_guides = [("stale",)]
+    assert alignment._apply_resize_alignment_snapping(
+        None, image, 100.0, 50.0, 1, 1, 0, 1920.0, 1080.0,
+    ) == (100.0, 50.0)
+    assert alignment._active_alignment_guides == []
 
 
 def test_ui_editor_selection_identity_uses_game_object_id_not_wrapper_identity():
@@ -4255,8 +4831,8 @@ def test_ui_editor_selection_identity_uses_game_object_id_not_wrapper_identity()
 
 
 def test_runtime_image_packet_refreshes_when_async_texture_becomes_ready():
-    from types import SimpleNamespace
-
+    from Infernux.core.asset_ref import TextureRef
+    from Infernux.ui import UIImage
     from Infernux.ui.ui_render_dispatch import _runtime_render_image
 
     class Renderer:
@@ -4271,17 +4847,17 @@ def test_runtime_image_packet_refreshes_when_async_texture_becomes_ready():
             self.images.append(arguments)
 
     renderer = Renderer()
-    element = SimpleNamespace(
-        texture_path="Assets/Textures/hud.png",
-        color=[1.0, 1.0, 1.0, 1.0],
-        opacity=1.0,
-        rotation=0.0,
-        mirror_x=False,
-        mirror_y=False,
-        corner_radius=0.0,
-        _ui_render_revision=7,
+    element = UIImage()
+    texture = TextureRef(
+        guid="texture-guid", path_hint="Assets/Textures/hud.png",
     )
+    element.texture = texture
     texture_id = [0]
+    requested_sources = []
+
+    def get_texture_id(source):
+        requested_sources.append(source)
+        return texture_id[0]
 
     def render():
         _runtime_render_image(
@@ -4294,7 +4870,7 @@ def test_runtime_image_packet_refreshes_when_async_texture_becomes_ready():
             50.0,
             1.0,
             1.0,
-            lambda _path: texture_id[0],
+            get_texture_id,
         )
 
     render()
@@ -4306,9 +4882,119 @@ def test_runtime_image_packet_refreshes_when_async_texture_becomes_ready():
     assert len(renderer.rects) == 1
     assert len(renderer.images) == 1
     assert renderer.images[0][1] == 73
+    assert requested_sources == [texture, texture]
 
 
-def test_ui_editor_continuous_manipulation_is_core_owned_and_fail_closed():
+def test_image_and_button_texture_sources_use_only_their_current_contracts():
+    from Infernux.core.asset_ref import TextureRef
+    from Infernux.engine.ui.inspector_ui_components import _has_native_size_texture
+    from Infernux.ui import UIButton, UIImage
+    from Infernux.ui.ui_render_dispatch import image_texture_source
+
+    material_state = {"texture": None, "texture_guid": ""}
+    image = UIImage()
+    image_texture = TextureRef(
+        guid="image-texture-guid", path_hint="Assets/Textures/image.png",
+    )
+    image.texture = image_texture
+    button = UIButton()
+    button_texture = TextureRef(
+        guid="button-texture-guid", path_hint="Assets/Textures/button.png",
+    )
+    button.background_texture = button_texture
+
+    assert image_texture_source(image, material_state) is image_texture
+    assert image_texture_source(button, material_state) is button_texture
+    assert _has_native_size_texture(image)
+    assert _has_native_size_texture(button)
+
+    material_texture = object()
+    material_state["texture"] = material_texture
+    button.background_texture = None
+    assert image_texture_source(button, material_state) is material_texture
+
+
+def test_button_obsolete_texture_path_is_ignored_in_favor_of_current_slot():
+    from Infernux.components.fields import get_raw_field_value
+    from Infernux.core.asset_ref import TextureRef
+    from Infernux.ui import UIButton
+
+    button = UIButton()
+    current = TextureRef(
+        guid="button-current-guid", path_hint="Assets/Textures/current.png",
+    )
+    button.background_texture = current
+    button._deserialize_fields_document({
+        "texture_path": "Assets/Textures/legacy.png",
+        "background_texture": None,
+    })
+    assert get_raw_field_value(button, "background_texture") is None
+
+
+def test_runtime_text_packet_refreshes_when_transform_rotation_changes(scene):
+    from Infernux.lib import Vector3
+    from Infernux.ui import UIText
+    from Infernux.ui.ui_render_dispatch import _runtime_render_text
+
+    class Renderer:
+        def __init__(self):
+            self.text_calls = []
+
+        def add_text(self, *arguments):
+            self.text_calls.append(arguments)
+
+    element = UIText()
+    game_object = scene.create_game_object("Rotating text")
+    game_object.add_py_component(element)
+    renderer = Renderer()
+
+    def render():
+        _runtime_render_text(
+            element,
+            renderer,
+            0,
+            sx=10.0,
+            sy=20.0,
+            sw=100.0,
+            sh=50.0,
+            ref_w=1920.0,
+            ref_h=1080.0,
+            scale_x=1.0,
+            scale_y=1.0,
+            text_scale=1.0,
+            get_tex_id=lambda _path: 0,
+        )
+
+    render()
+    assert renderer.text_calls[-1][14] == 0.0
+
+    game_object.transform.local_euler_angles = Vector3(0.0, 0.0, 90.0)
+    render()
+
+    assert len(renderer.text_calls) == 2
+    assert renderer.text_calls[-1][14] == 90.0
+
+    game_object.transform.local_euler_angles = Vector3(15.0, 25.0, 45.0)
+    _runtime_render_text(
+        element,
+        renderer,
+        2,
+        sx=0.0,
+        sy=0.0,
+        sw=100.0,
+        sh=50.0,
+        ref_w=100.0,
+        ref_h=50.0,
+        scale_x=1.0,
+        scale_y=1.0,
+        text_scale=1.0,
+        get_tex_id=lambda _path: 0,
+        world_transform_owned=True,
+    )
+    assert renderer.text_calls[-1][14] == 0.0
+
+
+def test_ui_editor_continuous_manipulation_rejects_non_transform_targets():
     from types import SimpleNamespace
 
     from Infernux.engine.interaction import (
@@ -4342,41 +5028,83 @@ def test_ui_editor_continuous_manipulation_is_core_owned_and_fail_closed():
         capture_context=lambda: EditorContextSnapshot(focus=focus.snapshot),
     )
     EditorInteractionCore._instance = core
-    element = SimpleNamespace(x=12.0, y=24.0, rotation=0.0)
+    element = SimpleNamespace()
+    panel = ProbePanel(element)
+    try:
+        with pytest.raises(RuntimeError, match="current screen component"):
+            panel._begin_element_manipulation("drag", element)
+        assert edits.active_count == 0
+        assert focus.snapshot.capture_owner_id == ""
+    finally:
+        UndoManager._instance = previous_manager
+        EditorInteractionCore._instance = previous_core
+        ContinuousEditService._instance = previous_edits
+        FocusService._instance = previous_focus
+
+
+def test_ui_editor_transform_backed_gesture_records_native_transform():
+    from types import SimpleNamespace
+
+    from Infernux.components.value_codec import VALUE_CODECS
+    from Infernux.engine.interaction import (
+        ContinuousEditService,
+        EditorContextSnapshot,
+        EditorInteractionCore,
+        FocusService,
+    )
+    from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
+    from Infernux.engine.undo import UndoManager
+    from Infernux.lib import Vector3
+
+    class ProbePanel(UIEditorPanel):
+        def __init__(self, element):
+            super().__init__()
+            self.element = element
+
+        @property
+        def _selected_element_comp(self):
+            return self.element
+
+    previous_manager = UndoManager.instance()
+    previous_core = EditorInteractionCore._instance
+    previous_edits = ContinuousEditService._instance
+    previous_focus = FocusService._instance
+    manager = UndoManager()
+    edits = ContinuousEditService()
+    focus = FocusService()
+    core = SimpleNamespace(
+        continuous_edits=edits,
+        focus=focus,
+        capture_context=lambda: EditorContextSnapshot(focus=focus.snapshot),
+    )
+    EditorInteractionCore._instance = core
+    transform = SimpleNamespace(
+        local_position=Vector3(1.0, 2.0, 3.0),
+        local_euler_angles=Vector3(0.0, 0.0, 0.0),
+    )
+    game_object = SimpleNamespace(id=72, transform=transform)
+    element = SimpleNamespace(
+        _try_get_game_object=lambda: game_object,
+        width=160.0,
+        height=40.0,
+    )
     panel = ProbePanel(element)
     try:
         assert panel._begin_element_manipulation("drag", element)
-        assert focus.snapshot.capture_owner_id == "ui_editor.manipulation"
-        assert edits.active_count == 1
         assert panel._mutate_element_manipulation(
-            lambda: (setattr(element, "x", 32.0), setattr(element, "y", 44.0))
+            lambda: setattr(transform, "local_position", Vector3(4.0, 5.0, 6.0))
         )
         assert panel._finish_element_manipulation(commit=True)
-        assert edits.active_count == 0
-        assert focus.snapshot.capture_owner_id == ""
         assert manager.undo_description == "Move UI Element"
-        entry = manager.action_journal.peek_undo()
-        assert entry is not None
-        assert entry.after_context.focus.capture_owner_id == ""
 
         manager.undo()
-        assert (element.x, element.y) == (12.0, 24.0)
-        manager.redo()
-        assert (element.x, element.y) == (32.0, 44.0)
-
-        assert panel._begin_element_manipulation("rotate", element)
-        assert panel._mutate_element_manipulation(
-            lambda: setattr(element, "rotation", 90.0)
+        assert VALUE_CODECS.encode(transform.local_position) == pytest.approx(
+            [1.0, 2.0, 3.0]
         )
-        assert panel._finish_element_manipulation(commit=False)
-        assert element.rotation == 0.0
-        assert manager.undo_description == "Move UI Element"
-
-        manager.enabled = False
-        before = (element.x, element.y)
-        assert not panel._begin_element_manipulation("drag", element)
-        assert not panel._apply_drag_suppressed(100.0, 200.0, 800.0, 600.0)
-        assert (element.x, element.y) == before
+        manager.redo()
+        assert VALUE_CODECS.encode(transform.local_position) == pytest.approx(
+            [4.0, 5.0, 6.0]
+        )
     finally:
         UndoManager._instance = previous_manager
         EditorInteractionCore._instance = previous_core

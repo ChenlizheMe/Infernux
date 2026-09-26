@@ -72,10 +72,43 @@ def test_lowercase_namespace_exposes_gameplay_api() -> None:
     assert inx.GameObject is Infernux.GameObject
 
 
+def test_lowercase_namespace_imports_with_web_runtime_package() -> None:
+    repository = Path(__file__).parents[2]
+    python_root = repository / "python"
+    code = r'''
+import sys
+from types import ModuleType
+
+package = ModuleType("Infernux")
+package.__path__ = [sys.argv[1]]
+package.__all__ = ("sentinel",)
+package.sentinel = object()
+sys.modules["Infernux"] = package
+
+import infernux as inx
+from Infernux.version import ENGINE_VERSION
+
+assert not hasattr(package, "__version__")
+assert inx.__version__ == ENGINE_VERSION
+assert inx.sentinel is package.sentinel
+'''
+    completed = subprocess.run(
+        [sys.executable, "-c", code, str(python_root / "Infernux")],
+        cwd=repository,
+        env={**os.environ, "PYTHONPATH": str(python_root)},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_lowercase_namespace_lazily_forwards_subsystems() -> None:
     for name in (
         "components",
         "core",
+        "editor",
         "input",
         "lifecycle",
         "physics",
@@ -92,6 +125,14 @@ def test_lowercase_namespace_lazily_forwards_subsystems() -> None:
     assert inx.renderstack.__name__ == "Infernux.renderstack"
     assert inx.resources.__name__ == "Infernux.resources"
     assert callable(inx.renderstack.discovery_import_failures)
+
+
+def test_editor_namespace_reuses_authoritative_registries():
+    from Infernux.engine.interaction import EditorCommand, EditorCommandRegistry, ShortcutRouter
+
+    assert inx.editor.EditorCommand is EditorCommand
+    assert inx.editor.EditorCommandRegistry is EditorCommandRegistry
+    assert inx.editor.ShortcutRouter is ShortcutRouter
 
 
 def test_runtime_ui_public_import_does_not_load_editor_theme() -> None:
@@ -155,6 +196,7 @@ def test_lowercase_type_stub_explicitly_covers_runtime_exports() -> None:
         if node.module == "Infernux":
             explicit.update(alias.asname or alias.name for alias in node.names)
     assert set(inx.__all__) <= explicit
+    assert not [name for name in explicit if not hasattr(inx, name)]
 
 
 def test_lowercase_namespace_reload_preserves_runtime_type_identity() -> None:

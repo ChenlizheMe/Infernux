@@ -66,11 +66,21 @@ def project_asset_commands(tmp_path, monkeypatch):
         "import_asset",
         staticmethod(lambda _path, database=None: True),
     )
+    monkeypatch.setattr(
+        AssetManager,
+        "reimport_asset",
+        staticmethod(lambda _path, database=None: True),
+    )
+
+    class _Database:
+        @staticmethod
+        def get_guid_from_path(path):
+            return "registered-guid" if os.path.isfile(path) else ""
 
     journal = EditorActionJournal()
     manager = UndoManager(journal)
     service = ProjectAssetCommandService(SelectionService())
-    service.configure(str(tmp_path), None)
+    service.configure(str(tmp_path), _Database())
     try:
         yield service, manager, journal, assets
     finally:
@@ -100,6 +110,30 @@ def test_project_asset_service_records_automation_rename_once(project_asset_comm
     assert not (assets / "After.txt").exists()
 
 
+def test_project_asset_service_reads_and_replaces_registered_text_with_undo(
+    project_asset_commands,
+):
+    service, manager, journal, assets = project_asset_commands
+    source = assets / "Authored.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+
+    assert service.read_text(str(source)) == "value = 1\n"
+    assert service.set_text(
+        str(source),
+        "value = 2\n",
+        origin=ActionOrigin.AUTOMATION,
+    ) == str(source.resolve())
+    assert source.read_text(encoding="utf-8") == "value = 2\n"
+    assert len(journal.applied_entries()) == 1
+    assert journal.applied_entries()[0].origin is ActionOrigin.AUTOMATION
+
+    manager.undo()
+    assert source.read_text(encoding="utf-8") == "value = 1\n"
+
+    manager.redo()
+    assert source.read_text(encoding="utf-8") == "value = 2\n"
+
+
 @pytest.mark.parametrize("is_directory", (False, True))
 def test_project_asset_service_selects_renamed_asset_or_folder(
     project_asset_commands,
@@ -119,10 +153,41 @@ def test_project_asset_service_selects_renamed_asset_or_folder(
     )
 
     snapshot = selection.snapshot
-    target = SelectionTarget.asset(destination)
-    assert snapshot.targets == (target,)
-    assert snapshot.primary == target
-    assert snapshot.owner_id == "project"
+    if is_directory:
+        # Directories are navigation/view state, not registered asset identity.
+        assert snapshot.targets == ()
+        assert snapshot.primary is None
+    else:
+        target = SelectionTarget.asset("registered-guid")
+        assert snapshot.targets == (target,)
+        assert snapshot.primary == target
+        assert snapshot.owner_id == "project"
+
+
+@pytest.mark.parametrize("subresource", (False, True))
+def test_deleting_folder_clears_selected_child_guid(
+    project_asset_commands,
+    subresource,
+):
+    service, _manager, _journal, assets = project_asset_commands
+    folder = assets / "ToDelete"
+    folder.mkdir()
+    child = folder / "Mesh.fbx"
+    child.write_text("mesh", encoding="utf-8")
+    selection = SelectionService.instance()
+    target = (
+        SelectionTarget.asset_subresource(
+            "registered-guid", "mesh-id", sub_kind="mesh"
+        )
+        if subresource
+        else SelectionTarget.asset("registered-guid")
+    )
+    selection.select(target, owner_id="project", record_history=False)
+
+    service.delete((str(folder),))
+
+    assert not folder.exists()
+    assert selection.snapshot.primary is None
 
 
 def test_project_asset_interactions_own_clipboard_transfer_and_delete(

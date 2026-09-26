@@ -43,6 +43,8 @@ from Infernux.engine.undo._structural_commands import (
     ReparentCommand,
     MoveGameObjectCommand,
     SceneHierarchyLayoutCommand,
+    CrossSceneHierarchyMoveCommand,
+    AdditiveSceneResidencyCommand,
     GlobalContextCommand,
     GlobalFocusCommand,
     GlobalSelectionCommand,
@@ -63,6 +65,7 @@ from Infernux.engine.undo._asset_commands import (
     ProjectAssetMoveBatchCommand,
     ProjectAssetPasteCommand,
     ProjectAssetRenameCommand,
+    ProjectAssetTextCommand,
 )
 
 from Infernux.engine.undo._timeline_commands import (
@@ -126,10 +129,11 @@ __all__ = [
     "SetPropertyCommand", "BuiltinPropertyCommand",
     "GenericComponentCommand", "PythonComponentDocumentCommand", "MaterialDocumentCommand", "ResourceDocumentCommand", "SetMaterialSlotCommand", "SceneEnvironmentCommand",
     "CreateGameObjectCommand", "DeleteGameObjectCommand", "DeleteGameObjectsCommand",
-    "ReparentCommand", "MoveGameObjectCommand", "SceneHierarchyLayoutCommand",
+    "ReparentCommand", "MoveGameObjectCommand", "SceneHierarchyLayoutCommand", "CrossSceneHierarchyMoveCommand", "AdditiveSceneResidencyCommand",
     "GlobalContextCommand", "GlobalFocusCommand", "GlobalSelectionCommand", "PrefabModeCommand", "PrefabApplyOverridesCommand", "PrefabUnpackCommand",
     "PrefabRevertCommand",
     "ProjectAssetCreateCommand", "ProjectPrefabCreateCommand", "ProjectAssetRenameCommand",
+    "ProjectAssetTextCommand",
     "ImportSettingsDraftCommand",
     "ProjectAssetDeleteCommand",
     "ProjectAssetCopyCommand",

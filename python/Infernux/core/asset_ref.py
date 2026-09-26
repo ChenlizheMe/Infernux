@@ -14,20 +14,10 @@ from typing import Any, Optional
 
 
 def _get_asset_database():
-    """Return the C++ AssetDatabase, trying AssetManager first then engine."""
+    """Use the database owned by the current AssetManager lifecycle."""
     from Infernux.core.assets import AssetManager
 
-    if AssetManager._asset_database is not None:
-        return AssetManager._asset_database
-    try:
-        # Editor-only module; absent in stripped player runtimes.
-        from Infernux.engine.play_mode import PlayModeManager
-    except ImportError:
-        return None
-    pm = PlayModeManager.instance()
-    if pm and pm._asset_database is not None:
-        return pm._asset_database
-    return None
+    return AssetManager._asset_database
 
 
 class AssetRefBase:
@@ -53,6 +43,7 @@ class AssetRefBase:
 
     @guid.setter
     def guid(self, value: str):
+        value = str(value or "").strip()
         if value != self._guid:
             self._guid = value
             self._cached = None
@@ -83,7 +74,7 @@ class AssetRefBase:
 
     @path_hint.setter
     def path_hint(self, value: str):
-        self._path_hint = value
+        self._path_hint = str(value or "").strip()
 
     # ── Resolution ─────────────────────────────────────────────────────
 
@@ -111,15 +102,18 @@ class AssetRefBase:
     # ── Serialization ──────────────────────────────────────────────────
 
     def to_dict(self) -> dict:
-        return {"guid": self._guid, "path_hint": self._path_hint}
+        return {"guid": self._guid}
 
     @classmethod
     def from_dict(cls, d: dict) -> "AssetRefBase":
-        if type(d) is not dict or set(d) != {"guid", "path_hint"}:
-            raise ValueError("asset reference must use the complete current field set")
-        if type(d["guid"]) is not str or type(d["path_hint"]) is not str:
-            raise TypeError("asset reference values must be strings")
-        return cls(guid=d["guid"], path_hint=d["path_hint"])
+        if type(d) is not dict:
+            return cls()
+        # Old path-only fields and unrelated legacy keys carry no runtime
+        # identity.  A persisted hint without its GUID is ignored rather than
+        # becoming a stale display value or a recovery request.
+        guid = d.get("guid", "")
+        guid = guid if type(guid) is str else ""
+        return cls(guid=guid)
 
     # ── Display ────────────────────────────────────────────────────────
 
@@ -186,6 +180,21 @@ class TextureRef(AssetRefBase):
         return AssetManager.load_by_guid(self._guid, asset_type=Texture)
 
 
+class RenderTextureRef(AssetRefBase):
+    """Persistent reference to one shared RenderTexture, not its pixel contents."""
+
+    def resolve(self):
+        # AssetManager owns reference invalidation; the native owner already
+        # provides sharing. A second cache here would hide deletion/Undo.
+        return self._do_resolve() if self._guid else None
+
+    def _do_resolve(self):
+        from Infernux.core.assets import AssetManager
+        from Infernux.core.render_texture import RenderTexture
+
+        return AssetManager.load_by_guid(self._guid, asset_type=RenderTexture)
+
+
 class ShaderRef(AssetRefBase):
     """Reference to a Shader asset (resolves to ShaderAssetInfo)."""
 
@@ -202,6 +211,24 @@ class AudioClipRef(AssetRefBase):
         from Infernux.core.assets import AssetManager
         from Infernux.core.audio_clip import AudioClip
         return AssetManager.load_by_guid(self._guid, asset_type=AudioClip)
+
+
+class DataAssetRef(AssetRefBase):
+    """GUID reference to one shared typed DataAsset."""
+
+    def resolve(self):
+        # DataAsset identity is owned by AssetManager's current author/Play
+        # cache domain. A reference-local cache could retain an author object
+        # across Enter Play or a gameplay clone across Stop.
+        if not self._guid:
+            return None
+        return self._do_resolve()
+
+    def _do_resolve(self):
+        from Infernux.core.assets import AssetManager
+        from Infernux.core.data_asset import DataAsset
+
+        return AssetManager.load_by_guid(self._guid, asset_type=DataAsset)
 
 
 class PhysicMaterialRef(AssetRefBase):
@@ -274,16 +301,11 @@ class RenderEffectRef(AssetRefBase):
             # GUID is the asset identity; never fall back to a path when the
             # GUID lookup fails.
             return AssetManager.load_by_guid(self._guid, asset_type=RenderEffect)
-        if self._path_hint:
-            # Code-authored RenderStack references (Python-first API) may name
-            # an .effect file directly; without a GUID the explicit path *is*
-            # the identity, not a fallback.
-            return AssetManager.load(self._path_hint, asset_type=RenderEffect)
         # Runtime-created effects carry no GUID; the live object is the identity.
         return self._cached
 
     def __bool__(self):
-        return bool(self._guid or self._path_hint or self._cached is not None)
+        return bool(self._guid or self._cached is not None)
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -336,6 +358,11 @@ class AnimationClipRef(AssetRefBase):
 class AnimationClip3DRef(AssetRefBase):
     """Reference to an AnimationClip3D (.animclip3d) asset. GUID only."""
 
+    def resolve(self):
+        # Imported clips can be renamed or removed by model Apply. The animator
+        # owns its playback cache; an authoring ref must observe current output.
+        return self._do_resolve() if self._guid else None
+
     def _do_resolve(self):
         db = _get_asset_database()
         path = db.get_path_from_guid(self._guid) if db else ""
@@ -378,12 +405,14 @@ def _ensure_ref_classes():
     _ASSET_REF_CLASSES.update({
         "Material": MaterialRef,
         "Texture": TextureRef,
+        "RenderTexture": RenderTextureRef,
         "Shader": ShaderRef,
         "AudioClip": AudioClipRef,
         "PhysicMaterial": PhysicMaterialRef,
         "AnimStateMachine": AnimStateMachineRef,
         "ParticleGraph": ParticleGraphRef,
         "RenderEffect": RenderEffectRef,
+        "DataAsset": DataAssetRef,
         "AnimationClip": AnimationClipRef,
         "AnimationClip3D": AnimationClip3DRef,
         "AnimationTimeline": AnimationTimelineRef,
@@ -457,6 +486,14 @@ def create_asset_ref(
 
     _ensure_ref_classes()
     descriptor = asset_type_registry.require(asset_type)
+    if descriptor.compatible_types:
+        from .asset_reference_types import AssetReferenceCodec
+        payload = AssetReferenceCodec.normalize(
+            descriptor.type_id, {"guid": guid, "path_hint": path_hint}
+        )
+        if payload["asset_type"] not in descriptor.compatible_types:
+            raise ValueError(f"{asset_type} requires a concrete asset type")
+        descriptor = asset_type_registry.require(payload["asset_type"])
     ref_class = _ASSET_REF_CLASSES.get(descriptor.type_id)
     if ref_class is None:
         return GenericAssetRef(
@@ -494,6 +531,16 @@ class MaterialRef(AssetRefBase):
     """
 
     def __init__(self, material=None, *, guid: str = "", path_hint: str = ""):
+        if isinstance(material, str):
+            token = material.strip()
+            if os.path.sep in token or "/" in token or "\\" in token or os.path.splitext(token)[1]:
+                from .asset_reference_types import _resolve_path_guid
+
+                guid = _resolve_path_guid(token)
+                super().__init__(guid=guid, path_hint=token if guid else "")
+            else:
+                super().__init__(guid=token, path_hint=path_hint)
+            return
         if material is not None:
             extracted_guid = self._extract_guid(material)
             native = getattr(material, "native", material)
@@ -511,13 +558,6 @@ class MaterialRef(AssetRefBase):
         native = getattr(material, "native", material)
         if hasattr(native, "guid") and native.guid:
             return native.guid
-        file_path = getattr(native, "file_path", "") or ""
-        if file_path:
-            db = _get_asset_database()
-            if db:
-                g = db.get_guid_from_path(file_path)
-                if g:
-                    return g
         return ""
 
     def resolve(self):
@@ -551,8 +591,9 @@ class MaterialRef(AssetRefBase):
 
     @property
     def display_name(self) -> str:
-        if self._path_hint:
-            return os.path.basename(self._path_hint)
+        current_path = self.path_hint
+        if current_path:
+            return os.path.basename(current_path)
         if self._guid:
             return f"GUID:{self._guid[:8]}\u2026"
         # Runtime material — use its name directly
@@ -575,10 +616,10 @@ class MaterialRef(AssetRefBase):
         return getattr(mat, name)
 
     def __copy__(self):
-        return type(self)(guid=self._guid, path_hint=self._path_hint)
+        return type(self)(guid=self._guid)
 
     def __deepcopy__(self, memo):
-        copied = type(self)(guid=self._guid, path_hint=self._path_hint)
+        copied = type(self)(guid=self._guid)
         memo[id(self)] = copied
         return copied
 

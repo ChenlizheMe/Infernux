@@ -152,10 +152,16 @@ Scene *SceneManager::CreateScene(const std::string &name)
     scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
     Scene *ptr = scene.get();
     m_scenes.push_back(std::move(scene));
+    m_loadedSceneSet.insert(ptr);
 
     // If no active scene, make this one active
     if (!m_activeScene) {
         SetActiveScene(ptr);
+    }
+
+    if (m_isPlaying) {
+        ptr->SetPlaying(true);
+        ptr->Start();
     }
 
     if (m_onSceneLoaded) {
@@ -165,18 +171,35 @@ Scene *SceneManager::CreateScene(const std::string &name)
     return ptr;
 }
 
+Scene *SceneManager::CreatePreviewScene(const std::string &name)
+{
+    auto scene = std::make_unique<Scene>(name, true);
+    // Python records still need the binding bridge; execution is excluded by
+    // preview membership, not by disabling authored component flags.
+    scene->SetRuntimeLifecycleSchedulerEnabled(true);
+    auto *result = scene.get();
+    m_previewScenes.push_back(std::move(scene));
+    return result;
+}
+
+void SceneManager::ClosePreviewScene(Scene *scene)
+{
+    const auto it = std::find_if(m_previewScenes.begin(), m_previewScenes.end(),
+                                 [scene](const auto &item) { return item.get() == scene; });
+    if (it == m_previewScenes.end())
+        throw std::invalid_argument("Scene is not an open preview Scene");
+    m_previewScenes.erase(it);
+}
+
 void SceneManager::SetActiveScene(Scene *scene)
 {
+    if (scene && m_loadedSceneSet.find(scene) == m_loadedSceneSet.end())
+        throw std::invalid_argument("active Scene must be loaded in this SceneManager");
     const bool activeSceneChanged = scene != m_activeScene;
     if (activeSceneChanged && m_isPlaying)
         FlushPersistentPromotions();
 
     m_activeScene = scene;
-    if (activeSceneChanged) {
-        m_fixedTimeAccumulator = 0.0f;
-        m_lastScaledDeltaTime = 0.0f;
-        m_resetDeltaTimeOnNextFrame = true;
-    }
     if (m_activeScene) {
         m_activeScene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
         m_activeScene->SetPlaying(m_isPlaying);
@@ -223,12 +246,39 @@ void SceneManager::UnloadScene(Scene *scene)
         m_onSceneUnloaded(scene);
     }
 
+    m_loadedSceneSet.erase(scene);
+
     auto it = std::find_if(m_scenes.begin(), m_scenes.end(),
                            [scene](const std::unique_ptr<Scene> &s) { return s.get() == scene; });
 
     if (it != m_scenes.end()) {
         m_scenes.erase(it);
     }
+}
+
+bool SceneManager::MoveSceneAdjacent(uint64_t draggedWorldId, uint64_t targetWorldId, bool after)
+{
+    if (draggedWorldId == 0 || targetWorldId == 0 || draggedWorldId == targetWorldId)
+        return false;
+
+    auto draggedIt = std::find_if(m_scenes.begin(), m_scenes.end(), [draggedWorldId](const auto &candidate) {
+        return candidate && candidate->GetWorldId() == draggedWorldId;
+    });
+    auto targetIt = std::find_if(m_scenes.begin(), m_scenes.end(), [targetWorldId](const auto &candidate) {
+        return candidate && candidate->GetWorldId() == targetWorldId;
+    });
+    if (draggedIt == m_scenes.end() || targetIt == m_scenes.end())
+        return false;
+
+    std::unique_ptr<Scene> dragged = std::move(*draggedIt);
+    m_scenes.erase(draggedIt);
+    targetIt = std::find_if(m_scenes.begin(), m_scenes.end(), [targetWorldId](const auto &candidate) {
+        return candidate && candidate->GetWorldId() == targetWorldId;
+    });
+    if (after)
+        ++targetIt;
+    m_scenes.insert(targetIt, std::move(dragged));
+    return true;
 }
 
 void SceneManager::Shutdown()
@@ -247,6 +297,7 @@ void SceneManager::Shutdown()
 
     // Destroy all scenes (GameObjects → Components → Colliders → bodies).
     UnloadAllScenes();
+    m_previewScenes.clear();
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     // Destroy the editor camera object (its Camera component must leave the
@@ -276,6 +327,7 @@ void SceneManager::UnloadAllScenes()
     }
 
     m_scenes.clear();
+    m_loadedSceneSet.clear();
 }
 
 Scene *SceneManager::GetScene(const std::string &name) const
@@ -290,9 +342,9 @@ Scene *SceneManager::GetScene(const std::string &name) const
 
 void SceneManager::Start()
 {
-    if (m_activeScene) {
-        m_activeScene->Start();
-    }
+    for (const auto &scene : m_scenes)
+        if (scene)
+            scene->Start();
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->Start();
 }
@@ -348,7 +400,13 @@ void SceneManager::SetRuntimeFrameBarrierCallback(RuntimeFrameBarrierCallback ca
 
 void SceneManager::EmitRuntimeFrameBarrier(RuntimeFrameBarrier barrier) const
 {
-    if (m_runtimeLifecycleFrameOpen && m_runtimeFrameBarrier)
+    // Frame barriers are authoritative engine-phase notifications, not an
+    // implementation detail of script lifecycle dispatch.  Edit Mode and
+    // script-free scenes still cross RenderExtraction/RenderGraph and need
+    // render-facing services (component gizmos, compute pose bindings, UI)
+    // to publish against those exact phases.  The Python scheduler already
+    // ignores lifecycle consumption when no native execution frame is open.
+    if (m_runtimeFrameBarrier)
         m_runtimeFrameBarrier(barrier);
 }
 
@@ -390,7 +448,7 @@ void SceneManager::Update(float deltaTime)
     auto t0 = ProfileClock::now();
 #endif
 
-    if (!m_isPlaying && m_activeScene) {
+    if (!m_isPlaying && !m_scenes.empty()) {
         const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
         if (useRuntimeScheduler) {
             m_runtimeLifecycleBegin();
@@ -398,7 +456,9 @@ void SceneManager::Update(float deltaTime)
         }
 
         t0 = ProfileClock::now();
-        m_activeScene->EditorUpdate(deltaTime);
+        for (const auto &scene : m_scenes)
+            if (scene)
+                scene->EditorUpdate(deltaTime);
         m_lastFrameProfile.editorUpdateMs += ProfileMsSince(t0);
 
         if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0)
@@ -406,10 +466,11 @@ void SceneManager::Update(float deltaTime)
     }
 
     // Update active scene if playing
-    if (m_isPlaying && !m_isPaused && (m_activeScene || m_runtimePersistentScene)) {
+    if (m_isPlaying && !m_isPaused && (!m_scenes.empty() || m_runtimePersistentScene)) {
         t0 = ProfileClock::now();
-        if (m_activeScene)
-            m_activeScene->ProcessPendingStarts();
+        for (const auto &scene : m_scenes)
+            if (scene)
+                scene->ProcessPendingStarts();
         if (m_runtimePersistentScene)
             m_runtimePersistentScene->ProcessPendingStarts();
         m_lastFrameProfile.pendingStartsMs += ProfileMsSince(t0);
@@ -441,8 +502,9 @@ void SceneManager::Update(float deltaTime)
         t0 = ProfileClock::now();
         if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0)
             m_runtimeLifecycleUpdate(m_lastScaledDeltaTime);
-        if (m_activeScene)
-            m_activeScene->Update(m_lastScaledDeltaTime);
+        for (const auto &scene : m_scenes)
+            if (scene)
+                scene->Update(m_lastScaledDeltaTime);
         if (m_runtimePersistentScene)
             m_runtimePersistentScene->Update(m_lastScaledDeltaTime);
         if (!TransformECSStore::Instance().IsFrameCacheActive())
@@ -454,7 +516,7 @@ void SceneManager::Update(float deltaTime)
 
 void SceneManager::EnsurePhysicsQueriesCurrent()
 {
-    if (!m_activeScene && !m_runtimePersistentScene)
+    if (m_scenes.empty() && !m_runtimePersistentScene)
         return;
     FlushPendingBroadphase();
     // Outside play mode nothing steps the simulation, so moved bodies must be
@@ -473,10 +535,11 @@ void SceneManager::FixedUpdate()
 
 void SceneManager::LateUpdate(float deltaTime)
 {
-    if (m_isPlaying && !m_isPaused && (m_activeScene || m_runtimePersistentScene)) {
+    if (m_isPlaying && !m_isPaused && (!m_scenes.empty() || m_runtimePersistentScene)) {
         auto t0 = ProfileClock::now();
-        if (m_activeScene)
-            m_activeScene->ProcessPendingStarts();
+        for (const auto &scene : m_scenes)
+            if (scene)
+                scene->ProcessPendingStarts();
         if (m_runtimePersistentScene)
             m_runtimePersistentScene->ProcessPendingStarts();
         m_lastFrameProfile.pendingStartsMs += ProfileMsSince(t0);
@@ -485,8 +548,9 @@ void SceneManager::LateUpdate(float deltaTime)
         if (m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable &&
             m_runtimeLifecycleLateUpdateCount > 0)
             m_runtimeLifecycleLateUpdate(m_lastScaledDeltaTime);
-        if (m_activeScene)
-            m_activeScene->LateUpdate(m_lastScaledDeltaTime);
+        for (const auto &scene : m_scenes)
+            if (scene)
+                scene->LateUpdate(m_lastScaledDeltaTime);
         if (m_runtimePersistentScene)
             m_runtimePersistentScene->LateUpdate(m_lastScaledDeltaTime);
         if (!TransformECSStore::Instance().IsFrameCacheActive())
@@ -507,10 +571,11 @@ void SceneManager::LateUpdate(float deltaTime)
 void SceneManager::EndFrame()
 {
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PendingDestroy);
-    if (m_activeScene || m_runtimePersistentScene) {
+    if (!m_scenes.empty() || m_runtimePersistentScene) {
         auto t0 = ProfileClock::now();
-        if (m_activeScene)
-            m_activeScene->ProcessPendingDestroys();
+        for (const auto &scene : m_scenes)
+            if (scene)
+                scene->ProcessPendingDestroys();
         if (m_runtimePersistentScene)
             m_runtimePersistentScene->ProcessPendingDestroys();
         FlushPersistentPromotions();
@@ -550,7 +615,7 @@ void SceneManager::Play()
 
 void SceneManager::StartActiveSceneForPlay()
 {
-    if (!m_activeScene)
+    if (m_scenes.empty())
         return;
 
     // Scene-relative frame numbering is the useful contract for deterministic
@@ -559,25 +624,33 @@ void SceneManager::StartActiveSceneForPlay()
     m_runtimeFrameCount = 0;
 
     const auto transitionStart = ProfileClock::now();
-    m_activeScene->SetPlaying(true);
+    for (const auto &scene : m_scenes)
+        if (scene)
+            scene->SetPlaying(true);
 
     // A transactional runtime load publishes freshly-deserialized Transform
     // rows immediately before this call. Their world caches can still contain
     // values from recycled ECS slots. Jolt shapes consume world scale during
     // body creation, so synchronize the graph before Collider::RegisterBody.
     auto phaseStart = ProfileClock::now();
-    TransformECSStore::Instance().SyncSceneWorldMatrices(m_activeScene);
+    for (const auto &scene : m_scenes)
+        if (scene)
+            TransformECSStore::Instance().SyncSceneWorldMatrices(scene.get());
     const double initialTransformMs = ProfileMsSince(phaseStart);
 
     phaseStart = ProfileClock::now();
-    m_activeScene->Start();
+    for (const auto &scene : m_scenes)
+        if (scene)
+            scene->Start();
     FlushPersistentPromotions();
     const double startMs = ProfileMsSince(phaseStart);
 
     // Start callbacks may author transforms. Publish those edits before shape
     // creation as well, matching the transform state visible to gameplay.
     phaseStart = ProfileClock::now();
-    TransformECSStore::Instance().SyncSceneWorldMatrices(m_activeScene);
+    for (const auto &scene : m_scenes)
+        if (scene)
+            TransformECSStore::Instance().SyncSceneWorldMatrices(scene.get());
     const double postStartTransformMs = ProfileMsSince(phaseStart);
 
     // Start callbacks can author transforms. The transform observer already
@@ -594,7 +667,7 @@ void SceneManager::StartActiveSceneForPlay()
     // Jolt bodies default to sleeping and need activation after broadphase
     // publication for gravity and forces to apply on the first fixed step.
     phaseStart = ProfileClock::now();
-    ActivateAllDynamicBodies();
+    ActivateDynamicBodies();
     const double activationMs = ProfileMsSince(phaseStart);
 
     const double totalMs = ProfileMsSince(transitionStart);
@@ -604,6 +677,23 @@ void SceneManager::StartActiveSceneForPlay()
         //             "ms colliderSync=", colliderSyncMs, "ms broadphase=", flushMs, "ms activate=", activationMs,
         //             "ms");
     }
+}
+
+void SceneManager::StartSceneForPlay(Scene *scene)
+{
+    if (!scene || m_loadedSceneSet.find(scene) == m_loadedSceneSet.end())
+        throw std::invalid_argument("additive Scene must be loaded before entering Play");
+    if (!m_isPlaying)
+        throw std::logic_error("additive Scene can enter Play only during a play session");
+
+    scene->SetRuntimeLifecycleSchedulerEnabled(m_runtimeLifecycleSchedulerEnabled);
+    scene->SetPlaying(true);
+    TransformECSStore::Instance().SyncSceneWorldMatrices(scene);
+    scene->Start();
+    TransformECSStore::Instance().SyncSceneWorldMatrices(scene);
+    SyncCollidersToPhysics(m_fixedTimeStep);
+    FlushPendingBroadphase();
+    ActivateDynamicBodies(scene);
 }
 
 void SceneManager::Stop()
@@ -645,12 +735,13 @@ void SceneManager::Pause()
 
 void SceneManager::Step(float deltaTime)
 {
-    if (!m_isPaused || !m_isPlaying || (!m_activeScene && !m_runtimePersistentScene))
+    if (!m_isPaused || !m_isPlaying || (m_scenes.empty() && !m_runtimePersistentScene))
         return;
 
     m_lastFrameProfile = {};
-    if (m_activeScene)
-        m_activeScene->ProcessPendingStarts();
+    for (const auto &scene : m_scenes)
+        if (scene)
+            scene->ProcessPendingStarts();
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->ProcessPendingStarts();
     const bool useRuntimeScheduler = m_runtimeLifecycleSchedulerEnabled && m_runtimeLifecycleWorkAvailable;
@@ -664,27 +755,31 @@ void SceneManager::Step(float deltaTime)
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformResolve);
     if (useRuntimeScheduler && m_runtimeLifecycleUpdateCount > 0)
         m_runtimeLifecycleUpdate(deltaTime);
-    if (m_activeScene)
-        m_activeScene->Update(deltaTime);
+    for (const auto &scene : m_scenes)
+        if (scene)
+            scene->Update(deltaTime);
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->Update(deltaTime);
     if (!TransformECSStore::Instance().IsFrameCacheActive())
         FlushPersistentPromotions();
-    if (m_activeScene)
-        m_activeScene->ProcessPendingStarts();
+    for (const auto &scene : m_scenes)
+        if (scene)
+            scene->ProcessPendingStarts();
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->ProcessPendingStarts();
     if (useRuntimeScheduler && m_runtimeLifecycleLateUpdateCount > 0)
         m_runtimeLifecycleLateUpdate(deltaTime);
-    if (m_activeScene)
-        m_activeScene->LateUpdate(deltaTime);
+    for (const auto &scene : m_scenes)
+        if (scene)
+            scene->LateUpdate(deltaTime);
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->LateUpdate(deltaTime);
     ++m_runtimeFrameCount;
     if (!TransformECSStore::Instance().IsFrameCacheActive())
         FlushPersistentPromotions();
-    if (m_activeScene)
-        TransformECSStore::Instance().SyncSceneWorldMatrices(m_activeScene);
+    for (const auto &scene : m_scenes)
+        if (scene)
+            TransformECSStore::Instance().SyncSceneWorldMatrices(scene.get());
     if (m_runtimePersistentScene)
         TransformECSStore::Instance().SyncSceneWorldMatrices(m_runtimePersistentScene.get());
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::FinalTransformResolve);
@@ -737,17 +832,116 @@ GameObject *SceneManager::FindRuntimeObjectByID(uint64_t id) const
         if (GameObject *object = m_activeScene->FindByID(id))
             return object;
     }
-    if (m_runtimePersistentScene) {
-        if (GameObject *object = m_runtimePersistentScene->FindByID(id))
-            return object;
-    }
     for (const auto &scene : m_scenes) {
         if (!scene || scene.get() == m_activeScene)
             continue;
         if (GameObject *object = scene->FindByID(id))
             return object;
     }
+    if (m_runtimePersistentScene) {
+        if (GameObject *object = m_runtimePersistentScene->FindByID(id))
+            return object;
+    }
     return nullptr;
+}
+
+Scene *SceneManager::GetSceneByWorldId(uint64_t worldId) const noexcept
+{
+    if (worldId == 0)
+        return nullptr;
+    for (const auto &scene : m_scenes) {
+        if (scene && scene->GetWorldId() == worldId)
+            return scene.get();
+    }
+    if (m_runtimePersistentScene && m_runtimePersistentScene->GetWorldId() == worldId)
+        return m_runtimePersistentScene.get();
+    for (const auto &scene : m_previewScenes)
+        if (scene->GetWorldId() == worldId)
+            return scene.get();
+    return nullptr;
+}
+
+GameObject *SceneManager::FindRuntimeObject(const std::string &name) const
+{
+    if (m_activeScene) {
+        if (GameObject *object = m_activeScene->Find(name))
+            return object;
+    }
+    for (const auto &scene : m_scenes) {
+        if (!scene || scene.get() == m_activeScene)
+            continue;
+        if (GameObject *object = scene->Find(name))
+            return object;
+    }
+    return m_runtimePersistentScene ? m_runtimePersistentScene->Find(name) : nullptr;
+}
+
+GameObject *SceneManager::FindRuntimeObjectWithTag(const std::string &tag) const
+{
+    if (m_activeScene) {
+        if (GameObject *object = m_activeScene->FindWithTag(tag))
+            return object;
+    }
+    for (const auto &scene : m_scenes) {
+        if (!scene || scene.get() == m_activeScene)
+            continue;
+        if (GameObject *object = scene->FindWithTag(tag))
+            return object;
+    }
+    return m_runtimePersistentScene ? m_runtimePersistentScene->FindWithTag(tag) : nullptr;
+}
+
+std::vector<GameObject *> SceneManager::FindRuntimeObjectsWithTag(const std::string &tag) const
+{
+    std::vector<GameObject *> objects;
+    const auto append = [&](const Scene *scene) {
+        if (!scene)
+            return;
+        auto found = scene->FindGameObjectsWithTag(tag);
+        objects.insert(objects.end(), found.begin(), found.end());
+    };
+    append(m_activeScene);
+    for (const auto &scene : m_scenes) {
+        if (scene && scene.get() != m_activeScene)
+            append(scene.get());
+    }
+    append(m_runtimePersistentScene.get());
+    return objects;
+}
+
+std::vector<GameObject *> SceneManager::FindRuntimeObjectsInLayer(int layer) const
+{
+    std::vector<GameObject *> objects;
+    const auto append = [&](const Scene *scene) {
+        if (!scene)
+            return;
+        auto found = scene->FindGameObjectsInLayer(layer);
+        objects.insert(objects.end(), found.begin(), found.end());
+    };
+    append(m_activeScene);
+    for (const auto &scene : m_scenes) {
+        if (scene && scene.get() != m_activeScene)
+            append(scene.get());
+    }
+    append(m_runtimePersistentScene.get());
+    return objects;
+}
+
+void SceneManager::MoveGameObjectToScene(GameObject *gameObject, Scene *destination)
+{
+    if (!gameObject || !destination)
+        throw std::invalid_argument("game object and destination Scene are required");
+    if (m_loadedSceneSet.find(destination) == m_loadedSceneSet.end())
+        throw std::invalid_argument("destination Scene must be loaded");
+    Scene *source = gameObject->GetScene();
+    if (!source || !IsRuntimeScene(source))
+        throw std::invalid_argument("game object must belong to a loaded Scene");
+    if (source == destination)
+        return;
+    if (gameObject->GetParent())
+        throw std::invalid_argument("only a root GameObject can move between Scenes");
+    if (!source->TransferRootObjectTo(gameObject, *destination))
+        throw std::runtime_error("GameObject hierarchy could not move between Scenes");
 }
 
 void SceneManager::FlushPersistentPromotions()
@@ -798,8 +992,9 @@ void SceneManager::PrepareActiveSceneReplacement()
 
 void SceneManager::UpdateRuntimeScenePlayingState(bool playing)
 {
-    if (m_activeScene)
-        m_activeScene->SetPlaying(playing);
+    for (const auto &scene : m_scenes)
+        if (scene)
+            scene->SetPlaying(playing);
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->SetPlaying(playing);
 }
@@ -817,32 +1012,37 @@ void SceneManager::ClearRuntimePersistentScene()
     m_runtimePersistentScene.reset();
 }
 
-void SceneManager::RestorePersistentComponentRegistries()
+void SceneManager::RestoreResidentComponentRegistries(Scene *sceneBeingRebuilt)
 {
-    if (!m_runtimePersistentScene)
-        return;
-
-    for (GameObject *object : m_runtimePersistentScene->GetAllObjects()) {
-        if (!object || !object->IsActiveInHierarchy())
-            continue;
-        for (MeshRenderer *renderer : object->GetComponents<MeshRenderer>()) {
-            if (renderer && renderer->IsEnabled())
-                RegisterMeshRenderer(renderer);
-        }
-        for (Light *light : object->GetComponents<Light>()) {
-            if (light && light->IsEnabled())
-                RegisterLight(light);
-        }
-        auto colliders = object->GetComponents<Collider>();
-        if (!colliders.empty()) {
-            Collider *primary = colliders.front();
-            if (primary && primary->IsEnabled()) {
-                if (primary->GetBodyId() == 0xFFFFFFFF)
-                    primary->RegisterBody();
-                primary->RestoreSceneResidency();
+    auto restore = [this](Scene *scene) {
+        if (!scene)
+            return;
+        for (GameObject *object : scene->GetAllObjects()) {
+            if (!object || !object->IsActiveInHierarchy())
+                continue;
+            for (MeshRenderer *renderer : object->GetComponents<MeshRenderer>()) {
+                if (renderer && renderer->IsEnabled())
+                    RegisterMeshRenderer(renderer);
+            }
+            for (Light *light : object->GetComponents<Light>()) {
+                if (light && light->IsEnabled())
+                    RegisterLight(light);
+            }
+            auto colliders = object->GetComponents<Collider>();
+            if (!colliders.empty()) {
+                Collider *primary = colliders.front();
+                if (primary && primary->IsEnabled()) {
+                    if (primary->GetBodyId() == 0xFFFFFFFF)
+                        primary->RegisterBody();
+                    primary->RestoreSceneResidency();
+                }
             }
         }
-    }
+    };
+    for (const auto &scene : m_scenes)
+        if (scene && scene.get() != sceneBeingRebuilt)
+            restore(scene.get());
+    restore(m_runtimePersistentScene.get());
 }
 
 void SceneManager::SyncCollidersToPhysics(float fixedDeltaTime)
@@ -887,7 +1087,7 @@ void SceneManager::PublishAuthoredTransformsToPhysics()
         TransformECSStore::Instance().SyncSceneWorldMatrices(m_runtimePersistentScene.get());
 
     auto &store = PhysicsECSStore::Instance();
-    if ((!m_activeScene && !m_runtimePersistentScene) || !store.HasDirtyColliders())
+    if ((m_scenes.empty() && !m_runtimePersistentScene) || !store.HasDirtyColliders())
         return;
 
     // Transform writes performed by Update/LateUpdate are collected by the
@@ -912,10 +1112,18 @@ void SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler)
     FlushPendingBroadphase();
 
     auto phaseStart = ProfileClock::now();
-    if (useRuntimeScheduler && m_runtimeLifecycleFixedUpdateCount > 0)
+    if (useRuntimeScheduler && m_runtimeLifecycleFixedUpdateCount > 0) {
+        static bool loggedRuntimeFixedBoundary = false;
+        if (!loggedRuntimeFixedBoundary) {
+            loggedRuntimeFixedBoundary = true;
+            INXLOG_INFO("[RuntimeLifecycle] fixed_update boundary active dt=", m_fixedTimeStep,
+                        " callbacks=", m_runtimeLifecycleFixedUpdateCount);
+        }
         m_runtimeLifecycleFixedUpdate(m_fixedTimeStep);
-    if (m_activeScene)
-        m_activeScene->FixedUpdate(m_fixedTimeStep);
+    }
+    for (const auto &scene : m_scenes)
+        if (scene)
+            scene->FixedUpdate(m_fixedTimeStep);
     if (m_runtimePersistentScene)
         m_runtimePersistentScene->FixedUpdate(m_fixedTimeStep);
     if (!TransformECSStore::Instance().IsFrameCacheActive())
@@ -926,12 +1134,12 @@ void SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler)
     auto &physicsStore = PhysicsECSStore::Instance();
     const bool hasRigidbodies = physicsStore.GetAliveRigidbodyCount() > 0;
 
-    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformToPhysics);
     if (hasRigidbodies) {
         phaseStart = ProfileClock::now();
         SyncCollidersToPhysics(m_fixedTimeStep);
         m_lastFrameProfile.syncCollidersMs += ProfileMsSince(phaseStart);
     }
+    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::TransformToPhysics);
 
     EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PhysicsSimulation);
     if (hasRigidbodies) {
@@ -946,12 +1154,12 @@ void SceneManager::RunFixedSimulationStep(bool useRuntimeScheduler)
         m_lastFrameProfile.physicsEventsMs += ProfileMsSince(phaseStart);
     }
 
-    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PhysicsToTransform);
     if (hasRigidbodies) {
         phaseStart = ProfileClock::now();
         SyncRigidbodiesToTransform();
         m_lastFrameProfile.syncRigidbodiesMs += ProfileMsSince(phaseStart);
     }
+    EmitRuntimeFrameBarrier(RuntimeFrameBarrier::PhysicsToTransform);
 }
 
 void SceneManager::FlushPendingBroadphase()
@@ -1048,8 +1256,6 @@ void SceneManager::SyncTransforms()
     // a barrier: wait for those immutable CPU jobs, commit them on this main
     // thread, then create/rebuild bodies before returning.
     FlushPendingBroadphase();
-    MeshCollider::FlushCompletedCooking(true);
-    FlushPendingBroadphase();
     PhysicsECSStore::Instance().MarkAllCollidersDirty();
     // During play, route moved kinematic / collider-only bodies through the
     // velocity-driven move paths — the editor gizmo calls Physics.sync_transforms
@@ -1057,6 +1263,11 @@ void SceneManager::SyncTransforms()
     // zero-velocity teleports that push dynamic bodies aside without imparting
     // any momentum. Outside play nothing steps the simulation, so moves must
     // remain teleports.
+    SyncCollidersToPhysics(m_isPlaying ? m_fixedTimeStep : 0.0f);
+    // Scale changes discovered above can start mesh cooking too. Include
+    // those jobs in this explicit barrier rather than waiting before discovery.
+    MeshCollider::FlushCompletedCooking(true);
+    FlushPendingBroadphase();
     SyncCollidersToPhysics(m_isPlaying ? m_fixedTimeStep : 0.0f);
 }
 
@@ -1085,18 +1296,18 @@ void SceneManager::ForceAllBodiesToCurrentTransform()
     });
 }
 
-void SceneManager::ActivateAllDynamicBodies()
+void SceneManager::ActivateDynamicBodies(Scene *scene)
 {
     auto &pw = PhysicsWorld::Instance();
     if (!pw.IsInitialized())
         return;
 
-    PhysicsECSStore::Instance().ForEachAliveRigidbody([this](RigidbodyECSData &data) {
+    PhysicsECSStore::Instance().ForEachAliveRigidbody([this, scene](RigidbodyECSData &data) {
         auto *rb = data.owner;
         if (!rb || !rb->IsEnabled() || rb->IsKinematic())
             return;
         auto *go = rb->GetGameObject();
-        if (!go || !IsRuntimeScene(go->GetScene()))
+        if (!go || !IsRuntimeScene(go->GetScene()) || (scene && go->GetScene() != scene))
             return;
         rb->WakeUp();
     });
@@ -1138,7 +1349,7 @@ void SceneManager::SyncRigidbodiesToTransform()
 
 void SceneManager::ApplyInterpolatedRigidbodies(float alpha)
 {
-    if (!m_activeScene && !m_runtimePersistentScene)
+    if (m_scenes.empty() && !m_runtimePersistentScene)
         return;
 
     auto &physics = PhysicsWorld::Instance();
@@ -1159,7 +1370,7 @@ void SceneManager::ApplyInterpolatedRigidbodies(float alpha)
 // Component registries
 // ============================================================================
 
-void SceneManager::ClearComponentRegistries()
+void SceneManager::ClearComponentRegistries(Scene *sceneBeingRebuilt)
 {
     // Renderer-facing registries: MeshRenderer/Light keep raw component
     // pointers, so we must drop them before the owning GameObjects die during
@@ -1177,10 +1388,10 @@ void SceneManager::ClearComponentRegistries()
     PhysicsECSStore::Instance().ClearPendingQueues();
     m_posePresentationBodyIds.clear();
 
-    // Scene document replacement clears process-wide renderer registries.
-    // The runtime-only persistent Scene is outside that transaction, so put
-    // its still-live components back immediately. Registration is idempotent.
-    RestorePersistentComponentRegistries();
+    // Scene document replacement clears process-wide registries. Re-publish
+    // every other loaded Scene plus the runtime-persistent Scene; the caller
+    // publishes the rebuilt Scene after its transaction commits.
+    RestoreResidentComponentRegistries(sceneBeingRebuilt);
 }
 
 // ========================================================================

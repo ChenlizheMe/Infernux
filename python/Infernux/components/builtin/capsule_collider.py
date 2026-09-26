@@ -19,8 +19,7 @@ from __future__ import annotations
 import math
 
 from Infernux.components.builtin_component import CppProperty
-from Infernux.components.fields import FieldType
-from Infernux.components.builtin.collider import Collider
+from Infernux.components.builtin.collider import Collider, _native_collider_properties
 
 
 class CapsuleCollider(Collider):
@@ -28,26 +27,10 @@ class CapsuleCollider(Collider):
 
     _cpp_type_name = "CapsuleCollider"
 
-    # ---- Capsule-specific properties ----
-    radius = CppProperty(
-        "radius",
-        FieldType.FLOAT,
-        default=0.5,
-        tooltip="Radius of the capsule collider",
-    )
-    height = CppProperty(
-        "height",
-        FieldType.FLOAT,
-        default=2.0,
-        tooltip="Total height of the capsule (including caps)",
-    )
-    direction = CppProperty(
-        "direction",
-        FieldType.INT,
-        default=1,
-        tooltip="Direction axis: 0=X, 1=Y, 2=Z",
-        range=(0, 2),
-    )
+    center, is_trigger, physic_material = _native_collider_properties(_cpp_type_name)
+    radius = CppProperty.from_native(_cpp_type_name, "radius")
+    height = CppProperty.from_native(_cpp_type_name, "height")
+    direction = CppProperty.from_native(_cpp_type_name, "direction")
 
     # ------------------------------------------------------------------
     # Gizmos — green wireframe capsule

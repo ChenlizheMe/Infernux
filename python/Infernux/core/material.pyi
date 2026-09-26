@@ -235,11 +235,16 @@ class Material:
         ...
 
     # High-level property setters
+    def set_matrix(self, name: str, value: Any) -> None:
+        """Set a NumPy (4,4) matrix indexed as [row, column]."""
+        ...
     def set_param(self, name: str, value: Any) -> None:
         """Set a non-texture material property using type/shape dispatch."""
         ...
     def set_texture(self, name: str, value: Any) -> None:
-        """Set a texture property from GUID, path, Texture, or None."""
+        """Bind a texture asset or builtin. Imported RenderTextures save their GUID;
+        anonymous RenderTextures only override the runtime binding. None clears it.
+        """
         ...
 
     # Flush

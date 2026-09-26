@@ -11,7 +11,8 @@ ShaderInfo {
 
 // ---- Screen coordinates ----
 
-// Normalized screen UV (0~1, bottom-left origin)
+// Normalized Vulkan screen UV (0~1, upper-left origin), matching sampled
+// render-target textures and the projection matrix's inverted Y axis.
 vec2 getScreenUV() {
     return gl_FragCoord.xy * _Globals._ScreenParams.zw;
 }
@@ -24,8 +25,8 @@ ivec2 getPixelCoord() {
 // ---- Camera ----
 
 // Structured shaders receive a camera source selected by the shader linker.
-// Lit passes resolve this to the camera-local set-1 LightingUBO; unlit passes
-// retain the engine-globals fallback. Never read _WorldSpaceCameraPos directly
+// Geometry surface fragments, including Unlit, resolve this to the camera-local
+// set-1 LightingUBO. Never read _WorldSpaceCameraPos directly
 // here: that buffer is shared by Scene and Game graphs and is staged from the
 // editor camera.
 #ifndef INX_SHADING_CAMERA_POSITION

@@ -193,11 +193,20 @@ def test_build_settings_scene_controls_expose_stable_semantic_ids(monkeypatch):
     )
     monkeypatch.setattr(igui.IGUI, "multi_drop_target", staticmethod(lambda *_args, **_kwargs: None))
     monkeypatch.setattr(igui.IGUI, "drop_target", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(
+        "Infernux.engine.ui.editor_services.EditorServices.instance",
+        staticmethod(lambda: SimpleNamespace(asset_database=SimpleNamespace(
+            get_path_from_guid=lambda guid: {
+                "racetrack-guid": "C:/RacingPilot/Assets/racetrack.scene",
+                "results-guid": "C:/RacingPilot/Assets/results.scene",
+            }.get(guid, "")
+        ))),
+    )
 
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
     panel._scenes = [
-        "Assets/racetrack.scene",
-        "Assets/results.scene",
+        "racetrack-guid",
+        "results-guid",
     ]
     panel._save = lambda: None
     ctx = _Context()
@@ -214,8 +223,44 @@ def test_build_settings_scene_controls_expose_stable_semantic_ids(monkeypatch):
         "build_settings.scene.1.move_up",
         "build_settings.scene.1.remove",
     } <= semantic_ids
-    assert ctx.semantic_values["build_settings.scene.0.row"] == "Assets/racetrack.scene"
-    assert ctx.semantic_values["build_settings.scene.1.row"] == "Assets/results.scene"
+    assert ctx.semantic_values["build_settings.scene.0.row"] == "racetrack-guid"
+    assert ctx.semantic_values["build_settings.scene.1.row"] == "results-guid"
+
+
+def test_build_settings_scene_row_survives_a_path_outside_the_project(monkeypatch):
+    import Infernux.engine.scene_manager as scene_manager
+    import Infernux.engine.ui.build_settings_panel as module
+    import Infernux.engine.ui.igui as igui
+
+    monkeypatch.setattr(module, "get_project_root", lambda: "C:/RacingPilot")
+
+    def outside_project(*_args):
+        raise ValueError("outside root")
+
+    monkeypatch.setattr(module, "relative_path", outside_project)
+    monkeypatch.setattr(
+        scene_manager.SceneFileManager, "instance", staticmethod(lambda: None)
+    )
+    monkeypatch.setattr(igui.IGUI, "multi_drop_target", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(igui.IGUI, "drop_target", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(
+        "Infernux.engine.ui.editor_services.EditorServices.instance",
+        staticmethod(lambda: SimpleNamespace(asset_database=SimpleNamespace(
+            get_path_from_guid=lambda _guid: "D:/Other/Scene.scene"
+        ))),
+    )
+
+    panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
+    panel._scenes = ["scene-guid"]
+    panel._save = lambda: None
+    ctx = _Context()
+    row_labels = []
+    ctx.selectable = lambda label, *_args: row_labels.append(label) or False
+
+    panel._render_scene_section(ctx)
+
+    assert ctx.semantic_values["build_settings.scene.0.row"] == "scene-guid"
+    assert module.resolved_path("D:/Other/Scene.scene") in row_labels[0]
 
 
 def test_build_settings_does_not_turn_external_splash_deletion_into_user_edit():
@@ -272,6 +317,14 @@ def test_build_settings_add_open_scene_uses_the_button_result(monkeypatch):
     )
     monkeypatch.setattr(igui.IGUI, "multi_drop_target", staticmethod(lambda *_args, **_kwargs: None))
     monkeypatch.setattr(igui.IGUI, "drop_target", staticmethod(lambda *_args, **_kwargs: None))
+    monkeypatch.setattr(
+        "Infernux.engine.ui.editor_services.EditorServices.instance",
+        staticmethod(lambda: SimpleNamespace(asset_database=SimpleNamespace(
+            get_guid_from_path=lambda _path: "racetrack-guid",
+            get_path_from_guid=lambda guid: current_scene
+            if guid == "racetrack-guid" else "",
+        ))),
+    )
 
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
     panel._scenes = []
@@ -280,8 +333,8 @@ def test_build_settings_add_open_scene_uses_the_button_result(monkeypatch):
 
     panel._render_scene_section(_Context(button_results=[True]))
 
-    assert panel._scenes == ["Assets/racetrack.scene"]
-    assert saves == [["Assets/racetrack.scene"]]
+    assert panel._scenes == ["racetrack-guid"]
+    assert saves == [["racetrack-guid"]]
 
 
 def test_build_settings_rejects_scene_outside_assets(monkeypatch):
@@ -307,7 +360,6 @@ def test_build_settings_output_controls_expose_stable_semantic_ids(monkeypatch):
     panel._game_name = "RacingPilot"
     panel._debug_mode = False
     panel._lto = True
-    panel._enable_jit = False
     panel._output_dir = "C:/Builds/RacingPilot"
     panel._icon_guid = ""
     panel._save = lambda: None
@@ -320,7 +372,6 @@ def test_build_settings_output_controls_expose_stable_semantic_ids(monkeypatch):
         "build_settings.game_name",
             "build_settings.debug_mode",
             "build_settings.lto",
-            "build_settings.enable_jit",
             "build_settings.output_dir",
         "build_settings.output_dir.browse",
         "build_settings.icon",
@@ -330,7 +381,6 @@ def test_build_settings_output_controls_expose_stable_semantic_ids(monkeypatch):
         "build_settings.game_name": "RacingPilot",
             "build_settings.debug_mode": False,
             "build_settings.lto": True,
-            "build_settings.enable_jit": False,
             "build_settings.output_dir": "C:/Builds/RacingPilot",
         "build_settings.icon": "",
     }
@@ -383,7 +433,7 @@ def test_build_click_cannot_unbalance_the_disabled_stack_mid_frame():
     panel._build_cancelled = False
     panel._build_error = None
     panel._build_output_dir = None
-    panel._scenes = ["Assets/MainMenu.scene"]
+    panel._scenes = ["main-menu-guid"]
     panel._output_dir = "C:/Builds/RacingPilot"
     host_target = _host_build_target()
     panel._build_target = str(host_target.id)
@@ -538,7 +588,7 @@ def test_build_progress_does_not_drive_a_second_status_bar_slider(monkeypatch):
 def test_build_commands_gate_start_and_cancel_without_entering_undo():
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
     panel._building = False
-    panel._scenes = ["Assets/Main.scene"]
+    panel._scenes = ["main-scene-guid"]
     panel._output_dir = "C:/Builds/RacingPilot"
     host_target = _host_build_target()
     panel._build_target = str(host_target.id)
@@ -664,7 +714,7 @@ def test_missing_platform_plugin_is_visible_and_blocks_build(monkeypatch):
     panel._android_artifact = "apk"
     panel._settings_controller = None
     panel._building = False
-    panel._scenes = ["Assets/Main.scene"]
+    panel._scenes = ["main-scene-guid"]
     panel._output_dir = "C:/Builds/Game"
     panel._save = lambda: None
     monkeypatch.setattr(panel, "_available_build_targets", lambda: (desktop,))

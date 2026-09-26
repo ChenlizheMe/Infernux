@@ -165,6 +165,10 @@ class ImageReadbackTicket final
     {
         return m_elementType;
     }
+    [[nodiscard]] bool IsBgra() const noexcept
+    {
+        return m_bgra;
+    }
     [[nodiscard]] size_t GetByteSize() const noexcept
     {
         return m_byteSize;
@@ -182,6 +186,7 @@ class ImageReadbackTicket final
     std::shared_ptr<VkBufferHandle> m_staging;
     AsyncSubmissionHandle m_submission;
     std::shared_ptr<GraphicsSubmissionTicket> m_graphicsSubmission;
+    rhi::SubmissionSerial m_frameCompletionEpoch = rhi::InvalidSubmissionSerial;
     std::atomic<ImageReadbackStatus> m_status{ImageReadbackStatus::Pending};
     std::vector<uint8_t> m_data;
     std::string m_elementType;
@@ -190,6 +195,7 @@ class ImageReadbackTicket final
     uint32_t m_height = 0;
     uint32_t m_channelCount = 0;
     size_t m_byteSize = 0;
+    bool m_bgra = false;
 };
 
 class GraphicsSubmissionTicket final
@@ -336,6 +342,13 @@ class VkResourceManager
     [[nodiscard]] std::shared_ptr<ImageReadbackTicket>
     BeginImageReadback(VkImage image, VkImageLayout layout, VkImageAspectFlags aspect, VkPipelineStageFlags sourceStage,
                        VkAccessFlags sourceAccess, uint32_t width, uint32_t height, VkFormat format);
+    /// Record a readback into an already-open frame command buffer. Completion
+    /// follows the frame fence identified by completionEpoch; no second queue
+    /// submission is created.
+    [[nodiscard]] std::shared_ptr<ImageReadbackTicket>
+    RecordFrameImageReadback(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout layout,
+                             VkImageAspectFlags aspect, VkPipelineStageFlags sourceStage, VkAccessFlags sourceAccess,
+                             uint32_t width, uint32_t height, VkFormat format, rhi::SubmissionSerial completionEpoch);
     [[nodiscard]] GraphicsImageReadbackRecorder BeginGraphicsImageReadback(uint32_t width, uint32_t height,
                                                                            VkFormat format);
     void PollImageReadbacks();

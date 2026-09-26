@@ -42,7 +42,7 @@ Scene singleton that binds reusable Effect assets to pipeline stages.
 | `get_effect(stage_id: str, index: int = ...) → Optional[RenderEffect]` |  |
 | `remap_orphan_effect_stage(old_stage_id: str, new_stage_id: str) → int` |  |
 | `invalidate_graph() → None` | Mark the render graph as dirty, triggering a rebuild. |
-| `build_graph() → Any` | Build and return the render graph description. |
+| `build_graph(output_samples: int = 0) → Any` | Build and return the render graph description. |
 | `render(context: Any, camera: Any) → None` | Execute the render stack for a camera. |
 
 <!-- USER CONTENT START --> public_methods

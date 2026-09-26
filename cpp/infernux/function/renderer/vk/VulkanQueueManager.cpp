@@ -92,38 +92,46 @@ void VulkanQueueManager::Destroy() noexcept
     m_submitCv.notify_all();
 }
 
-rhi::SubmissionTicket VulkanQueueManager::Reserve(rhi::QueueRole role)
+rhi::SubmissionTicket VulkanQueueManager::Reserve(rhi::QueueRole role, uint32_t count)
 {
     std::lock_guard lock(m_mutex);
-    if (m_deviceId == rhi::InvalidDeviceId || role == rhi::QueueRole::Count)
+    if (m_deviceId == rhi::InvalidDeviceId || role == rhi::QueueRole::Count || count == 0)
         return {};
     auto &queue = m_queues[LaneIndex(role)];
     if (queue.queue == VK_NULL_HANDLE)
         return {};
-    const auto serial = queue.nextSerial++;
-    queue.lastReserved = serial;
+    const auto serial = queue.nextSerial;
+    queue.nextSerial += count;
+    queue.lastReserved = queue.nextSerial - 1;
     return {m_deviceId, role, serial};
 }
 
 VkResult VulkanQueueManager::SubmitReserved(rhi::SubmissionTicket ticket, const VkSubmitInfo &submitInfo,
                                             VkFence fence) noexcept
 {
+    return SubmitReserved(ticket, &submitInfo, 1, fence);
+}
+
+VkResult VulkanQueueManager::SubmitReserved(rhi::SubmissionTicket ticket, const VkSubmitInfo *submits, uint32_t count,
+                                            VkFence fence) noexcept
+{
     std::unique_lock lock(m_mutex);
-    if (!ticket.IsValid() || ticket.device != m_deviceId || ticket.queue == rhi::QueueRole::Count)
+    if (!ticket.IsValid() || ticket.device != m_deviceId || ticket.queue == rhi::QueueRole::Count || !submits ||
+        count == 0)
         return VK_ERROR_INITIALIZATION_FAILED;
     auto &queue = m_queues[LaneIndex(ticket.queue)];
     if (queue.queue == VK_NULL_HANDLE || ticket.serial > queue.lastReserved ||
-        ticket.serial < queue.nextSubmissionSerial)
+        ticket.serial < queue.nextSubmissionSerial || count - 1 > queue.lastReserved - ticket.serial)
         return VK_ERROR_INITIALIZATION_FAILED;
 
     m_submitCv.wait(lock, [&] { return m_device == VK_NULL_HANDLE || ticket.serial == queue.nextSubmissionSerial; });
     if (m_device == VK_NULL_HANDLE)
         return VK_ERROR_DEVICE_LOST;
 
-    const VkResult result = vkQueueSubmit(queue.queue, 1, &submitInfo, fence);
-    ++queue.nextSubmissionSerial;
+    const VkResult result = vkQueueSubmit(queue.queue, count, submits, fence);
+    queue.nextSubmissionSerial += count;
     if (result == VK_SUCCESS)
-        queue.lastSubmitted = ticket.serial;
+        queue.lastSubmitted = queue.nextSubmissionSerial - 1;
     lock.unlock();
     m_submitCv.notify_all();
     return result;
@@ -375,6 +383,15 @@ rhi::SubmissionSerial VulkanQueueManager::GetCompletedCompletionEpoch() const no
 {
     std::lock_guard lock(m_mutex);
     return m_completedCompletionEpoch;
+}
+
+bool VulkanQueueManager::IsCompletionEpochComplete(rhi::SubmissionSerial epoch) const noexcept
+{
+    std::lock_guard lock(m_mutex);
+    if (epoch == rhi::InvalidSubmissionSerial)
+        return false;
+    return epoch <= m_completedCompletionEpoch ||
+           m_completedOutOfOrderEpochs.find(epoch) != m_completedOutOfOrderEpochs.end();
 }
 
 rhi::SubmissionSerial VulkanQueueManager::ReserveCompletionEpoch() noexcept

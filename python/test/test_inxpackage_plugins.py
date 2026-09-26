@@ -18,7 +18,11 @@ import Infernux.plugins.github_releases as github_releases_module
 import Infernux.plugins.cache as plugin_cache_module
 from Infernux.engine import player_package_native
 from Infernux.application import Application
-from Infernux.engine.project_context import set_project_root
+from Infernux.engine.project_context import (
+    set_project_root,
+    set_runtime_asset_query,
+    set_runtime_asset_resolver,
+)
 from Infernux.plugins import (
     InxPackage,
     SharedPackageCache,
@@ -574,6 +578,15 @@ def test_repository_export_archives_only_pythonic_package_tree_and_any_payload(t
     set_project_root(str(project))
     Application._bind_engine(engine, "player")
     try:
+        page_guid = "0123456789abcdef0123456789abcdef"
+        set_runtime_asset_query(
+            lambda path: (page_guid,)
+            if path == "Assets/Plugins/web/index.html"
+            else ()
+        )
+        set_runtime_asset_resolver(
+            lambda guid: str(installed_page.resolve()) if guid == page_guid else None
+        )
         button = UIButton()
         button.on_click.add_listener(
             lambda: Application.open_url(
@@ -844,7 +857,7 @@ def test_official_registry_publishes_remote_entry_without_bundled_artifact(tmp_p
                         "dependencies": [],
                         "pages": [],
                         "intros": {},
-                        "category": "Platform",
+                        "category": "platform_build",
                         "targets": ["web-wasm32"],
                         "source": {
                             "type": "url",
@@ -862,7 +875,7 @@ def test_official_registry_publishes_remote_entry_without_bundled_artifact(tmp_p
 
     assert len(added) == 1
     entry = PluginRegistry(str(project)).find("infernux/platform-web")
-    assert entry["category"] == "Platform"
+    assert entry["category"] == "platform_build"
     assert entry["targets"] == ["web-wasm32"]
     assert entry["source"] == {
         "type": "url",
@@ -950,6 +963,65 @@ def test_resources_root_inxpackages_are_mandatory_and_idempotent(tmp_path):
     assert record["source"]["location"] == str(package.resolve())
     assert record["source"]["builtin"] is True
     assert (project / "Packages/infernux/platform-fixture/runtime/fixture.py").is_file()
+
+
+def test_resources_root_updates_an_installed_builtin_when_payload_changes(tmp_path):
+    source = _source(tmp_path / "source", "infernux/platform-fixture")
+    (source / "runtime").mkdir()
+    fixture = source / "runtime" / "fixture.py"
+    fixture.write_text("RELEASE = 'first'\n", encoding="utf-8")
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    package = _export(source, resources / "infernux.platform-fixture.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project), runtime=False)
+
+    install_bundled_packages(
+        str(project), resources_root=str(resources), manager=manager
+    )
+    record = manager.registry.installed_record("infernux/platform-fixture")
+    assert record is not None
+    cached = Path(str(record["package_path"]))
+    _FakeInxPack.archives[str(cached.resolve())] = dict(
+        _FakeInxPack.archives[str(package.resolve())]
+    )
+
+    fixture.write_text("RELEASE = 'second'\n", encoding="utf-8")
+    _export(source, package)
+    states = install_bundled_packages(
+        str(project), resources_root=str(resources), manager=manager
+    )
+
+    assert [state.reference for state in states] == ["infernux/platform-fixture"]
+    assert (
+        project / "Packages/infernux/platform-fixture/runtime/fixture.py"
+    ).read_text(encoding="utf-8") == "RELEASE = 'second'\n"
+
+    record = manager.registry.installed_record("infernux/platform-fixture")
+    assert record is not None
+    cached = Path(str(record["package_path"]))
+    _FakeInxPack.archives[str(cached.resolve())] = dict(
+        _FakeInxPack.archives[str(package.resolve())]
+    )
+    manifest_path = source / "inx_package.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["intro"] = "Updated built-in description"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _export(source, package)
+    metadata_only = install_bundled_packages(
+        str(project), resources_root=str(resources), manager=manager
+    )
+
+    assert [state.reference for state in metadata_only] == [
+        "infernux/platform-fixture"
+    ]
+    installed_manifest = json.loads(
+        (
+            project
+            / "Packages/infernux/platform-fixture/inx_package.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert installed_manifest["intro"] == "Updated built-in description"
 
 
 def test_resources_root_package_ignores_an_older_shared_cache_entry(tmp_path):
@@ -1792,7 +1864,7 @@ def test_official_release_downloads_to_project_cache_then_imports(
                                 "location": "https://github.com/vendor/engine",
                                 "revision": "040/multiplatform_build",
                             },
-                            "category": "Platform",
+                            "category": "platform_build",
                             "targets": ["released-test"],
                             "pages": [],
                         }
@@ -1876,7 +1948,7 @@ def test_official_release_downloads_to_project_cache_then_imports(
         assert registry_entry["source"]["release_tag"] == "v0.4.0"
         assert registry_entry["source"]["cache_scope"] == "hub"
         assert registry_entry["source"]["official"] is True
-        assert registry_entry["category"] == "Platform"
+        assert registry_entry["category"] == "platform_build"
         assert registry_entry["targets"] == ["released-test"]
 
         installed = manager.install_reference(
@@ -2513,6 +2585,36 @@ def test_startup_restores_installed_plugin_requirements_in_new_environment(
     assert not any(command[2:4] == ["pip", "install"] for command in commands)
 
 
+def test_install_reuses_satisfied_project_python_requirement_without_running_pip(
+    tmp_path, monkeypatch
+):
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    monkeypatch.setattr(manager, "_project_python_executable", lambda: "project-python")
+    monkeypatch.setattr(
+        manager,
+        "_python_environment_snapshot",
+        lambda _executable=None: {"shared-wheel": "1.5"},
+    )
+    monkeypatch.setattr(
+        manager,
+        "_run_process",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("satisfied requirements must not invoke pip")
+        ),
+    )
+
+    effect = manager._install_pip_lines(("shared-wheel>=1,<2",))
+
+    assert effect.before == {"shared-wheel": "1.5"}
+    assert effect.after == effect.before
+    assert effect.requirements == (
+        {"name": "shared-wheel", "requirement": "shared-wheel>=1,<2"},
+    )
+    assert effect.command == ()
+    assert effect.changes == ()
+
+
 def test_reference_identity_is_casefolded_across_platforms(tmp_path):
     lower = _source(tmp_path / "lower", "Vendor/CaseIdentity")
     upper = _source(tmp_path / "upper", "vendor/caseidentity")
@@ -2803,6 +2905,38 @@ def test_manifestless_local_package_preload_supports_relative_imports(tmp_path):
     runtime_preloads = preload_module.PreloadManager(str(project), runtime=True)
     assert runtime_preloads.reload_all() == ()
     assert not (project / "local-package.txt").exists()
+
+
+@pytest.mark.parametrize("fail_preload", [False, True])
+def test_preload_library_ownership_follows_success_and_failure(tmp_path, fail_preload):
+    from Infernux.engine.project_context import is_project_component_script
+
+    project = _project(tmp_path / "project")
+    package = _source(project / "Packages/vendor/compiler", "vendor/compiler")
+    library = package / "runtime/provider"
+    library.mkdir(parents=True)
+    implementation = library / "backend.py"
+    implementation.write_text("from contextlib import contextmanager\n", encoding="utf-8")
+    author = package / "runtime/AuthorComponent.py"
+    author.write_text("", encoding="utf-8")
+    (library / "lifecycle.py").write_text(
+        "from Infernux.lifecycle import InxPreload\n"
+        "class LibraryPreload(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        context.own_python_library('runtime/provider')\n"
+        + ("        raise RuntimeError('initialization failed')\n" if fail_preload else "")
+        + "    def unload(self): pass\n",
+        encoding="utf-8",
+    )
+    manager = PluginManager.startup(str(project))
+    try:
+        state = next(iter(manager.preloads.states.values()))
+        assert state.loaded is not fail_preload, state.error
+        assert is_project_component_script(str(implementation), str(project)) is fail_preload
+        assert is_project_component_script(str(author), str(project))
+    finally:
+        manager.shutdown()
+    assert is_project_component_script(str(implementation), str(project))
 
 
 def test_package_preloads_with_matching_module_paths_are_isolated(tmp_path):
@@ -3493,6 +3627,112 @@ def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
         if owner:
             PanelRegistry.remove_owner(owner)
         PanelRegistry.unbind_live()
+
+
+@pytest.mark.parametrize("teardown", ["uninstall", "disable", "shutdown"])
+def test_plugin_commands_and_shortcuts_follow_preload_lifetime(tmp_path, monkeypatch, teardown):
+    from Infernux.engine.interaction.commands import EditorCommandRegistry
+    from Infernux.engine.interaction.shortcuts import ShortcutRouter
+
+    monkeypatch.setattr(EditorCommandRegistry, "_instance", None)
+    monkeypatch.setattr(ShortcutRouter, "_instance", None)
+    commands = EditorCommandRegistry.instance()
+    shortcuts = ShortcutRouter.instance()
+    source = _source(tmp_path / "source", "vendor/authoring")
+    editor = source / "editor"
+    editor.mkdir()
+    (editor / "startup.py").write_text(
+        "from Infernux.lifecycle import InxPreload\n"
+        "from Infernux.engine.interaction.commands import EditorCommand, EditorCommandRegistry\n"
+        "from Infernux.engine.interaction.shortcuts import KeyChord, ShortcutBinding, ShortcutRouter\n"
+        "EditorCommandRegistry.instance().register(EditorCommand('vendor.create', lambda ctx: 'created', display_name='创建关卡'))\n"
+        "class Startup(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        ShortcutRouter.instance().register(ShortcutBinding('vendor.create', KeyChord.parse('Ctrl+F9'), binding_id='vendor.create.key'))\n",
+        encoding="utf-8",
+    )
+    package = _export(source, tmp_path / "authoring.inxpkg")
+    manager = PluginManager(str(_project(tmp_path / "project")))
+    try:
+        manager.install_package(str(package), install_dependencies=False)
+        assert commands.get("vendor.create").display_name == "创建关卡"
+        assert len(shortcuts.bindings) == 1
+        for _ in range(2):
+            manager.reload("vendor/authoring")
+            assert commands.get("vendor.create") is not None
+            assert len(shortcuts.bindings) == 1
+            assert not manager.preloads.failures
+        if teardown == "uninstall":
+            manager.uninstall("vendor/authoring")
+        elif teardown == "disable":
+            manager.set_enabled("vendor/authoring", False)
+        else:
+            manager.shutdown()
+        assert commands.get("vendor.create") is None
+        assert shortcuts.bindings == ()
+        if teardown == "disable":
+            manager.set_enabled("vendor/authoring", True)
+            assert commands.get("vendor.create") is not None
+            assert len(shortcuts.bindings) == 1
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.parametrize("teardown", ["uninstall", "disable", "shutdown"])
+def test_plugin_handles_cancel_capture_and_retire_with_preload_lifetime(
+    tmp_path, monkeypatch, teardown
+):
+    from Infernux.engine.interaction.handles import EditorHandleRegistry
+
+    monkeypatch.setattr(EditorHandleRegistry, "_instance", None)
+    handles = EditorHandleRegistry.instance()
+    source = _source(tmp_path / "source", "vendor/handles")
+    editor = source / "editor"
+    editor.mkdir()
+    (editor / "startup.py").write_text(
+        "from pathlib import Path\n"
+        "from Infernux.editor import register_handle_provider\n"
+        "from Infernux.lifecycle import InxPreload\n"
+        "ROOT = ''\n"
+        "def record(value):\n"
+        "    with Path(ROOT, 'handles.log').open('a', encoding='utf-8') as stream: stream.write(str(value) + '\\n')\n"
+        "def draw(handles):\n"
+        "    handles.position('pivot', (0, 0, 0), lambda value: record(('change', tuple(value))), on_cancel=lambda value: record(('cancel', tuple(value))))\n"
+        "class Startup(InxPreload):\n"
+        "    def preload(self, context):\n"
+        "        global ROOT\n"
+        "        ROOT = context.project_root\n"
+        "        register_handle_provider('vendor.handles', draw, on_retire=lambda: record(('retire',)))\n",
+        encoding="utf-8",
+    )
+    package = _export(source, tmp_path / "handles.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project))
+    try:
+        manager.install_package(str(package), install_dependencies=False)
+        handles.collect(object())
+        assert handles.begin_capture(
+            "vendor.handles:pivot", (0, 0, 5), (0, 0, -1)
+        )
+        handles.update_capture((1, 0, 5), (0, 0, -1))
+
+        if teardown == "uninstall":
+            manager.uninstall("vendor/handles")
+        elif teardown == "disable":
+            manager.set_enabled("vendor/handles", False)
+        else:
+            manager.shutdown()
+
+        assert handles.active_capture_id == ""
+        assert handles.frame_handles == ()
+        assert handles.providers == ()
+        assert (project / "handles.log").read_text(encoding="utf-8").splitlines()[-3:] == [
+            "('change', (0.0, 0.0, 0.0))",
+            "('cancel', (0.0, 0.0, 0.0))",
+            "('retire',)",
+        ]
+    finally:
+        manager.shutdown()
 
 
 def test_requirements_choose_official_inxpackage_before_pip(tmp_path, monkeypatch):

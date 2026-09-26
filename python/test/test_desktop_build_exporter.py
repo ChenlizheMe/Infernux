@@ -35,7 +35,7 @@ def _request(tmp_path: Path, **options) -> BuildRequest:
     (project / "Assets").mkdir(parents=True)
     (project / "ProjectSettings").mkdir()
     (project / "ProjectSettings" / "BuildSettings.json").write_text(
-        json.dumps({"scenes": []}), encoding="utf-8"
+        json.dumps({"scene_guids": []}), encoding="utf-8"
     )
     entries = options.pop("asset_catalog_entries", ())
     return BuildRequest(
@@ -118,12 +118,12 @@ def test_host_exporter_routes_settings_catalog_progress_and_cancellation(
         tmp_path,
         build_settings={
             "game_name": "Balance040",
+            "scene_guids": ["requested-scene-guid"],
             "display_mode": "windowed",
             "window_width": 960,
             "window_height": 540,
             "window_resizable": False,
             "lto": False,
-            "enable_jit": True,
             "splash_items": [],
         },
         asset_catalog_entries=[{"guid": "a" * 32}],
@@ -136,6 +136,7 @@ def test_host_exporter_routes_settings_catalog_progress_and_cancellation(
     assert result.success
     assert result.artifacts[0].kind == "player-directory"
     assert captured["kwargs"]["game_name"] == "Balance040"
+    assert captured["kwargs"]["build_scene_guids"] == ["requested-scene-guid"]
     assert captured["kwargs"]["display_mode"] == "windowed"
     assert captured["kwargs"]["debug_mode"] is False
     assert captured["entries"] == [{"guid": "a" * 32}]

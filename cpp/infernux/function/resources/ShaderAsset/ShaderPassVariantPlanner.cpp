@@ -81,6 +81,12 @@ ShaderPassVariantPlan ShaderPassVariantPlanner::Plan(const ShaderDescriptor &ver
         return plan;
     }
 
+    if (interfaceArtifact.domain == ShaderProgramDomain::ScreenUI ||
+        interfaceArtifact.domain == ShaderProgramDomain::WorldUI) {
+        Add(plan, ShaderCompileTarget::Forward, true, "UI programs use the dedicated Forward output contract");
+        return plan;
+    }
+
     Add(plan, ShaderCompileTarget::Forward, true, "all linked material programs require a Forward variant");
     Add(plan, ShaderCompileTarget::ForwardPlus, true, "mesh material programs require a tiled Forward+ variant");
     const bool deferredCompatible = !transparent && !forceForward && shadingModelSupportsDeferred;

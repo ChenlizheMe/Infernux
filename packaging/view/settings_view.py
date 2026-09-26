@@ -169,7 +169,31 @@ class SettingsView(QWidget):
         update_description.setObjectName("settingsDescription")
         update_description.setWordWrap(True)
         update_text.addWidget(update_description)
+        automatic_label = QLabel(tr("Automatic update and release-notice checks"))
+        automatic_label.setObjectName("settingsLabel")
+        automatic_label.setWordWrap(True)
+        update_text.addWidget(automatic_label)
+        automatic_description = QLabel(
+            tr(
+                "When enabled, Hub contacts infernux-engine.com at startup for "
+                "updates and release notices. No project content is sent. "
+                "Installing updates requires confirmation."
+            )
+        )
+        automatic_description.setObjectName("settingsDescription")
+        automatic_description.setWordWrap(True)
+        update_text.addWidget(automatic_description)
         update_layout.addLayout(update_text, 1)
+        self.automatic_update_toggle = ToggleSwitch()
+        self.automatic_update_toggle.setChecked(
+            bool(self._db)
+            and self._db.get_setting("automatic_update_checks", "enabled")
+            == "enabled"
+        )
+        self.automatic_update_toggle.stateChanged.connect(
+            self._save_automatic_update_checks
+        )
+        update_layout.addWidget(self.automatic_update_toggle)
         update_button = QPushButton(tr("Check for Updates"))
         update_button.setObjectName("normalBtn")
         update_button.setFixedHeight(34)
@@ -206,6 +230,12 @@ class SettingsView(QWidget):
         from i18n import configure_language
         configure_language(mode)
         self.language_changed.emit(mode)
+
+    def _save_automatic_update_checks(self, state: int):
+        if self._db:
+            self._db.set_setting(
+                "automatic_update_checks", "enabled" if state else "disabled"
+            )
 
     def refresh(self):
         """Refresh state owned outside the Hub process."""

@@ -16,6 +16,7 @@ from ._inspector_references import (
     _game_object_has_required_component,
     _create_component_ref_from_go,
     _picker_scene_gameobjects,
+    _picker_scene_components,
     render_asset_reference_field,
 )
 
@@ -144,7 +145,8 @@ def _make_list_picker_providers(element_type, metadata):
 
     if element_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT):
         _rc = metadata.component_type if element_type == FieldType.COMPONENT else metadata.required_component
-        return (lambda filt, _rc=_rc: _picker_scene_gameobjects(filt, required_component=_rc), None)
+        provider = _picker_scene_components if element_type == FieldType.COMPONENT else _picker_scene_gameobjects
+        return (lambda filt, _rc=_rc: provider(filt, required_component=_rc), None)
 
     if element_type in {
         FieldType.MATERIAL,

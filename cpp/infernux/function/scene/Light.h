@@ -7,6 +7,7 @@
 
 #include "Component.h"
 #include <algorithm>
+#include <cmath>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -42,6 +43,12 @@ enum class LightRenderMode
     Auto = 0,       ///< Automatic based on importance
     ForcePixel = 1, ///< Always per-pixel lighting
     ForceVertex = 2 ///< Always per-vertex lighting
+};
+
+enum class LightColorMode
+{
+    Color = 0,
+    FilterAndTemperature = 1,
 };
 
 enum class LightInfluenceDomain : uint32_t
@@ -100,7 +107,7 @@ class Light : public Component
     // Color & Intensity (Unity-style)
     // ========================================================================
 
-    /// @brief Get light color (linear RGB, not gamma)
+    /// @brief Authored sRGB color; a filter when color temperature is enabled.
     [[nodiscard]] glm::vec3 GetColor() const
     {
         return m_color;
@@ -108,11 +115,48 @@ class Light : public Component
     void SetColor(const glm::vec3 &color)
     {
         m_color = color;
+        UpdateEffectiveColorCache();
     }
     void SetColor(float r, float g, float b)
     {
         m_color = glm::vec3(r, g, b);
+        UpdateEffectiveColorCache();
     }
+
+    [[nodiscard]] bool GetUseColorTemperature() const
+    {
+        return m_useColorTemperature;
+    }
+    void SetUseColorTemperature(bool enabled)
+    {
+        m_useColorTemperature = enabled;
+        UpdateEffectiveColorCache();
+    }
+    [[nodiscard]] LightColorMode GetColorMode() const
+    {
+        return m_useColorTemperature ? LightColorMode::FilterAndTemperature : LightColorMode::Color;
+    }
+    void SetColorMode(LightColorMode mode)
+    {
+        SetUseColorTemperature(mode == LightColorMode::FilterAndTemperature);
+    }
+
+    [[nodiscard]] float GetColorTemperature() const
+    {
+        return m_colorTemperature;
+    }
+    void SetColorTemperature(float kelvin)
+    {
+        if (std::isfinite(kelvin))
+            m_colorTemperature = glm::clamp(kelvin, 1000.0f, 20000.0f);
+        UpdateEffectiveColorCache();
+    }
+
+    /// @brief Authored color after optional Kelvin tint, in sRGB for editor display.
+    [[nodiscard]] glm::vec3 GetEffectiveColor() const;
+
+    /// @brief Effective emitted color converted to linear RGB for shader input.
+    [[nodiscard]] glm::vec3 GetLinearColor() const;
 
     /// @brief Get light intensity (multiplier for color)
     [[nodiscard]] float GetIntensity() const
@@ -124,10 +168,10 @@ class Light : public Component
         m_intensity = std::max(intensity, 0.0f);
     }
 
-    /// @brief Get final light color (color * intensity)
+    /// @brief Get final emitted color in linear RGB, including intensity.
     [[nodiscard]] glm::vec3 GetFinalColor() const
     {
-        return m_color * m_intensity;
+        return GetLinearColor() * m_intensity;
     }
 
     // ========================================================================
@@ -297,6 +341,9 @@ class Light : public Component
     // Light properties
     LightType m_lightType = LightType::Directional;
     glm::vec3 m_color = glm::vec3(1.0f, 1.0f, 1.0f);
+    bool m_useColorTemperature = false;
+    float m_colorTemperature = 6500.0f;
+    glm::vec3 m_effectiveLinearColor = glm::vec3(1.0f);
     float m_intensity = 1.0f;
 
     // Range (Point/Spot)
@@ -322,6 +369,8 @@ class Light : public Component
     bool m_baked = false;
 
   private:
+    void UpdateEffectiveColorCache();
+
     void SetInfluenceDomain(LightInfluenceDomain domain, bool enabled)
     {
         const uint32_t bit = static_cast<uint32_t>(domain);

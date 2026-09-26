@@ -46,6 +46,15 @@
 
 | 方法 | 描述 |
 |------|------|
+| `physics_pre_step(fixed_delta_time: float) → None` | Called after Collider input is synchronized and before Jolt steps. |
+| `physics_post_step(fixed_delta_time: float) → None` | Called after Jolt results and Rigidbody transforms are published. |
+| `on_mouse_enter() → None` |  |
+| `on_mouse_over() → None` |  |
+| `on_mouse_exit() → None` |  |
+| `on_mouse_down() → None` |  |
+| `on_mouse_drag() → None` |  |
+| `on_mouse_up() → None` |  |
+| `on_mouse_up_as_button() → None` |  |
 | `destroy() → None` | 销毁此组件或指定的 GameObject。 |
 | `on_collision_enter(collision: Any) → None` | Called when this collider starts touching another collider. |
 | `on_collision_stay(collision: Any) → None` | Called every fixed-update while two colliders remain in contact. |

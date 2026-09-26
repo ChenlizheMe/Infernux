@@ -48,7 +48,7 @@ class PlayerBootstrap:
         project_path: str,
         engine_log_level=LogLevel.Info,
         *,
-        scenes: List[str],
+        scene_guids: List[str],
         display_mode: str = "fullscreen_borderless",
         window_width: int = 1920,
         window_height: int = 1080,
@@ -59,7 +59,7 @@ class PlayerBootstrap:
     ):
         self.project_path = project_path
         self.engine_log_level = engine_log_level
-        self.scenes = list(scenes)
+        self.scene_guids = list(scene_guids)
         self.display_mode = display_mode
         self.window_width = window_width
         self.window_height = window_height
@@ -109,6 +109,15 @@ class PlayerBootstrap:
         if self.engine is not None:
             phase("prepare runtime scripts", self.engine.prepare_startup_refresh)
         self._pump_startup_events()
+        # A Player without a splash must enter Play before the first GUI draw.
+        # Waiting for PlayerGUI.on_render() makes simulation startup depend on
+        # the first present/camera texture, leaving a live window with a
+        # non-playing scene (notably GPU compute/soft-body components).
+        # Splash-backed products intentionally keep their deferred activation
+        # contract and are started by PlayerGUI after the splash completes.
+        if getattr(self, "runtime_session", None) is not None and not getattr(self, "splash_items", ()):
+            phase("activate runtime scene", self._enter_play_mode)
+            self._pump_startup_events()
         _plog(
             f"[Startup] bootstrap ready: "
             f"{(time.perf_counter() - startup_started) * 1000.0:.1f} ms"
@@ -346,11 +355,11 @@ class PlayerBootstrap:
         candidate = resolved_path(os.path.join(data_root, normalized[len(prefix):]))
         return candidate if is_path_within(candidate, data_root, allow_root=False) else None
 
-    def _resolve_runtime_scene(self, scene_reference: str) -> Optional[str]:
+    def _resolve_runtime_scene(self, scene_guid: str) -> Optional[str]:
         if self._runtime_manifest is None or self._runtime_catalog is None:
             return None
         self._runtime_manifest.require_service("runtime_asset_catalog")
-        return self._runtime_catalog.resolve_scene(scene_reference)
+        return self._runtime_catalog.resolve_scene(scene_guid)
 
     def _init_engine(self):
         if self._runtime_manifest is None:
@@ -494,40 +503,39 @@ class PlayerBootstrap:
         if self._runtime_manifest is None:
             raise RuntimeError("Player runtime manifest is not loaded")
         self._runtime_manifest.require_service("player_scene_service")
-        first_scene = self.scenes[0]
-        requested_scene = os.environ.get("_INFERNUX_PLAYER_START_SCENE", "").strip()
-        if requested_scene:
-            # A packaged Player contains cooked scene artifacts rather than the
-            # source ``Assets/*.scene`` documents.  The Supervisor already
-            # constrains this value to BuildManifest scenes; the immutable
-            # RuntimeAssetCatalog is the final authority inside the Player.
-            if self._resolve_runtime_scene(requested_scene) is not None:
-                first_scene = requested_scene
+        first_scene_guid = self.scene_guids[0]
+        requested_scene_guid = os.environ.get(
+            "_INFERNUX_PLAYER_START_SCENE_GUID", ""
+        ).strip()
+        if requested_scene_guid:
+            if requested_scene_guid in self.scene_guids:
+                first_scene_guid = requested_scene_guid
             else:
                 raise RuntimeError(
-                    "Supervisor Player start scene is not present in the runtime "
-                    f"asset catalog: {requested_scene}"
+                    "Supervisor Player start scene GUID is not present in the "
+                    f"BuildManifest: {requested_scene_guid}"
                 )
-        # Resolve relative paths against project root (packaged builds
-        # store scene paths relative to the game folder)
-        catalog_scene = self._resolve_runtime_scene(first_scene)
-        if catalog_scene is None:
+        if self._resolve_runtime_scene(first_scene_guid) is None:
             raise RuntimeError(
-                f"Build scene is not reachable through RuntimeAssetCatalog: {first_scene}"
+                "Build scene GUID is not reachable through RuntimeAssetCatalog: "
+                f"{first_scene_guid}"
             )
-        first_scene = catalog_scene
 
-        if not os.path.isfile(first_scene):
-            raise RuntimeError(f"First scene file not found: {first_scene}")
-
-        if self.runtime_session is None or not self.runtime_session.load_scene(first_scene):
+        # Keep the GUID authoritative through the complete Player load chain.
+        # PlayerSceneService resolves it once through RuntimeAssetCatalog; feeding
+        # the cooked path back into that GUID-only boundary would create a second
+        # resource identity and make packaged scene loading dependent on paths.
+        if (
+            self.runtime_session is None
+            or not self.runtime_session.load_scene(first_scene_guid)
+        ):
             detail = (
                 str(getattr(self.runtime_session, "last_scene_error", ""))
                 if self.runtime_session is not None
                 else "Player runtime session is unavailable"
             )
             raise RuntimeError(
-                f"Failed to load initial scene: {first_scene}: "
+                f"Failed to load initial scene GUID {first_scene_guid}: "
                 f"{detail or 'scene transaction rejected the document'}"
             )
 

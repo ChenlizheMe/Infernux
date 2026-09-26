@@ -28,10 +28,12 @@
 | 方法 | 描述 |
 |------|------|
 | `Gizmos.draw_line(start: Vec3, end: Vec3) → None` | 绘制一条线段。 |
+| `Gizmos.draw_lines(positions: ndarray | Buffer, indices: ndarray) → None` | Draw indexed lines from NumPy or GPU-resident (N,3) positions. |
 | `Gizmos.draw_ray(origin: Vec3, direction: Vec3) → None` | 绘制一条射线。 |
 | `Gizmos.draw_icon(position: Vec3, object_id: int, color: Optional[Tuple[float, float, float]] = ...) → None` | 在指定位置绘制图标。 |
 | `Gizmos.draw_wire_cube(center: Vec3, size: Vec3) → None` | 绘制线框立方体。 |
 | `Gizmos.draw_wire_sphere(center: Vec3, radius: float, segments: int = ...) → None` | 绘制线框球体。 |
+| `Gizmos.draw_wire_spheres(centers: Buffer, radius: float, segments: int = ..., center_indices: ndarray | None = ...) → None` | Draw many wire spheres from GPU-resident center positions. |
 | `Gizmos.draw_frustum(position: Vec3, fov_deg: float, aspect: float, near: float, far: float, forward: Vec3 = ..., up: Vec3 = ..., right: Vec3 = ...) → None` | 绘制视锥体。 |
 | `Gizmos.draw_wire_arc(center: Vec3, normal: Vec3, radius: float, start_angle_deg: float = ..., arc_deg: float = ..., segments: int = ...) → None` | Draw a wireframe arc in the Scene view. |
 

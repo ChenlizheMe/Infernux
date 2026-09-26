@@ -89,6 +89,18 @@ def _standard_edit_shortcuts(
     )
 
 
+def _project_asset_path_for_guid(guid: str) -> str:
+    """Resolve one global Project selection identity at the UI boundary."""
+    try:
+        from Infernux.core.assets import AssetManager
+
+        return str(
+            AssetManager.require_asset_database().get_path_from_guid(guid) or ""
+        ).strip()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return ""
+
+
 def hierarchy_panel_interaction(
     scene_commands: SceneObjectCommandService,
     *,
@@ -132,6 +144,7 @@ def hierarchy_panel_interaction(
         try:
             object_ids = tuple(int(value) for value in payload.get("object_ids", ()))
             target_id = int(payload.get("target_id", 0) or 0)
+            destination_world_id = int(payload.get("destination_world_id", 0) or 0)
         except (TypeError, ValueError):
             return None
         mode = str(payload.get("mode", "") or "").strip().lower()
@@ -141,7 +154,13 @@ def hierarchy_panel_interaction(
             return None
         if mode != "root" and target_id <= 0:
             return None
-        return object_ids, mode, target_id, bool(payload.get("after", False))
+        return (
+            object_ids,
+            mode,
+            target_id,
+            bool(payload.get("after", False)),
+            destination_world_id,
+        )
 
     def expanded_args(context: CommandContext):
         try:
@@ -152,6 +171,21 @@ def hierarchy_panel_interaction(
         if object_id <= 0 or not isinstance(expanded, bool):
             return None
         return object_id, expanded
+
+    def scene_world_id(context: CommandContext) -> int:
+        try:
+            return int(context.payload.get("world_id", 0) or 0)
+        except (AttributeError, TypeError, ValueError):
+            return 0
+
+    def activate_scene(context: CommandContext) -> bool:
+        world_id = scene_world_id(context)
+        if world_id <= 0:
+            return False
+        from Infernux.engine.scene_manager import SceneFileManager
+
+        scene_files = SceneFileManager.instance()
+        return bool(scene_files and scene_files.activate_loaded_scene(world_id))
 
     def bind(panel: object) -> PanelCommandAdapter:
         _require_methods(
@@ -231,6 +265,10 @@ def hierarchy_panel_interaction(
                     ),
                     lambda context: move_args(context) is not None,
                 ),
+                "scene.set_active": BoundPanelCommand(
+                    activate_scene,
+                    lambda context: scene_world_id(context) > 0,
+                ),
                 "hierarchy.set_expanded": BoundPanelCommand(
                     lambda context: bool(
                         (args := expanded_args(context)) is not None
@@ -302,6 +340,7 @@ def hierarchy_panel_interaction(
         "scene.create_model",
         "scene.rename_object",
         "scene.move_hierarchy",
+        "scene.set_active",
         "hierarchy.set_expanded",
     ]
     if creation_service is not None:
@@ -346,7 +385,7 @@ def project_panel_interaction(
         seen: set[str] = set()
         if context.selection.domain is SelectionDomain.ASSET:
             raw_paths = tuple(
-                str(target.document_id or target.target_id or "").strip()
+                _project_asset_path_for_guid(target.target_id)
                 for target in context.selection.targets
             )
         else:
@@ -384,7 +423,7 @@ def project_panel_interaction(
             and context.selection.domain is SelectionDomain.ASSET
             and context.selection.primary is not None
         ):
-            value = context.selection.primary.target_id
+            value = _project_asset_path_for_guid(context.selection.primary.target_id)
         return value
 
     def destination(context: CommandContext, panel: object) -> str:
@@ -472,7 +511,7 @@ def project_panel_interaction(
             and context.selection.primary is not None
         ):
             primary = context.selection.primary
-            value = str(primary.document_id or primary.target_id or "").strip()
+            value = _project_asset_path_for_guid(primary.document_id or primary.target_id)
         return lexical_path(value)
 
     def expansion_args(context: CommandContext):
@@ -596,8 +635,18 @@ def project_panel_interaction(
 
     def locate_asset(context: CommandContext) -> bool:
         path = navigation_path(context)
+        try:
+            from Infernux.core.assets import AssetManager
+
+            guid = str(
+                AssetManager.require_asset_database().get_guid_from_path(path) or ""
+            ).strip()
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            guid = ""
+        if not guid:
+            return False
         return navigation.locate(
-            SelectionTarget.asset(path),
+            SelectionTarget.asset(guid),
             owner_id="project",
             reason="project_locate_asset",
             record_history=True,
@@ -1091,6 +1140,7 @@ def scene_view_panel_interaction(
         "scene.tool.move": (1, "Select Move Tool"),
         "scene.tool.rotate": (2, "Select Rotate Tool"),
         "scene.tool.scale": (3, "Select Scale Tool"),
+        "scene.tool.rect": (4, "Select Rect Tool"),
     }
 
     def bind(panel: object) -> PanelCommandAdapter:
@@ -1226,6 +1276,7 @@ def scene_view_panel_interaction(
                 ("scene.tool.move", "W"),
                 ("scene.tool.rotate", "E"),
                 ("scene.tool.scale", "R"),
+                ("scene.tool.rect", "T"),
                 ("scene.frame_selected", "F"),
             )
         ),
@@ -1255,7 +1306,7 @@ def ui_editor_panel_interaction(
             parent_id = int(context.payload.get("parent_id", 0) or 0)
         except (TypeError, ValueError):
             return None
-        if kind not in {"ui.canvas", "ui.text", "ui.image", "ui.button"}:
+        if kind not in {"ui.canvas", "ui.frame", "ui.text", "ui.image", "ui.button", "ui.progress_bar", "ui.slider"}:
             return None
         return kind, parent_id
 

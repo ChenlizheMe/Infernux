@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       replace_existing_release:
-        description: Replace or extend an existing release (increment setup.cfg build_number first)
+        description: Recover an unpublished draft; published Hub changes require a new project.version
         required: true
         type: boolean
         default: false
@@ -12,6 +12,7 @@ on:
 permissions:
   actions: read
   contents: write
+  pages: write
 
 jobs:
   build-test-publish:

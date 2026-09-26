@@ -825,7 +825,9 @@ void OutlineRenderer::RecordMaskDraws(VkCommandBuffer cmdBuf, const std::vector<
         VkBuffer vertBuffers[] = {vertBuf};
         VkDeviceSize offsets[] = {0};
         vkCmdBindVertexBuffers(cmdBuf, 0, 1, vertBuffers, offsets);
-        vkCmdBindIndexBuffer(cmdBuf, idxBuf, 0, VK_INDEX_TYPE_UINT32);
+        const MeshIndexFormat indexFormat = m_core->GetObjectIndexFormat(dc.objectId);
+        vkCmdBindIndexBuffer(cmdBuf, idxBuf, 0,
+                             indexFormat == MeshIndexFormat::UInt16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
 
         // Push per-object model matrix + normal matrix
         struct PushConstants

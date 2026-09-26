@@ -1,7 +1,3 @@
-#include <function/renderer/ProfileConfig.h>
-
-#if INFERNUX_FRAME_PROFILE
-
 #include "GpuTimestampQueries.h"
 
 #include "VkDeviceContext.h"
@@ -18,7 +14,7 @@ GpuTimestampQueries::~GpuTimestampQueries()
 }
 
 bool GpuTimestampQueries::Initialize(const VkDeviceContext &context, uint32_t framesInFlight,
-                                     uint32_t maxRegionsPerFrame)
+                                     uint32_t maxRegionsPerFrame, uint32_t queueFamily)
 {
     Destroy();
 
@@ -27,8 +23,17 @@ bool GpuTimestampQueries::Initialize(const VkDeviceContext &context, uint32_t fr
         return false;
     }
 
-    const auto &deviceCapabilities = context.GetCapabilities();
-    if (!deviceCapabilities.timestampQueries.supported) {
+    auto capabilities = context.GetCapabilities().timestampQueries;
+    if (queueFamily != VK_QUEUE_FAMILY_IGNORED) {
+        uint32_t count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(context.GetPhysicalDevice(), &count, nullptr);
+        std::vector<VkQueueFamilyProperties> families(count);
+        vkGetPhysicalDeviceQueueFamilyProperties(context.GetPhysicalDevice(), &count, families.data());
+        capabilities.validBits = queueFamily < count ? families[queueFamily].timestampValidBits : 0;
+        capabilities.supported = capabilities.validBits > 0;
+        capabilities.nanosecondsPerTick = context.GetDeviceProperties().limits.timestampPeriod;
+    }
+    if (!capabilities.supported) {
         m_device = VK_NULL_HANDLE;
         return false;
     }
@@ -51,7 +56,7 @@ bool GpuTimestampQueries::Initialize(const VkDeviceContext &context, uint32_t fr
         }
     }
 
-    m_capabilities = deviceCapabilities.timestampQueries;
+    m_capabilities = capabilities;
     m_capabilities.maxRegionsPerFrame = regionCapacity;
     return true;
 }
@@ -161,7 +166,7 @@ bool GpuTimestampQueries::CollectCompletedFrame(uint32_t frameIndex)
         m_device, frame.pool, 0, frame.queryCount, sizeof(QueryValue) * frame.queryCount, m_queryScratch.data(),
         sizeof(QueryValue), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
     frame.pending = false;
-    if (result != VK_SUCCESS) {
+    if (result != VK_SUCCESS || frame.serial < m_latestFrame.serial) {
         return false;
     }
 
@@ -197,5 +202,3 @@ GpuTimestampQueries::FrameState *GpuTimestampQueries::CurrentRecordingFrame() no
 }
 
 } // namespace infernux::vk
-
-#endif

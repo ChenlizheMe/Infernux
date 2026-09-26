@@ -74,6 +74,7 @@ class HierarchyPanel : public EditorPanel
     std::function<std::string()> getSceneDisplayName;
     std::function<bool()> isPrefabMode;
     std::function<std::string()> getPrefabDisplayName;
+    std::function<bool(uint64_t)> isSceneDirty;
 
     // ── Runtime hidden objects ───────────────────────────────────────
 
@@ -102,6 +103,7 @@ class HierarchyPanel : public EditorPanel
     // ── Drag-drop payload type ───────────────────────────────────────
 
     static constexpr const char *DRAG_DROP_TYPE = "HIERARCHY_GAMEOBJECT";
+    static constexpr const char *SCENE_DRAG_DROP_TYPE = "HIERARCHY_SCENE";
 
   protected:
     void OnRenderContent(InxGUIContext *ctx) override;
@@ -138,6 +140,7 @@ class HierarchyPanel : public EditorPanel
     uint64_t m_cachedStructureVer = UINT64_MAX;
     size_t m_cachedRawRootCount = 0;
     std::vector<GameObject *> m_cachedRoots;
+    std::vector<Scene *> m_cachedScenes;
     float m_lastRootRefreshTime = 0.0f;
     static constexpr float STALE_ROOT_INTERVAL = 0.12f;
     static constexpr int STALE_ROOT_THRESHOLD = 128;
@@ -160,23 +163,30 @@ class HierarchyPanel : public EditorPanel
     // ── Flat virtual scrolling ───────────────────────────────────────
     struct FlatItem
     {
-        GameObject *obj;
-        int depth;
-        bool hasVisibleChildren;
+        GameObject *obj = nullptr;
+        int depth = 0;
+        bool hasVisibleChildren = false;
+        Scene *scene = nullptr;
+        bool sceneHeader = false;
     };
     std::vector<FlatItem> m_flatItems;
     EditorTreeProjectionModel<uint64_t> m_treeProjection;
     std::unordered_set<uint64_t> m_forceExpandIds; // one-shot SetNextItemOpen
-    bool m_flatListDirty = true;                   // rebuild flat list when true
+    std::unordered_set<uint64_t> m_collapsedSceneWorldIds;
+    bool m_flatListDirty = true; // rebuild flat list when true
 
     void BuildFlatVisibleList(const std::vector<GameObject *> &roots);
     void RebuildFlatListIfNeeded(const std::vector<GameObject *> &roots);
     void BuildFlatListRecurse(GameObject *obj, int depth);
     void BuildFlatListRecurse(GameObject *obj, int depth, std::vector<FlatItem> &items);
     void RenderFlatItem(InxGUIContext *ctx, const FlatItem &item, float baseIndentX, float indentStep);
+    void RenderSceneHeader(InxGUIContext *ctx, Scene *scene);
+    void MoveSceneAdjacent(uint64_t draggedWorldId, uint64_t targetWorldId, bool after);
 
     // ── Pending selection (deferred left-click) ──────────────────────
     uint64_t m_pendingSelectId = 0;
+    uint64_t m_pendingSceneSelectWorldId = 0;
+    uint64_t m_selectedSceneWorldId = 0;
     bool m_pendingCtrl = false;
     bool m_pendingShift = false;
     uint64_t m_lastObservedPrimaryId = 0;
@@ -185,6 +195,8 @@ class HierarchyPanel : public EditorPanel
 
     // ── Pending auto-expand ──────────────────────────────────────────
     uint64_t m_pendingExpandId = 0;
+    uint64_t m_draggedObjectId = 0;
+    uint64_t m_draggedSceneWorldId = 0;
 
     // ── Inline rename ────────────────────────────────────────────────
     uint64_t m_renameId = 0;
@@ -244,7 +256,7 @@ class HierarchyPanel : public EditorPanel
     static std::vector<uint64_t> TopoSortIds(Scene *scene, const std::vector<uint64_t> &ids);
     void ReparentObject(uint64_t draggedId, uint64_t newParentId);
     void MoveObjectAdjacent(uint64_t draggedId, uint64_t targetId, bool after);
-    void ReparentToRoot(uint64_t draggedId);
+    void ReparentToRoot(uint64_t draggedId, uint64_t destinationWorldId = 0);
     void HandleExternalDrop(const std::string &dropType, uint64_t payload, uint64_t parentId = 0);
     void HandleExternalDropStr(const std::string &dropType, const std::string &payload, uint64_t parentId = 0);
     bool ValidateReparent(GameObject *obj, uint64_t newParentId, GameObject *newParent);

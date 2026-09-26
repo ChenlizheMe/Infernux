@@ -15,7 +15,7 @@ from pathlib import PurePosixPath
 from pathlib import Path
 from typing import Any, Iterable
 
-from Infernux.core.asset_types import AUDIO_EXTENSIONS
+from Infernux.core.asset_types import AUDIO_EXTENSIONS, MESH_EXTENSIONS
 
 from .path_utils import relative_path, resolved_path
 
@@ -37,6 +37,7 @@ _DOCUMENT_TYPES = {
     ".animclip3d": "animation_clip_3d",
     ".animfsm": "animation_fsm",
     ".animtimeline": "animation_timeline",
+    ".inxdata": "data_asset",
 }
 
 # One source of truth for authoring documents that must be cooked into
@@ -44,18 +45,26 @@ _DOCUMENT_TYPES = {
 # separate: GameBuilder may rewrite project-owned absolute paths only in
 # formats whose parser contract is JSON.
 RUNTIME_AUTHORING_DOCUMENT_SUFFIXES = frozenset(_DOCUMENT_TYPES) | frozenset(
-    {".graph", ".particlegraph"}
+    {".graph", ".particlegraph", ".rendertexture"}
 )
 RUNTIME_JSON_DOCUMENT_SUFFIXES = frozenset(_DOCUMENT_TYPES) | frozenset(
-    {".graph", ".particlegraph", ".json"}
+    {".graph", ".particlegraph", ".rendertexture", ".json"}
 )
 _AUDIO_TYPES = {extension: "audio" for extension in AUDIO_EXTENSIONS}
 _DIRECT_TEXTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr", ".exr"}
-_DIRECT_MODEL_SUFFIXES = {".fbx", ".obj", ".gltf", ".glb", ".dae"}
+# Keep runtime classification on the same source-of-truth list used by the
+# AssetDatabase and Project panel.  A source model must not become an opaque
+# blob merely because a newly supported interchange format was added there.
+_DIRECT_MODEL_SUFFIXES = frozenset(MESH_EXTENSIONS)
 _BINARY_ARTIFACT_MAGIC = {
     ".inxtex": b"INXTEXTURE",
     ".inxmesh": b"INXMESHART",
     ".inxskin": b"INXSKINAR",
+    ".inxrtex": b"INXRTEX1",
+}
+_BINARY_ARTIFACT_SCHEMA = {
+    ".inxmesh": b"MSH1",
+    ".inxskin": b"SKN1",
 }
 _ARTIFACT_SUFFIXES = frozenset(_BINARY_ARTIFACT_MAGIC) | frozenset(
     {".inxparticle", ".inxeffect"}
@@ -84,6 +93,7 @@ _RUNTIME_ARTIFACT_REASON_BY_LOGICAL_TYPE = {
     "animation_clip_3d": "runtime_loader_requires_serialized_document",
     "animation_fsm": "runtime_loader_requires_serialized_document",
     "animation_timeline": "runtime_loader_requires_serialized_document",
+    "data_asset": "runtime_loader_requires_serialized_document",
     "audio": "runtime_audio_backend_requires_encoded_stream",
     "project_runtime_document": "runtime_loader_requires_opaque_project_payload",
     "project_runtime_blob": "runtime_loader_requires_opaque_project_payload",
@@ -215,6 +225,8 @@ def source_fingerprint(project_root: str | os.PathLike[str], entry: dict[str, An
     """Return and verify the current filesystem fingerprint for an index entry."""
 
     source = source_path_for_entry(project_root, entry)
+    if _metadata_value(entry, "import_owner_guid"):
+        source = source.partition("::subtex:")[0].partition("::subanim:")[0]
     try:
         stat = os.stat(source)
     except OSError as exc:
@@ -292,6 +304,13 @@ def artifact_source_hash(path: str | os.PathLike[str]) -> str:
     if raw[marker_offset : marker_offset + 4] != b"\x04\x03\x02\x01":
         raise RuntimeArtifactError(f"Library artifact has an invalid endian marker: {artifact}")
     hash_size_offset = marker_offset + 4
+    schema = _BINARY_ARTIFACT_SCHEMA.get(suffix)
+    if schema is not None:
+        if raw[hash_size_offset : hash_size_offset + len(schema)] != schema:
+            raise RuntimeArtifactError(
+                f"Library artifact has an invalid current format marker: {artifact}"
+            )
+        hash_size_offset += len(schema)
     hash_offset = hash_size_offset + 4
     hash_size = int.from_bytes(
         raw[hash_size_offset:hash_offset], "little", signed=False
@@ -399,6 +418,8 @@ def logical_asset_type(entry: dict[str, Any]) -> str:
         return "mesh"
     if suffix == ".particlegraph":
         return "particlegraph"
+    if suffix == ".rendertexture":
+        return "rendertexture"
     return ""
 
 
@@ -433,6 +454,8 @@ def logical_type_for_path(path: str) -> str:
     if lower.startswith("library/artifacts/document/"):
         document_type = _DOCUMENT_TYPES.get(suffix, "project_runtime_document")
         return f"{document_type}_artifact"
+    if lower.startswith("library/artifacts/data/") and suffix == ".inxasset":
+        return "data_asset_artifact"
     if lower.startswith("library/artifacts/audio/"):
         return "audio_artifact"
     if lower.startswith("library/artifacts/blob/"):
@@ -450,11 +473,17 @@ def logical_type_for_path(path: str) -> str:
     if suffix == ".inxparticle":
         return "particle_graph_artifact"
     if suffix == ".inxmesh":
+        if lower.startswith(("assets/", "packages/")):
+            return "model_source"
         return "mesh_artifact"
     if suffix == ".inxskin":
         return "skinned_mesh_artifact"
     if suffix == ".inxtex":
         return "texture_artifact"
+    if suffix == ".inxrtex":
+        return "render_texture_artifact"
+    if suffix == ".rendertexture":
+        return "render_texture_source"
     if suffix == ".inxeffect":
         return "render_effect_artifact"
     if suffix in {".json", ".yaml", ".yml"}:
@@ -480,6 +509,7 @@ def payload_kind_for(logical_type: str) -> str:
         "animation_clip_3d",
         "animation_timeline",
         "animation_fsm",
+        "data_asset",
     }:
         return "serialized_runtime_document"
     if logical_type == "compiled_script":
@@ -536,18 +566,16 @@ def _asset_refs(value: Any, field_name: str = "") -> Iterable[tuple[str, str]]:
         # several native/current documents (materials, effect groups and
         # renderer components) store the same GUID/path pair without it.
         # Both are durable asset identities and must contribute to the Player
-        # catalog dependency graph.
+        # catalog dependency graph.  Path hints are display-only and never
+        # identify a runtime dependency.
         if value.get("$type") == "asset_ref" or (
             "guid" in value and ("path_hint" in value or "asset_type" in value)
         ):
             guid = value.get("guid")
-            path_hint = value.get("path_hint")
             if not isinstance(guid, str):
                 guid = ""
-            if not isinstance(path_hint, str):
-                path_hint = ""
-            if guid or path_hint:
-                yield guid, path_hint
+            if guid:
+                yield guid, ""
         for key, item in value.items():
             yield from _asset_refs(item, str(key))
     elif isinstance(value, list):
@@ -572,7 +600,6 @@ def _asset_refs(value: Any, field_name: str = "") -> Iterable[tuple[str, str]]:
 
 def _dependencies(
     payload: bytes | None,
-    path_index: dict[str, str],
     guid_index: dict[str, str],
 ) -> tuple[list[str], list[dict[str, str]]]:
     if not payload:
@@ -583,20 +610,13 @@ def _dependencies(
         return [], []
     ids: set[str] = set()
     unresolved: set[tuple[str, str]] = set()
-    for guid, path_hint in _asset_refs(value):
+    for guid, _path_hint in _asset_refs(value):
         target = guid_index.get(guid) if guid else None
-        if target is None and path_hint:
-            normalized = path_hint.replace("\\", "/").lstrip("./").casefold()
-            target = path_index.get(normalized)
-            if target is None and normalized.startswith("assets/"):
-                target = path_index.get(normalized[7:])
         if target is not None:
             ids.add(target)
             continue
         if guid:
             unresolved.add(("guid", guid))
-        if path_hint:
-            unresolved.add(("path", path_hint))
     return sorted(ids), [
         {"kind": kind, "value": value}
         for kind, value in sorted(unresolved)
@@ -747,7 +767,6 @@ def build_catalog(
     for record in prepared:
         dependencies, unresolved = _dependencies(
             record.pop("_payload"),
-            path_index,
             guid_index,
         )
         binding = record.get("source_asset")

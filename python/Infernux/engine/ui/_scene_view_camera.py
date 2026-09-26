@@ -270,16 +270,15 @@ class SceneViewCameraMixin:
             return False
         from Infernux.lib import SceneManager
 
-        scene = SceneManager.instance().get_active_scene()
-        return bool(scene and scene.find_by_id(int(object_id)))
+        return bool(SceneManager.instance().find_runtime_object_by_id(int(object_id)))
 
     def frame_object_by_id(self, object_id: int) -> bool:
         if not self.can_frame_object_by_id(object_id):
             return False
         from Infernux.lib import SceneManager
 
-        scene = SceneManager.instance().get_active_scene()
-        return self.fly_to_object(scene.find_by_id(int(object_id)))
+        obj = SceneManager.instance().find_runtime_object_by_id(int(object_id))
+        return self.fly_to_object(obj)
 
     def fly_to_object(self, game_object):
         """Start a smooth camera animation to focus on *game_object*.
@@ -373,10 +372,7 @@ class SceneViewCameraMixin:
             return False
 
         from Infernux.lib import SceneManager
-        scene = SceneManager.instance().get_active_scene()
-        if not scene:
-            return False
-        obj = scene.find_by_id(obj_id)
+        obj = SceneManager.instance().find_runtime_object_by_id(obj_id)
         if obj is None:
             return False
 

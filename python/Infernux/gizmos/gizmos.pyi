@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import List, Optional, Tuple
+from numpy import ndarray
+from Infernux.compute import Buffer
 
 Vec3 = Tuple[float, float, float]
 
@@ -20,6 +22,10 @@ class Gizmos:
         """Draw a line from start to end in the Scene view."""
         ...
     @classmethod
+    def draw_lines(cls, positions: ndarray | Buffer, indices: ndarray) -> None:
+        """Draw indexed lines from NumPy or GPU-resident (N,3) positions."""
+        ...
+    @classmethod
     def draw_ray(cls, origin: Vec3, direction: Vec3) -> None:
         """Draw a ray starting at origin in the given direction."""
         ...
@@ -35,6 +41,11 @@ class Gizmos:
     @classmethod
     def draw_wire_sphere(cls, center: Vec3, radius: float, segments: int = ...) -> None:
         """Draw a wireframe sphere in the Scene view."""
+        ...
+    @classmethod
+    def draw_wire_spheres(cls, centers: Buffer, radius: float, segments: int = ...,
+                          center_indices: ndarray | None = ...) -> None:
+        """Draw many wire spheres from GPU-resident center positions."""
         ...
     @classmethod
     def draw_frustum(cls, position: Vec3, fov_deg: float, aspect: float,

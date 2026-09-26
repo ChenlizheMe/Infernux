@@ -21,6 +21,8 @@ from collections import defaultdict
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from Infernux.core.asset_types import MESH_EXTENSIONS
+
 from .path_utils import resolved_path
 from .player_package_native import (
     ASSET_CATALOG_ARCHIVE_FILENAME,
@@ -111,13 +113,13 @@ PLAYER_FORBIDDEN_RUNTIME_MODULES = forbidden_player_service_modules() | frozense
         "Infernux/engine/deferred_task.pyc",
         "Infernux/engine/scene_document_transaction.pyc",
         "Infernux/engine/scene_manager.pyc",
+        "Infernux/gizmos/collector.pyc",
     }
 )
 PLAYER_FORBIDDEN_RUNTIME_PREFIXES = frozenset(
     {
         "Infernux/engine/interaction/",
         "Infernux/engine/undo/",
-        "Infernux/gizmos/",
     }
 )
 
@@ -146,6 +148,17 @@ AUTHOR_SOURCE_SUFFIXES = frozenset(
         ".hpp",
     }
 )
+# Interchange/model sources are authoring inputs, not runtime payloads. A
+# cooked Player contains the GUID-addressed InxMesh/InxSkin artifact, never the
+# original DCC file. Keep this tied to the AssetDatabase registry so a newly
+# supported model format cannot silently leak into a Player package.
+RAW_MODEL_SOURCE_SUFFIXES = frozenset(MESH_EXTENSIONS)
+
+
+def _is_raw_model_source_path(path: str) -> bool:
+    """Return whether *path* names an interchange model source."""
+
+    return Path(path).suffix.casefold() in RAW_MODEL_SOURCE_SUFFIXES
 # Runtime.inxrt contains the engine's own shader programs.  This is the only
 # author-source exception: project Content remains subject to the source gate.
 RUNTIME_BUILTIN_SHADER_SUFFIXES = frozenset(
@@ -176,6 +189,26 @@ _PE_SIGNATURE = b"PE\0\0"
 _PE_MACHINES = frozenset({0x014C, 0x8664, 0xAA64})
 _IMAGE_FILE_EXECUTABLE_IMAGE = 0x0002
 _IMAGE_FILE_DLL = 0x2000
+
+
+def _is_format_marker_group(paths) -> bool:
+    """Package-local format/type declarations are not duplicated game payloads."""
+    entries = [path.split("::", 1)[-1] for path in paths]
+    return all(entry.endswith("/py.typed") for entry in entries)
+
+
+def _is_runtime_license_group(paths) -> bool:
+    """Dependencies retain their own legal notices even when the text repeats."""
+    for path in paths:
+        archive, separator, entry = path.partition("::")
+        if not separator or Path(archive).suffix.casefold() not in {".inxrt", ".inxmod"}:
+            return False
+        if Path(entry).name.casefold() not in {
+            "license", "license.txt", "license.md", "copying", "copying.txt",
+            "notice", "notice.txt", "notice.md",
+        }:
+            return False
+    return bool(paths)
 
 
 def _sha256(path: Path) -> str:
@@ -256,7 +289,26 @@ def _read_text(path: Path) -> str:
 
 
 def _contains_absolute_author_path(text: str) -> bool:
-    return ABSOLUTE_PATH_RE.search(text) is not None
+    # JSON escaping is not a filesystem path.  In particular, an embedded
+    # JSON string such as ``[\"driver\"]`` produces adjacent backslashes in
+    # the outer document and used to be mistaken for a UNC prefix.  Inspect
+    # decoded string values when the payload is JSON; plain text still goes
+    # through the strict drive/POSIX/UNC expression unchanged.
+    try:
+        document = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return ABSOLUTE_PATH_RE.search(text) is not None
+
+    pending = [document]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, str) and ABSOLUTE_PATH_RE.search(value) is not None:
+            return True
+    return False
 
 
 def _is_safe_native_entry_path(entry_name: str) -> bool:
@@ -450,6 +502,10 @@ def _archive_entry_records(
             and not _is_project_runtime_shader_entry(relative_archive, entry_name)
         ):
             author_sources.append(entry_relative)
+        if _is_raw_model_source_path(entry_name):
+            forbidden.append(
+                f"{entry_relative}: raw model source is not a Player payload"
+            )
         if entry_suffix in NATIVE_SUFFIXES:
             native_files.append(entry_relative)
         if entry_suffix == ".exe":
@@ -644,6 +700,8 @@ def audit_player_package(
             meta_files.append(relative)
         if suffix in AUTHOR_SOURCE_SUFFIXES:
             author_sources.append(relative)
+        if _is_raw_model_source_path(relative):
+            forbidden.append(f"{relative}: raw model source is not a Player payload")
         if suffix in {".pyc", ".pyo"}:
             # Compiled user scripts are allowed only inside Content.inxpkg;
             # a loose bytecode file is still redundant package payload.
@@ -783,6 +841,8 @@ def audit_player_package(
         for paths in hashes.values()
         if len(paths) > 1
         and not _is_required_bootstrap_duplicate(paths)
+        and not _is_format_marker_group(paths)
+        and not _is_runtime_license_group(paths)
         and not _is_linux_soname_alias_group(paths)
         and not _is_logically_distinct_asset_payload(paths, data_relative)
     )
@@ -913,6 +973,14 @@ def audit_player_package(
     if parallel_present != runtime_features.parallel:
         runtime_payload_gap.append(
             "Parallel.inxmod presence disagrees with RuntimeManifest features"
+        )
+    # Parallel is a sealed, lazily materialized module.  An expanded module
+    # tree defeats the Player package boundary and can add tens of megabytes
+    # to every delivery, so reject it at the final-layout audit boundary.
+    expanded_parallel = data_root / "Modules" / "Parallel"
+    if expanded_parallel.exists():
+        runtime_payload_gap.append(
+            "expanded Modules/Parallel runtime is forbidden; ship Parallel.inxmod"
         )
     runtime_payload_gap.extend(runtime_contract_gaps)
     bootstrap_prefix = f"{data_relative}/Bootstrap.inxrt::"

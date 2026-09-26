@@ -11,6 +11,7 @@ import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
+import android.util.Log;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.Surface;
@@ -26,11 +27,12 @@ import java.nio.charset.StandardCharsets;
 
 /** Injects two simultaneous contacts through Android's system input test boundary. */
 public final class MultiTouchInstrumentation extends Instrumentation {
+    private static final String LOG_TAG = "InfernuxInputTest";
     private static final String EXPECTED_TEXT = "输入测试中文🙂";
     private static final float FIXTURE_REFERENCE_WIDTH = 1280.0f;
     private static final float FIXTURE_REFERENCE_HEIGHT = 720.0f;
     private static final float TEXT_INPUT_BUTTON_CENTER_X = 512.0f + 256.0f * 0.5f;
-    private static final float TEXT_INPUT_BUTTON_CENTER_Y = 20.0f + 64.0f * 0.5f;
+    private static final float TEXT_INPUT_BUTTON_CENTER_Y = 260.0f + 64.0f * 0.5f;
     private static final long ROTATION_STABLE_MILLISECONDS = 250L;
     private static final long BUTTON_PRESS_MILLISECONDS = 500L;
     private static final long TOUCH_PHASE_MILLISECONDS = 500L;
@@ -129,12 +131,23 @@ public final class MultiTouchInstrumentation extends Instrumentation {
                     10000L);
             orientationPassed = true;
             stage = "text-input-button";
+            final float buttonX = fixtureButtonCenterX(
+                    reverseLandscape.width, reverseLandscape.height);
+            final float buttonY = fixtureButtonCenterY(
+                    reverseLandscape.width, reverseLandscape.height);
+            Log.i(LOG_TAG, "INFERNUX_ANDROID_IME_TAP "
+                    + "rotation=" + reverseLandscape.rotation
+                    + " viewport=" + reverseLandscape.width + "x" + reverseLandscape.height
+                    + " normalized=" + buttonX + "," + buttonY
+                    + " pixel=" + buttonX * reverseLandscape.width
+                    + "," + buttonY * reverseLandscape.height
+                    + " safeInsets=" + formatInsets(reverseLandscape.safeInsets));
             injectTap(
                     automation,
                     reverseLandscape.width,
                     reverseLandscape.height,
-                    fixtureButtonCenterX(reverseLandscape.width, reverseLandscape.height),
-                    fixtureButtonCenterY(reverseLandscape.width, reverseLandscape.height));
+                    buttonX,
+                    buttonY);
             stage = "ime-visible";
             final ImeSnapshot visibleIme = waitForIme(targetActivity, true, 10000L);
             if (!visibleIme.editorFocused) {
@@ -447,11 +460,13 @@ public final class MultiTouchInstrumentation extends Instrumentation {
     }
 
     private static float fixtureButtonCenterX(int width, int height) {
-        return TEXT_INPUT_BUTTON_CENTER_X * fixtureScale(width, height) / width;
+        return 0.5f + (TEXT_INPUT_BUTTON_CENTER_X - FIXTURE_REFERENCE_WIDTH * 0.5f)
+                * fixtureScale(width, height) / width;
     }
 
     private static float fixtureButtonCenterY(int width, int height) {
-        return TEXT_INPUT_BUTTON_CENTER_Y * fixtureScale(width, height) / height;
+        return 0.5f + (TEXT_INPUT_BUTTON_CENTER_Y - FIXTURE_REFERENCE_HEIGHT * 0.5f)
+                * fixtureScale(width, height) / height;
     }
 
     private long readPositiveLong(String key, long defaultValue) {

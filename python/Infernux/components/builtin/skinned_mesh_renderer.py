@@ -7,7 +7,7 @@ model metadata and the active take selection used by SkeletalAnimator.
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Tuple
 
 from Infernux.components.builtin.mesh_renderer import MeshRenderer
 from Infernux.components.builtin_component import CppProperty
@@ -53,6 +53,15 @@ class SkinnedMeshRenderer(MeshRenderer):
         cpp = self._cpp_component
         if cpp is not None and hasattr(cpp, "set_source_model_guid"):
             cpp.set_source_model_guid(guid or "")
+
+    def get_root_motion_delta(
+        self, take_name: str, from_seconds: float, to_seconds: float,
+        loop: bool = True, animation_source_guid: str = "",
+    ) -> Tuple[object, object]:
+        """Sample one imported root-motion interval as (translation, rotation)."""
+        return self._require_cpp_component().get_root_motion_delta(
+            take_name, from_seconds, to_seconds, loop, animation_source_guid,
+        )
 
     @property
     def animation_take_count(self) -> int:

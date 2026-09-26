@@ -21,13 +21,13 @@ All tracks share the source-level `volume`, `pitch`, `mute`, `loop`, `min_distan
 
 Short gameplay sounds use `play_one_shot(clip, volume_scale)`. The source owns a pool of transient voices, so several hits can overlap without creating temporary GameObjects or consuming persistent tracks. `one_shot_pool_size` controls the maximum concurrent one-shot voices and defaults to 8.
 
-An `AudioListener` must exist in the scene. For screen-centered or effectively 2D sound, keep the source on or near the listener. Distance attenuation starts at `min_distance` and reaches its minimum at `max_distance`.
+Use `spatial_blend = 0` for music and screen-centered sound: it preserves the original stereo channels regardless of the source position. Use `spatial_blend = 1` for a 3D point source and keep one active `AudioListener` in the world. Distance attenuation starts at `min_distance` and reaches zero at `max_distance`.
 
 ## Prepare the scene {#editor-setup}
 
 This walkthrough builds on the collision scene from Chapter 5.
 
-1. Add `Assets/Audio/music_loop.wav` and `Assets/Audio/hit.wav` to the project. The runtime bundles four decoders: WAV (`SDL_LoadWAV`), OGG/Vorbis (`stb_vorbis`), MP3 (`dr_mp3`), and FLAC (`dr_flac`). WAV is the simplest path and the recommended first asset; there are currently no automated audio tests covering the decoders.
+1. Add `Assets/Audio/music_loop.wav` and `Assets/Audio/hit.wav` to the project. WAV, OGG/Vorbis, MP3, and FLAC support both resident and streaming playback. For long music, select the audio asset, set **Load Type → Streaming**, and click **Apply**. Streaming reads and decodes ahead into bounded buffers rather than keeping the entire decoded clip in memory. Keep short effects on **Decompress on Load**. **Revert** discards unapplied import settings.
 2. Select the main camera and add an **AudioListener** component. Keep one active listener in the scene.
 3. Select the player and add an **AudioSource** component. Leave **Track Count** at `1`; the script will assign track 0. Disable **Play On Awake** because the script starts playback after loading the clip.
 4. Keep the player's Collider and Rigidbody from the physics chapter, and keep a Collider on the object it will hit. `on_collision_enter()` requires a real collision pair.
@@ -135,6 +135,7 @@ The following members are declared by the current Python wrapper and type stub.
 | `set_track_volume(i, volume)` / `get_track_volume(i)` | Write or read the per-track volume. |
 | `play(i=0)` / `stop(i=0)` | Start or stop one persistent track. |
 | `pause(i=0)` / `un_pause(i=0)` | Pause or resume one persistent track. |
+| `get_track_time(i=0)` / `set_track_time(i, seconds)` | Read or seek the source-mixing cursor in clip seconds. Seeking preserves pause; stopping resets it. This is runtime state, and device buffering may delay audible output. |
 | `is_track_playing(i)` / `is_track_paused(i)` | Query one track. |
 | `play_one_shot(clip, volume_scale=1.0)` | Play a transient clip through the source's voice pool. |
 | `stop_one_shots()` | Stop every active pooled one-shot voice. |
@@ -142,6 +143,20 @@ The following members are declared by the current Python wrapper and type stub.
 | `serialize()` / `deserialize(json_str)` | Export or restore the component's JSON representation. |
 
 Use `set_track_clip_by_guid()` for authored asset references when the AssetRegistry/AssetDatabase is initialized. For a direct runtime load, use `AudioClip.load(path)` followed by `set_track_clip()` as in the example.
+
+### Group volume and audio time
+
+Set `source.output_bus` to `Music`, `SFX`, `Ambience`, or `UI`; `Master` affects all of them. Use `AudioEngine.instance()` from `Infernux.lib` to call `fade_bus_volume("Music", 0.0, 1.0)`. The fade follows the audio device, even when game frames stall. `pause_all()` freezes that clock; muting a bus leaves its playback and fade running. A direct `set_bus_volume()` cancels its current fade, and `cancel_bus_fade()` holds the current level.
+
+`output_time` reports mixed audio seconds, not the hardware playhead. `output_peak` reports the latest mixed block's peak. `saturated_sample_count` counts output samples at full scale after SDL mixing: it warns about saturation but cannot reconstruct peaks already clipped by SDL. `device_driver` and `device_name` identify the selected SDL output while the engine is initialized; `sample_rate` and `channel_count` report its format. `underrun_count` counts streaming callback requests that emitted silence while decoded frames were unavailable. It resets with each device session and does not measure operating-system or DAC underruns. These readings are runtime diagnostics, not scene properties or a compressor/limiter.
+
+### Voice limits and priority
+
+`AudioEngine.instance().max_real_voices` limits the voices actually mixed by the device (default `64`, positive integer). Excess voices and inaudible sources become virtual: their playback position continues on the audio clock, but they do not produce samples. When capacity becomes available they resume at the current position, not the beginning. `pause()` freezes a track; virtualization does not.
+
+Set `source.priority` from `0` (highest) to `255` (lowest); the default is `128`. The scheduler first compares priority, then effective volume including distance and bus gain, then start order for stable ties. For example, give UI confirmations a lower number than ambient loops. Inspect `real_voice_count`, `virtual_voice_count`, and `source.is_track_virtual(index)` during Play. Arbitration runs on the engine update; virtual time and bus fades keep advancing between updates. A physical voice limit is not a total memory limit: clips and logical voice handles still occupy memory.
+
+A full one-shot pool rejects an incoming sound if its `volume_scale` is lower than every occupied slot. Otherwise it replaces the quietest slot, choosing the oldest on a tie. `source.rejected_one_shot_count` reports rejected requests without flooding the Console. This local pool policy is separate from the engine-wide priority scheduler. Size the pool for the intended gameplay concurrency instead of making it unbounded.
 
 ## Verify the result {#verify}
 
@@ -156,7 +171,7 @@ For a quick API check, add temporary logs for `self._source.is_track_playing(0)`
 ## Common errors {#common-errors}
 
 - **Using `source.clip`**: this property is not public. Assign a numbered track with `set_track_clip()`.
-- **Loading MP3 or OGG based on old UI text**: the runtime decodes OGG/Vorbis, MP3, FLAC, and WAV. WAV remains the simplest choice for the tutorial clips, and no automated test covers the decoders yet.
+- **Loading MP3 or OGG based on old UI text**: the runtime decodes OGG/Vorbis, MP3, FLAC, and WAV. WAV remains the simplest choice for the tutorial clips, with native decoding and playback regression coverage.
 - **Unloading too early**: keep each `AudioClip` wrapper alive until every source using it has stopped.
 - **Playing in `on_collision_stay()`**: this callback repeats each fixed step. Use `on_collision_enter()` for one sound per contact.
 - **No sound in the scene**: confirm that one active AudioListener exists, the clip loaded, the source is not muted, and the source is inside the attenuation range.
@@ -191,13 +206,13 @@ Infernux 的 `AudioSource` 是多轨组件，没有单一的 `clip` 属性。先
 
 短促的游戏音效使用 `play_one_shot(clip, volume_scale)`。音源内部持有瞬时声部池，多次命中可以重叠播放，无需创建临时 GameObject，也不会占用持续轨道。`one_shot_pool_size` 控制一次性声部的最大并发数，默认值为 8。
 
-场景中必须存在 `AudioListener`。屏幕中心音效或近似 2D 的音效可把音源放在监听器附近。距离衰减从 `min_distance` 开始，在 `max_distance` 处达到最低音量。
+音乐和屏幕音效使用 `spatial_blend = 0`，保留原始立体声，不受音源位置影响。三维点声源使用 `spatial_blend = 1`，并在世界中保留一个活动的 `AudioListener`。距离衰减从 `min_distance` 开始，在 `max_distance` 处降为零。
 
 ## 准备场景 {#zh-editor-setup}
 
 以下步骤沿用第 5 章的碰撞场景。
 
-1. 把 `music_loop.wav` 和 `hit.wav` 放入 `Assets/Audio`。运行时内置四种解码器：WAV（`SDL_LoadWAV`）、OGG/Vorbis（`stb_vorbis`）、MP3（`dr_mp3`）与 FLAC（`dr_flac`）。WAV 路径最简单，建议把它作为第一份验收资产；当前没有自动化音频测试覆盖这些解码器。
+1. 把 `music_loop.wav` 和 `hit.wav` 放入 `Assets/Audio`。WAV、OGG/Vorbis、MP3 和 FLAC 均支持常驻和流式播放。长音乐可在选中资产后，将 **加载方式** 改为 **流式播放**，再点击 **应用**；引擎会分段预读和解码，不会把整首音乐的 PCM 常驻内存。短音效保持 **加载时解压** 即可。点击 **还原** 可以撤销尚未应用的导入设置。
 2. 选择主摄像机，添加 **AudioListener** 组件。场景中保留一个启用的监听器。
 3. 选择玩家，添加 **AudioSource** 组件。**Track Count** 保持 `1`，脚本会设置轨道 0。关闭 **Play On Awake**，脚本会在音频加载完成后启动播放。
 4. 保留物理章节中的玩家 Collider 与 Rigidbody，并给障碍物保留 Collider。`on_collision_enter()` 需要有效的碰撞组合。
@@ -305,6 +320,7 @@ def update(self, delta_time):
 | `set_track_volume(i, volume)` / `get_track_volume(i)` | 写入或读取单轨音量。 |
 | `play(i=0)` / `stop(i=0)` | 启动或停止一条持续轨道。 |
 | `pause(i=0)` / `un_pause(i=0)` | 暂停或恢复一条持续轨道。 |
+| `get_track_time(i=0)` / `set_track_time(i, seconds)` | 读取或设置轨道的混音读取位置，单位为音频原始时间的秒。跳转保留暂停状态，停止归零；该位置不写入场景，声卡缓冲可能使实际声音稍晚。 |
 | `is_track_playing(i)` / `is_track_paused(i)` | 查询指定轨道。 |
 | `play_one_shot(clip, volume_scale=1.0)` | 通过音源的声部池播放瞬时音频。 |
 | `stop_one_shots()` | 停止当前全部一次性音效。 |
@@ -312,6 +328,20 @@ def update(self, delta_time):
 | `serialize()` / `deserialize(json_str)` | 导出或恢复组件的 JSON 表示。 |
 
 AssetRegistry/AssetDatabase 已初始化时，可用 `set_track_clip_by_guid()` 处理已编辑资源引用。运行时按路径直接加载时，使用示例中的 `AudioClip.load(path)` 和 `set_track_clip()`。
+
+### 分组音量与音频时间
+
+把 `source.output_bus` 设为 `Music`、`SFX`、`Ambience` 或 `UI`，`Master` 则控制全部分组。从 `Infernux.lib` 获取 `AudioEngine.instance()` 后，可以调用 `fade_bus_volume("Music", 0.0, 1.0)`，让音乐在一秒内淡出。过渡由音频设备推进，游戏卡顿不会使它停止；`pause_all()` 会冻结音频时钟，分组静音则不会暂停播放或过渡。直接设置 `set_bus_volume()` 会取消原有过渡，`cancel_bus_fade()` 会保持当前音量。
+
+`output_time` 是已经混音的秒数，不是声卡的实际播放位置。`output_peak` 是最近输出块的峰值，`saturated_sample_count` 是 SDL 混音后达到满幅的样本总数，可用来发现音量过高，但无法还原已被 SDL 截掉的峰值。`device_driver`、`device_name` 标识当前 SDL 输出后端与设备，`sample_rate`、`channel_count` 给出输出格式。`underrun_count` 统计流式解码帧未及时就绪而在回调中填充静音的请求次数；每次设备会话重新计数，不代表操作系统或 DAC 层的所有欠载。这些都是运行时观测数据，不写入场景，也不是压缩器或限幅器。
+
+### 声部限额与优先级
+
+`AudioEngine.instance().max_real_voices` 控制设备实际参与混音的声部数量，默认 `64`，必须为正整数。超过限额或不可听的声音转为虚拟播放：不生成音频样本，但播放位置仍按音频时钟推进。有空位后从当前进度恢复，不从头播放。`pause()` 会冻结轨道，虚拟播放则不会。
+
+`source.priority` 的范围是 `0`（最高）到 `255`（最低），默认为 `128`。调度先比较优先级，再比较包含距离和分组增益的有效音量，完全相同时优先保留先开始的声音。例如，可以让 UI 确认声的数值小于环境循环声。Play 时可查看 `real_voice_count`、`virtual_voice_count` 和 `source.is_track_virtual(index)`。名额分配在引擎更新时执行，虚拟播放进度和分组淡入淡出不依赖逐帧调用。实际混音限额不是总内存限额，音频资产和逻辑声部句柄仍占用内存。
+
+一次性声部池满时，若新音效的 `volume_scale` 比所有在用声部都小，就拒绝这次播放；否则替换其中最轻的音效，音量相同时替换最早开始的。`source.rejected_one_shot_count` 可查看拒绝次数，不会反复刷 Console。这是单个音源内部的策略，与引擎全局的优先级调度不同。池大小应对应游戏实际并发需求，不宜无限增大。
 
 ## 验证结果 {#zh-verify}
 
@@ -326,7 +356,7 @@ AssetRegistry/AssetDatabase 已初始化时，可用 `set_track_clip_by_guid()` 
 ## 常见错误 {#zh-common-errors}
 
 - **使用 `source.clip`**：当前公开 API 没有这个属性。请用 `set_track_clip()` 分配编号轨道。
-- **根据旧界面文字加载 MP3 或 OGG**：运行时支持解码 OGG/Vorbis、MP3、FLAC 与 WAV。教程音频仍建议使用 WAV，路径最简单；目前没有自动化测试覆盖解码器。
+- **根据旧界面文字加载 MP3 或 OGG**：运行时支持解码 OGG/Vorbis、MP3、FLAC 与 WAV。教程音频仍建议使用 WAV，路径最简单；已有原生解码与播放回归。
 - **过早卸载**：每个音频的所有使用者停止后，再调用 `unload()`。
 - **在 `on_collision_stay()` 中播放**：该回调每个固定步都会运行。一次接触一次音效应使用 `on_collision_enter()`。
 - **场景中没有声音**：检查是否存在一个启用的 AudioListener、音频是否加载成功、音源是否静音，以及音源是否位于衰减范围内。

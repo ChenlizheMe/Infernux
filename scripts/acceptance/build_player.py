@@ -73,16 +73,39 @@ def _parse_option(value: str) -> tuple[str, object]:
     return key, decoded
 
 
-def _load_exporter(target: str):
+def _load_exporter(target: str, *, editor_root_override: Path | None = None):
     try:
         plugin, module_name, class_name = EXPORTERS[target]
     except KeyError as error:
         supported = ", ".join(SUPPORTED_TARGETS)
         raise ValueError(f"unsupported Player target {target!r}; choose {supported}") from error
-    editor_root = str(PLUGIN_EDITORS[plugin])
+    editor_path = (
+        editor_root_override.expanduser().resolve()
+        if editor_root_override is not None
+        else PLUGIN_EDITORS[plugin].resolve()
+    )
+    module_root = editor_path / module_name
+    if not module_root.is_dir():
+        raise ValueError(
+            f"Platform plugin editor root does not provide {module_name}: {editor_path}"
+        )
+    if editor_root_override is not None:
+        # An explicit release-engineering root is authoritative.  A caller may
+        # have inspected the source plugin earlier in this process; retaining
+        # any part of that package would silently assemble a mixed payload.
+        for loaded_name in tuple(sys.modules):
+            if loaded_name == module_name or loaded_name.startswith(module_name + "."):
+                del sys.modules[loaded_name]
+        importlib.invalidate_caches()
+    editor_root = str(editor_path)
     if editor_root not in sys.path:
         sys.path.insert(0, editor_root)
     module = importlib.import_module(module_name)
+    module_file = Path(module.__file__).resolve()
+    if not module_file.is_relative_to(module_root):
+        raise RuntimeError(
+            f"Platform plugin import escaped the selected editor root: {module_file}"
+        )
     return getattr(module, class_name)()
 
 
@@ -105,15 +128,84 @@ def _prepare_engine(*, installed: bool) -> dict[str, str]:
 
 
 def _installed_exporter_registry(project: Path):
+    """Prepare the installed project boundary and return its exporter registry.
+
+    Installed-only builds must publish project-owned SerializableObject and
+    DataAsset types before GameBuilder cooks ``.inxdata`` documents.  Keep this
+    path identical to source acceptance so a wheel-only Hub install exercises
+    the same authoring/runtime contract as the Editor.
+    """
+    return _prepare_project_registry(project)
+
+
+def _prepare_project_registry(project: Path):
+    """Load project-authored types before cooking project data assets.
+
+    The editor and installed-only acceptance path both refresh the project
+    and run plugin preloads before the first scene/resource is decoded.  The
+    source acceptance path used to load only the platform exporter, which
+    meant DataAsset documents containing project SerializableObject subclasses
+    failed during Cook with an unknown type id.
+    """
     from Infernux.engine.build import exporter_registry
     from Infernux.engine.library_sync import sync_resources
-    from Infernux.engine.project_context import set_project_root
+    from Infernux.engine.project_context import (
+        is_editor_asset_path,
+        package_script_role,
+        set_project_root,
+    )
     from Infernux.plugins import PluginManager
+    from Infernux.components.script_loader import load_all_components_from_file
+    from Infernux.components.component_identity import bind_asset_script_guid
+    from Infernux.components.registry import publish_component_script_types
 
-    # Match Editor ordering: plugin preloads can read project assets immediately.
     set_project_root(str(project))
     sync_resources(str(project))
-    PluginManager.startup(str(project), runtime=False)
+    # Cook is a runtime publication step.  Keep the plugin boundary identical
+    # to the Player host: only ``runtime/`` package code is discovered and
+    # loaded.  Starting an authoring manager here imports editor-role preload
+    # modules (and can transitively import MCP/FastMCP) even though no Editor
+    # process is running.
+    PluginManager.startup(str(project), runtime=True)
+
+    # Cook decodes DataAsset documents before the normal build script
+    # compilation phase.  Import every project-owned Python source now so
+    # SerializableObject/DataAsset subclasses publish their stable type IDs
+    # before the first artifact is encoded.  This is the same authored-script
+    # boundary used by the editor; it is not a second import/fallback path.
+    roots = (project / "Assets", project / "Packages")
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for script_path in sorted(root.rglob("*.py")):
+            project_relative = script_path.relative_to(project).as_posix()
+            if root.name == "Assets" and is_editor_asset_path(project_relative):
+                continue
+            if root.name == "Packages" and package_script_role(
+                str(script_path), str(project)
+            ) != "runtime":
+                continue
+            components = tuple(
+                load_all_components_from_file(str(script_path), register=False)
+            )
+            if not components:
+                continue
+            meta_path = script_path.with_name(script_path.name + ".meta")
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                script_guid = str(meta["metadata"]["guid"]["value"] or "")
+            except (FileNotFoundError, OSError, KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"Project script has no readable AssetDatabase GUID: {script_path}"
+                ) from exc
+            if not script_guid:
+                raise RuntimeError(
+                    f"Project script has no AssetDatabase GUID: {script_path}"
+                )
+            for component_type in components:
+                bind_asset_script_guid(component_type, script_guid, register=False)
+            publish_component_script_types(str(script_path), components)
+
     return exporter_registry
 
 
@@ -150,6 +242,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("output", type=Path, help="published Player output directory")
     parser.add_argument("--installed", action="store_true", help="Use only the installed wheel and project-installed platform plugins")
     parser.add_argument(
+        "--plugin-editor-root",
+        type=Path,
+        help=(
+            "Explicit editor root for the selected source platform plugin. "
+            "Release engineering uses this to consume an out-of-source working package."
+        ),
+    )
+    parser.add_argument(
         "--report",
         type=Path,
         help="JSON evidence path (default: <output>/build-evidence.json)",
@@ -175,7 +275,10 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    arguments = _parser().parse_args(argv)
+    parser = _parser()
+    arguments = parser.parse_args(argv)
+    if arguments.installed and arguments.plugin_editor_root is not None:
+        parser.error("--plugin-editor-root cannot be combined with --installed")
     project = arguments.project.expanduser().resolve()
     output = arguments.output.expanduser().resolve()
     report_path = (
@@ -259,7 +362,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.installed:
         registry = _installed_exporter_registry(project)
     else:
-        exporter = _load_exporter(arguments.target)
+        _prepare_project_registry(project)
+        exporter = _load_exporter(
+            arguments.target,
+            editor_root_override=arguments.plugin_editor_root,
+        )
         registry = BuildExporterRegistry()
         registry.register("scripts/acceptance/build-player", exporter)
     service = BuildService(registry)
@@ -275,6 +382,44 @@ def main(argv: Sequence[str] | None = None) -> int:
             "output": str(output),
             "options": options,
             "diagnostics": [_diagnostic_payload(item) for item in error.diagnostics],
+            "progress": progress,
+            "progress_summary": progress_summary(),
+        }
+        _write_report(report_path, payload)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 2
+    except KeyError as error:
+        # An installed-only project can legitimately lack a platform plugin
+        # (for example a project that only installed Windows support).  Expose
+        # that as a build diagnostic instead of leaking the registry's raw
+        # ``Unknown build target`` exception.
+        if not str(error).startswith("'Unknown build target:"):
+            raise
+        available_targets = [str(item.id) for item in registry.targets()]
+        payload = {
+            "schema": "infernux.build_evidence",
+            "status": "plugin-missing",
+            "project": str(project),
+            "target": arguments.target,
+            "output": str(output),
+            "options": options,
+            "diagnostics": [
+                {
+                    "severity": "error",
+                    "code": "build.platform_plugin.missing",
+                    "message": (
+                        f"No installed platform plugin provides build target "
+                        f"{arguments.target!r}. Install the official platform plugin "
+                        "in Hub, then retry."
+                    ),
+                    "source": "scripts/acceptance/build_player.py",
+                    "detail": {
+                        "requested_target": arguments.target,
+                        "available_targets": available_targets,
+                        "cause": str(error),
+                    },
+                }
+            ],
             "progress": progress,
             "progress_summary": progress_summary(),
         }

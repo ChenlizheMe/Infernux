@@ -1,12 +1,16 @@
 #include <core/threading/JobSystem.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDatabase/AssetIndex.h>
+#include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetImporter/ImporterRegistry.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxDefaultLoader.hpp>
 #include <function/resources/InxFileLoader/InxPythonScriptLoader.hpp>
+#include <function/resources/InxMesh/MeshLoader.h>
+#include <function/resources/InxTexture/TextureLoader.h>
 #include <platform/filesystem/InxPath.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -73,7 +77,7 @@ void TestImporterExtensionsAreCaseInsensitive()
     Require(duplicateRejected, "case-only duplicate importer registration was accepted");
 }
 
-void TestPathOnlyDependencyIsRejectedOnInitialRefresh()
+void TestNonGuidRenderEffectFieldsDoNotCreateDependenciesOnInitialRefresh()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-asset-refresh-relative-dependency";
     std::filesystem::remove_all(root);
@@ -89,15 +93,18 @@ void TestPathOnlyDependencyIsRejectedOnInitialRefresh()
 })");
     WriteText(group, R"({
   "$schema": "infernux.render_effect_group",
+  "legacy_version": 1,
   "entries": [
     {
       "asset": {
         "guid": "",
-        "path_hint": "Assets/Rendering/Bloom.effect"
+        "path_hint": "Assets/Rendering/Bloom.effect",
+        "path": "Assets/Rendering/Bloom.effect"
       },
       "enabled": true,
       "entry_id": "bloom",
-      "overrides": {}
+      "overrides": {},
+      "scope": "final"
     }
   ]
 })");
@@ -128,10 +135,8 @@ void TestPathOnlyDependencyIsRejectedOnInitialRefresh()
                 "initial refresh did not persist the asset index");
             const auto *entry = index.Find(infernux::FilesystemPathKey(infernux::FromFsPath(group)));
             Require(entry != nullptr, "effect group is absent from the initial asset index");
-            Require(!entry->importSucceeded, "path-only dependency unexpectedly passed initial import");
-            Require(entry->importError.find("must provide a GUID") != std::string::npos,
-                    "path-only dependency rejection did not explain the GUID-only contract");
-            Require(entry->dependencies.empty(), "rejected path-only dependency was published to the graph");
+            Require(entry->importSucceeded, "non-GUID render effect fields should not invalidate the asset");
+            Require(entry->dependencies.empty(), "path-only render effect field published a dependency");
             registry.Shutdown();
         }
         infernux::JobSystem::Shutdown();
@@ -395,6 +400,62 @@ void TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar()
     std::filesystem::remove_all(root);
 }
 
+void TestCompositeModelPublishesExternalTextureGuidDependencies()
+{
+    const auto root = std::filesystem::temp_directory_path() / "infernux-asset-model-dependencies";
+    std::filesystem::remove_all(root);
+    const auto sourceRoot =
+        std::filesystem::path(INFERNUX_SOURCE_DIR) / "external" / "assimp" / "test" / "models" / "OBJ";
+    const auto model = root / "Assets" / "Models" / "spider.obj";
+    const auto material = root / "Assets" / "Models" / "spider.mtl";
+    std::filesystem::create_directories(model.parent_path());
+    std::filesystem::copy_file(sourceRoot / "spider.obj", model, std::filesystem::copy_options::overwrite_existing);
+    std::filesystem::copy_file(sourceRoot / "spider.mtl", material, std::filesystem::copy_options::overwrite_existing);
+    for (const char *name :
+         {"wal67ar_small.jpg", "wal69ar_small.jpg", "SpiderTex.jpg", "drkwood2.jpg", "engineflare1.jpg"}) {
+        std::filesystem::copy_file(sourceRoot / name, model.parent_path() / name,
+                                   std::filesystem::copy_options::overwrite_existing);
+    }
+
+    infernux::AssetDependencyGraph::Instance().Clear();
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::DefaultText,
+                                std::make_unique<infernux::InxDefaultTextLoader>(infernux::ResourceType::DefaultText));
+        registry.RegisterLoader(infernux::ResourceType::Mesh, std::make_unique<infernux::MeshLoader>());
+        registry.RegisterLoader(infernux::ResourceType::Texture, std::make_unique<infernux::TextureLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        auto *assetDatabase = registry.GetAssetDatabase();
+        assetDatabase->Refresh();
+
+        const auto modelGuid = assetDatabase->GetGuidFromPath(infernux::FromFsPath(model));
+        Require(!modelGuid.empty(), "composite model fixture was not registered");
+        const auto dependencies = infernux::AssetDependencyGraph::Instance().GetDependencies(modelGuid);
+        Require(dependencies.size() == 5, "composite model did not publish five texture GUID dependencies");
+        for (const char *name :
+             {"wal67ar_small.jpg", "wal69ar_small.jpg", "SpiderTex.jpg", "drkwood2.jpg", "engineflare1.jpg"}) {
+            const auto textureGuid = assetDatabase->GetGuidFromPath(infernux::FromFsPath(model.parent_path() / name));
+            Require(!textureGuid.empty() && dependencies.count(textureGuid) == 1,
+                    "composite model texture dependency was not published by GUID");
+        }
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        infernux::AssetDependencyGraph::Instance().Clear();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    infernux::AssetDependencyGraph::Instance().Clear();
+    std::filesystem::remove_all(root);
+}
+
 void TestRuntimeAssetCatalogResolvesBuiltInArchiveResources()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-runtime-builtin-catalog";
@@ -444,6 +505,80 @@ void TestRuntimeAssetCatalogResolvesBuiltInArchiveResources()
     std::filesystem::remove_all(root);
 }
 
+void TestModelSettingsPublishOnlyAfterSuccessfulImport()
+{
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("infernux-model-settings-publication-" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto model = root / "Assets" / "Model.obj";
+    const std::string geometry = "o Triangle\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    WriteText(model, geometry);
+    const auto readBytes = [](const std::filesystem::path &path) {
+        std::ifstream input(path, std::ios::binary);
+        Require(input.good(), "missing committed import file");
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    };
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::Mesh, std::make_unique<infernux::MeshLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        auto *db = registry.GetAssetDatabase();
+        db->Refresh();
+        const std::string path = infernux::FromFsPath(model);
+        const auto guid = db->GetGuidFromPath(path);
+        const auto metaPath = infernux::InxResourceMeta::GetMetaFilePath(path);
+        const auto artifactPath = db->GetRuntimeArtifactPath(guid, infernux::ResourceType::Mesh);
+        const auto originalMeta = readBytes(infernux::ToFsPath(metaPath));
+        const auto originalArtifact = readBytes(infernux::ToFsPath(artifactPath));
+        const auto originalSnapshot = db->GetMetaByGuid(guid);
+        const auto generation = db->GetQueryGeneration();
+        WriteText(model, "not a model\n");
+        const auto failure = db->ReimportAsset(path, {{"scale_factor", 3.0}, {"weld_vertices", false}});
+        Require(!failure && !failure.databaseCommitted, "invalid source was published");
+        Require(readBytes(infernux::ToFsPath(metaPath)) == originalMeta, "failed Apply changed disk settings");
+        Require(readBytes(infernux::ToFsPath(artifactPath)) == originalArtifact, "failed Apply changed artifact");
+        Require(db->GetMetaByGuid(guid) == originalSnapshot, "failed Apply replaced live metadata");
+        Require(db->GetQueryGeneration() == generation, "failed Apply advanced published catalog");
+        WriteText(model, geometry);
+        const auto success = db->ReimportAsset(path, {{"scale_factor", 3.0}, {"weld_vertices", false}});
+        Require(success && success.databaseCommitted, "valid model settings were not published");
+        const auto published = db->GetMetaByGuid(guid);
+        Require(published->GetDataAs<float>("scale_factor") == 3.0f, "scale draft was lost");
+        Require(!published->GetDataAs<bool>("weld_vertices"), "welding draft was lost");
+        Require(readBytes(infernux::ToFsPath(artifactPath)) != originalArtifact, "settings did not change geometry");
+        infernux::InxResourceMeta disk;
+        Require(disk.LoadFromFile(metaPath), "could not read committed settings");
+        Require(disk.SerializeDocument() == published->SerializeDocument(), "disk and live settings differ");
+        Require(db->GetGuidFromPath(path) == guid, "Apply replaced source identity");
+        Require(db->ReimportAsset(path).succeeded, "source reimport failed after Apply");
+        Require(db->GetMetaByGuid(guid)->GetDataAs<float>("scale_factor") == 3.0f,
+                "source reimport discarded applied settings");
+        const auto committedMeta = readBytes(infernux::ToFsPath(metaPath));
+        const auto committedArtifact = readBytes(infernux::ToFsPath(artifactPath));
+        bool invalidRejected = false;
+        try {
+            (void)db->ReimportAsset(path, {{"guid", "replacement-guid"}});
+        } catch (const std::invalid_argument &) {
+            invalidRejected = true;
+        }
+        Require(invalidRejected, "settings were allowed to replace asset identity");
+        Require(readBytes(infernux::ToFsPath(metaPath)) == committedMeta, "invalid settings changed metadata");
+        Require(readBytes(infernux::ToFsPath(artifactPath)) == committedArtifact, "invalid settings changed artifact");
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        throw;
+    }
+}
+
 void TestRuntimeAssetCatalogResolvesPrimaryContentArtifact()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-runtime-content-catalog";
@@ -491,6 +626,41 @@ void TestRuntimeAssetCatalogResolvesPrimaryContentArtifact()
     std::filesystem::remove_all(root);
 }
 
+void TestCookedModelTexturesKeepArtifactPaths()
+{
+    const auto root = std::filesystem::temp_directory_path() / "infernux-cooked-model-textures";
+    infernux::InxResourceMeta model, texture;
+    model.Init("model", 5, "Assets/Composite.glb", infernux::ResourceType::Mesh);
+    texture.Init("model", 5, "Assets/Composite.glb::subtex:image", infernux::ResourceType::Texture);
+    texture.AddMetadata("import_owner_guid", model.GetGuid());
+    model.AddMetadata("model_textures", nlohmann::json::array({{{"key", "image/color"},
+                                                                {"guid", texture.GetGuid()},
+                                                                {"name", "Image"},
+                                                                {"metadata", texture.SerializeDocument()}}})
+                                            .dump());
+    const auto modelPath = "Library/Artifacts/Mesh/" + model.GetGuid() + ".inxmesh";
+    const auto texturePath = "Library/Artifacts/Texture/" + texture.GetGuid() + ".inxtex";
+    WriteText(root / modelPath, "cooked model");
+    WriteText(root / texturePath, "cooked texture");
+    const auto catalog = root / "RuntimeAssetRecords.json";
+    WriteText(catalog, nlohmann::json{{"$schema", "infernux.runtime_asset_records"},
+                                      {"entries", nlohmann::json::array({{{"guid", model.GetGuid()},
+                                                                          {"runtime_path", modelPath},
+                                                                          {"metadata", model.SerializeDocument()}},
+                                                                         {{"guid", texture.GetGuid()},
+                                                                          {"runtime_path", texturePath},
+                                                                          {"metadata", texture.SerializeDocument()}}})}}
+                           .dump());
+    infernux::AssetDatabase database;
+    database.InitializeRuntime(infernux::FromFsPath(root));
+    database.InstallRuntimeAssetCatalog(infernux::FromFsPath(catalog));
+    Require(database.GetPathFromGuid(texture.GetGuid()) == infernux::FromFsPath(root / texturePath),
+            "Player expanded editor-only model children over cooked Texture paths");
+    Require(database.GetMetaByGuid(texture.GetGuid())->GetResourceType() == infernux::ResourceType::Texture,
+            "Player lost imported Texture type");
+    std::filesystem::remove_all(root);
+}
+
 void TestMoveRequiresRegisteredGuidIdentity()
 {
     const auto root = std::filesystem::current_path() / "infernux-asset-move-guid-contract";
@@ -520,21 +690,65 @@ void TestMoveRequiresRegisteredGuidIdentity()
             "failed relocation imported a replacement GUID");
     std::filesystem::remove_all(root);
 }
+
+void TestBlenderNumberedBackupsAreNotAssets()
+{
+    const auto root = std::filesystem::temp_directory_path() / "infernux-blender-backup-scan";
+    std::filesystem::remove_all(root);
+    const auto source = root / "Assets" / "Notes.txt";
+    const auto backup = root / "Assets" / "Assembly.blend1";
+    WriteText(source, "asset\n");
+    WriteText(backup, "Blender backup generation\n");
+
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::DefaultText,
+                                std::make_unique<infernux::InxDefaultTextLoader>(infernux::ResourceType::DefaultText));
+        registry.PopulateAssetDatabaseLoaders();
+        auto *assetDatabase = registry.GetAssetDatabase();
+        assetDatabase->Refresh();
+
+        Require(!assetDatabase->GetGuidFromPath(infernux::FromFsPath(source)).empty(),
+                "ordinary source asset was not scanned");
+        Require(assetDatabase->GetGuidFromPath(infernux::FromFsPath(backup)).empty(),
+                "Blender numbered backup entered the asset catalog");
+        Require(!std::filesystem::exists(backup.string() + ".meta"),
+                "Blender numbered backup received a metadata sidecar");
+
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
 } // namespace
 
 int main()
 {
     try {
         TestImporterExtensionsAreCaseInsensitive();
-        TestPathOnlyDependencyIsRejectedOnInitialRefresh();
+        TestNonGuidRenderEffectFieldsDoNotCreateDependenciesOnInitialRefresh();
         TestScriptReimportRefreshesContentHashAndPreservesGuid();
         TestValidButStaleSidecarIsRebuiltFromCurrentSource();
         TestProjectPackagesScanRootSharesTheGuidCatalog();
         TestStartupCatalogSurvivesLiveIndexInvalidation();
         TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar();
+        TestCompositeModelPublishesExternalTextureGuidDependencies();
+        TestModelSettingsPublishOnlyAfterSuccessfulImport();
         TestRuntimeAssetCatalogResolvesBuiltInArchiveResources();
         TestRuntimeAssetCatalogResolvesPrimaryContentArtifact();
+        TestCookedModelTexturesKeepArtifactPaths();
         TestMoveRequiresRegisteredGuidIdentity();
+        TestBlenderNumberedBackupsAreNotAssets();
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "Asset database refresh test failed: " << error.what() << '\n';

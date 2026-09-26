@@ -1,16 +1,15 @@
-"""GameBuilder — compile an Infernux project into a standalone executable.
+"""GameBuilder — cook and package an Infernux project as a standalone Player.
 
-Orchestrates Nuitka compilation, asset copying, splash processing,
-build manifest generation, and final cleanup.
+Uses the platform's precompiled Player runtime and packages imported assets,
+runtime modules, splash data and the ordered build scene list.
 
 Example::
 
     builder = GameBuilder(
         project_path="/path/to/project",
         output_dir="/path/to/output",
-        on_progress=lambda msg, pct: print(f"{msg} ({pct*100:.0f}%)"),
     )
-    builder.build()
+    builder.build(on_progress=lambda msg, pct: print(f"{msg} ({pct*100:.0f}%)"))
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ class GameBuilder:
     project_path: str
     project_name: str
     output_dir: str
-    icon_path: str
+    icon_guid: str
     display_mode: str
     window_width: int
     window_height: int
@@ -37,12 +36,17 @@ class GameBuilder:
         output_dir: str,
         *,
         game_name: str = ...,
-        icon_path: Optional[str] = None,
+        icon_guid: str = ...,
         display_mode: str = ...,
         window_width: int = ...,
         window_height: int = ...,
         window_resizable: bool = ...,
         splash_items: Optional[List[dict]] = ...,
+        debug_mode: bool = ...,
+        lto: bool = ...,
+        include_jit_runtime: bool = ...,
+        player_runtime_root: str = ...,
+        build_scene_guids: Optional[List[str]] = ...,
     ) -> None: ...
 
     def build(

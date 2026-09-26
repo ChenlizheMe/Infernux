@@ -17,6 +17,7 @@ A single scene containing GameObjects.
 | Name | Type | Description |
 |------|------|------|
 | name | `str` |  |
+| is_preview | `bool` |  *(read-only)* |
 | structure_version | `int` |  *(read-only)* |
 | temporal_discontinuity_revision | `int` |  *(read-only)* |
 | world_id | `int` |  *(read-only)* |

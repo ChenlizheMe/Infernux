@@ -43,11 +43,22 @@ class PlayerRuntimeSession:
         self._runtime_catalog: Optional[PlayerRuntimeAssetCatalog] = None
         self._state = "stopped"
         self._last_frame_time = time.time()
+        self._membership_warmup_frames = 0
 
     def _refresh_execution_membership(self) -> None:
-        refresh = getattr(self._execution_scheduler, "refresh_scene_membership", None)
-        if callable(refresh):
-            refresh()
+        # Defer the registry scan to the scheduler's next safe point.  Calling
+        # the scan synchronously from native scene callbacks opens a runtime
+        # transaction while a frame is active; marking it pending preserves the
+        # single-owner boundary without dropping freshly published components.
+        # The native pre-scene callback may run while a frame transaction is
+        # active.  Only mark the registry scan here; the scheduler consumes it
+        # at its next owner safe point and publishes the immutable phase plan.
+        scheduler = self._execution_scheduler
+        scheduler._registry_scan_pending = True
+        # Advertise that Python work exists immediately.  This only changes
+        # the cheap native gate; the phase counts are published by
+        # ``prepare_frame`` at the next owner safe point.
+        scheduler._sync_native_work_availability()
 
     @property
     def is_playing(self) -> bool:
@@ -73,6 +84,18 @@ class PlayerRuntimeSession:
     def execution_scheduler(self) -> Any:
         """Return the shared on-demand phase-plan service for diagnostics."""
         return self._execution_scheduler
+
+    def get_asset_database(self) -> Any:
+        """Return the Player's already-published runtime asset database.
+
+        ``AssetManager.initialize`` consumes this narrow host contract in both
+        desktop and Web Players. The returned database is the immutable
+        runtime catalog view installed by the platform host; it is never an
+        Editor source database and cannot scan ``Assets``.
+        """
+        if self._asset_database is None:
+            raise RuntimeError("Player runtime asset database is not configured")
+        return self._asset_database
 
     @property
     def runtime_manifest(self) -> Optional[RuntimeProductManifest]:
@@ -115,9 +138,17 @@ class PlayerRuntimeSession:
         if not callable(bind_catalog):
             raise RuntimeError("Player scene service cannot bind RuntimeAssetCatalog")
         bind_catalog(runtime_catalog)
-        from Infernux.engine.project_context import set_runtime_asset_resolver
+        from Infernux.engine.project_context import (
+            set_runtime_asset_extension_resolver,
+            set_runtime_asset_query,
+            set_runtime_asset_resolver,
+            set_runtime_package_resolver,
+        )
 
-        set_runtime_asset_resolver(runtime_catalog.resolve_asset)
+        set_runtime_asset_resolver(runtime_catalog.resolve_guid)
+        set_runtime_asset_extension_resolver(runtime_catalog.source_extension_for_guid)
+        set_runtime_package_resolver(runtime_catalog.resolve_package)
+        set_runtime_asset_query(runtime_catalog.query_asset_guids)
         self._runtime_manifest = runtime_manifest
         self._runtime_catalog = runtime_catalog
         self._validate_player_boundary()
@@ -176,7 +207,7 @@ class PlayerRuntimeSession:
         if getattr(native_module, "__runtime_profile__", "desktop") != "web-player":
             from Infernux.renderstack.render_stack import RenderStack
 
-            RenderStack._active_instance = None
+            RenderStack.clear_active_instance()
         from Infernux.scene import SceneManager as RuntimeSceneManager
 
         # Install the packaged scene owner before native ``play()`` dispatches
@@ -190,11 +221,20 @@ class PlayerRuntimeSession:
             self._refresh_loaded_scene(scene)
             self._refresh_execution_membership()
             SceneManager.instance().play()
+            # SceneManager.Play() publishes Start callbacks and may materialize
+            # runtime component mirrors. Reconcile once after that publication
+            # so the native lifecycle fast path cannot start with an empty
+            # phase plan (which would leave GPU compute components idle).
+            self._refresh_execution_membership()
         except Exception:
             RuntimeSceneManager.remove_runtime_service(self._scene_service)
             self._scene_service_installed = False
             raise
         self._state = "playing"
+        # Native Start may publish Python component mirrors one frame later
+        # on a packaged scene. Keep a short deterministic warm-up window so
+        # the first fixed step cannot observe an empty runtime phase plan.
+        self._membership_warmup_frames = 8
         return True
 
     def tick(self, external_delta_time: Optional[float] = None) -> float:
@@ -207,6 +247,9 @@ class PlayerRuntimeSession:
         """
         if not self.is_playing:
             return 0.0
+        if self._membership_warmup_frames > 0:
+            self._refresh_execution_membership()
+            self._membership_warmup_frames -= 1
         previous_scene_path = self._scene_service.active_scene_path
         self._scene_service.process_pending_load()
         if self._scene_service.active_scene_path != previous_scene_path:
@@ -263,9 +306,17 @@ class PlayerRuntimeSession:
             except Exception as exc:
                 Debug.log_suppressed("PlayerRuntimeSession.remove_scene_service", exc)
             self._scene_service_installed = False
-        from Infernux.engine.project_context import set_runtime_asset_resolver
+        from Infernux.engine.project_context import (
+            set_runtime_asset_extension_resolver,
+            set_runtime_asset_query,
+            set_runtime_asset_resolver,
+            set_runtime_package_resolver,
+        )
 
         set_runtime_asset_resolver(None)
+        set_runtime_asset_extension_resolver(None)
+        set_runtime_package_resolver(None)
+        set_runtime_asset_query(None)
         self._state = "stopped"
 
     @staticmethod

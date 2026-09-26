@@ -101,11 +101,27 @@ def _default_scene_document(default_effect_guid: str) -> dict:
                             "clearFlags": 0,
                             "cullingMask": 4294967295,
                             "depth": 0.0,
+                            "dithering": False,
                             "farClip": 5000.0,
                             "fov": 60.0,
+                            "usePhysicalProperties": False,
+                            "iso": 200,
+                            "shutterSpeed": 0.005,
+                            "aperture": 16.0,
+                            "focusDistance": 10.0,
+                            "focalLength": 50.0,
+                            "bladeCount": 5,
+                            "curvature": [2.0, 11.0],
+                            "barrelClipping": 0.25,
+                            "anamorphism": 0.0,
+                            "sensorSize": [36.0, 24.0],
+                            "lensShift": [0.0, 0.0],
+                            "gateFit": 2,
                             "nearClip": 0.01,
                             "orthoSize": 5.0,
                             "projectionMode": 0,
+                            "stopNaNs": False,
+                            "targetTextureGuid": "",
                         },
                         "enabled": True,
                         "execution_order": 0,
@@ -145,8 +161,6 @@ def _default_scene_document(default_effect_guid: str) -> dict:
                             "outerSpotAngle": 45.0,
                             "range": 10.0,
                             "renderMode": 0,
-                            "shadowBias": 1.0,
-                            "shadowNormalBias": 1.0,
                             "shadowSoftness": 1.5,
                             "shadowStrength": 1.0,
                             "shadows": 2,
@@ -304,18 +318,22 @@ def _create_default_project_content(
 
     scene_path = os.path.join(assets_dir, "Scenes", "Start.scene")
     _write_json_document(scene_path, _default_scene_document(effect_group_guid))
+    scene_guid = uuid.uuid5(
+        _COMPONENT_SCRIPT_NAMESPACE,
+        f"infernux-project-scene:{project_name}:Start",
+    ).hex
+    _write_asset_identity_meta(scene_path, scene_guid, "Scene")
     final_scene_path = os.path.join(final_dir, "Assets", "Scenes", "Start.scene")
     _write_json_document(
         os.path.join(staging_dir, "ProjectSettings", "BuildSettings.json"),
         {
             "debug_mode": False,
             "display_mode": "windowed",
-            "enable_jit": False,
             "game_name": project_name,
             "icon_guid": "",
             "lto": True,
             "output_dir": "",
-            "scenes": [final_scene_path],
+            "scene_guids": [scene_guid],
             "splash_items": [],
             "window_height": 720,
             "window_resizable": True,

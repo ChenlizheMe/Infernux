@@ -48,6 +48,18 @@ struct UniformBufferInfo
     std::vector<UniformMember> members;
 };
 
+enum class ReflectedImageDimension : uint8_t
+{
+    Unknown,
+    D1,
+    D2,
+    D3,
+    Cube,
+    Rect,
+    Buffer,
+    SubpassData,
+};
+
 /**
  * @brief A sampled image (texture) descriptor
  */
@@ -59,6 +71,10 @@ struct SampledImageInfo
     uint32_t arraySize; // For texture arrays
     VkShaderStageFlags stageFlags;
     VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bool multisampled = false;
+    ReflectedImageDimension dimension = ReflectedImageDimension::Unknown;
+    bool arrayed = false;
+    bool hasArrayDimension = false; // Descriptor arrays, including [1] and multidimensional arrays.
 };
 
 struct StorageBufferInfo
@@ -150,6 +166,10 @@ class ShaderReflection
     {
         return m_storageImages;
     }
+    [[nodiscard]] const std::vector<std::string> &GetUnsupportedDescriptorResources() const
+    {
+        return m_unsupportedDescriptorResources;
+    }
     [[nodiscard]] const std::vector<PushConstantInfo> &GetPushConstants() const
     {
         return m_pushConstants;
@@ -166,6 +186,11 @@ class ShaderReflection
     [[nodiscard]] VkShaderStageFlagBits GetStage() const
     {
         return m_stage;
+    }
+
+    [[nodiscard]] bool RequiresSampleRateShading() const noexcept
+    {
+        return m_sampleRateShading;
     }
 
     /**
@@ -185,12 +210,14 @@ class ShaderReflection
     void Clear();
 
   private:
+    bool m_sampleRateShading = false;
     VkShaderStageFlagBits m_stage = VK_SHADER_STAGE_VERTEX_BIT;
 
     std::vector<UniformBufferInfo> m_uniformBuffers;
     std::vector<SampledImageInfo> m_sampledImages;
     std::vector<StorageBufferInfo> m_storageBuffers;
     std::vector<StorageImageInfo> m_storageImages;
+    std::vector<std::string> m_unsupportedDescriptorResources;
     std::vector<PushConstantInfo> m_pushConstants;
     std::vector<ShaderIOVariable> m_inputs;
     std::vector<ShaderIOVariable> m_outputs;

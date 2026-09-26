@@ -898,9 +898,7 @@ class PluginManager:
             location = str(source["repository"])
         else:
             return ""
-        from .official import migrate_official_repository
-
-        return migrate_official_repository(reference, location)
+        return location
 
     def download_update(
         self, reference: str, release_tag: str, *, progress: _InstallProgress | None = None,
@@ -1218,12 +1216,21 @@ class PluginManager:
         values = tuple(str(line) for line in lines)
         executable = self._project_python_executable()
         before = self._python_environment_snapshot(executable)
+        requirements = _pip_requirement_targets(values)
+        requested = tuple(item["requirement"] for item in requirements)
+        if requested and _requirements_satisfied(requested, before):
+            return _PipInstallEffect(
+                before,
+                dict(before),
+                requirements,
+                (),
+                "Requirements already satisfied by the project Python environment.",
+            )
         try:
             with self._pip_requirement_file(values) as filtered:
                 command = (executable, "-m", "pip", "install", "-r", filtered)
                 result = self._run_process(list(command), cwd=self.project_root)
             after = self._python_environment_snapshot(executable)
-            requirements = _pip_requirement_targets(values)
             self._activate_installed_python_paths(before, after, executable=executable)
             return _PipInstallEffect(
                 before,

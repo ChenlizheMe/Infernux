@@ -50,7 +50,7 @@ double Milliseconds(Clock::time_point start)
 
 void TestResourceTypeMetadataRoundTrip()
 {
-    const std::array<std::pair<ResourceType, const char *>, 12> cases = {{
+    const std::pair<ResourceType, const char *> cases[] = {
         {ResourceType::Meta, "Meta"},
         {ResourceType::Shader, "Shader"},
         {ResourceType::Texture, "Texture"},
@@ -63,7 +63,9 @@ void TestResourceTypeMetadataRoundTrip()
         {ResourceType::PhysicMaterial, "PhysicMaterial"},
         {ResourceType::RenderEffect, "RenderEffect"},
         {ResourceType::ParticleGraph, "ParticleGraph"},
-    }};
+        {ResourceType::DataAsset, "DataAsset"},
+        {ResourceType::RenderTexture, "RenderTexture"},
+    };
 
     for (const auto &[type, name] : cases) {
         infernux::InxResourceMeta metadata;
@@ -171,6 +173,16 @@ void TestScaleAndStrictRoundTrip()
     }
     Require(rejected, "AssetIndex accepted an unknown entry field");
     Require(loaded.Size() == entryCount, "AssetIndex invalid document partially mutated live state");
+
+    auto legacy = document;
+    legacy.erase("import_revision");
+    DocumentStore::Instance().WriteAndWait(infernux::FromFsPath(indexPath), legacy.dump());
+    Require(!loaded.Load(infernux::FromFsPath(indexPath), "c:/project"),
+            "AssetIndex reused a catalog without authoritative Prefab dependencies");
+    Require(loaded.Size() == 0, "AssetIndex retained stale entries after a revision change");
+    restored.Save(infernux::FromFsPath(indexPath));
+    Require(loaded.Load(infernux::FromFsPath(indexPath), "c:/project"),
+            "AssetIndex failed to reuse the rebuilt current revision");
 
     Require(serializeMs < 10'000.0, "AssetIndex 10k serialization exceeded 10 seconds");
     Require(deserializeMs < 10'000.0, "AssetIndex 10k deserialization exceeded 10 seconds");

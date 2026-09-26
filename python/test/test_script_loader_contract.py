@@ -14,10 +14,34 @@ from Infernux.components.script_loader import (
 )
 import Infernux.components.script_loader as script_loader
 from Infernux.components import InxComponent
+from Infernux.components.fields import get_serialized_fields
 from Infernux.components.component_identity import bind_asset_script_guid
 from Infernux.components.registry import get_type, get_type_by_identity
 from Infernux.engine.component_restore import create_component_instance
 from Infernux.engine.project_context import get_project_root, set_project_root
+
+
+def test_module_retirement_preserves_schema_for_surviving_data_asset():
+    module_name = "retired_data_asset_schema_probe"
+    module = types.ModuleType(module_name)
+    module.__file__ = __file__
+    exec(
+        "from Infernux import DataAsset, serialized_field\n"
+        "class RetiredConfig(DataAsset):\n"
+        "    __serialized_type_id__ = 'test.retired_data_asset_schema_probe'\n"
+        "    speed = serialized_field(7.5)\n",
+        module.__dict__,
+    )
+    sys.modules[module_name] = module
+    asset_type = module.RetiredConfig
+    asset = asset_type()
+    try:
+        script_loader._clear_loaded_script_modules([module_name])
+
+        assert tuple(get_serialized_fields(asset_type)) == ("speed",)
+        assert asset.serialize_document()["fields"] == {"speed": 7.5}
+    finally:
+        sys.modules.pop(module_name, None)
 
 
 def test_script_loader_falls_back_to_sole_class_after_rename(tmp_path):
@@ -198,8 +222,68 @@ def test_asset_load_binds_every_component_type_in_one_script(tmp_path):
             script_guid,
             target._get_type_guid(),
         )._get_type_guid()
+
+        # Restoring another instance is not a script refresh. It must retain
+        # the published classes and the sibling references in their globals.
+        second = load_and_create_component(
+            str(script), type_name="Caller", script_guid=script_guid,
+        )
+        target_instance = load_and_create_component(
+            str(script), type_name="Target", script_guid=script_guid,
+        )
+        assert type(second) is type(caller)
+        assert type(target_instance) is target
+        assert get_type("Caller") is type(caller)
     finally:
         set_project_root(previous_root)
+
+
+def test_game_object_class_handle_uses_published_asset_revision(tmp_path, scene):
+    from Infernux.components.registry import (
+        publish_component_script_types, resolve_published_type,
+        snapshot_component_registry_state, restore_component_registry_state,
+    )
+    project = tmp_path / "project"
+    assets = project / "Assets"
+    assets.mkdir(parents=True)
+    script = assets / "AuthoringHandle.py"
+    script.write_text(
+        "from Infernux import InxComponent, serialized_field\n"
+        "class HandleProbe(InxComponent):\n"
+        "    value = serialized_field(7)\n", encoding="utf-8",
+    )
+    previous_root = get_project_root()
+    registry = snapshot_component_registry_state()
+    set_project_root(str(project))
+    try:
+        provisional = load_all_components_from_file(str(script), register=False)[0]
+        first = load_and_create_component(str(script), script_guid="asset-handle-guid")
+        published = type(first)
+        assert provisional is not published
+        assert not provisional._asset_script_guid_
+        assert resolve_published_type(provisional) is published
+
+        obj = scene.create_game_object("Published handle")
+        component = obj.add_component(provisional)
+        assert type(component) is published
+        assert component._script_guid == "asset-handle-guid"
+        assert obj.get_component(provisional) is component
+
+        # A newer revision is resolved by stable identity, not Python class id.
+        newer = load_all_components_from_file(str(script), register=False)[0]
+        bind_asset_script_guid(newer, "asset-handle-guid", register=False)
+        publish_component_script_types(str(script), (newer,))
+        assert resolve_published_type(published) is newer
+        assert resolve_published_type(provisional) is newer
+
+        other = type("HandleProbe", (InxComponent,), {"__module__": "OtherModule"})
+        assert resolve_published_type(provisional) is newer
+        assert resolve_published_type(other) is other
+        bind_asset_script_guid(published, "different-asset-guid", register=False)
+        assert resolve_published_type(published) is published
+    finally:
+        set_project_root(previous_root)
+        restore_component_registry_state(registry)
 
 
 def test_script_loader_executes_exact_pyc_with_canonical_project_module(tmp_path, monkeypatch):

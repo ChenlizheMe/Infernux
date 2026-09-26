@@ -1,6 +1,7 @@
 #include "ComponentFactory.h"
 #include "Component.h"
 #include <algorithm>
+#include <mutex>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -13,6 +14,7 @@ struct ComponentRegistration
     ComponentFactory::Creator creator;
     ComponentFactory::DocumentValidator validator;
     ComponentTypeConstraints constraints;
+    ComponentFactory::SemanticDeclaration declaration;
 };
 
 std::unordered_map<std::string, ComponentRegistration> &GetRegistry()
@@ -23,18 +25,32 @@ std::unordered_map<std::string, ComponentRegistration> &GetRegistry()
 } // namespace
 
 bool ComponentFactory::Register(const std::string &typeName, Creator creator, DocumentValidator validator,
-                                ComponentTypeConstraints constraints)
+                                ComponentTypeConstraints constraints, SemanticDeclaration declaration)
 {
     if (typeName.empty() || !creator || !validator)
         throw std::invalid_argument("component registration requires type name, creator, and document validator");
     auto &registry = GetRegistry();
-    const bool inserted =
-        registry
-            .emplace(typeName, ComponentRegistration{std::move(creator), std::move(validator), std::move(constraints)})
-            .second;
+    const bool inserted = registry
+                              .emplace(typeName, ComponentRegistration{std::move(creator), std::move(validator),
+                                                                       std::move(constraints), std::move(declaration)})
+                              .second;
     if (!inserted)
         throw std::logic_error("duplicate component registration: " + typeName);
     return true;
+}
+
+void ComponentFactory::PublishSemanticTypes()
+{
+    static std::once_flag publication;
+    std::call_once(publication, [] {
+        SemanticOwnerEdit edit{"engine:native", {}};
+        for (const auto &[name, registration] : GetRegistry()) {
+            if (registration.declaration)
+                edit.types.push_back(registration.declaration());
+        }
+        auto &catalog = SemanticTypeRegistry::Instance();
+        catalog.Publish(catalog.Prepare({edit}));
+    });
 }
 
 std::unique_ptr<Component> ComponentFactory::Create(const std::string &typeName)

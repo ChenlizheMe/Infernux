@@ -5,12 +5,17 @@
  * Part of the deferred command-buffer binding surface.
  *
  * Exposes the deferred-recording CommandBuffer API to Python, allowing
- * users to write custom render pipelines with full control over render
- * targets and global shader parameters.
+ * users to write custom render pipelines with explicit render-target commands.
  */
 
+#include "MatrixPyBridge.h"
 #include <function/renderer/CommandBuffer.h>
+#include <function/renderer/RendererSelection.h>
+#include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxMesh/InxMesh.h>
+#include <function/scene/GameObject.h>
+#include <function/scene/MeshRenderer.h>
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -23,6 +28,102 @@ namespace infernux
 
 void RegisterCommandBufferBindings(py::module_ &m)
 {
+    py::class_<DrawParameterBlock>(m, "DrawParameterBlock", "Mutable values captured by one explicit draw_mesh command")
+        .def(py::init<>())
+        .def("set_float", &DrawParameterBlock::SetFloat, py::arg("name"), py::arg("value"))
+        .def("set_int", &DrawParameterBlock::SetInt, py::arg("name"), py::arg("value"))
+        .def(
+            "set_vector2",
+            [](DrawParameterBlock &self, const std::string &name, py::sequence value) {
+                if (py::len(value) != 2)
+                    throw py::value_error("set_vector2 requires exactly 2 numbers");
+                self.SetVector2(name, {value[0].cast<float>(), value[1].cast<float>()});
+            },
+            py::arg("name"), py::arg("value"))
+        .def(
+            "set_vector3",
+            [](DrawParameterBlock &self, const std::string &name, py::sequence value) {
+                if (py::len(value) != 3)
+                    throw py::value_error("set_vector3 requires exactly 3 numbers");
+                self.SetVector3(name, {value[0].cast<float>(), value[1].cast<float>(), value[2].cast<float>()});
+            },
+            py::arg("name"), py::arg("value"))
+        .def(
+            "set_vector4",
+            [](DrawParameterBlock &self, const std::string &name, py::sequence value) {
+                if (py::len(value) != 4)
+                    throw py::value_error("set_vector4 requires exactly 4 numbers");
+                self.SetVector4(name, {value[0].cast<float>(), value[1].cast<float>(), value[2].cast<float>(),
+                                       value[3].cast<float>()});
+            },
+            py::arg("name"), py::arg("value"))
+        .def(
+            "set_color",
+            [](DrawParameterBlock &self, const std::string &name, py::sequence value) {
+                if (py::len(value) != 4)
+                    throw py::value_error("set_color requires exactly 4 numbers");
+                self.SetColor(name, {value[0].cast<float>(), value[1].cast<float>(), value[2].cast<float>(),
+                                     value[3].cast<float>()});
+            },
+            py::arg("name"), py::arg("value"))
+        .def(
+            "set_matrix",
+            [](DrawParameterBlock &self, const std::string &name, py::handle value) {
+                self.SetMatrix(name, binding::Matrix4FromPython(value, "Draw matrix"));
+            },
+            py::arg("name"), py::arg("value"))
+        .def(
+            "set_float_array",
+            [](DrawParameterBlock &self, const std::string &name, const std::vector<float> &values) {
+                self.SetFloatArray(name, values);
+            },
+            py::arg("name"), py::arg("values"))
+        .def(
+            "set_vector4_array",
+            [](DrawParameterBlock &self, const std::string &name, py::sequence values) {
+                std::vector<glm::vec4> native;
+                native.reserve(py::len(values));
+                for (py::handle item : values) {
+                    py::sequence vector = py::reinterpret_borrow<py::sequence>(item);
+                    if (py::len(vector) != 4)
+                        throw py::value_error("set_vector4_array requires four-component vectors");
+                    native.emplace_back(vector[0].cast<float>(), vector[1].cast<float>(), vector[2].cast<float>(),
+                                        vector[3].cast<float>());
+                }
+                self.SetVector4Array(name, native);
+            },
+            py::arg("name"), py::arg("values"))
+        .def("set_texture", &DrawParameterBlock::SetTexture, py::arg("name"), py::arg("texture_guid"))
+        .def("set_buffer", &DrawParameterBlock::SetBuffer, py::arg("name"), py::arg("buffer"))
+        .def("remove", &DrawParameterBlock::Remove, py::arg("name"))
+        .def("clear", &DrawParameterBlock::Clear)
+        .def_property_readonly("size", &DrawParameterBlock::Size);
+
+    const auto rendererIdentity = [](const MeshRenderer &renderer) {
+        const auto *owner = renderer.GetGameObject();
+        if (!owner)
+            throw py::value_error("RendererSelection requires a live scene renderer");
+        return RenderProxyHandle::FromScene(owner->GetHandle(), renderer.GetHandle());
+    };
+    py::class_<RendererSelection, std::shared_ptr<RendererSelection>>(m, "RendererSelection")
+        .def(py::init<std::shared_ptr<InxMaterial>>(), py::arg("material"))
+        .def(
+            "set",
+            [rendererIdentity](RendererSelection &self, const MeshRenderer &renderer, int submesh,
+                               const DrawParameterBlock *parameters) {
+                self.Set(rendererIdentity(renderer), submesh, parameters);
+            },
+            py::arg("renderer"), py::arg("submesh") = -1, py::arg("parameters") = nullptr)
+        .def(
+            "remove",
+            [rendererIdentity](RendererSelection &self, const MeshRenderer &renderer, int submesh) {
+                return self.Remove(rendererIdentity(renderer), submesh);
+            },
+            py::arg("renderer"), py::arg("submesh") = -1)
+        .def("clear", &RendererSelection::Clear)
+        .def_property_readonly("size", &RendererSelection::Size)
+        .def_property_readonly("revision", &RendererSelection::Revision);
+
     // ---- RenderTargetHandle ----
     py::class_<RenderTargetHandle>(m, "RenderTargetHandle", "Opaque handle to a temporary or persistent render target")
         .def(py::init<>())
@@ -76,27 +177,17 @@ void RegisterCommandBufferBindings(py::module_ &m)
         .def("clear_render_target", &CommandBuffer::ClearRenderTarget, py::arg("clear_color"), py::arg("clear_depth"),
              py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a"), py::arg("depth") = 1.0f,
              "Clear the currently-bound render target")
-
-        // ---- Global Shader Parameters ----
-        .def("set_global_texture", &CommandBuffer::SetGlobalTexture, py::arg("name"), py::arg("handle"),
-             "Set a global texture shader parameter by name")
-        .def("set_global_float", &CommandBuffer::SetGlobalFloat, py::arg("name"), py::arg("value"),
-             "Set a global float shader parameter by name")
-        .def("set_global_vector", &CommandBuffer::SetGlobalVector, py::arg("name"), py::arg("x"), py::arg("y"),
-             py::arg("z"), py::arg("w"), "Set a global vec4 shader parameter by name")
         .def(
-            "set_global_matrix",
-            [](CommandBuffer &self, const std::string &name, py::list data) {
-                if (py::len(data) != 16) {
-                    throw std::runtime_error("set_global_matrix requires a list of 16 floats");
-                }
-                std::array<float, 16> arr;
-                for (int i = 0; i < 16; i++)
-                    arr[i] = data[i].cast<float>();
-                self.SetGlobalMatrix(name, arr);
+            "draw_mesh",
+            [](CommandBuffer &self, const std::shared_ptr<InxMesh> &mesh, py::handle matrix,
+               const std::shared_ptr<InxMaterial> &material, int submeshIndex, int pass,
+               const DrawParameterBlock *parameters) {
+                self.DrawMesh(mesh, binding::Matrix4FromPython(matrix, "draw_mesh matrix"), material, submeshIndex,
+                              pass, parameters);
             },
-            py::arg("name"), py::arg("data"),
-            "Set a global 4x4 matrix shader parameter (list of 16 floats, column-major)")
+            py::arg("mesh"), py::arg("matrix"), py::arg("material"), py::arg("submesh") = 0, py::arg("pass_index") = 0,
+            py::arg("parameters") = nullptr,
+            "Record one explicit mesh draw from the material's primary pass; parameter values are captured immediately")
 
         // ---- Misc ----
         .def("clear", &CommandBuffer::Clear, "Discard all recorded commands (reuse the buffer)")

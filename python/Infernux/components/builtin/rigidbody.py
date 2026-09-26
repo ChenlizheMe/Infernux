@@ -77,66 +77,15 @@ class Rigidbody(BuiltinComponent):
 
     # ---- Serialized properties (displayed in Inspector) ----
 
-    mass = CppProperty(
-        "mass",
-        FieldType.FLOAT,
-        default=1.0,
-        tooltip="Mass in kilograms",
-        range=(0.001, 1000.0),
-        slider=False,
-    )
-
-    drag = CppProperty(
-        "drag",
-        FieldType.FLOAT,
-        default=0.0,
-        tooltip="Linear drag coefficient",
-        range=(0.0, 100.0),
-        slider=False,
-    )
-
-    angular_drag = CppProperty(
-        "angular_drag",
-        FieldType.FLOAT,
-        default=0.05,
-        tooltip="Angular drag coefficient",
-        range=(0.0, 100.0),
-        slider=False,
-    )
-
-    use_gravity = CppProperty(
-        "use_gravity",
-        FieldType.BOOL,
-        default=True,
-        tooltip="Should this rigidbody be affected by gravity?",
-    )
-
-    is_kinematic = CppProperty(
-        "is_kinematic",
-        FieldType.BOOL,
-        default=False,
-        tooltip="If enabled, the object is not driven by physics but by script/animation",
-    )
-
-    collision_detection_mode = CppProperty(
-        "collision_detection_mode",
-        FieldType.ENUM,
-        default=CollisionDetectionMode.Discrete,
-        enum_type=CollisionDetectionMode,
-        enum_labels=["Discrete", "Continuous", "Continuous Dynamic"],
-        tooltip="CCD mode. Continuous Dynamic also sweeps against moving rigidbodies and costs more.",
-        range=(0, 2),
-    )
-
-    interpolation = CppProperty(
-        "interpolation",
-        FieldType.ENUM,
-        default=RigidbodyInterpolation.None_,
-        enum_type=RigidbodyInterpolation,
-        enum_labels=["None", "Interpolate"],
-        tooltip="Smooths presentation between fixed physics steps.",
-        range=(0, 1),
-    )
+    mass = CppProperty.from_native("Rigidbody", "mass")
+    drag = CppProperty.from_native("Rigidbody", "drag")
+    angular_drag = CppProperty.from_native("Rigidbody", "angular_drag")
+    use_gravity = CppProperty.from_native("Rigidbody", "use_gravity")
+    is_kinematic = CppProperty.from_native("Rigidbody", "is_kinematic")
+    collision_detection_mode = CppProperty.from_native("Rigidbody", "collision_detection_mode")
+    collision_detection_mode.metadata.enum_type = CollisionDetectionMode
+    interpolation = CppProperty.from_native("Rigidbody", "interpolation")
+    interpolation.metadata.enum_type = RigidbodyInterpolation
 
     # ---- Per-axis freeze constraints (displayed as checkboxes) ----
 
@@ -228,25 +177,8 @@ class Rigidbody(BuiltinComponent):
     def constraints(self, value: int):
         self._require_cpp_component().constraints = int(value)
 
-    @property
-    def max_angular_velocity(self) -> float:
-        """Maximum angular velocity in rad/s."""
-        cpp = self._require_cpp_component()
-        return cpp.max_angular_velocity
-
-    @max_angular_velocity.setter
-    def max_angular_velocity(self, value: float):
-        self._require_cpp_component().max_angular_velocity = float(value)
-
-    @property
-    def max_linear_velocity(self) -> float:
-        """Maximum linear velocity in m/s."""
-        cpp = self._require_cpp_component()
-        return cpp.max_linear_velocity
-
-    @max_linear_velocity.setter
-    def max_linear_velocity(self, value: float):
-        self._require_cpp_component().max_linear_velocity = float(value)
+    max_angular_velocity = CppProperty.from_native("Rigidbody", "max_angular_velocity")
+    max_linear_velocity = CppProperty.from_native("Rigidbody", "max_linear_velocity")
 
     @property
     def constraints_flags(self) -> RigidbodyConstraints:
@@ -292,6 +224,22 @@ class Rigidbody(BuiltinComponent):
         self._require_cpp_component().angular_velocity = coerce_vec3(value)
 
     # ---- Read-only world info ----
+
+    def get_point_velocity(self, point):
+        """World-space velocity at ``point``, including the body's angular motion.
+
+        Uses the physical center of mass, not the interpolated display transform.
+        """
+        return self._require_cpp_component().get_point_velocity(coerce_vec3(point))
+
+    def get_point_velocities(self, points, output):
+        """Write point velocities to caller-owned NumPy storage and return it.
+
+        Both arrays must be C-contiguous float32 ``(N, 3)``. Output must be
+        writable; exact in-place use is supported, partial overlap is not.
+        Reads body state once for the whole batch, without per-point Python calls.
+        """
+        return self._require_cpp_component().get_point_velocities(points, output)
 
     @property
     def world_center_of_mass(self):

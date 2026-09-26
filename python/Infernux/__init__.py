@@ -35,6 +35,10 @@ from Infernux import scene
 from Infernux.scene import GameObjectQuery, LayerMask, SceneManager
 from Infernux.timing import Time
 from Infernux.mathf import Mathf
+from Infernux.ui import (
+    UICanvas, UIFrame, UIGroup, UIProgressBar, UISlider, UIText, UIImage,
+    UIRawImage, UIButton, UIEvent, UIEvent1,
+)
 from Infernux.coroutine import (
     Coroutine,
     WaitForSeconds,
@@ -55,13 +59,18 @@ def __getattr__(name: str):
 
     This keeps Numba out of ordinary star-import paths while still supporting:
 
-        from Infernux import njit
+        from Infernux import compute
         from Infernux import jit
     """
-    if name == "jit":
-        return importlib.import_module("Infernux.jit")
+    if name in {"jit", "compute"}:
+        return importlib.import_module(f"Infernux.{name}")
+    if name in {"buffer", "Buffer"}:
+        compute_module = importlib.import_module("Infernux.compute")
+        value = getattr(compute_module, name)
+        globals()[name] = value
+        return value
     if name in {
-        "njit", "warmup", "ensure_jit_runtime",
+        "warmup",
         "JIT_AVAILABLE",
     }:
         jit_module = importlib.import_module("Infernux.jit")
@@ -141,6 +150,7 @@ __all__ = [
     "ComponentRef",
     "PrefabRef",
     "SerializableObject",
+    "DataAsset",
     # Builtin components
     "Light",
     "MeshRenderer",
@@ -157,12 +167,26 @@ __all__ = [
     "RigidbodyConstraints",
     "CollisionDetectionMode",
     "RigidbodyInterpolation",
+    "HingeJoint",
+    "SliderJoint",
     "AudioSource",
     "AudioListener",
     "SpriteRenderer",
     "SpiritAnimator",
     "SkeletalAnimator",
     "RuntimeAcceptanceRunner",
+    # UI components
+    "UICanvas",
+    "UIFrame",
+    "UIGroup",
+    "UIProgressBar",
+    "UISlider",
+    "UIText",
+    "UIImage",
+    "UIRawImage",
+    "UIButton",
+    "UIEvent",
+    "UIEvent1",
     # Explicit early-import lifecycle used by project and plugin scripts
     "InxPreload",
     "PreloadContext",
@@ -179,9 +203,14 @@ __all__ = [
     "AddComponentMenu",
     "HelpURL",
     "Icon",
+    "DrivenTransformProperties",
+    "drives_transform",
+    "DrivesTransform",
     # Core assets
     "Material",
     "Texture",
+    "RenderTexture",
+    "Mesh",
     "Shader",
     "AudioClip",
     "AnimationClip",
@@ -191,13 +220,17 @@ __all__ = [
     "AnimTransition",
     "AnimCondition",
     "AnimParameter",
+    "AssetFile",
     "AssetManager",
+    "SandboxPath",
     "TextureRef",
+    "RenderTextureRef",
     "ShaderRef",
     "AudioClipRef",
     "AnimationClipRef",
     "AnimStateMachineRef",
     "RenderEffectRef",
+    "DataAssetRef",
     # Debug — class only (use Debug.log / Debug.log_warning / …)
     "Debug",
     # Submodules

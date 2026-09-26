@@ -17,7 +17,4 @@ class ObjectExecutionLayer:
         if not selected_object_id:
             return None
         from Infernux.lib import SceneManager
-        scene = SceneManager.instance().get_active_scene()
-        if scene:
-            return scene.find_by_id(selected_object_id)
-        return None
+        return SceneManager.instance().find_runtime_object_by_id(selected_object_id)

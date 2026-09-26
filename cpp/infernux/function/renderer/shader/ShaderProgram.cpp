@@ -284,6 +284,9 @@ void ShaderProgram::MergeReflectionData()
         // Check if binding already exists
         for (auto &existing : m_descriptorBindings) {
             if (existing.binding == binding && existing.set == set) {
+                if (existing.type != type || existing.descriptorCount != count || existing.name != name)
+                    throw std::runtime_error("Shader reflection descriptor ABI mismatch at set " + std::to_string(set) +
+                                             ", binding " + std::to_string(binding));
                 // Merge stage flags
                 existing.stageFlags |= stage;
                 return;
@@ -311,6 +314,10 @@ void ShaderProgram::MergeReflectionData()
         addBinding(sampler.binding, sampler.set, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sampler.arraySize,
                    VK_SHADER_STAGE_VERTEX_BIT, sampler.name);
     }
+    for (const auto &buffer : m_vertReflection.GetStorageBuffers()) {
+        addBinding(buffer.binding, buffer.set, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer.arraySize,
+                   VK_SHADER_STAGE_VERTEX_BIT, buffer.name);
+    }
 
     // Process fragment shader UBOs
     for (const auto &ubo : m_fragReflection.GetUniformBuffers()) {
@@ -321,6 +328,10 @@ void ShaderProgram::MergeReflectionData()
     for (const auto &sampler : m_fragReflection.GetSampledImages()) {
         addBinding(sampler.binding, sampler.set, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, sampler.arraySize,
                    VK_SHADER_STAGE_FRAGMENT_BIT, sampler.name);
+    }
+    for (const auto &buffer : m_fragReflection.GetStorageBuffers()) {
+        addBinding(buffer.binding, buffer.set, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer.arraySize,
+                   VK_SHADER_STAGE_FRAGMENT_BIT, buffer.name);
     }
 
     // Sort by set, then by binding
@@ -424,7 +435,7 @@ void ShaderProgram::ExtractMaterialUBOLayout()
     // Also look for a vertex-stage MaterialProperties UBO at binding 14
     // (used when the vertex ShaderInfo declares Properties)
     for (const auto &ubo : m_vertReflection.GetUniformBuffers()) {
-        if (ubo.name == "MaterialProperties" && ubo.binding == 14 && ubo.set == 0) {
+        if (ubo.name == "MaterialProperties" && ubo.binding == 14 && (ubo.set == 0 || ubo.set == 2)) {
             m_vertexMaterialUBOLayout.binding = ubo.binding;
             m_vertexMaterialUBOLayout.size = ubo.size;
             m_vertexMaterialUBOLayout.members = ubo.members;
@@ -514,7 +525,7 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
 
         std::vector<VkDescriptorBindingFlags> bindingFlags;
         VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};
-        if (enableUpdateAfterBind && setIndex == 0) {
+        if (enableUpdateAfterBind && setIndex == MaterialDescriptorSet) {
             bindingFlags.assign(bindings.size(), VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
                                                      VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT);
             bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
@@ -545,7 +556,7 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
             INXLOG_ERROR("Failed to create empty descriptor set layout");
             return false;
         }
-        m_descriptorSetLayouts[0] = layout;
+        m_descriptorSetLayouts[MaterialDescriptorSet] = layout;
     }
 
     return true;
@@ -554,10 +565,10 @@ bool ShaderProgram::CreateDescriptorSetLayouts()
 bool ShaderProgram::CreatePipelineLayout()
 {
     if (m_variantKey.target != ShaderCompileTarget::Shadow && s_perViewDescSetLayout != VK_NULL_HANDLE) {
-        auto it = m_descriptorSetLayouts.find(1);
+        auto it = m_descriptorSetLayouts.find(ViewDescriptorSet);
         if (it != m_descriptorSetLayouts.end() && it->second != s_perViewDescSetLayout)
             vkDestroyDescriptorSetLayout(m_device, it->second, nullptr);
-        m_descriptorSetLayouts[1] = s_perViewDescSetLayout;
+        m_descriptorSetLayouts[ViewDescriptorSet] = s_perViewDescSetLayout;
     }
 
     // If a globals descriptor set layout was registered, ensure set 2 exists
@@ -565,11 +576,11 @@ bool ShaderProgram::CreatePipelineLayout()
     // canonical engine layout so descriptor set compatibility is guaranteed.
     if (m_variantKey.target != ShaderCompileTarget::Shadow && s_globalsDescSetLayout != VK_NULL_HANDLE) {
         // If reflection already created a set 2, destroy it — we use the shared one
-        auto it = m_descriptorSetLayouts.find(2);
+        auto it = m_descriptorSetLayouts.find(EngineDescriptorSet);
         if (it != m_descriptorSetLayouts.end() && it->second != s_globalsDescSetLayout) {
             vkDestroyDescriptorSetLayout(m_device, it->second, nullptr);
         }
-        m_descriptorSetLayouts[2] = s_globalsDescSetLayout;
+        m_descriptorSetLayouts[EngineDescriptorSet] = s_globalsDescSetLayout;
     }
 
     if (m_usesBindlessTextureABI) {
@@ -679,6 +690,15 @@ void ShaderProgramCache::Initialize(VkDevice device)
 
 void ShaderProgramCache::Shutdown()
 {
+    // Shared publications may still be held by scene materials after the
+    // cache and render-data maps release their own references. Destroy the
+    // Vulkan objects while the device is valid; the later shared_ptr
+    // destructors then perform an idempotent no-op.
+    for (auto &weakProgram : m_devicePrograms) {
+        if (auto program = weakProgram.lock())
+            program->Destroy();
+    }
+    m_devicePrograms.clear();
     Clear();
     m_device = VK_NULL_HANDLE;
 }
@@ -714,6 +734,12 @@ ShaderProgramPublication ShaderProgramCache::GetOrCreateProgram(const ShaderProg
         return nullptr;
     }
 
+    if (m_devicePrograms.size() == m_devicePrograms.capacity()) {
+        m_devicePrograms.erase(std::remove_if(m_devicePrograms.begin(), m_devicePrograms.end(),
+                                              [](const auto &weakProgram) { return weakProgram.expired(); }),
+                               m_devicePrograms.end());
+    }
+    m_devicePrograms.emplace_back(program);
     ShaderProgramPublication publication = std::move(program);
     m_programs[canonicalKey] = publication;
     return publication;

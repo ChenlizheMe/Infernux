@@ -83,6 +83,11 @@ def _normalize_mesh_source_value(value, parameter_name: str) -> dict:
     if isinstance(value, AssetReference):
         return value.to_dict()
     if type(value) is dict:
+        if value.get("$type") == "component_ref":
+            raise TypeError(
+                f"particle Mesh parameter {parameter_name!r} requires a Mesh asset "
+                "or SkinnedMeshRenderer"
+            )
         try:
             return AssetReference.from_dict(value).to_dict()
         except (TypeError, ValueError) as exc:
@@ -1562,7 +1567,6 @@ class ParticleSystem(InxComponent):
             graph_key = (
                 "asset",
                 str(getattr(graph, "guid", "") or ""),
-                str(getattr(graph, "path_hint", "") or ""),
             )
         return graph_key, int(get_raw_field_value(self, "random_seed") or 0)
 
@@ -1575,7 +1579,6 @@ class ParticleSystem(InxComponent):
         if graph is None or not (
             isinstance(graph, ParticleGraphAsset)
             or bool(graph)
-            or getattr(graph, "path_hint", "")
         ):
             self._remove_native_batch()
             self._clear_runtime_state()
@@ -1597,14 +1600,12 @@ class ParticleSystem(InxComponent):
         graph_ref = get_raw_field_value(self, "graph")
         now = time.monotonic()
         if not force and now < getattr(self, "_compile_retry_at", 0.0):
-            path = self._particle_source_path(graph_ref)
-            guid = getattr(graph_ref, "guid", "")
-            if not path or ParticleArtifactRegistry.get(path, guid=guid) is None:
+            guid = str(getattr(graph_ref, "guid", "") or "").strip()
+            if not guid or ParticleArtifactRegistry.get(guid=guid) is None:
                 return False
         if graph_ref is not None and (
             isinstance(graph_ref, ParticleGraphAsset)
             or bool(graph_ref)
-            or getattr(graph_ref, "path_hint", "")
             or (
                 callable(getattr(graph_ref, "resolve", None))
                 and graph_ref.resolve() is not None
@@ -1633,22 +1634,23 @@ class ParticleSystem(InxComponent):
 
     def _load_particle_graph_artifact(self, graph_ref: ParticleGraphRef) -> bool:
         try:
-            path = self._particle_source_path(graph_ref)
-            if not path:
+            guid = str(getattr(graph_ref, "guid", "") or "").strip()
+            if not guid:
                 raise RuntimeError(
                     "ParticleGraph runtime requires a saved AOT artifact; save "
                     "the ParticleGraph before Play"
                 )
-            guid = getattr(graph_ref, "guid", "")
-            editor_source = Application.is_editor() and os.path.isfile(path)
-            if editor_source:
+            if Application.is_editor():
+                path = self._particle_source_path(graph_ref)
+                if not path or not os.path.isfile(path):
+                    raise RuntimeError(
+                        "ParticleGraph GUID is not registered to an authoring source"
+                    )
                 artifact = ParticleArtifactRegistry.compile_path(path, guid=guid)
             else:
-                artifact = ParticleArtifactRegistry.get(path, guid=guid)
+                artifact = ParticleArtifactRegistry.get(guid=guid)
                 if artifact is None:
-                    artifact = ParticleArtifactRegistry.load_runtime_reference(
-                        path, guid=guid
-                    )
+                    artifact = ParticleArtifactRegistry.load_runtime_reference(guid=guid)
             if artifact is None:
                 raise RuntimeError(
                     "ParticleGraph AOT artifact is missing or stale; save the "
@@ -2377,9 +2379,7 @@ class ParticleSystem(InxComponent):
             return
         self._artifact_registry_revision = registry_revision
         graph_ref = get_raw_field_value(self, "graph")
-        path = self._particle_source_path(graph_ref)
         artifact = ParticleArtifactRegistry.get(
-            path,
             guid=getattr(graph_ref, "guid", ""),
         )
         if artifact is not None and artifact.revision != self._artifact_revision:
@@ -2510,7 +2510,7 @@ class ParticleSystem(InxComponent):
 
     def _mesh_emitter_gizmo_bounds(self, shape) -> tuple[float, ...] | None:
         reference = shape.mesh
-        key = str(reference.guid or reference.path_hint).strip()
+        key = str(reference.guid or "").strip()
         if not key:
             return None
         cache = getattr(self, "_emitter_mesh_gizmo_bounds", None)
@@ -2750,18 +2750,16 @@ class ParticleSystem(InxComponent):
     def _particle_source_path(graph_ref: ParticleGraphRef) -> str:
         if graph_ref is None:
             return ""
-        guid = getattr(graph_ref, "guid", "")
-        path_hint = getattr(graph_ref, "path_hint", "")
-        if guid:
-            try:
-                from Infernux.core.asset_ref import _get_asset_database
+        guid = str(getattr(graph_ref, "guid", "") or "").strip()
+        if not guid:
+            return ""
+        try:
+            from Infernux.core.asset_ref import _get_asset_database
 
-                database = _get_asset_database()
-                if database:
-                    return database.get_path_from_guid(guid) or path_hint
-            except (AttributeError, RuntimeError):
-                pass
-        return path_hint
+            database = _get_asset_database()
+            return str(database.get_path_from_guid(guid) or "") if database else ""
+        except (AttributeError, KeyError, RuntimeError, TypeError, ValueError):
+            return ""
 
     def _gpu_emitter_id(self, stable_id: str) -> int:
         identity = f"{int(self._batch_id) & 0xFFFFFFFFFFFFFFFF}:{stable_id}"
@@ -2784,7 +2782,7 @@ class ParticleSystem(InxComponent):
 
     @staticmethod
     def _particle_texture_guid(value) -> str:
-        """Return a native texture identity without treating a path as a GUID."""
+        """Return the imported texture GUID used by the native runtime."""
         if isinstance(value, AssetReference):
             reference = value
         elif isinstance(value, dict):
@@ -2794,27 +2792,7 @@ class ParticleSystem(InxComponent):
             return token if token in {"white", "black", "normal"} else "white"
 
         guid = str(reference.guid or "").strip()
-        if guid:
-            return guid
-        path_hint = str(reference.path_hint or "").strip()
-        if not path_hint:
-            return "white"
-        try:
-            from Infernux.core.asset_ref import _get_asset_database
-            from Infernux.engine.path_utils import resolved_path
-            from Infernux.engine.project_context import get_project_root
-
-            path = path_hint
-            if not os.path.isabs(path):
-                project_root = get_project_root()
-                if project_root:
-                    path = os.path.join(project_root, path)
-            database = _get_asset_database()
-            if database:
-                return database.get_guid_from_path(resolved_path(path)) or "white"
-        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
-            pass
-        return "white"
+        return guid or "white"
 
     def _gpu_material_binding(self, output, emitter_id: str = "") -> dict[str, object]:
         is_mesh = output.output_type == "mesh"
@@ -2947,11 +2925,8 @@ class ParticleSystem(InxComponent):
 
         registry = AssetRegistry.instance()
         native = registry.load_mesh_by_guid(reference.guid) if reference.guid else None
-        path = cls._absolute_project_path(reference.path_hint)
-        if native is None and path:
-            native = registry.load_mesh(path)
         if native is None:
-            identity = reference.guid or reference.path_hint or "<empty reference>"
+            identity = reference.guid or "<empty reference>"
             raise RuntimeError(f"{purpose} cannot load {identity!r}")
         return native
 
@@ -3000,9 +2975,8 @@ class ParticleSystem(InxComponent):
                 )
             reference = interface.texture
             if not reference.guid:
-                identity = reference.path_hint or "<empty reference>"
                 raise RuntimeError(
-                    f"ParticleGraph GPU volume interface {stable_id!r} requires an imported texture GUID; got {identity!r}"
+                    f"ParticleGraph GPU volume interface {stable_id!r} requires an imported texture GUID"
                 )
             native = registry.load_texture_by_guid(reference.guid)
             if native is None:
@@ -3134,7 +3108,7 @@ class ParticleSystem(InxComponent):
                         decoded_meshes.append(decoded)
                         continue
                     overridden = AssetReference.from_dict(override)
-                    if overridden.guid or overridden.path_hint:
+                    if overridden.guid:
                         reference = overridden
                 decoded.update(
                     source_kind="asset",
@@ -3157,9 +3131,8 @@ class ParticleSystem(InxComponent):
 
         reference = interface.texture
         if not reference.guid:
-            identity = reference.path_hint or "<empty reference>"
             raise RuntimeError(
-                f"ParticleGraph Vector Field {interface.stable_id!r} requires an imported texture GUID; got {identity!r}"
+                f"ParticleGraph Vector Field {interface.stable_id!r} requires an imported texture GUID"
             )
         native = AssetRegistry.instance().load_texture_by_guid(reference.guid)
         if native is None or native.dimension != "3d" or native.semantic != "vector_field":
@@ -3167,18 +3140,6 @@ class ParticleSystem(InxComponent):
                 f"ParticleGraph Vector Field {interface.stable_id!r} cannot load a VectorField Texture3D from {reference.guid!r}"
             )
         return native
-
-    @staticmethod
-    def _absolute_project_path(path: str) -> str:
-        if not path or os.path.isabs(path):
-            return path
-        try:
-            from Infernux.engine.project_context import get_project_root
-
-            project_root = get_project_root()
-            return os.path.join(project_root, path) if project_root else path
-        except (AttributeError, RuntimeError):
-            return path
 
     def _reset_gpu_emitters(self, emitter_index: int | None = None) -> None:
         native = self._native_engine()

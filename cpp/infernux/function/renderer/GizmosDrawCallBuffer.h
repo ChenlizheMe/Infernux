@@ -5,21 +5,29 @@
 #include <glm/glm.hpp>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace infernux
 {
 
 class InxMaterial;
+namespace rhi
+{
+class ComputeBuffer;
+}
 
 /**
  * @brief Buffer that receives packed gizmo geometry from Python and produces DrawCalls.
  *
  * Python-side Gizmos/GizmosCollector packs all per-frame gizmo primitives
- * into flat vertex/index arrays plus a descriptor list, then uploads them
- * in a single call via SetData().  The C++ side stores the data and
- * produces DrawCall entries consumed by ScriptableRenderContext::SubmitCulling().
+ * into flat vertex/index arrays plus a
+ * descriptor list, then publishes them
+ * in a single call via SetData(). The C++ side retains unchanged geometry,
  *
+ * advances an explicit generation only for vertex/topology changes, and
+ * produces DrawCall entries consumed by
+ * ScriptableRenderContext::SubmitCulling().
  * Queue range: 10000-20000 (_ComponentGizmos pass, depth-tested).
  *
  * Object IDs use prefix 0xEDED_GIZM_xxxx_xxxx to avoid collision with
@@ -45,8 +53,12 @@ class GizmosDrawCallBuffer
     static constexpr uint32_t ICON_KIND_LIGHT = 2;
     static constexpr uint32_t ICON_KIND_PARTICLE = 3;
 
-    /// Billboard materials for the built-in icon kinds. Any missing entry falls
-    /// back to @c fallback.
+    /// Billboard materials for the built-in icon kinds.
+    ///
+    /// A known icon kind must never fall back to the generic material.  The
+    /// generic material deliberately samples the built-in white texture, so a
+    /// transiently unpublished camera/light material would otherwise render a
+    /// solid white quad instead of the authored alpha silhouette.
     struct IconMaterials
     {
         std::shared_ptr<InxMaterial> fallback;
@@ -58,21 +70,14 @@ class GizmosDrawCallBuffer
         {
             switch (iconKind) {
             case ICON_KIND_CAMERA:
-                if (camera)
-                    return camera;
-                break;
+                return camera;
             case ICON_KIND_LIGHT:
-                if (light)
-                    return light;
-                break;
+                return light;
             case ICON_KIND_PARTICLE:
-                if (particle)
-                    return particle;
-                break;
+                return particle;
             default:
-                break;
+                return fallback;
             }
-            return fallback;
         }
     };
 
@@ -94,6 +99,24 @@ class GizmosDrawCallBuffer
         uint32_t indexStart = 0; ///< Offset into the shared index array
         uint32_t indexCount = 0; ///< Number of indices for this draw
         float worldMatrix[16];   ///< Column-major 4x4 world transform
+    };
+
+    /**
+     * @brief A line draw whose canonical Vertex stream stays GPU resident.
+     *
+     * The scripting layer
+     * supplies immutable line topology and a stable
+     * identity.  Later frames update only the borrowed resident
+     * vertex buffer
+     * and transform; no vertex readback or repeated mesh upload is involved.
+     */
+    struct ResidentDrawDescriptor
+    {
+        uint64_t identity = 0;
+        uint32_t vertexCount = 0;
+        std::shared_ptr<rhi::ComputeBuffer> vertexBuffer;
+        std::vector<uint32_t> indices;
+        float worldMatrix[16]{};
     };
 
     /**
@@ -123,10 +146,20 @@ class GizmosDrawCallBuffer
      */
     void SetData(std::vector<Vertex> vertices, std::vector<uint32_t> indices, std::vector<DrawDescriptor> descriptors);
 
+    /// Replace the active GPU-resident line draws for this frame. Topology is
+    /// retained by stable identity while the draw remains active.
+    void SetResidentData(std::vector<ResidentDrawDescriptor> descriptors);
+
+    [[nodiscard]] bool HasResidentTopology(uint64_t identity, uint32_t vertexCount) const;
+
     /**
      * @brief Clear all buffered data (e.g. when no gizmos to draw).
      */
     void Clear();
+
+    /// Clear only CPU immediate-mode line data while retaining active
+    /// resident line identities.
+    void ClearCpuData();
 
     /**
      * @brief Check if buffer has any data to draw.
@@ -139,7 +172,7 @@ class GizmosDrawCallBuffer
      * Each DrawDescriptor becomes one DrawCall with:
      *   - material = gizmoMaterial (unlit vertex-color)
      *   - objectId = OBJECT_ID_PREFIX | descriptorIndex
-     *   - forceBufferUpdate = true (immediate-mode: data changes every frame)
+     *   - meshRuntimeVersion advances only when immediate geometry changes
      *
      * @param gizmoMaterial  Material for gizmo rendering (vertex-color, unlit)
      * @return DrawCallResult containing all gizmo draw calls
@@ -174,7 +207,9 @@ class GizmosDrawCallBuffer
      * Each IconEntry becomes one DrawCall with:
      *   - 4 vertices forming a camera-facing diamond quad
      *   - material = iconMaterial (TRIANGLE_LIST, unlit vertex-color)
-     *   - objectId = IconEntry::objectId (the actual GameObject ID)
+     *   - objectId = renderer-private icon buffer identity
+     *   - pickingObjectId = IconEntry::objectId (the actual
+     * GameObject ID)
      *   - Constant angular size relative to distance from camera
      *
      * @param materials     Per-kind icon billboard materials
@@ -184,7 +219,9 @@ class GizmosDrawCallBuffer
      * @return DrawCallResult containing all icon draw calls
      */
     [[nodiscard]] DrawCallResult GetIconDrawCalls(const IconMaterials &materials, const glm::vec3 &cameraPos,
-                                                  const glm::vec3 &cameraRight, const glm::vec3 &cameraUp) const;
+                                                  const glm::vec3 &cameraRight, const glm::vec3 &cameraUp,
+                                                  const glm::mat4 &projection, uint32_t viewportHeight,
+                                                  float dpiScale) const;
 
     /**
      * @brief Get icon entries for picking tests.
@@ -194,11 +231,12 @@ class GizmosDrawCallBuffer
         return m_iconEntries;
     }
 
-    /// Angular size factor: icon world-size = distance * ICON_SIZE_FACTOR
-    static constexpr float ICON_SIZE_FACTOR = 0.036f;
+    /// Half of the intended icon width in 100%-DPI viewport pixels.
+    static constexpr float ICON_HALF_SIZE_PIXELS = 20.0f;
 
-    /// Minimum half-size used when an icon is extremely close to the camera.
-    static constexpr float ICON_MIN_WORLD_SIZE = 0.10f;
+    [[nodiscard]] static float ComputeIconHalfWorldSize(const glm::vec3 &iconPosition, const glm::vec3 &cameraPosition,
+                                                        const glm::vec3 &cameraForward, const glm::mat4 &projection,
+                                                        uint32_t viewportHeight, float dpiScale);
 
   private:
     std::vector<Vertex> m_vertices;
@@ -210,15 +248,30 @@ class GizmosDrawCallBuffer
     mutable std::vector<std::vector<Vertex>> m_slicedVertices;
     mutable std::vector<std::vector<uint32_t>> m_slicedIndices;
     mutable bool m_slicesDirty = true;
+    uint64_t m_cpuGeometryRevision = 1;
+
+    struct ResidentDraw
+    {
+        std::shared_ptr<rhi::ComputeBuffer> vertexBuffer;
+        std::vector<Vertex> topologyVertices;
+        std::vector<uint32_t> indices;
+        glm::mat4 worldMatrix{1.0f};
+    };
+    std::unordered_map<uint64_t, ResidentDraw> m_residentDraws;
+    std::vector<uint64_t> m_residentOrder;
 
     /// @brief Rebuild per-descriptor vertex/index slices from the packed arrays.
     void RebuildSlices() const;
 
     // ---- Icon billboard data ----
+    struct IconGeometryState
+    {
+        std::vector<Vertex> vertices;
+        std::vector<uint32_t> indices;
+        uint64_t revision = 0;
+    };
     std::vector<IconEntry> m_iconEntries;
-    mutable std::vector<std::vector<Vertex>> m_iconSlicedVertices;
-    mutable std::vector<std::vector<uint32_t>> m_iconSlicedIndices;
-    mutable bool m_iconSlicesDirty = true;
+    mutable std::unordered_map<uint64_t, IconGeometryState> m_iconGeometryStates;
 };
 
 } // namespace infernux

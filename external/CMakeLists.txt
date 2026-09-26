@@ -20,6 +20,11 @@ set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_ASSIMP_TOOLS OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(ASSIMP_NO_EXPORT ON CACHE BOOL "" FORCE)
+# Assimp owns compiler-warning portability for its source tree.  The current
+# release emits a Clang-version-specific suppression flag, so promoting
+# third-party diagnostics to errors makes an otherwise valid engine build
+# depend on the host runner's exact Clang revision.
+set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
 # IFC importer triggers a spurious MSVC /MP parallel compilation error
 # (C2065 "_Ty1" in <map> from IFCUtil.h) — disable it; IFC (building
 # CAD) is not needed for game asset pipelines.
@@ -49,6 +54,23 @@ set(SDL_SHARED ON CACHE BOOL "" FORCE)
 set(SDL_STATIC OFF CACHE BOOL "" FORCE)
 set(SDL_OPENGL OFF CACHE BOOL "" FORCE)
 set(SDL_OPENGLES OFF CACHE BOOL "" FORCE)
+if(UNIX AND NOT APPLE AND NOT ANDROID AND NOT EMSCRIPTEN)
+    # Linux desktop artifacts support native X11 and Wayland from the same SDL
+    # build.  Do not let a missing development package silently remove one of
+    # the supported window systems from the published runtime.
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(INFERNUX_SDL_WAYLAND REQUIRED
+        egl
+        wayland-client>=1.18
+        wayland-egl
+        wayland-cursor
+        xkbcommon>=0.5.0
+        libdecor-0
+    )
+    set(SDL_X11 ON CACHE BOOL "" FORCE)
+    set(SDL_WAYLAND ON CACHE BOOL "" FORCE)
+    set(SDL_WAYLAND_LIBDECOR ON CACHE BOOL "" FORCE)
+endif()
 
 # Jolt Physics configuration
 #
@@ -324,6 +346,10 @@ find_package(Vulkan REQUIRED)
 set(VMA_BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)
 set(VMA_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(VulkanMemoryAllocator)
+set_property(TARGET VulkanMemoryAllocator PROPERTY
+    INTERFACE_SYSTEM_INCLUDE_DIRECTORIES
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/VulkanMemoryAllocator/include>"
+)
 
 # ------------------------------------------------------------------------------
 # ImGui
@@ -338,14 +364,16 @@ set(IMGUI_CORE_SRCS
 )
 
 set(INFERNUX_IMGUI_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/imgui")
-set(INFERNUX_IMGUI_VULKAN_BACKEND "${INFERNUX_IMGUI_GENERATED_DIR}/imgui_impl_vulkan_infernux.cpp")
+# The Vulkan backend is maintained in the Infernux ImGui fork.  Keep the
+# generated directory only for the project-owned fragment shader header; the
+# backend itself must not be rewritten by a configure-time string patch.
+set(INFERNUX_IMGUI_VULKAN_BACKEND "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp")
 set(INFERNUX_IMGUI_FRAGMENT_SOURCE
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/gui/backend/infernux_imgui_frag.frag")
 set(INFERNUX_IMGUI_FRAGMENT_HEADER
     "${INFERNUX_IMGUI_GENERATED_DIR}/infernux_imgui_frag.u32")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp"
-    "${CMAKE_SOURCE_DIR}/cmake/patch_imgui_vulkan_backend.py"
     "${INFERNUX_IMGUI_FRAGMENT_SOURCE}"
 )
 file(MAKE_DIRECTORY "${INFERNUX_IMGUI_GENERATED_DIR}")
@@ -359,17 +387,6 @@ execute_process(
 )
 if(NOT INFERNUX_IMGUI_SHADER_RESULT EQUAL 0)
     message(FATAL_ERROR "Failed to compile the Infernux ImGui fragment shader: ${INFERNUX_IMGUI_SHADER_ERROR}")
-endif()
-execute_process(
-    COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_SOURCE_DIR}/cmake/patch_imgui_vulkan_backend.py"
-        --source "${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp"
-        --output "${INFERNUX_IMGUI_VULKAN_BACKEND}"
-    RESULT_VARIABLE INFERNUX_IMGUI_PATCH_RESULT
-    ERROR_VARIABLE INFERNUX_IMGUI_PATCH_ERROR
-)
-if(NOT INFERNUX_IMGUI_PATCH_RESULT EQUAL 0)
-    message(FATAL_ERROR "Failed to prepare the Infernux ImGui Vulkan backend: ${INFERNUX_IMGUI_PATCH_ERROR}")
 endif()
 
 set(IMGUI_BACKEND_SRCS

@@ -209,6 +209,82 @@ class AuthoringMutationService:
             )
         return bool(applied)
 
+    def execute_command_batch(
+        self,
+        commands: tuple[tuple[str, Callable[[int, int], Any]], ...],
+        *,
+        view_id: str,
+        description: str,
+    ) -> bool:
+        """Execute edits to several documents as one chronological action.
+
+        Multi-object inspectors must not publish one journal entry per target:
+        Undo would otherwise leave a partially edited selection.  Every
+        document receives its own revision adapter, while the adapters are
+        executed and rolled back by one compound command.
+        """
+        owner_view_id = str(view_id or "").strip()
+        if not owner_view_id:
+            raise ValueError("authoring command batch requires an authoring view id")
+        entries = tuple(commands)
+        if not entries:
+            return False
+
+        identifiers = tuple(str(document_id or "").strip() for document_id, _factory in entries)
+        if any(not identifier for identifier in identifiers):
+            raise ValueError("authoring command batch requires document ids")
+        if len(set(identifiers)) != len(identifiers):
+            raise ValueError("authoring command batch cannot edit one document twice")
+        if any(not callable(factory) for _document_id, factory in entries):
+            raise TypeError("authoring command batch factories must be callable")
+
+        manager = self._undo_manager()
+        if manager is None:
+            return False
+
+        from Infernux.engine.undo import CompoundCommand
+        from Infernux.engine.undo._document_commands import DocumentRevisionCommand
+
+        reserved: list[tuple[str, int]] = []
+        journal_commands = []
+        try:
+            for (document_id, factory), identifier in zip(entries, identifiers):
+                document = self._documents.require(identifier)
+                before_revision = int(document.revision)
+                after_revision = self._documents.reserve_changed_revision(
+                    identifier,
+                    view_id=owner_view_id,
+                )
+                reserved.append((identifier, before_revision))
+                command = factory(before_revision, after_revision)
+                if command is None:
+                    raise TypeError("authoring command batch factory returned no command")
+                locator = self._documents.locate(identifier)
+                if locator is None:
+                    command.dispose()
+                    raise RuntimeError("authoring command batch document has no stable locator")
+                journal_commands.append(
+                    DocumentRevisionCommand(
+                        command,
+                        locator,
+                        before_revision,
+                        after_revision,
+                    )
+                )
+        except Exception:
+            for command in journal_commands:
+                command.dispose()
+            for identifier, before_revision in reserved:
+                self._documents.restore_content_revision(identifier, before_revision)
+            raise
+
+        compound = CompoundCommand(journal_commands, str(description or "Edit documents"))
+        applied = manager.execute(compound)
+        if not applied:
+            for identifier, before_revision in reserved:
+                self._documents.restore_content_revision(identifier, before_revision)
+        return bool(applied)
+
     def record_applied_command(
         self,
         document_id: str,

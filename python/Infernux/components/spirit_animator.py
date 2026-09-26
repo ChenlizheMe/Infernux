@@ -9,7 +9,7 @@ SpriteRenderer.
 Usage::
 
     animator = game_object.add_component(SpiritAnimator)
-    animator.controller = AnimStateMachineRef(path_hint="Assets/Animations/player.animfsm")
+    animator.controller = AnimStateMachineRef(guid="<controller asset GUID>")
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ from Infernux.core.anim_state_machine import (
 from Infernux.core.animation_clip import AnimationClip
 from Infernux.core.asset_ref import AnimStateMachineRef
 from Infernux.debug import Debug
-from Infernux.engine.path_utils import same_path
 from Infernux.graph.types import ValueType
 
 
@@ -309,18 +308,13 @@ class SpiritAnimator(InxComponent):
         except (AttributeError, ImportError, RuntimeError, TypeError):
             pass
 
-    @staticmethod
-    def _event_asset_path(file_path: str) -> str:
-        path = str(file_path or "").strip()
-        return path[:-5] if path.casefold().endswith(".meta") else path
+    def _controller_reference(self) -> Optional[AnimStateMachineRef]:
+        reference = type(self).controller.get_raw(self)
+        return reference if isinstance(reference, AnimStateMachineRef) else None
 
-    @staticmethod
-    def _state_clip_reference_path(state: AnimState) -> str:
-        if not state.clip_guid:
-            return ""
-        return str(
-            _get_asset_database().get_path_from_guid(state.clip_guid) or ""
-        ).strip()
+    def _controller_reference_guid(self) -> str:
+        reference = self._controller_reference()
+        return str(getattr(reference, "guid", "") or "").strip()
 
     def _apply_current_clip_frame(self) -> None:
         clip = self._current_clip
@@ -336,7 +330,7 @@ class SpiritAnimator(InxComponent):
         renderer.sync_visual()
         self._last_applied_frame = frame_id
 
-    def _reload_clip_asset(self, asset_path: str) -> bool:
+    def _reload_clip_asset(self, asset_guid: str, asset_path: str) -> bool:
         fsm = self._fsm
         if fsm is None:
             return False
@@ -344,7 +338,7 @@ class SpiritAnimator(InxComponent):
             state
             for state in fsm.states
             if getattr(state, "kind", "clip") != "timeline"
-            and same_path(self._state_clip_reference_path(state), asset_path)
+            and str(getattr(state, "clip_guid", "") or "").strip() == asset_guid
         )
         if not affected:
             return False
@@ -373,7 +367,7 @@ class SpiritAnimator(InxComponent):
 
     def _reload_controller_asset(self, asset_path: str) -> bool:
         fsm = self._fsm
-        if fsm is None or not same_path(getattr(fsm, "file_path", ""), asset_path):
+        if fsm is None:
             return False
         replacement = AnimStateMachine.load(asset_path)
         if replacement is None:
@@ -440,13 +434,37 @@ class SpiritAnimator(InxComponent):
         for mutation in iter_asset_mutations(change):
             if mutation.kind is AssetMutationKind.DELETED:
                 continue
-            asset_path = self._event_asset_path(mutation.path)
+            asset_guid = str(mutation.guid or "").strip()
+            if not asset_guid:
+                continue
+
+            controller_guid = self._controller_reference_guid()
+            affected_clip = bool(
+                self._fsm is not None
+                and any(
+                    getattr(state, "kind", "clip") != "timeline"
+                    and str(getattr(state, "clip_guid", "") or "").strip()
+                    == asset_guid
+                    for state in self._fsm.states
+                )
+            )
+            if asset_guid != controller_guid and not affected_clip:
+                continue
+
+            asset_path = str(
+                _get_asset_database().get_path_from_guid(asset_guid) or ""
+            ).strip()
             if not asset_path:
                 continue
             try:
-                if self._reload_controller_asset(asset_path):
-                    continue
-                self._reload_clip_asset(asset_path)
+                if asset_guid == controller_guid:
+                    reference = self._controller_reference()
+                    if reference is not None:
+                        reference.invalidate()
+                    if self._reload_controller_asset(asset_path):
+                        continue
+                if affected_clip:
+                    self._reload_clip_asset(asset_guid, asset_path)
             except Exception as exc:
                 Debug.log_error(
                     f"[SpiritAnimator] asset hot reload failed for '{asset_path}': {exc}"
@@ -506,10 +524,10 @@ class SpiritAnimator(InxComponent):
                     f"[SpiritAnimator] Failed to load clip for state '{state.name}': {clip_path}"
                 )
         else:
-            if state.clip_guid or state.clip_path:
+            if state.clip_guid:
                 Debug.log_warning(
                     f"[SpiritAnimator] Clip not found for state '{state.name}' "
-                    f"(guid='{state.clip_guid}', path='{state.clip_path}')"
+                    f"(guid='{state.clip_guid}')"
                 )
         self._clip_cache[key] = clip
         return clip

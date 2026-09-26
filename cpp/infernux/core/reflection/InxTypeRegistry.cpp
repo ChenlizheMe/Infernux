@@ -118,6 +118,10 @@ void InxTypeRegistry::Build()
                 return std::string("RenderEffect");
             case ResourceType::ParticleGraph:
                 return std::string("ParticleGraph");
+            case ResourceType::DataAsset:
+                return std::string("DataAsset");
+            case ResourceType::RenderTexture:
+                return std::string("RenderTexture");
             default:
                 return std::string("Unknown");
             }
@@ -147,6 +151,10 @@ void InxTypeRegistry::Build()
                 return std::any{ResourceType::RenderEffect};
             if (s == "ParticleGraph")
                 return std::any{ResourceType::ParticleGraph};
+            if (s == "DataAsset")
+                return std::any{ResourceType::DataAsset};
+            if (s == "RenderTexture")
+                return std::any{ResourceType::RenderTexture};
             if (s == "Unknown")
                 return std::any{ResourceType::DefaultText};
             return std::any{ResourceType::DefaultText};

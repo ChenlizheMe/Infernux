@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 COLOR_TEXTURE = "color"
 DEPTH_TEXTURE = "depth"
 SHADOW_MAP_TEXTURE = "shadow_map"
+LIGHT_LIST_BUFFER = "light_list"
 MOTION_TEXTURE = "motion"
 MOTION_MSAA_TEXTURE = "_motion_msaa"
 NORMAL_TEXTURE = "normal"
@@ -26,7 +27,7 @@ BEFORE_POST_PROCESS_POINT = "before_post_process"
 AFTER_POST_PROCESS_POINT = "after_post_process"
 
 GBUFFER_ALBEDO_TEXTURE = "gbuffer_albedo"
-GBUFFER_NORMAL_TEXTURE = NORMAL_TEXTURE
+GBUFFER_NORMAL_TEXTURE = "gbuffer_normal"
 GBUFFER_MATERIAL_TEXTURE = "gbuffer_material"
 GBUFFER_EMISSION_TEXTURE = "gbuffer_emission"
 GBUFFER_OBJECT_TEXTURE = "gbuffer_object"
@@ -225,8 +226,10 @@ def add_normal_buffer_pass(
     depth,
     queue_range: tuple[int, int] | None = None,
     msaa_samples: int = 1,
+    material_filter: str = "all",
+    initial_normal=None,
 ) -> object | None:
-    """Write nearest opaque normals against the existing scene depth."""
+    """Write covered opaque normals against this View's read-only depth."""
     from Infernux.rendergraph.graph import Format
 
     target = graph.create_texture(
@@ -235,6 +238,8 @@ def add_normal_buffer_pass(
         samples=1,
     )
     multisampled = int(msaa_samples) > 1
+    if initial_normal is not None and multisampled:
+        raise ValueError("normal coverage overlay requires a single-sample target")
     draw_target = target
     if multisampled:
         draw_target = graph.create_texture(
@@ -242,16 +247,21 @@ def add_normal_buffer_pass(
             format=Format.RGBA16_SFLOAT,
             samples=int(msaa_samples),
         )
+    if initial_normal is not None:
+        with graph.add_copy_pass(f"{source}/NormalBase") as copy_pass:
+            copy_pass.copy_texture(initial_normal, target)
     with graph.add_pass(f"{source}/Normal") as render_pass:
         render_pass.read(depth)
         render_pass.write_color(draw_target)
         if multisampled:
             render_pass.write_resolve(target)
-        render_pass.set_clear(color=(0.5, 0.5, 1.0, 0.0))
+        if initial_normal is None:
+            render_pass.set_clear(color=(0.5, 0.5, 1.0, 0.0))
         render_pass.draw_renderers(
             queue_range=queue_range or opaque_queue_range(),
             sort_mode="front_to_back",
             material_pass="normal",
+            material_filter=material_filter,
         )
     return target
 

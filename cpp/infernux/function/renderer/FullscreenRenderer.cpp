@@ -13,9 +13,11 @@ namespace infernux
 bool FullscreenPipelineKey::operator==(const FullscreenPipelineKey &other) const noexcept
 {
     return shaderName == other.shaderName && renderTargetLayout == other.renderTargetLayout &&
-           samples == other.samples && colorFormat == other.colorFormat &&
-           inputTextureCount == other.inputTextureCount && depthInputMask == other.depthInputMask &&
-           useDynamicRendering == other.useDynamicRendering;
+           samples == other.samples && colorFormat == other.colorFormat && depthFormat == other.depthFormat &&
+           depth.testEnabled == other.depth.testEnabled && depth.writeEnabled == other.depth.writeEnabled &&
+           depth.compare == other.depth.compare && alphaBlend == other.alphaBlend &&
+           inputResourceCount == other.inputResourceCount && depthInputMask == other.depthInputMask &&
+           inputBufferMask == other.inputBufferMask && useDynamicRendering == other.useDynamicRendering;
 }
 
 size_t FullscreenPipelineKeyHash::operator()(const FullscreenPipelineKey &key) const noexcept
@@ -25,7 +27,13 @@ size_t FullscreenPipelineKeyHash::operator()(const FullscreenPipelineKey &key) c
     combine(rhi::HandleHash<rhi::RenderTargetLayoutTag>{}(key.renderTargetLayout));
     combine(static_cast<size_t>(key.samples));
     combine(static_cast<size_t>(key.colorFormat));
-    combine(key.inputTextureCount);
+    combine(static_cast<size_t>(key.depthFormat));
+    combine(key.depth.testEnabled);
+    combine(key.depth.writeEnabled);
+    combine(static_cast<size_t>(key.depth.compare));
+    combine(key.alphaBlend);
+    combine(key.inputResourceCount);
+    combine(key.inputBufferMask);
     combine(key.depthInputMask);
     combine(key.useDynamicRendering ? 1U : 0U);
     return hash;
@@ -75,18 +83,20 @@ struct FullscreenRenderer::Impl
     PipelineEntry CreatePipeline(const FullscreenPipelineKey &key)
     {
         PipelineEntry entry;
-        if (!host || !device || key.inputTextureCount > rhi::BindingLayoutDesc::MaxEntries ||
+        if (!host || !device || key.inputResourceCount > rhi::BindingLayoutDesc::MaxEntries ||
             (!key.useDynamicRendering && !key.renderTargetLayout.IsValid()))
             return entry;
 
         rhi::BindingLayoutDesc inputLayoutDesc;
-        inputLayoutDesc.entryCount = key.inputTextureCount;
-        for (uint32_t index = 0; index < key.inputTextureCount; ++index) {
+        inputLayoutDesc.entryCount = key.inputResourceCount;
+        for (uint32_t index = 0; index < key.inputResourceCount; ++index) {
             auto &binding = inputLayoutDesc.entries[index];
             binding.binding = index;
-            binding.type = rhi::BindingType::CombinedTextureSampler;
+            binding.type = (key.inputBufferMask & (1u << index)) != 0 ? rhi::BindingType::StorageBuffer
+                                                                      : rhi::BindingType::CombinedTextureSampler;
             binding.visibility = rhi::ShaderStage::Fragment;
             binding.depthRead = (key.depthInputMask & (1u << index)) != 0;
+            binding.readOnlyStorage = binding.type == rhi::BindingType::StorageBuffer;
         }
         entry.rhi.inputLayout = device->CreateBindingLayout(inputLayoutDesc);
         if (!entry.rhi.inputLayout.IsValid())
@@ -101,6 +111,8 @@ struct FullscreenRenderer::Impl
         desc.samples = key.samples;
         desc.colorTargetCount = 1;
         desc.colorTargets[0].format = key.colorFormat;
+        desc.colorTargets[0].blendEnabled = key.alphaBlend;
+        desc.depth = key.depth;
         desc.bindingLayouts[desc.bindingLayoutCount++] = entry.rhi.inputLayout;
         desc.pushConstantStages = rhi::ShaderStage::Fragment;
         desc.pushConstantBytes = sizeof(FullscreenPushConstants);
@@ -108,6 +120,9 @@ struct FullscreenRenderer::Impl
             desc.renderingSignature.colorFormatCount = 1;
             desc.renderingSignature.colorFormats[0] = key.colorFormat;
             desc.renderingSignature.samples = key.samples;
+            desc.renderingSignature.depthFormat = key.depthFormat;
+            if (rhi::IsStencilFormat(key.depthFormat))
+                desc.renderingSignature.stencilFormat = key.depthFormat;
         }
 
         const auto perViewLayout = host->GetPerViewLayout();
@@ -127,8 +142,9 @@ struct FullscreenRenderer::Impl
         if (globalsLayout.IsValid())
             desc.bindingLayouts[desc.bindingLayoutCount++] = globalsLayout;
 
-        desc.vertexShader = host->AcquireShaderModule("Fullscreen Triangle", rhi::ShaderStage::Vertex);
-        desc.fragmentShader = host->AcquireShaderModule(key.shaderName, rhi::ShaderStage::Fragment);
+        desc.vertexShader = host->AcquireShaderModule("Fullscreen Triangle", rhi::ShaderStage::Vertex, 0, 0);
+        desc.fragmentShader = host->AcquireShaderModule(key.shaderName, rhi::ShaderStage::Fragment,
+                                                        key.inputResourceCount, key.inputBufferMask);
         if (!desc.vertexShader.IsValid() || !desc.fragmentShader.IsValid()) {
             host->ReportError("FullscreenRenderer: missing shader modules for '" + key.shaderName + "'");
             device->Release(desc.vertexShader);
@@ -237,7 +253,7 @@ void FullscreenRenderer::InvalidateShader(const std::string &shaderName)
 }
 
 rhi::BindGroupHandle FullscreenRenderer::AllocateBindGroup(rhi::BindingLayoutHandle layout,
-                                                           const FullscreenTextureInput *inputs, uint32_t inputCount,
+                                                           const FullscreenResourceInput *inputs, uint32_t inputCount,
                                                            rhi::SamplerHandle colorSampler)
 {
     if (!m_impl || !m_impl->device || m_impl->frameBindGroups.empty())
@@ -247,17 +263,29 @@ rhi::BindGroupHandle FullscreenRenderer::AllocateBindGroup(rhi::BindingLayoutHan
     rhi::BindGroupDesc groupDesc;
     groupDesc.layout = layout;
     groupDesc.lifetime = rhi::BindGroupLifetime::FrameTransient;
-    groupDesc.textureCount = inputCount;
-    if (!layout.IsValid() || !inputs || inputCount > groupDesc.textures.size())
+    if (!layout.IsValid() || !inputs || inputCount > rhi::BindingLayoutDesc::MaxEntries)
         return {};
     for (uint32_t i = 0; i < inputCount; ++i) {
         const auto &input = inputs[i];
+        if (input.buffer.IsValid()) {
+            if (groupDesc.bufferCount >= groupDesc.buffers.size())
+                return {};
+            auto &buffer = groupDesc.buffers[groupDesc.bufferCount++];
+            buffer.binding = i;
+            buffer.type = rhi::BindingType::StorageBuffer;
+            buffer.buffer = input.buffer;
+            buffer.byteSize = input.byteSize;
+            continue;
+        }
+        if (groupDesc.textureCount >= groupDesc.textures.size())
+            return {};
         const bool nearestSampling = input.depthRead || rhi::IsIntegerFormat(input.format);
-        auto &texture = groupDesc.textures[i];
+        auto &texture = groupDesc.textures[groupDesc.textureCount++];
         texture.binding = i;
         texture.type = rhi::BindingType::CombinedTextureSampler;
         texture.texture = input.view;
-        texture.sampler = nearestSampling ? m_impl->nearestSampler : colorSampler;
+        texture.sampler =
+            input.sampler.IsValid() ? input.sampler : (nearestSampling ? m_impl->nearestSampler : colorSampler);
         texture.depthRead = input.depthRead;
         if (!texture.texture.IsValid() || !texture.sampler.IsValid())
             return {};

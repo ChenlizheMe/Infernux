@@ -2,7 +2,7 @@
 
 The editor and Player publish one :class:`RuntimeRevisionEpoch` at an owner
 safe point.  A frame keeps a strong reference to the epoch it captured, so a
-body reload cannot change update/fixed_update/late_update halfway through a
+body reload cannot change fixed/physics/update phases halfway through a
 frame.  This module is intentionally independent from the component lifecycle
 mixins; it is the single owner of revision-aware dispatch state.
 """
@@ -17,7 +17,13 @@ import weakref
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 
-RUNTIME_PHASE_NAMES = ("update", "fixed_update", "late_update")
+RUNTIME_PHASE_NAMES = (
+    "update",
+    "fixed_update",
+    "late_update",
+    "physics_pre_step",
+    "physics_post_step",
+)
 _MISSING = object()
 
 
@@ -153,8 +159,8 @@ class RuntimeTypeDispatchDescriptor:
         return self._phase_dispatch
 
     @property
-    def phase_presence(self) -> tuple[bool, bool, bool]:
-        """Whether update/fixed_update/late_update exist in this descriptor."""
+    def phase_presence(self) -> tuple[bool, ...]:
+        """Whether each authoritative runtime phase exists in this descriptor."""
         return tuple(method is not None for method in self.phase_methods)  # type: ignore[return-value]
 
     @property

@@ -1,3 +1,4 @@
+#include "JsonPyBridge.h"
 #include "function/resources/AssetDatabase/AssetDatabase.h"
 #include "function/resources/AssetDependencyGraph.h"
 #include "function/resources/InxResource/InxResourceMeta.h"
@@ -17,7 +18,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
     py::enum_<AssetEvent>(m, "AssetEvent")
         .value("Deleted", AssetEvent::Deleted)
         .value("Modified", AssetEvent::Modified)
-        .value("Moved", AssetEvent::Moved);
+        .value("Moved", AssetEvent::Moved)
+        .value("RuntimeModified", AssetEvent::RuntimeModified);
 
     py::enum_<AssetMutationErrorCode>(m, "AssetMutationErrorCode")
         .value("NONE", AssetMutationErrorCode::None)
@@ -80,6 +82,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def("is_owner_thread", &AssetDatabase::IsOwnerThread,
              "Whether the caller owns this initialized asset database")
         .def("refresh", &AssetDatabase::Refresh, "Refresh assets by scanning Assets folder")
+        .def("configure_blender_import", &AssetDatabase::ConfigureBlenderImport, py::arg("executable"),
+             py::arg("export_script"))
         .def("begin_refresh", &AssetDatabase::BeginRefresh,
              "Schedule filesystem scan and fingerprint collection on the engine JobSystem")
         .def("try_commit_refresh", &AssetDatabase::TryCommitRefresh,
@@ -92,8 +96,24 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def("add_scan_root", &AssetDatabase::AddScanRoot, py::arg("path"),
              "Add an extra directory to scan during Refresh (e.g. Library/Resources)")
         .def("import_asset", &AssetDatabase::ImportAsset, py::arg("path"), "Import a single asset")
-        .def("reimport_asset", &AssetDatabase::ReimportAsset, py::arg("path"), py::call_guard<py::gil_scoped_release>(),
-             "Reimport an existing asset while preserving its GUID")
+        .def(
+            "reimport_asset",
+            [](AssetDatabase &database, const std::string &path, py::object settings) {
+                const auto snapshot = PythonToJson(settings);
+                py::gil_scoped_release release;
+                return database.ReimportAsset(path, snapshot);
+            },
+            py::arg("path"), py::arg("settings") = py::none(),
+            "Reimport an existing asset, atomically publishing optional model settings with its artifacts")
+        .def(
+            "begin_model_reimport",
+            [](AssetDatabase &database, const std::string &path, py::object settings) {
+                database.BeginModelReimport(path, PythonToJson(settings));
+            },
+            py::arg("path"), py::arg("settings"), "Start model parsing on the native JobSystem")
+        .def("try_commit_model_reimport", &AssetDatabase::TryCommitModelReimport,
+             "Return None while pending, otherwise publish once and return the mutation result")
+        .def("discard_model_reimport", &AssetDatabase::DiscardModelReimport)
         .def("delete_asset", &AssetDatabase::DeleteAsset, py::arg("path"), "Delete asset and its meta")
         .def("move_asset", &AssetDatabase::MoveAsset, py::arg("old_path"), py::arg("new_path"),
              "Move/rename asset preserving GUID")
@@ -157,6 +177,13 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def_property_readonly("last_refresh_scanned_count", &AssetDatabase::GetLastRefreshScannedCount)
         .def_property_readonly("last_refresh_scan_ms", &AssetDatabase::GetLastRefreshScanMilliseconds)
         .def_property_readonly("last_refresh_commit_ms", &AssetDatabase::GetLastRefreshCommitMilliseconds)
+        .def_property_readonly("last_model_reimport_worker_ms", &AssetDatabase::GetLastModelReimportWorkerMilliseconds)
+        .def_property_readonly("last_model_reimport_prepare_ms",
+                               &AssetDatabase::GetLastModelReimportPrepareMilliseconds)
+        .def_property_readonly("last_model_reimport_persistence_ms",
+                               &AssetDatabase::GetLastModelReimportPersistenceMilliseconds)
+        .def_property_readonly("last_model_reimport_live_publication_ms",
+                               &AssetDatabase::GetLastModelReimportLivePublicationMilliseconds)
         .def_property_readonly("last_refresh_prepare_ms", &AssetDatabase::GetLastRefreshPrepareMilliseconds)
         .def_property_readonly("last_refresh_finalize_ms", &AssetDatabase::GetLastRefreshFinalizeMilliseconds)
         .def_property_readonly("last_refresh_owner_merge_max_slice_ms",

@@ -109,9 +109,12 @@ _PURE_CALL_NAMES = frozenset(
         "bool", "bytes", "bytearray", "complex", "dict", "float", "frozenset",
         "int", "list", "range", "set", "slice", "str", "tuple",
         "Path", "Vector2", "Vector3", "Vector4", "vec4f", "quatf",
-        "vector2", "vector3", "vector4", "quaternion", "Color", "Quaternion", "Matrix4x4",
+        "vector2", "vector3", "vector4", "quaternion", "color", "Color", "Quaternion", "Matrix4x4",
         "AnimationCurve", "Keyframe", "Gradient", "GradientKey",
         "GameObjectRef", "MaterialRef", "ComponentRef", "PrefabRef",
+        "TextureRef", "ShaderRef", "AudioClipRef", "AnimationClipRef",
+        "AnimationClip3DRef", "AnimStateMachineRef", "PhysicMaterialRef",
+        "ParticleGraphRef", "RenderEffectRef", "DataAssetRef",
         "serialized_field", "int_field", "list_field", "component_field",
         "component_list_field", "hide_field", "field", "cast", "auto", "dataclass",
         "dataclass_transform", "final", "override", "unique",
@@ -392,7 +395,7 @@ class _PolicyVisitor(ast.NodeVisitor):
     def _is_controlled_declaration_decorator(self, node: ast.Call) -> bool:
         """Admit public, declaration-only decorators with no eager work.
 
-        ``Infernux.jit.njit`` creates a lazy dispatcher when the function is
+        ``Infernux.jit.compile`` creates a lazy dispatcher when the function is
         declared, while ``render_effect_feature`` publishes class metadata.
         Keep these capabilities scoped to decorator expressions so equivalent
         module-level calls cannot borrow the same permission.
@@ -401,9 +404,7 @@ class _PolicyVisitor(ast.NodeVisitor):
         if self._declaration_decorator_depth <= 0:
             return False
         controlled_paths = {
-            ("Infernux.jit", "njit"),
-            ("Infernux", "njit"),
-            ("infernux", "njit"),
+            ("Infernux.jit", "compile"),
             ("Infernux.renderstack", "render_effect_feature"),
             ("infernux", "renderstack", "render_effect_feature"),
         }
@@ -433,10 +434,15 @@ class _PolicyVisitor(ast.NodeVisitor):
             }:
                 return True
             # ``from Infernux import *`` intentionally has no member table.
-            return node.func.id in {"njit", "render_effect_feature", *component_decorators}
+            return node.func.id in {"render_effect_feature", *component_decorators}
         path = self._imported_path(node.func)
         if not path:
             return False
+        if ".".join(path) in {
+            "Infernux.jit.compile",
+            "infernux.jit.compile",
+        }:
+            return True
         if path in controlled_paths:
             return True
         return path[-1] in component_decorators and path[:-1] in {

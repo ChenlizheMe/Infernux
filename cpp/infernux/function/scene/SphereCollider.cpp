@@ -23,7 +23,21 @@
 namespace infernux
 {
 
-INFERNUX_REGISTER_VALIDATED_COMPONENT("SphereCollider", SphereCollider)
+namespace
+{
+SemanticTypeDescriptor DescribeSphereCollider()
+{
+    auto type =
+        Collider::DescribeSemanticType("SphereCollider", "infernux.component.sphere-collider", "Sphere Collider");
+    Collider::AddSemanticField(type, "radius", "FLOAT", 0.5, "sphere_collider.radius",
+                               "sphere_collider.tooltip.radius")["minimum"] = 0.001;
+    return type;
+}
+
+const bool registeredSphereCollider = ComponentFactory::Register(
+    "SphereCollider", [] { return std::make_unique<SphereCollider>(); }, SphereCollider::ValidateSerializedDocument,
+    SphereCollider::GetTypeConstraints(), DescribeSphereCollider);
+} // namespace
 
 void SphereCollider::SetRadius(float radius)
 {

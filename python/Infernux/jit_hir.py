@@ -20,7 +20,7 @@ import math
 import textwrap
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 class _StrEnum(str, Enum):
@@ -79,6 +79,8 @@ class DiagnosticCode(_StrEnum):
     NON_AFFINE_INDEX = "non_affine_index"
     INDIRECT_WRITE = "indirect_write"
     LOOP_CARRIED_READ = "loop_carried_read"
+    LOOP_CARRIED_WRITE = "loop_carried_write"
+    REDUCTION_FEEDBACK = "reduction_feedback"
     LOOP_CARRIED_SCALAR = "loop_carried_scalar"
     UNKNOWN_CALL = "unknown_call"
     CONTAINER_MUTATION = "container_mutation"
@@ -192,6 +194,7 @@ class BufferAccess:
     syntax: str = ""
     same_iteration: bool = False
     unique: bool = False
+    axes: tuple[AffineExpr | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -485,6 +488,20 @@ def _index_is_unique(index: AffineExpr | None, loop_name: str) -> bool:
     return coefficient != 0 and all(name == loop_name for name in index.variables)
 
 
+def _may_cross_iterations(left: AffineExpr | None, right: AffineExpr | None, loop_name: str) -> bool:
+    if left is None or right is None:
+        return True
+    if left == right:
+        return left.coefficient(loop_name) == 0
+    left_uniform = tuple(item for item in left.coefficients if item[0] != loop_name)
+    right_uniform = tuple(item for item in right.coefficients if item[0] != loop_name)
+    if left_uniform != right_uniform:
+        return True
+    divisor = math.gcd(left.coefficient(loop_name), right.coefficient(loop_name))
+    # Distinct residue classes (e.g. 2*i and 2*i+1) cannot share an element.
+    return not divisor or (left.constant - right.constant) % divisor == 0
+
+
 def _call_name(node: ast.Call) -> tuple[str | None, str | None]:
     if isinstance(node.func, ast.Name):
         return node.func.id, None
@@ -492,6 +509,128 @@ def _call_name(node: ast.Call) -> tuple[str | None, str | None]:
         if isinstance(node.func.value, ast.Name):
             return node.func.value.id, node.func.attr
     return None, None
+
+
+def _access_axes(node, imports):
+    index = _index_node(node)
+    return tuple(_affine(axis, known_calls=imports) for axis in
+                 (index.elts if isinstance(index, ast.Tuple) else (index,)))
+
+
+def _row_local(axes, loop):
+    """One or more unshifted induction axes, with literal remaining axes.
+
+    Restrict this proof to nonnegative increasing ranges: crossing from -1
+    to positive indices can revisit a NumPy row after negative-index wrapping.
+    Dependence analysis still checks that different accesses share an
+    independent axis; x[i, 0] and x[0, i] are not automatically independent.
+    """
+    if len(axes) < 2 or not isinstance(loop.target, ast.Name):
+        return False
+    call = loop.iter
+    if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name) or call.func.id != "range":
+        return False
+    start = 0 if len(call.args) == 1 else _constant_int(call.args[0]) if call.args else None
+    step = _constant_int(call.args[2]) if len(call.args) == 3 else 1
+    if start is None or start < 0 or step is None or step <= 0:
+        return False
+    same = lambda axis: _is_same_iteration_index(axis, loop.target.id)
+    return any(same(axis) for axis in axes) and all(
+        axis is not None and (not axis.coefficients or same(axis)) for axis in axes)
+
+
+def _buffer_dependences(reads, writes, index_name, loop_id, aliases):
+    """One dependence rule for symbolic buffers and admitted runtime aliases."""
+    def same_buffer(left, right):
+        return aliases.get(left, left) == aliases.get(right, right)
+
+    def may_cross(left, right):
+        # Multidimensional arrays intersect only if every axis intersects.
+        # Equal induction axes separate row-local work even when other
+        # coordinates differ. Mixed axes/shifted rows remain conservative.
+        if left.axes and len(left.axes) == len(right.axes):
+            return all(_may_cross_iterations(a, b, index_name)
+                       for a, b in zip(left.axes, right.axes))
+        return _may_cross_iterations(left.index, right.index, index_name)
+
+    result = []
+    for access in reads:
+        if any(same_buffer(write.buffer, access.buffer) and
+               may_cross(access, write)
+               for write in writes):
+            result.append(Diagnostic(
+                DiagnosticSeverity.ERROR, DiagnosticCode.LOOP_CARRIED_READ,
+                f"read {access.syntax} depends on another loop iteration",
+                access.location, loop_id))
+    for index, write in enumerate(writes):
+        if any(same_buffer(other.buffer, write.buffer) and
+               may_cross(write, other)
+               for other in writes[index + 1:]):
+            result.append(Diagnostic(
+                DiagnosticSeverity.ERROR, DiagnosticCode.LOOP_CARRIED_WRITE,
+                f"different writes to '{write.buffer}' may overlap between iterations",
+                write.location, loop_id))
+    return tuple(result)
+
+
+def parallel_alias_pairs(hir: FunctionHIR) -> tuple[tuple[str, str], ...]:
+    """Equal-layout parameter pairs proven safe for this parallel publication.
+
+    Restrict this first proof to one loop. Multiple loops can be fused by the
+    backend, so per-loop dependence checks alone do not prove their ordering.
+    The small result also travels with cooked bytecode; Players need no source
+    parsing or second alias analysis.
+    """
+    if len(hir.loops) != 1 or not hir.eligible_loops:
+        return ()
+    function = next(node for node in _parse(hir.source).body
+                    if isinstance(node, ast.FunctionDef) and node.name == hir.name)
+    for statement in function.body:
+        if isinstance(statement, ast.For):
+            continue
+        if any(isinstance(node, (ast.Call, ast.Subscript, ast.Attribute))
+               for node in ast.walk(statement)):
+            return ()
+    loop = hir.loops[0]
+    names = sorted({access.buffer for access in (*loop.buffer_reads, *loop.buffer_writes)})
+    return tuple((left, right) for index, left in enumerate(names) for right in names[index + 1:]
+                 if not analyze_buffer_aliases(hir, ((left, right),)))
+
+
+def analyze_buffer_aliases(hir: FunctionHIR, groups: tuple[tuple[str, ...], ...]) -> tuple[Diagnostic, ...]:
+    """Check equal-layout shared buffers once per prepared argument alias pattern.
+
+    Groups contain parameter names whose arrays have exactly the same memory
+    span, dtype and shape. Offset/reshaped views must be rejected by the backend
+    before this analysis: symbolic indices would not denote the same bytes.
+    """
+    if not groups:
+        return ()
+    # The minimal HIR cannot prove alias safety for expressions it did not
+    # inspect. Do not mistake an absent access record for independent buffers.
+    # Affine buffer index disjointness is valid for any subset of range values;
+    # a non-affine trip count (e.g. shape[0] // 2) does not hide body accesses.
+    ranges = {loop.stable_id for loop in hir.loops
+              if loop.range_spec is not None and loop.range_spec.step_value not in (None, 0)}
+    incomplete = next((item for item in hir.diagnostics
+                       if item.is_error and item.code != DiagnosticCode.ALIAS_RISK
+                       and not (item.code == DiagnosticCode.UNSUPPORTED_RANGE and item.loop_id in ranges)), None)
+    if incomplete is not None:
+        return (Diagnostic(
+            DiagnosticSeverity.ERROR, DiagnosticCode.ALIAS_RISK,
+            f"shared-buffer parallel access is not proven: {incomplete.message}",
+            incomplete.location, incomplete.loop_id),)
+    arguments = {argument.name for argument in hir.arguments}
+    for loop in hir.loops:
+        for access in (*loop.buffer_reads, *loop.buffer_writes):
+            if access.buffer not in arguments:
+                return (Diagnostic(
+                    DiagnosticSeverity.ERROR, DiagnosticCode.ALIAS_RISK,
+                    f"shared-buffer analysis requires direct array parameters; '{access.buffer}' is an indirect binding",
+                    access.location, loop.stable_id),)
+    aliases = {name: group[0] for group in groups for name in group}
+    return tuple(diagnostic for loop in hir.loops for diagnostic in _buffer_dependences(
+        loop.buffer_reads, loop.buffer_writes, loop.index_name, loop.stable_id, aliases))
 
 
 class _Analyzer:
@@ -657,16 +796,18 @@ class _Analyzer:
                 self.diagnostic(DiagnosticCode.INDIRECT_WRITE, "buffer access base must be a named buffer", node, loop_id=loop_id)
             else:
                 index = _affine(_index_node(node), known_calls=self.imports)
+                axes = _access_axes(node, self.imports)
+                row_local = _row_local(axes, loop)
                 loop_name = loop.target.id if isinstance(loop.target, ast.Name) else ""
-                if index is None or any(name != loop_name for name in index.variables):
+                if not row_local and (index is None or any(name != loop_name for name in index.variables)):
                     self.diagnostic(
                         DiagnosticCode.NON_AFFINE_INDEX,
                         f"read from {node.value.id}[...] is not indexed by the loop induction variable",
                         node,
                         loop_id=loop_id,
                     )
-                same = _is_same_iteration_index(index, loop_name=loop_name)
-                reads.append(BufferAccess(node.value.id, index, BufferAccessKind.READ, _location(node), _unparse(node), same, _index_is_unique(index, loop_name)))
+                same = row_local or _is_same_iteration_index(index, loop_name=loop_name)
+                reads.append(BufferAccess(node.value.id, index, BufferAccessKind.READ, _location(node), _unparse(node), same, row_local or _index_is_unique(index, loop_name), axes))
                 effects.append(Effect(EffectKind.BUFFER_READ, f"read {node.value.id}[{_unparse(_index_node(node))}]", _location(node), node.value.id))
             for child in ast.iter_child_nodes(node):
                 self._visit_expression(child, loop, loop_id, reads, effects)
@@ -708,8 +849,10 @@ class _Analyzer:
             return
         buffer_name = target.value.id
         index = _affine(_index_node(target), known_calls=self.imports)
-        unique = _index_is_unique(index, loop.target.id if isinstance(loop.target, ast.Name) else "")
-        same = _is_same_iteration_index(index, loop.target.id if isinstance(loop.target, ast.Name) else "")
+        axes = _access_axes(target, self.imports)
+        row_local = _row_local(axes, loop)
+        unique = row_local or _index_is_unique(index, loop.target.id if isinstance(loop.target, ast.Name) else "")
+        same = row_local or _is_same_iteration_index(index, loop.target.id if isinstance(loop.target, ast.Name) else "")
         if not unique:
             self.diagnostic(
                 DiagnosticCode.INDIRECT_WRITE,
@@ -718,11 +861,11 @@ class _Analyzer:
                 loop_id=loop_id,
             )
         access_kind = BufferAccessKind.READ_WRITE if aug else BufferAccessKind.WRITE
-        access = BufferAccess(buffer_name, index, access_kind, _location(target), _unparse(target), same, unique)
+        access = BufferAccess(buffer_name, index, access_kind, _location(target), _unparse(target), same, unique, axes)
         writes.append(access)
         effects.append(Effect(EffectKind.BUFFER_WRITE, f"write {buffer_name}[{_unparse(_index_node(target))}]", _location(target), buffer_name))
         if aug:
-            reads.append(BufferAccess(buffer_name, index, BufferAccessKind.READ, _location(target), _unparse(target), same, unique))
+            reads.append(BufferAccess(buffer_name, index, BufferAccessKind.READ, _location(target), _unparse(target), same, unique, axes))
             effects.append(Effect(EffectKind.BUFFER_READ, f"read for update {buffer_name}[{_unparse(_index_node(target))}]", _location(target), buffer_name))
 
     def _is_scalar_reduction(
@@ -779,8 +922,6 @@ class _Analyzer:
             if isinstance(target, ast.Subscript):
                 self._write_access(target, loop, loop_id, reads, writes, effects, aug=False)
             elif isinstance(target, ast.Name):
-                if self._contains_name(node.value, target.id):
-                    self.diagnostic(DiagnosticCode.LOOP_CARRIED_SCALAR, f"scalar '{target.id}' carries a value between iterations", node, loop_id=loop_id)
                 statements.append(HIRStatement(HIRStatementKind.ASSIGN, target.id, _unparse(node.value), self._expr_type(node.value), _location(node)))
             else:
                 self.diagnostic(DiagnosticCode.INDIRECT_WRITE, "attribute or computed targets are not writable in a parallel loop", target, loop_id=loop_id)
@@ -821,13 +962,93 @@ class _Analyzer:
             return
         self.diagnostic(DiagnosticCode.UNSUPPORTED_STATEMENT, f"statement '{type(node).__name__}' is not supported", node, loop_id=loop_id)
 
-    @staticmethod
-    def _contains_name(node: ast.AST, name: str) -> bool:
-        return any(isinstance(item, ast.Name) and item.id == name and isinstance(item.ctx, ast.Load) for item in ast.walk(node))
-
     def _inspect_function_controls(self) -> None:
         if isinstance(self.function, ast.AsyncFunctionDef):
             self.diagnostic(DiagnosticCode.ASYNC_FUNCTION, "async functions cannot be lowered to this synchronous HIR", self.function)
+
+    @staticmethod
+    def _scalar_flow(
+        nodes: Sequence[ast.stmt],
+        defined: set[str],
+        on_read: Callable[[ast.Name, set[str]], None],
+    ) -> set[str] | None:
+        """Visit structured paths with a must-defined set, without another IR.
+
+        A terminating branch does not reach its sibling's merge. Unsupported
+        compound statements conservatively expose reads and kill no names.
+        """
+        defined = set(defined)
+
+        def read(expression):
+            for child in ast.walk(expression):
+                if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
+                    on_read(child, defined)
+
+        for node in nodes:
+            if isinstance(node, ast.If):
+                read(node.test)
+                branches = [
+                    _Analyzer._scalar_flow(branch, defined, on_read)
+                    for branch in (node.body, node.orelse)
+                ]
+                reachable = [branch for branch in branches if branch is not None]
+                if not reachable:
+                    return None
+                defined = set.intersection(*reachable)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                if node.value is not None:
+                    read(node.value)
+                    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                    for target in targets:
+                        read(target)
+                        defined.update(child.id for child in ast.walk(target)
+                                       if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store))
+            elif isinstance(node, ast.AugAssign):
+                read(node.value)
+                read(node.target)
+                if isinstance(node.target, ast.Name):
+                    on_read(node.target, defined)
+                    defined.add(node.target.id)
+            else:
+                read(node)
+                if isinstance(node, (ast.Continue, ast.Break, ast.Return, ast.Raise)):
+                    return None
+        return defined
+
+    def _scalar_dependencies(self, node: ast.For, loop_id: str, reductions: Sequence[Reduction]) -> None:
+        assigned = {child.id for statement in node.body for child in ast.walk(statement)
+                    if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)}
+        index = node.target.id if isinstance(node.target, ast.Name) else ""
+        reduction_names = {reduction.target for reduction in reductions}
+        carried_candidates = assigned - reduction_names
+        reported = set()
+
+        def reject(name, location, reason):
+            if name not in reported:
+                reported.add(name)
+                self.diagnostic(DiagnosticCode.LOOP_CARRIED_SCALAR, reason, location, loop_id=loop_id)
+
+        if index in assigned:
+            reject(index, node.target, f"loop induction variable '{index}' is reassigned")
+
+        def read_iteration(child, defined):
+            name = child.id
+            if name in carried_candidates and name not in defined:
+                reject(name, child, f"scalar '{name}' may read a previous iteration before being defined")
+
+        self._scalar_flow(node.body, {index}, read_iteration)
+
+        # A non-reduction scalar's last sequential value cannot be obtained
+        # from unordered worker-private assignments. A definite overwrite
+        # before a later read makes that loop output dead and remains legal.
+        live_out_candidates = (assigned | {index}) - reduction_names
+
+        def read_after(child, defined):
+            if child.id in live_out_candidates and child.id not in defined:
+                reject(child.id, child, f"scalar '{child.id}' is read after the loop")
+
+        position = self.function.body.index(node)
+        self._scalar_flow([*node.orelse, *self.function.body[position + 1:]], set(), read_after)
 
     def _loop(self, node: ast.For, ordinal: int) -> RangeLoopHIR:
         loop_id = self._loop_id(node, ordinal)
@@ -842,20 +1063,42 @@ class _Analyzer:
         statements: list[HIRStatement] = []
         for statement in node.body:
             self._statement(statement, node, loop_id, reads, writes, reductions, effects, statements)
+        self._scalar_dependencies(node, loop_id, reductions)
 
         # An access to a previous/future element of a buffer written in this
         # loop is a loop-carried dependence.  Same-element read/modify/write
         # remains safe because the write is unique for the current induction
         # value.
-        written_names = {access.buffer for access in writes}
-        for access in reads:
-            if access.buffer in written_names and not access.same_iteration:
+        self.diagnostics.extend(_buffer_dependences(reads, writes, index_name, loop_id, {}))
+
+        # An accumulator may be returned after its loop, but consuming its
+        # intermediate value inside the loop turns a reduction into a scan.
+        reduction_targets = {reduction.target for reduction in reductions}
+        for target in reduction_targets:
+            if len({item.operator for item in reductions if item.target == target}) > 1:
                 self.diagnostic(
-                    DiagnosticCode.LOOP_CARRIED_READ,
-                    f"read {access.syntax} depends on another loop iteration",
-                    _synthetic_node_location(access.location),
-                    loop_id=loop_id,
+                    DiagnosticCode.INVALID_REDUCTION,
+                    f"reduction '{target}' mixes different operators",
+                    node, loop_id=loop_id,
                 )
+        for statement in node.body:
+            for child in ast.walk(statement):
+                if isinstance(child, (ast.Assign, ast.AnnAssign)):
+                    targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+                    if child.value is not None:
+                        for target in targets:
+                            if isinstance(target, ast.Name) and target.id in reduction_targets:
+                                self.diagnostic(
+                                    DiagnosticCode.INVALID_REDUCTION,
+                                    f"reduction '{target.id}' is overwritten inside the loop",
+                                    child, loop_id=loop_id,
+                                )
+                if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load) and child.id in reduction_targets:
+                    self.diagnostic(
+                        DiagnosticCode.REDUCTION_FEEDBACK,
+                        f"reduction '{child.id}' is consumed before the parallel loop completes",
+                        child, loop_id=loop_id,
+                    )
 
         # Multiple symbolic buffers may alias at runtime.  Elementwise
         # same-index access is safe; retaining the risk in HIR lets a future
@@ -1039,15 +1282,6 @@ class _Analyzer:
         )
 
 
-def _synthetic_node_location(location: SourceLocation) -> ast.AST:
-    node = ast.Constant(value=None)
-    node.lineno = location.line
-    node.col_offset = location.column
-    node.end_lineno = location.end_line
-    node.end_col_offset = location.end_column
-    return node
-
-
 def _parse(source: str) -> ast.Module:
     try:
         return ast.parse(textwrap.dedent(source), mode="exec")
@@ -1185,8 +1419,10 @@ __all__ = [
     "TypeRef",
     "ValueType",
     "analyze_function",
+    "analyze_buffer_aliases",
     "analyze_source",
     "build_hir",
     "eligible_loops",
     "hir_fingerprint",
+    "parallel_alias_pairs",
 ]

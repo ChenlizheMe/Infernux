@@ -10,6 +10,7 @@ from Infernux.lib import (
     Vector3,
     _install_native_lifetime_guard,
     _is_native_lifetime_error,
+    _unwrap_vec3,
 )
 
 
@@ -100,6 +101,40 @@ class TestNativeLifetimeErrorClassifier:
         assert _is_native_lifetime_error(RuntimeError("some other runtime problem")) is False
 
 
+def test_value_record_guard_preserves_truth_and_protects_native_access():
+    class Record:
+        distance = 1.0
+
+        @property
+        def collider(self):
+            raise RuntimeError("native object has been destroyed")
+
+    _install_native_lifetime_guard(Record, check_liveness=False)
+    record = Record()
+    assert bool(record) and record.distance == 1.0
+    with pytest.raises(InvalidNativeObjectError):
+        _ = record.collider
+    # Repeated installation must not reintroduce an entity liveness check.
+    _install_native_lifetime_guard(Record)
+    assert bool(record)
+
+
+def test_query_and_contact_records_have_no_entity_bool_override():
+    for cls in (lib_module.RaycastHit, lib_module.CollisionInfo):
+        assert '__bool__' not in vars(cls)
+
+
+class TestTransformVectorCoercion:
+    def test_plain_sequence_becomes_vector3(self):
+        value = _unwrap_vec3((1, 2.5, -3))
+        assert isinstance(value, Vector3)
+        assert (value.x, value.y, value.z) == pytest.approx((1.0, 2.5, -3.0))
+
+    def test_invalid_sequence_is_left_for_native_diagnostic(self):
+        value = _unwrap_vec3((1, 2))
+        assert value == (1, 2)
+
+
 class TestGuardedGameObject:
     def test_invalid_id_raises(self):
         with pytest.raises(InvalidNativeObjectError):
@@ -152,6 +187,84 @@ class TestGuardedTransform:
         assert bool(_FakeDeadTransform()) is False
 
 
+def test_native_guard_binds_one_shared_function_and_preserves_signature():
+    import inspect
+
+    method = _FakeDeadGameObject().set_parent
+    assert method.__func__ is _FakeDeadGameObject.set_parent
+    assert str(inspect.signature(method)) == "(parent)"
+    assert method.__name__ == "set_parent"
+    assert _FakeDeadGameObject().set_parent.__func__ is method.__func__
+    with pytest.raises(InvalidNativeObjectError):
+        _FakeDeadGameObject.set_parent(_FakeDeadGameObject(), None)
+
+
+def test_guard_does_not_wrap_python_component_methods_on_lookup():
+    class UserComponent(_FakeDeadComponent):
+        def update(self):
+            return self.serialize()
+
+    component = UserComponent()
+    assert UserComponent.__getattribute__ is object.__getattribute__
+    assert UserComponent.__setattr__ is object.__setattr__
+    assert component.update.__func__ is UserComponent.update
+    with pytest.raises(InvalidNativeObjectError):
+        component.update()
+    # Hot replacement is normal Python binding; there is no stale callable cache.
+    replacement = lambda self: 42
+    UserComponent.update = replacement
+    assert component.update.__func__ is replacement
+    assert component.update() == 42
+
+
+def test_guard_wraps_property_accessors_once_without_changing_property_contract():
+    descriptor = vars(_FakeDeadTransform)["position"]
+    assert isinstance(descriptor, property)
+    assert descriptor.fget._infernux_native_guarded
+    assert descriptor.fset._infernux_native_guarded
+    with pytest.raises(InvalidNativeObjectError):
+        _FakeDeadTransform().position = Vector3(1, 2, 3)
+    with pytest.raises(AttributeError):
+        _FakeDeadGameObject().id = 2  # Read-only native properties remain read-only.
+
+
+def test_guard_preserves_static_class_methods_and_ordinary_errors():
+    class NativeFixture:
+        @staticmethod
+        def static(value):
+            return value
+
+        @classmethod
+        def kind(cls):
+            return cls
+
+        def fail(self):
+            raise RuntimeError("ordinary failure")
+
+    _install_native_lifetime_guard(NativeFixture)
+    first_method = NativeFixture.fail
+    _install_native_lifetime_guard(NativeFixture)
+    assert NativeFixture.fail is first_method
+    instance = NativeFixture()
+    assert instance.static(7) == NativeFixture.static(7) == 7
+    assert instance.kind() is NativeFixture
+    with pytest.raises(RuntimeError, match="^ordinary failure$") as error:
+        instance.fail()
+    assert type(error.value) is RuntimeError
+
+
+def test_guard_does_not_retain_native_owner():
+    import gc
+    import weakref
+
+    instance = _FakeDeadGameObject()
+    reference = weakref.ref(instance)
+    instance.get_children
+    del instance
+    gc.collect()
+    assert reference() is None
+
+
 class TestInstantiateOverloads:
     def test_instantiate_source_resolution_errors_are_not_suppressed(self):
         class BrokenReference:
@@ -176,6 +289,49 @@ class TestInstantiateOverloads:
         monkeypatch.setattr(lib_module, "_instantiate_prefab_reference", instantiate_prefab)
 
         assert GameObject.instantiate(prefab_ref) is clone
+
+    def test_prefab_reference_without_guid_ignores_legacy_path_hint(self, monkeypatch):
+        class LegacyPathOnlyReference:
+            guid = ""
+
+            @property
+            def path_hint(self):
+                raise AssertionError("legacy prefab path_hint must not be read")
+
+        monkeypatch.setattr(
+            "Infernux.engine.prefab_manager.instantiate_prefab",
+            lambda **_kwargs: pytest.fail("path-only PrefabRef must not be instantiated"),
+        )
+
+        assert lib_module._instantiate_prefab_reference(LegacyPathOnlyReference()) is None
+
+    def test_prefab_reference_does_not_fallback_to_path_after_guid_failure(self, monkeypatch):
+        class GuidReference:
+            guid = " prefab-guid "
+
+            @property
+            def path_hint(self):
+                raise AssertionError("prefab path_hint must not be read")
+
+        database = object()
+        registry = type("Registry", (), {"get_asset_database": lambda self: database})()
+        monkeypatch.setattr(lib_module.AssetRegistry, "instance", staticmethod(lambda: registry))
+        calls = []
+
+        def instantiate_prefab(**kwargs):
+            calls.append(kwargs)
+            return None
+
+        monkeypatch.setattr(
+            "Infernux.engine.prefab_manager.instantiate_prefab",
+            instantiate_prefab,
+        )
+
+        assert lib_module._instantiate_prefab_reference(GuidReference()) is None
+        assert len(calls) == 1
+        assert calls[0]["guid"] == "prefab-guid"
+        assert calls[0]["asset_database"] is database
+        assert "file_path" not in calls[0]
 
     def test_game_object_instantiate_applies_position_rotation_and_parent(self, monkeypatch):
         clone = _FakeClone()

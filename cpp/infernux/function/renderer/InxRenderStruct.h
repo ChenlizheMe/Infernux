@@ -4,6 +4,7 @@
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #endif
 
+#include "RendererParameterBlock.h"
 #include <array>
 #include <memory>
 #include <string>
@@ -15,6 +16,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <chrono>
+#include <limits>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -23,6 +26,46 @@ namespace infernux
 #endif
 
 class InxMaterial;
+
+/// Requested index storage for model/runtime mesh GPU publication. CPU
+/// geometry remains uint32_t so physics and editing never inherit a packed
+/// representation.
+enum class MeshIndexFormat : uint32_t
+{
+    Auto,
+    UInt16,
+    UInt32,
+};
+
+/// Distinguishes the two immutable GPU geometry views of an imported model.
+/// The GUID and runtime version remain the asset identity; this view is a
+/// storage-domain discriminator, never a synthetic GUID suffix.
+enum class MeshGeometryView : uint8_t
+{
+    MergedModelSpace,
+    NodeLocal,
+};
+
+inline MeshIndexFormat ResolveMeshIndexFormat(MeshIndexFormat requested, size_t vertexCount,
+                                              const std::vector<uint32_t> &indices)
+{
+    const bool fits16 = vertexCount <= static_cast<size_t>(std::numeric_limits<uint16_t>::max()) + 1U;
+    bool indicesFit16 = fits16;
+    for (const uint32_t index : indices) {
+        if (index >= vertexCount)
+            throw std::invalid_argument("Mesh contains an out-of-range vertex index");
+        if (index > std::numeric_limits<uint16_t>::max())
+            indicesFit16 = false;
+    }
+    if (requested == MeshIndexFormat::UInt16 && !indicesFit16)
+        throw std::invalid_argument("Mesh index_format uint16 exceeds the 16-bit vertex/index range");
+    return requested == MeshIndexFormat::Auto ? (indicesFit16 ? MeshIndexFormat::UInt16 : MeshIndexFormat::UInt32)
+                                              : requested;
+}
+namespace rhi
+{
+class ComputeBuffer;
+}
 
 /**
  * @brief Vertex structure for mesh rendering.
@@ -33,6 +76,7 @@ class InxMaterial;
  * - Tangent: Tangent vector for normal mapping (w = handedness)
  * - Color: Vertex color (can be used for tinting or debugging)
  * - TexCoord: Primary UV coordinates
+ * - TexCoord1: Secondary/lightmap UV coordinates
  */
 struct Vertex
 {
@@ -41,6 +85,7 @@ struct Vertex
     glm::vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f}; ///< Missing tangent direction + handedness
     glm::vec3 color{1.0f, 1.0f, 1.0f};         ///< Vertex color (default white)
     glm::vec2 texCoord{0.0f};                  ///< Missing UVs deterministically use the origin
+    glm::vec2 texCoord1{0.0f};                 ///< Secondary/lightmap UV; missing channels use the origin
     glm::uvec4 boneIndices{0, 0, 0, 0};        ///< GPU skinning bone indices
     glm::vec4 boneWeights{0.0f};               ///< GPU skinning weights
 
@@ -121,26 +166,37 @@ struct DrawCall
     int32_t vertexStart = 0;               // Base vertex offset (for submesh rendering)
     glm::mat4 worldMatrix{1.0f};           // Object's world transform matrix
     std::shared_ptr<InxMaterial> material; // Owns the material for the lifetime of cached/render-thread draw calls
-    uint64_t objectId = 0;                 // Compatibility key for buffer lookup and picking
-    uint64_t pickingObjectId = 0;          // Optional scene owner exposed by picking passes
-    uint32_t layerMask = 1u;               // Owning GameObject layer bit for per-light culling masks
-    RenderDrawIdentity identity;           // Stable source identity across scene/component lifetimes
-    bool frustumVisible = true;            // Whether object passed main-camera frustum culling
-    bool castsShadows = true;              // Whether the source renderer participates in shadow passes
-    bool isStatic = false;                 // Standard GameObject static contract; skinned renderers remain dynamic
-    AABB worldBounds;                      // World-space bounding box for shadow cascade culling
+    // Immutable per-renderer values layered over material defaults. This is
+    // parameter state only; shader and fixed-function pipeline state remain
+    // owned by the material.
+    std::shared_ptr<const RendererParameterBlock> parameterBlock;
+    uint32_t materialSlot = 0;
+    uint64_t objectId = 0;        // Compatibility key for buffer lookup and picking
+    uint64_t pickingObjectId = 0; // Optional scene owner exposed by picking passes
+    uint32_t layerMask = 1u;      // Owning GameObject layer bit for per-light culling masks
+    RenderDrawIdentity identity;  // Stable source identity across scene/component lifetimes
+    bool frustumVisible = true;   // Whether object passed main-camera frustum culling
+    bool castsShadows = true;     // Whether the source renderer participates in shadow passes
+    bool isStatic = false;        // Standard GameObject static contract; skinned renderers remain dynamic
+    AABB worldBounds;             // World-space bounding box for shadow cascade culling
 
     // Per-object mesh data pointers
     // Non-owning references to MeshRenderer's persistent vertex/index data.
     // Used by the renderer to create/update per-object GPU buffers.
     const std::vector<Vertex> *meshVertices = nullptr;
     const std::vector<uint32_t> *meshIndices = nullptr;
+    MeshIndexFormat meshIndexFormat = MeshIndexFormat::Auto;
     // Keeps the storage behind meshVertices/meshIndices alive for immutable
     // RenderWorld snapshots. Asset meshes retain their asset generation;
     // inline meshes retain an extraction-owned snapshot.
     std::shared_ptr<const void> meshDataOwner;
+    // Optional resident vertex stream. Its bytes use the canonical Vertex
+    // layout, so compute and graphics consume one allocation without a
+    // GPU->CPU->GPU publication loop. Indices remain owned by the source mesh.
+    std::shared_ptr<rhi::ComputeBuffer> meshVertexBuffer;
     std::string meshAssetGuid;
     uint64_t meshRuntimeVersion = 0;
+    MeshGeometryView meshGeometryView = MeshGeometryView::MergedModelSpace;
 
     // Optional GPU skinning palette. When present, vertex data is the bind-pose
     // skinned mesh stream and the vertex shader applies these matrices.

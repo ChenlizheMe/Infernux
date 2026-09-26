@@ -15,6 +15,7 @@ def test_runtime_scene_load_prepares_persistent_group_before_commit(monkeypatch)
 
     calls: list[str] = []
     monkeypatch.setattr(SceneManager, "_runtime_scene_service", None)
+    monkeypatch.setattr(SceneManager, "_unload_other_scenes", staticmethod(lambda _scene: None))
 
     class NativeManager:
         def get_active_scene(self):
@@ -95,7 +96,7 @@ def test_build_list_loading_has_no_editor_panel_dependency(tmp_path, monkeypatch
     settings = project / "ProjectSettings" / "BuildSettings.json"
     settings.parent.mkdir(parents=True)
     settings.write_text(
-        '{"scenes":["Assets/Scenes/Main.scene"]}',
+        '{"scene_guids":["main-scene-guid"]}',
         encoding="utf-8",
     )
     previous_root = get_project_root()
@@ -108,6 +109,17 @@ def test_build_list_loading_has_no_editor_panel_dependency(tmp_path, monkeypatch
 
     try:
         set_project_root(str(project))
+        from Infernux.core.assets import AssetManager
+        monkeypatch.setattr(
+            AssetManager,
+            "_asset_database",
+            type("Database", (), {
+                "get_path_from_guid": staticmethod(
+                    lambda guid: str(project / "Assets/Scenes/Main.scene")
+                    if guid == "main-scene-guid" else ""
+                )
+            })(),
+        )
         monkeypatch.setattr(builtins, "__import__", guarded_import)
         scenes = SceneManager._load_build_list()
         assert len(scenes) == 1
@@ -136,7 +148,7 @@ def test_load_scene_accepts_name_filename_and_project_path(tmp_path, monkeypatch
         monkeypatch.setattr(
             SceneManager,
             "_do_load",
-            staticmethod(lambda path: loaded.append(path) or True),
+            staticmethod(lambda path, **_kwargs: loaded.append(path) or True),
         )
 
         references = [

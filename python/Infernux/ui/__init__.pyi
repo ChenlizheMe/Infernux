@@ -13,12 +13,23 @@ from .enums import (
     UIScaleMode as UIScaleMode,
     ScreenMatchMode as ScreenMatchMode,
     UITransitionType as UITransitionType,
+    UILayoutDirection as UILayoutDirection,
+    UILayoutSizing as UILayoutSizing,
+    UILayoutPosition as UILayoutPosition,
+    UILayoutAlign as UILayoutAlign,
+    UILayoutJustify as UILayoutJustify,
+    UIFillDirection as UIFillDirection,
 )
 from .inx_ui_component import InxUIComponent as InxUIComponent
 from .inx_ui_screen_component import InxUIScreenComponent as InxUIScreenComponent
 from .ui_canvas import UICanvas as UICanvas
+from .ui_frame import UIFrame as UIFrame
+from .ui_group import UIGroup as UIGroup
+from .ui_progress_bar import UIProgressBar as UIProgressBar
+from .ui_slider import UISlider as UISlider
 from .ui_text import UIText as UIText
 from .ui_image import UIImage as UIImage
+UIRawImage = UIImage
 from .ui_selectable import UISelectable as UISelectable
 from .ui_button import UIButton as UIButton
 from .ui_event_data import PointerEventData as PointerEventData, PointerButton as PointerButton, PointerType as PointerType
@@ -38,11 +49,22 @@ __all__ = [
     "UIScaleMode",
     "ScreenMatchMode",
     "UITransitionType",
+    "UILayoutDirection",
+    "UILayoutSizing",
+    "UILayoutPosition",
+    "UILayoutAlign",
+    "UILayoutJustify",
+    "UIFillDirection",
     "InxUIComponent",
     "InxUIScreenComponent",
     "UICanvas",
+    "UIFrame",
+    "UIGroup",
+    "UIProgressBar",
+    "UISlider",
     "UIText",
     "UIImage",
+    "UIRawImage",
     "UISelectable",
     "UIButton",
     "PointerEventData",

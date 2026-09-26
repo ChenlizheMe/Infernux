@@ -660,6 +660,27 @@ def get_type_by_identity(
     return matches[-1] if matches else None
 
 
+def resolve_published_type(component_type: Type['InxComponent']) -> Type['InxComponent']:
+    """Resolve a class handle against the currently published script revision.
+
+    Editor preloads can retain a class imported before the first asset-backed
+    publication. That provisional handle is identified by module and qualname,
+    never by its short class name alone. Normal bound types use the GUID index.
+    """
+    with _registration_lock:
+        registration = _type_registrations.get(component_type._get_type_guid())
+        if registration is not None and registration.component_type is not None:
+            return registration.component_type
+        if not component_type._asset_script_guid_:
+            for registration in _type_registrations.values():
+                current = registration.component_type
+                if (registration.project_script and current is not None
+                        and current.__module__ == component_type.__module__
+                        and current.__qualname__ == component_type.__qualname__):
+                    return current
+    return component_type
+
+
 def get_all_types() -> Dict[str, Type['InxComponent']]:
     """
     Get all known InxComponent subclass types.

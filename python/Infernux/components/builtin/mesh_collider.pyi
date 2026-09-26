@@ -7,6 +7,10 @@ class MeshCollider(Collider):
 
     _cpp_type_name: str
 
+    def recook(self) -> None:
+        """Request collision rebuilding after visual mesh updates."""
+        ...
+
     # ---- CppProperty fields as properties ----
 
     @property

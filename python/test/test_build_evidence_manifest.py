@@ -58,6 +58,7 @@ def test_manifest_hashes_files_directories_and_results(tmp_path: Path):
         artifacts=(("android", artifact), ("web", web)),
         results=(("browser-smoke", result),),
         require_clean=True,
+        require_passed=True,
     )
 
     assert manifest["$schema"] == module.SCHEMA
@@ -94,3 +95,71 @@ def test_require_clean_rejects_dirty_repository(tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="clean Git worktree"):
         module.repository_record(tmp_path, require_clean=True)
+
+
+def test_require_passed_rejects_failed_acceptance_result(tmp_path: Path):
+    module = _module()
+    repository = tmp_path / "repo"
+    evidence = tmp_path / "evidence"
+    repository.mkdir()
+    evidence.mkdir()
+    _repository(repository)
+    result = evidence / "smoke.json"
+    result.write_text(json.dumps({"status": "failed"}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not passed.*browser-smoke"):
+        module.build_manifest(
+            release="0.4.0",
+            root=evidence,
+            repository=repository,
+            artifacts=(),
+            results=(("browser-smoke", result),),
+            require_clean=True,
+            require_passed=True,
+        )
+
+
+def test_require_passed_rejects_missing_status(tmp_path: Path):
+    module = _module()
+    repository = tmp_path / "repo"
+    evidence = tmp_path / "evidence"
+    repository.mkdir()
+    evidence.mkdir()
+    _repository(repository)
+    result = evidence / "smoke.json"
+    result.write_text(json.dumps({"success": True}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not passed.*browser-smoke"):
+        module.build_manifest(
+            release="0.4.0",
+            root=evidence,
+            repository=repository,
+            artifacts=(),
+            results=(("browser-smoke", result),),
+            require_clean=True,
+            require_passed=True,
+        )
+
+
+def test_require_passed_rejects_explicit_false_success(tmp_path: Path):
+    module = _module()
+    repository = tmp_path / "repo"
+    evidence = tmp_path / "evidence"
+    repository.mkdir()
+    evidence.mkdir()
+    _repository(repository)
+    result = evidence / "smoke.json"
+    result.write_text(
+        json.dumps({"status": "passed", "success": False}), encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="not passed.*browser-smoke"):
+        module.build_manifest(
+            release="0.4.0",
+            root=evidence,
+            repository=repository,
+            artifacts=(),
+            results=(("browser-smoke", result),),
+            require_clean=True,
+            require_passed=True,
+        )

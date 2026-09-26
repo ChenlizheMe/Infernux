@@ -24,6 +24,8 @@ from .builtin import (
     RigidbodyConstraints as RigidbodyConstraints,
     CollisionDetectionMode as CollisionDetectionMode,
     RigidbodyInterpolation as RigidbodyInterpolation,
+    HingeJoint as HingeJoint,
+    SliderJoint as SliderJoint,
     AudioSource as AudioSource,
     AudioListener as AudioListener,
     SpriteRenderer as SpriteRenderer,
@@ -135,6 +137,11 @@ from .decorators import (
     HelpURL as HelpURL,
     Icon as Icon,
 )
+from .transform_authoring import (
+    DrivenTransformProperties as DrivenTransformProperties,
+    drives_transform as drives_transform,
+    DrivesTransform as DrivesTransform,
+)
 
 __all__ = [
     "InxComponent",
@@ -155,6 +162,8 @@ __all__ = [
     "RigidbodyConstraints",
     "CollisionDetectionMode",
     "RigidbodyInterpolation",
+    "HingeJoint",
+    "SliderJoint",
     "AudioSource",
     "AudioListener",
     "SpriteRenderer",
@@ -216,6 +225,9 @@ __all__ = [
     "AddComponentMenu",
     "HelpURL",
     "Icon",
+    "DrivenTransformProperties",
+    "drives_transform",
+    "DrivesTransform",
     "SpiritAnimator",
     "SkeletalAnimator",
     "TimelineAction",

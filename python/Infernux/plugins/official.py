@@ -12,12 +12,14 @@ from Infernux.core.document_store import write_document_text
 from Infernux.engine.path_utils import resolved_path
 
 from .cache import package_cache_root
+from .categories import normalize_plugin_category
 from .content import normalize_page_descriptor
 from .manager import PluginManager, PluginState
 from .package import (
     InxPackage,
     InxPackagePreview,
     PACKAGE_EXTENSION,
+    read_entry,
     validate_reference,
 )
 from .registry import PluginRegistry
@@ -31,19 +33,6 @@ OFFICIAL_REGISTRY_URL = (
 )
 DEFAULT_LIBRARIES_SCHEMA = "infernux.default_libraries"
 _REMOTE_SOURCE_TYPES = {"git", "github", "url"}
-
-
-def migrate_official_repository(reference: str, location: str) -> str:
-    """Compatibility mapping for the four former engine-subdirectory plugins."""
-    platform = reference.casefold().removeprefix("infernux/platform-")
-    if (
-        platform in {"windows", "linux", "android", "web"}
-        and reference.casefold().startswith("infernux/platform-")
-        and location.rstrip("/").removesuffix(".git").casefold()
-        == "https://github.com/chenlizheme/infernux"
-    ):
-        return f"https://github.com/ChenlizheMe/infernux_{platform}"
-    return location
 
 
 class OfficialCatalogError(RuntimeError):
@@ -100,10 +89,7 @@ def _remote_source(raw: object, *, reference: str) -> dict[str, object]:
             f"Official plugin source is invalid: {reference}"
         )
     source["type"] = source_type
-    source["location"] = migrate_official_repository(reference, location)
-    if source["location"] != location:
-        source.pop("subdirectory", None)
-        source.pop("revision", None)
+    source["location"] = location
     source["official"] = True
     return source
 
@@ -206,7 +192,7 @@ def _catalog_entries(document: Mapping[str, object], official_packages: str) -> 
             source["reference"] = reference
         repository = str(raw.get("repository", "")).strip()
         if repository:
-            source["repository"] = migrate_official_repository(reference, repository)
+            source["repository"] = repository
             if source.get("type") == "url":
                 source["release_tag"] = f"v{str(raw.get('version', '')).strip()}"
         dependencies = raw.get("dependencies", [])
@@ -246,7 +232,7 @@ def _catalog_entries(document: Mapping[str, object], official_packages: str) -> 
                 "intro": str(raw.get("intro", "")),
                 "intros": dict(intros),
                 "pages": normalized_pages,
-                "category": str(raw.get("category", "Other")),
+                "category": normalize_plugin_category(raw.get("category", "other")),
                 "targets": [str(value) for value in targets],
                 "source": source,
             }
@@ -274,11 +260,7 @@ def _merge_official_registry(project: str, validated) -> tuple[dict[str, object]
         if not (
             isinstance(item, Mapping)
             and isinstance(item.get("source"), Mapping)
-            and (
-                bool(item["source"].get("official", False))
-                or migrate_official_repository(str(item["reference"]), str(item["source"].get("location", "")))
-                != str(item["source"].get("location", ""))
-            )
+            and bool(item["source"].get("official", False))
         )
     ]
     local_references = {str(entry["reference"]).casefold() for entry in kept}
@@ -305,10 +287,11 @@ def install_bundled_packages(
     """Install every wheel-mandatory InxPackage from the resources root.
 
     A direct child named ``*.inxpkg`` is part of the host wheel's built-in
-    package set.  The set is authoritative and local for missing references:
-    startup never replaces a missing artifact with a network download.  An
-    existing project installation with the same reference is preserved because
-    it may be a newer release or originate from another supported source.
+    package set.  The set is authoritative and local: startup never replaces a
+    missing artifact with a network download.  Existing non-built-in packages
+    are preserved because they may originate from another supported source;
+    installed built-ins are synchronized transactionally from the wheel-owned
+    artifact.
     """
 
     project = resolved_path(project_root)
@@ -381,15 +364,88 @@ def install_bundled_packages(
                 },
             )
         installed: list[PluginState] = []
-        for _package_path, preview in previews:
+        for package_path, preview in previews:
             reference = str(preview.metadata["reference"])
-            if manager.registry.installed_record(reference) is not None:
+            current = manager.registry.installed_record(reference)
+            if current is None:
+                installed.append(manager.install_reference(reference))
                 continue
-            installed.append(manager.install_reference(reference))
+            source = current.get("source")
+            if not isinstance(source, Mapping) or not bool(source.get("builtin", False)):
+                continue
+            if _bundled_install_matches(project, current, preview):
+                continue
+            installed.append(
+                manager.install_package(
+                    package_path,
+                    source={
+                        "type": "local",
+                        "location": package_path,
+                        "builtin": True,
+                    },
+                    update=True,
+                    overwrite_modified=True,
+                )
+            )
         return tuple(installed)
     finally:
         if owned_manager:
             manager.shutdown()
+
+
+def _bundled_install_matches(
+    project_root: str,
+    current: Mapping[str, object],
+    preview: InxPackagePreview,
+) -> bool:
+    """Return whether a built-in's published project payload is current."""
+
+    if str(current.get("version", "")) != str(preview.metadata.get("version", "")):
+        return False
+    control = current.get("control")
+    if not isinstance(control, Mapping) or str(control.get("guid", "")).casefold() != str(
+        preview.metadata.get("control_guid", "")
+    ).casefold():
+        return False
+    control_hint = str(control.get("path_hint", "")).replace("\\", "/").strip("/")
+    if not control_hint:
+        return False
+    control_path = resolved_path(os.path.join(project_root, *control_hint.split("/")))
+    try:
+        with open(control_path, "r", encoding="utf-8") as stream:
+            if json.load(stream) != preview.metadata:
+                return False
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    installed = {
+        str(item.get("guid", "")).casefold(): item
+        for item in current.get("files", ())
+        if isinstance(item, Mapping) and str(item.get("guid", "")).strip()
+    }
+    incoming = {
+        str(item.get("guid", "")).casefold(): item
+        for item in preview.file_records
+    }
+    if set(installed) != set(incoming):
+        return False
+    for guid, item in incoming.items():
+        existing = installed[guid]
+        if str(existing.get("logical_path", "")) != str(item.get("logical_path", "")):
+            return False
+        hint = str(existing.get("path_hint", "")).replace("\\", "/").strip("/")
+        if not hint:
+            return False
+        destination = resolved_path(os.path.join(project_root, *hint.split("/")))
+        try:
+            with open(destination, "rb") as stream:
+                installed_payload = stream.read()
+        except OSError:
+            return False
+        if installed_payload != read_entry(
+            preview.package_path, str(item["archive_path"])
+        ):
+            return False
+    return True
 
 
 def install_default_libraries(

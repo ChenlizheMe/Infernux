@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/zh/api/njit.html" class="">njit</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/zh/api/compile.html" class="">compile</a><a href="/wiki/site/zh/api/statistics.html" class="">statistics</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -358,6 +358,16 @@
 </thead>
 <tbody>
 <tr>
+<td>priority</td>
+<td><code>int</code></td>
+<td></td>
+</tr>
+<tr>
+<td>rejected_one_shot_count</td>
+<td><code>int</code></td>
+<td><em>(只读)</em></td>
+</tr>
+<tr>
 <td>track_count</td>
 <td><code>int</code></td>
 <td>Number of audio tracks on this source, valid range 1..16.</td>
@@ -388,6 +398,11 @@
 <td>是否在 Awake 时自动播放。</td>
 </tr>
 <tr>
+<td>spatial_blend</td>
+<td><code>float</code></td>
+<td>空间混合（0=2D, 1=3D）。</td>
+</tr>
+<tr>
 <td>min_distance</td>
 <td><code>float</code></td>
 <td>3D 声音的最小距离。</td>
@@ -405,7 +420,7 @@
 <tr>
 <td>output_bus</td>
 <td><code>str</code></td>
-<td>Output mixer/audio bus name.</td>
+<td>Output bus: Master, Music, SFX, Ambience, or UI.</td>
 </tr>
 <tr>
 <td>is_playing</td>
@@ -462,6 +477,14 @@
 <td>Return the volume of the specified track.</td>
 </tr>
 <tr>
+<td><code>get_track_time(track_index: int = 0) → float</code></td>
+<td>Clip seconds of the next mixed sample; output buffering can lag.</td>
+</tr>
+<tr>
+<td><code>set_track_time(track_index: int, seconds: float) → None</code></td>
+<td>Seek within the loaded clip, preserving playing/paused state.</td>
+</tr>
+<tr>
 <td><code>play(track_index: int = ...) → None</code></td>
 <td>播放音频。</td>
 </tr>
@@ -496,6 +519,10 @@
 <tr>
 <td><code>is_track_paused(track_index: int) → bool</code></td>
 <td>Return whether the specified track is currently paused.</td>
+</tr>
+<tr>
+<td><code>is_track_virtual(track_index: int = 0) → bool</code></td>
+<td>Playback advances without occupying a physical mixing voice.</td>
 </tr>
 <tr>
 <td><code>serialize() → str</code></td>

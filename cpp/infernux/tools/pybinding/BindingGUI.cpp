@@ -78,7 +78,7 @@ PropertyDesc DecodePropertyDesc(const py::dict &d)
         p.fVal[0] = d["f"].cast<float>();
         break;
     case PropertyDesc::Int:
-        p.iVal = d["i"].cast<int>();
+        p.iVal = d["i"].cast<int64_t>();
         break;
     case PropertyDesc::Bool:
         p.bVal = d["b"].cast<bool>();
@@ -115,8 +115,8 @@ PropertyDesc DecodePropertyDesc(const py::dict &d)
     if (d.contains("mn") && d.contains("mx")) {
         p.hasRange = true;
         if (p.type == PropertyDesc::Int) {
-            p.intRangeMin = d["mn"].cast<int>();
-            p.intRangeMax = d["mx"].cast<int>();
+            p.intRangeMin = d["mn"].cast<int64_t>();
+            p.intRangeMax = d["mx"].cast<int64_t>();
         } else {
             p.rangeMin = d["mn"].cast<float>();
             p.rangeMax = d["mx"].cast<float>();
@@ -165,6 +165,8 @@ void UpdatePropertyBatchValues(PropertyBatchPlan &plan, const py::sequence &valu
             desc.fVal[0] = py::cast<float>(value);
             break;
         case PropertyDesc::Int:
+            desc.iVal = py::cast<int64_t>(value);
+            break;
         case PropertyDesc::Enum:
             desc.iVal = py::cast<int>(value);
             break;
@@ -258,6 +260,13 @@ void RegisterGUIBindings(py::module_ &m)
             result["request_sequence"] = snapshot.requestSequence;
             result["input_sequence"] = snapshot.inputSequence;
             result["mouse"] = py::make_tuple(snapshot.mouseX, snapshot.mouseY);
+            py::dict coordinates;
+            coordinates["space"] = snapshot.desktopCoordinates ? "imgui_desktop" : "sdl_window";
+            coordinates["display_origin"] = py::make_tuple(snapshot.displayX, snapshot.displayY);
+            coordinates["display_size"] = py::make_tuple(snapshot.displayWidth, snapshot.displayHeight);
+            coordinates["framebuffer_scale"] = py::make_tuple(snapshot.framebufferScaleX, snapshot.framebufferScaleY);
+            coordinates["ui_scale"] = snapshot.uiScale;
+            result["coordinates"] = std::move(coordinates);
             result["wants_text_input"] = snapshot.wantsTextInput;
             py::dict dragDrop;
             dragDrop["active"] = snapshot.dragDropActive;
@@ -732,6 +741,7 @@ void RegisterGUIBindings(py::module_ &m)
         // Splitter helper methods
         .def("invisible_button", &InxGUIContext::InvisibleButton)
         .def("is_item_active", &InxGUIContext::IsItemActive)
+        .def("is_item_edited", &InxGUIContext::IsItemEdited)
         .def("is_any_item_active", &InxGUIContext::IsAnyItemActive)
         .def("is_pointer_activation_blocked_by_popup", &InxGUIContext::IsPointerActivationBlockedByPopup,
              "Return whether a popup owns pointer activation for this complete GUI frame")
@@ -895,7 +905,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("set_window_font_scale", &InxGUIContext::SetWindowFontScale, py::arg("scale"),
              "Set font scale for the current window (1.0 = default)")
         .def("get_dpi_scale", &InxGUIContext::GetDpiScale,
-             "Get the OS display scale factor (e.g. 2.0 for 200% scaling)")
+             "Get authored UI units to SDL window units (display scale / pixel density)")
         .def("draw_text", &InxGUIContext::DrawText, py::arg("x"), py::arg("y"), py::arg("text"), py::arg("r"),
              py::arg("g"), py::arg("b"), py::arg("a"), py::arg("font_size") = 0.0f,
              "Draw text at absolute screen coordinates with colour and optional font size")
@@ -914,26 +924,33 @@ void RegisterGUIBindings(py::module_ &m)
              py::arg("wrap_width") = 0.0f, py::arg("rotation") = 0.0f, py::arg("mirror_h") = false,
              py::arg("mirror_v") = false, py::arg("clip") = false, py::arg("font_path") = std::string(),
              py::arg("line_height") = 1.0f, py::arg("letter_spacing") = 0.0f,
+             py::arg("fallback_font_paths") = std::vector<std::string>(),
              "Draw aligned text with arbitrary rotation (degrees) and optional horizontal/vertical mirror")
         .def(
             "calc_text_size",
             [](InxGUIContext &ctx, const std::string &text, float fontSize, const std::string &fontPath,
-               float lineHeight, float letterSpacing) -> py::tuple {
-                auto [w, h] = ctx.CalcTextSizeA(text, fontSize, fontPath, lineHeight, letterSpacing);
+               float lineHeight, float letterSpacing,
+               const std::vector<std::string> &fallbackFontPaths) -> py::tuple {
+                auto [w, h] = ctx.CalcTextSizeA(
+                    text, fontSize, fontPath, lineHeight, letterSpacing, fallbackFontPaths);
                 return py::make_tuple(py::float_(w), py::float_(h));
             },
             py::arg("text"), py::arg("font_size") = 0.0f, py::arg("font_path") = std::string(),
             py::arg("line_height") = 1.0f, py::arg("letter_spacing") = 0.0f,
+            py::arg("fallback_font_paths") = std::vector<std::string>(),
             "Calculate pixel size of text at given font size. Returns (width, height).")
         .def(
             "calc_text_size_wrapped",
             [](InxGUIContext &ctx, const std::string &text, float fontSize, float wrapWidth,
-               const std::string &fontPath, float lineHeight, float letterSpacing) -> py::tuple {
-                auto [w, h] = ctx.CalcTextSizeWrappedA(text, fontSize, wrapWidth, fontPath, lineHeight, letterSpacing);
+               const std::string &fontPath, float lineHeight, float letterSpacing,
+               const std::vector<std::string> &fallbackFontPaths) -> py::tuple {
+                auto [w, h] = ctx.CalcTextSizeWrappedA(
+                    text, fontSize, wrapWidth, fontPath, lineHeight, letterSpacing, fallbackFontPaths);
                 return py::make_tuple(py::float_(w), py::float_(h));
             },
             py::arg("text"), py::arg("font_size") = 0.0f, py::arg("wrap_width") = 0.0f,
             py::arg("font_path") = std::string(), py::arg("line_height") = 1.0f, py::arg("letter_spacing") = 0.0f,
+            py::arg("fallback_font_paths") = std::vector<std::string>(),
             "Calculate wrapped pixel size of text at given font size. Returns (width, height).")
         .def("push_draw_list_clip_rect", &InxGUIContext::PushDrawListClipRect, py::arg("min_x"), py::arg("min_y"),
              py::arg("max_x"), py::arg("max_y"), py::arg("intersect_with_current") = true,
@@ -1118,6 +1135,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def("select_entry", &ConsolePanel::SelectEntry, py::arg("uid"))
         .def("set_selection_snapshot", &ConsolePanel::SetSelectionSnapshot, py::arg("uid"))
         .def_property_readonly("_selected_uid", &ConsolePanel::GetSelectedUid)
+        .def_property_readonly("_selected_uids", &ConsolePanel::GetSelectedUids)
         .def_property_readonly("_revision", &ConsolePanel::GetRevision)
         .def(
             "_get_visible_log_snapshot",
@@ -1219,6 +1237,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("get_play_state", &ToolbarPanel::getPlayState)
         .def_readwrite("get_play_time_str", &ToolbarPanel::getPlayTimeStr)
         .def_readwrite("is_show_grid", &ToolbarPanel::isShowGrid)
+        .def_readwrite("is_show_gizmos", &ToolbarPanel::isShowGizmos)
         .def_readwrite("translate", &ToolbarPanel::translate)
         .def(
             "get_camera_settings",
@@ -1375,6 +1394,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("get_scene_display_name", &HierarchyPanel::getSceneDisplayName)
         .def_readwrite("is_prefab_mode", &HierarchyPanel::isPrefabMode)
         .def_readwrite("get_prefab_display_name", &HierarchyPanel::getPrefabDisplayName)
+        .def_readwrite("is_scene_dirty", &HierarchyPanel::isSceneDirty)
         // Runtime hidden
         .def_readwrite("get_runtime_hidden_ids", &HierarchyPanel::getRuntimeHiddenIds)
         // UI structure queries
@@ -1454,6 +1474,8 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("layer", &InspectorPanel::ObjectInfo::layer)
         .def_readwrite("prefab_guid", &InspectorPanel::ObjectInfo::prefabGuid)
         .def_readwrite("hide_transform", &InspectorPanel::ObjectInfo::hideTransform)
+        .def_readwrite("hide_transform_scale", &InspectorPanel::ObjectInfo::hideTransformScale)
+        .def_readwrite("driven_transform_properties", &InspectorPanel::ObjectInfo::drivenTransformProperties)
         .def_readwrite("transform_component_id", &InspectorPanel::ObjectInfo::transformComponentId);
 
     py::class_<InspectorPanel::TransformData>(m, "InspectorTransformData")
@@ -1482,11 +1504,17 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("is_native", &InspectorPanel::AddComponentEntry::isNative)
         .def_readwrite("script_path", &InspectorPanel::AddComponentEntry::scriptPath);
 
+    py::class_<InspectorPanel::PrefabInfo::StructuralRow>(m, "InspectorPrefabStructuralRow")
+        .def(py::init<>())
+        .def_readwrite("kind", &InspectorPanel::PrefabInfo::StructuralRow::kind)
+        .def_readwrite("node_path", &InspectorPanel::PrefabInfo::StructuralRow::nodePath)
+        .def_readwrite("key", &InspectorPanel::PrefabInfo::StructuralRow::key);
     py::class_<InspectorPanel::PrefabInfo>(m, "InspectorPrefabInfo")
         .def(py::init<>())
         .def_readwrite("override_count", &InspectorPanel::PrefabInfo::overrideCount)
         .def_readwrite("is_readonly", &InspectorPanel::PrefabInfo::isReadonly)
-        .def_readwrite("is_transform_readonly", &InspectorPanel::PrefabInfo::isTransformReadonly);
+        .def_readwrite("is_transform_readonly", &InspectorPanel::PrefabInfo::isTransformReadonly)
+        .def_readwrite("structural_rows", &InspectorPanel::PrefabInfo::structuralRows);
 
     py::class_<InspectorPanel, EditorPanel, std::shared_ptr<InspectorPanel>>(m, "InspectorPanel")
         .def(py::init<>())

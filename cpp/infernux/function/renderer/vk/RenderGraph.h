@@ -54,6 +54,7 @@
 #include <function/renderer/rhi/RenderSubmissionPlan.h>
 #include <function/renderer/rhi/RenderViewContext.h>
 #include <function/renderer/rhi/RhiDescriptors.h>
+#include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/renderer/rhi/RhiSubmission.h>
 #include <functional>
 #include <memory>
@@ -87,6 +88,7 @@ enum class ResourceType
 {
     Buffer,
     Texture2D,
+    Texture3D,
     TextureCube,
     DepthStencil,
     RendererList,
@@ -611,11 +613,29 @@ struct ResourceData
     bool concurrentQueueSharing = false;
     VkImage externalImage = VK_NULL_HANDLE;
     VkImageView externalView = VK_NULL_HANDLE;
+    struct AttachmentBinding
+    {
+        enum class Kind
+        {
+            Color,
+            Resolve,
+            Depth
+        };
+        uint32_t passId;
+        uint32_t colorIndex;
+        Kind kind;
+    };
+    // Compile-time reverse references; imported image swaps update only the
+    // attachment slots that consume this resource, not the whole graph.
+    std::vector<AttachmentBinding> attachmentBindings;
     rhi::TextureViewHandle rhiView;
     rhi::TextureHandle rhiTexture;
     VkBuffer externalBuffer = VK_NULL_HANDLE;
     rhi::BufferHandle rhiBuffer;
     const RendererList *externalRendererList = nullptr;
+    // Imported persistent allocations stay alive for the compiled graph.
+    // Reset releases the borrow through the owning RHI retirement path.
+    std::shared_ptr<const rhi::RenderTextureGeneration> externalOwner;
 
     // Allocated resources (for transient)
     VkImage allocatedImage = VK_NULL_HANDLE;
@@ -795,16 +815,37 @@ class RenderGraph
 
     /// Import a persistent texture owned outside the graph.
     ResourceHandle ImportTexture(const std::string &name, VkImage image, VkImageView view, VkFormat format,
-                                 uint32_t width, uint32_t height,
-                                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+                                 uint32_t width, uint32_t height, VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT,
+                                 uint32_t depth = 1, bool isVolume = false);
 
     /// Import a persistent RHI texture while preserving its queue-sharing contract.
     ResourceHandle ImportTexture(const std::string &name, rhi::TextureHandle texture, rhi::TextureViewHandle view,
                                  VkFormat format, uint32_t width, uint32_t height,
-                                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+                                 VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t depth = 1,
+                                 bool isVolume = false);
+
+    struct RenderTextureResources
+    {
+        ResourceHandle color;
+        ResourceHandle depth;
+        ResourceHandle resolve; // Invalid for single-sample targets; sample color directly.
+    };
+    /// Borrow one complete persistent allocation generation. Graph versions
+    /// describe pass writes; they do not replace the owner's resize revision.
+    /// Reimporting a generation returns the latest declared versions of the
+    /// same attachments, rather than creating aliases with unrelated hazards.
+    RenderTextureResources ImportRenderTexture(const std::string &name,
+                                               const std::shared_ptr<const rhi::RenderTextureGeneration> &generation);
+
+    /// Select an already imported color attachment as this graph's output.
+    void SetBackbuffer(ResourceHandle color);
 
     /// Rebind an imported texture to another image with the same description.
     bool UpdateImportedTexture(ResourceHandle handle, VkImage image, VkImageView view);
+    /// Rebind a single-sample persistent color slot without changing its graph
+    /// identity or attachment contract (e.g. a history ping-pong).
+    void UpdateImportedRenderTextureColor(ResourceHandle handle,
+                                          const std::shared_ptr<const rhi::RenderTextureGeneration> &generation);
 
     /// Import a stable host-side renderer list object. Its contents may change every frame.
     ResourceHandle ImportRendererList(const std::string &name, const RendererList *rendererList);
@@ -828,6 +869,7 @@ class RenderGraph
 #if INFERNUX_FRAME_PROFILE
     static ExecuteProfileSnapshot GetExecuteProfileSnapshot();
     static std::vector<PassCallbackProfileEntry> GetTopCallbackProfiles(size_t maxEntries);
+    static PassCallbackProfileEntry GetCallbackProfile(std::string_view name);
     static std::vector<ParticlePassProfileEntry> GetParticlePassProfiles(size_t maxEntries);
     static void ResetExecuteProfileSnapshot();
 #endif
@@ -891,6 +933,12 @@ class RenderGraph
     /// Reset tracked resource state once before recording the compiled
     /// submission batches. A backend executor calls this once per graph frame.
     void BeginExecution();
+
+    /// Record first-use attachment transitions into an existing Graphics command
+    /// buffer, before cross-queue ownership releases and graph work. No submit,
+    /// wait, pixel clear or extra allocation is performed here.
+    [[nodiscard]] bool NeedsPersistentImageInitialization() const;
+    void RecordPersistentImageInitialization(VkCommandBuffer commandBuffer);
 
     /// Record one compiler-produced submission batch into a command buffer.
     /// Batches must be recorded in SubmissionPlan order.
@@ -1053,6 +1101,7 @@ class RenderGraph
 
     /// Pre-compute per-pass Dynamic Rendering attachments, viewport and scissor.
     void PrecomputeExecuteData();
+    void RefreshImportedAttachmentViews(uint32_t resourceId);
 
     /// Compile the topological pass order into device/queue/view batches.
     [[nodiscard]] bool CompileSubmissionPlan();
@@ -1132,7 +1181,9 @@ class RenderGraph
         QueueOwnershipTransferInfo info;
         ResourceState sourceState;
         ResourceAccess targetAccess;
+        bool fromPreviousExecution = false;
     };
+    [[nodiscard]] bool NeedsOwnershipRelease(uint32_t transferIndex) const noexcept;
     std::vector<QueueOwnershipTransfer> m_queueOwnershipTransfers;
     std::vector<QueueOwnershipTransferInfo> m_queueOwnershipTransferInfos;
     std::vector<std::vector<uint32_t>> m_batchOutgoingOwnershipTransfers;

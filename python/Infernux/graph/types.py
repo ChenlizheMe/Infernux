@@ -65,7 +65,7 @@ class CoordinateSpace(str, Enum):
     BAKE_BASIS = "bake_basis"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class AssetReference:
     guid: str = ""
     path_hint: str = ""
@@ -81,9 +81,25 @@ class AssetReference:
 
     @classmethod
     def from_dict(cls, value) -> "AssetReference":
-        if type(value) is not dict or set(value) != {"guid", "path_hint"}:
-            raise ValueError("asset reference requires exactly guid and path_hint")
-        return cls(value["guid"], value["path_hint"])
+        if type(value) is not dict:
+            return cls()
+        guid = value.get("guid", "")
+        path_hint = value.get("path_hint", "")
+        return cls(
+            guid if type(guid) is str else "",
+            path_hint if type(path_hint) is str else "",
+        )
+
+    def __bool__(self) -> bool:
+        return bool(self.guid)
+
+    def __eq__(self, other) -> bool:
+        if isinstance(other, AssetReference):
+            return self.guid == other.guid
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self.guid)
 
 
 @dataclass(frozen=True, order=True)

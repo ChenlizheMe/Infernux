@@ -1,4 +1,5 @@
 #include "VulkanSubmissionExecutor.h"
+#include "RhiVulkanTypes.h"
 
 #include "DescriptorBindTrace.h"
 #include "VkDeviceContext.h"
@@ -145,43 +146,6 @@ VkCommandBuffer VulkanSubmissionExecutor::AcquireCommandBuffer(FrameState &frame
     return commandBuffer;
 }
 
-VkPipelineStageFlags VulkanSubmissionExecutor::ToVkStages(rhi::PipelineStage stages) noexcept
-{
-    if (stages == rhi::PipelineStage::None)
-        return VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-    VkPipelineStageFlags result = 0;
-    const auto has = [&](rhi::PipelineStage bit) { return (stages & bit) != rhi::PipelineStage::None; };
-    if (has(rhi::PipelineStage::Top))
-        result |= VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-    if (has(rhi::PipelineStage::DrawIndirect))
-        result |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
-    if (has(rhi::PipelineStage::VertexInput))
-        result |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-    if (has(rhi::PipelineStage::VertexShader))
-        result |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
-    if (has(rhi::PipelineStage::FragmentShader))
-        result |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    if (has(rhi::PipelineStage::EarlyDepth))
-        result |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    if (has(rhi::PipelineStage::LateDepth))
-        result |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-    if (has(rhi::PipelineStage::ColorOutput))
-        result |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    if (has(rhi::PipelineStage::ComputeShader))
-        result |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-    if (has(rhi::PipelineStage::Transfer))
-        result |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-    if (has(rhi::PipelineStage::Bottom))
-        result |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-    if (has(rhi::PipelineStage::Host))
-        result |= VK_PIPELINE_STAGE_HOST_BIT;
-    if (has(rhi::PipelineStage::AllGraphics))
-        result |= VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT;
-    if (has(rhi::PipelineStage::AllCommands))
-        result |= VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-    return result != 0 ? result : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-}
-
 void VulkanSubmissionExecutor::CancelReservations(const std::vector<rhi::SubmissionTicket> &tickets,
                                                   size_t first) noexcept
 {
@@ -201,13 +165,18 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         return output;
     const auto firstGraphics = std::find_if(plan.batches.begin(), plan.batches.end(),
                                             [](const auto &batch) { return batch.queue == rhi::QueueRole::Graphics; });
-    if (firstGraphics == plan.batches.end() || sync.completionFence == VK_NULL_HANDLE ||
-        sync.completionEpoch == rhi::InvalidSubmissionSerial) {
-        INXLOG_ERROR("VulkanSubmissionExecutor requires Graphics work, a completion fence, and a completion epoch");
+    if (sync.completionFence == VK_NULL_HANDLE || sync.completionEpoch == rhi::InvalidSubmissionSerial) {
+        INXLOG_ERROR("VulkanSubmissionExecutor requires a completion fence and a completion epoch");
+        return output;
+    }
+    const bool hasGraphics = firstGraphics != plan.batches.end();
+    if (!hasGraphics && (sync.imageAvailable != VK_NULL_HANDLE || sync.renderFinished != VK_NULL_HANDLE)) {
+        INXLOG_ERROR("Presentation synchronization requires Graphics work");
         return output;
     }
 
-    const uint32_t finalGraphicsLane = m_queues->GetSnapshot(rhi::QueueRole::Graphics).nativeLane;
+    const auto joinRole = hasGraphics ? rhi::QueueRole::Graphics : plan.batches.back().queue;
+    const uint32_t joinLane = m_queues->GetSnapshot(joinRole).nativeLane;
     std::vector<bool> coveredByTerminal(plan.batches.size(), false);
     const auto markCovered = [&](auto &&self, uint32_t batchIndex) -> void {
         if (batchIndex >= plan.batches.size() || coveredByTerminal[batchIndex])
@@ -230,6 +199,8 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
     markCovered(markCovered, static_cast<uint32_t>(plan.batches.size() - 1));
     const bool needsTerminalJoin =
         std::any_of(coveredByTerminal.begin(), coveredByTerminal.end(), [](bool covered) { return !covered; });
+    const uint32_t terminalLane =
+        needsTerminalJoin ? joinLane : m_queues->GetSnapshot(plan.batches.back().queue).nativeLane;
     bool hasCrossQueueDependency = false;
     for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
         const auto &batch = plan.batches[batchIndex];
@@ -243,7 +214,7 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         }
         // A fallback terminal join needs timeline visibility for independent
         // native lanes that are not covered by the plan's own terminal batch.
-        if (batchIndex + 1 < plan.batches.size() && targetLane != finalGraphicsLane)
+        if (batchIndex + 1 < plan.batches.size() && targetLane != terminalLane)
             hasCrossQueueDependency = true;
     }
     if (hasCrossQueueDependency && m_laneTimelines.empty()) {
@@ -271,6 +242,8 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
     diagnostic.previousTimelineValue = sync.previousFrameTimelineValue;
     diagnostic.uploadTimeline = sync.uploadTimeline;
     diagnostic.uploadTimelineValue = sync.uploadTimelineValue;
+    diagnostic.backgroundComputeTimeline = sync.backgroundComputeTimeline;
+    diagnostic.backgroundComputeTimelineValue = sync.backgroundComputeTimelineValue;
     diagnostic.batchRoles.reserve(plan.batches.size());
     diagnostic.batchLanes.reserve(plan.batches.size());
     diagnostic.batchSignalValues.reserve(plan.batches.size());
@@ -322,21 +295,28 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
     // transfer role aliases a compute lane, reserving first would put the
     // consumer ahead of its producer and create a same-queue timeline
     // deadlock during generation-prime particle work.
-    for (const rhi::SubmissionBatch &batch : plan.batches) {
-        if (batch.device != m_deviceContext->GetDeviceId()) {
+    for (size_t first = 0; first < plan.batches.size();) {
+        const auto &batch = plan.batches[first];
+        size_t end = first + 1;
+        while (end < plan.batches.size() && plan.batches[end].queue == batch.queue)
+            ++end;
+        if (std::any_of(plan.batches.begin() + first, plan.batches.begin() + end,
+                        [&](const auto &item) { return item.device != m_deviceContext->GetDeviceId(); })) {
             INXLOG_ERROR("VulkanSubmissionExecutor rejected a batch for another device");
             CancelReservations(tickets, 0);
             return output;
         }
-        rhi::SubmissionTicket ticket = m_queues->Reserve(batch.queue);
+        rhi::SubmissionTicket ticket = m_queues->Reserve(batch.queue, static_cast<uint32_t>(end - first));
         if (!ticket.IsValid()) {
             CancelReservations(tickets, 0);
             return output;
         }
-        tickets.push_back(ticket);
+        for (size_t index = first; index < end; ++index, ++ticket.serial)
+            tickets.push_back(ticket);
+        first = end;
     }
     if (needsTerminalJoin) {
-        const auto joinTicket = m_queues->Reserve(rhi::QueueRole::Graphics);
+        const auto joinTicket = m_queues->Reserve(joinRole);
         if (!joinTicket.IsValid()) {
             CancelReservations(tickets, 0);
             return output;
@@ -354,15 +334,30 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             lastGraphicsBatch = index;
         }
     }
-    const size_t previousFrameWaitBatch = sync.previousFrameWaitAtFirstBatch ? 0 : firstGraphicsBatch;
+    const size_t previousFrameWaitBatch = (sync.previousFrameWaitAtFirstBatch || !hasGraphics) ? 0 : firstGraphicsBatch;
     std::vector<bool> laneSubmitted((std::max)(m_laneTimelines.size(), static_cast<size_t>(4)), false);
+
+    // Keep each compiler batch's wait/signal boundary intact. Consecutive
+    // same-role batches share one host vkQueueSubmit call, not one VkSubmitInfo.
+    // Storage is fixed before pointers are installed in the submit structures.
+    struct BatchSync
+    {
+        std::vector<VkSemaphore> waits, signals;
+        std::vector<VkPipelineStageFlags> waitStages;
+        std::vector<uint64_t> waitValues, signalValues;
+        VkTimelineSemaphoreSubmitInfo timeline{};
+    };
+    std::vector<BatchSync> batchSync(plan.batches.size());
+    std::vector<VkSubmitInfo> submits(plan.batches.size());
+    size_t groupFirst = 0;
 
     for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
         const rhi::SubmissionBatch &batch = plan.batches[batchIndex];
         const uint32_t targetLane = m_queues->GetSnapshot(batch.queue).nativeLane;
-        std::vector<VkSemaphore> waits;
-        std::vector<VkPipelineStageFlags> waitStages;
-        std::vector<uint64_t> waitValues;
+        auto &storage = batchSync[batchIndex];
+        auto &waits = storage.waits;
+        auto &waitStages = storage.waitStages;
+        auto &waitValues = storage.waitValues;
         bool usesTimeline = false;
         if (batchIndex == firstGraphicsBatch && sync.imageAvailable != VK_NULL_HANDLE) {
             waits.push_back(sync.imageAvailable);
@@ -374,6 +369,13 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             waits.push_back(sync.previousFrameTimeline);
             waitStages.push_back(sync.previousFrameStages);
             waitValues.push_back(sync.previousFrameTimelineValue);
+            usesTimeline = true;
+        }
+        if (batchIndex == firstGraphicsBatch && sync.backgroundComputeTimeline != VK_NULL_HANDLE &&
+            sync.backgroundComputeTimelineValue != 0) {
+            waits.push_back(sync.backgroundComputeTimeline);
+            waitStages.push_back(sync.backgroundComputeStages);
+            waitValues.push_back(sync.backgroundComputeTimelineValue);
             usesTimeline = true;
         }
         const bool firstOnLane = targetLane < laneSubmitted.size() && !laneSubmitted[targetLane];
@@ -400,19 +402,20 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         };
 
         for (const rhi::SubmissionBatchDependency &dependency : batch.waitsFor) {
-            if (!addLaneWait(dependency.sourceBatch, ToVkStages(dependency.waitStages))) {
-                CancelReservations(tickets, batchIndex);
+            if (!addLaneWait(dependency.sourceBatch,
+                             rhi::ToVkPipelineStages(dependency.waitStages, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT))) {
+                CancelReservations(tickets, groupFirst);
                 return output;
             }
         }
 
         const bool finalBatch = batchIndex + 1 == plan.batches.size();
         if (finalBatch && !needsTerminalJoin) {
-            // Join every lane into the final Graphics fence, including work
+            // Join every lane into the terminal fence, including work
             // that is topologically independent from the final render pass.
             for (uint32_t sourceBatch = 0; sourceBatch < batchIndex; ++sourceBatch) {
                 if (!addLaneWait(sourceBatch, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT)) {
-                    CancelReservations(tickets, batchIndex);
+                    CancelReservations(tickets, groupFirst);
                     return output;
                 }
             }
@@ -427,8 +430,8 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             usesTimeline = true;
         }
 
-        std::vector<VkSemaphore> signals;
-        std::vector<uint64_t> signalSubmitValues;
+        auto &signals = storage.signals;
+        auto &signalSubmitValues = storage.signalValues;
         if (targetLane < m_laneTimelines.size() && signalValues[batchIndex] != 0) {
             signals.push_back(m_laneTimelines[targetLane].semaphore);
             signalSubmitValues.push_back(signalValues[batchIndex]);
@@ -439,7 +442,7 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             signalSubmitValues.push_back(0);
         }
 
-        VkTimelineSemaphoreSubmitInfo timelineInfo{};
+        auto &timelineInfo = storage.timeline;
         if (usesTimeline) {
             timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
             timelineInfo.waitSemaphoreValueCount = static_cast<uint32_t>(waitValues.size());
@@ -448,7 +451,7 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
             timelineInfo.pSignalSemaphoreValues = signalSubmitValues.data();
         }
 
-        VkSubmitInfo submitInfo{};
+        auto &submitInfo = submits[batchIndex];
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submitInfo.pNext = usesTimeline ? &timelineInfo : nullptr;
         submitInfo.waitSemaphoreCount = static_cast<uint32_t>(waits.size());
@@ -459,22 +462,30 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         submitInfo.signalSemaphoreCount = static_cast<uint32_t>(signals.size());
         submitInfo.pSignalSemaphores = signals.data();
 
+        // Later batches on this lane must not repeat the external upload wait,
+        // even when this host-call group has not been flushed yet.
+        if (targetLane < laneSubmitted.size())
+            laneSubmitted[targetLane] = true;
+        if (!finalBatch && plan.batches[batchIndex + 1].queue == batch.queue)
+            continue;
+
         const VkFence fence = finalBatch && !needsTerminalJoin ? sync.completionFence : VK_NULL_HANDLE;
-        const VkResult result = m_queues->SubmitReserved(tickets[batchIndex], submitInfo, fence);
+        const VkResult result = m_queues->SubmitReserved(tickets[groupFirst], submits.data() + groupFirst,
+                                                         static_cast<uint32_t>(batchIndex + 1 - groupFirst), fence);
         if (result != VK_SUCCESS) {
             CancelReservations(tickets, batchIndex + 1);
             if (output.submittedAny) {
                 (void)m_queues->WaitIdleForAllQueues();
-                for (size_t completed = 0; completed < batchIndex; ++completed)
+                for (size_t completed = 0; completed < groupFirst; ++completed)
                     m_queues->MarkCompleted(tickets[completed]);
             }
             output.result = result;
             return output;
         }
         output.submittedAny = true;
-        frame.submittedTickets.push_back(tickets[batchIndex]);
-        if (targetLane < laneSubmitted.size())
-            laneSubmitted[targetLane] = true;
+        frame.submittedTickets.insert(frame.submittedTickets.end(), tickets.begin() + groupFirst,
+                                      tickets.begin() + batchIndex + 1);
+        groupFirst = batchIndex + 1;
         if (finalBatch && !needsTerminalJoin && targetLane < m_laneTimelines.size()) {
             output.completionTimeline = m_laneTimelines[targetLane].semaphore;
             output.completionTimelineValue = signalValues[batchIndex];
@@ -488,7 +499,7 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         std::vector<uint64_t> joinedLaneValues(m_laneTimelines.size(), 0);
         for (size_t batchIndex = 0; batchIndex < plan.batches.size(); ++batchIndex) {
             const uint32_t lane = m_queues->GetSnapshot(plan.batches[batchIndex].queue).nativeLane;
-            if (lane == finalGraphicsLane || lane >= joinedLaneValues.size())
+            if (lane == joinLane || lane >= joinedLaneValues.size())
                 continue;
             joinedLaneValues[lane] = (std::max)(joinedLaneValues[lane], signalValues[batchIndex]);
         }
@@ -503,9 +514,9 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         std::vector<VkSemaphore> signals;
         std::vector<uint64_t> signalValuesForSubmit;
         uint64_t joinTimelineValue = 0;
-        if (finalGraphicsLane < m_laneTimelines.size()) {
-            signals.push_back(m_laneTimelines[finalGraphicsLane].semaphore);
-            joinTimelineValue = m_laneTimelines[finalGraphicsLane].nextValue++;
+        if (joinLane < m_laneTimelines.size()) {
+            signals.push_back(m_laneTimelines[joinLane].semaphore);
+            joinTimelineValue = m_laneTimelines[joinLane].nextValue++;
             signalValuesForSubmit.push_back(joinTimelineValue);
         }
         VkTimelineSemaphoreSubmitInfo timelineInfo{};
@@ -537,7 +548,7 @@ VulkanSubmissionExecutor::ExecuteResult VulkanSubmissionExecutor::Execute(uint32
         }
         output.submittedAny = true;
         frame.submittedTickets.push_back(joinTicket);
-        output.completionTimeline = m_laneTimelines[finalGraphicsLane].semaphore;
+        output.completionTimeline = m_laneTimelines[joinLane].semaphore;
         output.completionTimelineValue = joinTimelineValue;
     }
 

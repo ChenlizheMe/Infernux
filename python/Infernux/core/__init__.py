@@ -29,11 +29,14 @@ Usage::
 
 from .material import Material
 from .texture import Texture
+from .render_texture import RenderTexture
+from .mesh import Mesh
 from .shader import Shader
 from .audio_clip import AudioClip
 from .physic_material import PhysicMaterial
+from .data_asset import DataAsset
 from .animation_clip import AnimationClip, AnimationFrame
-from .animation_clip3d import AnimationClip3D
+from .animation_clip3d import AnimationClip3D, ImportedFloatCurve
 from .anim_state_machine import (
     AnimStateMachine,
     AnimState,
@@ -41,7 +44,8 @@ from .anim_state_machine import (
     AnimCondition,
     AnimParameter,
 )
-from .assets import AssetManager
+from .assets import AssetFile, AssetManager
+from .sandbox_files import SandboxPath
 from .parallel_backend import (
     ParallelBackend,
     ParallelBufferView,
@@ -61,6 +65,7 @@ from .asset_types import (
 )
 from .asset_ref import (
     TextureRef,
+    RenderTextureRef,
     ShaderRef,
     AudioClipRef,
     AnimationClipRef,
@@ -69,6 +74,7 @@ from .asset_ref import (
     PhysicMaterialRef,
     ParticleGraphRef,
     RenderEffectRef,
+    DataAssetRef,
 )
 from .asset_reference_types import (
     AssetReferenceType,
@@ -79,18 +85,24 @@ from .asset_reference_types import (
 __all__ = [
     "Material",
     "Texture",
+    "RenderTexture",
+    "Mesh",
     "Shader",
     "AudioClip",
     "PhysicMaterial",
+    "DataAsset",
     "AnimationClip",
     "AnimationFrame",
     "AnimationClip3D",
+    "ImportedFloatCurve",
     "AnimStateMachine",
     "AnimState",
     "AnimTransition",
     "AnimCondition",
     "AnimParameter",
+    "AssetFile",
     "AssetManager",
+    "SandboxPath",
     "ParallelBackend",
     "ParallelBufferView",
     "ParallelCapabilities",
@@ -109,6 +121,7 @@ __all__ = [
     "AudioCompressionFormat",
     "MeshImportSettings",
     "TextureRef",
+    "RenderTextureRef",
     "ShaderRef",
     "AudioClipRef",
     "AnimationClipRef",
@@ -117,6 +130,7 @@ __all__ = [
     "PhysicMaterialRef",
     "ParticleGraphRef",
     "RenderEffectRef",
+    "DataAssetRef",
     "AssetReferenceType",
     "AssetTypeRegistry",
     "asset_type_registry",

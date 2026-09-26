@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/en/api/njit.html" class="">njit</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/compile.html" class="">compile</a><a href="/wiki/site/en/api/statistics.html" class="">statistics</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -346,8 +346,8 @@ AudioSource owns <code>track_count</code> tracks. Assign each track with
 <code>set_track_clip(index, clip)</code> or <code>set_track_clip_by_guid(index, guid)</code>,
 then call <code>play(index)</code>. <code>play_on_awake</code> only auto-plays track 0.</p>
 <p>For transient SFX, prefer <code>play_one_shot(clip, volume_scale)</code> rather than
-creating temporary AudioSource objects. Sources are spatialized; for "2D"
-audio, place the AudioSource on/near the AudioListener's GameObject.</p>
+creating temporary AudioSource objects. Set <code>spatial_blend</code> to 0 for
+channel-preserving 2D audio and to 1 for a point-source 3D signal.</p>
 <!-- USER CONTENT START -->
 <p>description
 <strong>Status:</strong> Preview · <strong>Verified with:</strong> 0.4.0</p>
@@ -364,6 +364,16 @@ audio, place the AudioSource on/near the AudioListener's GameObject.</p>
 </tr>
 </thead>
 <tbody>
+<tr>
+<td>priority</td>
+<td><code>int</code></td>
+<td></td>
+</tr>
+<tr>
+<td>rejected_one_shot_count</td>
+<td><code>int</code></td>
+<td><em>(read-only)</em></td>
+</tr>
 <tr>
 <td>track_count</td>
 <td><code>int</code></td>
@@ -395,6 +405,11 @@ audio, place the AudioSource on/near the AudioListener's GameObject.</p>
 <td>Whether track 0 plays automatically during component start.</td>
 </tr>
 <tr>
+<td>spatial_blend</td>
+<td><code>float</code></td>
+<td>Blend between stereo 2D (0) and point-source 3D (1).</td>
+</tr>
+<tr>
 <td>min_distance</td>
 <td><code>float</code></td>
 <td>Distance where 3D attenuation begins.</td>
@@ -412,7 +427,7 @@ audio, place the AudioSource on/near the AudioListener's GameObject.</p>
 <tr>
 <td>output_bus</td>
 <td><code>str</code></td>
-<td>Output mixer/audio bus name.</td>
+<td>Output bus: Master, Music, SFX, Ambience, or UI.</td>
 </tr>
 <tr>
 <td>is_playing</td>
@@ -469,6 +484,14 @@ audio, place the AudioSource on/near the AudioListener's GameObject.</p>
 <td>Return the volume of the specified track.</td>
 </tr>
 <tr>
+<td><code>get_track_time(track_index: int = 0) → float</code></td>
+<td>Clip seconds of the next mixed sample; output buffering can lag.</td>
+</tr>
+<tr>
+<td><code>set_track_time(track_index: int, seconds: float) → None</code></td>
+<td>Seek within the loaded clip, preserving playing/paused state.</td>
+</tr>
+<tr>
 <td><code>play(track_index: int = ...) → None</code></td>
 <td>Start playback on the specified zero-based track.</td>
 </tr>
@@ -503,6 +526,10 @@ audio, place the AudioSource on/near the AudioListener's GameObject.</p>
 <tr>
 <td><code>is_track_paused(track_index: int) → bool</code></td>
 <td>Return whether the specified track is currently paused.</td>
+</tr>
+<tr>
+<td><code>is_track_virtual(track_index: int = 0) → bool</code></td>
+<td>Playback advances without occupying a physical mixing voice.</td>
 </tr>
 <tr>
 <td><code>serialize() → str</code></td>

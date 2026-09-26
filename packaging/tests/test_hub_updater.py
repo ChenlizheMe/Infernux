@@ -1,3 +1,4 @@
+import io
 import json
 import shutil
 import zipfile
@@ -82,7 +83,8 @@ def test_unpublished_release_does_not_offer_downloads(monkeypatch):
 
     result = check_for_update("0.3.7", platform_id="windows-x64")
 
-    assert result.status is HubUpdateStatus.UP_TO_DATE
+    assert result.status is HubUpdateStatus.CATALOG_INVALID
+    assert "not published" in result.detail
     assert result.update is None
 
 
@@ -121,6 +123,19 @@ def test_check_selects_the_linux_release(monkeypatch):
     assert update.asset_name == "InfernuxHub-1.1.0-linux-x64-full.zip"
     assert update.manifest_url.endswith("InfernuxHub-linux-x64-manifest.json")
     assert update.platform == "linux-x64"
+
+
+def test_asset_mirror_metadata_is_optional(monkeypatch):
+    release = _catalog("1.1.0", "windows-x64")
+    for asset in release["releases"][0]["platforms"]["windows-x64"].values():
+        del asset["fallback_url"]
+    monkeypatch.setattr(hub_updater, "_request_bytes", lambda *_args: json.dumps(release).encode())
+
+    result = check_for_update("1.0.0", platform_id="windows-x64")
+
+    assert result.status is HubUpdateStatus.UPDATE_AVAILABLE
+    assert result.update.asset_fallback_url == ""
+    assert result.update.manifest_fallback_url == ""
 
 
 def test_check_requires_the_current_platform_release(monkeypatch):
@@ -176,6 +191,112 @@ def test_check_reports_network_unavailable(monkeypatch):
 
     assert result.status is HubUpdateStatus.NETWORK_UNAVAILABLE
     assert "offline" in result.detail
+
+
+def test_request_preserves_the_actual_network_failure(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise OSError("connection timed out")
+
+    monkeypatch.setattr(hub_updater.urllib.request, "urlopen", fail)
+
+    with pytest.raises(OSError, match="connection timed out"):
+        hub_updater._request_bytes("https://example.invalid/catalog")
+
+
+def test_catalog_uses_the_website_before_its_static_mirror(monkeypatch):
+    requested = []
+    release = _catalog("1.1.0", "windows-x64")
+
+    def fetch(request, *, timeout):
+        requested.append(request.full_url)
+        assert timeout == 15
+        if len(requested) == 1:
+            raise OSError("website unavailable")
+        return io.BytesIO(json.dumps(release).encode())
+
+    monkeypatch.setattr(hub_updater.urllib.request, "urlopen", fetch)
+
+    result = check_for_update("1.0.0", platform_id="windows-x64")
+
+    assert result.status is HubUpdateStatus.UPDATE_AVAILABLE
+    assert requested == [
+        "https://infernux-engine.com/hub-catalog.json",
+        "https://raw.githubusercontent.com/ChenlizheMe/Infernux/master/docs/hub-catalog.json",
+    ]
+
+
+@pytest.mark.parametrize("body, status", [
+    (b"not json", HubUpdateStatus.CATALOG_INVALID),
+    (json.dumps(_catalog("1.0.0", "windows-x64")).encode(), HubUpdateStatus.UP_TO_DATE),
+])
+def test_a_successful_catalog_response_does_not_query_another_authority(
+    monkeypatch, body, status,
+):
+    requested = []
+
+    def fetch(request, *, timeout):
+        requested.append(request.full_url)
+        return io.BytesIO(body)
+
+    monkeypatch.setattr(hub_updater.urllib.request, "urlopen", fetch)
+
+    result = check_for_update("1.0.0", platform_id="windows-x64")
+
+    assert result.status is status
+    assert requested == [hub_updater.HUB_CATALOG_URL]
+
+
+def test_catalog_network_failures_are_bounded_and_visible(monkeypatch):
+    requested = []
+
+    def fetch(request, *, timeout):
+        requested.append(request.full_url)
+        raise OSError("offline")
+
+    monkeypatch.setattr(hub_updater.urllib.request, "urlopen", fetch)
+
+    result = check_for_update("1.0.0", platform_id="windows-x64")
+
+    assert result.status is HubUpdateStatus.NETWORK_UNAVAILABLE
+    assert "offline" in result.detail
+    assert len(requested) == 2
+
+
+@pytest.mark.parametrize("current, target, status", [
+    ("1.1.0-rc.1", "1.1.0", HubUpdateStatus.UPDATE_AVAILABLE),
+    ("1.1.0-rc.2", "1.1.0-rc.10", HubUpdateStatus.UPDATE_AVAILABLE),
+    ("1.1.0", "1.1.0-rc.1", HubUpdateStatus.UP_TO_DATE),
+    ("1.9.9", "1.10.0", HubUpdateStatus.UPDATE_AVAILABLE),
+])
+def test_version_ordering_includes_release_candidates(monkeypatch, current, target, status):
+    release = _catalog(target, "windows-x64")
+    monkeypatch.setattr(hub_updater, "_request_bytes", lambda *_args: json.dumps(release).encode())
+
+    assert check_for_update(current, platform_id="windows-x64").status is status
+
+
+def test_download_uses_a_bounded_timeout_and_one_asset_mirror(tmp_path, monkeypatch):
+    release = _catalog("1.1.0", "windows-x64")
+    monkeypatch.setattr(hub_updater, "_request_bytes", lambda *_args: json.dumps(release).encode())
+    update = check_for_update("1.0.0", platform_id="windows-x64").update
+    requested = []
+
+    def fetch(request, *, timeout):
+        requested.append(request.full_url)
+        assert timeout == 60
+        if len(requested) == 1:
+            raise OSError("primary interrupted")
+        response = io.BytesIO(b"x")
+        response.headers = {"Content-Length": "1"}
+        return response
+
+    monkeypatch.setattr(hub_updater.urllib.request, "urlopen", fetch)
+    destination = tmp_path / update.asset_name
+
+    hub_updater._download(update, destination)
+
+    assert destination.read_bytes() == b"x"
+    assert requested == [update.asset_url, update.asset_fallback_url]
 
 
 def test_update_into_versioned_runtime_hub_is_required(monkeypatch):

@@ -17,8 +17,7 @@ Example::
 from __future__ import annotations
 
 from Infernux.components.builtin_component import CppProperty
-from Infernux.components.fields import FieldType
-from Infernux.components.builtin.collider import Collider
+from Infernux.components.builtin.collider import Collider, _native_collider_properties
 
 
 class BoxCollider(Collider):
@@ -26,13 +25,8 @@ class BoxCollider(Collider):
 
     _cpp_type_name = "BoxCollider"
 
-    # ---- Box-specific properties ----
-    size = CppProperty(
-        "size",
-        FieldType.VEC3,
-        default=None,
-        tooltip="Size of the box collider (full extents)",
-    )
+    center, is_trigger, physic_material = _native_collider_properties(_cpp_type_name)
+    size = CppProperty.from_native(_cpp_type_name, "size")
 
     # ------------------------------------------------------------------
     # Gizmos — Unity-style green wireframe box

@@ -43,6 +43,18 @@ int main()
 
         graph.AddRuntimeDependency("runtime-object", "dependency-a-0");
         graph.InstallAssetSnapshot(built);
+        std::vector<std::string> notified;
+        graph.RegisterCallback(ResourceType::Mesh,
+                               [&](const std::string &dependent, const std::string &source, AssetEvent event) {
+                                   Require(source == "dependency-a-0", "notification changed source identity");
+                                   notified.push_back(dependent);
+                               });
+        graph.NotifyEvent("dependency-a-0", ResourceType::Mesh, AssetEvent::RuntimeModified);
+        Require(notified == std::vector<std::string>{"runtime-object"},
+                "runtime publication notified source assets or missed its runtime user");
+        notified.clear();
+        graph.NotifyEvent("dependency-a-0", ResourceType::Mesh, AssetEvent::Modified);
+        Require(notified.size() == 2, "file modification stopped notifying the asset/runtime union");
         Require(graph.GetAssetGeneration() == 1, "asset dependency generation did not publish");
         Require(graph.HasDependency("asset-0", "dependency-a-0"), "asset edge was not published");
         Require(graph.HasDependency("runtime-object", "dependency-a-0"), "runtime overlay was replaced");
@@ -72,6 +84,21 @@ int main()
         Require(!graph.HasDependency("asset-0", "dependency-a-0"), "replacement retained a removed asset edge");
         Require(graph.HasDependency("runtime-object", "dependency-a-0"), "replacement removed runtime usage");
         Require(built->GetEdgeCount() == userCount * 2, "retained generation changed after replacement");
+        const auto sourceSnapshot = graph.GetAssetSnapshot();
+        graph.AddRuntimeDependency("runtime-object", "second-runtime-asset");
+        graph.RekeyRuntimeDependencies("runtime-object", "published-object");
+        Require(!graph.HasDependency("runtime-object", "dependency-a-0"), "staged owner retained an edge");
+        Require(graph.HasDependency("published-object", "dependency-a-0") &&
+                    graph.HasDependency("published-object", "second-runtime-asset"),
+                "publication lost an asset edge");
+        notified.clear();
+        graph.NotifyEvent("dependency-a-0", ResourceType::Mesh, AssetEvent::RuntimeModified);
+        Require(notified == std::vector<std::string>{"published-object"}, "notification used the old owner ID");
+        graph.RekeyRuntimeDependencies("published-object", "published-object");
+        graph.RekeyRuntimeDependencies("no-runtime-assets", "unused-owner");
+        Require(graph.GetAssetSnapshot() == sourceSnapshot, "runtime identity change rebuilt the source graph");
+        graph.ClearRuntimeDependenciesOf("published-object");
+        Require(graph.GetDependents("second-runtime-asset").empty(), "published owner cleanup retained an edge");
 
         graph.ClearRuntimeDependenciesOf("runtime-object");
         graph.Clear();

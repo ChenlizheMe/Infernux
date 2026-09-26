@@ -13,21 +13,50 @@ using infernux::InxMaterial;
 using infernux::MaterialBlendFactor;
 using infernux::MaterialCompareOp;
 using infernux::MaterialCullMode;
+using infernux::MaterialSamplerAddress;
+using infernux::MaterialSamplerFilter;
+using infernux::MaterialTextureSampler;
 using infernux::RenderStateOverride;
 using infernux::ShaderAssetReference;
 using infernux::ShaderProgramArtifact;
 using infernux::ShaderProgramPropertyBinding;
 using infernux::ShaderProgramStageMask;
 
-void VerifyRemovedFieldRejection()
+void VerifyRetiredFieldsAreIgnored()
 {
     InxMaterial material("Current", "Lit");
-    auto invalid = material.SerializeDocument();
-    invalid["material_version"] = 4;
+    auto document = material.SerializeDocument();
+    document["material_version"] = 4;
+    document["shaders"]["vertex"]["path_hint"] = "Assets/Shaders/Stale.vert";
+    document["shaders"]["vertex"]["unexpected"] = true;
 
-    const auto before = material.SerializeDocument();
-    assert(!material.DeserializeDocument(invalid));
-    assert(material.SerializeDocument() == before);
+    assert(material.DeserializeDocument(document));
+    const auto current = material.SerializeDocument();
+    assert(!current.contains("material_version"));
+    assert(!current["shaders"]["vertex"].contains("path_hint"));
+    assert(!current["shaders"]["vertex"].contains("unexpected"));
+}
+
+void VerifyGizmoIconPreservesAuthoredAlpha()
+{
+    // Every built-in icon uses this same material factory; only its texture
+    // differs. Transparent interiors must blend, not become binary holes.
+    const auto material = InxMaterial::CreateComponentGizmoIconMaterial();
+    const auto &state = material->GetRenderState();
+    assert(state.blendEnable);
+    assert(state.srcColorBlendFactor == MaterialBlendFactor::SourceAlpha);
+    assert(state.dstColorBlendFactor == MaterialBlendFactor::OneMinusSourceAlpha);
+    assert(!state.alphaClipEnabled);
+    assert(state.alphaClipThreshold == 0.0f);
+    assert(state.depthTestEnable && !state.depthWriteEnable);
+    const auto *sampler = material->GetTextureSampler("texSampler");
+    assert(sampler != nullptr);
+    assert(sampler->minFilter == MaterialSamplerFilter::Linear);
+    assert(sampler->magFilter == MaterialSamplerFilter::Linear);
+    assert(sampler->mipFilter == MaterialSamplerFilter::Nearest);
+    // Shader defaults cannot turn the explicitly authored blend into a mask.
+    material->ApplyShaderRenderMeta("", "", "", "", 2000, "", "", "0.5");
+    assert(!material->GetRenderState().alphaClipEnabled);
 }
 
 void VerifyStableReferencesAndClone()
@@ -39,16 +68,22 @@ void VerifyStableReferencesAndClone()
     material.SetFragShaderReference(fragment);
 
     const auto document = material.SerializeDocument();
+    assert(!document["shaders"]["vertex"].contains("path_hint"));
+    assert(!document["shaders"]["fragment"].contains("path_hint"));
     InxMaterial restored;
     assert(restored.DeserializeDocument(document));
-    assert(restored.GetVertShaderReference() == vertex);
-    assert(restored.GetFragShaderReference() == fragment);
+    const ShaderAssetReference persistedVertex{"vertex-guid", "Standard", ""};
+    const ShaderAssetReference persistedFragment{"fragment-guid", "Unlit", ""};
+    assert(restored.GetVertShaderReference() == persistedVertex);
+    assert(restored.GetFragShaderReference() == persistedFragment);
+    assert(restored.GetVertShaderReference().pathHint.empty());
+    assert(restored.GetFragShaderReference().pathHint.empty());
     assert(restored.GetShaderId() == "vertex-guid|fragment-guid");
 
     const std::shared_ptr<InxMaterial> clone = restored.Clone();
     assert(clone);
-    assert(clone->GetVertShaderReference() == vertex);
-    assert(clone->GetFragShaderReference() == fragment);
+    assert(clone->GetVertShaderReference() == persistedVertex);
+    assert(clone->GetFragShaderReference() == persistedFragment);
 }
 
 void VerifyTransactionalFailure()
@@ -67,11 +102,34 @@ void VerifyTransactionalFailure()
     };
     assert(!material.DeserializeDocument(invalid));
     assert(material.SerializeDocument() == before);
+}
 
-    invalid = before;
-    invalid["shaders"]["vertex"]["unexpected"] = true;
-    assert(!material.DeserializeDocument(invalid));
-    assert(material.SerializeDocument() == before);
+void VerifyMaterialIdentityIsNotSourceProvenance()
+{
+    InxMaterial first("Embedded", "Lit");
+    InxMaterial second("Embedded", "Lit");
+    const auto firstKey = first.GetMaterialKey();
+    const auto secondKey = second.GetMaterialKey();
+    assert(firstKey != secondKey);
+    first.SetFilePath("Assets/Models/shared.obj::submat:0");
+    second.SetFilePath(first.GetFilePath());
+    assert(first.GetMaterialKey() == firstKey);
+    assert(second.GetMaterialKey() == secondKey);
+    first.SetName("Renamed");
+    first.SetFilePath("Assets/Models/moved.obj::submat:0");
+    assert(first.GetMaterialKey() == firstKey);
+    const InxMaterial copied(first);
+    assert(copied.GetMaterialKey() != firstKey);
+
+    first.SetGuid("shared-material-guid");
+    second.SetGuid("shared-material-guid");
+    assert(first.GetMaterialKey() == "shared-material-guid");
+    assert(first.GetMaterialKey() == second.GetMaterialKey());
+    const auto clone = first.Clone();
+    clone->SetFilePath(first.GetFilePath());
+    clone->SetName(first.GetName());
+    assert(clone->GetMaterialKey() != first.GetMaterialKey());
+    assert(clone->GetMaterialKey() != copied.GetMaterialKey());
 }
 
 void VerifyRenderStateVersioning()
@@ -295,29 +353,137 @@ void VerifySparseMaterialUsesLinkedShaderDefaults()
     smoothness.byteAlignment = 4;
     artifact.properties.push_back(smoothness);
 
+    const uint64_t authoredVersion = material.GetAuthoredVersion();
     assert(material.SynchronizeShaderPropertyDefaults(artifact));
+    assert(material.GetAuthoredVersion() == authoredVersion);
     assert(std::get<glm::vec4>(material.GetProperty("baseColor")->value) == glm::vec4(0.25f, 0.5f, 0.75f, 1.0f));
     assert(std::get<float>(material.GetProperty("smoothness")->value) == 0.5f);
     const uint64_t synchronizedVersion = material.GetVersion();
     assert(!material.SynchronizeShaderPropertyDefaults(artifact));
     assert(material.GetVersion() == synchronizedVersion);
+    material.ApplyShaderRenderMeta("", "", "", "", 2000, "", "", "0.3");
+    assert(material.GetAuthoredVersion() == authoredVersion);
+    material.InvalidateTextureAssets("unused", false);
+    assert(material.GetAuthoredVersion() == authoredVersion);
+    material.SetColor("baseColor", glm::vec4(1.0f));
+    assert(material.GetAuthoredVersion() > authoredVersion);
+}
+
+void VerifyColorVectorShaderTransitionsPreserveAuthoredValues()
+{
+    InxMaterial material("AuthoredTint", "Unlit");
+    const glm::vec4 tint(1.0f, 0.55f, 0.12f, 1.0f);
+    material.SetVector4("baseColor", tint);
+    ShaderProgramArtifact artifact;
+    ShaderProgramPropertyBinding binding;
+    binding.name = "baseColor";
+    binding.type = "Color";
+    binding.defaultValue = "[1,1,1,1]";
+    artifact.properties.push_back(binding);
+
+    // Color and Float4 share their numeric representation. Shader semantic
+    // changes must not discard an authored tint on first pipeline creation.
+    for (const auto *type : {"Color", "Float4", "Color"}) {
+        artifact.properties[0].type = type;
+        const auto version = material.GetVersion();
+        assert(material.SynchronizeShaderPropertyDefaults(artifact));
+        assert(material.GetVersion() > version);
+        const auto expected = std::string(type) == "Color" ? infernux::MaterialPropertyType::Color
+                                                           : infernux::MaterialPropertyType::Float4;
+        assert(material.GetProperty("baseColor")->type == expected);
+        assert(std::get<glm::vec4>(material.GetProperty("baseColor")->value) == tint);
+        assert(material.SerializeDocument()["properties"]["baseColor"]["type"] == static_cast<int>(expected));
+        const auto synchronized = material.GetVersion();
+        assert(!material.SynchronizeShaderPropertyDefaults(artifact));
+        assert(material.GetVersion() == synchronized);
+    }
+    // A genuinely incompatible shape still takes the shader's typed default.
+    material.SetFloat("baseColor", 0.25f);
+    assert(material.SynchronizeShaderPropertyDefaults(artifact));
+    assert(std::get<glm::vec4>(material.GetProperty("baseColor")->value) == glm::vec4(1.0f));
+}
+
+void VerifyTextureSamplerBindingRoundTrip()
+{
+    InxMaterial material("SamplerBinding", "Lit");
+    material.SetTextureGuid("texSampler", "white");
+    MaterialTextureSampler sampler;
+    sampler.minFilter = MaterialSamplerFilter::Nearest;
+    sampler.magFilter = MaterialSamplerFilter::Linear;
+    sampler.mipFilter = MaterialSamplerFilter::Nearest;
+    sampler.addressU = MaterialSamplerAddress::Clamp;
+    sampler.addressV = MaterialSamplerAddress::Mirror;
+    sampler.addressW = MaterialSamplerAddress::Repeat;
+    material.SetTextureSampler("texSampler", sampler);
+    assert(material.GetTextureSampler("texSampler") && *material.GetTextureSampler("texSampler") == sampler);
+
+    const auto document = material.SerializeDocument();
+    assert(document.at("textureSamplers").at("texSampler").at("addressV") ==
+           static_cast<uint32_t>(MaterialSamplerAddress::Mirror));
+    InxMaterial restored;
+    assert(restored.DeserializeDocument(document));
+    assert(restored.GetTextureSampler("texSampler") && *restored.GetTextureSampler("texSampler") == sampler);
+    assert(restored.Clone()->GetTextureSampler("texSampler") &&
+           *restored.Clone()->GetTextureSampler("texSampler") == sampler);
+
+    const auto before = restored.SerializeDocument();
+    auto invalid = before;
+    invalid["textureSamplers"]["texSampler"]["minFilter"] = 99;
+    assert(!restored.DeserializeDocument(invalid));
+    assert(restored.SerializeDocument() == before);
+    invalid = before;
+    invalid["textureSamplers"]["missing"] = invalid["textureSamplers"]["texSampler"];
+    assert(!restored.DeserializeDocument(invalid));
+    assert(restored.SerializeDocument() == before);
+
+    assert(restored.RemoveProperty("texSampler"));
+    assert(restored.GetTextureSampler("texSampler") == nullptr);
+    assert(!restored.SerializeDocument().contains("textureSamplers"));
+}
+
+void VerifyReflectedArrayRoundTripAndLengthAuthority()
+{
+    InxMaterial material("ArrayContract", "Unlit");
+    material.SetFloatArray("curve", {0.0f, 0.5f, 1.0f});
+    material.SetVector4Array("palette", {{1.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 1.0f, 0.0f, 1.0f}});
+
+    const auto document = material.SerializeDocument();
+    InxMaterial restored;
+    assert(restored.DeserializeDocument(document));
+    assert(std::get<std::vector<float>>(restored.GetProperty("curve")->value) ==
+           std::vector<float>({0.0f, 0.5f, 1.0f}));
+    const auto &palette = std::get<std::vector<glm::vec4>>(restored.GetProperty("palette")->value);
+    assert(palette.size() == 2 && palette[1] == glm::vec4(0.0f, 1.0f, 0.0f, 1.0f));
+
+    bool rejected = false;
+    try {
+        restored.SetFloatArray("curve", {1.0f, 2.0f});
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    assert(rejected);
 }
 
 } // namespace
 
 int main()
 {
-    VerifyRemovedFieldRejection();
+    VerifyGizmoIconPreservesAuthoredAlpha();
+    VerifyRetiredFieldsAreIgnored();
     VerifyStableReferencesAndClone();
+    VerifyMaterialIdentityIsNotSourceProvenance();
     VerifyTransactionalFailure();
     VerifyRenderStateVersioning();
     VerifyShaderReferenceVersioning();
     VerifyPropertyRemoval();
+    VerifyTextureSamplerBindingRoundTrip();
     VerifyShaderDefaultsReplacePreviousShaderState();
     VerifyMaterialOverridesSurviveShaderDefaults();
     VerifyBuiltinSixWaySmokeMaterial();
     VerifyBackendNeutralRenderStateSchema();
     VerifySparseMaterialUsesLinkedShaderDefaults();
+    VerifyColorVectorShaderTransitionsPreserveAuthoredValues();
+    VerifyReflectedArrayRoundTripAndLengthAuthority();
     std::cout << "Material document tests passed\n";
     return 0;
 }

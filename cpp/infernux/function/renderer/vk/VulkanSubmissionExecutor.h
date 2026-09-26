@@ -16,6 +16,7 @@ class VkDeviceContext;
 class VulkanQueueManager;
 
 /// Records and submits one backend-neutral submission plan on a Vulkan device.
+/// Includes standalone compute/transfer plans without graphics or presentation.
 /// Command pools are frame-slot and queue-role owned; queue ordering and GPU
 /// completion are delegated to VulkanQueueManager.
 class VulkanSubmissionExecutor
@@ -29,6 +30,9 @@ class VulkanSubmissionExecutor
         VkPipelineStageFlags imageAvailableStages = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSemaphore uploadTimeline = VK_NULL_HANDLE;
         uint64_t uploadTimelineValue = 0;
+        VkSemaphore backgroundComputeTimeline = VK_NULL_HANDLE;
+        uint64_t backgroundComputeTimelineValue = 0;
+        VkPipelineStageFlags backgroundComputeStages = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
         VkSemaphore renderFinished = VK_NULL_HANDLE;
         VkFence completionFence = VK_NULL_HANDLE;
         VkSemaphore previousFrameTimeline = VK_NULL_HANDLE;
@@ -108,13 +112,14 @@ class VulkanSubmissionExecutor
         uint64_t previousTimelineValue = 0;
         VkSemaphore uploadTimeline = VK_NULL_HANDLE;
         uint64_t uploadTimelineValue = 0;
+        VkSemaphore backgroundComputeTimeline = VK_NULL_HANDLE;
+        uint64_t backgroundComputeTimelineValue = 0;
         VkSemaphore completionTimeline = VK_NULL_HANDLE;
         uint64_t completionTimelineValue = 0;
     };
 
     [[nodiscard]] bool CreatePools(FrameState &frame);
     [[nodiscard]] VkCommandBuffer AcquireCommandBuffer(FrameState &frame, rhi::QueueRole role);
-    [[nodiscard]] static VkPipelineStageFlags ToVkStages(rhi::PipelineStage stages) noexcept;
     void CancelReservations(const std::vector<rhi::SubmissionTicket> &tickets, size_t first) noexcept;
 
     VkDeviceContext *m_deviceContext = nullptr;

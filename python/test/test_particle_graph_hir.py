@@ -5373,9 +5373,7 @@ def test_particle_runtime_index_loads_aot_without_authoring_source(tmp_path, mon
     source_path.unlink()
     ParticleArtifactRegistry.clear()
 
-    restored = ParticleArtifactRegistry.load_runtime_reference(
-        "Assets/Smoke.particle.py", guid="smoke-guid"
-    )
+    restored = ParticleArtifactRegistry.load_runtime_reference(guid="smoke-guid")
 
     assert restored is not None
     assert restored.source_kind == "script"
@@ -5462,10 +5460,12 @@ def test_particle_graph_save_compiles_the_in_memory_snapshot_once(tmp_path, monk
 
     path.unlink()
     ParticleArtifactRegistry.clear()
-    with pytest.raises(ParticleArtifactError, match="empty GUID"):
+    assert (
         ParticleArtifactRegistry.load_runtime_reference(
-            "Assets/SingleSnapshot.particlegraph", guid="scene-reference-guid"
+            guid="scene-reference-guid"
         )
+        is None
+    )
 
 
 def test_particle_runtime_reference_never_uses_path_or_stable_id_fallback(
@@ -5507,9 +5507,7 @@ def test_particle_runtime_reference_never_uses_path_or_stable_id_fallback(
     ParticleArtifactRegistry.clear()
 
     assert (
-        ParticleArtifactRegistry.load_runtime_reference(
-            "Assets/PathFallback.particlegraph", guid="requested-guid"
-        )
+        ParticleArtifactRegistry.load_runtime_reference(guid="requested-guid")
         is None
     )
 

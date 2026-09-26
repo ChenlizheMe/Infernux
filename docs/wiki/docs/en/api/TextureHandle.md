@@ -6,7 +6,7 @@ class in <b>Infernux.rendergraph</b>
 
 ## Description
 
-A handle to a transient texture resource in the render graph.
+A graph-local reference to a declared or imported texture resource.
 
 <!-- USER CONTENT START --> description
 
@@ -32,6 +32,9 @@ A handle to a transient texture resource in the render graph.
 | size | `Optional[Tuple[int, int]]` |  |
 | size_divisor | `int` |  |
 | samples | `int` |  |
+| asset_guid | `str` | GUID of an imported texture asset, or an empty string for graph/render-target textures. |
+| depth | `int` | Texture depth. `1` for 2D textures. |
+| is_volume | `bool` | Whether this handle refers to a 3D texture. |
 | is_depth | `bool` | Returns True if this texture uses a depth format. *(read-only)* |
 
 <!-- USER CONTENT START --> properties

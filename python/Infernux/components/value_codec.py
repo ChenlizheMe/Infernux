@@ -92,9 +92,16 @@ class ValueCodecRegistry:
         raise AssertionError("the built-in codec must be the final decode fallback")
 
     def _encode_builtin(self, value: Any, path: str) -> Any:
-        if isinstance(value, Enum):
+        value_type = type(value)
+        is_enum = isinstance(value, Enum)
+        if not is_enum and hasattr(value_type, "__members__"):
+            from Infernux.lib import _Infernux
+            is_enum = getattr(_Infernux, value_type.__name__, None) is value_type
+        if is_enum:
             from .value_document import make_enum
-            return make_enum(type(value).__qualname__, value.name)
+            if value.name not in value_type.__members__:
+                raise ValueError(f"{path}: unknown {value_type.__qualname__} enum member")
+            return make_enum(value_type.__qualname__, value.name)
         from Infernux.graph.ramp import AnimationCurve, Gradient
         if isinstance(value, (AnimationCurve, Gradient)):
             return self._encode_builtin(value.to_dict(), path)
@@ -125,7 +132,7 @@ class ValueCodecRegistry:
             return value._serialize()
         if isinstance(value, MaterialRef):
             from .value_document import make_asset_ref
-            return make_asset_ref("Material", value.guid, value._path_hint)
+            return make_asset_ref("Material", value.guid)
 
         from ._serialize_helpers import _serialize_asset_ref, serialize_vec
         asset_document = _serialize_asset_ref(value)
@@ -317,7 +324,19 @@ class ValueCodecRegistry:
         if isinstance(value, list):
             return [self.decode(item, FieldType.UNKNOWN, f"{path}[{index}]") for index, item in enumerate(value)]
         if isinstance(value, dict):
-            decoded = deserialize_dict_ref(value)
+            fallback_asset_type = {
+                FieldType.MATERIAL: "Material",
+                FieldType.TEXTURE: "Texture",
+                FieldType.SHADER: "Shader",
+                FieldType.GAME_OBJECT: "Prefab",
+            }.get(field_type, "")
+            if field_type == FieldType.ASSET:
+                fallback_asset_type = str(
+                    getattr(field_meta_or_type, "asset_type", "") or ""
+                ).strip()
+            decoded = deserialize_dict_ref(
+                value, fallback_asset_type=fallback_asset_type
+            )
             if decoded is value:
                 return {
                     key: self.decode(item, FieldType.UNKNOWN, f"{path}.{key}")
@@ -402,7 +421,12 @@ class ValueCodecRegistry:
                 ValueCodecRegistry._reject_reserved_document_fields(value, path)
             from .value_document import TYPE_KEY
             if TYPE_KEY in value and not allow_custom_type:
-                ValueCodecRegistry._validate_typed_document(value, path)
+                document_type = ValueCodecRegistry._validate_typed_document(value, path)
+                from .value_document import ASSET_REF
+                if document_type == ASSET_REF:
+                    # Legacy/forward fields in an asset reference do not
+                    # participate in the persisted runtime contract.
+                    return
             for key, item in value.items():
                 ValueCodecRegistry._validate_encoded_document(
                     item,
@@ -452,23 +476,24 @@ class ValueCodecRegistry:
             return document_type
 
         if document_type == COMPONENT_REF:
-            if set(value) != {TYPE_KEY, "game_object_id", "component_type"}:
+            if set(value) - {"component_id"} != {TYPE_KEY, "game_object_id", "component_type"}:
                 raise ValueError(f"{path}: ComponentRef document has unknown or missing fields")
             if type(value["game_object_id"]) is not int or value["game_object_id"] < 0:
                 raise TypeError(f"{path}: ComponentRef go_id must be a non-negative integer")
             if not isinstance(value["component_type"], str):
                 raise TypeError(f"{path}: ComponentRef type_name must be a string")
+            if type(value.get("component_id", 0)) is not int or value.get("component_id", 0) < 0:
+                raise TypeError(f"{path}: ComponentRef component_id must be a non-negative integer")
             return document_type
 
         if document_type == ASSET_REF:
-            if set(value) != {TYPE_KEY, "asset_type", "guid", "path_hint"}:
-                raise ValueError(f"{path}: asset reference document has unknown or missing fields")
-            if not all(isinstance(value[key], str) for key in ("asset_type", "guid", "path_hint")):
+            # Old path/display fields and unrelated future fields do not
+            # participate in identity.  Only declared type and GUID are read.
+            if any(
+                key in value and not isinstance(value[key], str)
+                for key in ("asset_type", "guid")
+            ):
                 raise TypeError(f"{path}: asset reference values must be strings")
-            from Infernux.core.asset_reference_types import asset_type_registry
-
-            if asset_type_registry.get(value["asset_type"]) is None:
-                raise ValueError(f"{path}: unknown asset reference type {value['asset_type']!r}")
             return document_type
 
         if document_type == SERIALIZABLE_OBJECT:
@@ -496,7 +521,7 @@ class ValueCodecRegistry:
         if field_type == FieldType.GAME_OBJECT:
             if document_type == GAME_OBJECT_REF:
                 return
-            if document_type == ASSET_REF and value["asset_type"] == "Prefab":
+            if document_type == ASSET_REF and value.get("asset_type", "Prefab") == "Prefab":
                 return
             raise TypeError(f"{path}: GAME_OBJECT field contains the wrong reference type")
         if document_type != ASSET_REF:
@@ -515,9 +540,14 @@ class ValueCodecRegistry:
                 raise ValueError(f"{path}: ASSET field has no asset_type contract")
         from Infernux.core.asset_reference_types import asset_type_registry
 
-        expected = asset_type_registry.require(expected_asset_type).type_id
-        actual = asset_type_registry.require(value["asset_type"]).type_id
-        if actual != expected:
+        descriptor = asset_type_registry.require(expected_asset_type)
+        expected = descriptor.type_id
+        actual_token = value.get("asset_type", expected)
+        actual_descriptor = asset_type_registry.get(actual_token)
+        # A missing or retired type tag is legacy metadata, not a distinct
+        # identity.  The field's declared type remains authoritative.
+        actual = actual_descriptor.type_id if actual_descriptor is not None else expected
+        if actual not in (descriptor.compatible_types or (expected,)):
             raise TypeError(f"{path}: {field_type.name} field requires {expected_asset_type} reference data")
 
 

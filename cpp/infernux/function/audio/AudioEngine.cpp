@@ -2,7 +2,9 @@
 
 #include "AudioClip.h"
 #include "AudioListener.h"
+#include "AudioMixer.h"
 #include "AudioSource.h"
+#include "AudioStreamBuffer.h"
 
 #include <core/log/InxLog.h>
 #include <function/scene/GameObject.h>
@@ -11,25 +13,69 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
-#include <cstring>
 #include <glm/glm.hpp>
+#include <limits>
+#include <stdexcept>
 
 namespace infernux
 {
+namespace
+{
+
+int AudioBusIndex(const std::string &busName)
+{
+    if (busName == "Master")
+        return -1;
+    if (busName == "Music")
+        return 0;
+    if (busName == "SFX")
+        return 1;
+    if (busName == "Ambience")
+        return 2;
+    if (busName == "UI")
+        return 3;
+    throw std::invalid_argument("Unknown audio bus '" + busName + "'");
+}
+
+size_t AudioBusSlot(const std::string &busName)
+{
+    return static_cast<size_t>(AudioBusIndex(busName) + 1);
+}
+
+} // namespace
 
 struct AudioEngine::AudioVoiceState
 {
-    std::mutex mutex;
-    std::vector<float> pcmFrames;
+    AudioEngine *engine = nullptr;
+    std::atomic<size_t> busSlot{0};
+    std::shared_ptr<const AudioPlaybackPcm> pcm;
+    std::unique_ptr<AudioStreamBuffer> streaming;
     size_t frameCount = 0;
+    int sampleRate = 0;
     double cursor = 0.0;
-    float gain = 1.0f;
-    float pan = 0.0f;
-    float pitch = 1.0f;
-    bool loop = false;
-    bool destroyed = false;
-    bool finished = false;
+    float currentGain = 0.0f;
+    float currentSpatialGain = 1.0f;
+    float currentPan = 0.0f;
+    float currentSpatialBlend = 0.0f;
+    std::atomic<float> gain = 1.0f;
+    std::atomic<float> spatialGain = 1.0f;
+    std::atomic<float> pan = 0.0f;
+    std::atomic<float> spatialBlend = 1.0f;
+    std::atomic<float> pitch = 1.0f;
+    std::atomic<bool> loop = false;
+    std::atomic<bool> destroyed = false;
+    std::atomic<bool> finished = false;
+    bool paused = true; // Owner-thread binding state; callback never writes it.
+    SDL_AudioStream *stream = nullptr;
+    bool bound = false;
+    bool virtualized = false;
+    bool selected = false;
+    double virtualSince = 0.0;
+    uint64_t order = 0;
+    int priority = 128; // Lower values are more important.
+    float audibility = 1.0f;
 };
 
 AudioEngine &AudioEngine::Instance()
@@ -81,7 +127,11 @@ bool AudioEngine::Initialize()
         INXLOG_WARN("Could not query device format, using requested spec");
     }
 
-    if (!SDL_ResumeAudioDevice(m_deviceId)) {
+    m_busMailbox.Publish(m_busEnvelopes);
+    m_outputDsp.ResetDeviceSession();
+    m_underrunCount.store(0, std::memory_order_relaxed);
+    if (!SDL_SetAudioPostmixCallback(m_deviceId, &AudioEngine::ProcessOutput, this) ||
+        !SDL_ResumeAudioDevice(m_deviceId)) {
         INXLOG_ERROR("Failed to resume audio device: ", SDL_GetError());
         SDL_CloseAudioDevice(m_deviceId);
         m_deviceId = 0;
@@ -131,15 +181,15 @@ void AudioEngine::Shutdown()
         }
     }
 
-    std::vector<SDL_AudioStream *> streams;
+    decltype(m_voiceStates) retiringVoices;
     {
         std::lock_guard<std::mutex> lock(m_streamsMutex);
-        streams = m_activeStreams;
-        m_activeStreams.clear();
-        m_voiceStates.clear();
+        // Callback userdata must stay alive until SDL has stopped every
+        // stream callback, including voices not owned by an AudioSource.
+        retiringVoices.swap(m_voiceStates);
     }
 
-    for (SDL_AudioStream *stream : streams) {
+    for (const auto &[stream, state] : retiringVoices) {
         if (!stream) {
             continue;
         }
@@ -154,6 +204,7 @@ void AudioEngine::Shutdown()
         SDL_CloseAudioDevice(m_deviceId);
         m_deviceId = 0;
     }
+    m_outputDsp.ResetDeviceSession();
 
     SDL_QuitSubSystem(SDL_INIT_AUDIO);
 
@@ -165,20 +216,59 @@ void AudioEngine::Shutdown()
     m_activeListener = nullptr;
     m_globalPaused = false;
     m_initialized = false;
+    m_realVoiceCount = 0;
+    m_voiceCandidates.clear();
+    m_nextVoiceOrder = 1;
+    // Freeze author values at shutdown. A fresh device starts a new clock;
+    // no fade from the previous engine session survives into that timeline.
+    const double stoppedAt = GetOutputTime();
+    for (auto &bus : m_busEnvelopes) {
+        bus.start = bus.target = bus.VolumeAt(stoppedAt);
+        bus.startedAt = bus.duration = 0.0;
+    }
+    m_outputTime.store(0.0, std::memory_order_relaxed);
+    m_outputPeak.store(0.0f, std::memory_order_relaxed);
+    m_saturatedSamples.store(0, std::memory_order_relaxed);
+    m_underrunCount.store(0, std::memory_order_relaxed);
 }
 
-float AudioEngine::ComputeAttenuation(float distance, float minDist, float maxDist)
+std::string AudioEngine::GetDeviceDriver() const
 {
-    if (maxDist <= minDist) {
-        return distance <= minDist ? 1.0f : 0.0f;
-    }
-    if (distance <= minDist) {
-        return 1.0f;
-    }
-    if (distance >= maxDist) {
-        return 0.0f;
-    }
-    return 1.0f - (distance - minDist) / (maxDist - minDist);
+    if (!m_initialized)
+        return {};
+    const char *driver = SDL_GetCurrentAudioDriver();
+    return driver ? std::string(driver) : std::string();
+}
+
+std::string AudioEngine::GetDeviceName() const
+{
+    if (!m_initialized || m_deviceId == 0)
+        return {};
+    const char *name = SDL_GetAudioDeviceName(m_deviceId);
+    return name ? std::string(name) : std::string();
+}
+
+void SDLCALL AudioEngine::ProcessOutput(void *userdata, const SDL_AudioSpec *spec, float *buffer, int length)
+{
+    auto &engine = *static_cast<AudioEngine *>(userdata);
+    const auto &buses = engine.m_busMailbox.Consume();
+    const int frames = length / (static_cast<int>(sizeof(float)) * spec->channels);
+    const double begin = engine.GetOutputTime();
+    const double step = 1.0 / spec->freq;
+    const double end = begin + frames * step;
+    // Sub-bus targets become visible to the next voice mixing block. Voice
+    // ramps smooth this device-block update without depending on game Update.
+    const float masterGain = buses[0].muted ? 0.0f : buses[0].VolumeAt(end);
+    engine.m_audioBusGains[0].store(masterGain, std::memory_order_relaxed);
+    for (size_t slot = 1; slot < buses.size(); ++slot)
+        engine.m_audioBusGains[slot].store(buses[slot].muted ? 0.0f : masterGain * buses[slot].VolumeAt(end),
+                                           std::memory_order_relaxed);
+    const size_t sampleCount = static_cast<size_t>(frames) * static_cast<size_t>(spec->channels);
+    engine.m_outputDsp.Process(buffer, sampleCount, spec->channels);
+    const auto meter = audio_mixer::MeasureOutput(buffer, sampleCount);
+    engine.m_outputPeak.store(meter.peak, std::memory_order_relaxed);
+    engine.m_saturatedSamples.fetch_add(meter.saturatedSamples, std::memory_order_relaxed);
+    engine.m_outputTime.store(end, std::memory_order_relaxed);
 }
 
 void SDLCALL AudioEngine::FeedVoiceStream(void *userdata, SDL_AudioStream *stream, int additional_amount,
@@ -192,57 +282,95 @@ void SDLCALL AudioEngine::FeedVoiceStream(void *userdata, SDL_AudioStream *strea
     }
 
     const int bytesPerFrame = static_cast<int>(sizeof(float) * 2);
-    const int requestedFrames = std::max(1, additional_amount / bytesPerFrame);
-    std::vector<float> output(static_cast<size_t>(requestedFrames) * 2, 0.0f);
-
-    std::lock_guard<std::mutex> voiceLock(voice->mutex);
-    if (voice->destroyed || voice->pcmFrames.empty() || voice->frameCount == 0) {
+    int remainingFrames = std::max(1, additional_amount / bytesPerFrame);
+    if (voice->destroyed.load(std::memory_order_acquire) || voice->frameCount == 0) {
         return;
     }
+    if (voice->streaming) {
+        if (voice->streaming->Failed()) {
+            voice->finished.store(true, std::memory_order_release);
+            SDL_FlushAudioStream(stream);
+            return;
+        }
+    }
 
-    const float clampedPan = std::clamp(voice->pan, -1.0f, 1.0f);
-    const float pan01 = (clampedPan + 1.0f) * 0.5f;
-    const float leftGain = voice->gain * std::cos(pan01 * 1.57079632679f);
-    const float rightGain = voice->gain * std::sin(pan01 * 1.57079632679f);
-    const double step = std::max(0.01, static_cast<double>(voice->pitch));
+    const float targetGain =
+        voice->gain.load(std::memory_order_relaxed) *
+        voice->engine->m_audioBusGains[voice->busSlot.load(std::memory_order_relaxed)].load(std::memory_order_relaxed);
+    const float targetSpatialGain = voice->spatialGain.load(std::memory_order_relaxed);
+    const float targetPan = voice->pan.load(std::memory_order_relaxed);
+    const float targetSpatialBlend = voice->spatialBlend.load(std::memory_order_relaxed);
+    const double step = std::max(0.01, static_cast<double>(voice->pitch.load(std::memory_order_relaxed)));
+    const bool loop = voice->loop.load(std::memory_order_relaxed);
+    const float smoothingStep = 1.0f / static_cast<float>(std::max(1, voice->sampleRate / 200));
 
     bool finished = false;
-    for (int frame = 0; frame < requestedFrames; ++frame) {
-        if (!voice->loop && voice->cursor >= static_cast<double>(voice->frameCount)) {
-            finished = true;
+    bool underrun = false;
+    const size_t frameCount = voice->frameCount;
+    std::array<float, 2048> output{};
+    while (remainingFrames > 0 && !finished) {
+        if (voice->streaming)
+            voice->streaming->Request(static_cast<uint64_t>(voice->cursor));
+        const int chunkFrames = std::min(remainingFrames, static_cast<int>(output.size() / 2));
+        int writtenFrames = 0;
+        for (; writtenFrames < chunkFrames; ++writtenFrames) {
+            if (!loop && voice->cursor >= static_cast<double>(frameCount)) {
+                finished = true;
+                break;
+            }
+
+            double frameCursor = voice->cursor;
+            while (loop && frameCursor >= static_cast<double>(frameCount)) {
+                frameCursor -= static_cast<double>(frameCount);
+                voice->cursor = frameCursor;
+            }
+
+            const size_t index0 = std::min(static_cast<size_t>(frameCursor), frameCount - 1);
+            const size_t index1 = loop ? (index0 + 1) % frameCount : std::min(index0 + 1, frameCount - 1);
+            const float fraction = static_cast<float>(frameCursor - static_cast<double>(index0));
+            float l0, r0, l1, r1;
+            if (voice->streaming) {
+                if (!voice->streaming->ReadFrame(index0, l0, r0) || !voice->streaming->ReadFrame(index1, l1, r1)) {
+                    // IO can stall. Output silence without skipping source time;
+                    // never decode, wait, allocate or switch loading mode here.
+                    output[static_cast<size_t>(writtenFrames) * 2] = 0;
+                    output[static_cast<size_t>(writtenFrames) * 2 + 1] = 0;
+                    voice->currentGain = 0.0f;
+                    underrun = true;
+                    continue;
+                }
+            } else {
+                const auto &pcmFrames = voice->pcm->stereoFrames;
+                l0 = pcmFrames[index0 * 2];
+                r0 = pcmFrames[index0 * 2 + 1];
+                l1 = pcmFrames[index1 * 2];
+                r1 = pcmFrames[index1 * 2 + 1];
+            }
+            const float left = l0 + (l1 - l0) * fraction;
+            const float right = r0 + (r1 - r0) * fraction;
+            voice->currentGain = audio_mixer::ApproachParameter(voice->currentGain, targetGain, smoothingStep);
+            voice->currentSpatialGain =
+                audio_mixer::ApproachParameter(voice->currentSpatialGain, targetSpatialGain, smoothingStep);
+            voice->currentPan = audio_mixer::ApproachParameter(voice->currentPan, targetPan, smoothingStep);
+            voice->currentSpatialBlend =
+                audio_mixer::ApproachParameter(voice->currentSpatialBlend, targetSpatialBlend, smoothingStep);
+            const auto mixed = audio_mixer::MixStereoFrame(left, right, voice->currentGain, voice->currentSpatialGain,
+                                                           voice->currentPan, voice->currentSpatialBlend);
+            output[static_cast<size_t>(writtenFrames) * 2] = mixed.left;
+            output[static_cast<size_t>(writtenFrames) * 2 + 1] = mixed.right;
+            voice->cursor += step;
+        }
+        if (writtenFrames > 0 && !SDL_PutAudioStreamData(stream, output.data(), writtenFrames * bytesPerFrame)) {
+            INXLOG_WARN("AudioEngine: failed to push streamed audio data: ", SDL_GetError());
             break;
         }
-
-        double frameCursor = voice->cursor;
-        while (voice->loop && frameCursor >= static_cast<double>(voice->frameCount)) {
-            frameCursor -= static_cast<double>(voice->frameCount);
-            voice->cursor = frameCursor;
-        }
-
-        const size_t index0 = std::min(static_cast<size_t>(frameCursor), voice->frameCount - 1);
-        const size_t index1 =
-            voice->loop ? (index0 + 1) % voice->frameCount : std::min(index0 + 1, voice->frameCount - 1);
-        const float fraction = static_cast<float>(frameCursor - static_cast<double>(index0));
-
-        const float left0 = voice->pcmFrames[index0 * 2];
-        const float right0 = voice->pcmFrames[index0 * 2 + 1];
-        const float left1 = voice->pcmFrames[index1 * 2];
-        const float right1 = voice->pcmFrames[index1 * 2 + 1];
-
-        const float mono0 = 0.5f * (left0 + right0);
-        const float mono1 = 0.5f * (left1 + right1);
-        const float monoSample = mono0 + (mono1 - mono0) * fraction;
-
-        output[static_cast<size_t>(frame) * 2] = monoSample * leftGain;
-        output[static_cast<size_t>(frame) * 2 + 1] = monoSample * rightGain;
-        voice->cursor += step;
+        remainingFrames -= writtenFrames;
     }
-
-    voice->finished = finished;
-
-    if (!SDL_PutAudioStreamData(stream, output.data(), requestedFrames * bytesPerFrame)) {
-        INXLOG_WARN("AudioEngine: failed to push streamed audio data: ", SDL_GetError());
-    }
+    if (finished)
+        SDL_FlushAudioStream(stream);
+    if (underrun)
+        voice->engine->m_underrunCount.fetch_add(1, std::memory_order_relaxed);
+    voice->finished.store(finished, std::memory_order_release);
 }
 
 std::shared_ptr<AudioEngine::AudioVoiceState> AudioEngine::GetVoiceState(SDL_AudioStream *stream) const
@@ -258,6 +386,8 @@ std::shared_ptr<AudioEngine::AudioVoiceState> AudioEngine::GetVoiceState(SDL_Aud
 
 AudioListener *AudioEngine::FindBestListenerLocked(AudioListener *exclude) const
 {
+    AudioListener *best = nullptr;
+    uint64_t bestId = (std::numeric_limits<uint64_t>::max)();
     for (AudioListener *candidate : m_registeredListeners) {
         if (!candidate || candidate == exclude || candidate->IsDestroyed() || !candidate->IsEnabled()) {
             continue;
@@ -268,14 +398,18 @@ AudioListener *AudioEngine::FindBestListenerLocked(AudioListener *exclude) const
             continue;
         }
 
-        return candidate;
+        const uint64_t candidateId = candidate->GetGameObjectId();
+        if (candidateId != 0 && candidateId < bestId) {
+            best = candidate;
+            bestId = candidateId;
+        }
     }
-
-    return nullptr;
+    return best;
 }
 
-void AudioEngine::Update(float /*deltaTime*/)
+void AudioEngine::Update(float deltaTime)
 {
+    (void)deltaTime;
     if (!m_initialized) {
         return;
     }
@@ -311,8 +445,7 @@ void AudioEngine::Update(float /*deltaTime*/)
             continue;
         }
 
-        auto streams = source->GetActiveStreams();
-        if (streams.empty()) {
+        if (!source->HasActiveVoices()) {
             continue;
         }
 
@@ -323,7 +456,7 @@ void AudioEngine::Update(float /*deltaTime*/)
                 const glm::vec3 sourcePos = sourceTr->GetWorldPosition();
                 const float distance = glm::length(sourcePos - listenerPos);
                 const float spatialGain =
-                    ComputeAttenuation(distance, source->GetMinDistance(), source->GetMaxDistance());
+                    audio_mixer::DistanceAttenuation(distance, source->GetMinDistance(), source->GetMaxDistance());
                 const glm::vec3 toSource = distance > 0.001f ? (sourcePos - listenerPos) / distance : glm::vec3(0.0f);
                 const float pan = glm::dot(toSource, listenerRight);
                 source->SetComputedSpatialGain(spatialGain);
@@ -336,9 +469,10 @@ void AudioEngine::Update(float /*deltaTime*/)
 
         source->ApplyAllTrackGains();
     }
+    RebalanceVoices();
 }
 
-SDL_AudioStream *AudioEngine::CreateVoice(AudioSource * /*source*/, AudioClip *clip)
+SDL_AudioStream *AudioEngine::CreateVoice(AudioSource * /*source*/, AudioClip *clip, double startSeconds)
 {
     if (!m_initialized || !clip || !clip->IsLoaded()) {
         return nullptr;
@@ -349,32 +483,36 @@ SDL_AudioStream *AudioEngine::CreateVoice(AudioSource * /*source*/, AudioClip *c
     playbackSpec.channels = 2;
     playbackSpec.freq = m_deviceSpec.freq > 0 ? m_deviceSpec.freq : 44100;
 
-    Uint8 *convertedData = nullptr;
-    int convertedLength = 0;
-    const auto &clipData = clip->GetData();
-    SDL_AudioSpec sourceSpec = {};
-    sourceSpec.format = clip->GetFormat();
-    sourceSpec.channels = clip->GetChannels();
-    sourceSpec.freq = clip->GetSampleRate();
-
-    if (!SDL_ConvertAudioSamples(&sourceSpec, clipData.data(), static_cast<int>(clipData.size()), &playbackSpec,
-                                 &convertedData, &convertedLength)) {
-        INXLOG_ERROR("Failed to convert audio clip for playback: ", SDL_GetError());
-        return nullptr;
-    }
-
-    SDL_AudioStream *stream = SDL_CreateAudioStream(&playbackSpec, &m_deviceSpec);
-    if (!stream) {
-        INXLOG_ERROR("Failed to create audio stream: ", SDL_GetError());
-        SDL_free(convertedData);
+    if (clip->IsStreaming())
+        playbackSpec.freq = clip->GetSampleRate();
+    auto pcm = clip->IsStreaming() ? nullptr : clip->AcquirePlaybackPcm(playbackSpec.freq);
+    if (!clip->IsStreaming() && (!pcm || pcm->frameCount == 0)) {
+        INXLOG_ERROR("Failed to acquire prepared audio clip for playback");
         return nullptr;
     }
 
     auto voiceState = std::make_shared<AudioVoiceState>();
-    voiceState->pcmFrames.resize(static_cast<size_t>(convertedLength) / sizeof(float));
-    std::memcpy(voiceState->pcmFrames.data(), convertedData, static_cast<size_t>(convertedLength));
-    voiceState->frameCount = voiceState->pcmFrames.size() / 2;
-    SDL_free(convertedData);
+    voiceState->sampleRate = playbackSpec.freq;
+    voiceState->frameCount = pcm ? pcm->frameCount : clip->GetSampleCount();
+    voiceState->cursor = std::clamp(startSeconds * playbackSpec.freq, 0.0, static_cast<double>(voiceState->frameCount));
+    if (clip->IsStreaming()) {
+        try {
+            voiceState->streaming = clip->CreateStream(static_cast<uint64_t>(voiceState->cursor));
+        } catch (const std::exception &e) {
+            INXLOG_ERROR("Cannot prepare streaming voice: ", e.what());
+            return nullptr;
+        }
+    }
+    SDL_AudioStream *stream = SDL_CreateAudioStream(&playbackSpec, &m_deviceSpec);
+    if (!stream) {
+        INXLOG_ERROR("Failed to create audio stream: ", SDL_GetError());
+        return nullptr;
+    }
+
+    voiceState->engine = this;
+    voiceState->stream = stream;
+    voiceState->order = m_nextVoiceOrder++;
+    voiceState->pcm = std::move(pcm);
 
     if (!SDL_SetAudioStreamGetCallback(stream, &AudioEngine::FeedVoiceStream, voiceState.get())) {
         INXLOG_ERROR("Failed to register audio stream callback: ", SDL_GetError());
@@ -382,23 +520,11 @@ SDL_AudioStream *AudioEngine::CreateVoice(AudioSource * /*source*/, AudioClip *c
         return nullptr;
     }
 
-    if (!SDL_BindAudioStream(m_deviceId, stream)) {
-        INXLOG_ERROR("Failed to bind audio stream to device: ", SDL_GetError());
-        SDL_DestroyAudioStream(stream);
-        return nullptr;
-    }
-
-    if (!SDL_ResumeAudioStreamDevice(stream)) {
-        INXLOG_ERROR("Failed to resume audio stream device: ", SDL_GetError());
-        SDL_UnbindAudioStream(stream);
-        SDL_DestroyAudioStream(stream);
-        return nullptr;
-    }
-
     {
         std::lock_guard<std::mutex> lock(m_streamsMutex);
-        m_activeStreams.push_back(stream);
         m_voiceStates.emplace(stream, std::move(voiceState));
+        if (m_voiceStates.size() > m_voiceCandidates.capacity())
+            m_voiceCandidates.reserve(std::max(m_voiceStates.size(), m_voiceCandidates.capacity() * 2));
     }
 
     return stream;
@@ -418,13 +544,12 @@ void AudioEngine::DestroyVoice(SDL_AudioStream *stream)
             state = it->second;
             m_voiceStates.erase(it);
         }
-        m_activeStreams.erase(std::remove(m_activeStreams.begin(), m_activeStreams.end(), stream),
-                              m_activeStreams.end());
     }
 
     if (state) {
-        std::lock_guard<std::mutex> voiceLock(state->mutex);
-        state->destroyed = true;
+        state->destroyed.store(true, std::memory_order_release);
+        if (state->bound)
+            --m_realVoiceCount;
     }
 
     SDL_LockAudioStream(stream);
@@ -434,45 +559,201 @@ void AudioEngine::DestroyVoice(SDL_AudioStream *stream)
     SDL_DestroyAudioStream(stream);
 }
 
-void AudioEngine::UpdateVoiceMix(SDL_AudioStream *stream, float gain, float pan, float pitch, bool loop)
+void AudioEngine::UpdateVoiceMix(SDL_AudioStream *stream, float gain, float spatialGain, float pan, float spatialBlend,
+                                 float pitch, bool loop, const std::string &busName, int priority)
 {
     auto state = GetVoiceState(stream);
     if (!state) {
         return;
     }
 
-    std::lock_guard<std::mutex> lock(state->mutex);
-    state->gain = std::max(0.0f, gain);
-    state->pan = std::clamp(pan, -1.0f, 1.0f);
-    state->pitch = std::clamp(pitch, 0.1f, 3.0f);
-    state->loop = loop;
-    if (state->loop && state->finished) {
-        state->finished = false;
-    }
+    if (state->virtualized &&
+        (pitch != state->pitch.load(std::memory_order_relaxed) || loop != state->loop.load(std::memory_order_relaxed)))
+        CommitVirtualCursor(*state, GetOutputTime());
+    state->priority = priority;
+    state->busSlot.store(AudioBusSlot(busName), std::memory_order_relaxed);
+    state->gain.store(std::max(0.0f, gain), std::memory_order_relaxed);
+    state->spatialGain.store(std::clamp(spatialGain, 0.0f, 1.0f), std::memory_order_relaxed);
+    state->pan.store(std::clamp(pan, -1.0f, 1.0f), std::memory_order_relaxed);
+    state->spatialBlend.store(std::clamp(spatialBlend, 0.0f, 1.0f), std::memory_order_relaxed);
+    state->pitch.store(std::clamp(pitch, 0.1f, 3.0f), std::memory_order_relaxed);
+    state->loop.store(loop, std::memory_order_relaxed);
+    if (loop && state->finished.load(std::memory_order_acquire))
+        state->finished.store(false, std::memory_order_release);
 }
 
 void AudioEngine::SetVoicePaused(SDL_AudioStream *stream, bool paused)
 {
-    if (!stream) {
+    auto state = GetVoiceState(stream);
+    if (!state || state->paused == paused) {
         return;
     }
 
     if (paused) {
-        SDL_PauseAudioStreamDevice(stream);
+        if (state->virtualized)
+            CommitVirtualCursor(*state, GetOutputTime());
+        if (state->bound) {
+            // A manual pause preserves the queued tail, unlike virtualization.
+            SDL_UnbindAudioStream(stream);
+            state->bound = false;
+            --m_realVoiceCount;
+        }
+        state->paused = true;
     } else {
-        SDL_ResumeAudioStreamDevice(stream);
+        state->virtualSince = GetOutputTime();
+        state->paused = false;
+        SetVoiceReal(*state, m_realVoiceCount < m_maxRealVoices && VoiceAudibility(*state) > 0.0f);
     }
+}
+
+double AudioEngine::GetVoiceTime(SDL_AudioStream *stream) const
+{
+    auto state = GetVoiceState(stream);
+    if (!state)
+        return 0.0;
+    SDL_LockAudioStream(stream);
+    const double frames = VoiceCursorAt(*state, GetOutputTime());
+    const double seconds = frames / state->sampleRate;
+    SDL_UnlockAudioStream(stream);
+    return seconds;
+}
+
+void AudioEngine::SetVoiceTime(SDL_AudioStream *stream, double seconds)
+{
+    if (!std::isfinite(seconds) || seconds < 0.0)
+        throw std::invalid_argument("Audio time must be finite and non-negative");
+    auto state = GetVoiceState(stream);
+    if (!state)
+        return;
+    SDL_LockAudioStream(stream);
+    SDL_ClearAudioStream(stream);
+    state->cursor = std::min(seconds * state->sampleRate, static_cast<double>(state->frameCount));
+    state->virtualSince = GetOutputTime();
+    state->finished.store(false, std::memory_order_release);
+    state->currentGain = 0.0f; // Reuse the normal gain ramp after a discontinuity.
+    SDL_UnlockAudioStream(stream);
 }
 
 bool AudioEngine::HasVoiceFinished(SDL_AudioStream *stream) const
 {
     auto state = GetVoiceState(stream);
-    if (!state) {
-        return true;
-    }
+    return !state || VoiceFinished(*state);
+}
 
-    std::lock_guard<std::mutex> lock(state->mutex);
-    return state->finished;
+bool AudioEngine::VoiceFinished(const AudioVoiceState &state) const
+{
+    if (state.virtualized)
+        return !state.loop.load(std::memory_order_relaxed) &&
+               VoiceCursorAt(state, GetOutputTime()) >= static_cast<double>(state.frameCount);
+
+    // Producing the last sample does not mean SDL has consumed the tail yet.
+    // Keep the voice alive until all flushed output has reached the device.
+    return state.finished.load(std::memory_order_acquire) && SDL_GetAudioStreamAvailable(state.stream) == 0;
+}
+
+double AudioEngine::VoiceCursorAt(const AudioVoiceState &state, double time) const
+{
+    double cursor = state.cursor;
+    if (state.virtualized && !state.paused)
+        cursor +=
+            std::max(0.0, time - state.virtualSince) * state.sampleRate * state.pitch.load(std::memory_order_relaxed);
+    const double count = static_cast<double>(state.frameCount);
+    return state.loop.load(std::memory_order_relaxed) ? std::fmod(cursor, count) : std::min(cursor, count);
+}
+
+void AudioEngine::CommitVirtualCursor(AudioVoiceState &state, double time)
+{
+    state.cursor = VoiceCursorAt(state, time);
+    state.virtualSince = time;
+}
+
+float AudioEngine::VoiceAudibility(const AudioVoiceState &state) const
+{
+    const float blend = state.spatialBlend.load(std::memory_order_relaxed);
+    return state.gain.load(std::memory_order_relaxed) *
+           (1.0f - blend + blend * state.spatialGain.load(std::memory_order_relaxed)) *
+           m_audioBusGains[state.busSlot.load(std::memory_order_relaxed)].load(std::memory_order_relaxed);
+}
+
+void AudioEngine::SetVoiceReal(AudioVoiceState &state, bool real)
+{
+    if (real == state.bound && (real || state.virtualized))
+        return;
+    if (!real) {
+        if (state.bound) {
+            SDL_UnbindAudioStream(state.stream);
+            state.bound = false;
+            --m_realVoiceCount;
+        }
+        SDL_LockAudioStream(state.stream);
+        SDL_ClearAudioStream(state.stream);
+        state.virtualSince = GetOutputTime();
+        state.virtualized = true;
+        SDL_UnlockAudioStream(state.stream);
+        return;
+    }
+    if (state.virtualized) {
+        CommitVirtualCursor(state, GetOutputTime());
+        state.currentGain = 0.0f;
+    }
+    if (!SDL_BindAudioStream(m_deviceId, state.stream))
+        throw std::runtime_error(std::string("Failed to resume audio voice: ") + SDL_GetError());
+    state.virtualized = false;
+    state.bound = true;
+    ++m_realVoiceCount;
+}
+
+void AudioEngine::RebalanceVoices()
+{
+    m_voiceCandidates.clear();
+    for (const auto &[stream, owned] : m_voiceStates) {
+        auto &state = *owned;
+        state.selected = false;
+        if (state.paused || VoiceFinished(state))
+            continue;
+        state.audibility = VoiceAudibility(state);
+        if (state.audibility > 0.0f)
+            m_voiceCandidates.push_back(&state);
+    }
+    const size_t count = std::min(m_maxRealVoices, m_voiceCandidates.size());
+    std::partial_sort(m_voiceCandidates.begin(), m_voiceCandidates.begin() + count, m_voiceCandidates.end(),
+                      [](const AudioVoiceState *a, const AudioVoiceState *b) {
+                          if (a->priority != b->priority)
+                              return a->priority < b->priority;
+                          if (a->audibility != b->audibility)
+                              return a->audibility > b->audibility;
+                          return a->order < b->order;
+                      });
+    for (size_t i = 0; i < count; ++i)
+        m_voiceCandidates[i]->selected = true;
+    // Demote before promoting so the physical budget is never exceeded.
+    for (const auto &[stream, state] : m_voiceStates)
+        if (!state->paused && !state->selected)
+            SetVoiceReal(*state, false);
+    for (size_t i = 0; i < count; ++i)
+        SetVoiceReal(*m_voiceCandidates[i], true);
+}
+
+void AudioEngine::SetMaxRealVoices(size_t count)
+{
+    if (count == 0)
+        throw std::invalid_argument("Audio real voice budget must be positive");
+    m_maxRealVoices = count;
+    RebalanceVoices();
+}
+
+bool AudioEngine::IsVoiceVirtual(SDL_AudioStream *stream) const
+{
+    const auto state = GetVoiceState(stream);
+    return state && !state->paused && state->virtualized && !VoiceFinished(*state);
+}
+
+size_t AudioEngine::GetVirtualVoiceCount() const
+{
+    size_t count = 0;
+    for (const auto &[stream, state] : m_voiceStates)
+        count += !state->paused && state->virtualized && !VoiceFinished(*state);
+    return count;
 }
 
 bool AudioEngine::PlayPreview(const std::string &filePath)
@@ -487,7 +768,8 @@ bool AudioEngine::PlayPreview(const std::string &filePath)
     SDL_AudioStream *stream = CreateVoice(nullptr, clip.get());
     if (!stream)
         return false;
-    UpdateVoiceMix(stream, 1.0f, 0.0f, 1.0f, false);
+    UpdateVoiceMix(stream, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, false);
+    SetVoicePaused(stream, false);
 
     std::lock_guard<std::mutex> lock(m_previewMutex);
     m_previewClip = std::move(clip);
@@ -614,12 +896,81 @@ void AudioEngine::SetActiveListener(AudioListener *listener)
     m_activeListener = listener;
 }
 
+uint64_t AudioEngine::GetActiveListenerGameObjectId() const
+{
+    std::lock_guard<std::mutex> lock(m_listenersMutex);
+    return m_activeListener ? m_activeListener->GetGameObjectId() : 0;
+}
+
 void AudioEngine::SetMasterVolume(float volume)
 {
-    m_masterVolume = std::clamp(volume, 0.0f, 1.0f);
-    if (m_deviceId != 0) {
-        SDL_SetAudioDeviceGain(m_deviceId, m_masterVolume);
-    }
+    SetBusVolume("Master", volume);
+}
+
+bool AudioEngine::IsValidBusName(const std::string &busName)
+{
+    return busName == "Master" || busName == "Music" || busName == "SFX" || busName == "Ambience" || busName == "UI";
+}
+
+void AudioEngine::SetBusVolume(const std::string &busName, float volume)
+{
+    if (!std::isfinite(volume))
+        throw std::invalid_argument("Audio bus volume must be finite");
+    const size_t slot = AudioBusSlot(busName);
+    auto &bus = m_busEnvelopes[slot];
+    bus.start = bus.target = std::clamp(volume, 0.0f, 1.0f);
+    bus.duration = 0.0;
+    m_busMailbox.Publish(m_busEnvelopes);
+}
+
+float AudioEngine::GetBusVolume(const std::string &busName) const
+{
+    return m_busEnvelopes[AudioBusSlot(busName)].VolumeAt(GetOutputTime());
+}
+
+void AudioEngine::FadeBusVolume(const std::string &busName, float volume, float durationSeconds)
+{
+    if (!std::isfinite(volume))
+        throw std::invalid_argument("Audio bus volume must be finite");
+    if (!std::isfinite(durationSeconds) || durationSeconds <= 0.0f)
+        throw std::invalid_argument("Audio bus fade duration must be positive and finite");
+    const size_t slot = AudioBusSlot(busName);
+    auto &fade = m_busEnvelopes[slot];
+    const double now = GetOutputTime();
+    fade.start = fade.VolumeAt(now);
+    fade.target = std::clamp(volume, 0.0f, 1.0f);
+    fade.duration = durationSeconds;
+    fade.startedAt = now;
+    m_busMailbox.Publish(m_busEnvelopes);
+}
+
+void AudioEngine::CancelBusFade(const std::string &busName)
+{
+    SetBusVolume(busName, GetBusVolume(busName));
+}
+
+bool AudioEngine::IsBusFading(const std::string &busName) const
+{
+    return m_busEnvelopes[AudioBusSlot(busName)].IsFading(GetOutputTime());
+}
+
+void AudioEngine::SetBusMuted(const std::string &busName, bool muted)
+{
+    m_busEnvelopes[AudioBusSlot(busName)].muted = muted;
+    m_busMailbox.Publish(m_busEnvelopes);
+}
+
+bool AudioEngine::GetBusMuted(const std::string &busName) const
+{
+    return m_busEnvelopes[AudioBusSlot(busName)].muted;
+}
+
+float AudioEngine::GetBusGain(const std::string &busName) const
+{
+    const int index = AudioBusIndex(busName);
+    if (index < 0)
+        return 1.0f;
+    return GetBusMuted(busName) ? 0.0f : GetBusVolume(busName);
 }
 
 void AudioEngine::PauseAll()
@@ -641,7 +992,7 @@ void AudioEngine::ResumeAll()
 size_t AudioEngine::GetActiveVoiceCount() const
 {
     std::lock_guard<std::mutex> lock(m_streamsMutex);
-    return m_activeStreams.size();
+    return m_voiceStates.size();
 }
 
 } // namespace infernux

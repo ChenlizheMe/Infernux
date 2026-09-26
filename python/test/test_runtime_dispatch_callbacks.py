@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -87,6 +88,27 @@ def test_inx_component_bound_callback_resolves_the_new_body_after_publication():
     finally:
         publication.rollback()
         _ReloadableCallbackComponent.handle = old_method
+
+
+def test_callback_survives_same_proxy_rebind_for_persistent_scene_move():
+    owner = _ReloadableCallbackComponent()
+    owner.values = []
+    proxy = SimpleNamespace(component_id=owner.component_id, execution_order=0, enabled=True, handle=object())
+    owner._bind_native_component(proxy)
+    generation = owner._native_generation
+
+    registry = ReloadableCallbackRegistry()
+    registry.add_listener(owner.handle)
+    owner._bind_native_component(proxy)
+
+    assert owner._native_generation == generation
+    assert registry.invoke(1)[0].status == "resolved"
+    assert owner.values == [("old", 1)]
+
+    replacement = SimpleNamespace(component_id=owner.component_id, execution_order=0, enabled=True, handle=object())
+    owner._bind_native_component(replacement)
+    assert owner._native_generation == generation + 1
+    assert registry.invoke(2)[0].status == "owner_invalid"
 
 
 def test_callback_invoke_does_not_reflect_signature_after_registration(monkeypatch):

@@ -123,6 +123,10 @@ class AssetDatabase
     /// Also creates and registers all built-in importers.
     void Initialize(const std::string &projectRoot);
 
+    /// Configure before startup, or on the owner between import transactions.
+    /// Empty paths disable .blend authoring; Players never need this tool.
+    void ConfigureBlenderImport(const std::string &executable, const std::string &exportScript);
+
     /// @brief Initialize the immutable Player-side database without editor importers.
     ///
     /// Platform Players consume build-authored RuntimeAssetRecords and never
@@ -181,7 +185,11 @@ class AssetDatabase
 
     /// @brief Re-run metadata/dependency import for an already registered asset.
     /// Preserves the existing GUID and returns false for missing or unregistered paths.
-    [[nodiscard]] AssetMutationResult ReimportAsset(const std::string &path);
+    [[nodiscard]] AssetMutationResult ReimportAsset(const std::string &path, const nlohmann::json &settings = nullptr);
+    /// Explicit model Apply: immutable worker input, then owner-thread publication.
+    void BeginModelReimport(const std::string &path, const nlohmann::json &settings);
+    [[nodiscard]] std::optional<AssetMutationResult> TryCommitModelReimport();
+    void DiscardModelReimport();
 
     /// @brief Delete asset and meta.
     /// Notifies dependents via AssetDependencyGraph::NotifyEvent(Deleted).
@@ -272,6 +280,22 @@ class AssetDatabase
     [[nodiscard]] double GetLastRefreshCommitMilliseconds() const noexcept
     {
         return m_lastRefreshCommitMilliseconds;
+    }
+    [[nodiscard]] double GetLastModelReimportWorkerMilliseconds() const noexcept
+    {
+        return m_lastModelReimportWorkerMilliseconds;
+    }
+    [[nodiscard]] double GetLastModelReimportPrepareMilliseconds() const noexcept
+    {
+        return m_lastModelReimportPrepareMilliseconds;
+    }
+    [[nodiscard]] double GetLastModelReimportPersistenceMilliseconds() const noexcept
+    {
+        return m_lastModelReimportPersistenceMilliseconds;
+    }
+    [[nodiscard]] double GetLastModelReimportLivePublicationMilliseconds() const noexcept
+    {
+        return m_lastModelReimportLivePublicationMilliseconds;
     }
     [[nodiscard]] double GetLastRefreshPrepareMilliseconds() const noexcept
     {
@@ -529,6 +553,19 @@ class AssetDatabase
         Mode mode = Mode::CreateOrLoad;
     };
 
+    struct PendingModelReimport
+    {
+        WorkerImport worker;
+        WorkerMetadataPrepare metadata;
+        nlohmann::json settings;
+        AssetMutationResult result;
+        AssetFileFingerprint metadataFingerprint;
+        bool metadataExists = false;
+        bool discarded = false;
+        double workerMilliseconds = 0.0;
+        JobHandle job;
+    };
+
     struct QuerySnapshot
     {
         uint64_t generation = 0;
@@ -607,6 +644,7 @@ class AssetDatabase
     [[nodiscard]] WorkingSet TakeWorkingSet();
     void InstallWorkingSet(WorkingSet workingSet);
     void PublishQuerySnapshot(bool includeCatalog = true);
+    void PublishModelSubAssetEvents(const std::shared_ptr<const QuerySnapshot> &previous);
     void PublishQuerySnapshotForPaths(const std::vector<std::string> &paths);
     void InstallQuerySnapshot(std::shared_ptr<QuerySnapshot> snapshot) noexcept;
     [[nodiscard]] std::shared_ptr<const QuerySnapshot> LoadQuerySnapshot() const;
@@ -638,17 +676,30 @@ class AssetDatabase
     void UpdateCachedFileState(const std::string &path, bool readOnly);
 
     /// Run the matching importer for this asset (dependency scanning etc.)
-    bool RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata = true);
+    bool RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata = true,
+                     const InxResourceMeta *candidateMetadata = nullptr,
+                     const AssetFileFingerprint *expectedSource = nullptr);
+    bool PrepareReimportInput(const std::string &path, WorkerMetadataPrepare &candidate, AssetMutationResult &result);
+    static bool PrepareReimportMetadata(WorkerMetadataPrepare &candidate, const nlohmann::json &settings,
+                                        AssetMutationResult &result);
+    ImportRequest MakeImportRequest(const std::string &guid, const std::string &path, bool isReimport,
+                                    const InxResourceMeta &metadata) const;
+    void PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata,
+                               double *prepareMilliseconds = nullptr, double *persistenceMilliseconds = nullptr,
+                               double *livePublicationMilliseconds = nullptr);
+    void FinishReimport(AssetMutationResult &result);
 
     std::string CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
                                      bool persistMetadata, const std::string &identityKey);
-    [[nodiscard]] std::string RebuildMetadata(const std::string &filePath, bool persistMetadata = true);
     void DeleteMetadata(const std::string &filePath);
     void MoveMetadata(const std::string &oldFilePath, const std::string &newFilePath);
     void RebuildDerivedIndex();
     [[nodiscard]] bool IsReadOnlyPath(const std::string &normalizedPath) const;
 
     std::string m_projectRoot;
+    std::string m_blenderExecutable;
+    std::string m_blenderExportScript;
+    std::shared_ptr<PendingModelReimport> m_pendingModelReimport;
     std::string m_assetsRoot;
     std::vector<std::string> m_extraScanRoots;
     std::unordered_set<std::string> m_readOnlyScanRoots;
@@ -695,6 +746,10 @@ class AssetDatabase
     size_t m_lastRefreshScannedCount = 0;
     double m_lastRefreshScanMilliseconds = 0.0;
     double m_lastRefreshCommitMilliseconds = 0.0;
+    double m_lastModelReimportWorkerMilliseconds = 0.0;
+    double m_lastModelReimportPrepareMilliseconds = 0.0;
+    double m_lastModelReimportPersistenceMilliseconds = 0.0;
+    double m_lastModelReimportLivePublicationMilliseconds = 0.0;
     double m_lastRefreshPrepareMilliseconds = 0.0;
     double m_lastRefreshFinalizeMilliseconds = 0.0;
     double m_lastRefreshOwnerMergeMaxSliceMilliseconds = 0.0;

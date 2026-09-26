@@ -20,7 +20,6 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from Infernux.components.builtin_component import BuiltinComponent, CppProperty
-from Infernux.components.fields import FieldType
 
 
 def _to_native_material(value):
@@ -36,6 +35,11 @@ def _to_native_material(value):
     if native is not None:
         return native
     return value
+
+
+def _native_mesh_pivot(value):
+    from Infernux.lib import Vector3
+    return Vector3(*value)
 
 
 class MeshRenderer(BuiltinComponent):
@@ -56,17 +60,11 @@ class MeshRenderer(BuiltinComponent):
     _component_category_ = "Rendering"
 
     # ---- Shadow settings ----
-    casts_shadows = CppProperty(
-        "casts_shadows",
-        FieldType.BOOL,
-        default=True,
-        tooltip="Whether this renderer casts shadows",
-    )
-    receives_shadows = CppProperty(
-        "receives_shadows",
-        FieldType.BOOL,
-        default=True,
-        tooltip="Whether this renderer receives shadows",
+    casts_shadows = CppProperty.from_native("MeshRenderer", "casts_shadows")
+    receives_shadows = CppProperty.from_native("MeshRenderer", "receives_shadows")
+    submesh_index = CppProperty.from_native("MeshRenderer", "submesh_index")
+    mesh_pivot_offset = CppProperty.from_native(
+        "MeshRenderer", "mesh_pivot_offset", set_converter=_native_mesh_pivot,
     )
 
     # ------------------------------------------------------------------
@@ -254,6 +252,66 @@ class MeshRenderer(BuiltinComponent):
         if cpp is not None:
             cpp.set_material_slot_count(count)
 
+    def set_parameter(
+        self,
+        name: str,
+        value,
+        *,
+        material_slot: int = 0,
+        persistent: bool = False,
+        owner: str = "script",
+    ) -> None:
+        """Override one reflected material parameter for this renderer.
+
+        Runtime overrides are the default and disappear with this component's
+        Play/runtime lifetime. Set ``persistent=True`` for authored scene data.
+        Neither mode modifies or clones the shared material.
+        Matrix parameters accept NumPy (4,4) arrays indexed [row, column].
+        """
+        cpp = self._require_cpp_component()
+        cpp.set_parameter(name, value, material_slot, persistent, owner)
+
+    def get_parameter(
+        self,
+        name: str,
+        *,
+        material_slot: int = 0,
+        persistent_only: bool = False,
+        owner: str = "",
+    ):
+        """Return this renderer's override, or ``None`` when it inherits the material.
+
+        With the default empty ``owner``, this reads the effective value after
+        runtime writers and persistent scene data are resolved.  A non-empty
+        ``owner`` inspects only that runtime writer; it does not fall through
+        to another writer or to persistent data.
+        """
+        cpp = self._require_cpp_component()
+        return cpp.get_parameter(name, material_slot, persistent_only, owner)
+
+    def remove_parameter(
+        self,
+        name: str,
+        *,
+        material_slot: int = 0,
+        persistent: bool = False,
+        owner: str = "script",
+    ) -> bool:
+        """Remove one override without disturbing other parameter writers."""
+        cpp = self._require_cpp_component()
+        return bool(cpp.remove_parameter(name, material_slot, persistent, owner))
+
+    def clear_parameters(
+        self, *, material_slot: int = 0, persistent: bool = False, owner: str = "script"
+    ) -> None:
+        """Clear one slot's persistent values or one runtime writer.
+
+        Runtime clearing only removes values written by ``owner``.  Other
+        systems using the same renderer keep their values.
+        """
+        cpp = self._require_cpp_component()
+        cpp.clear_parameters(material_slot, persistent, owner)
+
     # ------------------------------------------------------------------
     # Mesh data access (read-only, for AI / CV / inspection)
     # ------------------------------------------------------------------
@@ -296,6 +354,37 @@ class MeshRenderer(BuiltinComponent):
             return cpp.get_mesh_asset()
         return None
 
+    @property
+    def mesh(self):
+        """The shared public Mesh resource; reading never creates a copy."""
+        native = self.get_mesh_asset()
+        if native is None:
+            return None
+        from Infernux.core.mesh import Mesh
+
+        return Mesh.from_native(native)
+
+    @mesh.setter
+    def mesh(self, value) -> None:
+        cpp = self._require_cpp_component()
+        if value is None:
+            cpp.clear_mesh_asset()
+            return
+        native = getattr(value, "native", value)
+        guid = str(getattr(native, "guid", "") or "")
+        if not guid:
+            raise ValueError("MeshRenderer.mesh requires a registered Mesh resource")
+        cpp.set_mesh_asset_guid(guid)
+
+    @property
+    def shared_mesh(self):
+        """Alias for :attr:`mesh`; use ``mesh.copy()`` for independent data."""
+        return self.mesh
+
+    @shared_mesh.setter
+    def shared_mesh(self, value) -> None:
+        self.mesh = value
+
     def get_material_slot_names(self) -> List[str]:
         """Material slot names from the model file (e.g. 'Body', 'Glass')."""
         mesh = self.get_mesh_asset()
@@ -310,6 +399,10 @@ class MeshRenderer(BuiltinComponent):
                     return [names[slot]]
                 sub_name = info.get("name", "")
                 return [sub_name] if sub_name else []
+            node_group = cpp.model_node_group if cpp is not None else -1
+            if node_group >= 0:
+                slots = sorted({int(info["material_slot"]) for info in self.get_submesh_infos()})
+                return [names[slot] if slot < len(names) else f"Material {slot}" for slot in slots]
             return names
         return []
 
@@ -323,8 +416,11 @@ class MeshRenderer(BuiltinComponent):
         if submesh_index >= 0 and submesh_index < mesh.submesh_count:
             return [mesh.get_submesh_info(submesh_index)]
         result = []
+        node_group = cpp.model_node_group if cpp is not None else -1
         for i in range(mesh.submesh_count):
-            result.append(mesh.get_submesh_info(i))
+            info = mesh.get_submesh_info(i)
+            if node_group < 0 or int(info["node_group"]) == node_group:
+                result.append(info)
         return result
 
     @property
@@ -343,6 +439,14 @@ class MeshRenderer(BuiltinComponent):
             return cpp.index_count
         return 0
 
+    @property
+    def inline_mesh_version(self) -> int:
+        """Monotonic generation used to publish inline geometry."""
+        cpp = self._cpp_component
+        if cpp is not None:
+            return cpp.inline_mesh_version
+        return 0
+
     def get_positions(self) -> List[Tuple[float, float, float]]:
         """Get all vertex positions as (x, y, z) tuples."""
         cpp = self._cpp_component
@@ -355,6 +459,13 @@ class MeshRenderer(BuiltinComponent):
         cpp = self._cpp_component
         if cpp is not None:
             return cpp.get_normals()
+        return []
+
+    def get_tangents(self) -> List[Tuple[float, float, float, float]]:
+        """Get all vertex tangent frames as (x, y, z, handedness)."""
+        cpp = self._cpp_component
+        if cpp is not None:
+            return cpp.get_tangents()
         return []
 
     def get_uvs(self) -> List[Tuple[float, float]]:
@@ -371,6 +482,124 @@ class MeshRenderer(BuiltinComponent):
             return cpp.get_indices()
         return []
 
+    def set_inline_mesh_data(
+        self, positions, normals, uvs, indices, name: str = "Inline Mesh", tangents=None,
+    ) -> None:
+        """Replace the mesh from NumPy arrays, copying data into native storage.
+
+        Positions/normals are (N, 3), UVs are (N, 2), and indices are flat.
+        Pass normals=None to generate area-weighted vertex normals in native
+        code. Pass tangents=None to derive tangent frames from positions,
+        normals and UVs. Shared indices are smoothed; duplicated seam vertices
+        are not welded. Degenerate/unreferenced vertices receive deterministic
+        zero-normal/default-tangent attributes. Explicit attributes are
+        preserved.
+        Native bindings validate shapes and convert to float32/uint32.
+        This replaces the whole mesh; it is not a GPU-resident update API.
+        Rendering uploads the new geometry on its next update. Existing
+        collision stays unchanged until MeshCollider.recook() is requested.
+        """
+        self._require_cpp_component().set_inline_mesh_data(positions, normals, uvs, indices, name, tangents)
+
+    def recalculate_normals(self) -> None:
+        """Rebuild normals on a CPU inline mesh; resident meshes derive them on GPU."""
+        self._require_cpp_component().recalculate_normals()
+
+    def recalculate_tangents(self) -> None:
+        """Rebuild tangent frames on a CPU inline mesh."""
+        self._require_cpp_component().recalculate_tangents()
+
+    def recalculate_bounds(self) -> None:
+        """Rebuild local bounds on a CPU inline mesh."""
+        self._require_cpp_component().recalculate_bounds()
+
+    def create_vertex_buffer(
+        self, *, device: str = "gpu", auto_normals: bool = True,
+        auto_tangents: bool = True, capacity: int | None = None,
+    ):
+        """Create ``inx.buffer`` storage from the current inline mesh.
+
+        The buffer uses the engine's canonical interleaved vertex layout. Its
+        first six float columns are position and normal; the remaining columns
+        preserve tangent, colour, UV, skin-index bits, and skin weights. Bind
+        it with :meth:`set_vertex_buffer` after compute kernels are ready to
+        update it in place. By default, kernels that touch this stream trigger
+        one GPU normal rebuild at the end of their engine phase. Pass
+        ``auto_normals=False`` only when a kernel writes deliberate normals.
+        Tangents are rebuilt from the current positions and authored UVs by
+        default; disable ``auto_tangents`` when a kernel supplies its own
+        tangent frame or the material never consumes one. Derived attributes
+        follow the authored index topology, so UV/hard-edge splits stay split.
+        ``capacity`` reserves canonical vertex slots without increasing the
+        effective draw range.  It must be at least the current vertex count;
+        the initial authored stream occupies the prefix and spare slots remain
+        zeroed.  No mesh data is read back during rendering.
+        """
+        if device != "gpu":
+            raise ValueError("Mesh vertex buffers must use device='gpu'")
+        import numpy as np
+        from Infernux.compute import buffer, _enable_automatic_mesh_attributes
+
+        cpp = self._require_cpp_component()
+        data = np.asarray(cpp.get_vertex_buffer_data(), dtype=np.float32)
+        vertex_count = int(data.shape[0])
+        if capacity is None:
+            capacity = vertex_count
+        if isinstance(capacity, bool) or not isinstance(capacity, int):
+            raise TypeError("Mesh vertex buffer capacity must be an integer")
+        if capacity < vertex_count:
+            raise ValueError("Mesh vertex buffer capacity cannot be smaller than vertex_count")
+        storage = np.zeros((capacity, data.shape[1]), dtype=np.float32)
+        storage[:vertex_count] = data
+        result = buffer(shape=storage.shape, dtype=np.float32, device="gpu", data=storage)
+        if auto_normals or auto_tangents:
+            _enable_automatic_mesh_attributes(
+                result,
+                np.asarray(cpp.get_positions(), dtype=np.float32),
+                np.asarray(cpp.get_indices(), dtype=np.int32),
+                normals=bool(auto_normals),
+                tangents=bool(auto_tangents),
+            )
+        return result
+
+    def set_vertex_buffer(self, value, bounds_min, bounds_max, *, space="local") -> None:
+        """Render directly from a resident GPU vertex buffer.
+
+        ``value`` must come from :meth:`create_vertex_buffer`. ``space`` is
+        explicit: local vertices use the GameObject Transform, while world
+        vertices already contain their final position. Bounds use the same
+        coordinate space and compute writes never trigger a hidden readback.
+        """
+        from Infernux.compute import Buffer
+
+        if not isinstance(value, Buffer) or value.device != "gpu":
+            raise TypeError("MeshRenderer.set_vertex_buffer expects a GPU inx.buffer")
+        value._require_open()
+        if value.dtype != "float32" or len(value.shape) != 2 or value.shape[1] != 25:
+            raise ValueError(
+                "MeshRenderer vertex storage must use float32 shape (capacity, 25)"
+            )
+        if value.shape[0] < self.vertex_count:
+            raise ValueError(
+                "MeshRenderer vertex storage capacity cannot be smaller than vertex_count"
+            )
+        if space not in {"local", "world"}:
+            raise ValueError("MeshRenderer vertex buffer space must be 'local' or 'world'")
+        from Infernux.math.coerce import coerce_vec3
+
+        self._require_cpp_component().set_vertex_buffer(
+            value._native, coerce_vec3(bounds_min), coerce_vec3(bounds_max), space == "world"
+        )
+
+    def clear_vertex_buffer(self) -> None:
+        """Return rendering to the authored CPU vertex stream."""
+        self._require_cpp_component().clear_vertex_buffer()
+
+    @property
+    def vertex_buffer_capacity(self) -> int:
+        """Allocated resident vertex slots; zero when no GPU stream is bound."""
+        return int(self._require_cpp_component().vertex_buffer_capacity)
+
     def set_primitive_mesh(self, primitive_type) -> None:
         """Assign one of the built-in primitive meshes."""
         cpp = self._cpp_component
@@ -382,6 +611,21 @@ class MeshRenderer(BuiltinComponent):
         cpp = self._cpp_component
         if cpp is not None and hasattr(cpp, "set_mesh_asset_guid"):
             cpp.set_mesh_asset_guid(guid or "")
+
+    def set_model_mesh(self, guid: str, node_path: list[str]) -> None:
+        """Use one source model node's local mesh, retaining its source identity."""
+        self._require_cpp_component().set_model_mesh(guid, node_path)
+
+    @property
+    def model_node_path(self) -> list[str]:
+        """Source node identity, empty for a whole model or an ordinary mesh."""
+        return self._require_cpp_component().model_node_path
+
+    @property
+    def model_subresource_id(self) -> str:
+        """Stable imported subresource identity, when this is a model node."""
+        cpp = self._require_cpp_component()
+        return str(getattr(cpp, "model_subresource_id", "") or "")
 
     def clear_mesh_asset(self) -> None:
         """Clear the assigned asset mesh."""

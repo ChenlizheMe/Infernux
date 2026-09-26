@@ -15,6 +15,7 @@ _lock = threading.RLock()
 _engine_ref: weakref.ReferenceType | None = None
 _runtime_kind = "uninitialized"
 _exit_code = 0
+_player_install_root = ""
 
 
 def _renderer_state_from_native(native) -> dict[str, Any]:
@@ -85,7 +86,7 @@ class Application:
 
     @staticmethod
     def asset_path(path: str) -> str:
-        """Resolve an ``Assets/...`` or ``Packages/...`` asset in Editor/Player."""
+        """Resolve one ``Assets/...`` file through its managed GUID identity."""
         from Infernux.engine.project_context import resolve_asset_path
 
         resolved = resolve_asset_path(path)
@@ -155,10 +156,10 @@ class Application:
 
     @staticmethod
     def request_render_target_capture(source: str, output_path: str) -> int:
-        """Queue an engine-native Scene/Game capture under persistent data."""
+        """Queue an engine-native Scene, Game, or complete Editor capture."""
         normalized_source = str(source).strip().lower()
-        if normalized_source not in {"scene", "game"}:
-            raise ValueError("Render target capture source must be 'scene' or 'game'")
+        if normalized_source not in {"scene", "game", "editor"}:
+            raise ValueError("Render target capture source must be 'scene', 'game', or 'editor'")
         root = Application.persistent_data_path()
         if not root:
             raise RuntimeError("Render target capture requires an active project")
@@ -203,7 +204,7 @@ class Application:
 
     @staticmethod
     def _bind_engine(engine, runtime_kind: str) -> None:
-        global _engine_ref, _runtime_kind, _exit_code
+        global _engine_ref, _runtime_kind, _exit_code, _player_install_root
         kind = str(runtime_kind).strip().lower()
         if kind not in {"editor", "player", "headless"}:
             raise ValueError(f"Unsupported application runtime kind: {runtime_kind}")
@@ -211,16 +212,33 @@ class Application:
             _engine_ref = weakref.ref(engine)
             _runtime_kind = kind
             _exit_code = 0
+            _player_install_root = (
+                resolved_path(os.environ.get("_INFERNUX_PLAYER_INSTALL_ROOT", ""))
+                if kind == "player"
+                and os.environ.get("_INFERNUX_PLAYER_INSTALL_ROOT", "").strip()
+                else ""
+            )
 
     @staticmethod
     def _unbind_engine(engine) -> None:
-        global _engine_ref, _runtime_kind
+        global _engine_ref, _runtime_kind, _player_install_root
         with _lock:
             current = _engine_ref() if _engine_ref is not None else None
             if current is not engine:
                 return
             _engine_ref = None
             _runtime_kind = "uninitialized"
+            _player_install_root = ""
+
+    @staticmethod
+    def _player_executable_directory() -> str:
+        """Return the PlayerHost-bound executable directory, never a guess."""
+        with _lock:
+            if _runtime_kind != "player" or not _player_install_root:
+                raise RuntimeError(
+                    "The PlayerHost did not provide the executable directory"
+                )
+            return _player_install_root
 
     @staticmethod
     def _current_engine():

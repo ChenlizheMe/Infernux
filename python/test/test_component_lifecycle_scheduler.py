@@ -36,6 +36,12 @@ class _ScheduledProbe(ComponentLifecycleMixin):
     def fixed_update(self, delta_time: float) -> None:
         self.calls.append(f"fixed:{delta_time}")
 
+    def physics_pre_step(self, delta_time: float) -> None:
+        self.calls.append(f"physics_pre:{delta_time}")
+
+    def physics_post_step(self, delta_time: float) -> None:
+        self.calls.append(f"physics_post:{delta_time}")
+
     def late_update(self, delta_time: float) -> None:
         self.calls.append(f"late:{delta_time}")
 
@@ -63,12 +69,58 @@ def test_framework_lifecycle_noops_do_not_schedule_declarative_components():
         False,
         False,
         False,
+        False,
+        False,
     )
     assert build_type_dispatch_descriptor(UpdatingComponent).phase_presence == (
         True,
         False,
         False,
+        False,
+        False,
     )
+
+
+def test_runtime_scheduler_executes_public_physics_boundaries_in_order():
+    scheduler = RuntimeExecutionScheduler()
+    probe = _ScheduledProbe(1)
+    scheduler.register_component(probe)
+
+    scheduler.execute_frame(0.02, 0.016)
+
+    assert probe.calls == [
+        "fixed:0.02",
+        "physics_pre:0.02",
+        "physics_post:0.02",
+        "update:0.016",
+        "late:0.016",
+    ]
+
+
+def test_runtime_callbacks_use_the_compute_recording_boundary(monkeypatch):
+    import Infernux.components._component_lifecycle as lifecycle
+
+    events = []
+
+    class Scope:
+        def __enter__(self):
+            events.append("enter")
+
+        def __exit__(self, exc_type, exc, traceback):
+            events.append("exit")
+
+    monkeypatch.setattr(lifecycle, "_compute_recording_scope", lambda: Scope())
+
+    scheduler = RuntimeExecutionScheduler()
+    first = _ScheduledProbe(9, order=1)
+    second = _ScheduledProbe(10, order=2)
+    scheduler.register_component(first)
+    scheduler.register_component(second)
+    scheduler.execute_phase("fixed_update", 0.02)
+
+    assert events == ["enter", "exit"]
+    assert first.calls == ["fixed:0.02"]
+    assert second.calls == ["fixed:0.02"]
 
 
 def test_runtime_scheduler_builds_once_and_reuses_stable_plan():
@@ -87,6 +139,17 @@ def test_runtime_scheduler_builds_once_and_reuses_stable_plan():
     assert counters["plan_builds"] == 1
     assert counters["plan_hits"] == 1
     assert counters["plan_prepare_calls"] == 2
+
+
+def test_component_base_exposes_unity_mouse_hooks_without_extra_component():
+    from Infernux.components import InxComponent
+    component = InxComponent()
+    for name in (
+        "on_mouse_enter", "on_mouse_over", "on_mouse_exit", "on_mouse_down",
+        "on_mouse_drag", "on_mouse_up", "on_mouse_up_as_button",
+    ):
+        assert callable(getattr(component, name))
+        getattr(component, name)()
 
 
 def test_phase_plan_snapshot_is_safe_while_native_frame_is_active():
@@ -224,7 +287,11 @@ def test_scene_registry_rebuild_keeps_persistent_components_in_runtime_plan(monk
             return type(
                 "_Manager",
                 (),
-                {"get_runtime_persistent_scene": lambda self: persistent_scene},
+                {
+                    "scene_count": 1,
+                    "get_scene_at": lambda self, index: active_scene,
+                    "get_runtime_persistent_scene": lambda self: persistent_scene,
+                },
             )()
 
     monkeypatch.setattr(native_lib, "SceneManager", _SceneManager)
@@ -239,7 +306,7 @@ def test_scene_registry_rebuild_keeps_persistent_components_in_runtime_plan(monk
     assert scheduler.phase_plan("update") == (active_component, persistent_component)
 
 
-def test_scene_registry_reconcile_only_restores_persistent_components(monkeypatch):
+def test_scene_registry_reconcile_restores_other_resident_components(monkeypatch):
     from Infernux.components.component import InxComponent
     from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
     import Infernux.lib as native_lib
@@ -282,14 +349,18 @@ def test_scene_registry_reconcile_only_restores_persistent_components(monkeypatc
             return type(
                 "_Manager",
                 (),
-                {"get_runtime_persistent_scene": lambda self: persistent_scene},
+                {
+                    "scene_count": 1,
+                    "get_scene_at": lambda self, index: active_scene,
+                    "get_runtime_persistent_scene": lambda self: persistent_scene,
+                },
             )()
 
     monkeypatch.setattr(native_lib, "SceneManager", _SceneManager)
     monkeypatch.setattr(InxComponent, "_active_instances", {501: [active_component]})
 
     transaction = SceneDocumentTransaction(active_scene, document={})
-    transaction._reconcile_persistent_python_registries()
+    transaction._reconcile_resident_python_registries()
 
     assert active_component.bind_count == 0
     assert persistent_component.bind_count == 1
@@ -315,6 +386,8 @@ def test_scene_registry_rebuild_propagates_persistent_scene_failure(monkeypatch)
                 "_Manager",
                 (),
                 {
+                    "scene_count": 0,
+                    "get_scene_at": lambda self, index: None,
                     "get_runtime_persistent_scene": lambda self: (_ for _ in ()).throw(
                         RuntimeError("persistent scene unavailable")
                     )
@@ -594,6 +667,24 @@ def test_native_bridge_reuses_one_snapshot_across_multiple_fixed_steps():
     assert counters["frame_begins"] == 1
 
 
+def test_native_phases_cannot_create_a_frame_the_native_owner_did_not_open():
+    scheduler = RuntimeExecutionScheduler(name="native-owner")
+    for phase in ("fixed_update", "physics_pre_step", "physics_post_step", "update", "late_update"):
+        try:
+            scheduler.execute_native_phase(phase, 0.02)
+        except RuntimeError as exc:
+            assert "SceneManager.begin_native_frame" in str(exc)
+        else:
+            raise AssertionError("phase implicitly opened an unowned frame")
+        assert scheduler._native_frame is None
+    try:
+        scheduler.execute_native_editor_update(0.02)
+    except RuntimeError as exc:
+        assert "SceneManager.begin_native_frame" in str(exc)
+    else:
+        raise AssertionError("editor update implicitly opened an unowned frame")
+
+
 def test_native_bridge_editor_update_filters_non_edit_mode_components():
     scheduler = RuntimeExecutionScheduler(name="editor")
     regular = _ScheduledProbe(1)
@@ -609,7 +700,53 @@ def test_native_bridge_editor_update_filters_non_edit_mode_components():
         scheduler.end_native_frame()
 
     assert regular.calls == []
-    assert preview.calls == ["update:0.016"]
+    assert preview.calls == ["update:0.016", "late:0.016"]
+
+
+def test_editor_late_update_runs_after_all_preview_updates_in_one_frame():
+    scheduler = RuntimeExecutionScheduler(name="editor-late")
+    events = []
+
+    class Preview(_ScheduledProbe):
+        def update(self, delta_time):
+            events.append((self.label, "update"))
+
+        def late_update(self, delta_time):
+            events.append((self.label, "late"))
+
+    for label in (1, 2):
+        preview = Preview(label)
+        preview.label = label
+        preview._execute_in_edit_mode = True
+        scheduler.register_component(preview)
+    scheduler.begin_native_frame()
+    try:
+        scheduler.execute_native_editor_update(.016)
+    finally:
+        scheduler.end_native_frame()
+    assert events == [(1, "update"), (2, "update"), (1, "late"), (2, "late")]
+    counters = scheduler.profiler_snapshot()
+    assert counters["plan_builds"] == 1
+    assert counters["native_editor_dispatches"] == 1
+
+
+def test_editor_component_disabled_during_update_does_not_receive_late_update():
+    scheduler = RuntimeExecutionScheduler(name="editor-disable")
+
+    class Preview(_ScheduledProbe):
+        def update(self, delta_time):
+            self.calls.append("update")
+            self._enabled = False
+
+    preview = Preview(1)
+    preview._execute_in_edit_mode = True
+    scheduler.register_component(preview)
+    scheduler.begin_native_frame()
+    try:
+        scheduler.execute_native_editor_update(.016)
+    finally:
+        scheduler.end_native_frame()
+    assert preview.calls == ["update"]
 
 
 def test_native_bridge_preserves_enabled_transition_between_phases():

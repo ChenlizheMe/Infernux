@@ -30,6 +30,8 @@ class Touch:
     is_primary: bool
     cancel_reason: str
     phase: TouchPhase
+    began_this_frame: bool
+    begin_normalized_position: Tuple[float, float]
 
 
 class AccelerationEvent:
@@ -126,6 +128,8 @@ class Input:
     """The current mouse position in screen coordinates."""
     game_mouse_position: Tuple[float, float]
     """The current mouse position in game viewport coordinates."""
+    game_viewport_size: Tuple[float, float]
+    """The current game viewport size in pixels."""
     mouse_scroll_delta: Tuple[float, float]
     """The mouse scroll delta for the current frame."""
     input_string: str
@@ -160,6 +164,10 @@ class Input:
     @staticmethod
     def set_game_viewport_origin(x: float, y: float) -> None:
         """Set the game viewport origin in screen coordinates."""
+        ...
+    @staticmethod
+    def set_game_viewport_size(width: float, height: float) -> None:
+        """Set the game viewport size in pixels."""
         ...
     @staticmethod
     def is_game_focused() -> bool:
@@ -225,6 +233,31 @@ class Input:
     @staticmethod
     def is_cursor_locked() -> bool:
         """Returns True if the cursor is currently locked."""
+        ...
+
+    @staticmethod
+    def set_cursor_visible(visible: bool) -> None:
+        """Show or hide the cursor without changing relative mouse mode."""
+        ...
+
+    @staticmethod
+    def is_cursor_visible() -> bool:
+        """Return the requested cursor visibility."""
+        ...
+
+    @staticmethod
+    def set_cursor_confined(confined: bool) -> None:
+        """Confine or release the visible cursor without locking it."""
+        ...
+
+    @staticmethod
+    def is_cursor_confined() -> bool:
+        """Return whether visible cursor confinement is requested."""
+        ...
+
+    @staticmethod
+    def warp_cursor(x: float, y: float) -> bool:
+        """Warp the visible cursor in logical window coordinates."""
         ...
 
     @staticmethod

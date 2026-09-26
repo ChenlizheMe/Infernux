@@ -190,7 +190,7 @@ ShaderProgramArtifactPublishResult VkShaderCache::PublishProgramArtifact(const S
     }
 
     const auto existing = m_programArtifacts.find(artifact.key.stages);
-    const bool sameRevision = existing != m_programArtifacts.end() && existing->second.key == artifact.key;
+    const bool sameRevision = existing != m_programArtifacts.end() && existing->second->key == artifact.key;
     if (sameRevision && m_programCache.HasProgram({artifact.key, ShaderCompileTarget::Forward})) {
         result.accepted = true;
         return result;
@@ -220,8 +220,8 @@ ShaderProgramArtifactPublishResult VkShaderCache::PublishProgramArtifact(const S
     }
 
     if (existing != m_programArtifacts.end())
-        result.replacedProgram = existing->second.key;
-    m_programArtifacts[artifact.key.stages] = artifact;
+        result.replacedProgram = existing->second->key;
+    m_programArtifacts[artifact.key.stages] = std::make_shared<const ShaderProgramArtifact>(artifact);
     result.accepted = true;
     result.changed = true;
     return result;
@@ -230,7 +230,25 @@ ShaderProgramArtifactPublishResult VkShaderCache::PublishProgramArtifact(const S
 const ShaderProgramArtifact *VkShaderCache::FindProgramArtifact(const ShaderStagePair &stages) const
 {
     const auto found = m_programArtifacts.find(stages);
-    return found != m_programArtifacts.end() ? &found->second : nullptr;
+    return found != m_programArtifacts.end() ? found->second.get() : nullptr;
+}
+
+std::shared_ptr<const ShaderProgramArtifact> VkShaderCache::ShareProgramArtifact(const ShaderStagePair &stages) const
+{
+    const auto found = m_programArtifacts.find(stages);
+    return found != m_programArtifacts.end() ? found->second : nullptr;
+}
+
+std::shared_ptr<const ShaderProgramArtifact> VkShaderCache::TakeUIProgramArtifact(const ShaderProgramKey &key)
+{
+    const auto found = m_programArtifacts.find(key.stages);
+    if (found == m_programArtifacts.end() || found->second->key != key ||
+        (found->second->domain != ShaderProgramDomain::ScreenUI &&
+         found->second->domain != ShaderProgramDomain::WorldUI))
+        return nullptr;
+    auto artifact = std::move(found->second);
+    m_programArtifacts.erase(found);
+    return artifact;
 }
 
 ShaderProgramPublication VkShaderCache::MaterializeProgramVariant(const ShaderStagePair &stages,
@@ -240,11 +258,11 @@ ShaderProgramPublication VkShaderCache::MaterializeProgramVariant(const ShaderSt
     if (artifact == m_programArtifacts.end())
         return nullptr;
 
-    const auto *variant = artifact->second.FindVariant(target);
+    const auto *variant = artifact->second->FindVariant(target);
     if (!variant)
         return nullptr;
 
-    const ShaderProgramVariantKey key{artifact->second.key, target};
+    const ShaderProgramVariantKey key{artifact->second->key, target};
     ShaderProgramPublication program =
         m_programCache.GetOrCreateProgram(key, variant->vertexSpirv, variant->fragmentSpirv);
     if (!program || !program->IsValid()) {

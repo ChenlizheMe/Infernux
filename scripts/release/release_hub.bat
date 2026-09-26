@@ -2,15 +2,10 @@
 setlocal EnableExtensions
 cd /d "%~dp0\..\.."
 
-rem Maintainer release commands:
-rem   scripts\release\release_hub.bat 0.4.0                 Build and publish.
-rem   scripts\release\release_hub.bat 0.4.0 --force         Replace a release.
-rem   scripts\release\release_hub.bat 0.4.0 --overwrite     Alias for --force.
-rem   scripts\release\release_hub.bat 0.4.0 --build-only    Build without upload.
-rem   scripts\release\release_hub.bat 0.4.0 --upload-only   Upload an existing build.
-
+rem Build local Windows artifacts. Official publication is performed only by
+rem .github/workflows/release.yml after SignPath approval.
 set "VERSION=%~1"
-if not defined VERSION set /p "VERSION=Infernux version (for example 0.2.2): "
+if not defined VERSION set /p "VERSION=Infernux version (for example 0.4.0): "
 if not defined VERSION (
     echo [ERROR] A version number is required.
     exit /b 2
@@ -34,15 +29,5 @@ if errorlevel 1 (
     exit /b 4
 )
 
-set "PUBLISH_ARG=-Publish"
-set "FORCE_ARG="
-set "UPLOAD_ONLY_ARG="
-for %%A in (%*) do (
-    if /I "%%~A"=="--build-only" set "PUBLISH_ARG="
-    if /I "%%~A"=="--force" set "FORCE_ARG=-Force"
-    if /I "%%~A"=="--overwrite" set "FORCE_ARG=-Force"
-    if /I "%%~A"=="--upload-only" set "UPLOAD_ONLY_ARG=-UploadOnly"
-)
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0release_hub.ps1" -Version "%VERSION%" %PUBLISH_ARG% %FORCE_ARG% %UPLOAD_ONLY_ARG%
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0release_hub.ps1" -Version "%VERSION%"
 exit /b %ERRORLEVEL%

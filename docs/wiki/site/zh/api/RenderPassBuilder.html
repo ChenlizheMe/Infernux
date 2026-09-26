@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/zh/api/njit.html" class="">njit</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/zh/api/compile.html" class="">compile</a><a href="/wiki/site/zh/api/statistics.html" class="">statistics</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -342,6 +342,11 @@
 <p>渲染 Pass 构建器。链式 API 定义输入输出。</p>
 <!-- USER CONTENT START -->
 <p>description</p>
+<p>全屏效果可用 <code>set_buffer("values", graph.import_buffer("values", gpu_buffer))</code>
+绑定现有 <code>inx.buffer(..., dtype="uint32", device="gpu")</code>。ShaderInfo 声明
+<code>Resources { BufferUInt values }</code>，GLSL 读取 <code>values.data[index]</code>。
+shader 资源声明与 <code>set_texture()</code>／<code>set_buffer()</code> 调用顺序应相同；此绑定会在同一
+RenderGraph 中声明 fragment 阶段的 storage 读取依赖，buffer 仍由计算运行时持有。</p>
 <!-- USER CONTENT END -->
 
 <h2 id="_2">构造函数<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
@@ -426,6 +431,10 @@
 <td>Bind a texture to a sampler input for this pass.</td>
 </tr>
 <tr>
+<td><code>set_buffer(resource_name: str, buffer: str | BufferHandle) → RenderPassBuilder</code></td>
+<td>将只读 uint32 GPU buffer 绑定到全屏 shader 资源。</td>
+</tr>
+<tr>
 <td><code>set_textures(bindings: Mapping[str, object]) → RenderPassBuilder</code></td>
 <td>Bind multiple textures to sampler inputs for this pass.</td>
 </tr>
@@ -434,7 +443,7 @@
 <td>Set clear values for color and/or depth attachments.</td>
 </tr>
 <tr>
-<td><code>draw_renderers(queue_range: Tuple[int, int] = ..., sort_mode: str = ..., pass_tag: str = ..., override_material: str = ..., material_pass: str = ...) → RenderPassBuilder</code></td>
+<td><code>draw_renderers(queue_range: Tuple[int, int] = ..., sort_mode: str = ..., pass_tag: str = ..., override_material: str = ..., material_pass: str = ..., material_filter: str = ..., renderer_selection: RendererSelection | None = ...) → RenderPassBuilder</code></td>
 <td>Draw visible renderers filtered by queue range.</td>
 </tr>
 <tr>
@@ -450,8 +459,12 @@
 <td>Draw screen-space UI elements in this pass.</td>
 </tr>
 <tr>
-<td><code>fullscreen_quad(shader: str) → RenderPassBuilder</code></td>
-<td>Draw a fullscreen quad with the specified shader.</td>
+<td><code>draw_world_ui(layer_mask: int = ...) → RenderPassBuilder</code></td>
+<td>Draw selected GameObject layers, also respecting Camera culling and pass depth.</td>
+</tr>
+<tr>
+<td><code>fullscreen_quad(shader: str, depth_test: DepthCompare | None = None, depth_write: bool = False, alpha_blend: bool = False) → RenderPassBuilder</code></td>
+<td>Draw a fullscreen triangle with explicit optional depth/blend state.</td>
 </tr>
 <tr>
 <td><code>copy_texture(source: str | TextureHandle, destination: str | TextureHandle) → RenderPassBuilder</code></td>

@@ -11,6 +11,7 @@
 
 #include <function/renderer/shader/ShaderProgram.h>
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -101,6 +102,10 @@ class VkShaderCache
 
     [[nodiscard]] ShaderProgramArtifactPublishResult PublishProgramArtifact(const ShaderProgramArtifact &artifact);
     [[nodiscard]] const ShaderProgramArtifact *FindProgramArtifact(const ShaderStagePair &stages) const;
+    [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
+    ShareProgramArtifact(const ShaderStagePair &stages) const;
+    /// Removes only the exact UI-domain revision. Mesh/particle publications are never owned by UI.
+    [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact> TakeUIProgramArtifact(const ShaderProgramKey &key);
     /// Materialize one semantic pass on first use. Publishing an artifact only
     /// creates its mandatory Forward program.
     [[nodiscard]] ShaderProgramPublication MaterializeProgramVariant(const ShaderStagePair &stages,
@@ -140,7 +145,8 @@ class VkShaderCache
     std::unordered_map<std::string, std::vector<char>> m_vertCodes;
     std::unordered_map<std::string, std::vector<char>> m_fragCodes;
     std::unordered_map<std::string, ShaderRenderMeta> m_renderMetas;
-    std::unordered_map<ShaderStagePair, ShaderProgramArtifact, ShaderStagePairHash> m_programArtifacts;
+    std::unordered_map<ShaderStagePair, std::shared_ptr<const ShaderProgramArtifact>, ShaderStagePairHash>
+        m_programArtifacts;
     ShaderProgramCache m_programCache;
 };
 

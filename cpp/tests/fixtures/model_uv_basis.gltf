@@ -1,0 +1,177 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "Infernux authored two-UV skinned tangent regression"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "nodes": [
+        0
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Mirrored Surface",
+      "scale": [
+        -2,
+        3,
+        0.5
+      ],
+      "mesh": 0,
+      "skin": 0,
+      "children": [
+        1
+      ]
+    },
+    {
+      "name": "Joint"
+    }
+  ],
+  "skins": [
+    {
+      "joints": [
+        1
+      ],
+      "inverseBindMatrices": 8
+    }
+  ],
+  "meshes": [
+    {
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TANGENT": 4,
+            "TEXCOORD_0": 2,
+            "TEXCOORD_1": 3,
+            "JOINTS_0": 5,
+            "WEIGHTS_0": 6
+          },
+          "indices": 7
+        }
+      ]
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 312,
+      "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAA8wQ1P/MENb8AAAAA7AXRPuwF0T7sBVG/Os0TPzrNEz86zRM/Os0TPzrNEz86zRM/Os0TPzrNEz86zRM/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPwAAgD8AAAAA8wQ1P/MENb8AAAAAAACAP/MENT/zBDW/AAAAAAAAgD/zBDU/8wQ1vwAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAABAAIAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 36
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 36,
+      "byteLength": 36
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 72,
+      "byteLength": 24
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 96,
+      "byteLength": 24
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 120,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 168,
+      "byteLength": 24
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 192,
+      "byteLength": 48
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 240,
+      "byteLength": 6
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 248,
+      "byteLength": 64
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3",
+      "min": [
+        0,
+        -0.7071067811865476,
+        -0.8164965809277261
+      ],
+      "max": [
+        0.7071067811865476,
+        0.4082482904638631,
+        0
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 4,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 5,
+      "componentType": 5123,
+      "count": 3,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 6,
+      "componentType": 5126,
+      "count": 3,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 7,
+      "componentType": 5123,
+      "count": 3,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 8,
+      "componentType": 5126,
+      "count": 1,
+      "type": "MAT4"
+    }
+  ]
+}

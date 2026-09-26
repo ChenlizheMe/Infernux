@@ -15,6 +15,7 @@ include("${CMAKE_SOURCE_DIR}/cmake/InfernuxSources.cmake")
 add_subdirectory(external)
 
 include("${CMAKE_SOURCE_DIR}/cmake/InfernuxNativeTargets.cmake")
+include("${CMAKE_SOURCE_DIR}/cmake/InfernuxGpuJit.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/InfernuxPlayerHost.cmake")
 add_subdirectory(external/plugins)
 include("${CMAKE_SOURCE_DIR}/cpp/tests/CMakeLists.txt")

@@ -4,6 +4,8 @@
 # enabled explicitly below where the target's export strategy supports it, so
 # compile and link settings always agree.
 add_library(InfernuxFoundation SHARED ${INFERNUX_FOUNDATION_SOURCES})
+add_library(InfernuxAudioRuntime SHARED ${INFERNUX_AUDIO_RUNTIME_SOURCES})
+add_library(InfernuxAssetRuntime SHARED ${INFERNUX_ASSET_RUNTIME_SOURCES})
 add_library(InfernuxParticleRuntime SHARED ${INFERNUX_PARTICLE_RUNTIME_SOURCES})
 add_library(InfernuxShaderCompiler SHARED ${INFERNUX_SHADER_COMPILER_SOURCES})
 add_library(InfernuxRenderCore SHARED ${INFERNUX_RENDER_CORE_SOURCES})
@@ -15,10 +17,10 @@ if(INFERNUX_VULKAN_LOADER_TARGET)
     set(_infernux_vulkan_loader ${INFERNUX_VULKAN_LOADER_TARGET})
 endif()
 
-# Shipping builds keep the composition layer as a private archive so the Python
-# module can LTO/dead-strip the exact bound surface instead of shipping a
-# 60k-symbol auto-export DLL. Native regression tests use the shared form to
-# avoid loading a full private runtime image into every test process.
+# The Windows composition layer is always a private archive: its internal C++
+# surface is larger than the PE export-table limit and is not a public DLL ABI.
+# ELF development builds may still share it so native test processes reuse the
+# runtime image; shipping builds link it privately for LTO/dead stripping.
 if(INFERNUX_RUNTIME_STATIC)
     add_library(InfernuxRuntime STATIC ${INFERNUX_RUNTIME_SOURCES})
 else()
@@ -44,6 +46,8 @@ endif()
 # The composition library is private to the Python module in shipping builds.
 set(INFERNUX_RUNTIME_DLL_TARGETS
     InfernuxFoundation
+    InfernuxAudioRuntime
+    InfernuxAssetRuntime
     InfernuxParticleRuntime
     InfernuxShaderCompiler
     InfernuxRenderCore
@@ -53,7 +57,21 @@ set(INFERNUX_RUNTIME_DLL_TARGETS
 if(NOT INFERNUX_RUNTIME_STATIC)
     list(APPEND INFERNUX_RUNTIME_DLL_TARGETS InfernuxRuntime)
 endif()
-foreach(_infernux_dll ${INFERNUX_RUNTIME_DLL_TARGETS})
+# AssetRuntime has a deliberately annotated ABI. Existing subsystem DLLs are
+# kept on their current export policy until each boundary is annotated in turn.
+set(_infernux_legacy_auto_export_dlls
+    InfernuxFoundation
+    InfernuxAudioRuntime
+    InfernuxParticleRuntime
+    InfernuxShaderCompiler
+    InfernuxRenderCore
+    InfernuxRendererRuntime
+    InfernuxVulkanBackend
+)
+if(NOT INFERNUX_RUNTIME_STATIC)
+    list(APPEND _infernux_legacy_auto_export_dlls InfernuxRuntime)
+endif()
+foreach(_infernux_dll ${_infernux_legacy_auto_export_dlls})
     set_target_properties(${_infernux_dll} PROPERTIES
         WINDOWS_EXPORT_ALL_SYMBOLS ON
         CXX_VISIBILITY_PRESET default
@@ -63,6 +81,8 @@ endforeach()
 
 set(INFERNUX_NATIVE_TARGETS
     InfernuxFoundation
+    InfernuxAudioRuntime
+    InfernuxAssetRuntime
     InfernuxParticleRuntime
     InfernuxShaderCompiler
     InfernuxRenderCore
@@ -92,6 +112,10 @@ if(INFERNUX_VULKAN_LOADER_TARGET)
     endforeach()
 endif()
 
+target_link_libraries(InfernuxAudioRuntime PUBLIC InfernuxFoundation SDL3::SDL3)
+target_link_libraries(InfernuxAudioRuntime PRIVATE dr_libs)
+target_link_libraries(InfernuxAssetRuntime PUBLIC InfernuxFoundation)
+target_compile_definitions(InfernuxAssetRuntime PRIVATE INFERNUX_ASSET_RUNTIME_EXPORTS=1)
 target_link_libraries(InfernuxParticleRuntime PUBLIC InfernuxFoundation)
 target_link_libraries(InfernuxShaderCompiler PUBLIC InfernuxFoundation)
 target_link_libraries(InfernuxRenderCore PUBLIC InfernuxFoundation)
@@ -99,12 +123,15 @@ target_link_libraries(InfernuxRendererRuntime PUBLIC InfernuxFoundation)
 target_link_libraries(InfernuxVulkanBackend PUBLIC InfernuxRenderCore)
 target_link_libraries(InfernuxRuntime PUBLIC
     InfernuxFoundation
+    InfernuxAudioRuntime
+    InfernuxAssetRuntime
     InfernuxParticleRuntime
     InfernuxShaderCompiler
     InfernuxRenderCore
     InfernuxRendererRuntime
     InfernuxVulkanBackend
 )
+target_include_directories(InfernuxRuntime PRIVATE "${CMAKE_SOURCE_DIR}/external/MikkTSpace")
 if(INFERNUX_USE_TARGET_PYTHON)
     target_link_libraries(InfernuxRuntime PRIVATE pybind11::headers InfernuxTargetPython)
 else()
@@ -211,10 +238,16 @@ else()
 endif()
 
 foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
+    # ProfileConfig.h is included by public renderer headers whose class
+    # layouts contain profiling state in RelWithDebInfo.  Consumers must see
+    # the same configuration-specific value as the library or objects such as
+    # SceneRenderExtractor are allocated with the wrong size.
+    target_compile_definitions(${_infernux_target} PUBLIC
+        $<$<CONFIG:RelWithDebInfo>:INFERNUX_FRAME_PROFILE=1>
+    )
     target_compile_definitions(${_infernux_target} PRIVATE
         GLM_FORCE_DEPTH_ZERO_TO_ONE
         GLM_FORCE_LEFT_HANDED
-        $<$<CONFIG:RelWithDebInfo>:INFERNUX_FRAME_PROFILE=1>
         $<$<CONFIG:Debug>:INFERNUX_FILE_LOGGING=1>
         $<$<CONFIG:RelWithDebInfo>:INFERNUX_FILE_LOGGING=1>
         $<$<CONFIG:Release>:INFERNUX_FILE_LOGGING=1>

@@ -100,6 +100,8 @@ class InspectorPanel : public EditorPanel
         int layer = 0;
         std::string prefabGuid;
         bool hideTransform = false;
+        bool hideTransformScale = false;
+        uint32_t drivenTransformProperties = 0;
         uint64_t transformComponentId = 0;
     };
     std::function<ObjectInfo(uint64_t)> getObjectInfo;
@@ -174,6 +176,13 @@ class InspectorPanel : public EditorPanel
         int overrideCount = 0;
         bool isReadonly = false;
         bool isTransformReadonly = false;
+        struct StructuralRow
+        {
+            std::string kind;
+            std::string nodePath;
+            std::string key;
+        };
+        std::vector<StructuralRow> structuralRows;
     };
     std::function<PrefabInfo(uint64_t)> getPrefabInfo;
 
@@ -294,8 +303,9 @@ class InspectorPanel : public EditorPanel
 
     void RenderObjectHeader(InxGUIContext *ctx, uint64_t objId, const ObjectInfo &info);
     void RenderTagLayerRow(InxGUIContext *ctx, uint64_t objId, const ObjectInfo &info);
-    void RenderTransform(InxGUIContext *ctx, uint64_t objId);
-    void RenderMultiTransform(InxGUIContext *ctx, const std::vector<uint64_t> &ids);
+    void RenderTransform(InxGUIContext *ctx, uint64_t objId, bool hideScale = false, uint32_t drivenProperties = 0);
+    void RenderMultiTransform(InxGUIContext *ctx, const std::vector<uint64_t> &ids, bool hideScale = false,
+                              uint32_t drivenProperties = 0);
     std::string UpdateTransformGesture(size_t rowIndex, uint32_t lifecycleFlags);
     void FinishTransformGesture(size_t rowIndex, uint32_t lifecycleFlags);
     void RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, const PrefabInfo &pinfo);

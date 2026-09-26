@@ -6,6 +6,35 @@ import Infernux.lib as native_lib
 from Infernux.core.material import Material
 
 
+def test_new_material_template_uses_native_color_semantics():
+    import json
+    from Infernux.engine.ui.project_file_ops import MATERIAL_TEMPLATE
+
+    native = native_lib.InxMaterial('Authored', 'Unlit')
+    native.set_color('baseColor', (1., .55, .12, 1.))
+    expected = native.serialize_document()['properties']['baseColor']['type']
+    document = json.loads(MATERIAL_TEMPLATE.format(material_name='Created'))
+    assert "path_hint" not in document["shaders"]["vertex"]
+    assert "path_hint" not in document["shaders"]["fragment"]
+    assert document['properties']['baseColor']['type'] == expected
+    assert native.deserialize_document(document)
+
+
+def test_builtin_unlit_material_does_not_persist_shader_paths():
+    import json
+    from pathlib import Path
+
+    from Infernux.resources import resources_path
+
+    document = json.loads(
+        (Path(resources_path) / "materials" / "default_unlit.mat").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "path_hint" not in document["shaders"]["vertex"]
+    assert "path_hint" not in document["shaders"]["fragment"]
+
+
 class _NativeMaterial:
     def __init__(self, *, deleted: bool = False, save_result: bool = True):
         self.guid = "test-material"
@@ -37,6 +66,22 @@ class _AssetRegistry:
     @classmethod
     def instance(cls):
         return cls.current
+
+
+def test_render_texture_binding_does_not_schedule_asset_save(monkeypatch):
+    from types import SimpleNamespace
+    from Infernux.core.render_texture import RenderTexture
+
+    native = _NativeMaterial()
+    bindings = {}
+    native._set_render_texture = lambda name, owner: bindings.update({name: owner})
+    material = Material(native)
+    target = RenderTexture.__new__(RenderTexture)
+    target._native = SimpleNamespace(asset_guid='')
+    monkeypatch.setattr(material, '_auto_save', lambda: pytest.fail('runtime target must not save an asset'))
+    material.set_texture('texSampler', target)
+    assert bindings['texSampler'] is target._native
+    assert native.save_count == 0
 
 
 class _MaterialRegistry:

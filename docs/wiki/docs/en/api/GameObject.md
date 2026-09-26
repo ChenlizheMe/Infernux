@@ -25,6 +25,7 @@ A GameObject owns a Transform and a set of components. Distinguish `active_self`
 | is_static | `bool` |  |
 | prefab_guid | `str` |  |
 | prefab_root | `bool` |  |
+| prefab_source_id | `int` |  |
 | active_self | `bool` |  *(read-only)* |
 | active_in_hierarchy | `bool` |  *(read-only)* |
 | id | `int` |  *(read-only)* |

@@ -128,6 +128,24 @@ def test_reimport_rebuilds_database_before_registry_reload(monkeypatch):
     assert order == ["db-reimport", "registry-reload", "py-evict", "editor-modified"]
 
 
+def test_model_apply_sends_snapshot_without_writing_sidecar(monkeypatch):
+    from Infernux.core.asset_types import MeshImportSettings
+
+    calls = []
+    monkeypatch.setattr(AssetManager, "_ensure_execution_strategies", classmethod(lambda cls: None))
+    monkeypatch.setattr(AssetManager, "_import_apply_handlers", {
+        "mesh": lambda *_: (_ for _ in ()).throw(AssertionError("early sidecar write"))
+    })
+    monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(
+        lambda cls, path, **kwargs: calls.append((path, kwargs)) or False
+    ))
+    settings = MeshImportSettings(scale_factor=3.0, weld_vertices=False)
+    assert AssetManager.apply_import_settings("mesh", "model.obj", settings) is False
+    assert calls == [("model.obj", {"import_settings": settings.to_dict()})]
+    settings.scale_factor = 7.0
+    assert calls[0][1]["import_settings"]["scale_factor"] == 3.0
+
+
 def test_texture_reimport_uses_single_native_publication_path(monkeypatch):
     order = []
     database = _Database(order)

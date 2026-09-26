@@ -14,6 +14,10 @@ namespace infernux
 namespace
 {
 
+// Revision 1 includes authoritative Prefab Variant dependencies. Older
+// catalogs cannot be reused even when the source timestamps are unchanged.
+constexpr int kImportRevision = 1;
+
 void RequireExactFields(const nlohmann::json &object, std::initializer_list<const char *> fields,
                         const std::string &location)
 {
@@ -30,7 +34,7 @@ ResourceType ParseResourceType(const nlohmann::json &value, const std::string &l
     if (!value.is_number_integer())
         throw std::invalid_argument(location + " must be an integer");
     const int raw = value.get<int>();
-    if (raw < static_cast<int>(ResourceType::Shader) || raw > static_cast<int>(ResourceType::ParticleGraph))
+    if (raw < static_cast<int>(ResourceType::Shader) || raw > static_cast<int>(ResourceType::RenderTexture))
         throw std::invalid_argument(location + " is not a current ResourceType");
     return static_cast<ResourceType>(raw);
 }
@@ -70,6 +74,10 @@ bool AssetIndex::Load(const std::string &path, const std::string &normalizedProj
     if (!document.is_object() || !document.contains("project_root") || !document["project_root"].is_string())
         throw std::invalid_argument("AssetIndex has no valid project_root");
     if (document["project_root"].get<std::string>() != normalizedProjectRoot) {
+        Reset(normalizedProjectRoot);
+        return false;
+    }
+    if (!document.contains("import_revision") || document["import_revision"] != kImportRevision) {
         Reset(normalizedProjectRoot);
         return false;
     }
@@ -127,12 +135,14 @@ nlohmann::json AssetIndex::SerializeDocument() const
                            {"metadata", entry->metadata.SerializeDocument()}});
     }
 
-    return {{"project_root", m_projectRoot}, {"entries", std::move(entries)}};
+    return {{"project_root", m_projectRoot}, {"import_revision", kImportRevision}, {"entries", std::move(entries)}};
 }
 
 void AssetIndex::DeserializeDocument(const nlohmann::json &document, const std::string &normalizedProjectRoot)
 {
-    RequireExactFields(document, {"project_root", "entries"}, "AssetIndex");
+    RequireExactFields(document, {"project_root", "import_revision", "entries"}, "AssetIndex");
+    if (document["import_revision"] != kImportRevision)
+        throw std::invalid_argument("AssetIndex import revision does not match");
     if (!document["project_root"].is_string() || document["project_root"].get<std::string>() != normalizedProjectRoot)
         throw std::invalid_argument("AssetIndex project_root does not match");
     if (!document["entries"].is_array())

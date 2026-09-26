@@ -10,10 +10,13 @@ warmup(fn: Callable[..., Any]) → None
 
 ## Description
 
-Pre-compile a ``@njit`` function by calling it with representative args.
+Prepare a compiled CPU function on isolated inputs; errors propagate.
 
 <!-- USER CONTENT START --> description
-
+Compile and validate one runtime signature using isolated argument copies.
+Preparation failures propagate and never cause a second execution through a
+different backend. A target without CPU JIT removes this call while cooking
+ordinary Python bytecode; the runtime API itself never becomes a no-op.
 <!-- USER CONTENT END -->
 
 ## Parameters
@@ -25,5 +28,7 @@ Pre-compile a ``@njit`` function by calling it with representative args.
 ## Example
 
 <!-- USER CONTENT START --> example
-> **Example status:** No curated example has been verified for this symbol in 0.4.0. Use the signatures above; do not infer behavior from similarly named APIs in other engines.
+```python
+jit.warmup(integrate, positions, velocities, 1.0 / 60.0)
+```
 <!-- USER CONTENT END -->

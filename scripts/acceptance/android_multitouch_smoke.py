@@ -56,6 +56,8 @@ _DEFAULT_REQUIRED_LOGS = (
     "value=Package resource reached UIText on every Player target.",
     "INFERNUX_PLATFORM_FIXTURE_PRELOAD_RESOURCE_READY "
     "value=Package resource reached UIText on every Player target.",
+    "INFERNUX_PLATFORM_FIXTURE_MANAGED_GUID_READ_READY "
+    "guid=8b7148eba8303c90b0589315c16f7cba",
     "INFERNUX_PLATFORM_FIXTURE_MULTITOUCH_READY",
     "INFERNUX_PLATFORM_FIXTURE_UNITY_TOUCH_READY",
     "INFERNUX_PLATFORM_FIXTURE_TOUCH_CANCELED",
@@ -244,7 +246,6 @@ def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
         automated_install_approval = install_apk(
             adb,
             arguments.instrumentation_apk,
-            replace=False,
             approve_oem_prompt=not device.emulator,
         )
         installed = True
@@ -353,7 +354,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--serial")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--logcat-report", type=Path)
-    parser.add_argument("--target-package", default="com.infernux.bootstrap")
+    parser.add_argument(
+        "--target-package",
+        required=True,
+        help="Installed Player applicationId (for example com.infernux.infernux041labv2)",
+    )
     parser.add_argument(
         "--instrumentation-package", default="com.infernux.acceptance.input"
     )

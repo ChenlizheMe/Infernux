@@ -45,6 +45,7 @@ def test_linux_setup_installs_and_checks_the_native_toolchain() -> None:
     for dependency in (
         "clang-format",
         "glslang-tools",
+        "libegl-dev",
         "libegl1",
         "libgl1",
         "libxcb-cursor0",
@@ -77,6 +78,75 @@ def test_linux_setup_installs_and_checks_the_native_toolchain() -> None:
     assert "find_llvm_tool llvm-ar" in configurator
     assert "find_llvm_tool llvm-ranlib" in configurator
     assert "install_linux_dependencies.sh" in configurator
+
+
+def test_linux_sdl_build_requires_x11_and_wayland() -> None:
+    external_cmake = (ROOT / "external/CMakeLists.txt").read_text(encoding="utf-8")
+
+    assert 'pkg_check_modules(INFERNUX_SDL_WAYLAND REQUIRED' in external_cmake
+    for dependency in (
+        "egl",
+        "wayland-client>=1.18",
+        "wayland-egl",
+        "wayland-cursor",
+        "xkbcommon>=0.5.0",
+        "libdecor-0",
+    ):
+        assert dependency in external_cmake
+    assert 'set(SDL_X11 ON CACHE BOOL "" FORCE)' in external_cmake
+    assert 'set(SDL_WAYLAND ON CACHE BOOL "" FORCE)' in external_cmake
+
+
+def test_linux_build_does_not_promote_assimp_warnings_to_errors() -> None:
+    external_cmake = (ROOT / "external/CMakeLists.txt").read_text(encoding="utf-8")
+
+    warning_policy = 'set(ASSIMP_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)'
+    assert warning_policy in external_cmake
+    assert external_cmake.index(warning_policy) < external_cmake.index(
+        "add_subdirectory(assimp)"
+    )
+
+
+def test_linux_vulkan_surface_uses_the_active_sdl_video_backend() -> None:
+    view = (ROOT / "cpp/infernux/platform/window/InxView.cpp").read_text(
+        encoding="utf-8"
+    )
+    renderer = (ROOT / "cpp/infernux/function/renderer/InxRenderer.cpp").read_text(
+        encoding="utf-8"
+    )
+    core = (ROOT / "cpp/infernux/function/renderer/InxVkCoreModular.cpp").read_text(
+        encoding="utf-8"
+    )
+    device = (ROOT / "cpp/infernux/function/renderer/vk/VkDeviceContext.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    # SDL resolves this list from the video driver selected by SDL_Init
+    # (Wayland, X11, or XWayland). The same list must reach vkCreateInstance;
+    # asking another subsystem later or naming a Linux WSI extension here can
+    # create an instance/surface backend mismatch.
+    assert view.index("SDL_Init(SDL_INIT_VIDEO") < view.index("SDL_CreateWindow(")
+    assert renderer.index("m_view->Init(width, height)") < renderer.index(
+        "m_view->GetVkExtensions(&extCount)"
+    )
+    assert renderer.index("m_view->GetVkExtensions(&extCount)") < renderer.index(
+        "m_vkCore->Init("
+    )
+    assert "m_deviceConfig.windowInstanceExtensions.emplace_back(vkWindowExts[index])" in core
+    assert "GetRequiredExtensions(config, m_validationEnabled)" in device
+    assert "for (const std::string &extension : config.windowInstanceExtensions)" in device
+    assert "SDL_Vulkan_CreateSurface(m_window, vkInstance" in view
+
+    surface_contract = view + renderer + core + device
+    for forbidden in (
+        "VK_KHR_XLIB_SURFACE_EXTENSION_NAME",
+        "VK_KHR_XCB_SURFACE_EXTENSION_NAME",
+        "VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME",
+        "vkCreateXlibSurfaceKHR",
+        "vkCreateXcbSurfaceKHR",
+        "vkCreateWaylandSurfaceKHR",
+    ):
+        assert forbidden not in surface_contract
 
 
 def test_linux_ci_reuses_the_repository_dependency_installer() -> None:

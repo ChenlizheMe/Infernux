@@ -29,6 +29,38 @@ def test_switching_plugins_selects_first_page_without_locking_it(pages):
     assert render("vendor/first")[0] is True
 
 
+def test_plugin_panel_filters_by_stable_category_key():
+    registry = SimpleNamespace(
+        available=lambda: (
+            {
+                "reference": "infernux/platform-web",
+                "name": "Web Platform",
+                "category": "platform_build",
+                "source": {"official": True},
+            },
+            {
+                "reference": "infernux/mcp",
+                "name": "MCP",
+                "category": "editor_tools",
+                "source": {"official": True},
+            },
+        ),
+        installed=lambda: (),
+    )
+    manager = SimpleNamespace(
+        registry=registry,
+        states={},
+        cached_reference_path=lambda _reference: "",
+    )
+    panel = PluginPanel()
+    panel._category_index = 1
+
+    rows = panel._visible_rows(manager)
+
+    assert [row["reference"] for row in rows] == ["infernux/platform-web"]
+    assert rows[0]["_category_key"] == "platform_build"
+
+
 def test_document_images_request_ui_color_and_full_page_resolution(monkeypatch):
     panel = PluginPanel()
     requests = []

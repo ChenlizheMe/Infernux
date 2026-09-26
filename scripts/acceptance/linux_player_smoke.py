@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -16,6 +17,14 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+
+# Importing the source engine prepares its own native-library search path for
+# the acceptance process.  A packaged Player must not inherit those build-tree
+# entries: doing so can load one half of the runtime from the checkout and the
+# other half from the Player package.  Preserve the caller's launch environment
+# before importing Infernux and use that clean boundary for the child process.
+_PLAYER_LAUNCH_ENVIRONMENT = os.environ.copy()
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +43,14 @@ _FATAL_PATTERNS = (
     "CRASH:",
     "Traceback (most recent call last)",
     "[ERROR]",
+    "X Error of failed request",
+    "VK_ERROR_DEVICE_LOST",
+    "device lost",
+    "Aborted",
+    "SIGABRT",
+    "Segmentation fault",
+    "SIGSEGV",
+    "segfault",
 )
 
 
@@ -48,11 +65,13 @@ class SmokeResult:
     final_position: tuple[float, float, float]
     axis_delta: float
     validation: bool
+    video_driver: str
     vk_driver_files: str
     fatal_count: int
     elapsed_seconds: float
     runtime_frame_count: int
     submission_ready: bool
+    capture_path: str
     component_assertions: list[dict[str, Any]]
     component_fields: dict[str, Any]
 
@@ -396,12 +415,36 @@ def _fatal_lines(text: str) -> list[str]:
     ]
 
 
+def _selected_video_driver(text: str) -> str:
+    """Return the last SDL backend reported while creating the Vulkan surface.
+
+    SDL emits its own startup line (``SDL chose video backend 'x11'``), while
+    the engine emits the stricter ``selected backend=x11`` contract marker.
+    Both describe the same selected backend; accepting both keeps the smoke
+    gate tied to the runtime's authoritative startup evidence instead of
+    depending on which logger reaches the captured Player stream first.
+    """
+
+    matches = re.findall(r"(?:selected )?backend=([^,\s]+)", text)
+    matches.extend(re.findall(r"SDL chose video backend ['\"]([^'\"]+)['\"]", text))
+    return matches[-1] if matches else ""
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("player", help="Path to a built Linux Player executable")
     parser.add_argument("--report", help="Write atomic JSON acceptance evidence")
     parser.add_argument("--artifact-root", help="Directory for logs and control files")
     parser.add_argument("--xvfb", choices=("auto", "always", "never"), default="auto")
+    parser.add_argument(
+        "--video-driver",
+        choices=("default", "x11", "wayland"),
+        default="default",
+        help=(
+            "Force SDL's Linux video backend and require the runtime to report "
+            "the same backend. Wayland requires an existing WAYLAND_DISPLAY."
+        ),
+    )
     parser.add_argument("--display", default=":98")
     parser.add_argument("--vk-driver-files", default="")
     parser.add_argument("--validation", action="store_true")
@@ -413,6 +456,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--minimum-axis-delta", type=float, default=0.1)
     parser.add_argument("--minimum-final-y", type=float)
     parser.add_argument(
+        "--capture-file",
+        default="",
+        help="Optional plain .png basename captured from the Player game render target",
+    )
+    parser.add_argument("--capture-timeout", type=float, default=30.0)
+    parser.add_argument(
         "--component-probe",
         action="append",
         type=_parse_component_probe,
@@ -420,6 +469,15 @@ def _parser() -> argparse.ArgumentParser:
         help="Repeatable JSON component probe with public fields and assertions",
     )
     return parser
+
+
+def _display_server_available(environment: dict[str, str]) -> bool:
+    driver = str(environment.get("SDL_VIDEODRIVER", "") or "").casefold()
+    if driver == "wayland":
+        return bool(environment.get("WAYLAND_DISPLAY"))
+    if driver == "x11":
+        return bool(environment.get("DISPLAY"))
+    return bool(environment.get("DISPLAY") or environment.get("WAYLAND_DISPLAY"))
 
 
 def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
@@ -432,6 +490,14 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
     game = str(manifest.get("game", "") or player.name)
     if args.startup_timeout <= 0.0 or args.press_duration <= 0.0:
         raise ValueError("timeouts and press duration must be positive")
+    capture_file = str(args.capture_file or "").strip()
+    if capture_file and (
+        Path(capture_file).name != capture_file
+        or Path(capture_file).suffix.casefold() != ".png"
+    ):
+        raise ValueError("--capture-file must be a plain .png basename")
+    if args.capture_timeout <= 0.0 or args.capture_timeout > 60.0:
+        raise ValueError("--capture-timeout must be in (0, 60]")
 
     request = artifact_root / "control-request.json"
     response = artifact_root / "control-response.json"
@@ -443,7 +509,7 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
     probes = list(args.component_probe)
     player_probes = _player_component_probes(probes)
     object_names = _probe_object_names(args.object, probes)
-    environment = os.environ.copy()
+    environment = _PLAYER_LAUNCH_ENVIRONMENT.copy()
     environment.update(
         {
             "_INFERNUX_PLAYER_DEBUG_BUILD": "1",
@@ -459,9 +525,16 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
         )
     if args.validation:
         environment["VK_INSTANCE_LAYERS"] = "VK_LAYER_KHRONOS_validation"
+    if args.video_driver != "default":
+        environment["SDL_VIDEODRIVER"] = args.video_driver
+    if args.video_driver == "wayland" and args.xvfb == "always":
+        raise ValueError("--video-driver=wayland cannot be combined with --xvfb=always")
 
-    use_xvfb = args.xvfb == "always" or (
-        args.xvfb == "auto" and not environment.get("DISPLAY")
+    display_server_available = _display_server_available(environment)
+    use_xvfb = args.video_driver != "wayland" and (
+        args.xvfb == "always" or (
+        args.xvfb == "auto" and not display_server_available
+        )
     )
     xvfb_process: subprocess.Popen[str] | None = None
     player_process: subprocess.Popen[str] | None = None
@@ -491,8 +564,11 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             time.sleep(0.5)
             if xvfb_process.poll() is not None:
                 raise RuntimeError(f"Xvfb exited with code {xvfb_process.returncode}")
-        elif not environment.get("DISPLAY"):
-            raise RuntimeError("DISPLAY is unset and --xvfb=never was requested")
+        elif not display_server_available:
+            raise RuntimeError(
+                "neither the selected X11 nor Wayland display is available and "
+                "--xvfb=never was requested"
+            )
 
         with outer_log.open("w", encoding="utf-8", newline="\n") as outer_stream:
             player_process = subprocess.Popen(
@@ -582,6 +658,23 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
                 "Linux Player feature readiness timed out: " + last_feature_error
             )
 
+        capture_path = ""
+        if capture_file:
+            capture = control.call(
+                "capture",
+                {
+                    "file_name": capture_file,
+                    "timeout_seconds": args.capture_timeout,
+                },
+                timeout=args.capture_timeout + 5.0,
+                process=player_process,
+            )
+            capture_path = str(capture.get("output_path", "") or "")
+            if str(capture.get("status", "")) != "completed":
+                raise RuntimeError(f"Player render-target capture failed: {capture!r}")
+            if not capture_path or not Path(capture_path).is_file():
+                raise RuntimeError(f"Player capture artifact is missing: {capture_path!r}")
+
         control.call("shutdown", timeout=10.0, process=player_process)
         try:
             player_process.wait(timeout=10.0)
@@ -596,6 +689,12 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
         fatals = _fatal_lines(combined)
         if fatals:
             raise RuntimeError("Linux Player emitted fatal or Vulkan validation diagnostics")
+        selected_driver = _selected_video_driver(combined)
+        if args.video_driver != "default" and selected_driver != args.video_driver:
+            raise RuntimeError(
+                "SDL selected video backend "
+                f"{selected_driver or '<none>'!r}; expected {args.video_driver!r}"
+            )
         return SmokeResult(
             player=str(player),
             game=game,
@@ -606,17 +705,26 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
             final_position=final,
             axis_delta=delta,
             validation=bool(args.validation),
+            video_driver=selected_driver,
             vk_driver_files=str(environment.get("VK_DRIVER_FILES", "")),
             fatal_count=0,
             elapsed_seconds=time.monotonic() - started,
             runtime_frame_count=int(feature_observation.get("runtime_frame_count", 0)),
             submission_ready=bool(feature_observation.get("submission_ready")),
+            capture_path=capture_path,
             component_assertions=assertion_results,
             component_fields=component_fields,
         )
     finally:
         _terminate(player_process)
         _terminate(xvfb_process)
+        state_artifact = artifact_root / "player-state.log"
+        if not state_artifact.is_file():
+            state_artifact.write_text(
+                _new_log_text(state_log, state_start),
+                encoding="utf-8",
+                newline="\n",
+            )
 
 
 def main() -> int:

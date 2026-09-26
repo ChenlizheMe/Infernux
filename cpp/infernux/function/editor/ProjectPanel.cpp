@@ -18,6 +18,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/InxMesh/InxMesh.h>
+#include <function/resources/InxMesh/ModelMeshReference.h>
 #include <functional>
 #include <imgui_internal.h>
 #include <nlohmann/json.hpp>
@@ -87,14 +90,15 @@ static std::string MakeSubAssetVirtualPath(const std::string &basePath, const ch
 static bool IsVirtualSubAssetPath(const std::string &path)
 {
     return path.find(kSubMatToken) != std::string::npos || path.find(kSubBoneToken) != std::string::npos ||
-           path.find(kSubAnimToken) != std::string::npos;
+           path.find(kSubAnimToken) != std::string::npos || path.find(infernux::ModelMeshToken) != std::string::npos ||
+           path.find("::subtex:") != std::string::npos;
 }
 
 static std::string ResolveRealAssetPath(const std::string &path)
 {
     if (path.empty())
         return path;
-    for (const char *tok : {kSubMatToken, kSubBoneToken, kSubAnimToken}) {
+    for (const char *tok : {kSubMatToken, kSubBoneToken, kSubAnimToken, infernux::ModelMeshToken, "::subtex:"}) {
         auto pos = path.find(tok);
         if (pos != std::string::npos)
             return path.substr(0, pos);
@@ -155,23 +159,15 @@ static std::string SelectionPathForInspector(const std::string &path)
     // Embedded animation takes use the 3D clip inspector (Python + virtual path).
     if (path.find(kSubAnimToken) != std::string::npos)
         return path;
+    if (path.find(infernux::ModelMeshToken) != std::string::npos)
+        return path;
+    if (path.find("::subtex:") != std::string::npos)
+        return path;
     return ResolveRealAssetPath(path);
 }
 
 /// True if the mouse is over the docked/floating Inspector window (screen space).
 /// Prevents Project panel from clearing file selection when clicking empty Inspector space.
-bool IsMouseOverInspectorWindow()
-{
-    ImGuiWindow *win = ImGui::FindWindowByName("Inspector###inspector");
-    if (win == nullptr || win->Hidden)
-        return false;
-    const ImVec2 mp = ImGui::GetIO().MousePos;
-    const float x0 = win->Pos.x;
-    const float y0 = win->Pos.y;
-    const float x1 = x0 + win->SizeFull.x;
-    const float y1 = y0 + win->SizeFull.y;
-    return mp.x >= x0 && mp.x <= x1 && mp.y >= y0 && mp.y <= y1;
-}
 } // namespace
 
 // ImGui key constants
@@ -300,6 +296,7 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
             {".animtimeline", "timeline"},
             {".timelinefsm", "timeline_fsm"},
             {".particlegraph", "particle_graph"},
+            {".inxdata", "file"},
             {".effect", "render_effect"},
             {".effectgroup", "render_effect_group"},
             {".prefab", "prefab"},
@@ -337,6 +334,8 @@ const std::unordered_map<std::string, ProjectPanel::DragDropInfo> &ProjectPanel:
             {".animclip3d", {"ANIMCLIP3D_FILE", "3D AnimClip"}},
             {".animfsm", {"ANIMFSM_FILE", "AnimFSM"}},
             {".particlegraph", {"PARTICLE_GRAPH_FILE", "Particle Graph"}},
+            {".inxdata", {"DATA_ASSET_FILE", "Data Asset"}},
+            {".rendertexture", {"RENDER_TEXTURE_FILE", "Render Texture"}},
             {".effect", {"RENDER_EFFECT_FILE", "Render Effect"}},
             // Effect assets and groups occupy the same RenderStack slot type.
             {".effectgroup", {"RENDER_EFFECT_FILE", "Render Effect Group"}},
@@ -1153,7 +1152,36 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
 
     const uint64_t childMtime = modelItem.mtimeNs;
 
+    const auto textureManifest = TryGetMetaString(meta.get(), "model_textures");
+    if (!textureManifest.empty()) {
+        for (const auto &entry : nlohmann::json::parse(textureManifest)) {
+            FileItem sub{};
+            sub.type = FileItem::SubTexture;
+            sub.name = entry.at("name").get<std::string>();
+            sub.path = modelPath + "::subtex:" + entry.at("guid").get<std::string>();
+            sub.ext = ".png";
+            sub.parentPath = modelPath;
+            sub.mtimeNs = childMtime;
+            out.push_back(std::move(sub));
+        }
+    }
+
+    const auto meshManifest = TryGetMetaString(meta.get(), "model_meshes");
+    if (!meshManifest.empty()) {
+        for (const auto &entry : nlohmann::json::parse(meshManifest)) {
+            FileItem sub{};
+            sub.type = FileItem::SubMesh;
+            sub.name = entry.at("name").get<std::string>();
+            sub.path = infernux::MakeModelMeshReference(modelPath, entry.at("path").get<std::vector<std::string>>());
+            sub.ext = ".inxmesh";
+            sub.parentPath = modelPath;
+            sub.mtimeNs = childMtime;
+            out.push_back(std::move(sub));
+        }
+    }
+
     // ── Materials (material slots) ────────────────────────────────────
+    const bool importMaterials = TryGetMetaString(meta.get(), "material_import_mode") != "none";
     std::vector<std::string> matNames = SplitCommaList(TryGetMetaString(meta.get(), "material_slots"));
     int matCount = TryGetMetaInt(meta.get(), "material_slot_count", -1);
     if (matNames.empty() && matCount > 0) {
@@ -1162,7 +1190,7 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
             matNames.push_back("Material_" + std::to_string(i));
     }
 
-    if (!matNames.empty()) {
+    if (importMaterials && !matNames.empty()) {
         for (int i = 0; i < static_cast<int>(matNames.size()); ++i) {
             FileItem sub{};
             sub.type = FileItem::SubMaterial;
@@ -1174,7 +1202,7 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
             sub.slotIndex = i;
             out.push_back(std::move(sub));
         }
-    } else {
+    } else if (importMaterials) {
         FileItem sub{};
         sub.type = FileItem::SubMaterial;
         sub.name = "(No materials in meta — reimport model)";
@@ -1190,45 +1218,20 @@ void ProjectPanel::AppendModelSubAssets(std::vector<FileItem> &out, AssetDatabas
     // remain persistence identities, but they are not filesystem paths and
     // must never be fed back through Project selection/path projection.
     const std::string &animVirtualBase = modelPath;
-    std::vector<std::string> animNames = SplitCommaList(TryGetMetaString(meta.get(), "animation_names_csv"));
-    int animCount = TryGetMetaInt(meta.get(), "animation_count", -1);
-    if (!animNames.empty()) {
-        const int maxShow = 24;
-        const int total = static_cast<int>(animNames.size());
-        const int show = std::min(total, maxShow);
-        for (int i = 0; i < show; ++i) {
+    if (meta->HasKey("model_animations")) {
+        const auto animations = nlohmann::json::parse(TryGetMetaString(meta.get(), "model_animations"));
+        for (size_t i = 0; i < animations.size(); ++i) {
+            const auto &animation = animations[i];
             FileItem sub{};
             sub.type = FileItem::SubMesh;
-            const std::string &takeName = animNames[static_cast<size_t>(i)];
-            sub.name = StripPipeDisplaySuffix(takeName) + ".animclip3d";
-            sub.path = MakeSubAssetVirtualPath(animVirtualBase, kSubAnimToken, i);
+            sub.name = animation.at("name").get<std::string>() + ".animclip3d";
+            sub.path = animVirtualBase + kSubAnimToken + animation.at("id").get<std::string>();
             sub.ext = ".animclip3d";
             sub.parentPath = modelPath;
             sub.mtimeNs = childMtime;
-            sub.slotIndex = i;
+            sub.slotIndex = static_cast<int>(i);
             out.push_back(std::move(sub));
         }
-        if (total > show) {
-            FileItem sub{};
-            sub.type = FileItem::SubMesh;
-            sub.name = std::string("... ") + std::to_string(total - show) + " more animation takes";
-            sub.path = MakeSubAssetVirtualPath(animVirtualBase, kSubAnimToken, 999999);
-            sub.ext = ".animclip3d";
-            sub.parentPath = modelPath;
-            sub.mtimeNs = childMtime;
-            sub.slotIndex = -1;
-            out.push_back(std::move(sub));
-        }
-    } else if (animCount > 0) {
-        FileItem sub{};
-        sub.type = FileItem::SubMesh;
-        sub.name = std::string("Animations: ") + std::to_string(animCount) + " take(s) (reimport for names)";
-        sub.path = MakeSubAssetVirtualPath(animVirtualBase, kSubAnimToken, 0);
-        sub.ext = ".animclip3d";
-        sub.parentPath = modelPath;
-        sub.mtimeNs = childMtime;
-        sub.slotIndex = -1;
-        out.push_back(std::move(sub));
     }
 }
 
@@ -1535,6 +1538,12 @@ uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath, uint64_t c
     double now = m_frameTimeNow;
 
     uint64_t mtimeNs = cachedMtimeNs;
+    const bool modelChild = filePath.find(infernux::ModelMeshToken) != std::string::npos;
+    if (modelChild && m_assetDatabase) {
+        const auto guid = m_assetDatabase->GetGuidFromPath(infernux::SplitModelMeshReference(filePath).first);
+        const auto mesh = infernux::AssetRegistry::Instance().GetAsset<infernux::InxMesh>(guid);
+        mtimeNs = mesh ? mesh->GetGeneration() : 1;
+    }
     if (mtimeNs == 0) {
         auto it = m_modelMtimeCache.find(filePath);
         if (it != m_modelMtimeCache.end() && (now - it->second.second) < 1.0) {
@@ -1552,12 +1561,12 @@ uint64_t ProjectPanel::GetModelThumbnail(const std::string &filePath, uint64_t c
 
     const std::string resourceKey = std::string("mesh|") + filePath;
     const uint64_t readyTexture = m_engine->GetMeshPreviewTextureId(resourceKey);
-    if (readyTexture != 0)
+    auto &request = m_modelPreviewRequests[resourceKey];
+    if (readyTexture != 0 && (!modelChild || request.fingerprint == mtimeNs))
         return readyTexture;
     if (m_modelPreviewRequestsThisFrame >= kModelPreviewRequestBudget)
-        return 0;
+        return readyTexture;
 
-    auto &request = m_modelPreviewRequests[resourceKey];
     if (request.fingerprint == mtimeNs && m_previewFrameSerial - request.lastRequestFrame < 30)
         return 0;
     request.fingerprint = mtimeNs;
@@ -1714,6 +1723,9 @@ uint64_t ProjectPanel::GetTypeIconId(const FileItem &item) const
     } else if (item.type == FileItem::SubMesh) {
         auto mapIt = iconMap.find(item.ext.empty() ? ".fbx" : item.ext);
         key = mapIt != iconMap.end() ? &mapIt->second : nullptr;
+    } else if (item.type == FileItem::SubTexture) {
+        auto sit = iconMap.find(".png");
+        key = sit != iconMap.end() ? &sit->second : nullptr;
     } else if (item.type == FileItem::SubMaterial) {
         auto sit = iconMap.find(".mat");
         key = sit != iconMap.end() ? &sit->second : nullptr;
@@ -1784,7 +1796,7 @@ const ProjectPanel::LabelEntry &ProjectPanel::GetCachedItemLabel(InxGUIContext *
             }
         }
         nameDisplay = std::string("  ") + subLabel;
-    } else if (item.type == FileItem::SubMaterial) {
+    } else if (item.type == FileItem::SubMaterial || item.type == FileItem::SubTexture) {
         nameDisplay = std::string("  ") + item.name;
     }
 
@@ -1915,7 +1927,8 @@ void ProjectPanel::HandleItemClick(const FileItem &item, InxGUIContext *ctx)
             if (RequestDirectoryNavigation(item.path))
                 m_lastClickedFile.clear();
         }
-    } else if (item.type == FileItem::SubMesh || item.type == FileItem::SubMaterial) {
+    } else if (item.type == FileItem::SubMesh || item.type == FileItem::SubMaterial ||
+               item.type == FileItem::SubTexture) {
         // Sub-assets: select only
     } else if (doubleClicked) {
         std::string openKind = "system";
@@ -2308,13 +2321,9 @@ void ProjectPanel::OnRenderContent(InxGUIContext *ctx)
     ctx->PopStyleVar(1);   // WindowPadding
     const auto tailStart = std::chrono::steady_clock::now();
 
-    bool hasSelection = !m_selectedFile.empty() || !m_selectedFiles.empty();
-    bool clickedOutsideProject = hasSelection &&
-                                 (ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1) || ImGui::IsMouseClicked(2)) &&
-                                 !ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows) &&
-                                 !ImGui::IsAnyItemActive() && !IsMouseOverInspectorWindow();
-    if (clickedOutsideProject)
-        ClearSelection();
+    // Focus changes (menus, toolbars, other panels) are not selection edits.
+    // Each picking surface publishes its own intent to the shared authority;
+    // clearing here would also insert a spurious action ahead of asset Undo.
     const auto contentEnd = std::chrono::steady_clock::now();
     m_subBreadcrumb += std::chrono::duration<double, std::milli>(folderStart - breadcrumbStart).count();
     m_subFolderTree += std::chrono::duration<double, std::milli>(gridStart - folderStart).count();
@@ -2966,7 +2975,8 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
                 selectionKey = &fallbackSelectionKey;
             }
 
-            const bool isSubAsset = (item.type == FileItem::SubMaterial || item.type == FileItem::SubMesh);
+            const bool isSubAsset = (item.type == FileItem::SubMaterial || item.type == FileItem::SubMesh ||
+                                     item.type == FileItem::SubTexture);
             const std::string itemSemanticId = captureSemantics ? MakeProjectItemSemanticId(item) : std::string{};
             const ImVec2 cellTopLeft = ImGui::GetCursorScreenPos();
 
@@ -2985,7 +2995,8 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             }
 
             const auto isSubAssetItem = [](const FileItem &it) {
-                return it.type == FileItem::SubMaterial || it.type == FileItem::SubMesh;
+                return it.type == FileItem::SubMaterial || it.type == FileItem::SubMesh ||
+                       it.type == FileItem::SubTexture;
             };
 
             // Expanded model on this row: draw the left portion of the inline strip so it
@@ -3037,7 +3048,14 @@ void ProjectPanel::RenderFileGrid(InxGUIContext *ctx)
             uint64_t displayTexId = 0;
             bool isUiPrefab = false;
             if (item.type == FileItem::SubMesh) {
-                displayTexId = GetTypeIconId(item);
+                if (item.path.find(infernux::ModelMeshToken) != std::string::npos)
+                    displayTexId = GetModelThumbnail(item.path, item.mtimeNs);
+                if (displayTexId == 0)
+                    displayTexId = GetTypeIconId(item);
+            } else if (item.type == FileItem::SubTexture) {
+                displayTexId = GetThumbnail(item.path, item.mtimeNs);
+                if (displayTexId == 0)
+                    displayTexId = GetTypeIconId(item);
             } else if (item.type == FileItem::SubMaterial) {
                 displayTexId = GetEmbeddedMaterialThumbnail(item);
                 if (displayTexId == 0)
@@ -3331,7 +3349,8 @@ void ProjectPanel::RenderContextMenu(InxGUIContext *ctx)
 void ProjectPanel::RenderDragDropSource(InxGUIContext *ctx, const FileItem &item)
 {
     // Embedded model materials are browse-only (no drag — use a standalone .mat to assign).
-    if (item.type != FileItem::Dir && item.type != FileItem::File && item.type != FileItem::SubMesh)
+    if (item.type != FileItem::Dir && item.type != FileItem::File && item.type != FileItem::SubMesh &&
+        item.type != FileItem::SubTexture)
         return;
 
     // BeginDragDropSource is cheap (~1µs) — returns false 99.9% of the time.
@@ -3348,6 +3367,13 @@ void ProjectPanel::RenderDragDropSource(InxGUIContext *ctx, const FileItem &item
 
     if (item.type == FileItem::SubMesh) {
         if (item.parentPath.empty()) {
+            ctx->EndDragDropSource();
+            return;
+        }
+
+        if (item.path.find(infernux::ModelMeshToken) != std::string::npos) {
+            ctx->SetDragDropPayload("MODEL_FILE", item.path);
+            ctx->Label("Mesh: " + item.name);
             ctx->EndDragDropSource();
             return;
         }

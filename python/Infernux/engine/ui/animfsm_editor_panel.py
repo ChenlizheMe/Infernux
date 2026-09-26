@@ -281,7 +281,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             guid = ""
         if guid:
             return DocumentKey.asset(DocumentKind.ANIMATION_FSM, guid)
-        return DocumentKey.resource(DocumentKind.ANIMATION_FSM, normalized)
+        return DocumentKey.session(DocumentKind.ANIMATION_FSM)
 
     def _replace_fsm_document(self, *, resource_path: str, dirty: bool) -> None:
         from Infernux.engine.interaction import (
@@ -321,15 +321,14 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         destination_path: str,
         guid: str,
     ) -> None:
-        del guid
+        del source_path, guid
         if document_id != self.document_id:
             return
-        if self._file_path and same_path(self._file_path, source_path):
-            self._file_path = resolved_path(destination_path)
-            if self._fsm is not None:
-                self._fsm.file_path = self._file_path
-                self._fsm.name = os.path.splitext(os.path.basename(self._file_path))[0]
-            self._persist_panel_state()
+        self._file_path = resolved_path(destination_path)
+        if self._fsm is not None:
+            self._fsm.file_path = self._file_path
+            self._fsm.name = os.path.splitext(os.path.basename(self._file_path))[0]
+        self._persist_panel_state()
 
     def _fsm_document(self):
         from Infernux.engine.interaction import DocumentRegistry
@@ -340,14 +339,16 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         if document_id != self.document_id or self._fsm is None:
             raise ValueError("FSM restore capture targeted another document")
         self._sync_fsm_from_graph()
-        return {
-            "fsm": self._fsm.to_dict(),
-            "file_path": self._file_path,
-        }
+        return {"fsm": self._fsm.to_dict()}
 
     def restore_document_restore_state(self, state: dict) -> None:
+        if not isinstance(state, dict) or set(state) != {"fsm"}:
+            raise ValueError("FSM document restore state is invalid")
         self._fsm = AnimStateMachine.from_dict(copy.deepcopy(state["fsm"]))
-        self._file_path = self._normalize_fsm_path(state.get("file_path", ""))
+        document = self._fsm_document()
+        self._file_path = self._normalize_fsm_path(
+            document.resource_path if document is not None else ""
+        )
         self._fsm.file_path = self._file_path
         self._sync_graph_from_fsm()
         self._graph_selection.clear(record_history=False)
@@ -357,10 +358,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         state,
         error: Exception,
     ) -> bool:
-        del error
-        path = str(state.get("file_path", "")) if isinstance(state, dict) else ""
-        if path and os.path.isfile(path):
-            return self.open_document_resource_immediate(path)
+        del state, error
         self._new_fsm_immediate()
         return True
 
@@ -972,11 +970,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             self.unbind_document()
         self._fsm = fsm
         self._file_path = target_path
-        for state in fsm.states:
-            if not state.clip_guid and state.clip_path:
-                state.clip_guid = self._resolve_guid(state.clip_path)
-            if state.clip_guid:
-                state.clip_path = ""
         self._sync_graph_from_fsm()
         self._replace_fsm_document(resource_path=target_path, dirty=False)
         self._graph_selection.clear(record_history=False)
@@ -1162,8 +1155,8 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
     @staticmethod
     def _resolved_clip_path_for_state(state: AnimState) -> str:
-        path = (state.clip_path or "").strip()
-        if not path and state.clip_guid:
+        path = ""
+        if state.clip_guid:
             try:
                 from Infernux.core.assets import AssetManager
 
@@ -1606,11 +1599,11 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
     def _embedded_clip3d_picker_items(filter_text: str) -> List[Tuple[str, str]]:
         """List model-embedded takes alongside standalone ``.animclip3d`` assets.
 
-        The Project panel exposes an embedded take as ``<model-guid>::subanim:<n>``.
+        The Project panel exposes a take as ``<model-path>::subanim:<clip-id>``.
         Returning that same public virtual reference keeps object-picker assignment,
         drag-and-drop assignment, and runtime loading on one contract.
         """
-        from Infernux.core.asset_types import read_meta_file, read_meta_guid
+        from Infernux.core.asset_types import read_meta_file
         from Infernux.engine.interaction import asset_reference_catalog
 
         filt = (filter_text or "").strip().lower()
@@ -1622,22 +1615,18 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 continue
             seen.add(normalized)
             meta = read_meta_file(model_path) or {}
-            names_csv = meta.get("animation_names_csv") or ""
-            if not isinstance(names_csv, str):
-                continue
-            take_names = [name.strip() for name in names_csv.split(",") if name.strip()]
-            if not take_names:
-                continue
+            from Infernux.core.animation_clip3d import embedded_take_descriptors
+            takes = embedded_take_descriptors(meta)
             model_name = os.path.splitext(os.path.basename(model_path))[0]
-            base = read_meta_guid(model_path) or model_path
-            for index, take_name in enumerate(take_names):
+            for take in takes:
+                take_name = take["name"]
                 display = f"{model_name} | {take_name}"
                 if filt and filt not in display.lower():
                     continue
-                virtual_path = f"{base}::subanim:{index}"
+                virtual_path = f"{model_path}::subanim:{take['id']}"
                 items.append((display, {
                     "asset_type": "AnimationClip3D",
-                    "guid": "",
+                    "guid": take.get("guid", ""),
                     "path_hint": virtual_path,
                     "builtin": "",
                 }))
@@ -1645,7 +1634,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
     def _clip_ref_for_state(self, state: AnimState):
         """Build a clip ref (2D/3D) with path hint resolved for Inspector-style labels."""
-        path = (state.clip_path or "").strip()
+        path = ""
         if not path and state.clip_guid:
             try:
                 from Infernux.core.assets import AssetManager
@@ -1683,9 +1672,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
     def _clip_b_ref_for_state(self, state: AnimState):
         """Build a clip ref for the blend node's second clip (B)."""
-        path = (getattr(state, "clip_b_path", "") or "").strip()
+        path = ""
         guid = getattr(state, "clip_b_guid", "") or ""
-        if not path and guid:
+        if guid:
             try:
                 from Infernux.core.assets import AssetManager
                 adb = getattr(AssetManager, "_asset_database", None)
@@ -1699,7 +1688,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
     def _clip_b_display_name(self, state: AnimState, ref=None) -> str:
         guid = str(getattr(state, "clip_b_guid", "") or "")
-        path = str(getattr(state, "clip_b_path", "") or "")
+        path = ""
         cache = getattr(self, "_clip_name_cache", None)
         if cache is None:
             cache = {}
@@ -1728,18 +1717,18 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             Debug.log_error(f"Animation state clip B assignment rejected: {exc}")
             return
         guid = self._resolve_guid(p) if p else ""
-        path = "" if guid else (p or "")
+        if not guid:
+            Debug.log_error("Animation state clip B assignment requires a registered asset GUID")
+            return
         if record_undo:
             self._update_state_fields(
                 state,
                 "Assign blend clip B",
                 merge_key=f"state:{state.stable_id}:clip_b",
                 clip_b_guid=guid,
-                clip_b_path=path,
             )
         else:
             state.clip_b_guid = guid
-            state.clip_b_path = path
         self._clip_name_cache = {}
 
     def _clear_clip_b_from_state(self, state: AnimState, node=None, *, record_undo: bool = True):
@@ -1749,11 +1738,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 "Clear blend clip B",
                 merge_key=f"state:{state.stable_id}:clip_b",
                 clip_b_guid="",
-                clip_b_path="",
             )
         else:
             state.clip_b_guid = ""
-            state.clip_b_path = ""
         self._clip_name_cache = {}
 
     def _render_clip_b_reference_row(self, ctx: InxGUIContext, state: AnimState, node, lw: float) -> None:
@@ -1765,7 +1752,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         display = self._clip_b_display_name(state, ref)
 
         field_label(ctx, t("animfsm_editor.clip_b"), lw)
-        clip_b_ping = str(getattr(ref, "path_hint", "") or getattr(state, "clip_b_path", "") or "").strip()
+        clip_b_ping = str(getattr(ref, "path_hint", "") or "").strip()
         if not clip_b_ping:
             try:
                 from Infernux.core.assets import AssetManager
@@ -1790,7 +1777,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             ),
             on_clear=lambda _st=state, _nd=node: self._clear_clip_b_from_state(_st, _nd),
             ping_path=clip_b_ping or None,
-            has_value=bool(state.clip_b_guid or state.clip_b_path),
+            has_value=bool(state.clip_b_guid),
             reference_value=AssetReferenceCodec.normalize(descriptor.type_id, ref),
             semantic_id="animfsm.state.clip_b",
         )
@@ -1798,7 +1785,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
     def _clip_display_name(self, state: AnimState, ref=None) -> str:
         """Human-readable clip name (take/file name) instead of a raw GUID."""
         guid = str(getattr(state, "clip_guid", "") or "")
-        path = str(getattr(state, "clip_path", "") or "")
+        path = ""
         cache = getattr(self, "_clip_name_cache", None)
         if cache is None:
             cache = {}
@@ -1816,7 +1803,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
     @staticmethod
     def _clip_name_from(guid: str, path: str, resolved: str, ref_factory) -> str:
         """Resolve a human-readable clip name from guid/path/resolved-path."""
-        # Embedded FBX take "<base>::subanim:<i>": resolve the take's display name
+        # Embedded model take "<base>::subanim:<stable-id>": resolve its display name.
         # (basename of the virtual path is just the model GUID, which looks wrong).
         emb = path if "::subanim:" in path else (resolved or "")
         if "::subanim:" in emb:
@@ -1824,7 +1811,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 from Infernux.core.animation_clip3d import AnimationClip3D
                 ec = AnimationClip3D.from_embedded_take_virtual_path(emb)
                 if ec is not None and getattr(ec, "take_name", ""):
-                    return str(ec.take_name)
+                    return str(ec.name)
             except Exception:
                 pass
         try:
@@ -1882,7 +1869,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             ),
             on_clear=_on_clear,
             ping_path=clip_ping or None,
-            has_value=bool(state.clip_guid or state.clip_path),
+            has_value=bool(state.clip_guid),
             reference_value=AssetReferenceCodec.normalize(descriptor.type_id, ref),
             semantic_id=semantic_id,
         )
@@ -2582,7 +2569,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             Debug.log_error(f"Animation timeline assignment rejected: {exc}")
             return
         guid = self._resolve_guid(p) if p else ""
-        resolved_path = "" if guid else (p or "")
+        if not guid:
+            Debug.log_error("Animation timeline assignment requires a registered asset GUID")
+            return
         if record_undo:
             self._update_state_fields(
                 state,
@@ -2590,12 +2579,10 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 merge_key=f"state:{state.stable_id}:timeline",
                 kind="timeline",
                 timeline_guid=guid,
-                timeline_path=resolved_path,
             )
         else:
             state.kind = "timeline"
             state.timeline_guid = guid
-            state.timeline_path = resolved_path
         self._clip_name_cache = {}
 
     def _clear_timeline_from_state(self, state: AnimState, node=None, *, record_undo: bool = True):
@@ -2605,16 +2592,14 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 "Clear timeline",
                 merge_key=f"state:{state.stable_id}:timeline",
                 timeline_guid="",
-                timeline_path="",
             )
         else:
             state.timeline_guid = ""
-            state.timeline_path = ""
         self._clip_name_cache = {}
 
     def _timeline_display_name(self, state: AnimState) -> str:
         guid = str(getattr(state, "timeline_guid", "") or "")
-        path = str(getattr(state, "timeline_path", "") or "")
+        path = ""
         resolved = path
         if not resolved and guid:
             try:
@@ -2634,7 +2619,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         display = self._timeline_display_name(state)
 
         field_label(ctx, t("animfsm_editor.timeline_ref"), lw)
-        tl_ping = str(getattr(state, "timeline_path", "") or "").strip()
+        tl_ping = ""
         if not tl_ping:
             try:
                 from Infernux.core.assets import AssetManager
@@ -2654,7 +2639,7 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             on_assign=lambda p, _st=state, _nd=node: self._assign_timeline_to_state(_st, p, _nd),
             on_clear=lambda _st=state, _nd=node: self._clear_timeline_from_state(_st, _nd),
             ping_path=tl_ping or None,
-            has_value=bool(state.timeline_guid or state.timeline_path),
+            has_value=bool(state.timeline_guid),
             reference_value={
                 "asset_type": "AnimationTimeline",
                 "guid": str(getattr(state, "timeline_guid", "") or ""),
@@ -2682,11 +2667,9 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 "Clear clip",
                 merge_key=f"state:{state.stable_id}:clip",
                 clip_guid="",
-                clip_path="",
             )
         else:
             state.clip_guid = ""
-            state.clip_path = ""
         self._clip_name_cache = {}
 
     def _assign_clip_to_state(self, state: AnimState, clip_path, node=None, *, record_undo: bool = True):
@@ -2697,18 +2680,18 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             Debug.log_error(f"Animation state clip assignment rejected: {exc}")
             return
         guid = self._resolve_guid(p) if p else ""
-        path = "" if guid else (p or "")
+        if not guid:
+            Debug.log_error("Animation state clip assignment requires a registered asset GUID")
+            return
         if record_undo:
             self._update_state_fields(
                 state,
                 "Assign clip",
                 merge_key=f"state:{state.stable_id}:clip",
                 clip_guid=guid,
-                clip_path=path,
             )
         else:
             state.clip_guid = guid
-            state.clip_path = path
         self._clip_name_cache = {}
 
     # ── Save ──────────────────────────────────────────────────────────
@@ -2858,11 +2841,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 return False
             self._fsm = fsm
             self._file_path = self._normalize_fsm_path(target) or target
-            for state in fsm.states:
-                if not state.clip_guid and state.clip_path:
-                    state.clip_guid = self._resolve_guid(state.clip_path)
-                if state.clip_guid:
-                    state.clip_path = ""
             self._sync_graph_from_fsm()
             self._graph_selection.clear(record_history=False)
             return True

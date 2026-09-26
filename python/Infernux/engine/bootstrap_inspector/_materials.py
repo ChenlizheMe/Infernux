@@ -55,10 +55,15 @@ def _collect_material_renderers(items, native_map, obj):
         mat_count = getattr(renderer, 'material_count', 0) or 1
         material_guids = tuple(renderer.get_material_guids() or [])
         slot_names = tuple(renderer.get_material_slot_names() or [])
+        mesh_identity = ()
+        if item.type_name == "MeshRenderer":
+            mesh = renderer.get_mesh_asset()
+            if mesh is not None:
+                mesh_identity = (mesh.guid, mesh.generation, tuple(renderer.model_node_path))
         renderers.append((renderer, mat_count, material_guids, slot_names))
         signature_parts.append((
             getattr(renderer, 'component_id', id(renderer)),
-            mat_count, material_guids, slot_names,
+            mat_count, material_guids, slot_names, mesh_identity,
         ))
     return renderers, tuple(signature_parts)
 

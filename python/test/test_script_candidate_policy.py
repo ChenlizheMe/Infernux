@@ -20,6 +20,7 @@ def _report(source: str):
         "import numpy as np\nDEFAULT = np.zeros((2, 3), dtype=np.float32)\n",
         "from numpy import dtype, asarray\nDEFAULT = asarray([1, 2], dtype=dtype('f4'))\n",
         "from Infernux import Vector3, serialized_field\nVALUE = Vector3(1, 2, 3)\nfield = serialized_field(default=1.0)\n",
+        "import Infernux as inx\nACCENT = inx.color(0.2, 0.8, 1.0, 1.0)\nCONFIG = inx.DataAssetRef()\n",
         "from dataclasses import dataclass\n@dataclass\nclass Config:\n    value: int = 1\n",
         "from pathlib import Path\nROOT = Path('Assets')\n",
         "def update(self, delta_time):\n    open('out.txt', 'w')\n    import subprocess\n    subprocess.run(['tool'])\n",
@@ -32,30 +33,33 @@ def test_common_imports_declarations_and_function_bodies_are_not_blocked(source)
     assert report.blocked == ()
 
 
-@pytest.mark.parametrize(
-    "source",
-    (
-        "from Infernux.jit import njit\n@njit(auto_parallel=True)\ndef kernel(values):\n    return values\n",
-        "from Infernux import njit\n@njit(cache=True)\ndef kernel(values):\n    return values\n",
-        "from Infernux import *\n@njit(auto_parallel=True, parallel_policy='auto')\ndef kernel(values):\n    return values\n",
-        "from Infernux.jit import njit as compile_kernel\n@compile_kernel(auto_parallel=True)\ndef kernel(values):\n    return values\n",
-    ),
-)
-def test_public_njit_is_allowed_only_as_a_controlled_declaration_decorator(source):
-    report = _report(source)
-
-    assert report.blocked == ()
-    assert report.runtime_guard_required == ()
-
-
-def test_public_njit_name_is_not_a_general_top_level_call_capability():
+@pytest.mark.parametrize("imports, decorator", [
+    ("import Infernux as inx", "inx.jit.compile"),
+    ("import infernux as inx", "inx.jit.compile"),
+    ("from Infernux import jit as cpu", "cpu.compile"),
+    ("import Infernux.jit as cpu", "cpu.compile"),
+    ("from Infernux.jit import compile as optimize", "optimize"),
+])
+def test_public_jit_compile_is_a_controlled_declaration(imports, decorator):
     report = _report(
-        "from Infernux.jit import njit\nfactory = njit(auto_parallel=True)\n"
+        f"{imports}\n@{decorator}(cache=True)\ndef advance(values):\n    return values\n"
     )
+    assert report.blocked == report.runtime_guard_required == ()
 
-    assert report.blocked == ()
-    assert len(report.runtime_guard_required) == 1
-    assert report.runtime_guard_required[0].operation == "Infernux.jit.njit"
+
+def test_builtin_compile_call_is_not_confused_with_jit_declaration():
+    report = _report("factory = compile('value = 1', '<generated>', 'exec')\n")
+    assert len(report.blocked) == 1
+    assert report.blocked[0].operation == "compile"
+
+
+@pytest.mark.parametrize("source", [
+    "import Infernux as inx\nfactory = inx.jit.compile(cache=True)\n",
+    "import unrelated as inx\n@inx.jit.compile()\ndef run(x):\n    return x\n",
+])
+def test_jit_declaration_permission_does_not_authorize_other_top_level_calls(source):
+    report = _report(source)
+    assert report.blocked or report.runtime_guard_required
 
 
 def test_render_effect_feature_is_allowed_only_as_a_declaration_decorator():
@@ -94,15 +98,12 @@ def test_lowercase_public_namespace_supports_declaration_only_component_scripts(
     assert report.runtime_guard_required == ()
 
 
-@pytest.mark.parametrize(
-    "source",
-    (
-        "import infernux as inx\n@inx.njit()\ndef kernel(value):\n    return value\n",
-        "import infernux as inx\n@inx.renderstack.render_effect_feature('tests.post.effect')\nclass Effect:\n    pass\n",
-    ),
-)
-def test_lowercase_public_namespace_supports_controlled_declaration_decorators(source):
-    report = _report(source)
+def test_lowercase_public_namespace_supports_render_declaration_decorator():
+    report = _report(
+        "import infernux as inx\n"
+        "@inx.renderstack.render_effect_feature('tests.post.effect')\n"
+        "class Effect:\n    pass\n"
+    )
 
     assert report.blocked == ()
     assert report.runtime_guard_required == ()

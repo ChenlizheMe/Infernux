@@ -7,7 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.platform_player_bootstrap import prepare_platform_player
+from Infernux.engine.platform_player_bootstrap import (
+    _parallel_module_cache,
+    prepare_platform_player,
+)
 from Infernux.engine.player_package_native import read_manifest, write_pack
 
 
@@ -35,7 +38,10 @@ def _platform_package(tmp_path: Path) -> Path:
     data_root = tmp_path / "Game_Data"
     data_root.mkdir(parents=True)
     source = tmp_path / "BuildSettings.json"
-    source.write_text('{"scenes": ["Assets/Scenes/Start.scene"]}\n', encoding="utf-8")
+    source.write_text(
+        '{"scene_guids": ["11111111111111111111111111111111"]}\n',
+        encoding="utf-8",
+    )
     guid_map = tmp_path / "_script_guid_map.json"
     guid_map.write_text('{"scripts": {}}\n', encoding="utf-8")
     builtin_shader = tmp_path / "standard.vert"
@@ -87,6 +93,25 @@ def _platform_package(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return data_root
+
+
+def _write_parallel_generation(data_root: Path, source: Path, payload: bytes) -> dict:
+    source.write_bytes(payload)
+    archive = data_root / "Modules" / "Parallel.inxmod"
+    archive.parent.mkdir(exist_ok=True)
+    write_pack((("numba/runtime.bin", source),), archive)
+    manifest = read_manifest(archive)
+    index_path = data_root / "PackageIndex.inxmanifest"
+    records = [
+        line
+        for line in index_path.read_text(encoding="ascii").splitlines()
+        if not line.startswith("parallel\t")
+    ]
+    records.append(
+        f"parallel\t{manifest['archive_sha256']}\t{manifest['archive_bytes']}"
+    )
+    index_path.write_text("\n".join(records) + "\n", encoding="ascii")
+    return manifest
 
 
 @pytest.mark.parametrize("flavor,debug_flag", [("PlayerDebug", "1"), ("PlayerRelease", "0")])
@@ -143,6 +168,25 @@ def test_platform_player_keeps_only_the_active_content_generation(tmp_path):
     assert not stale_generations[2].exists()
     assert not incomplete.exists()
     assert unrelated.is_dir()
+
+
+def test_parallel_cache_identity_rejects_same_size_previous_generation(tmp_path):
+    data_root = _platform_package(tmp_path)
+    cache_root = tmp_path / "cache"
+    source = tmp_path / "parallel.bin"
+
+    first_manifest = _write_parallel_generation(data_root, source, b"old")
+    first = Path(_parallel_module_cache(data_root, cache_root))
+    assert (first / "numba/runtime.bin").read_bytes() == b"old"
+
+    second_manifest = _write_parallel_generation(data_root, source, b"new")
+    assert second_manifest["archive_bytes"] == first_manifest["archive_bytes"]
+    assert second_manifest["archive_sha256"] != first_manifest["archive_sha256"]
+
+    second = Path(_parallel_module_cache(data_root, cache_root))
+    assert second != first
+    assert (second / "numba/runtime.bin").read_bytes() == b"new"
+    assert not first.exists()
 
 
 def test_platform_player_asset_root_must_be_the_cooked_data_directory(tmp_path):

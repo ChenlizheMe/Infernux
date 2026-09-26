@@ -12,12 +12,15 @@
 #include "InxVkCoreModular.h"
 #include "MsaaPolicy.h"
 #include "OutlineRenderer.h"
+#include "RendererSelection.h"
 #include "SceneRenderTarget.h"
 #include "gui/InxScreenUIRenderer.h"
 #include "particle/ParticleGpuBounds.h"
 #include "particle/ParticleGpuCuller.h"
 #include "particle/ParticleGpuDrawRegistry.h"
 #include "particle/ParticleGpuSorter.h"
+#include "rhi/RhiComputeBuffer.h"
+#include "shader/ShaderReflection.h"
 #include "vk/RhiVulkanTypes.h"
 #include "vk/VkDeviceContext.h"
 #include "vk/VkPipelineManager.h"
@@ -30,13 +33,17 @@
 #include <core/types/ColorSpace.h>
 #include <cstring>
 #include <function/renderer/rhi/RhiBuffer.h>
+#include <function/renderer/rhi/RhiComputeBuffer.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxTexture/InxTexture.h>
 #include <function/scene/Camera.h>
 #include <function/scene/LightingData.h>
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <type_traits>
 #include <unordered_set>
 
@@ -67,11 +74,12 @@ template <typename T> void HashShadowValue(uint64_t &hash, const T &value)
 lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const std::vector<DrawCall> &drawCalls)
 {
     lighting::ShadowDepthRange result{};
-    if (!camera || !camera->GetTransform())
+    if (!camera)
         return result;
 
-    const glm::vec3 cameraPosition = camera->GetTransform()->GetWorldPosition();
-    const glm::vec3 cameraForward = glm::normalize(camera->GetTransform()->GetWorldForward());
+    const auto cameraToWorld = camera->GetCameraToWorldMatrix();
+    const glm::vec3 cameraPosition(cameraToWorld[3]);
+    const glm::vec3 cameraForward = glm::normalize(glm::vec3(cameraToWorld[2]));
     float nearest = std::numeric_limits<float>::max();
     float farthest = 0.0f;
     for (const DrawCall &drawCall : drawCalls) {
@@ -104,7 +112,8 @@ bool TextureDescEquals(const GraphTextureDesc &a, const GraphTextureDesc &b)
 {
     return a.name == b.name && a.format == b.format && a.isBackbuffer == b.isBackbuffer && a.isDepth == b.isDepth &&
            a.width == b.width && a.height == b.height && a.sizeDivisor == b.sizeDivisor && a.samples == b.samples &&
-           a.role == b.role && a.temporalKey == b.temporalKey;
+           a.role == b.role && a.temporalKey == b.temporalKey && a.renderTexture == b.renderTexture &&
+           a.attachment == b.attachment && a.assetGuid == b.assetGuid && a.depth == b.depth && a.isVolume == b.isVolume;
 }
 
 uint32_t EffectiveTextureSamples(const GraphTextureDesc &texture, uint32_t frameSamples)
@@ -117,9 +126,20 @@ bool TextureExtentsMatch(const GraphTextureDesc &a, const GraphTextureDesc &b)
     return a.width == b.width && a.height == b.height && a.sizeDivisor == b.sizeDivisor;
 }
 
+bool PassWritesTexture(const GraphPassDesc &pass, const std::string &name)
+{
+    return pass.writeDepth == name || pass.resolveColor == name ||
+           std::any_of(pass.writeColors.begin(), pass.writeColors.end(),
+                       [&](const auto &output) { return output.second == name; }) ||
+           std::any_of(pass.commands.begin(), pass.commands.end(), [&](const GraphCommandDesc &command) {
+               return command.type == GraphCommandType::CopyTexture && command.destinationResource == name;
+           });
+}
+
 bool BufferDescEquals(const GraphBufferDesc &a, const GraphBufferDesc &b)
 {
-    return a.name == b.name && a.byteSize == b.byteSize && a.usage == b.usage;
+    return a.name == b.name && a.byteSize == b.byteSize && a.usage == b.usage && a.computeBuffer == b.computeBuffer &&
+           a.viewLightList == b.viewLightList;
 }
 
 bool BufferAccessEquals(const GraphBufferAccessDesc &a, const GraphBufferAccessDesc &b)
@@ -142,10 +162,13 @@ bool CommandDescEquals(const GraphCommandDesc &a, const GraphCommandDesc &b)
     };
     return a.type == b.type && a.shaderTarget == b.shaderTarget && a.materialFilter == b.materialFilter &&
            a.queueMin == b.queueMin && a.queueMax == b.queueMax && a.sortMode == b.sortMode && a.passTag == b.passTag &&
-           a.overrideMaterial == b.overrideMaterial && a.lightIndex == b.lightIndex &&
-           a.screenUIList == b.screenUIList && a.shaderName == b.shaderName && a.parameterBlock == b.parameterBlock &&
-           parameterLayoutEquals(a, b) && a.inputBindings == b.inputBindings && a.sourceResource == b.sourceResource &&
-           a.destinationResource == b.destinationResource && a.copyBytes == b.copyBytes;
+           a.overrideMaterial == b.overrideMaterial && a.rendererSelection == b.rendererSelection &&
+           a.depthTest == b.depthTest && a.depthWrite == b.depthWrite && a.depthCompare == b.depthCompare &&
+           a.alphaBlend == b.alphaBlend && a.lightIndex == b.lightIndex && a.screenUIList == b.screenUIList &&
+           a.worldUILayerMask == b.worldUILayerMask && a.shaderName == b.shaderName &&
+           a.parameterBlock == b.parameterBlock && parameterLayoutEquals(a, b) && a.inputBindings == b.inputBindings &&
+           a.sourceResource == b.sourceResource && a.destinationResource == b.destinationResource &&
+           a.copyBytes == b.copyBytes;
 }
 
 bool CommandListEquals(const std::vector<GraphCommandDesc> &a, const std::vector<GraphCommandDesc> &b)
@@ -188,8 +211,9 @@ bool PassDescEquals(const GraphPassDesc &a, const GraphPassDesc &b)
 bool GraphDescEquals(const RenderGraphDescription &a, const RenderGraphDescription &b)
 {
     if (a.name != b.name || a.outputTexture != b.outputTexture || a.msaaSamples != b.msaaSamples ||
-        a.textures.size() != b.textures.size() || a.buffers.size() != b.buffers.size() ||
-        a.passes.size() != b.passes.size()) {
+        a.temporalJitter != b.temporalJitter || a.linearOutputTexture != b.linearOutputTexture ||
+        a.linearOutputPassCount != b.linearOutputPassCount || a.textures.size() != b.textures.size() ||
+        a.buffers.size() != b.buffers.size() || a.passes.size() != b.passes.size()) {
         return false;
     }
 
@@ -265,13 +289,113 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                          "' must inherit the frame sample count");
             return false;
         }
-        if (!tex.isBackbuffer && !rhi::IsValidPixelFormat(tex.format)) {
+        if (!tex.isBackbuffer && tex.role != GraphTextureRole::Asset && !rhi::IsValidPixelFormat(tex.format)) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name, "' has an undefined pixel format");
             return false;
         }
-        if (!tex.isBackbuffer && tex.isDepth != rhi::IsDepthFormat(tex.format)) {
+        if (!tex.isBackbuffer && tex.role != GraphTextureRole::Asset && tex.isDepth != rhi::IsDepthFormat(tex.format)) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture '", tex.name,
                          "' depth flag does not match its pixel format");
+            return false;
+        }
+        if (tex.role == GraphTextureRole::Persistent) {
+            if (!tex.renderTexture || tex.isBackbuffer || tex.sizeDivisor != 0 || !tex.temporalKey.empty()) {
+                INXLOG_ERROR("Persistent graph textures require an explicit RenderTexture attachment");
+                return false;
+            }
+            const auto generation = tex.renderTexture->Acquire();
+            const rhi::TextureResource *image = nullptr;
+            switch (tex.attachment) {
+            case GraphTextureAttachment::Color:
+                image = &generation->ColorAttachment();
+                break;
+            case GraphTextureAttachment::Depth:
+                image = generation->depth.get();
+                break;
+            case GraphTextureAttachment::Resolve:
+                if (generation->multisampleColor)
+                    image = generation->color.get();
+                break;
+            }
+            const uint32_t samples = tex.attachment == GraphTextureAttachment::Resolve
+                                         ? 1u
+                                         : static_cast<uint32_t>(generation->description.samples);
+            if (!image || !image->IsValid() || tex.samples != samples || tex.format != image->GetFormat()) {
+                INXLOG_ERROR("Persistent graph texture description does not match its live owner");
+                return false;
+            }
+            // A local writer must define the contents before reading. A pure
+            // import instead requires a producer in the frame's view schedule.
+            const auto writer = std::find_if(desc.passes.begin(), desc.passes.end(), [&](const GraphPassDesc &pass) {
+                return PassWritesTexture(pass, tex.name);
+            });
+            if (writer != desc.passes.end() &&
+                (!PrimaryCommand(*writer) || PrimaryCommand(*writer)->type != GraphCommandType::CopyTexture) &&
+                (tex.isDepth ? !writer->clearDepth
+                             : (!writer->clearColor && writer->resolveColor != tex.name &&
+                                (!PrimaryCommand(*writer) ||
+                                 PrimaryCommand(*writer)->type != GraphCommandType::FullscreenQuad)))) {
+                INXLOG_ERROR("Persistent graph target requires a clear on its first writer: ", tex.name);
+                return false;
+            }
+            for (auto pass = desc.passes.begin(); writer != desc.passes.end() && pass != std::next(writer); ++pass) {
+                const bool reads =
+                    std::find(pass->readTextures.begin(), pass->readTextures.end(), tex.name) !=
+                        pass->readTextures.end() ||
+                    std::any_of(pass->commands.begin(), pass->commands.end(), [&](const GraphCommandDesc &command) {
+                        return command.sourceResource == tex.name ||
+                               std::any_of(command.inputBindings.begin(), command.inputBindings.end(),
+                                           [&](const auto &input) { return input.second == tex.name; });
+                    });
+                if (reads) {
+                    INXLOG_ERROR("Persistent graph target cannot be read before its first writer completes: ",
+                                 tex.name);
+                    return false;
+                }
+            }
+            for (const auto &pass : desc.passes) {
+                const bool sampled =
+                    std::any_of(pass.commands.begin(), pass.commands.end(), [&](const GraphCommandDesc &command) {
+                        return std::any_of(command.inputBindings.begin(), command.inputBindings.end(),
+                                           [&](const auto &input) { return input.second == tex.name; }) ||
+                               (command.type == GraphCommandType::FullscreenQuad &&
+                                std::find(pass.readTextures.begin(), pass.readTextures.end(), tex.name) !=
+                                    pass.readTextures.end());
+                    });
+                const bool sampledByMaterial =
+                    std::any_of(pass.commands.begin(), pass.commands.end(), [&](const GraphCommandDesc &command) {
+                        return command.type != GraphCommandType::FullscreenQuad &&
+                               std::any_of(command.inputBindings.begin(), command.inputBindings.end(),
+                                           [&](const auto &input) { return input.second == tex.name; });
+                    });
+                if (sampled &&
+                    ((samples != 1 && sampledByMaterial) || (tex.isDepth && !generation->description.sampledDepth))) {
+                    INXLOG_ERROR("Material sampling requires resolved color; depth sampling requires sampledDepth: ",
+                                 tex.name);
+                    return false;
+                }
+            }
+            continue;
+        }
+        if (tex.role == GraphTextureRole::Asset) {
+            if (tex.assetGuid.empty() || tex.renderTexture || tex.isBackbuffer || tex.isDepth || tex.sizeDivisor != 0 ||
+                !tex.temporalKey.empty() || tex.samples != 1 || tex.width == 0 || tex.height == 0 || tex.depth == 0 ||
+                (!tex.isVolume && tex.depth != 1)) {
+                INXLOG_ERROR("Sampled graph texture assets require a GUID, explicit dimensions, and one sample: ",
+                             tex.name);
+                return false;
+            }
+            const bool written = std::any_of(desc.passes.begin(), desc.passes.end(), [&](const GraphPassDesc &pass) {
+                return PassWritesTexture(pass, tex.name);
+            });
+            if (written) {
+                INXLOG_ERROR("Sampled graph texture assets are read-only: ", tex.name);
+                return false;
+            }
+            continue;
+        }
+        if (tex.renderTexture) {
+            INXLOG_ERROR("Only persistent graph textures may retain a RenderTexture owner");
             return false;
         }
         if (tex.role == GraphTextureRole::Transient) {
@@ -282,10 +406,9 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
             }
             continue;
         }
-        if (tex.temporalKey.empty() || tex.isBackbuffer || tex.isDepth || tex.width != 0 || tex.height != 0 ||
-            tex.sizeDivisor != 0 || tex.samples != 1) {
+        if (tex.temporalKey.empty() || tex.isBackbuffer || tex.isDepth || tex.samples != 1) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: temporal texture '", tex.name,
-                         "' must be a scene-sized, single-sample color texture with a temporal key");
+                         "' must be a single-sample color texture with a temporal key");
             return false;
         }
         auto &pair = temporalPairs[tex.temporalKey];
@@ -296,10 +419,47 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
         }
         *slot = &tex;
     }
-    for (const auto &[key, pair] : temporalPairs) {
-        if (!pair.read || !pair.write || pair.read->format != pair.write->format) {
+    for (const auto &temporalEntry : temporalPairs) {
+        const auto &key = temporalEntry.first;
+        const auto &pair = temporalEntry.second;
+        if (!pair.read || !pair.write || pair.read->format != pair.write->format ||
+            pair.read->width != pair.write->width || pair.read->height != pair.write->height ||
+            pair.read->sizeDivisor != pair.write->sizeDivisor) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: temporal history '", key,
                          "' requires one matching read/write pair");
+            return false;
+        }
+        bool written = false;
+        for (const auto &pass : desc.passes) {
+            const auto writes = [&](const std::string &name) {
+                return pass.writeDepth == name || pass.resolveColor == name ||
+                       std::any_of(pass.writeColors.begin(), pass.writeColors.end(),
+                                   [&](const auto &output) { return output.second == name; }) ||
+                       std::any_of(pass.commands.begin(), pass.commands.end(), [&](const auto &command) {
+                           return command.type == GraphCommandType::CopyTexture && command.destinationResource == name;
+                       });
+            };
+            if (writes(pair.read->name)) {
+                INXLOG_ERROR("Temporal history input is read-only: ", pair.read->name);
+                return false;
+            }
+            const bool readsOutput =
+                std::find(pass.readTextures.begin(), pass.readTextures.end(), pair.write->name) !=
+                    pass.readTextures.end() ||
+                std::any_of(pass.commands.begin(), pass.commands.end(), [&](const auto &command) {
+                    return (command.type == GraphCommandType::CopyTexture &&
+                            command.sourceResource == pair.write->name) ||
+                           std::any_of(command.inputBindings.begin(), command.inputBindings.end(),
+                                       [&](const auto &binding) { return binding.second == pair.write->name; });
+                });
+            if (readsOutput && (!written || writes(pair.write->name))) {
+                INXLOG_ERROR("Temporal output must be produced before a separate pass reads it: ", pair.write->name);
+                return false;
+            }
+            written = written || writes(pair.write->name);
+        }
+        if (!written) {
+            INXLOG_ERROR("Temporal history requires an output write on every execution: ", key);
             return false;
         }
     }
@@ -310,6 +470,7 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                                             static_cast<uint32_t>(GraphBufferUsage::TransferDestination);
     std::unordered_map<std::string, const GraphBufferDesc *> buffers;
     buffers.reserve(desc.buffers.size());
+    size_t viewLightListCount = 0;
     for (const auto &buffer : desc.buffers) {
         if (buffer.name.empty() || textures.find(buffer.name) != textures.end()) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: invalid or duplicate buffer name '", buffer.name, "'");
@@ -320,11 +481,31 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: invalid buffer description for '", buffer.name, "'");
             return false;
         }
+        if (buffer.computeBuffer &&
+            (buffer.computeBuffer->GetByteSize() != buffer.byteSize || !buffer.computeBuffer->GetBuffer().IsValid())) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: imported buffer '", buffer.name,
+                         "' has no live allocation of the declared size");
+            return false;
+        }
+        if (buffer.viewLightList) {
+            ++viewLightListCount;
+            if (buffer.computeBuffer || buffer.byteSize < sizeof(uint32_t) * 4 ||
+                buffer.usage != static_cast<uint32_t>(GraphBufferUsage::Storage)) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: view light list '", buffer.name,
+                             "' must be a read-only storage resource with a 16-byte header");
+                return false;
+            }
+        }
+    }
+    if (viewLightListCount > 1) {
+        INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: only one view light list is allowed");
+        return false;
     }
 
     std::unordered_set<std::string> passNames;
     passNames.reserve(desc.passes.size());
     std::unordered_set<std::string> parameterBlockIds;
+    std::unordered_set<std::string> producedTextures;
     for (const auto &pass : desc.passes) {
         if (pass.name.empty()) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass name cannot be empty");
@@ -341,6 +522,42 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
         }
         const GraphCommandDesc *command = PrimaryCommand(pass);
         if (command) {
+            if (command->type == GraphCommandType::FullscreenQuad) {
+                if (pass.writeColors.size() != 1 || pass.writeColors.front().first != 0 ||
+                    (command->depthTest && pass.writeDepth.empty()) || (command->depthWrite && !command->depthTest) ||
+                    static_cast<uint8_t>(command->depthCompare) > static_cast<uint8_t>(rhi::CompareFunction::Always)) {
+                    INXLOG_ERROR("Fullscreen pass '", pass.name, "' has an invalid color/depth contract");
+                    return false;
+                }
+                const auto requiresExisting = [&](const std::string &name) {
+                    const auto texture = textures.find(name);
+                    return texture == textures.end() ||
+                           (texture->second->role != GraphTextureRole::Persistent && !producedTextures.count(name));
+                };
+                if (((command->alphaBlend || command->depthTest) && !pass.clearColor &&
+                     requiresExisting(pass.writeColors.front().second)) ||
+                    (!pass.writeDepth.empty() && !pass.clearDepth && requiresExisting(pass.writeDepth))) {
+                    INXLOG_ERROR("Fullscreen pass '", pass.name, "' must clear or load an earlier attachment output");
+                    return false;
+                }
+                if (std::find(pass.readTextures.begin(), pass.readTextures.end(), pass.writeDepth) !=
+                        pass.readTextures.end() ||
+                    std::any_of(command->inputBindings.begin(), command->inputBindings.end(),
+                                [&](const auto &binding) { return binding.second == pass.writeDepth; })) {
+                    INXLOG_ERROR("Fullscreen pass '", pass.name, "' cannot sample its attached depth; copy it first");
+                    return false;
+                }
+            } else if (command->depthTest || command->depthWrite || command->alphaBlend) {
+                INXLOG_ERROR("Explicit fullscreen raster state used by a non-fullscreen pass: ", pass.name);
+                return false;
+            }
+            if (command->rendererSelection &&
+                (command->type != GraphCommandType::DrawRenderers || !command->overrideMaterial.empty())) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: renderer selection requires DrawRenderers "
+                             "without another override material in pass '",
+                             pass.name, "'");
+                return false;
+            }
             if (command->pushConstants.size() > 32) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
                              "' exceeds the 32-float push constant limit");
@@ -367,8 +584,8 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
         const bool rasterCommand =
             command &&
             (command->type == GraphCommandType::DrawRenderers || command->type == GraphCommandType::DrawSkybox ||
-             command->type == GraphCommandType::DrawShadowCasters || command->type == GraphCommandType::DrawScreenUI ||
-             command->type == GraphCommandType::FullscreenQuad);
+             command->type == GraphCommandType::DrawShadowCasters || command->type == GraphCommandType::DrawWorldUI ||
+             command->type == GraphCommandType::DrawScreenUI || command->type == GraphCommandType::FullscreenQuad);
         const bool copyCommand = command && (command->type == GraphCommandType::CopyTexture ||
                                              command->type == GraphCommandType::CopyBuffer);
         if ((pass.type == GraphPassType::Raster && command && !rasterCommand) ||
@@ -412,12 +629,25 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                              "' does not declare the required usage");
                 return false;
             }
+            if (buffer->second->viewLightList && access.type != GraphBufferAccessType::StorageRead) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: view light list '", access.resource,
+                             "' is read-only");
+                return false;
+            }
+            if (buffer->second->computeBuffer && (access.type == GraphBufferAccessType::StorageWrite ||
+                                                  access.type == GraphBufferAccessType::TransferWrite)) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: imported buffer '", access.resource,
+                             "' is read-only in the render graph");
+                return false;
+            }
         }
         if (command && command->type == GraphCommandType::CopyTexture) {
             const auto source = textures.find(command->sourceResource);
             const auto destination = textures.find(command->destinationResource);
             if (source == textures.end() || destination == textures.end() || source == destination ||
                 source->second->isBackbuffer || destination->second->isBackbuffer ||
+                source->second->role == GraphTextureRole::Asset ||
+                destination->second->role == GraphTextureRole::Asset ||
                 source->second->format != destination->second->format) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: texture copy pass '", pass.name,
                              "' has incompatible resources");
@@ -439,6 +669,11 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                 (destination->second->usage & transferDestination) == 0) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: buffer copy pass '", pass.name,
                              "' resources do not declare transfer usage");
+                return false;
+            }
+            if (destination->second->computeBuffer) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: imported buffer '", command->destinationResource,
+                             "' cannot be a copy destination");
                 return false;
             }
         } else if (command && command->type == GraphCommandType::Present &&
@@ -468,6 +703,12 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                              "' requires a depth output");
                 return false;
             }
+        }
+        if (command && command->type == GraphCommandType::DrawWorldUI &&
+            (pass.writeColors.size() != 1 || pass.writeDepth.empty())) {
+            INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: world UI pass '", pass.name,
+                         "' requires one color output and one depth output");
+            return false;
         }
         if (pass.clearDepth && pass.writeDepth.empty()) {
             INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
@@ -556,6 +797,11 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                              textureName, "' as color slot ", slot);
                 return false;
             }
+            if (texIt->second->role == GraphTextureRole::Asset) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                             "' cannot write sampled Texture asset '", textureName, "'");
+                return false;
+            }
             if (!acceptAttachmentSamples(*texIt->second)) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
                              "' uses color and depth attachments with different sample counts");
@@ -580,6 +826,11 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
             if (!texIt->second->isDepth) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' writes color texture '",
                              pass.writeDepth, "' as depth");
+                return false;
+            }
+            if (texIt->second->role == GraphTextureRole::Asset) {
+                INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name,
+                             "' cannot write sampled Texture asset '", pass.writeDepth, "'");
                 return false;
             }
             if (!acceptAttachmentSamples(*texIt->second)) {
@@ -620,7 +871,8 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
                                     ? textures.find(pass.writeColors.front().second)
                                     : textures.end();
             if (resolve == textures.end() || source == textures.end() || resolve->second->isBackbuffer ||
-                resolve->second->isDepth || pass.resolveColor == pass.writeColors.front().second ||
+                resolve->second->role == GraphTextureRole::Asset || resolve->second->isDepth ||
+                pass.resolveColor == pass.writeColors.front().second ||
                 EffectiveTextureSamples(*source->second, frameSamples) <= 1 ||
                 EffectiveTextureSamples(*resolve->second, frameSamples) != 1 ||
                 source->second->format != resolve->second->format ||
@@ -639,12 +891,22 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
             }
         }
 
+        for (const auto &[slot, name] : pass.writeColors)
+            producedTextures.insert(name);
+        if (!pass.writeDepth.empty())
+            producedTextures.insert(pass.writeDepth);
+        if (!pass.resolveColor.empty())
+            producedTextures.insert(pass.resolveColor);
+        if (command && command->type == GraphCommandType::CopyTexture)
+            producedTextures.insert(command->destinationResource);
+
         if (!command)
             continue;
         for (const auto &[samplerName, textureName] : command->inputBindings) {
-            if (textures.find(textureName) == textures.end()) {
+            if (textures.find(textureName) == textures.end() &&
+                (command->type != GraphCommandType::FullscreenQuad || buffers.find(textureName) == buffers.end())) {
                 INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: pass '", pass.name, "' input '", samplerName,
-                             "' references unknown texture '", textureName, "'");
+                             "' references unknown resource '", textureName, "'");
                 return false;
             }
         }
@@ -652,6 +914,10 @@ bool ValidatePythonGraphDescription(const RenderGraphDescription &desc, uint32_t
 
     if (!desc.outputTexture.empty() && textures.find(desc.outputTexture) == textures.end()) {
         INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: output texture '", desc.outputTexture, "' is not declared");
+        return false;
+    }
+    if (!desc.outputTexture.empty() && textures.at(desc.outputTexture)->role == GraphTextureRole::Asset) {
+        INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: a sampled Texture asset cannot be the graph output");
         return false;
     }
 
@@ -690,17 +956,26 @@ uint64_t SceneRenderGraph::GetTransientResidentBytes() const
 // ============================================================================
 
 bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *sceneTarget,
-                                  rhi::RenderViewKind viewKind)
+                                  rhi::RenderViewKind viewKind, std::shared_ptr<rhi::RenderTexture> output)
 {
-    if (!vkCore || !sceneTarget) {
+    if (!vkCore || (!sceneTarget && !output)) {
         INXLOG_ERROR("SceneRenderGraph::Initialize: Invalid parameters");
         return false;
     }
 
     m_vkCore = vkCore;
+    m_screenTarget = sceneTarget;
+    if (output) {
+        m_outputTexture = std::move(output);
+        m_outputGeneration = m_outputTexture->Acquire();
+        m_outputTarget = std::make_unique<SceneRenderTarget>(vkCore);
+        m_outputTarget->BindAttachments(m_outputGeneration);
+        sceneTarget = m_outputTarget.get();
+    }
     m_sceneTarget = sceneTarget;
     m_width = sceneTarget->GetWidth();
     m_height = sceneTarget->GetHeight();
+    ++m_resourceAccessRevision;
 
     m_renderView.id = rhi::AllocateRenderViewId();
     m_renderView.device = vkCore->GetDeviceContext().GetDeviceId();
@@ -731,7 +1006,8 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     cameraBufferDesc.memory = rhi::BufferMemory::Upload;
     for (auto &frame : m_perViewFrames) {
         frame.cameraMatrix = rhiDevice.CreateBuffer(cameraBufferDesc);
-        if (!frame.cameraMatrix.IsValid()) {
+        frame.editorOverlayCameraMatrix = rhiDevice.CreateBuffer(cameraBufferDesc);
+        if (!frame.cameraMatrix.IsValid() || !frame.editorOverlayCameraMatrix.IsValid()) {
             INXLOG_ERROR("SceneRenderGraph: failed to allocate camera-local matrix UBO");
             return false;
         }
@@ -761,10 +1037,13 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
         auto &frame = m_perViewFrames[i];
         frame.geometryDescriptor = vkCore->AllocatePerViewDescriptorLease();
         frame.particleDescriptor = vkCore->AllocatePerViewDescriptorLease();
+        frame.editorOverlayDescriptor = vkCore->AllocatePerViewDescriptorLease();
         frame.geometryGroup = rhiDevice.RegisterBindGroup(frame.GeometrySet());
         frame.particleGroup = rhiDevice.RegisterBindGroup(frame.ParticleSet());
+        frame.editorOverlayGroup = rhiDevice.RegisterBindGroup(frame.EditorOverlaySet());
         if (!frame.geometryDescriptor.IsValid() || !frame.particleDescriptor.IsValid() ||
-            !frame.geometryGroup.IsValid() || !frame.particleGroup.IsValid()) {
+            !frame.editorOverlayDescriptor.IsValid() || !frame.geometryGroup.IsValid() ||
+            !frame.particleGroup.IsValid() || !frame.editorOverlayGroup.IsValid()) {
             INXLOG_ERROR("SceneRenderGraph: failed to allocate the canonical per-view descriptor resources [", i, "]");
             return false;
         }
@@ -772,8 +1051,11 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
         const VkBuffer cameraBuffer = rhiDevice.Resolve(frame.cameraMatrix);
         vkCore->UpdatePerViewLightingBuffer(frame.GeometrySet(), lightingBuffer, sizeof(ShaderLightingUBO));
         vkCore->UpdatePerViewLightingBuffer(frame.ParticleSet(), lightingBuffer, sizeof(ShaderLightingUBO));
+        vkCore->UpdatePerViewLightingBuffer(frame.EditorOverlaySet(), lightingBuffer, sizeof(ShaderLightingUBO));
         vkCore->UpdatePerViewCameraBuffer(frame.GeometrySet(), cameraBuffer, sizeof(UniformBufferObject));
         vkCore->UpdatePerViewCameraBuffer(frame.ParticleSet(), cameraBuffer, sizeof(UniformBufferObject));
+        vkCore->UpdatePerViewCameraBuffer(frame.EditorOverlaySet(), rhiDevice.Resolve(frame.editorOverlayCameraMatrix),
+                                          sizeof(UniformBufferObject));
     }
 
     // Initialize fullscreen effect renderer for FullscreenQuad passes
@@ -833,16 +1115,111 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
 
 void SceneRenderGraph::InvalidateBeforeTargetReplacement()
 {
+    if (HasOutputTexture())
+        return; // A screen resize does not replace this camera's allocation.
     m_graphBuilt = false;
     m_needsCompile = true;
 }
 
+void SceneRenderGraph::SetOutputTexture(std::shared_ptr<rhi::RenderTexture> output)
+{
+    const auto generation = output ? output->Acquire() : nullptr;
+    if (m_outputTexture == output && m_outputGeneration == generation)
+        return;
+    ++m_resourceAccessRevision;
+    m_outputTexture = std::move(output);
+    m_outputGeneration = generation;
+    if (generation) {
+        if (!m_outputTarget)
+            m_outputTarget = std::make_unique<SceneRenderTarget>(m_vkCore);
+        m_outputTarget->BindAttachments(generation);
+    }
+    m_sceneTarget = nullptr;
+    ReplaceSceneTarget(m_screenTarget);
+    if (!m_outputTexture)
+        m_outputTarget.reset();
+    m_pythonGraphSourceRevision = 0; // Output domain can change without changing the Python artifact.
+    SetEffectiveMsaaSamples(m_effectiveMsaaSamples);
+}
+
+bool SceneRenderGraph::HasLocalTextureProducer(const RenderGraphDescription &description,
+                                               const MaterialTextureRead &read)
+{
+    const auto attachment =
+        read.generation->multisampleColor ? GraphTextureAttachment::Resolve : GraphTextureAttachment::Color;
+    bool reachedReader = false, hasWriter = false, priorWriter = false;
+    for (const auto &pass : description.passes) {
+        const bool writes =
+            std::any_of(description.textures.begin(), description.textures.end(), [&](const GraphTextureDesc &texture) {
+                const auto physicalAttachment =
+                    !read.generation->multisampleColor && texture.attachment == GraphTextureAttachment::Resolve
+                        ? GraphTextureAttachment::Color
+                        : texture.attachment;
+                return texture.role == GraphTextureRole::Persistent && texture.renderTexture == read.texture &&
+                       physicalAttachment == attachment && PassWritesTexture(pass, texture.name);
+            });
+        if (pass.name == read.passName) {
+            if (writes)
+                throw std::invalid_argument("RenderTexture sampled and written by the same pass: " + read.passName);
+            reachedReader = true;
+        }
+        if (writes) {
+            hasWriter = true;
+            priorWriter |= !reachedReader;
+        }
+    }
+    if (!reachedReader)
+        throw std::invalid_argument("RenderTexture reader pass is not in this graph: " + read.passName);
+    if (hasWriter && !priorWriter)
+        throw std::invalid_argument("RenderTexture sampled before its local producer completes: " + read.passName);
+    return hasWriter;
+}
+
+RenderViewAccess SceneRenderGraph::GetResourceAccess() const
+{
+    RenderViewAccess access;
+    access.writes.push_back(m_outputTexture ? static_cast<const void *>(m_outputTexture.get()) : m_sceneTarget);
+    for (const auto &texture : m_pythonGraphDesc.textures) {
+        if (texture.role != GraphTextureRole::Persistent)
+            continue;
+        bool writes = false, reads = false;
+        for (const auto &pass : m_pythonGraphDesc.passes) {
+            writes |= PassWritesTexture(pass, texture.name);
+            reads |=
+                std::find(pass.readTextures.begin(), pass.readTextures.end(), texture.name) != pass.readTextures.end();
+            for (const auto &command : pass.commands) {
+                reads |= command.sourceResource == texture.name ||
+                         std::any_of(command.inputBindings.begin(), command.inputBindings.end(),
+                                     [&](const auto &item) { return item.second == texture.name; });
+            }
+        }
+        if (writes || reads) {
+            auto &resources = writes ? access.writes : access.reads;
+            if (std::find(resources.begin(), resources.end(), texture.renderTexture.get()) == resources.end())
+                resources.push_back(texture.renderTexture.get());
+        }
+    }
+    for (const auto &read : m_materialTextureReads) {
+        if (!HasLocalTextureProducer(m_pythonGraphDesc, read) &&
+            std::find(access.reads.begin(), access.reads.end(), read.texture.get()) == access.reads.end())
+            access.reads.push_back(read.texture.get());
+    }
+    return access;
+}
+
 void SceneRenderGraph::ReplaceSceneTarget(SceneRenderTarget *sceneTarget)
 {
+    m_screenTarget = sceneTarget;
+    sceneTarget = m_outputTarget && m_outputTexture ? m_outputTarget.get() : sceneTarget;
     if (!sceneTarget)
+        return;
+    if (m_sceneTarget == sceneTarget && m_width == sceneTarget->GetWidth() && m_height == sceneTarget->GetHeight() &&
+        m_renderView.colorFormat == rhi::FromVkFormat(sceneTarget->GetColorFormat()) &&
+        m_renderView.samples == rhi::FromVkSampleCount(sceneTarget->GetMsaaSampleCount()) && HasOutputTexture())
         return;
 
     m_sceneTarget = sceneTarget;
+    ++m_resourceAccessRevision;
     m_width = sceneTarget->GetWidth();
     m_height = sceneTarget->GetHeight();
     m_renderView.width = m_width;
@@ -918,31 +1295,25 @@ void SceneRenderGraph::InvalidateParticleViews()
     m_graphBuilt = false;
 }
 
-bool SceneRenderGraph::UsesTemporalHistory() const
-{
-    return std::any_of(m_pythonGraphDesc.textures.begin(), m_pythonGraphDesc.textures.end(),
-                       [](const GraphTextureDesc &texture) { return texture.role != GraphTextureRole::Transient; });
-}
-
 void SceneRenderGraph::RetireTemporalHistoryResources()
 {
-    if (m_temporalHistories.empty())
-        return;
-    auto retired = std::move(m_temporalHistories);
     m_temporalHistories.clear();
     m_renderView.history = {};
-    if (!m_vkCore)
+}
+
+void SceneRenderGraph::RetireImportedTextureAssets()
+{
+    m_graphTextureSamplers.clear();
+    m_graphTextureFormats.clear();
+    m_graphTextureAssetVersions.clear();
+    if (m_graphTexturePublications.empty())
         return;
-    rhi::Device *device = &m_vkCore->GetDeviceContext().GetRhiDevice();
-    m_vkCore->GetRetirementQueue().Retire([device, retired = std::move(retired)]() mutable {
-        for (auto &[key, history] : retired) {
-            (void)key;
-            for (const auto view : history.views)
-                device->Release(view);
-            for (const auto texture : history.textures)
-                device->Release(texture);
-        }
-    });
+    if (!m_vkCore) {
+        m_graphTexturePublications.clear();
+        return;
+    }
+    auto retired = std::move(m_graphTexturePublications);
+    m_vkCore->GetRetirementQueue().Retire([retired = std::move(retired)]() mutable { retired.clear(); });
 }
 
 void SceneRenderGraph::Destroy()
@@ -960,6 +1331,7 @@ void SceneRenderGraph::Destroy()
     m_pendingParticleViewDiagnostics.clear();
     m_particleCullers.clear();
     m_particleSorters.clear();
+    RetireImportedTextureAssets();
     m_fullscreenRenderer.Destroy();
     RetireTemporalHistoryResources();
     m_sceneDepthResolver.Destroy();
@@ -971,10 +1343,13 @@ void SceneRenderGraph::Destroy()
         for (auto &frame : m_perViewFrames) {
             rhiDevice.Release(frame.geometryGroup);
             rhiDevice.Release(frame.particleGroup);
+            rhiDevice.Release(frame.editorOverlayGroup);
             descriptorManager.Retire(frame.geometryDescriptor);
             descriptorManager.Retire(frame.particleDescriptor);
+            descriptorManager.Retire(frame.editorOverlayDescriptor);
             rhiDevice.Release(frame.lighting);
             rhiDevice.Release(frame.cameraMatrix);
+            rhiDevice.Release(frame.editorOverlayCameraMatrix);
             frame = {};
         }
         rhiDevice.Release(m_perViewLayout);
@@ -985,6 +1360,9 @@ void SceneRenderGraph::Destroy()
     m_shadowCameraResourceId = 0;
     m_transientResources.clear();
     m_parameterBlocks.clear();
+    m_submittedParameterBlocks.clear();
+    ++m_parameterBlockGeneration;
+    m_submittedParameterBlockGeneration = m_parameterBlockGeneration;
 
     if (m_renderGraph) {
         m_renderGraph->Destroy();
@@ -997,6 +1375,10 @@ void SceneRenderGraph::Destroy()
     m_graphBuilt = false;
     m_vkCore = nullptr;
     m_sceneTarget = nullptr;
+    m_screenTarget = nullptr;
+    m_outputTarget.reset();
+    m_outputGeneration.reset();
+    m_outputTexture.reset();
 }
 
 uint64_t SceneRenderGraph::RequestParticleViewDiagnostics(uint64_t graphInstanceId)
@@ -1191,9 +1573,28 @@ rhi::BindGroupHandle SceneRenderGraph::GetPerViewBindGroup() const
     return m_perViewFrames[frameIndex].geometryGroup;
 }
 
+rhi::BindGroupHandle SceneRenderGraph::GetEditorOverlayBindGroup() const
+{
+    if (!m_vkCore)
+        return {};
+    const uint32_t frameIndex = m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight;
+    return m_perViewFrames[frameIndex].editorOverlayGroup;
+}
+
+void SceneRenderGraph::SetCameraInvertCulling(bool invert)
+{
+    if (m_cameraInvertCulling == invert)
+        return;
+    m_cameraInvertCulling = invert;
+    m_cameraHistoryValid = false;
+    InvalidateTemporalHistory();
+}
+
 void SceneRenderGraph::SetCachedCameraVP(const Camera *camera, const glm::mat4 &view, const glm::mat4 &proj)
 {
-    bool cameraCut = m_hasCachedCameraVP && camera != m_cachedCamera;
+    const uint64_t historyRevision = camera ? camera->GetTemporalHistoryRevision() : 0;
+    bool cameraCut =
+        m_hasCachedCameraVP && (camera != m_cachedCamera || historyRevision != m_cachedCameraHistoryRevision);
     if (m_hasCachedCameraVP && !cameraCut) {
         const glm::mat4 previousInverseView = glm::inverse(m_cachedView);
         const glm::mat4 currentInverseView = glm::inverse(view);
@@ -1222,12 +1623,14 @@ void SceneRenderGraph::SetCachedCameraVP(const Camera *camera, const glm::mat4 &
     }
 
     m_cachedCamera = camera;
+    m_cachedCameraHistoryRevision = historyRevision;
     m_cachedView = view;
     m_drawView = view;
     m_cachedUnjitteredProj = proj;
-    m_temporalJitterNdc =
-        UsesTemporalHistory() ? ComputeTemporalJitterNdc(m_temporalSampleIndex, m_width, m_height) : glm::vec2(0.0f);
-    m_cachedProj = ApplyTemporalJitter(proj, m_temporalJitterNdc);
+    m_temporalJitterNdc = m_pythonGraphDesc.temporalJitter
+                              ? ComputeTemporalJitterNdc(m_temporalSampleIndex, m_width, m_height)
+                              : glm::vec2(0.0f);
+    m_cachedProj = ProjectionForPass(proj, m_temporalJitterNdc, false);
     m_hasCachedCameraVP = true;
     (void)StageCameraMatrices(view, m_cachedProj);
 }
@@ -1263,6 +1666,12 @@ glm::mat4 SceneRenderGraph::ApplyTemporalJitter(const glm::mat4 &projection, con
     return result;
 }
 
+glm::mat4 SceneRenderGraph::ProjectionForPass(const glm::mat4 &projection, const glm::vec2 &jitterNdc,
+                                              bool editorOverlay)
+{
+    return editorOverlay ? projection : ApplyTemporalJitter(projection, jitterNdc);
+}
+
 bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat4 &proj,
                                            const glm::mat4 *previousViewProj)
 {
@@ -1289,6 +1698,18 @@ bool SceneRenderGraph::StageCameraMatrices(const glm::mat4 &view, const glm::mat
     auto &rhiDevice = m_vkCore->GetDeviceContext().GetRhiDevice();
     if (!rhiDevice.WriteBuffer(frame.cameraMatrix, 0, &camera, sizeof(camera))) {
         INXLOG_ERROR("SceneRenderGraph: failed to upload camera-local matrix UBO");
+        return false;
+    }
+    UniformBufferObject overlayCamera = camera;
+    if (m_renderView.kind == rhi::RenderViewKind::Scene) {
+        // Editor overlays run after the temporal resolve. Their own subpixel
+        // jitter would otherwise reappear as icon/grid shimmer every frame.
+        overlayCamera.proj = ProjectionForPass(m_cachedUnjitteredProj, m_temporalJitterNdc, true);
+        overlayCamera.previousViewProj = overlayCamera.proj * view;
+        overlayCamera.inverseViewProj = glm::inverse(overlayCamera.proj * view);
+    }
+    if (!rhiDevice.WriteBuffer(frame.editorOverlayCameraMatrix, 0, &overlayCamera, sizeof(overlayCamera))) {
+        INXLOG_ERROR("SceneRenderGraph: failed to upload editor overlay camera UBO");
         return false;
     }
     return true;
@@ -1380,16 +1801,71 @@ void SceneRenderGraph::SetOutlineRenderer(OutlineRenderer *renderer)
 
 MaterialPassPipelineDescriptor SceneRenderGraph::GetEditorOverlayMaterialPass() const
 {
-    auto descriptor =
-        m_vkCore->GetMaterialPipelineManager().GetDefaultPassPipelineDescriptor(ShaderCompileTarget::Forward);
-    if (!m_renderGraph || !m_sceneTarget)
-        return descriptor;
-
-    descriptor.colorFormats = {rhi::FromVkFormat(m_sceneTarget->GetColorFormat())};
-    descriptor.depthFormat = rhi::FromVkFormat(m_sceneTarget->GetDepthFormat());
-    descriptor.samples = rhi::FromVkSampleCount(m_sceneTarget->GetMsaaSampleCount());
+    MaterialPassPipelineDescriptor descriptor;
+    descriptor.colorFormats = {m_renderView.colorFormat};
+    descriptor.depthFormat = m_renderView.depthFormat;
+    descriptor.samples = m_renderView.samples;
     descriptor.depthReadOnly = descriptor.depthFormat != rhi::PixelFormat::Undefined;
+    descriptor.invertCulling = m_cameraInvertCulling;
     return descriptor;
+}
+
+MaterialPassPipelineDescriptor SceneRenderGraph::ResolveMaterialPass(const RenderGraphDescription &graph,
+                                                                     const GraphPassDesc &pass,
+                                                                     const rhi::RenderViewContext &view,
+                                                                     bool invertCulling)
+{
+    MaterialPassPipelineDescriptor result;
+    const auto *command = PrimaryCommand(pass);
+    result.target = command ? command->shaderTarget : ShaderCompileTarget::Forward;
+    // Light-space geometry is not reflected with the observing camera.
+    result.invertCulling = invertCulling && command && command->type != GraphCommandType::DrawShadowCasters;
+    result.samples = view.samples;
+    const auto texture = [&](const std::string &name) -> const GraphTextureDesc & {
+        const auto found = std::find_if(graph.textures.begin(), graph.textures.end(),
+                                        [&](const GraphTextureDesc &item) { return item.name == name; });
+        if (found == graph.textures.end())
+            throw std::invalid_argument("Material pass references undeclared texture '" + name + "'");
+        return *found;
+    };
+    const auto samples = [&](const GraphTextureDesc &item) {
+        return item.isBackbuffer || item.IsViewDepth() || item.samples == 0
+                   ? view.samples
+                   : ToRhiSampleCount(static_cast<int>(item.samples));
+    };
+    auto colors = pass.writeColors;
+    std::sort(colors.begin(), colors.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+    for (const auto &[slot, name] : colors) {
+        (void)slot;
+        const auto &item = texture(name);
+        result.colorFormats.push_back(item.isBackbuffer ? view.colorFormat : item.format);
+        result.samples = samples(item);
+    }
+    // The topology builder's implicit color target applies only to a pass
+    // without an explicit depth output; depth-only really means depth-only.
+    if (colors.empty() && pass.writeDepth.empty() && result.target != ShaderCompileTarget::Depth &&
+        result.target != ShaderCompileTarget::Shadow)
+        result.colorFormats = {view.colorFormat};
+    const auto setDepth = [&](const GraphTextureDesc &item) {
+        result.depthFormat = item.IsViewDepth() ? view.depthFormat : item.format;
+        result.samples = samples(item);
+    };
+    if (!pass.writeDepth.empty()) {
+        setDepth(texture(pass.writeDepth));
+    } else {
+        for (const auto &name : pass.readTextures) {
+            if (command && std::any_of(command->inputBindings.begin(), command->inputBindings.end(),
+                                       [&](const auto &binding) { return binding.second == name; }))
+                continue;
+            const auto &item = texture(name);
+            if (item.isDepth) {
+                setDepth(item);
+                result.depthReadOnly = true;
+                break;
+            }
+        }
+    }
+    return result;
 }
 
 void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
@@ -1400,9 +1876,27 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     }
 
     RenderGraphDescription normalizedDesc = desc;
-    const VkSampleCountFlagBits callbackSamples = m_vkCore->GetMaterialPipelineManager().GetSampleCount();
+    if (HasOutputTexture()) {
+        normalizedDesc.msaaSamples = static_cast<int>(m_renderView.samples);
+        if (!normalizedDesc.linearOutputTexture.empty()) {
+            if (normalizedDesc.linearOutputPassCount > normalizedDesc.passes.size())
+                throw std::invalid_argument("RenderGraph linear output boundary exceeds its pass list");
+            normalizedDesc.passes.resize(normalizedDesc.linearOutputPassCount);
+            normalizedDesc.outputTexture = normalizedDesc.linearOutputTexture;
+        }
+        normalizedDesc.passes.erase(std::remove_if(normalizedDesc.passes.begin(), normalizedDesc.passes.end(),
+                                                   [](const GraphPassDesc &pass) {
+                                                       const auto *command = PrimaryCommand(pass);
+                                                       return command &&
+                                                              command->type == GraphCommandType::DrawScreenUI;
+                                                   }),
+                                    normalizedDesc.passes.end());
+    }
+    const auto callbackTarget = GetEditorOverlayMaterialPass().RenderingSignature();
+    const auto callbackSamples = m_renderView.samples;
     const bool topologyChanged = !m_hasPythonGraph || !GraphDescEquals(normalizedDesc, m_pythonGraphDesc);
-    const bool callbackContractChanged = m_pythonCallbackSamples != callbackSamples;
+    const bool callbackContractChanged =
+        m_pythonCallbackTarget != callbackTarget || m_pythonCallbackInvertCulling != m_cameraInvertCulling;
     if (!topologyChanged && !callbackContractChanged) {
         // Replaying an already-applied description must not clobber live
         // parameter blocks: effect edits arrive through UpdateParameterBlocks
@@ -1431,6 +1925,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     }
 
     if (topologyChanged) {
+        ++m_resourceAccessRevision;
         std::unordered_map<std::string, RuntimeParameterBlock> blocks;
         for (const auto &pass : normalizedDesc.passes) {
             const GraphCommandDesc *command = PrimaryCommand(pass);
@@ -1446,6 +1941,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             blocks.emplace(command->parameterBlock, std::move(block));
         }
         m_parameterBlocks = std::move(blocks);
+        ++m_parameterBlockGeneration;
     } else if (desc.sourceRevision != m_pythonGraphSourceRevision) {
         std::vector<GraphParameterBlockUpdate> updates;
         for (const auto &pass : normalizedDesc.passes) {
@@ -1461,9 +1957,6 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     m_hasShadowCasterPass = false;
 
     InxVkCoreModular *vkCore = m_vkCore;
-    const uint32_t graphFrameSamples = normalizedDesc.msaaSamples > 0
-                                           ? static_cast<uint32_t>(normalizedDesc.msaaSamples)
-                                           : static_cast<uint32_t>(callbackSamples);
     for (const auto &passDesc : normalizedDesc.passes) {
         const GraphCommandDesc *command = PrimaryCommand(passDesc);
         if (!command) {
@@ -1481,81 +1974,34 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
         const int queueMin = command->queueMin;
         const int queueMax = command->queueMax;
         const int screenUIListIndex = command->screenUIList;
+        const auto worldUILayerMask = command->worldUILayerMask;
         const int lightIndex = command->lightIndex;
         const std::string sortMode = command->sortMode;
         const std::string overrideMaterial = command->overrideMaterial;
+        const auto rendererSelection = command->rendererSelection;
         const std::string passTag = command->passTag;
         const GraphMaterialFilter materialFilter = command->materialFilter;
-        MaterialPassPipelineDescriptor materialPass =
-            vkCore->GetMaterialPipelineManager().GetDefaultPassPipelineDescriptor(command->shaderTarget);
-        if (commandType == GraphCommandType::DrawRenderers || commandType == GraphCommandType::DrawShadowCasters) {
-            materialPass.colorFormats.clear();
-            uint32_t passSamples = graphFrameSamples;
-            auto colorOutputs = passDesc.writeColors;
-            std::sort(colorOutputs.begin(), colorOutputs.end(),
-                      [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
-            for (const auto &colorOutput : colorOutputs) {
-                const std::string &textureName = colorOutput.second;
-                const auto texture = std::find_if(
-                    normalizedDesc.textures.begin(), normalizedDesc.textures.end(),
-                    [&textureName](const GraphTextureDesc &textureDesc) { return textureDesc.name == textureName; });
-                if (texture != normalizedDesc.textures.end()) {
-                    passSamples = EffectiveTextureSamples(*texture, graphFrameSamples);
-                    materialPass.colorFormats.push_back(
-                        texture->isBackbuffer ? rhi::FromVkFormat(vkCore->GetMaterialPipelineManager().GetColorFormat())
-                                              : texture->format);
-                }
-            }
-            if (colorOutputs.empty() && command->shaderTarget != ShaderCompileTarget::Depth &&
-                command->shaderTarget != ShaderCompileTarget::Shadow) {
-                materialPass.colorFormats.push_back(
-                    rhi::FromVkFormat(vkCore->GetMaterialPipelineManager().GetColorFormat()));
-            }
-            if (!passDesc.writeDepth.empty()) {
-                const auto depth = std::find_if(
-                    normalizedDesc.textures.begin(), normalizedDesc.textures.end(),
-                    [&passDesc](const GraphTextureDesc &desc) { return desc.name == passDesc.writeDepth; });
-                materialPass.depthFormat =
-                    depth != normalizedDesc.textures.end() ? depth->format : rhi::PixelFormat::Undefined;
-                if (depth != normalizedDesc.textures.end())
-                    passSamples = EffectiveTextureSamples(*depth, graphFrameSamples);
-            } else {
-                materialPass.depthFormat = rhi::PixelFormat::Undefined;
-                for (const std::string &textureName : passDesc.readTextures) {
-                    const bool sampledInput =
-                        std::any_of(command->inputBindings.begin(), command->inputBindings.end(),
-                                    [&textureName](const auto &binding) { return binding.second == textureName; });
-                    if (sampledInput)
-                        continue;
-                    const auto depth = std::find_if(normalizedDesc.textures.begin(), normalizedDesc.textures.end(),
-                                                    [&textureName](const GraphTextureDesc &desc) {
-                                                        return desc.name == textureName && desc.isDepth;
-                                                    });
-                    if (depth != normalizedDesc.textures.end()) {
-                        materialPass.depthFormat = depth->format;
-                        passSamples = EffectiveTextureSamples(*depth, graphFrameSamples);
-                        break;
-                    }
-                }
-            }
-            materialPass.samples = ToRhiSampleCount(static_cast<int>(passSamples));
-            materialPass.depthReadOnly =
-                passDesc.writeDepth.empty() && materialPass.depthFormat != rhi::PixelFormat::Undefined;
+        MaterialPassPipelineDescriptor materialPass;
+        if (commandType == GraphCommandType::DrawRenderers || commandType == GraphCommandType::DrawShadowCasters ||
+            commandType == GraphCommandType::DrawSkybox || commandType == GraphCommandType::DrawWorldUI) {
+            materialPass = ResolveMaterialPass(normalizedDesc, passDesc, m_renderView, m_cameraInvertCulling);
             m_pythonMaterialPasses[passDesc.name] = materialPass;
         }
 
         m_pythonCallbacks[passDesc.name] = [this, vkCore, commandType, queueMin, queueMax, screenUIListIndex,
-                                            lightIndex, sortMode, overrideMaterial, passTag, materialFilter,
+                                            worldUILayerMask, lightIndex, sortMode, overrideMaterial, rendererSelection,
+                                            passTag, materialFilter,
                                             materialPass](vk::RenderContext &ctx, uint32_t w, uint32_t h) {
             switch (commandType) {
             case GraphCommandType::DrawRenderers:
                 vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, queueMin,
-                                          queueMax, sortMode, overrideMaterial, passTag, &materialPass, materialFilter);
+                                          queueMax, sortMode, overrideMaterial, passTag, &materialPass, materialFilter,
+                                          rendererSelection.get());
                 break;
             case GraphCommandType::DrawSkybox: {
                 const int32_t skyboxQueue = EngineConfig::Get().skyboxQueue;
                 vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, skyboxQueue,
-                                          skyboxQueue, "", "", "__infernux_internal_skybox");
+                                          skyboxQueue, "", "", "__infernux_internal_skybox", &materialPass);
                 break;
             }
             case GraphCommandType::DrawShadowCasters:
@@ -1565,10 +2011,18 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
                 vkCore->DrawShadowCasters(ctx.GetCommandBuffer(), w, h, queueMin, queueMax, m_shadowCameraResourceId,
                                           m_cameraLightCollector.GetShadowFrame(), lightIndex);
                 break;
+            case GraphCommandType::DrawWorldUI:
+                if (m_screenUIRenderer)
+                    m_screenUIRenderer->RenderWorld(
+                        ctx.GetCommandBuffer(), w, h, m_cachedProj * m_drawView, materialPass.RenderingSignature(),
+                        vkCore->GetCurrentFrameSlot(),
+                        worldUILayerMask & (m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu),
+                        m_drawView, m_cachedProj);
+                break;
             case GraphCommandType::DrawScreenUI:
-                if (m_screenUIRenderer) {
+                if (m_screenUIRenderer && m_screenUIOutput && m_renderView.kind != rhi::RenderViewKind::Scene) {
                     auto list = (screenUIListIndex == 0) ? ScreenUIList::Camera : ScreenUIList::Overlay;
-                    m_screenUIRenderer->Render(ctx.GetCommandBuffer(), list, w, h);
+                    m_screenUIRenderer->Render(ctx.GetCommandBuffer(), list, w, h, vkCore->GetCurrentFrameSlot());
                 }
                 break;
             case GraphCommandType::FullscreenQuad:
@@ -1593,8 +2047,20 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     const auto editorOverlayPass = GetEditorOverlayMaterialPass();
     m_pythonCallbacks[kComponentGizmosPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
                                                                                     uint32_t h) {
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, COMP_GIZMO_QUEUE_MIN,
-                                  COMP_GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
+#if INFERNUX_FRAME_PROFILE
+        const auto region = vkCore->BeginGpuProfileRegion(ctx.GetCommandBuffer(), "_ComponentGizmos");
+        try {
+            vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), m_drawView,
+                                      COMP_GIZMO_QUEUE_MIN, COMP_GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
+        } catch (...) {
+            vkCore->EndGpuProfileRegion(ctx.GetCommandBuffer(), region);
+            throw;
+        }
+        vkCore->EndGpuProfileRegion(ctx.GetCommandBuffer(), region);
+#else
+        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), m_drawView,
+                                  COMP_GIZMO_QUEUE_MIN, COMP_GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
+#endif
     };
 
     // ========================================================================
@@ -1609,8 +2075,8 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     static const std::string kEditorGizmosPassName = "_EditorGizmos";
     m_pythonCallbacks[kEditorGizmosPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
                                                                                  uint32_t h) {
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, GIZMO_QUEUE_MIN,
-                                  GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
+        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), m_drawView,
+                                  GIZMO_QUEUE_MIN, GIZMO_QUEUE_MAX, "", "", "", &editorOverlayPass);
     };
 
     // ========================================================================
@@ -1623,18 +2089,21 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     static const std::string kEditorToolsPassName = "_EditorTools";
     m_pythonCallbacks[kEditorToolsPassName] = [this, vkCore, editorOverlayPass](vk::RenderContext &ctx, uint32_t w,
                                                                                 uint32_t h) {
-        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetPerViewBindGroup(), m_drawView, TOOLS_QUEUE_MIN,
-                                  TOOLS_QUEUE_MAX, "preserve", "", "", &editorOverlayPass);
+        vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), w, h, GetEditorOverlayBindGroup(), m_drawView,
+                                  TOOLS_QUEUE_MIN, TOOLS_QUEUE_MAX, "preserve", "", "", &editorOverlayPass);
     };
 
     // Store description for BuildRenderGraph()'s topology traversal. Exact
     // repeats return before validation/callback construction above.
     if (topologyChanged) {
+        if (normalizedDesc.temporalJitter != m_pythonGraphDesc.temporalJitter)
+            InvalidateTemporalHistory();
         m_pythonGraphDesc = std::move(normalizedDesc);
     }
     m_hasPythonGraph = true;
     m_pythonGraphSourceRevision = desc.sourceRevision;
-    m_pythonCallbackSamples = callbackSamples;
+    m_pythonCallbackTarget = callbackTarget;
+    m_pythonCallbackInvertCulling = m_cameraInvertCulling;
     if (topologyChanged || callbackContractChanged) {
         m_needsRebuild = true;
     }
@@ -1642,6 +2111,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 
 void SceneRenderGraph::UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates)
 {
+    bool publicationChanged = false;
     for (const auto &update : updates) {
         auto blockIt = m_parameterBlocks.find(update.id);
         if (blockIt == m_parameterBlocks.end())
@@ -1674,13 +2144,27 @@ void SceneRenderGraph::UpdateParameterBlocks(const std::vector<GraphParameterBlo
         block.values = values;
         block.byteSize = static_cast<uint32_t>(update.values.size() * sizeof(float));
         block.revision = update.revision;
+        publicationChanged = true;
     }
+    if (publicationChanged)
+        ++m_parameterBlockGeneration;
+}
+
+void SceneRenderGraph::CaptureParameterBlocksForSubmission()
+{
+    if (m_submittedParameterBlockGeneration == m_parameterBlockGeneration)
+        return;
+    m_submittedParameterBlocks = m_parameterBlocks;
+    m_submittedParameterBlockGeneration = m_parameterBlockGeneration;
 }
 
 bool SceneRenderGraph::IsPythonGraphCurrent(uint64_t sourceRevision) const
 {
     return sourceRevision != 0 && m_hasPythonGraph && m_pythonGraphSourceRevision == sourceRevision && m_vkCore &&
-           m_pythonCallbackSamples == m_vkCore->GetMaterialPipelineManager().GetSampleCount();
+           m_pythonCallbackTarget.colorFormats[0] == m_renderView.colorFormat &&
+           m_pythonCallbackTarget.depthFormat == m_renderView.depthFormat &&
+           m_pythonCallbackTarget.samples == m_renderView.samples &&
+           m_pythonCallbackInvertCulling == m_cameraInvertCulling;
 }
 
 uint32_t SceneRenderGraph::GetShadowMapResolution() const
@@ -1717,10 +2201,254 @@ uint32_t SceneRenderGraph::GetShadowMapResolution() const
 // Execution (Pure RenderGraph)
 // ============================================================================
 
+void SceneRenderGraph::RefreshMaterialTextureReads()
+{
+    std::vector<MaterialTextureRead> reads;
+    std::vector<MaterialBufferRead> bufferReads;
+    std::vector<const DrawCall *> resourceDraws;
+    for (const auto &draw : GetCachedDrawCalls()) {
+        if (draw.frustumVisible)
+            m_vkCore->PrepareMaterialTextureAssets(draw.material);
+        const bool hasMaterialResources =
+            draw.material && (!draw.material->GetRenderTextures().empty() || !draw.material->GetBuffers().empty());
+        const bool hasRendererBuffers = draw.parameterBlock && !draw.parameterBlock->buffers.empty();
+        if (draw.frustumVisible && (hasMaterialResources || hasRendererBuffers))
+            resourceDraws.push_back(&draw);
+    }
+    // Shadow draws use the engine shadow pipeline, not material samplers.
+    // Scene draws use the camera's submitted (layer/frustum filtered) list.
+    for (const auto &pass : m_pythonGraphDesc.passes) {
+        const auto *command = PrimaryCommand(pass);
+        if (command && m_screenUIRenderer &&
+            (command->type == GraphCommandType::DrawWorldUI ||
+             (command->type == GraphCommandType::DrawScreenUI && m_screenUIOutput &&
+              m_renderView.kind != rhi::RenderViewKind::Scene))) {
+            const auto list = command->type == GraphCommandType::DrawWorldUI
+                                  ? ScreenUIList::World
+                                  : (command->screenUIList == 0 ? ScreenUIList::Camera : ScreenUIList::Overlay);
+            auto mask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+            if (command->type == GraphCommandType::DrawWorldUI)
+                mask &= command->worldUILayerMask;
+            for (const auto &texture : m_screenUIRenderer->GetRenderTextureReads(list, mask))
+                reads.push_back({pass.name, texture, texture->Acquire()});
+            continue;
+        }
+        if (!command ||
+            (command->type != GraphCommandType::DrawRenderers && command->type != GraphCommandType::DrawSkybox))
+            continue;
+        const bool skybox = command->type == GraphCommandType::DrawSkybox;
+        std::shared_ptr<InxMaterial> overrideMaterial;
+        if (command->rendererSelection) {
+            overrideMaterial = command->rendererSelection->Material();
+            m_vkCore->PrepareMaterialTextureAssets(overrideMaterial);
+        } else if (!skybox && !command->overrideMaterial.empty()) {
+            auto &registry = AssetRegistry::Instance();
+            overrideMaterial = registry.GetBuiltinMaterial(command->overrideMaterial);
+            if (!overrideMaterial)
+                overrideMaterial = registry.LoadAsset<InxMaterial>(command->overrideMaterial, ResourceType::Material);
+            m_vkCore->PrepareMaterialTextureAssets(overrideMaterial);
+        }
+        const int minimum = skybox ? EngineConfig::Get().skyboxQueue : command->queueMin;
+        const int maximum = skybox ? minimum : command->queueMax;
+        const auto visit = [&](const DrawCall &draw) {
+            if (!draw.frustumVisible || (skybox && draw.identity.domain != RenderDomain::Skybox))
+                return;
+            if (command->rendererSelection && !command->rendererSelection->Find(draw.identity))
+                return;
+            const auto &material = overrideMaterial ? overrideMaterial : draw.material;
+            const std::shared_ptr<const RendererParameterBlock> *parameters =
+                command->rendererSelection ? command->rendererSelection->Find(draw.identity)
+                                           : (overrideMaterial ? nullptr : &draw.parameterBlock);
+            const bool hasParameterBuffers = parameters && *parameters && !(*parameters)->buffers.empty();
+            if (!material ||
+                (material->GetRenderTextures().empty() && material->GetBuffers().empty() && !hasParameterBuffers))
+                return;
+            const auto &source = draw.material ? draw.material : material;
+            if (source->GetRenderQueue() < minimum || source->GetRenderQueue() > maximum)
+                return;
+            const auto &tag = source->GetPassTag();
+            if (!skybox && !command->passTag.empty() &&
+                ((overrideMaterial && tag != command->passTag) ||
+                 (!overrideMaterial && !tag.empty() && tag != command->passTag)))
+                return;
+            if (command->materialFilter != GraphMaterialFilter::All) {
+                ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
+                if (const auto *committed =
+                        m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
+                    stages = committed->programKey.stages;
+                const auto *artifact =
+                    m_vkCore->ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
+                const bool deferred = artifact && artifact->FindVariant(ShaderCompileTarget::GBuffer);
+                if ((command->materialFilter == GraphMaterialFilter::DeferredCompatible && !deferred) ||
+                    (command->materialFilter == GraphMaterialFilter::DeferredUnsupported && deferred))
+                    return;
+            }
+            for (const auto &[name, texture] : material->GetRenderTextures())
+                reads.push_back({pass.name, texture, texture->Acquire()});
+            for (const auto &[name, buffer] : material->GetBuffers()) {
+                if (buffer)
+                    bufferReads.push_back({pass.name, buffer});
+            }
+            if (parameters && *parameters) {
+                for (const auto &[name, buffer] : (*parameters)->buffers) {
+                    if (buffer)
+                        bufferReads.push_back({pass.name, buffer});
+                }
+            }
+        };
+        if (overrideMaterial) {
+            if (!overrideMaterial->GetRenderTextures().empty() || !overrideMaterial->GetBuffers().empty() ||
+                command->rendererSelection) {
+                for (const auto &draw : GetCachedDrawCalls())
+                    visit(draw);
+            }
+        } else {
+            for (const auto *draw : resourceDraws)
+                visit(*draw);
+        }
+    }
+    std::sort(reads.begin(), reads.end(), [](const auto &a, const auto &b) {
+        if (a.passName != b.passName)
+            return a.passName < b.passName;
+        return std::less<const rhi::RenderTexture *>{}(a.texture.get(), b.texture.get());
+    });
+    reads.erase(std::unique(reads.begin(), reads.end()), reads.end());
+    std::sort(bufferReads.begin(), bufferReads.end(), [](const auto &a, const auto &b) {
+        if (a.passName != b.passName)
+            return a.passName < b.passName;
+        return std::less<const rhi::ComputeBuffer *>{}(a.buffer.get(), b.buffer.get());
+    });
+    bufferReads.erase(std::unique(bufferReads.begin(), bufferReads.end()), bufferReads.end());
+    if (reads != m_materialTextureReads || bufferReads != m_materialBufferReads) {
+        m_materialTextureReads = std::move(reads);
+        m_materialBufferReads = std::move(bufferReads);
+        m_needsRebuild = true;
+        ++m_resourceAccessRevision;
+    }
+}
+
+rhi::SubmissionTicket SceneRenderGraph::GetLatestComputeBufferWriteSubmission() const noexcept
+{
+    rhi::SubmissionTicket latest{};
+    for (const auto &read : m_materialBufferReads) {
+        if (!read.buffer)
+            continue;
+        const auto ticket = read.buffer->GetLastWriteSubmission();
+        if (ticket.IsValid() && (!latest.IsValid() || ticket.serial > latest.serial))
+            latest = ticket;
+    }
+    for (const auto &buffer : m_pythonGraphDesc.buffers) {
+        if (!buffer.computeBuffer)
+            continue;
+        const auto ticket = buffer.computeBuffer->GetLastWriteSubmission();
+        if (ticket.IsValid() && (!latest.IsValid() || ticket.serial > latest.serial))
+            latest = ticket;
+    }
+    return latest;
+}
+
 void SceneRenderGraph::EnsureGraphBuilt()
 {
     if (!m_sceneTarget || !m_sceneTarget->IsReady() || !m_renderGraph) {
         return;
+    }
+
+    // Culling is submitted after the Python graph. Discover runtime material
+    // inputs here, before graph compilation and cross-camera scheduling.
+    RefreshMaterialTextureReads();
+
+    uint64_t worldUIDepthSignature = 0;
+    if (m_screenUIRenderer) {
+        uint32_t mask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+        for (const auto &pass : m_pythonGraphDesc.passes) {
+            const auto *command = PrimaryCommand(pass);
+            if (command && command->type == GraphCommandType::DrawWorldUI) {
+                mask &= command->worldUILayerMask;
+                break;
+            }
+        }
+        if (m_screenUIRenderer->HasSelectiveWorldOcclusion(mask)) {
+            const auto runs = m_screenUIRenderer->GetWorldDepthRuns(m_cachedProj * m_drawView, mask);
+            worldUIDepthSignature = 1469598103934665603ull;
+            for (const auto &run : runs) {
+                for (const uint64_t value : {uint64_t(run.firstOrdinal), uint64_t(run.endOrdinal),
+                                             run.ignoredOccluderId, uint64_t(run.alwaysOnTop)}) {
+                    worldUIDepthSignature = (worldUIDepthSignature ^ value) * 1099511628211ull;
+                }
+            }
+        }
+    }
+    if (worldUIDepthSignature != m_worldUIDepthRunSignature) {
+        m_worldUIDepthRunSignature = worldUIDepthSignature;
+        m_needsRebuild = true;
+    }
+    if (worldUIDepthSignature && m_vkCore) {
+        const GraphCommandDesc *opaqueCommand = nullptr;
+        for (const auto &pass : m_pythonGraphDesc.passes) {
+            if (pass.name == "OpaquePass") {
+                opaqueCommand = PrimaryCommand(pass);
+                break;
+            }
+        }
+        if (opaqueCommand && opaqueCommand->type == GraphCommandType::DrawRenderers) {
+            const auto defaultMaterial = AssetRegistry::Instance().GetBuiltinMaterial("DefaultLit");
+            for (const auto &draw : GetCachedDrawCalls()) {
+                if (!draw.frustumVisible)
+                    continue;
+                const auto &material = draw.material ? draw.material : defaultMaterial;
+                if (!material || material->GetRenderQueue() < opaqueCommand->queueMin ||
+                    material->GetRenderQueue() > opaqueCommand->queueMax)
+                    continue;
+                const auto &tag = material->GetPassTag();
+                if (!opaqueCommand->passTag.empty() && !tag.empty() && tag != opaqueCommand->passTag)
+                    continue;
+                const auto &state = material->GetRenderState();
+                if (!state.depthWriteEnable)
+                    continue;
+                ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
+                if (const auto *committed =
+                        m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
+                    stages = committed->programKey.stages;
+                const auto *artifact =
+                    m_vkCore->ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
+                if (!artifact) {
+                    m_vkCore->RefreshMaterialPipeline(material, material->GetVertShaderName(),
+                                                      material->GetFragShaderName());
+                    if (const auto *committed =
+                            m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
+                        stages = committed->programKey.stages;
+                    artifact = m_vkCore->ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
+                }
+                if (!state.depthTestEnable || state.stencilTestEnable || !artifact ||
+                    !artifact->FindVariant(ShaderCompileTarget::Depth)) {
+                    INXLOG_ERROR("Selective World UI occlusion cannot replay depth-writing material '",
+                                 material->GetName(),
+                                 "': it requires ordinary depth testing, no stencil test, and a Depth shader variant");
+                    m_graphBuilt = false;
+                    m_needsRebuild = true;
+                    return;
+                }
+            }
+        }
+    }
+
+    for (auto &texture : m_pythonGraphDesc.textures) {
+        if (texture.role == GraphTextureRole::Asset) {
+            const uint64_t currentVersion = AssetRegistry::Instance().GetAssetVersion(texture.assetGuid);
+            const auto found = m_graphTextureAssetVersions.find(texture.assetGuid);
+            if (found == m_graphTextureAssetVersions.end() || found->second != currentVersion)
+                m_needsRebuild = true;
+            continue;
+        }
+        if (texture.role != GraphTextureRole::Persistent)
+            continue;
+        const auto generation = texture.renderTexture->Acquire();
+        const auto found = m_persistentTextureRevisions.find(texture.renderTexture.get());
+        if (found == m_persistentTextureRevisions.end() || found->second != generation->revision) {
+            texture.width = generation->width;
+            texture.height = generation->height;
+            m_needsRebuild = true;
+        }
     }
 
     if (m_particleDrawRegistry) {
@@ -1755,6 +2483,21 @@ void SceneRenderGraph::EnsureGraphBuilt()
         m_needsRebuild = true;
     }
 
+    // Asset publication is asynchronous. Do not reset a working graph while a
+    // cold or reimported texture revision is still uploading; keep executing
+    // the last compiled graph and retry the rebuild on the next frame. A
+    // resolved error is handled by the ordinary rebuild path so invalid graph
+    // state still fails visibly instead of silently retaining stale content.
+    if (m_needsRebuild) {
+        for (const auto &texture : m_pythonGraphDesc.textures) {
+            if (texture.role != GraphTextureRole::Asset)
+                continue;
+            const auto resolved = m_vkCore->ResolveTextureForGraph(texture.assetGuid, texture.isVolume, false);
+            if (resolved.status == TextureResolveStatus::Pending)
+                return;
+        }
+    }
+
     if (m_needsRebuild)
         RefreshForwardPlusParticleRequirement();
 
@@ -1772,6 +2515,8 @@ void SceneRenderGraph::EnsureGraphBuilt()
         // to be republished after the rebuild.
         InvalidatePerViewShadowBindings();
         BuildRenderGraph();
+        if (!m_graphBuilt)
+            return;
         m_needsRebuild = false;
         m_needsCompile = true; // Need to compile after rebuild
     }
@@ -1832,7 +2577,7 @@ void SceneRenderGraph::RefreshForwardPlusParticleRequirement()
         return;
     for (const auto &pass : m_pythonGraphDesc.passes) {
         for (const auto &command : pass.commands) {
-            if (command.type != GraphCommandType::DrawRenderers ||
+            if (command.type != GraphCommandType::DrawRenderers || command.rendererSelection ||
                 command.shaderTarget != ShaderCompileTarget::ForwardPlus) {
                 continue;
             }
@@ -1927,6 +2672,9 @@ bool SceneRenderGraph::PrepareForwardPlusFrame()
         m_vkCore->UpdatePerViewForwardPlusBuffers(descriptorSet, lights.buffer, lights.dataBytes, frame.headers,
                                                   frame.config.headerBytes, frame.lightMasks, frame.config.maskBytes,
                                                   viewFrame.lighting, sizeof(ShaderLightingUBO));
+        m_vkCore->UpdatePerViewForwardPlusBuffers(
+            viewFrame.EditorOverlaySet(), lights.buffer, lights.dataBytes, frame.headers, frame.config.headerBytes,
+            frame.lightMasks, frame.config.maskBytes, viewFrame.lighting, sizeof(ShaderLightingUBO));
         viewFrame.geometryBindings = geometryBindings;
     }
     if (m_forwardPlusParticlesRequired) {
@@ -1987,9 +2735,14 @@ bool SceneRenderGraph::PrepareSubmissionExecution()
     }
 
     if (m_importedDepthTarget.IsValid()) {
-        m_renderGraph->SetResourceInitialState(m_importedDepthTarget, rhi::TextureLayout::DepthStencilAttachment,
-                                               rhi::Access::DepthRead | rhi::Access::DepthWrite,
-                                               rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth);
+        const bool sampled = m_outputGeneration && m_outputGeneration->description.sampledDepth &&
+                             m_outputGeneration->description.samples == rhi::SampleCount::One;
+        m_renderGraph->SetResourceInitialState(
+            m_importedDepthTarget,
+            sampled ? rhi::TextureLayout::DepthStencilReadOnly : rhi::TextureLayout::DepthStencilAttachment,
+            sampled ? rhi::Access::ShaderRead : rhi::Access::DepthRead | rhi::Access::DepthWrite,
+            sampled ? rhi::PipelineStage::FragmentShader
+                    : rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth);
     }
 
     if (!m_graphBuilt)
@@ -2154,6 +2907,7 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
         if (!viewFrame.shadowBinding.usesDefaultTexture) {
             m_vkCore->ClearPerViewShadowMap(graphShadowDesc);
             m_vkCore->ClearPerViewShadowMap(particleShadowDesc);
+            m_vkCore->ClearPerViewShadowMap(viewFrame.EditorOverlaySet());
             viewFrame.shadowBinding = {};
         }
         return;
@@ -2179,6 +2933,7 @@ void SceneRenderGraph::RefreshPerViewShadowDescriptor()
     // domain can observe a half-updated per-view generation.
     m_vkCore->UpdatePerViewShadowMap(graphShadowDesc, view, shadowSampler, imageLayout);
     m_vkCore->UpdatePerViewShadowMap(particleShadowDesc, view, shadowSampler, imageLayout);
+    m_vkCore->UpdatePerViewShadowMap(viewFrame.EditorOverlaySet(), view, shadowSampler, imageLayout);
     viewFrame.shadowBinding = {view, shadowSampler, imageLayout, false};
 }
 
@@ -2282,6 +3037,15 @@ void SceneRenderGraph::ImportSceneTargetResources()
         return;
     }
 
+    if (m_outputGeneration) {
+        const auto attachments = m_renderGraph->ImportRenderTexture("CameraOutput", m_outputGeneration);
+        m_importedColorTarget = attachments.color;
+        m_importedDepthTarget = attachments.depth;
+        m_importedResolveTarget = attachments.resolve;
+        m_renderGraph->SetBackbuffer(m_importedColorTarget);
+        return;
+    }
+
     m_importedColorTarget = m_renderGraph->SetBackbuffer(
         m_sceneTarget->GetMsaaColorImage(), m_sceneTarget->GetMsaaColorImageView(), m_sceneTarget->GetColorFormat(),
         m_width, m_height, m_sceneTarget->GetMsaaSampleCount(), rhi::TextureLayout::Undefined);
@@ -2305,9 +3069,6 @@ void SceneRenderGraph::ImportSceneTargetResources()
 
 void SceneRenderGraph::ImportTemporalHistoryResources(std::unordered_map<std::string, vk::ResourceHandle> &handles)
 {
-    if (!m_vkCore || !m_renderGraph || m_width == 0 || m_height == 0)
-        return;
-
     struct RequestedHistory
     {
         const GraphTextureDesc *read = nullptr;
@@ -2315,125 +3076,87 @@ void SceneRenderGraph::ImportTemporalHistoryResources(std::unordered_map<std::st
     };
     std::unordered_map<std::string, RequestedHistory> requested;
     for (const auto &texture : m_pythonGraphDesc.textures) {
-        if (texture.role == GraphTextureRole::Transient)
-            continue;
-        auto &pair = requested[texture.temporalKey];
         if (texture.role == GraphTextureRole::TemporalRead)
-            pair.read = &texture;
-        else
-            pair.write = &texture;
+            requested[texture.temporalKey].read = &texture;
+        else if (texture.role == GraphTextureRole::TemporalWrite)
+            requested[texture.temporalKey].write = &texture;
     }
 
-    auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+    // Owners use the same allocation and in-flight retirement as public
+    // RenderTextures. No second raw-image allocation/teardown implementation.
     for (auto it = m_temporalHistories.begin(); it != m_temporalHistories.end();) {
-        const auto request = requested.find(it->first);
-        const bool reusable = request != requested.end() && request->second.read && request->second.write &&
-                              it->second.width == m_width && it->second.height == m_height &&
-                              it->second.format == request->second.read->format;
-        if (reusable) {
+        if (requested.find(it->first) == requested.end())
+            it = m_temporalHistories.erase(it);
+        else
             ++it;
-            continue;
-        }
-        TemporalHistoryResource retired = std::move(it->second);
-        it = m_temporalHistories.erase(it);
-        rhi::Device *retiredDevice = &device;
-        m_vkCore->GetRetirementQueue().Retire([retiredDevice, retired = std::move(retired)]() mutable {
-            for (const auto view : retired.views)
-                retiredDevice->Release(view);
-            for (const auto texture : retired.textures)
-                retiredDevice->Release(texture);
-        });
     }
-
-    for (const auto &[key, request] : requested) {
-        if (!request.read || !request.write)
-            continue;
-        auto [it, inserted] = m_temporalHistories.try_emplace(key);
-        auto &history = it->second;
-        if (inserted) {
-            rhi::TextureDesc textureDesc;
-            textureDesc.width = m_width;
-            textureDesc.height = m_height;
-            textureDesc.format = request.read->format;
-            textureDesc.samples = rhi::SampleCount::One;
-            textureDesc.usage = rhi::TextureUsageFlags::Sampled | rhi::TextureUsageFlags::TransferSource |
-                                rhi::TextureUsageFlags::TransferDestination;
-            bool created = true;
-            for (uint32_t index = 0; index < 2; ++index) {
-                history.textures[index] = device.CreateTexture(textureDesc);
-                if (!history.textures[index].IsValid()) {
-                    created = false;
-                    break;
-                }
-                rhi::TextureViewDesc viewDesc;
-                viewDesc.texture = history.textures[index];
-                viewDesc.format = textureDesc.format;
-                history.views[index] = device.CreateTextureView(viewDesc);
-                if (!history.views[index].IsValid()) {
-                    created = false;
-                    break;
-                }
-            }
-            if (!created) {
-                for (const auto view : history.views)
-                    device.Release(view);
-                for (const auto texture : history.textures)
-                    device.Release(texture);
-                m_temporalHistories.erase(it);
-                INXLOG_ERROR("SceneRenderGraph: failed to allocate temporal history '", key, "'");
-                continue;
-            }
-            history.format = textureDesc.format;
-            history.width = m_width;
-            history.height = m_height;
+    auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
+    for (const auto &requestEntry : requested) {
+        const auto &key = requestEntry.first;
+        const auto &request = requestEntry.second;
+        const auto &desc = *request.read; // Pair validated when the graph is published.
+        const uint32_t width = desc.width ? desc.width : std::max(1u, m_width / std::max(1u, desc.sizeDivisor));
+        const uint32_t height = desc.height ? desc.height : std::max(1u, m_height / std::max(1u, desc.sizeDivisor));
+        auto &history = m_temporalHistories[key];
+        if (!history.targets[0] || history.width != width || history.height != height ||
+            history.format != desc.format) {
+            rhi::RenderTextureDesc allocation;
+            allocation.width = width;
+            allocation.height = height;
+            allocation.colorFormat = desc.format;
+            std::array<std::shared_ptr<rhi::RenderTexture>, 2> targets;
+            for (uint32_t index = 0; index < 2; ++index)
+                targets[index] = std::make_shared<rhi::RenderTexture>(
+                    device, "History/" + key + "/" + std::to_string(index), allocation);
+            history.targets = std::move(targets);
+            history.width = width;
+            history.height = height;
+            history.format = desc.format;
+            history.valid = false;
+            history.readIndex = 0;
         }
-
         history.readName = request.read->name;
         history.writeName = request.write->name;
-        const uint32_t writeIndex = history.readIndex ^ 1u;
-        history.readHandle = m_renderGraph->ImportTexture(
-            history.readName, history.textures[history.readIndex], history.views[history.readIndex],
-            rhi::ToVkFormat(history.format), history.width, history.height);
-        history.writeHandle =
-            m_renderGraph->ImportTexture(history.writeName, history.textures[writeIndex], history.views[writeIndex],
-                                         rhi::ToVkFormat(history.format), history.width, history.height);
-        handles[history.readName] = history.readHandle;
+        const auto read = history.targets[history.readIndex]->Acquire();
+        const auto write = history.targets[history.readIndex ^ 1u]->Acquire();
+        history.readHandle = m_renderGraph->ImportRenderTexture(history.readName, read).color;
+        history.writeHandle = m_renderGraph->ImportRenderTexture(history.writeName, write).color;
+
+        // The first read after creation/cut is defined zero, not uninitialized
+        // device memory. The declared write carries ordering/layout hazards on
+        // every execution; clearing itself occurs only when history is invalid.
+        vk::ResourceHandle initializedRead;
+        const auto readHandle = history.readHandle;
+        m_renderGraph->AddTransferPass(
+            "__HistoryInit/" + key, [this, key, readHandle, &initializedRead](vk::PassBuilder &builder) {
+                initializedRead = builder.TransferWrite(readHandle);
+                builder.SetQueueRole(rhi::QueueRole::Graphics);
+                return [this, key, readHandle](vk::RenderContext &ctx) {
+                    if (m_temporalHistories.at(key).valid)
+                        return;
+                    const VkClearColorValue zero{};
+                    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                    const auto image =
+                        m_vkCore->GetDeviceContext().GetRhiDevice().Resolve(ctx.GetTextureHandle(readHandle));
+                    vkCmdClearColorImage(ctx.GetCommandBuffer(), image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1,
+                                         &range);
+                };
+            });
+        handles[history.readName] = initializedRead;
         handles[history.writeName] = history.writeHandle;
-        if (!m_renderView.history.IsValid())
-            m_renderView.history = history.views[history.readIndex];
     }
 }
 
 void SceneRenderGraph::BindTemporalHistoryResources()
 {
-    if (!m_vkCore || !m_renderGraph)
-        return;
-    auto &device = m_vkCore->GetDeviceContext().GetRhiDevice();
     m_renderView.history = {};
     for (auto &[key, history] : m_temporalHistories) {
-        (void)key;
-        const uint32_t writeIndex = history.readIndex ^ 1u;
-        if (!m_renderGraph->UpdateImportedTexture(history.readHandle,
-                                                  device.Resolve(history.textures[history.readIndex]),
-                                                  device.Resolve(history.views[history.readIndex])) ||
-            !m_renderGraph->UpdateImportedTexture(history.writeHandle, device.Resolve(history.textures[writeIndex]),
-                                                  device.Resolve(history.views[writeIndex]))) {
-            history.valid = false;
-            continue;
-        }
-        if (history.valid) {
-            m_renderGraph->SetResourceInitialState(history.readHandle, rhi::TextureLayout::TransferDestination,
-                                                   rhi::Access::TransferWrite, rhi::PipelineStage::Transfer);
-            m_renderGraph->SetResourceInitialState(history.writeHandle, rhi::TextureLayout::ShaderReadOnly,
-                                                   rhi::Access::ShaderRead, rhi::PipelineStage::FragmentShader);
-        } else {
-            m_renderGraph->SetResourceInitialState(history.readHandle, rhi::TextureLayout::Undefined, rhi::Access::None,
-                                                   rhi::PipelineStage::Top);
-            m_renderGraph->SetResourceInitialState(history.writeHandle, rhi::TextureLayout::Undefined,
-                                                   rhi::Access::None, rhi::PipelineStage::Top);
-        }
+        const auto read = history.targets[history.readIndex]->Acquire();
+        const auto write = history.targets[history.readIndex ^ 1u]->Acquire();
+        m_renderGraph->UpdateImportedRenderTextureColor(history.readHandle, read);
+        m_renderGraph->UpdateImportedRenderTextureColor(history.writeHandle, write);
         if (!m_renderView.history.IsValid())
-            m_renderView.history = history.views[history.readIndex];
+            m_renderView.history = read->color->GetView();
     }
 }
 
@@ -2466,12 +3189,81 @@ void SceneRenderGraph::UpdateMainPassClearSettings(CameraClearFlags clearFlags, 
 // BuildRenderGraph helpers
 // ---------------------------------------------------------------------------
 
-void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height,
+bool SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height,
                                                  std::unordered_map<std::string, vk::ResourceHandle> &customRTHandles)
 {
-    // Non-backbuffer, non-depth color textures
+    m_persistentTextureRevisions.clear();
+    m_drawTextureInputs.clear();
     for (const auto &tex : m_pythonGraphDesc.textures) {
-        if (tex.role == GraphTextureRole::Transient && !tex.isBackbuffer && !tex.isDepth) {
+        if (tex.role != GraphTextureRole::Persistent)
+            continue;
+        const auto generation = tex.renderTexture->Acquire();
+        const auto attachments = m_renderGraph->ImportRenderTexture(tex.name, generation);
+        switch (tex.attachment) {
+        case GraphTextureAttachment::Color:
+            customRTHandles[tex.name] = attachments.color;
+            break;
+        case GraphTextureAttachment::Depth:
+            customRTHandles[tex.name] = attachments.depth;
+            break;
+        case GraphTextureAttachment::Resolve:
+            customRTHandles[tex.name] = attachments.resolve;
+            break;
+        }
+        m_persistentTextureRevisions[tex.renderTexture.get()] = generation->revision;
+    }
+    for (auto &tex : m_pythonGraphDesc.textures) {
+        if (tex.role != GraphTextureRole::Asset)
+            continue;
+        const auto resolved = m_vkCore->ResolveTextureForGraph(tex.assetGuid, tex.isVolume, false);
+        if (resolved.status == TextureResolveStatus::Pending) {
+            m_needsRebuild = true;
+            return false;
+        }
+        const auto &publication = resolved.binding.gpuView;
+        if (resolved.status != TextureResolveStatus::Ready || !publication || !publication->IsValid()) {
+            INXLOG_ERROR("SceneRenderGraph: Texture asset '", tex.name, "' (GUID ", tex.assetGuid,
+                         ") could not be resolved");
+            return false;
+        }
+        const bool publicationIsVolume = publication->GetViewDesc().dimension == rhi::TextureViewDimension::Texture3D;
+        if (publicationIsVolume != tex.isVolume) {
+            INXLOG_ERROR("SceneRenderGraph: Texture asset '", tex.name,
+                         "' changed dimension after the graph was authored");
+            return false;
+        }
+        const auto asset = AssetRegistry::Instance().GetAsset<InxTexture>(tex.assetGuid);
+        if (!asset || asset->GetPixelWidth() == 0 || asset->GetPixelHeight() == 0 || asset->GetPixelDepth() == 0) {
+            INXLOG_ERROR("SceneRenderGraph: Texture asset '", tex.name, "' has no current dimensions");
+            return false;
+        }
+        tex.width = asset->GetPixelWidth();
+        tex.height = asset->GetPixelHeight();
+        tex.depth = asset->GetPixelDepth();
+        const auto handle = m_renderGraph->ImportTexture(tex.name, publication->GetTexture(), publication->GetView(),
+                                                         rhi::ToVkFormat(publication->GetFormat()), tex.width,
+                                                         tex.height, VK_SAMPLE_COUNT_1_BIT, tex.depth, tex.isVolume);
+        if (!handle.IsValid()) {
+            INXLOG_ERROR("SceneRenderGraph: Texture asset '", tex.name, "' could not be imported");
+            return false;
+        }
+        m_renderGraph->SetResourceInitialState(handle, rhi::TextureLayout::ShaderReadOnly, rhi::Access::ShaderRead,
+                                               rhi::PipelineStage::FragmentShader);
+        customRTHandles[tex.name] = handle;
+        m_graphTextureSamplers[tex.name] = publication->GetSampler();
+        m_graphTextureFormats[tex.name] = publication->GetFormat();
+        m_graphTextureAssetVersions[tex.assetGuid] = publication->GetRevision();
+        m_graphTexturePublications.push_back(publication);
+    }
+    for (const auto &read : m_materialTextureReads) {
+        m_drawTextureInputs[read.passName].push_back(read.generation);
+    }
+    // Only the root Camera depth is shared. All other transient declarations
+    // own a distinct image, regardless of matching size, format or sample count.
+    for (const auto &tex : m_pythonGraphDesc.textures) {
+        if (tex.IsViewDepth()) {
+            customRTHandles[tex.name] = m_importedDepthTarget;
+        } else if (tex.role == GraphTextureRole::Transient && !tex.isBackbuffer) {
             uint32_t texW = (tex.width > 0) ? tex.width : width;
             uint32_t texH = (tex.height > 0) ? tex.height : height;
             if (tex.sizeDivisor > 1) {
@@ -2486,21 +3278,7 @@ void SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
             customRTHandles[tex.name] = handle;
         }
     }
-
-    // Custom-size depth textures (shadow maps and offscreen depth targets)
-    for (const auto &tex : m_pythonGraphDesc.textures) {
-        if (tex.role == GraphTextureRole::Transient && tex.isDepth &&
-            ((tex.width > 0 && tex.height > 0) || tex.sizeDivisor > 1)) {
-            uint32_t texW = tex.width > 0 ? tex.width : std::max(1u, width / tex.sizeDivisor);
-            uint32_t texH = tex.height > 0 ? tex.height : std::max(1u, height / tex.sizeDivisor);
-            const uint32_t requestedSamples =
-                tex.samples == 0 ? static_cast<uint32_t>(m_sceneTarget->GetMsaaSampleCount()) : tex.samples;
-            vk::ResourceHandle handle = m_renderGraph->RegisterTransientTexture(
-                tex.name, texW, texH, rhi::ToVkFormat(tex.format),
-                rhi::ToVkSampleCount(ToRhiSampleCount(static_cast<int>(requestedSamples))), true);
-            customRTHandles[tex.name] = handle;
-        }
-    }
+    return true;
 }
 
 vk::ResourceHandle SceneRenderGraph::AppendAutoPass(const std::string &name, vk::ResourceHandle colorTarget,
@@ -2647,8 +3425,13 @@ void SceneRenderGraph::FinalizeGraphOutput(const std::unordered_map<std::string,
                 builder.Read(graphOutput, rhi::PipelineStage::FragmentShader);
             if (preserveMsaaAttachment)
                 builder.PrepareColorAttachment(msaaSource);
-            if (m_importedDepthTarget.IsValid())
-                builder.PrepareDepthStencilAttachment(m_importedDepthTarget);
+            if (m_importedDepthTarget.IsValid()) {
+                if (m_outputGeneration && m_outputGeneration->description.sampledDepth &&
+                    m_outputGeneration->description.samples == rhi::SampleCount::One)
+                    builder.ReadSampledDepth(m_importedDepthTarget);
+                else
+                    builder.PrepareDepthStencilAttachment(m_importedDepthTarget);
+            }
             builder.SetSideEffect();
             return [](vk::RenderContext &) {};
         });
@@ -2665,6 +3448,7 @@ void SceneRenderGraph::BuildRenderGraph()
         return;
     }
 
+    RetireImportedTextureAssets();
     auto retiredDepthResolveGroups = m_sceneDepthResolver.TakeBindGroups();
     if (!retiredDepthResolveGroups.empty()) {
         rhi::Device *device = &m_vkCore->GetDeviceContext().GetRhiDevice();
@@ -2674,6 +3458,7 @@ void SceneRenderGraph::BuildRenderGraph()
         });
     }
     m_renderGraph->Reset();
+    m_graphBuilt = false;
     m_committedShadowContentSignature = 0;
     m_pendingShadowContentSignature = 0;
     m_shadowAtlasValid = false;
@@ -2692,6 +3477,8 @@ void SceneRenderGraph::BuildRenderGraph()
         m_vkCore->ClearPerViewShadowMap(currentViewFrame.GeometrySet());
     if (currentViewFrame.ParticleSet() != VK_NULL_HANDLE)
         m_vkCore->ClearPerViewShadowMap(currentViewFrame.ParticleSet());
+    if (currentViewFrame.EditorOverlaySet() != VK_NULL_HANDLE)
+        m_vkCore->ClearPerViewShadowMap(currentViewFrame.EditorOverlaySet());
     currentViewFrame.shadowBinding = {};
 
     // Graph topology and material pipeline compatibility are independent.
@@ -2708,6 +3495,20 @@ void SceneRenderGraph::BuildRenderGraph()
     m_shadowMapInputIsDepth = false;
     m_visibleRendererList = {};
     m_shadowRendererList = {};
+
+    const auto declareMaterialBufferReads = [this](vk::PassBuilder &builder, const std::string &passName) {
+        for (const auto &read : m_materialBufferReads) {
+            if (read.passName != passName || !read.buffer)
+                continue;
+            const auto handle = builder.ImportBuffer("__MaterialBuffer/" + passName, read.buffer->GetBuffer(),
+                                                     read.buffer->GetByteSize());
+            if (!handle.IsValid())
+                throw std::runtime_error("Material storage buffer could not be imported into the render graph");
+            m_renderGraph->SetResourceInitialState(handle, rhi::TextureLayout::Undefined, rhi::Access::MemoryWrite,
+                                                   rhi::PipelineStage::AllCommands, rhi::QueueRole::Compute);
+            builder.ReadStorageBuffer(handle, rhi::PipelineStage::AllGraphics);
+        }
+    };
 
     const auto retireCuller = [this](std::shared_ptr<particle::ParticleGpuCuller> culler) {
         if (!culler)
@@ -2840,6 +3641,20 @@ void SceneRenderGraph::BuildRenderGraph()
 
     std::unordered_map<std::string, vk::ResourceHandle> customRTHandles;
     std::unordered_map<std::string, vk::ResourceHandle> bufferHandles;
+    std::array<vk::ResourceHandle, kMaxFramesInFlight> viewLightListHandles{};
+    uint64_t viewLightListByteSize = 0;
+    const bool hasViewLightList = std::any_of(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
+                                              [](const GraphBufferDesc &buffer) { return buffer.viewLightList; });
+    if (hasViewLightList) {
+        for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+            const auto lights = m_cameraCanonicalLights.Frame(frameIndex);
+            if (!lights.buffer.IsValid() || lights.capacityBytes < sizeof(uint32_t) * 4) {
+                INXLOG_ERROR("SceneRenderGraph: view light list is unavailable for frame slot ", frameIndex);
+                return;
+            }
+            viewLightListByteSize = std::max(viewLightListByteSize, lights.capacityBytes);
+        }
+    }
     ImportTemporalHistoryResources(customRTHandles);
     if (!m_pythonGraphDesc.passes.empty()) {
         std::unordered_map<std::string, const GraphTextureDesc *> texDescMap;
@@ -2847,7 +3662,72 @@ void SceneRenderGraph::BuildRenderGraph()
             texDescMap[tex.name] = &tex;
         }
 
+        // Import the canonical camera light upload once per frame slot. A
+        // fullscreen consumer selects the active slot at execution time,
+        // so descriptor bindings never retain another View's or frame's
+        // light data.
+        if (hasViewLightList) {
+            for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+                const auto lights = m_cameraCanonicalLights.Frame(frameIndex);
+                const std::string prefix = "View/LightList/Frame" + std::to_string(frameIndex);
+                m_renderGraph->AddComputePass(prefix, [&, frameIndex, prefix, lights](vk::PassBuilder &builder) {
+                    viewLightListHandles[frameIndex] =
+                        builder.ImportBuffer(prefix, lights.buffer, lights.capacityBytes);
+                    m_renderGraph->SetResourceInitialState(viewLightListHandles[frameIndex],
+                                                           rhi::TextureLayout::Undefined, rhi::Access::HostWrite,
+                                                           rhi::PipelineStage::Host);
+                    builder.ReadStorageBuffer(viewLightListHandles[frameIndex], rhi::PipelineStage::FragmentShader);
+                    return [](vk::RenderContext &) {};
+                });
+            }
+        }
+
         const auto &sortedPasses = m_pythonGraphDesc.passes;
+
+        uint32_t worldUIMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+        for (const auto &candidate : sortedPasses) {
+            const auto *candidateCommand = PrimaryCommand(candidate);
+            if (candidateCommand && candidateCommand->type == GraphCommandType::DrawWorldUI) {
+                worldUIMask &= candidateCommand->worldUILayerMask;
+                break;
+            }
+        }
+        const bool hasSelectiveWorldUI =
+            m_screenUIRenderer && m_screenUIRenderer->HasSelectiveWorldOcclusion(worldUIMask);
+        const auto worldUIDepthRuns =
+            hasSelectiveWorldUI ? m_screenUIRenderer->GetWorldDepthRuns(m_cachedProj * m_drawView, worldUIMask)
+                                : std::vector<InxScreenUIRenderer::WorldDepthRun>{};
+        const GraphPassDesc *worldUIOpaqueSource = nullptr;
+        if (hasSelectiveWorldUI) {
+            bool seenWorldUI = false;
+            bool invalidDepthWriter =
+                m_pythonGraphDesc.name != "Default Forward" || m_cameraClearFlags == CameraClearFlags::DontClear;
+            for (const auto &candidate : sortedPasses) {
+                const auto *candidateCommand = PrimaryCommand(candidate);
+                if (candidateCommand && candidateCommand->type == GraphCommandType::DrawWorldUI) {
+                    seenWorldUI = true;
+                    break;
+                }
+                if (candidate.writeDepth != "depth")
+                    continue;
+                if (candidate.name == "OpaquePass" && candidateCommand &&
+                    candidateCommand->type == GraphCommandType::DrawRenderers &&
+                    candidateCommand->shaderTarget == ShaderCompileTarget::Forward &&
+                    candidate.type == GraphPassType::Raster && candidate.commands.size() == 1 && candidate.clearDepth &&
+                    candidate.clearDepthValue == 1.0f && !candidateCommand->rendererSelection &&
+                    candidateCommand->overrideMaterial.empty() &&
+                    candidateCommand->materialFilter == GraphMaterialFilter::All) {
+                    worldUIOpaqueSource = &candidate;
+                } else {
+                    invalidDepthWriter = true;
+                }
+            }
+            if (!seenWorldUI || !worldUIOpaqueSource || invalidDepthWriter) {
+                INXLOG_ERROR("Selective World UI occlusion requires the unmodified Default Forward scene-depth "
+                             "writer; this graph or camera depth-preservation policy cannot be replayed exactly");
+                return;
+            }
+        }
 
         uint32_t width = m_width;
         uint32_t height = m_height;
@@ -2870,10 +3750,28 @@ void SceneRenderGraph::BuildRenderGraph()
 
         // Pre-register transient textures so their ResourceHandles are
         // available before passes reference them.
-        RegisterTransientTextures(width, height, customRTHandles);
+        if (!RegisterTransientTextures(width, height, customRTHandles))
+            return;
         for (const auto &buffer : m_pythonGraphDesc.buffers) {
-            bufferHandles[buffer.name] =
-                m_renderGraph->RegisterTransientBuffer(buffer.name, buffer.byteSize, ToVkBufferUsage(buffer.usage));
+            if (buffer.viewLightList) {
+                bufferHandles[buffer.name] = viewLightListHandles[0];
+                continue;
+            }
+            if (buffer.computeBuffer) {
+                const auto owner = buffer.computeBuffer;
+                m_renderGraph->AddPass("__ImportGraphBuffer/" + buffer.name, [&](vk::PassBuilder &builder) {
+                    bufferHandles[buffer.name] =
+                        builder.ImportBuffer(buffer.name, owner->GetBuffer(), owner->GetByteSize());
+                    return [](vk::RenderContext &) {};
+                });
+                if (!bufferHandles[buffer.name].IsValid()) {
+                    INXLOG_ERROR("SceneRenderGraph: imported buffer '", buffer.name, "' is unavailable");
+                    return;
+                }
+            } else {
+                bufferHandles[buffer.name] =
+                    m_renderGraph->RegisterTransientBuffer(buffer.name, buffer.byteSize, ToVkBufferUsage(buffer.usage));
+            }
         }
 
         struct ParticleGraphResources
@@ -3152,16 +4050,13 @@ void SceneRenderGraph::BuildRenderGraph()
                 return;
             if (m_importedColorTarget.IsValid() && handle.id == m_importedColorTarget.id) {
                 m_importedColorTarget = handle;
-                return;
             }
             if (m_importedResolveTarget.IsValid() && handle.id == m_importedResolveTarget.id) {
                 m_importedResolveTarget = handle;
-                return;
             }
             for (auto &[name, current] : customRTHandles) {
                 if (current.id == handle.id) {
                     current = handle;
-                    return;
                 }
             }
             for (auto &[name, current] : bufferHandles) {
@@ -3292,8 +4187,38 @@ void SceneRenderGraph::BuildRenderGraph()
         bool cameraClearOverridePending = m_hasCameraClearOverride;
         m_mainClearPassName.clear();
 
+        // Scene overlays are authored in linear space. Composite them before
+        // the final display encode so icons, handles, outlines and the grid all
+        // share the same color contract as scene geometry. Player/Game graphs
+        // never receive these editor-only passes.
+        bool sceneOverlaysAppended = false;
+        const auto appendSceneOverlays = [&]() {
+            if (sceneOverlaysAppended || m_renderView.kind != rhi::RenderViewKind::Scene)
+                return;
+            m_importedColorTarget =
+                AppendAutoPass("_ComponentGizmos", m_importedColorTarget, sharedDepth, width, height);
+            m_importedColorTarget = AppendAutoPass("_EditorGizmos", m_importedColorTarget, sharedDepth, width, height);
+            m_importedColorTarget = AppendEditorOutline(m_importedColorTarget);
+            m_importedColorTarget = AppendAutoPass("_EditorTools", m_importedColorTarget, sharedDepth, width, height);
+            sceneOverlaysAppended = true;
+        };
+
         for (const auto &passDesc : sortedPasses) {
             const GraphCommandDesc *command = PrimaryCommand(passDesc);
+            if (command && command->type == GraphCommandType::FullscreenQuad &&
+                command->shaderName == "Display Encode") {
+                appendSceneOverlays();
+            }
+            const auto isPersistent = [&](const std::string &name) {
+                const auto texture = texDescMap.find(name);
+                return texture != texDescMap.end() && texture->second->role == GraphTextureRole::Persistent;
+            };
+            const bool writesPersistent =
+                isPersistent(passDesc.writeDepth) || isPersistent(passDesc.resolveColor) ||
+                std::any_of(passDesc.writeColors.begin(), passDesc.writeColors.end(),
+                            [&](const auto &output) { return isPersistent(output.second); }) ||
+                (command && command->type == GraphCommandType::CopyTexture &&
+                 isPersistent(command->destinationResource));
             static const std::vector<std::pair<std::string, std::string>> kNoInputBindings;
             const auto &commandInputBindings = command ? command->inputBindings : kNoInputBindings;
             // Look up render callback from the Python callbacks map
@@ -3307,7 +4232,8 @@ void SceneRenderGraph::BuildRenderGraph()
             auto callback = callbackIt->second;
             std::vector<particle::GpuParticleDrawEntry> particleEntries;
             MaterialPassPipelineDescriptor particlePass;
-            const bool particleSurfacePass = command && command->type == GraphCommandType::DrawRenderers &&
+            const bool particleSurfacePass = command && !command->rendererSelection &&
+                                             command->type == GraphCommandType::DrawRenderers &&
                                              (command->shaderTarget == ShaderCompileTarget::Forward ||
                                               command->shaderTarget == ShaderCompileTarget::ForwardPlus ||
                                               command->shaderTarget == ShaderCompileTarget::Motion);
@@ -3338,7 +4264,7 @@ void SceneRenderGraph::BuildRenderGraph()
                 const auto custom = customRTHandles.find(name);
                 if (custom != customRTHandles.end())
                     return custom->second;
-                return texture->second->isDepth ? sharedDepth : vk::ResourceHandle{};
+                return {};
             };
             auto textureExtent = [&](const std::string &name) -> VkExtent3D {
                 const auto texture = texDescMap.find(name);
@@ -3372,6 +4298,10 @@ void SceneRenderGraph::BuildRenderGraph()
                     const auto sourceHandle = source->second;
                     const auto destinationHandle = destination->second;
                     m_renderGraph->AddTransferPass(passDesc.name, [&](vk::PassBuilder &builder) {
+                        // Public scene-graph copies sit between dependent raster
+                        // passes, like MSAA resolves; keep them on Graphics instead
+                        // of adding two ownership handoffs with no async work.
+                        builder.SetQueueRole(rhi::QueueRole::Graphics);
                         builder.TransferRead(sourceHandle);
                         written = builder.TransferWrite(destinationHandle);
                         builder.SetSideEffect(passDesc.sideEffect);
@@ -3398,9 +4328,10 @@ void SceneRenderGraph::BuildRenderGraph()
                         sourceDesc->isDepth ? rhi::TextureAspect::Depth : rhi::TextureAspect::Color;
                     vk::ResourceHandle written;
                     m_renderGraph->AddTransferPass(passDesc.name, [&](vk::PassBuilder &builder) {
+                        builder.SetQueueRole(rhi::QueueRole::Graphics);
                         builder.TransferRead(sourceHandle);
                         written = builder.TransferWrite(destinationHandle);
-                        builder.SetSideEffect(passDesc.sideEffect);
+                        builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
                         return [sourceHandle, written, copyExtent, aspect](vk::RenderContext &ctx) {
                             ctx.GetTransferCommandEncoder().CopyTexture(
                                 ctx.GetTextureHandle(sourceHandle), ctx.GetTextureHandle(written),
@@ -3450,7 +4381,8 @@ void SceneRenderGraph::BuildRenderGraph()
             const bool isDepthOnlyMaterialPass = command && command->type == GraphCommandType::DrawRenderers &&
                                                  (command->shaderTarget == ShaderCompileTarget::Depth ||
                                                   command->shaderTarget == ShaderCompileTarget::Shadow);
-            if (colorTargets.empty() && !isShadowPassAction && !isDepthOnlyMaterialPass) {
+            if (colorTargets.empty() && passDesc.writeDepth.empty() && !isShadowPassAction &&
+                !isDepthOnlyMaterialPass) {
                 colorTargets[0] = m_importedColorTarget;
             }
             // Primary color target (slot 0) — used for MSAA resolve and compute fallback
@@ -3497,6 +4429,9 @@ void SceneRenderGraph::BuildRenderGraph()
             };
             std::vector<InputBindingHandle> inputBindingHandles;
             for (const auto &[samplerName, textureName] : commandInputBindings) {
+                if (command && command->type == GraphCommandType::FullscreenQuad &&
+                    bufferHandles.find(textureName) != bufferHandles.end())
+                    continue;
                 auto texIt = texDescMap.find(textureName);
                 if (texIt != texDescMap.end() && texIt->second->isBackbuffer) {
                     // Backbuffer texture — use the imported color target
@@ -3526,8 +4461,9 @@ void SceneRenderGraph::BuildRenderGraph()
             float clearColorA = passDesc.clearColorA;
             float clearDepthVal = passDesc.clearDepthValue;
 
-            // Apply camera-driven clear overrides to the first pass that clears color.
-            if (cameraClearOverridePending && passDesc.clearColor) {
+            // Persistent outputs have their own producer clear contract. Camera
+            // background/accumulation settings belong to its view, not those outputs.
+            if (cameraClearOverridePending && passDesc.clearColor && !writesPersistent) {
                 switch (m_cameraClearFlags) {
                 case CameraClearFlags::Skybox:
                     clearColor = true;
@@ -3583,6 +4519,8 @@ void SceneRenderGraph::BuildRenderGraph()
                         const std::string resolvePassName =
                             "_SceneDepthResolve/" + std::to_string(depthResolvePassCounter++);
                         m_renderGraph->AddComputePass(resolvePassName, [&, sourceDepth](vk::PassBuilder &builder) {
+                            // Immediate raster dependency; no asynchronous overlap to gain.
+                            builder.SetQueueRole(rhi::QueueRole::Graphics);
                             builder.ReadSampledDepth(sourceDepth, rhi::PipelineStage::ComputeShader);
                             auto target = builder.CreateTexture("SceneDepthResolved", width, height,
                                                                 VK_FORMAT_R32_SFLOAT, VK_SAMPLE_COUNT_1_BIT);
@@ -3642,96 +4580,203 @@ void SceneRenderGraph::BuildRenderGraph()
             // =================================================================
             if (command && command->type == GraphCommandType::FullscreenQuad) {
 
-                // ------ MSAA auto-resolve for backbuffer reads ------
-                if (msaaSamples > VK_SAMPLE_COUNT_1_BIT && m_importedResolveTarget.IsValid()) {
-                    bool readsBackbuffer = false;
-                    for (const auto &readTex : passDesc.readTextures) {
-                        auto texIt = texDescMap.find(readTex);
-                        if (texIt != texDescMap.end() && texIt->second->isBackbuffer) {
-                            readsBackbuffer = true;
-                            break;
+                // Reflect once when building this graph, never in the frame loop.
+                // Texture2DMS retains sample identity; Texture2D consumes resolved data.
+                if (!m_vkCore->EnsureShaderAvailable(command->shaderName, "fragment"))
+                    return;
+                const auto *fragmentCode = m_vkCore->GetShaderCache().FindFragCode(command->shaderName);
+                ShaderReflection inputReflection;
+                if (!fragmentCode || !inputReflection.Reflect(*fragmentCode, VK_SHADER_STAGE_FRAGMENT_BIT))
+                    return;
+                std::unordered_set<uint32_t> multisampledBindings;
+                std::unordered_map<uint32_t, ReflectedImageDimension> sampledDimensions;
+                for (const auto &image : inputReflection.GetSampledImages()) {
+                    if (image.set != 0)
+                        continue;
+                    sampledDimensions[image.binding] = image.dimension;
+                    if (image.multisampled)
+                        multisampledBindings.insert(image.binding);
+                }
+                std::vector<std::string> inputNames;
+                for (const auto &[samplerName, textureName] : commandInputBindings)
+                    inputNames.push_back(textureName);
+                if (inputNames.empty()) {
+                    // Preserve the implicit binding order: ordinary color, then camera color.
+                    for (bool backbuffer : {false, true}) {
+                        for (const auto &name : passDesc.readTextures) {
+                            const auto *texture = texDescMap.at(name);
+                            if (!texture->isDepth && texture->isBackbuffer == backbuffer)
+                                inputNames.push_back(name);
                         }
                     }
-                    if (readsBackbuffer && backbufferDirtySinceResolve) {
-                        // Insert a transfer pass that resolves MSAA → 1x.
-                        // The render graph handles layout transitions via
-                        // TransferRead / TransferWrite declarations.
-                        auto importedColor = m_importedColorTarget;
-                        auto importedResolve = m_importedResolveTarget;
-                        uint32_t resolveW = width;
-                        uint32_t resolveH = height;
-                        std::string resolvePassName =
-                            "__MSAA_resolve_pre_fs_" + std::to_string(msaaResolvePassCounter++);
-                        vk::ResourceHandle resolvedVersion;
-
-                        m_renderGraph->AddTransferPass(resolvePassName, [importedColor, importedResolve, resolveW,
-                                                                         resolveH,
-                                                                         &resolvedVersion](vk::PassBuilder &builder) {
-                            builder.SetQueueRole(rhi::QueueRole::Graphics);
-                            builder.TransferRead(importedColor);
-                            resolvedVersion = builder.TransferWrite(importedResolve);
-                            builder.SetRenderArea(resolveW, resolveH);
-
-                            return [importedColor, resolvedVersion, resolveW, resolveH](vk::RenderContext &ctx) {
-                                ctx.GetTransferCommandEncoder().ResolveTexture(
-                                    ctx.GetTextureHandle(importedColor), ctx.GetTextureHandle(resolvedVersion),
-                                    {rhi::TextureAspect::Color, 0, 0, 0, 0, resolveW, resolveH, 1});
-                            };
-                        });
-                        publishResourceVersion(resolvedVersion);
-                        backbufferDirtySinceResolve = false;
-                    }
                 }
-
-                vk::ResourceHandle fullscreenResolvedDepth;
-                bool sampledDepthResolveUnavailable = false;
-                if (msaaSamples > VK_SAMPLE_COUNT_1_BIT) {
-                    for (const auto &[samplerName, textureName] : commandInputBindings) {
-                        (void)samplerName;
-                        const auto texture = texDescMap.find(textureName);
-                        if (texture == texDescMap.end() || !texture->second->isDepth)
-                            continue;
-                        const auto source = customRTHandles.find(textureName);
-                        if (source == customRTHandles.end() || !source->second.IsValid())
-                            continue;
+                struct FullscreenReadResource
+                {
+                    vk::ResourceHandle handle;
+                    std::array<vk::ResourceHandle, kMaxFramesInFlight> frameHandles{};
+                    rhi::PixelFormat format = rhi::PixelFormat::Undefined;
+                    bool depthRead = false;
+                    bool storageBuffer = false;
+                    bool frameLocal = false;
+                    uint64_t byteSize = 0;
+                    rhi::SamplerHandle sampler;
+                };
+                std::vector<FullscreenReadResource> fsReadInputs;
+                std::string temporalHistoryKey;
+                for (uint32_t binding = 0; binding < inputNames.size(); ++binding) {
+                    const auto &name = inputNames[binding];
+                    if (const auto buffer = bufferHandles.find(name); buffer != bufferHandles.end()) {
+                        const auto reflected = std::find_if(inputReflection.GetStorageBuffers().begin(),
+                                                            inputReflection.GetStorageBuffers().end(),
+                                                            [binding](const StorageBufferInfo &item) {
+                                                                return item.set == 0 && item.binding == binding;
+                                                            });
+                        if (reflected == inputReflection.GetStorageBuffers().end() || !reflected->readOnly ||
+                            reflected->arraySize != 1) {
+                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' input '", name,
+                                         "' requires a read-only scalar storage-buffer declaration at binding ",
+                                         binding);
+                            return;
+                        }
+                        const auto description =
+                            std::find_if(m_pythonGraphDesc.buffers.begin(), m_pythonGraphDesc.buffers.end(),
+                                         [&name](const GraphBufferDesc &item) { return item.name == name; });
+                        if (description == m_pythonGraphDesc.buffers.end())
+                            return;
+                        const auto maxRange =
+                            m_vkCore->GetDeviceContext().GetDeviceProperties().limits.maxStorageBufferRange;
+                        const uint64_t inputByteSize =
+                            description->viewLightList ? viewLightListByteSize : description->byteSize;
+                        if (inputByteSize > maxRange) {
+                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' buffer '", name, "' size ",
+                                         inputByteSize, " exceeds Vulkan maxStorageBufferRange ", maxRange);
+                            return;
+                        }
+                        FullscreenReadResource input{};
+                        input.handle = buffer->second;
+                        input.format = rhi::PixelFormat::Undefined;
+                        input.storageBuffer = true;
+                        input.byteSize = inputByteSize;
+                        input.frameLocal = description->viewLightList;
+                        if (input.frameLocal)
+                            input.frameHandles = viewLightListHandles;
+                        fsReadInputs.push_back(input);
+                        continue;
+                    }
+                    const auto &texture = *texDescMap.at(name);
+                    if (texture.role == GraphTextureRole::TemporalRead)
+                        temporalHistoryKey = texture.temporalKey;
+                    const uint32_t samples = EffectiveTextureSamples(texture, static_cast<uint32_t>(msaaSamples));
+                    auto source = texture.isBackbuffer ? m_importedColorTarget : customRTHandles.at(name);
+                    auto format =
+                        texture.isBackbuffer ? rhi::FromVkFormat(m_sceneTarget->GetColorFormat()) : texture.format;
+                    rhi::SamplerHandle sampler;
+                    if (texture.role == GraphTextureRole::Asset) {
+                        const auto dimension = sampledDimensions.find(binding);
+                        const auto expected =
+                            texture.isVolume ? ReflectedImageDimension::D3 : ReflectedImageDimension::D2;
+                        if (dimension == sampledDimensions.end() || dimension->second != expected) {
+                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' binds Texture asset '", name,
+                                         "' to an incompatible shader resource dimension at binding ", binding);
+                            return;
+                        }
+                        const auto formatIt = m_graphTextureFormats.find(name);
+                        const auto samplerIt = m_graphTextureSamplers.find(name);
+                        if (formatIt == m_graphTextureFormats.end() || samplerIt == m_graphTextureSamplers.end()) {
+                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' Texture asset '", name,
+                                         "' has no resident GPU publication");
+                            return;
+                        }
+                        format = formatIt->second;
+                        sampler = samplerIt->second;
+                    }
+                    const bool rawSamples = multisampledBindings.count(binding) != 0;
+                    if (rawSamples && samples == 1) {
+                        INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' binds single-sample texture '", name,
+                                     "' to a Texture2DMS input");
+                        return;
+                    }
+                    if (rawSamples || samples == 1) {
+                        FullscreenReadResource input{};
+                        input.handle = source;
+                        input.format = format;
+                        input.depthRead = texture.isDepth;
+                        input.sampler = sampler;
+                        fsReadInputs.push_back(input);
+                        continue;
+                    }
+                    const uint32_t inputWidth =
+                        texture.width ? texture.width : std::max(1u, width / std::max(1u, texture.sizeDivisor));
+                    const uint32_t inputHeight =
+                        texture.height ? texture.height : std::max(1u, height / std::max(1u, texture.sizeDivisor));
+                    if (texture.isDepth) {
                         if (!m_sceneDepthResolver.IsValid()) {
                             INXLOG_ERROR("SceneRenderGraph: sampled MSAA depth resolve is unavailable for pass '",
                                          passDesc.name, "'");
-                            sampledDepthResolveUnavailable = true;
-                            break;
+                            return;
                         }
-                        if (!resolvedParticleSceneDepth.IsValid() || resolvedParticleDepthSource != source->second) {
-                            const auto sourceDepth = source->second;
-                            const std::string resolvePassName =
-                                "_SceneDepthResolve/" + std::to_string(depthResolvePassCounter++);
-                            m_renderGraph->AddComputePass(resolvePassName, [&, sourceDepth](vk::PassBuilder &builder) {
-                                builder.ReadSampledDepth(sourceDepth, rhi::PipelineStage::ComputeShader);
-                                auto target = builder.CreateTexture("SceneDepthResolved", width, height,
-                                                                    VK_FORMAT_R32_SFLOAT, VK_SAMPLE_COUNT_1_BIT);
+                        if (!resolvedParticleSceneDepth.IsValid() || resolvedParticleDepthSource != source) {
+                            const auto resolveName = "_SceneDepthResolve/" + std::to_string(depthResolvePassCounter++);
+                            m_renderGraph->AddComputePass(resolveName, [&](vk::PassBuilder &builder) {
+                                builder.SetQueueRole(rhi::QueueRole::Graphics);
+                                builder.ReadSampledDepth(source, rhi::PipelineStage::ComputeShader);
+                                const auto target = builder.CreateTexture("SceneDepthResolved", inputWidth, inputHeight,
+                                                                          VK_FORMAT_R32_SFLOAT, VK_SAMPLE_COUNT_1_BIT);
                                 resolvedParticleSceneDepth = builder.WriteStorageTexture(target);
                                 const auto outputDepth = resolvedParticleSceneDepth;
-                                return [this, sourceDepth, outputDepth, width, height,
-                                        sampleCount = static_cast<uint32_t>(msaaSamples)](vk::RenderContext &ctx) {
+                                return [this, source, outputDepth, inputWidth, inputHeight,
+                                        samples](vk::RenderContext &ctx) {
                                     if (!m_sceneDepthResolver.Record(
-                                            ctx.GetComputeCommandEncoder(), ctx.GetTextureView(sourceDepth),
-                                            ctx.GetTextureView(outputDepth), width, height, sampleCount)) {
+                                            ctx.GetComputeCommandEncoder(), ctx.GetTextureView(source),
+                                            ctx.GetTextureView(outputDepth), inputWidth, inputHeight, samples))
                                         INXLOG_ERROR("SceneRenderGraph: failed to record the MSAA scene-depth resolve");
-                                    }
                                 };
                             });
-                            resolvedParticleDepthSource = sourceDepth;
+                            resolvedParticleDepthSource = source;
                         }
-                        fullscreenResolvedDepth = resolvedParticleSceneDepth;
-                        break;
+                        FullscreenReadResource input{};
+                        input.handle = resolvedParticleSceneDepth;
+                        input.format = rhi::PixelFormat::R32SFloat;
+                        fsReadInputs.push_back(input);
+                        continue;
                     }
+                    // Camera color shares its existing resolve; transient MSAA color
+                    // resolves at the consuming version, never by averaging owner IDs
+                    // explicitly declared Texture2DMS in the shader.
+                    vk::ResourceHandle resolved = texture.isBackbuffer ? m_importedResolveTarget : vk::ResourceHandle{};
+                    if (!texture.isBackbuffer || backbufferDirtySinceResolve) {
+                        const auto resolveName = "__MSAA_resolve_pre_fs_" + std::to_string(msaaResolvePassCounter++);
+                        m_renderGraph->AddTransferPass(resolveName, [&](vk::PassBuilder &builder) {
+                            builder.SetQueueRole(rhi::QueueRole::Graphics);
+                            builder.TransferRead(source);
+                            if (!resolved.IsValid())
+                                resolved = builder.CreateTexture("FullscreenColorResolved", inputWidth, inputHeight,
+                                                                 rhi::ToVkFormat(format), VK_SAMPLE_COUNT_1_BIT);
+                            resolved = builder.TransferWrite(resolved);
+                            builder.SetRenderArea(inputWidth, inputHeight);
+                            return [source, resolved, inputWidth, inputHeight](vk::RenderContext &ctx) {
+                                ctx.GetTransferCommandEncoder().ResolveTexture(
+                                    ctx.GetTextureHandle(source), ctx.GetTextureHandle(resolved),
+                                    {rhi::TextureAspect::Color, 0, 0, 0, 0, inputWidth, inputHeight, 1});
+                            };
+                        });
+                        if (texture.isBackbuffer) {
+                            publishResourceVersion(resolved);
+                            backbufferDirtySinceResolve = false;
+                        }
+                    }
+                    FullscreenReadResource input{};
+                    input.handle = resolved;
+                    input.format = format;
+                    fsReadInputs.push_back(input);
                 }
-                if (sampledDepthResolveUnavailable)
-                    continue;
 
                 // Capture references for the execute lambda
                 FullscreenRenderer *fsRenderer = &m_fullscreenRenderer;
                 std::string shaderName = command->shaderName;
                 std::string parameterBlock = command->parameterBlock;
+                const rhi::DepthState fsDepthState{command->depthTest, command->depthWrite, command->depthCompare};
+                const bool fsAlphaBlend = command->alphaBlend;
                 FullscreenPushConstants packedPushConstants{};
                 uint32_t packedPushConstantSize = 0;
                 int32_t historyValidParameterIndex = -1;
@@ -3755,80 +4800,16 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                 }
 
-                // Input textures for FullscreenQuad sampling.
-                // When inputBindings are specified, use them to determine
-                // binding order (binding 0 = first inputBinding, etc.).
-                // This ensures named sampler→texture mappings align with
-                // the descriptor set layout.  Fall back to readTextures
-                // order when no inputBindings are declared (single-input
-                // effects that just call read()).
-                struct FullscreenReadResource
-                {
-                    vk::ResourceHandle handle;
-                    rhi::PixelFormat format = rhi::PixelFormat::Undefined;
-                    bool depthRead = false;
-                };
-                std::vector<FullscreenReadResource> fsReadInputs;
-                std::string temporalHistoryKey;
-                if (!commandInputBindings.empty()) {
-                    // Use inputBindings order for deterministic sampler→binding mapping
-                    for (const auto &[samplerName, textureName] : commandInputBindings) {
-                        auto texIt = texDescMap.find(textureName);
-                        if (texIt == texDescMap.end())
-                            continue;
-                        if (texIt->second->role == GraphTextureRole::TemporalRead)
-                            temporalHistoryKey = texIt->second->temporalKey;
-                        if (texIt->second->isBackbuffer) {
-                            if (msaaSamples > VK_SAMPLE_COUNT_1_BIT && m_importedResolveTarget.IsValid()) {
-                                fsReadInputs.push_back({m_importedResolveTarget,
-                                                        rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
-                            } else {
-                                fsReadInputs.push_back(
-                                    {m_importedColorTarget, rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
-                            }
-                        } else if (texIt->second->isDepth && fullscreenResolvedDepth.IsValid()) {
-                            fsReadInputs.push_back({fullscreenResolvedDepth, rhi::PixelFormat::R32SFloat, false});
-                        } else {
-                            // Allow both color and depth textures as sampler inputs
-                            // for fullscreen effects (e.g. SSAO reads depth as sampler2D).
-                            // Always use Read() (→ SHADER_READ_ONLY_OPTIMAL) since these
-                            // are sampled textures, NOT depth attachments.  Shadow maps
-                            // and other depth-formatted textures are read with a regular
-                            // combined-image-sampler descriptor, not as depth attachments.
-                            auto rtIt = customRTHandles.find(textureName);
-                            if (rtIt != customRTHandles.end()) {
-                                fsReadInputs.push_back({rtIt->second, texIt->second->format, texIt->second->isDepth});
-                            }
-                        }
-                    }
-                } else {
-                    // Default path: use readTextures order (colorReadHandles + backbuffer)
-                    // for simple single-input effects that call read() without explicit inputBindings.
-                    for (const auto &readTex : passDesc.readTextures) {
-                        const auto texIt = texDescMap.find(readTex);
-                        if (texIt == texDescMap.end() || texIt->second->isDepth || texIt->second->isBackbuffer)
-                            continue;
-                        const auto rtIt = customRTHandles.find(readTex);
-                        if (rtIt != customRTHandles.end())
-                            fsReadInputs.push_back({rtIt->second, texIt->second->format, false});
-                    }
-                    for (const auto &readTex : passDesc.readTextures) {
-                        auto texIt = texDescMap.find(readTex);
-                        if (texIt != texDescMap.end() && texIt->second->isBackbuffer) {
-                            if (msaaSamples > VK_SAMPLE_COUNT_1_BIT && m_importedResolveTarget.IsValid()) {
-                                fsReadInputs.push_back({m_importedResolveTarget,
-                                                        rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
-                            } else {
-                                fsReadInputs.push_back(
-                                    {m_importedColorTarget, rhi::FromVkFormat(m_sceneTarget->GetColorFormat()), false});
-                            }
-                        }
-                    }
-                }
-
                 // Determine output target (primary color)
                 vk::ResourceHandle fsOutputTarget = primaryColorTarget;
                 vk::ResourceHandle fsWrittenVersion;
+                vk::ResourceHandle fsDepthTarget;
+                vk::ResourceHandle fsWrittenDepthVersion;
+                rhi::PixelFormat fsDepthFormat = rhi::PixelFormat::Undefined;
+                if (!passDesc.writeDepth.empty()) {
+                    fsDepthTarget = customRTHandles.at(passDesc.writeDepth);
+                    fsDepthFormat = ResolveMaterialPass(m_pythonGraphDesc, passDesc, m_renderView).depthFormat;
+                }
 
                 // Determine MSAA sample count and output format.
                 // When writing to the MSAA backbuffer the pipeline sample
@@ -3855,9 +4836,14 @@ void SceneRenderGraph::BuildRenderGraph()
                 for (const auto &[slot, texName] : passDesc.writeColors) {
                     if (slot == 0 && !texName.empty()) {
                         auto texIt = texDescMap.find(texName);
-                        if (texIt != texDescMap.end() && texIt->second->sizeDivisor > 1) {
-                            fsPassWidth = std::max(1u, width / texIt->second->sizeDivisor);
-                            fsPassHeight = std::max(1u, height / texIt->second->sizeDivisor);
+                        if (texIt != texDescMap.end()) {
+                            if (texIt->second->width > 0 && texIt->second->height > 0) {
+                                fsPassWidth = texIt->second->width;
+                                fsPassHeight = texIt->second->height;
+                            } else if (texIt->second->sizeDivisor > 1) {
+                                fsPassWidth = std::max(1u, width / texIt->second->sizeDivisor);
+                                fsPassHeight = std::max(1u, height / texIt->second->sizeDivisor);
+                            }
                         }
                     }
                 }
@@ -3868,10 +4854,22 @@ void SceneRenderGraph::BuildRenderGraph()
                     if (shadow != customRTHandles.end())
                         fullscreenShadowInput = shadow->second;
                 }
-                m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersion](vk::PassBuilder &builder) {
+                vk::ResourceHandle fsResolvedVersion;
+                m_renderGraph->AddPass(passDesc.name, [=, &fsWrittenVersion, &fsResolvedVersion,
+                                                       &fsWrittenDepthVersion](vk::PassBuilder &builder) {
+                    builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
                     // Declare read dependencies for DAG edges + barriers
                     for (const auto &input : fsReadInputs) {
-                        if (input.depthRead) {
+                        if (input.storageBuffer) {
+                            if (input.frameLocal) {
+                                for (const auto handle : input.frameHandles) {
+                                    if (handle.IsValid())
+                                        builder.ReadStorageBuffer(handle, rhi::PipelineStage::FragmentShader);
+                                }
+                            } else {
+                                builder.ReadStorageBuffer(input.handle, rhi::PipelineStage::FragmentShader);
+                            }
+                        } else if (input.depthRead) {
                             builder.ReadSampledDepth(input.handle);
                         } else {
                             builder.Read(input.handle);
@@ -3884,29 +4882,49 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                     // Declare color output
                     fsWrittenVersion = builder.WriteColor(fsOutputTarget, 0);
-                    // FullscreenRenderer uses an opaque pipeline and its
-                    // procedural triangle covers the complete render area.
-                    // The previous attachment contents are therefore not an
-                    // input to this pass.  Explicitly clear them so Vulkan
-                    // does not issue LOAD for an uninitialised transient
-                    // target.  Loading undefined tiles is particularly
-                    // hazardous on mobile tile renderers and can surface as
-                    // random blocks when the target is sampled by the next
-                    // post-processing pass.
-                    builder.SetClearColor(0.0F, 0.0F, 0.0F, 0.0F);
+                    if (resolveTarget.IsValid())
+                        fsResolvedVersion = builder.WriteResolve(resolveTarget);
+                    if (fsDepthTarget.IsValid())
+                        fsWrittenDepthVersion = builder.WriteDepth(fsDepthTarget);
+                    builder.SetDepthTest(fsDepthState.testEnabled);
+                    // Replacement passes fully define color. Partial coverage
+                    // and blending load the preceding graph version unless the
+                    // author explicitly clears it; never load a new transient.
+                    if (clearColor)
+                        builder.SetClearColor(clearColorR, clearColorG, clearColorB, clearColorA);
+                    else if (!fsAlphaBlend && !fsDepthState.testEnabled)
+                        builder.SetClearColor(0.0F, 0.0F, 0.0F, 0.0F);
+                    if (clearDepth && fsDepthTarget.IsValid())
+                        builder.SetClearDepth(clearDepthVal, 0);
                     builder.SetRenderArea(fsPassWidth, fsPassHeight);
                     return [=](vk::RenderContext &ctx) {
                         // Resolve input texture views using a stack path for the common case.
-                        FullscreenTextureInput inputsStack[8] = {};
-                        std::vector<FullscreenTextureInput> inputsHeap;
-                        FullscreenTextureInput *inputs = inputsStack;
+                        FullscreenResourceInput inputsStack[8] = {};
+                        std::vector<FullscreenResourceInput> inputsHeap;
+                        FullscreenResourceInput *inputs = inputsStack;
                         if (fsReadInputs.size() > 8) {
                             inputsHeap.resize(fsReadInputs.size());
                             inputs = inputsHeap.data();
                         }
                         const uint32_t inputCount = static_cast<uint32_t>(fsReadInputs.size());
                         for (uint32_t i = 0; i < inputCount; ++i) {
+                            if (fsReadInputs[i].storageBuffer) {
+                                const auto resource =
+                                    fsReadInputs[i].frameLocal
+                                        ? fsReadInputs[i]
+                                              .frameHandles[m_vkCore->GetCurrentFrameSlot() % kMaxFramesInFlight]
+                                        : fsReadInputs[i].handle;
+                                inputs[i].buffer = ctx.GetBufferHandle(resource);
+                                inputs[i].byteSize = fsReadInputs[i].byteSize;
+                                if (!inputs[i].buffer.IsValid()) {
+                                    INXLOG_ERROR("FullscreenQuad '", shaderName,
+                                                 "': input buffer is unavailable at binding ", i);
+                                    return;
+                                }
+                                continue;
+                            }
                             inputs[i].view = ctx.GetTextureView(fsReadInputs[i].handle);
+                            inputs[i].sampler = fsReadInputs[i].sampler;
                             inputs[i].format = fsReadInputs[i].format;
                             inputs[i].depthRead = fsReadInputs[i].depthRead;
                             if (!inputs[i].view.IsValid()) {
@@ -3918,11 +4936,16 @@ void SceneRenderGraph::BuildRenderGraph()
 
                         // Build pipeline key and ensure pipeline exists
                         FullscreenPipelineKey key;
+                        key.depthFormat = fsDepthFormat;
+                        key.depth = fsDepthState;
+                        key.alphaBlend = fsAlphaBlend;
                         key.shaderName = shaderName;
                         key.samples = fsSamples;
                         key.colorFormat = fsColorFormat;
-                        key.inputTextureCount = inputCount;
+                        key.inputResourceCount = inputCount;
                         for (uint32_t i = 0; i < inputCount && i < 32; ++i) {
+                            if (inputs[i].buffer.IsValid())
+                                key.inputBufferMask |= 1u << i;
                             if (inputs[i].depthRead)
                                 key.depthInputMask |= 1u << i;
                         }
@@ -3945,8 +4968,8 @@ void SceneRenderGraph::BuildRenderGraph()
                         FullscreenPushConstants drawPushConstants = packedPushConstants;
                         uint32_t drawPushConstantSize = packedPushConstantSize;
                         if (!parameterBlock.empty()) {
-                            const auto blockIt = m_parameterBlocks.find(parameterBlock);
-                            if (blockIt != m_parameterBlocks.end()) {
+                            const auto blockIt = m_submittedParameterBlocks.find(parameterBlock);
+                            if (blockIt != m_submittedParameterBlocks.end()) {
                                 drawPushConstants = blockIt->second.values;
                                 drawPushConstantSize = blockIt->second.byteSize;
                             }
@@ -3976,6 +4999,12 @@ void SceneRenderGraph::BuildRenderGraph()
                     fullscreenShadowDependencyDeclared = true;
                 }
                 publishResourceVersion(fsWrittenVersion);
+                publishResourceVersion(fsResolvedVersion);
+                publishResourceVersion(fsWrittenDepthVersion);
+                if (sharedDepth.IsValid() && sharedDepth.id == fsWrittenDepthVersion.id) {
+                    sharedDepth = fsWrittenDepthVersion;
+                    m_importedDepthTarget = sharedDepth;
+                }
 
                 if (writesBackbuffer) {
                     backbufferDirtySinceResolve = true;
@@ -3983,6 +5012,16 @@ void SceneRenderGraph::BuildRenderGraph()
                 continue;
             }
 
+            // Resolve the sample at this pass's position, after earlier writers
+            // published their SSA versions. An upfront handle would read v0.
+            std::vector<vk::ResourceHandle> drawTextureReads;
+            if (const auto inputs = m_drawTextureInputs.find(passDesc.name); inputs != m_drawTextureInputs.end()) {
+                for (const auto &generation : inputs->second) {
+                    const auto resources = m_renderGraph->ImportRenderTexture(
+                        "__DrawTexture/" + generation->sampledColor->GetSourceId(), generation);
+                    drawTextureReads.push_back(generation->multisampleColor ? resources.resolve : resources.color);
+                }
+            }
             std::vector<vk::ResourceHandle> writtenColorVersions;
             vk::ResourceHandle writtenDepthVersion;
             vk::ResourceHandle writtenResolveVersion;
@@ -4001,10 +5040,105 @@ void SceneRenderGraph::BuildRenderGraph()
             const vk::ResourceHandle rendererListHandle =
                 usesShadowRendererList ? m_shadowRendererList
                                        : (usesVisibleRendererList ? m_visibleRendererList : vk::ResourceHandle{});
+            if (hasSelectiveWorldUI && command && command->type == GraphCommandType::DrawWorldUI) {
+                if (!primaryColorTarget.IsValid() || !sharedDepth.IsValid() || colorTargets.size() != 1 ||
+                    colorTargets.begin()->first != 0) {
+                    INXLOG_ERROR("Selective World UI requires one existing color target and scene depth");
+                    return;
+                }
+                const auto *opaqueCommand = PrimaryCommand(*worldUIOpaqueSource);
+                auto replayPipeline = m_pythonMaterialPasses.at(worldUIOpaqueSource->name);
+                const auto uiMaterialPass = m_pythonMaterialPasses.at(passDesc.name);
+                const uint32_t worldUILayerMask = command->worldUILayerMask;
+                replayPipeline.target = ShaderCompileTarget::Depth;
+                replayPipeline.colorFormats.clear();
+                replayPipeline.depthReadOnly = false;
+                std::vector<vk::ResourceHandle> replayTextureReads;
+                if (const auto inputs = m_drawTextureInputs.find(worldUIOpaqueSource->name);
+                    inputs != m_drawTextureInputs.end()) {
+                    for (const auto &generation : inputs->second) {
+                        const auto resources = m_renderGraph->ImportRenderTexture(
+                            "__DrawTexture/" + generation->sampledColor->GetSourceId(), generation);
+                        replayTextureReads.push_back(generation->multisampleColor ? resources.resolve
+                                                                                  : resources.color);
+                    }
+                }
+                std::unordered_map<uint64_t, vk::ResourceHandle> alternateDepths;
+                for (const auto &run : worldUIDepthRuns) {
+                    const uint64_t excludedId = run.ignoredOccluderId;
+                    if (!excludedId || alternateDepths.count(excludedId))
+                        continue;
+                    const std::string replayName = passDesc.name + "/Exclude/" + std::to_string(excludedId);
+                    auto alternateDepth = m_renderGraph->RegisterTransientTexture(replayName + "/Depth", width, height,
+                                                                                  depthFormat, msaaSamples);
+                    vk::ResourceHandle writtenAlternateDepth;
+                    m_renderGraph->AddPass(replayName, [=, &writtenAlternateDepth](vk::PassBuilder &builder) {
+                        builder.ReadRendererList(m_visibleRendererList);
+                        declareMaterialBufferReads(builder, worldUIOpaqueSource->name);
+                        for (const auto texture : replayTextureReads)
+                            builder.Read(texture,
+                                         rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
+                        writtenAlternateDepth = builder.WriteDepth(alternateDepth);
+                        builder.SetRenderArea(width, height);
+                        builder.SetClearDepth(1.0f, 0);
+                        return [this, vkCore, opaqueCommand, replayPipeline, excludedId, width,
+                                height](vk::RenderContext &ctx) {
+                            const auto *list = ctx.GetRendererList(m_visibleRendererList);
+                            const auto *draws = list ? &list->DrawCalls() : nullptr;
+                            if (!vkCore->UsesDrawCalls(draws))
+                                vkCore->SetDrawCalls(draws);
+                            vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), width, height, GetPerViewBindGroup(),
+                                                      m_drawView, opaqueCommand->queueMin, opaqueCommand->queueMax,
+                                                      opaqueCommand->sortMode, "", opaqueCommand->passTag,
+                                                      &replayPipeline, opaqueCommand->materialFilter, nullptr,
+                                                      excludedId, true);
+                        };
+                    });
+                    alternateDepths.emplace(excludedId, writtenAlternateDepth);
+                }
+
+                vk::ResourceHandle currentColor = primaryColorTarget;
+                for (size_t runIndex = 0; runIndex < worldUIDepthRuns.size(); ++runIndex) {
+                    const auto run = worldUIDepthRuns[runIndex];
+                    const auto runDepth =
+                        run.ignoredOccluderId ? alternateDepths.at(run.ignoredOccluderId) : sharedDepth;
+                    const std::string runName = passDesc.name + "/Run/" + std::to_string(runIndex);
+                    const bool lastRun = runIndex + 1 == worldUIDepthRuns.size();
+                    vk::ResourceHandle writtenColor;
+                    vk::ResourceHandle writtenResolve;
+                    m_renderGraph->AddPass(runName, [=, &writtenColor, &writtenResolve](vk::PassBuilder &builder) {
+                        builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
+                        builder.ReadDepth(runDepth);
+                        for (const auto texture : drawTextureReads)
+                            builder.Read(texture,
+                                         rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
+                        writtenColor = builder.WriteColor(currentColor, 0);
+                        if (lastRun && resolveTarget.IsValid())
+                            writtenResolve = builder.WriteResolve(resolveTarget);
+                        builder.SetRenderArea(width, height);
+                        return [this, vkCore, uiMaterialPass, worldUILayerMask, run, width,
+                                height](vk::RenderContext &ctx) {
+                            m_screenUIRenderer->RenderWorld(
+                                ctx.GetCommandBuffer(), width, height, m_cachedProj * m_drawView,
+                                uiMaterialPass.RenderingSignature(), vkCore->GetCurrentFrameSlot(),
+                                worldUILayerMask & (m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu),
+                                m_drawView, m_cachedProj, run.firstOrdinal, run.endOrdinal);
+                        };
+                    });
+                    currentColor = writtenColor;
+                    publishResourceVersion(writtenColor);
+                    publishResourceVersion(writtenResolve);
+                }
+                if (writesBackbuffer)
+                    backbufferDirtySinceResolve = true;
+                continue;
+            }
             m_renderGraph->AddPass(passDesc.name, [=, &sharedDepth, &writtenColorVersions, &writtenDepthVersion,
                                                    &writtenResolveVersion](vk::PassBuilder &builder) {
+                builder.SetSideEffect(passDesc.sideEffect || writesPersistent);
                 // Local alias to make vkCore capturable by nested lambdas (MSVC C3481)
                 InxVkCoreModular *localVkCore = vkCore;
+                declareMaterialBufferReads(builder, passDesc.name);
 
                 struct ParticlePacket
                 {
@@ -4145,17 +5279,10 @@ void SceneRenderGraph::BuildRenderGraph()
                 // ----- Depth -----
                 vk::ResourceHandle depth;
                 if (!passDesc.writeDepth.empty()) {
-                    // Fixed-size and divided depth targets are pre-registered as 1x resources.
+                    // Every declared attachment has already been registered.
                     auto rtIt = customRTHandles.find(passDesc.writeDepth);
                     if (rtIt != customRTHandles.end()) {
                         depth = rtIt->second;
-                        writtenDepthVersion = builder.WriteDepth(depth);
-                        depth = writtenDepthVersion;
-                    } else if (isShadowPass) {
-                        // Fallback: create inline
-                        auto depthTexIt = texDescMap.find(passDesc.writeDepth);
-                        depth = builder.CreateDepthStencil(passDesc.writeDepth, passWidth, passHeight,
-                                                           shadowDepthFormat, VK_SAMPLE_COUNT_1_BIT);
                         writtenDepthVersion = builder.WriteDepth(depth);
                         depth = writtenDepthVersion;
                     }
@@ -4198,6 +5325,8 @@ void SceneRenderGraph::BuildRenderGraph()
                 for (const auto &readHandle : colorReadHandles) {
                     builder.Read(readHandle);
                 }
+                for (const auto handle : drawTextureReads)
+                    builder.Read(handle, rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
 
                 // ----- Input binding reads (sampled textures, e.g. shadow map) -----
                 // Input bindings reference textures by name for descriptor
@@ -4348,18 +5477,8 @@ void SceneRenderGraph::BuildRenderGraph()
             publishResourceVersion(writtenDepthVersion);
             publishResourceVersion(writtenResolveVersion);
 
-            // After scene-pass AddPass completes (setup lambda ran synchronously),
-            // sharedDepth is now valid.  Register it in customRTHandles under
-            // all scene-size depth texture names so subsequent fullscreen quad
-            // passes can reference depth via inputBindings / set_input().
             if (sharedDepth.IsValid()) {
                 m_importedDepthTarget = sharedDepth;
-                for (const auto &tex : m_pythonGraphDesc.textures) {
-                    if (tex.isDepth && tex.width == 0 && tex.height == 0 &&
-                        customRTHandles.find(tex.name) == customRTHandles.end()) {
-                        customRTHandles[tex.name] = sharedDepth;
-                    }
-                }
             }
 
             if (writesBackbuffer) {
@@ -4368,18 +5487,35 @@ void SceneRenderGraph::BuildRenderGraph()
         }
 
         // ====================================================================
-        // Editor overlays are a Scene-view concern only.  A standalone Player
-        // must export the exact user pipeline result: adding editor-only
-        // queues to a Game graph creates extra color-target versions after
-        // post processing and can invalidate the MSAA/display output chain.
-        // ====================================================================
-        if (m_renderView.kind == rhi::RenderViewKind::Scene) {
-            m_importedColorTarget =
-                AppendAutoPass("_ComponentGizmos", m_importedColorTarget, sharedDepth, width, height);
-            m_importedColorTarget = AppendAutoPass("_EditorGizmos", m_importedColorTarget, sharedDepth, width, height);
-            m_importedColorTarget = AppendEditorOutline(m_importedColorTarget);
-            m_importedColorTarget = AppendAutoPass("_EditorTools", m_importedColorTarget, sharedDepth, width, height);
+        // Persistent outputs remain observable even when not used by the screen.
+        for (const auto &texture : m_pythonGraphDesc.textures) {
+            if (texture.role != GraphTextureRole::Persistent && texture.role != GraphTextureRole::TemporalRead &&
+                texture.role != GraphTextureRole::TemporalWrite)
+                continue;
+            // Every imported attachment leaves the graph in its declared
+            // handoff layout, including unsampleable MSAA/depth attachments.
+            const bool sampleable = texture.samples == 1 &&
+                                    (!texture.isDepth || texture.renderTexture->Acquire()->description.sampledDepth);
+            const auto output = customRTHandles.at(texture.name);
+            m_renderGraph->AddPass("__Export/" + texture.name,
+                                   [output, isDepth = texture.isDepth, sampleable](vk::PassBuilder &builder) {
+                                       if (!sampleable && isDepth)
+                                           builder.PrepareDepthStencilAttachment(output);
+                                       else if (!sampleable)
+                                           builder.PrepareColorAttachment(output);
+                                       else if (isDepth)
+                                           builder.ReadSampledDepth(output);
+                                       else
+                                           builder.Read(output);
+                                       builder.SetSideEffect();
+                                       return [](vk::RenderContext &) {};
+                                   });
         }
+
+        // Custom author pipelines may omit the built-in display encode. Keep
+        // their editor overlays observable at the graph tail without adding
+        // anything to Game/Player graphs.
+        appendSceneOverlays();
     }
 
     // Set output for proper resource tracking and dead-pass culling.

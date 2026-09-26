@@ -670,17 +670,17 @@ static py::array CDS_BatchGather(uint32_t classId, uint32_t fieldId, int typeCod
 
     switch (type) {
     case ComponentDataStore::DataType::Float64: {
-        auto out = py::array_t<double>({static_cast<py::ssize_t>(n)});
+        auto out = py::array_t<double>(static_cast<py::ssize_t>(n));
         store.GatherFloat(classId, fieldId, handles.data(), n, out.mutable_data());
         return out;
     }
     case ComponentDataStore::DataType::Int64: {
-        auto out = py::array_t<int64_t>({static_cast<py::ssize_t>(n)});
+        auto out = py::array_t<int64_t>(static_cast<py::ssize_t>(n));
         store.GatherInt(classId, fieldId, handles.data(), n, out.mutable_data());
         return out;
     }
     case ComponentDataStore::DataType::Bool: {
-        auto out = py::array_t<uint8_t>({static_cast<py::ssize_t>(n)});
+        auto out = py::array_t<uint8_t>(static_cast<py::ssize_t>(n));
         store.GatherBool(classId, fieldId, handles.data(), n, out.mutable_data());
         return out;
     }

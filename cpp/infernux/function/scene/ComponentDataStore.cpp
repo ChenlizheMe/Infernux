@@ -93,11 +93,9 @@ std::string ComponentDataStore::LayoutIdentity(const std::string &className)
 void ComponentDataStore::MarkSupersededLayouts(SchemaTransaction &transaction, const std::string &className)
 {
     const std::string identity = LayoutIdentity(className);
-    if (identity.empty())
-        return;
-
     for (const auto &[publishedName, classId] : m_classNameToId) {
-        if (classId >= m_classes.size() || LayoutIdentity(publishedName) != identity)
+        if (classId >= m_classes.size() ||
+            (publishedName != className && (identity.empty() || LayoutIdentity(publishedName) != identity)))
             continue;
         auto &storage = m_classes[classId];
         if (storage.retired)
@@ -368,8 +366,6 @@ ComponentDataStore::PreparedClassId ComponentDataStore::PrepareClass(SchemaTrans
     auto &transaction = RequireSchemaTransaction(transactionId);
     if (transaction.sealed)
         throw std::logic_error("ComponentDataStore: sealed schema transaction is immutable");
-    if (m_classNameToId.find(className) != m_classNameToId.end())
-        throw std::invalid_argument("ComponentDataStore: prepared class name is already published");
     if (const auto existing = transaction.classNameToId.find(className); existing != transaction.classNameToId.end()) {
         return existing->second;
     }
@@ -632,8 +628,7 @@ ComponentDataStore::SchemaCommitMap ComponentDataStore::SealSchemaTransaction(Sc
             continue;
         const uint32_t classId =
             reusableIndex < reusableClassIds.size() ? reusableClassIds[reusableIndex++] : nextClassId++;
-        if (!publishedNameMap.emplace(prepared.name, classId).second)
-            throw std::invalid_argument("ComponentDataStore: prepared class conflicts with a published class");
+        publishedNameMap.insert_or_assign(prepared.name, classId);
         commitMap.emplace(preparedClassId, classId);
     }
 

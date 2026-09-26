@@ -470,59 +470,6 @@ class SelectionService:
         *,
         reason: str = "asset_moved",
     ) -> bool:
-        """Remap asset selections without creating a second user action."""
-        from Infernux.engine.path_utils import lexical_path, path_key
-
-        source_key = path_key(source_path)
-        destination = lexical_path(destination_path)
-        if not source_key or not destination:
-            raise ValueError("asset selection remap requires source and destination")
-
-        def remap(target: SelectionTarget) -> SelectionTarget:
-            if (
-                target.domain is SelectionDomain.ASSET
-                and path_key(target.target_id) == source_key
-            ):
-                return SelectionTarget.asset(destination)
-            if (
-                target.domain is SelectionDomain.ASSET_SUBRESOURCE
-                and path_key(target.document_id) == source_key
-            ):
-                return SelectionTarget.asset_subresource(
-                    destination,
-                    target.target_id,
-                    sub_kind=target.sub_kind,
-                )
-            return target
-
-        before = self._snapshot
-        mapping = {target: remap(target) for target in before.targets}
-        next_snapshot = (
-            SelectionSnapshot.create(
-                (mapping[target] for target in before.targets),
-                owner_id=before.owner_id,
-                primary=(
-                    mapping.get(before.primary)
-                    if before.primary is not None
-                    else None
-                ),
-                anchor=(
-                    mapping.get(before.anchor)
-                    if before.anchor is not None
-                    else None
-                ),
-            )
-            if before.targets
-            else before
-        )
-
-        for owner_id, targets in tuple(self._ordered_targets.items()):
-            remapped = tuple(remap(target) for target in targets)
-            if remapped != targets:
-                self._ordered_targets[owner_id] = remapped
-
-        return self.apply_snapshot(
-            next_snapshot,
-            reason=reason,
-            record_history=False,
-        )
+        """Asset selection identity is GUID-only and never changes on a move."""
+        del source_path, destination_path, reason
+        return False

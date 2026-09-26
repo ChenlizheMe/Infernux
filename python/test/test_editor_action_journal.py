@@ -46,15 +46,13 @@ def test_editor_context_rejects_non_selection_payloads():
 def test_editor_context_selection_replacement_preserves_document_locator():
     locator = DocumentLocator(
         "particle-smoke",
-        DocumentKey.resource(DocumentKind.PARTICLE_GRAPH, "Assets/Smoke.particlegraph"),
-        resource_path="Assets/Smoke.particlegraph",
+        DocumentKey.asset(DocumentKind.PARTICLE_GRAPH, "particle-guid"),
         title="Smoke",
     )
     window = WindowLocator("particle/Smoke", "particle_graph_editor")
     scene = DocumentLocator(
         "scene-main",
-        DocumentKey.resource(DocumentKind.SCENE, "Assets/Main.scene"),
-        resource_path="Assets/Main.scene",
+        DocumentKey.asset(DocumentKind.SCENE, "scene-guid"),
         title="Main",
     )
     context = EditorContextSnapshot(document=locator, window=window, scene=scene)

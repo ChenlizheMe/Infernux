@@ -31,9 +31,16 @@ def _inxpackage_export_paths(context, project_root: str) -> tuple[str, ...]:
 
     selected = ()
     if context.selection.domain is SelectionDomain.ASSET:
+        try:
+            from Infernux.core.assets import AssetManager
+
+            database = AssetManager.require_asset_database()
+        except (AttributeError, RuntimeError):
+            database = None
         selected = tuple(
-            resolve(target.document_id or target.target_id)
+            resolve(database.get_path_from_guid(target.target_id))
             for target in context.selection.targets
+            if database is not None
         )
 
     explicit = context.payload.get("paths", ())
@@ -275,6 +282,14 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
                 "Create Physic Material",
                 file_ops.create_physic_material,
                 (cur, name, adb),
+            ),
+            "data_asset": (
+                "Create Data Asset",
+                file_ops.create_data_asset,
+                (cur, name, variant, adb),
+            ),
+            "render_texture": (
+                "Create Render Texture", file_ops.create_render_texture, (cur, name, adb),
             ),
             "scene": ("Create Scene", file_ops.create_scene, (cur, name, adb)),
             "animation_clip": (

@@ -3,7 +3,10 @@ Internal JIT bootstrap — DO NOT import directly.
 
 Use the public API instead::
 
-    from Infernux.jit import njit, warmup, JIT_AVAILABLE
+    from Infernux import jit
+
+    @jit.compile
+    def update(values): ...
 """
 
 from __future__ import annotations
@@ -18,10 +21,11 @@ import sys as _sys
 import textwrap
 from time import perf_counter
 
-from Infernux.jit_hir import FunctionHIR, analyze_source, hir_fingerprint
+from Infernux.jit_hir import FunctionHIR, analyze_source, hir_fingerprint, parallel_alias_pairs
 from Infernux.jit_runtime import (
     BoundedLRU,
     DispatchDecision,
+    array_arguments_alias,
     calls_equivalent,
     clone_call_arguments,
     compiler_fingerprint,
@@ -32,8 +36,12 @@ from Infernux.jit_runtime import (
 _HAS_NUMBA = False
 _real_njit = None
 try:
-    from numba import njit as _numba_njit  # type: ignore[import-untyped]
-    _real_njit = _numba_njit
+    from Infernux._jit_compat import prepare_cpu_backend
+
+    prepare_cpu_backend()
+    from Infernux._jit_backend import compile_cpu
+
+    _real_njit = compile_cpu
     _HAS_NUMBA = True
 except Exception as _exc:
     if hasattr(_sys, '_INFERNUX_DEBUG'):
@@ -65,15 +73,10 @@ def _log_jit(msg: str) -> None:
         pass
 
 
-# In Nuitka standalone builds user scripts are compiled to .pyc and the
-# originals removed.  Numba's cache locator requires the source .py to
-# exist, so ``cache=True`` would raise RuntimeError.
-_NUITKA_COMPILED = "__compiled__" in globals()
-
 # ── Compilation cache ─────────────────────────────────────────────────
 # Prevents re-compiling the same @njit function when a user script module
 # is re-imported (e.g. scene loading calls load_all_components_from_file
-# multiple times for the same file).  Keyed by (co_filename, func_name, code_hash).
+# multiple times for the same file). Keyed by the complete publication identity.
 _compiled_cache = BoundedLRU(128)
 
 try:
@@ -84,42 +87,44 @@ except Exception:
 prange = _numba_prange
 
 
-def _njit_cache_key(fn, kwargs_tag: str = "") -> tuple:
-    """Build a hashable cache key for a @njit function.
+def _njit_cache_key(fn, kwargs_tag: str = "", *, disk_cache: bool = False) -> str | None:
+    """Identify compiled code and its captured environment at publication.
 
-    Uses (co_filename, func_name, bytecode_hash, kwargs_tag) so that
-    re-importing the same module reuses the previous compilation as long
-    as the function source hasn't changed.
+    Unchanged publications reuse compiled dispatchers; referenced constants,
+    authored helpers, compiler options and target changes select a new entry.
     """
     if getattr(fn, "__code__", None) is None:
         return None
-    return compiler_fingerprint(fn, {"numba_options": kwargs_tag})
+    options = {"numba_options": kwargs_tag}
+    if disk_cache:
+        from Infernux._jit_cache import cpu_cache_root
+
+        options["cache_owner"] = str(cpu_cache_root())
+    return compiler_fingerprint(fn, options)
 
 
 def _compile_njit(fn, kwargs):
-    """Compile *fn* with the current numba njit factory and attach ``.py``.
-
-    Automatically drops ``cache=True`` when the source ``.py`` file is
-    missing (e.g. in packaged builds where only ``.pyc`` remains), because
-    Numba's cache locator requires the source file.
-    """
-    if kwargs.get("cache"):
-        co_file = getattr(getattr(fn, "__code__", None), "co_filename", "")
-        if co_file and not os.path.isfile(co_file):
-            kwargs = dict(kwargs)
-            kwargs.pop("cache", None)
+    """Compile *fn*, with owned caching also available for cooked Python code."""
+    kwargs = dict(kwargs)
+    disk_cache = kwargs.pop("cache", False)
     if kwargs:
         compiled = _real_njit(**kwargs)(fn)
     else:
         compiled = _real_njit(fn)
+    if disk_cache:
+        from Infernux._jit_cache import PublicationCache
+
+        # Install before the first specialization. A changed dependency selects
+        # a new disk entry; never load stale code then attempt to repair it.
+        compiled._cache = PublicationCache(fn, compiler_fingerprint(fn, kwargs))
     compiled.py = fn
     return compiled
 
 
 def _compile_njit_cached(fn, kwargs):
-    """Like _compile_njit but reuses a previous result if the bytecode matches."""
+    """Reuse a dispatcher when code, captured dependencies and options match."""
     kwargs_tag = ",".join(f"{k}={v}" for k, v in sorted(kwargs.items()))
-    cache_key = _njit_cache_key(fn, kwargs_tag)
+    cache_key = _njit_cache_key(fn, kwargs_tag, disk_cache=bool(kwargs.get("cache")))
     if cache_key and cache_key in _compiled_cache:
         _log_jit(f"[JIT] {fn.__name__}: reusing cached compilation")
         cached = _compiled_cache[cache_key]
@@ -139,25 +144,504 @@ def _is_range_call(node) -> bool:
     )
 
 
-def _is_true_constant(node) -> bool:
-    return isinstance(node, ast.Constant) and node.value is True
+def _expression_name(node) -> str | None:
+    """Return a dotted name for a static decorator expression."""
+    parts = []
+    expression = node
+    while isinstance(expression, ast.Attribute):
+        parts.append(expression.attr)
+        expression = expression.value
+    if not isinstance(expression, ast.Name):
+        return None
+    parts.append(expression.id)
+    return ".".join(reversed(parts))
 
 
-def _is_njit_decorator(node) -> bool:
-    if isinstance(node, ast.Name):
-        return node.id == "njit"
-    if isinstance(node, ast.Attribute):
-        return node.attr == "njit"
-    return False
+def _jit_compile_decorator_names(module_ast) -> set[str]:
+    """Resolve the public ``inx.jit.compile`` CPU decorator aliases."""
+    names = set()
+    for node in module_ast.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in ("Infernux", "infernux"):
+                    names.add(f"{alias.asname or alias.name}.jit.compile")
+                elif alias.name in ("Infernux.jit", "infernux.jit"):
+                    names.add(f"{alias.asname}.compile" if alias.asname else f"{alias.name}.compile")
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            for alias in node.names:
+                if node.module in ("Infernux", "infernux") and alias.name == "jit":
+                    names.add(f"{alias.asname or alias.name}.compile")
+                elif node.module in ("Infernux.jit", "infernux.jit") and alias.name == "compile":
+                    names.add(alias.asname or alias.name)
+    return names
 
 
-def _decorator_requests_auto_parallel(node) -> bool:
-    if not isinstance(node, ast.Call) or not _is_njit_decorator(node.func):
-        return False
-    for keyword in node.keywords:
-        if keyword.arg == "auto_parallel" and _is_true_constant(keyword.value):
+def _jit_warmup_names(module_ast) -> set[str]:
+    """Resolve public ``inx.jit.warmup`` aliases without importing a module."""
+    names = set()
+    for node in module_ast.body:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in ("Infernux", "infernux"):
+                    names.add(f"{alias.asname or alias.name}.jit.warmup")
+                elif alias.name in ("Infernux.jit", "infernux.jit"):
+                    names.add(
+                        f"{alias.asname}.warmup"
+                        if alias.asname
+                        else f"{alias.name}.warmup"
+                    )
+        elif isinstance(node, ast.ImportFrom) and node.level == 0:
+            for alias in node.names:
+                if node.module in ("Infernux", "infernux") and alias.name == "jit":
+                    names.add(f"{alias.asname or alias.name}.warmup")
+                elif (
+                    node.module in ("Infernux.jit", "infernux.jit")
+                    and alias.name == "warmup"
+                ):
+                    names.add(alias.asname or alias.name)
+    return names
+
+
+def _is_jit_compile_decorator(node, compile_names) -> bool:
+    decorator = node.func if isinstance(node, ast.Call) else node
+    return _expression_name(decorator) in compile_names
+
+
+def _decorator_requests_auto_parallel(node, compile_names) -> bool:
+    if _is_jit_compile_decorator(node, compile_names):
+        if not isinstance(node, ast.Call):
             return True
+        for keyword in node.keywords:
+            if keyword.arg == "auto_parallel" and isinstance(keyword.value, ast.Constant):
+                return bool(keyword.value.value)
+        return True
     return False
+
+
+def _source_offset(source: str, line_starts: list[int], line: int, byte_column: int) -> int:
+    """Translate CPython AST's UTF-8 byte column into a source character offset."""
+    line_start = line_starts[line - 1]
+    line_end = source.find("\n", line_start)
+    if line_end < 0:
+        line_end = len(source)
+    line_text = source[line_start:line_end]
+    character_column = len(
+        line_text.encode("utf-8")[:byte_column].decode("utf-8")
+    )
+    return line_start + character_column
+
+
+def _blank_source_span(source: str, start: int, end: int, replacement: str = "") -> str:
+    """Blank one source span without changing its line count or later locations."""
+    segment = source[start:end]
+    blanked = "".join("\n" if char == "\n" else " " for char in segment)
+    if not replacement:
+        return blanked
+    first_content = next(
+        (index for index, char in enumerate(blanked) if char != "\n"),
+        None,
+    )
+    if first_content is None or len(replacement) > len(blanked) - first_content:
+        raise ValueError("interpreted CPU source replacement has no writable span")
+    return (
+        blanked[:first_content]
+        + replacement
+        + blanked[first_content + len(replacement):]
+    )
+
+
+_CPU_JIT_COMPILE_NAME = "infernux.jit.compile"
+_CPU_JIT_WARMUP_NAME = "infernux.jit.warmup"
+_RUNTIME_BINDING = "<runtime-binding>"
+
+
+class _CpuJitCookBindings:
+    """Source-ordered names used by the no-JIT cook.
+
+    A set is retained for every name because control-flow joins can make an
+    alias ambiguous.  Only a binding proven to be exactly one public JIT API
+    is rewritten; an ambiguous public binding is rejected instead of silently
+    changing either branch's execution model.
+    """
+
+    def __init__(self, parent=None, *, kind: str = "module"):
+        self.parent = parent
+        self.kind = kind
+        self.aliases: dict[str, frozenset[str]] = {}
+
+    def clone(self):
+        result = _CpuJitCookBindings(self.parent, kind=self.kind)
+        result.aliases = dict(self.aliases)
+        return result
+
+    def lookup(self, name: str) -> frozenset[str]:
+        if name in self.aliases:
+            return self.aliases[name]
+        if self.parent is not None:
+            return self.parent.lookup(name)
+        return frozenset({f"name:{name}"})
+
+    def bind(self, name: str, candidates) -> None:
+        resolved = frozenset(candidates)
+        self.aliases[name] = resolved or frozenset({_RUNTIME_BINDING})
+
+    def canonical(self, expression) -> frozenset[str]:
+        if isinstance(expression, ast.Name):
+            return self.lookup(expression.id)
+        if isinstance(expression, ast.Attribute):
+            owners = self.canonical(expression.value)
+            return frozenset(
+                _RUNTIME_BINDING
+                if owner == _RUNTIME_BINDING
+                else f"{owner}.{expression.attr}"
+                for owner in owners
+            )
+        if isinstance(expression, ast.IfExp):
+            return self.canonical(expression.body) | self.canonical(expression.orelse)
+        if isinstance(expression, ast.NamedExpr):
+            return self.canonical(expression.value)
+        return frozenset({_RUNTIME_BINDING})
+
+
+def _cpu_jit_import_identity(module: str) -> str:
+    if module in ("Infernux", "infernux"):
+        return "infernux"
+    if module in ("Infernux.jit", "infernux.jit"):
+        return "infernux.jit"
+    return f"module:{module}"
+
+
+def _merge_cpu_jit_cook_bindings(
+    destination: _CpuJitCookBindings,
+    branches: list[_CpuJitCookBindings],
+) -> None:
+    names = set(destination.aliases)
+    names.update(*(branch.aliases for branch in branches))
+    destination.aliases = {
+        name: frozenset().union(*(branch.lookup(name) for branch in branches))
+        for name in names
+    }
+
+
+class _CpuJitCookAnalyzer:
+    """Find source spans that are certainly public CPU JIT authoring."""
+
+    def __init__(self, source: str, line_starts: list[int]):
+        self.source = source
+        self.line_starts = line_starts
+        self.replacements: list[tuple[int, int, str]] = []
+
+    def _offset(self, node, *, end: bool = False) -> int:
+        return _source_offset(
+            self.source,
+            self.line_starts,
+            node.end_lineno if end else node.lineno,
+            node.end_col_offset if end else node.col_offset,
+        )
+
+    @staticmethod
+    def _classify(candidates: frozenset[str], expected: str, node) -> bool:
+        if expected not in candidates:
+            return False
+        if candidates != frozenset({expected}):
+            raise ValueError(
+                "ambiguous CPU JIT binding at "
+                f"line {getattr(node, 'lineno', 0)}; bind the public API "
+                "unconditionally before cooking"
+            )
+        return True
+
+    def _record_decorator(self, decorator, bindings: _CpuJitCookBindings) -> None:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        if not self._classify(
+            bindings.canonical(target), _CPU_JIT_COMPILE_NAME, decorator
+        ):
+            return
+        start = self._offset(decorator)
+        line_start = self.line_starts[decorator.lineno - 1]
+        at_sign = self.source.rfind("@", line_start, start + 1)
+        if at_sign < line_start:
+            raise ValueError("CPU JIT decorator source range has no '@' marker")
+        self.replacements.append((at_sign, self._offset(decorator, end=True), ""))
+
+    def _scan_expression(self, expression, bindings: _CpuJitCookBindings) -> None:
+        if expression is None:
+            return
+        if isinstance(
+            expression,
+            (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp),
+        ):
+            lexical_parent = bindings.parent if bindings.kind == "class" else bindings
+            child = _CpuJitCookBindings(lexical_parent, kind="function")
+            for index, generator in enumerate(expression.generators):
+                self._scan_expression(
+                    generator.iter,
+                    bindings if index == 0 else child,
+                )
+                self._bind_target(generator.target, {_RUNTIME_BINDING}, child)
+                for condition in generator.ifs:
+                    self._scan_expression(condition, child)
+            if isinstance(expression, ast.DictComp):
+                self._scan_expression(expression.key, child)
+                self._scan_expression(expression.value, child)
+            else:
+                self._scan_expression(expression.elt, child)
+            return
+        if isinstance(expression, ast.NamedExpr):
+            self._scan_expression(expression.value, bindings)
+            self._bind_target(
+                expression.target, bindings.canonical(expression.value), bindings
+            )
+            return
+        if isinstance(expression, ast.Lambda):
+            child = _CpuJitCookBindings(bindings, kind="function")
+            self._bind_arguments(expression.args, child)
+            self._scan_expression(expression.body, child)
+            return
+        if isinstance(expression, ast.Call):
+            if self._classify(
+                bindings.canonical(expression.func),
+                _CPU_JIT_WARMUP_NAME,
+                expression,
+            ):
+                self.replacements.append(
+                    (self._offset(expression), self._offset(expression, end=True), "None")
+                )
+        for child in ast.iter_child_nodes(expression):
+            self._scan_expression(child, bindings)
+
+    @staticmethod
+    def _bind_arguments(arguments, bindings: _CpuJitCookBindings) -> None:
+        for argument in (
+            *arguments.posonlyargs,
+            *arguments.args,
+            *arguments.kwonlyargs,
+        ):
+            bindings.bind(argument.arg, {_RUNTIME_BINDING})
+        if arguments.vararg is not None:
+            bindings.bind(arguments.vararg.arg, {_RUNTIME_BINDING})
+        if arguments.kwarg is not None:
+            bindings.bind(arguments.kwarg.arg, {_RUNTIME_BINDING})
+
+    def _bind_target(self, target, candidates, bindings: _CpuJitCookBindings) -> None:
+        if isinstance(target, ast.Name):
+            bindings.bind(target.id, candidates)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for item in target.elts:
+                self._bind_target(item, {_RUNTIME_BINDING}, bindings)
+
+    def _bind_assignment(self, target, value, bindings: _CpuJitCookBindings) -> None:
+        if (
+            isinstance(target, (ast.Tuple, ast.List))
+            and isinstance(value, (ast.Tuple, ast.List))
+            and len(target.elts) == len(value.elts)
+            and not any(isinstance(item, ast.Starred) for item in target.elts)
+        ):
+            for target_item, value_item in zip(target.elts, value.elts):
+                self._bind_assignment(target_item, value_item, bindings)
+            return
+        self._bind_target(target, bindings.canonical(value), bindings)
+
+    def _bind_pattern(self, pattern, bindings: _CpuJitCookBindings) -> None:
+        if isinstance(pattern, ast.MatchAs):
+            if pattern.pattern is not None:
+                self._bind_pattern(pattern.pattern, bindings)
+            if pattern.name is not None:
+                bindings.bind(pattern.name, {_RUNTIME_BINDING})
+        elif isinstance(pattern, ast.MatchStar):
+            if pattern.name is not None:
+                bindings.bind(pattern.name, {_RUNTIME_BINDING})
+        elif isinstance(pattern, ast.MatchMapping):
+            for child in pattern.patterns:
+                self._bind_pattern(child, bindings)
+            if pattern.rest is not None:
+                bindings.bind(pattern.rest, {_RUNTIME_BINDING})
+        elif isinstance(pattern, (ast.MatchSequence, ast.MatchOr)):
+            for child in pattern.patterns:
+                self._bind_pattern(child, bindings)
+        elif isinstance(pattern, ast.MatchClass):
+            for child in (*pattern.patterns, *pattern.kwd_patterns):
+                self._bind_pattern(child, bindings)
+
+    def _scan_import(self, statement, bindings: _CpuJitCookBindings) -> None:
+        if isinstance(statement, ast.Import):
+            for alias in statement.names:
+                if alias.asname:
+                    bindings.bind(alias.asname, {_cpu_jit_import_identity(alias.name)})
+                else:
+                    root = alias.name.split(".", 1)[0]
+                    bindings.bind(root, {_cpu_jit_import_identity(root)})
+            return
+
+        module = statement.module or ""
+        identity = (
+            _cpu_jit_import_identity(module)
+            if statement.level == 0
+            else f"module:{'.' * statement.level}{module}"
+        )
+        for alias in statement.names:
+            if alias.name == "*":
+                if identity == "infernux.jit":
+                    bindings.bind("compile", {_CPU_JIT_COMPILE_NAME})
+                    bindings.bind("warmup", {_CPU_JIT_WARMUP_NAME})
+                elif identity != "infernux":
+                    # An arbitrary star import may replace any name that is
+                    # already being tracked.  Preserve both possibilities so
+                    # a later public JIT-looking use fails closed instead of
+                    # deleting a decorator or call that may be unrelated.
+                    for name, candidates in tuple(bindings.aliases.items()):
+                        bindings.bind(name, {*candidates, _RUNTIME_BINDING})
+                continue
+            bindings.bind(
+                alias.asname or alias.name,
+                {f"{identity}.{alias.name}"},
+            )
+
+    def _scan_function(self, statement, bindings: _CpuJitCookBindings) -> None:
+        for decorator in statement.decorator_list:
+            self._record_decorator(decorator, bindings)
+            self._scan_expression(decorator, bindings)
+        for default in (*statement.args.defaults, *statement.args.kw_defaults):
+            self._scan_expression(default, bindings)
+        self._scan_expression(statement.returns, bindings)
+
+        # Method bodies do not close over their class namespace.  Their
+        # decorators do, because those expressions run in the class body.
+        lexical_parent = bindings.parent if bindings.kind == "class" else bindings
+        child = _CpuJitCookBindings(lexical_parent, kind="function")
+        self._bind_arguments(statement.args, child)
+        self._scan_body(statement.body, child)
+        bindings.bind(statement.name, {_RUNTIME_BINDING})
+
+    def _scan_body(self, statements, bindings: _CpuJitCookBindings) -> None:
+        for statement in statements:
+            if isinstance(statement, (ast.Import, ast.ImportFrom)):
+                self._scan_import(statement, bindings)
+            elif isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self._scan_function(statement, bindings)
+            elif isinstance(statement, ast.ClassDef):
+                for decorator in statement.decorator_list:
+                    self._scan_expression(decorator, bindings)
+                for base in statement.bases:
+                    self._scan_expression(base, bindings)
+                for keyword in statement.keywords:
+                    self._scan_expression(keyword.value, bindings)
+                self._scan_body(
+                    statement.body,
+                    _CpuJitCookBindings(bindings, kind="class"),
+                )
+                bindings.bind(statement.name, {_RUNTIME_BINDING})
+            elif isinstance(statement, ast.Assign):
+                self._scan_expression(statement.value, bindings)
+                for target in statement.targets:
+                    self._bind_assignment(target, statement.value, bindings)
+            elif isinstance(statement, ast.AnnAssign):
+                self._scan_expression(statement.annotation, bindings)
+                if statement.value is not None:
+                    self._scan_expression(statement.value, bindings)
+                    self._bind_assignment(statement.target, statement.value, bindings)
+            elif isinstance(statement, (ast.AugAssign, ast.Delete)):
+                if isinstance(statement, ast.AugAssign):
+                    self._scan_expression(statement.value, bindings)
+                    targets = (statement.target,)
+                else:
+                    targets = statement.targets
+                for target in targets:
+                    self._bind_target(target, {_RUNTIME_BINDING}, bindings)
+            elif isinstance(statement, ast.If):
+                self._scan_expression(statement.test, bindings)
+                body = bindings.clone()
+                otherwise = bindings.clone()
+                self._scan_body(statement.body, body)
+                self._scan_body(statement.orelse, otherwise)
+                _merge_cpu_jit_cook_bindings(bindings, [body, otherwise])
+            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+                expression = statement.test if isinstance(statement, ast.While) else statement.iter
+                self._scan_expression(expression, bindings)
+                body = bindings.clone()
+                if isinstance(statement, (ast.For, ast.AsyncFor)):
+                    self._bind_target(statement.target, {_RUNTIME_BINDING}, body)
+                self._scan_body(statement.body, body)
+                otherwise = bindings.clone()
+                self._scan_body(statement.orelse, otherwise)
+                _merge_cpu_jit_cook_bindings(bindings, [bindings.clone(), body, otherwise])
+            elif isinstance(statement, (ast.With, ast.AsyncWith)):
+                for item in statement.items:
+                    self._scan_expression(item.context_expr, bindings)
+                    if item.optional_vars is not None:
+                        self._bind_target(item.optional_vars, {_RUNTIME_BINDING}, bindings)
+                self._scan_body(statement.body, bindings)
+            elif isinstance(statement, (ast.Try, ast.TryStar)):
+                successful = bindings.clone()
+                self._scan_body(statement.body, successful)
+                self._scan_body(statement.orelse, successful)
+                branches = [successful]
+                for handler in statement.handlers:
+                    handled = bindings.clone()
+                    self._scan_expression(handler.type, handled)
+                    if handler.name:
+                        handled.bind(handler.name, {_RUNTIME_BINDING})
+                    self._scan_body(handler.body, handled)
+                    branches.append(handled)
+                _merge_cpu_jit_cook_bindings(bindings, branches)
+                self._scan_body(statement.finalbody, bindings)
+            elif isinstance(statement, ast.Match):
+                self._scan_expression(statement.subject, bindings)
+                branches = [bindings.clone()]
+                for case in statement.cases:
+                    branch = bindings.clone()
+                    self._bind_pattern(case.pattern, branch)
+                    self._scan_expression(case.guard, branch)
+                    self._scan_body(case.body, branch)
+                    branches.append(branch)
+                _merge_cpu_jit_cook_bindings(bindings, branches)
+            else:
+                for child in ast.iter_child_nodes(statement):
+                    if isinstance(child, ast.expr):
+                        self._scan_expression(child, bindings)
+
+    def analyze(self, module_ast) -> list[tuple[int, int, str]]:
+        self._scan_body(module_ast.body, _CpuJitCookBindings())
+        return self.replacements
+
+
+def build_interpreted_cpu_source(source: str) -> str:
+    """Freeze public CPU JIT authoring into ordinary Python for no-JIT targets.
+
+    This is a build transform, not a runtime fallback. It removes only the
+    public ``jit.compile`` decorator and replaces public ``jit.warmup`` calls
+    with ``None`` while preserving authored line numbers for diagnostics.
+    GPU declarations remain untouched and are validated by the platform
+    exporter because their execution model cannot become ordinary Python.
+    """
+    module_ast = ast.parse(source)
+    line_starts = [0]
+    line_starts.extend(
+        index + 1 for index, char in enumerate(source) if char == "\n"
+    )
+    replacements = _CpuJitCookAnalyzer(source, line_starts).analyze(module_ast)
+
+    if not replacements:
+        return source
+
+    # Keep the outermost replacement if authored code nests warmup calls.
+    selected: list[tuple[int, int, str]] = []
+    for candidate in sorted(replacements, key=lambda item: (item[0], -item[1])):
+        if selected and candidate[0] >= selected[-1][0] and candidate[1] <= selected[-1][1]:
+            continue
+        if selected and candidate[0] < selected[-1][1]:
+            raise ValueError("overlapping CPU JIT source transformations")
+        selected.append(candidate)
+
+    cooked = source
+    for start, end, replacement in reversed(selected):
+        cooked = (
+            cooked[:start]
+            + _blank_source_span(cooked, start, end, replacement)
+            + cooked[end:]
+        )
+    ast.parse(cooked)
+    return cooked
 
 
 class _AutoParallelRangeTransformer(ast.NodeTransformer):
@@ -234,16 +718,29 @@ def auto_parallel_declarations(source: str) -> tuple[tuple[str, str], ...]:
     except SyntaxError:
         return ()
     declarations: list[tuple[str, str]] = []
+    compile_names = _jit_compile_decorator_names(module_ast)
     for node in module_ast.body:
         if not isinstance(node, ast.FunctionDef):
             continue
         decorator = next(
-            (item for item in node.decorator_list if _decorator_requests_auto_parallel(item)),
+            (item for item in node.decorator_list
+             if _decorator_requests_auto_parallel(item, compile_names)),
             None,
         )
         if decorator is not None:
             declarations.append((node.name, _parallel_policy_from_decorator(decorator)))
     return tuple(declarations)
+
+
+def cpu_jit_declarations(source: str) -> tuple[str, ...]:
+    """Return public CPU JIT declarations without executing the module."""
+    module_ast = ast.parse(source)
+    compile_names = _jit_compile_decorator_names(module_ast)
+    return tuple(
+        node.name for node in module_ast.body
+        if isinstance(node, ast.FunctionDef)
+        and any(_is_jit_compile_decorator(item, compile_names) for item in node.decorator_list)
+    )
 
 
 def _hir_diagnostic(hir: FunctionHIR) -> str:
@@ -275,6 +772,7 @@ def build_auto_parallel_embedded_source(source: str) -> str | None:
         return None
 
     rewritten_body = []
+    compile_names = _jit_compile_decorator_names(module_ast)
     changed = False
     manifest: dict[str, dict[str, object]] = {}
     for node in module_ast.body:
@@ -283,11 +781,20 @@ def build_auto_parallel_embedded_source(source: str) -> str | None:
                 (
                     item
                     for item in node.decorator_list
-                    if _decorator_requests_auto_parallel(item)
+                    if _decorator_requests_auto_parallel(item, compile_names)
                 ),
                 None,
             )
             if decorator is not None:
+                if not isinstance(decorator, ast.Call):
+                    replacement = ast.copy_location(
+                        ast.Call(func=decorator, args=[], keywords=[]), decorator
+                    )
+                    node.decorator_list = [
+                        replacement if item is decorator else item
+                        for item in node.decorator_list
+                    ]
+                    decorator = replacement
                 hir = analyze_source(source, node.name)
                 rewritten_fn = _rewrite_function_node_for_auto_parallel(
                     node,
@@ -305,7 +812,6 @@ def build_auto_parallel_embedded_source(source: str) -> str | None:
                     rewritten_fn.name = f"__infernux_parallel_{node.name}_{suffix}"
                     fingerprint = hir_fingerprint(hir)
                     rewritten_body.append(rewritten_fn)
-                    assert isinstance(decorator, ast.Call)
                     decorator.keywords.append(
                         ast.keyword(
                             arg="_parallel_impl",
@@ -324,14 +830,18 @@ def build_auto_parallel_embedded_source(source: str) -> str | None:
                             value=ast.Constant(hir.operation_cost),
                         )
                     )
+                    alias_pairs = parallel_alias_pairs(hir)
+                    decorator.keywords.append(ast.keyword(
+                        arg="_parallel_alias_pairs", value=ast.parse(repr(alias_pairs), mode="eval").body))
                     manifest[node.name] = {
-                        "compiler_revision": 1,
+                        "compiler_revision": 2,
                         "hir_fingerprint": fingerprint,
                         "parallel_impl": rewritten_fn.name,
                         "policy": policy,
                         "loop_ids": [loop.stable_id for loop in hir.eligible_loops],
                         "diagnostic": _hir_diagnostic(hir),
                         "operation_cost": hir.operation_cost,
+                        "alias_pairs": alias_pairs,
                     }
                     changed = True
         rewritten_body.append(node)
@@ -340,7 +850,7 @@ def build_auto_parallel_embedded_source(source: str) -> str | None:
         return None
 
     import_node = ast.ImportFrom(
-        module="Infernux.jit",
+        module="Infernux._jit_kernels",
         names=[ast.alias(name="prange", asname="__infernux_prange")],
         level=0,
     )
@@ -433,6 +943,7 @@ def _try_build_auto_parallel_variant(fn, parallel_impl=None):
     rewritten_fn.__kwdefaults__ = getattr(fn, "__kwdefaults__", None)
     rewritten_fn.__dict__.update(getattr(fn, "__dict__", {}))
     rewritten_fn._infernux_hir = hir
+    rewritten_fn._infernux_parallel_alias_pairs = parallel_alias_pairs(hir)
     rewritten_fn._infernux_parallel_diagnostic = _hir_diagnostic(hir)
     return rewritten_fn
 
@@ -460,6 +971,7 @@ def _build_auto_parallel_dispatcher(
     parallel_policy: str = "auto",
     diagnostic: str = "",
     operation_cost: int = 1,
+    alias_pairs=(),
 ):
     """Build a signature-aware dispatcher without speculative re-execution.
 
@@ -470,9 +982,19 @@ def _build_auto_parallel_dispatcher(
     never caught and replayed through the serial kernel.
     """
     decisions = BoundedLRU(64)
+    hotness = BoundedLRU(64)
+    tier_threshold = 8
+    parameter_names = tuple(inspect.signature(fn).parameters)
+    safe_pairs = frozenset(pair for left, right in alias_pairs for pair in ((left, right), (right, left)))
 
     def _signature(args, kwargs):
-        return runtime_signature(args, kwargs, thread_count=_numba_thread_count())
+        return (runtime_signature(args, kwargs, thread_count=_numba_thread_count()),
+                array_arguments_alias(args, kwargs, parameter_names=parameter_names, safe_pairs=safe_pairs))
+
+    def _alias_decision():
+        if parallel_policy == "required":
+            raise ValueError("parallel_policy='required' cannot use unproven aliased or internally overlapping arrays")
+        return DispatchDecision("serial", "serial required: array alias/layout is not proven independent")
 
     def _static(args, kwargs):
         return static_cost_decision(
@@ -487,17 +1009,64 @@ def _build_auto_parallel_dispatcher(
         dispatcher.selected_mode = decision.mode
         dispatcher.last_diagnostic = decision.reason
 
+    def _promote(args, kwargs):
+        """Validate and publish the optimized tier at one safe boundary.
+
+        The probe uses isolated arguments and is never replayed into the
+        caller's objects.  A mismatch is a hard compiler contract error rather
+        than an implicit serial fallback; the optimized tier is published only
+        after result and mutation equivalence is proven.
+        """
+        serial_args, serial_kwargs = clone_call_arguments(args, kwargs)
+        parallel_args, parallel_kwargs = clone_call_arguments(args, kwargs)
+        serial_result = serial_compiled(*serial_args, **serial_kwargs)
+        parallel_result = parallel_compiled(*parallel_args, **parallel_kwargs)
+        if not calls_equivalent(
+            serial_result, serial_args, serial_kwargs,
+            parallel_result, parallel_args, parallel_kwargs,
+        ):
+            raise RuntimeError(
+                f"JIT kernel {fn.__name__!r}: optimized tier changed results or mutations"
+            )
+        serial_args, serial_kwargs = clone_call_arguments(args, kwargs)
+        parallel_args, parallel_kwargs = clone_call_arguments(args, kwargs)
+        serial_elapsed = _benchmark_callable(serial_compiled, *serial_args, **serial_kwargs)
+        parallel_elapsed = _benchmark_callable(parallel_compiled, *parallel_args, **parallel_kwargs)
+        choose_parallel = parallel_elapsed <= serial_elapsed * 0.90
+        mode = "parallel" if choose_parallel else "serial"
+        reason = (
+            f"tier=optimized {mode} published after {tier_threshold} hot calls; "
+            f"serial={serial_elapsed * 1000:.3f}ms, parallel={parallel_elapsed * 1000:.3f}ms"
+        )
+        return DispatchDecision(mode, reason, serial_elapsed, parallel_elapsed, 1)
+
     @functools.wraps(fn)
     def dispatcher(*args, **kwargs):
+        if parallel_compiled is serial_compiled and parallel_policy != "required":
+            # HIR rejected parallel lowering. Numba still checks argument types;
+            # there is no execution-mode choice to hash, probe, or cache here.
+            return serial_compiled(*args, **kwargs)
         key = _signature(args, kwargs)
-        decision = decisions.get(key)
+        hot_count = int(hotness.get(key, 0)) + 1
+        hotness[key] = hot_count
+        decision = _alias_decision() if key[1] else decisions.get(key)
         if decision is None:
             if parallel_policy == "required":
                 decision = DispatchDecision("parallel", "parallel required by policy")
             else:
                 static = _static(args, kwargs)
-                decision = DispatchDecision(static.mode, static.reason)
                 if static.confidence == "high":
+                    decision = DispatchDecision(static.mode, static.reason)
+                elif hot_count >= tier_threshold:
+                    decision = _promote(args, kwargs)
+                else:
+                    decision = DispatchDecision(
+                        "serial",
+                        f"tier=baseline serial until hotness {tier_threshold} ({hot_count}/{tier_threshold}); {static.reason}",
+                    )
+                if static.confidence == "high":
+                    decisions[key] = decision
+                elif hot_count >= tier_threshold:
                     decisions[key] = decision
         dispatcher.selected_mode = decision.mode
         dispatcher.last_diagnostic = decision.reason
@@ -505,8 +1074,24 @@ def _build_auto_parallel_dispatcher(
         return target(*args, **kwargs)
 
     def _warmup(*args, **kwargs):
+        def _prepare_selected(target):
+            # A dispatch decision is not compilation. Execute only on isolated
+            # arguments so the first real interaction does not compile or see
+            # mutations produced by warmup.
+            prepared_args, prepared_kwargs = clone_call_arguments(args, kwargs)
+            target(*prepared_args, **prepared_kwargs)
+
+        if parallel_compiled is serial_compiled and parallel_policy != "required":
+            _prepare_selected(serial_compiled)
+            return
         key = _signature(args, kwargs)
+        if key[1]:
+            decision = _alias_decision()
+            _prepare_selected(serial_compiled)
+            _record(key, decision)
+            return
         if parallel_compiled is serial_compiled:
+            _prepare_selected(serial_compiled)
             reason = diagnostic or "serial retained: no validated parallel variant is available"
             _record(key, DispatchDecision("serial", reason))
             _log_jit(f"[JIT] {fn.__name__}: {reason}")
@@ -514,33 +1099,18 @@ def _build_auto_parallel_dispatcher(
         if parallel_policy != "required":
             static = _static(args, kwargs)
             if static.confidence == "high":
+                _prepare_selected(parallel_compiled if static.mode == "parallel" else serial_compiled)
                 _record(key, DispatchDecision(static.mode, static.reason))
                 _log_jit(f"[JIT] {fn.__name__}: {static.reason}")
                 return
-        try:
-            serial_args, serial_kwargs = clone_call_arguments(args, kwargs)
-            parallel_args, parallel_kwargs = clone_call_arguments(args, kwargs)
-        except TypeError as exc:
-            reason = f"serial retained: inputs cannot be isolated for validation ({exc})"
-            _record(key, DispatchDecision("serial", reason))
-            _log_jit(f"[JIT] {fn.__name__}: {reason}")
-            return
+        serial_args, serial_kwargs = clone_call_arguments(args, kwargs)
+        parallel_args, parallel_kwargs = clone_call_arguments(args, kwargs)
 
         _log_jit(f"[JIT] warmup {fn.__name__}: compiling serial")
         serial_result = serial_compiled(*serial_args, **serial_kwargs)
 
         _log_jit(f"[JIT] warmup {fn.__name__}: compiling parallel")
-        try:
-            parallel_result = parallel_compiled(*parallel_args, **parallel_kwargs)
-        except Exception as exc:
-            if parallel_policy == "required":
-                raise RuntimeError(
-                    f"auto_parallel required kernel {fn.__name__!r} failed during validation"
-                ) from exc
-            reason = f"serial retained: parallel validation failed ({type(exc).__name__}: {exc})"
-            _record(key, DispatchDecision("serial", reason))
-            _log_jit(f"[JIT] {fn.__name__}: {reason}")
-            return
+        parallel_result = parallel_compiled(*parallel_args, **parallel_kwargs)
 
         if not calls_equivalent(
             serial_result,
@@ -550,40 +1120,29 @@ def _build_auto_parallel_dispatcher(
             parallel_args,
             parallel_kwargs,
         ):
-            reason = "serial retained: serial and parallel results or mutations differ"
-            if parallel_policy == "required":
-                raise RuntimeError(f"auto_parallel required kernel {fn.__name__!r}: {reason}")
-            _record(key, DispatchDecision("serial", reason))
-            _log_jit(f"[JIT] {fn.__name__}: {reason}")
-            return
+            raise RuntimeError(
+                f"JIT kernel {fn.__name__!r}: serial and parallel results or mutations differ"
+            )
 
         serial_samples: list[float] = []
         parallel_samples: list[float] = []
-        try:
-            sample_target = 5
-            while len(serial_samples) < sample_target:
-                sample_args, sample_kwargs = clone_call_arguments(args, kwargs)
-                serial_samples.append(
-                    _benchmark_callable(serial_compiled, *sample_args, **sample_kwargs)
-                )
-                sample_args, sample_kwargs = clone_call_arguments(args, kwargs)
-                parallel_samples.append(
-                    _benchmark_callable(parallel_compiled, *sample_args, **sample_kwargs)
-                )
-                # Long kernels already provide a strong signal per sample.
-                # Keep a median, but avoid turning a 1.5 s serial baseline
-                # into a 30 s editor warmup through excessive cloning/runs.
-                if len(serial_samples) == 1 and max(
-                    serial_samples[0], parallel_samples[0]
-                ) >= 0.050:
-                    sample_target = 3
-        except Exception as exc:
-            if parallel_policy == "required":
-                raise
-            reason = f"serial retained: benchmark failed ({type(exc).__name__}: {exc})"
-            _record(key, DispatchDecision("serial", reason))
-            _log_jit(f"[JIT] {fn.__name__}: {reason}")
-            return
+        sample_target = 5
+        while len(serial_samples) < sample_target:
+            sample_args, sample_kwargs = clone_call_arguments(args, kwargs)
+            serial_samples.append(
+                _benchmark_callable(serial_compiled, *sample_args, **sample_kwargs)
+            )
+            sample_args, sample_kwargs = clone_call_arguments(args, kwargs)
+            parallel_samples.append(
+                _benchmark_callable(parallel_compiled, *sample_args, **sample_kwargs)
+            )
+            # Long kernels already provide a strong signal per sample.
+            # Keep a median, but avoid turning a 1.5 s serial baseline
+            # into a 30 s editor warmup through excessive cloning/runs.
+            if len(serial_samples) == 1 and max(
+                serial_samples[0], parallel_samples[0]
+            ) >= 0.050:
+                sample_target = 3
 
         serial_elapsed = median(serial_samples)
         parallel_elapsed = median(parallel_samples)
@@ -616,6 +1175,8 @@ def _build_auto_parallel_dispatcher(
     dispatcher.selected_mode = "parallel" if parallel_policy == "required" else "serial"
     dispatcher.last_diagnostic = diagnostic or "runtime signature has not been validated"
     dispatcher.decisions = decisions
+    dispatcher.hotness = hotness
+    dispatcher.optimized_tier_threshold = tier_threshold
     dispatcher._infernux_warmup = _warmup
     return dispatcher
 
@@ -623,52 +1184,25 @@ def _build_auto_parallel_dispatcher(
 # ── njit wrapper ──────────────────────────────────────────────────────
 
 def njit(*args, **kwargs):
-    """``numba.njit`` wrapper — safe for both editor and standalone builds.
+    """Internal Numba adapter with engine-owned caching and dispatch policy.
 
-    The returned callable always has a ``.py`` attribute pointing to the
-    original pure-Python function, so callers can force the fallback::
-
-        @njit(cache=True, fastmath=True)
-        def burn(n: int) -> float: ...
-
-        burn(100)       # JIT-accelerated (or fallback if no Numba)
-        burn.py(100)    # always pure Python
+    This is not a fallback execution surface. Targets without the CPU compiler
+    reject publication instead of silently running authored JIT work through
+    the Python interpreter.
     """
     auto_parallel = bool(kwargs.pop("auto_parallel", False))
     parallel_policy = str(kwargs.pop("parallel_policy", "auto"))
     parallel_impl = kwargs.pop("_parallel_impl", None)
     parallel_fingerprint = str(kwargs.pop("_parallel_fingerprint", ""))
     parallel_static_cost = max(1, int(kwargs.pop("_parallel_static_cost", 1)))
+    embedded_alias_pairs = kwargs.pop("_parallel_alias_pairs", ())
     if parallel_policy not in {"auto", "required"}:
         raise ValueError("parallel_policy must be 'auto' or 'required'")
 
     if not _HAS_NUMBA:
-        # No-op fallback — attach .py for uniform API
-        def _attach_fallback(fn):
-            fn.auto_parallel = auto_parallel
-            fn.parallel_policy = parallel_policy
-            fn.compiler_fingerprint = parallel_fingerprint
-            fn.static_operation_cost = parallel_static_cost
-            fn.selected_mode = "serial"
-            fn.last_diagnostic = "serial selected: JIT runtime is unavailable in this build"
-            fn.serial = fn
-            fn.parallel = fn
-            fn.decisions = BoundedLRU(1)
-            fn.py = fn
-            return fn
-
-        def _wrap(fn):
-            if auto_parallel and parallel_policy == "required":
-                raise RuntimeError("parallel_policy='required' needs the Numba JIT runtime")
-            return _attach_fallback(fn)
-        if args and callable(args[0]):
-            if auto_parallel and parallel_policy == "required":
-                raise RuntimeError("parallel_policy='required' needs the Numba JIT runtime")
-            return _attach_fallback(args[0])
-        return _wrap
-
-    if _NUITKA_COMPILED:
-        kwargs.pop("cache", None)
+        raise RuntimeError(
+            "Infernux CPU compilation requires the bundled Numba/llvmlite JIT runtime"
+        )
 
     if auto_parallel:
         serial_kwargs = dict(kwargs)
@@ -681,6 +1215,7 @@ def njit(*args, **kwargs):
             cache_key = _njit_cache_key(
                 fn,
                 f"auto_parallel:{parallel_policy}:{parallel_fingerprint}:{sorted(serial_kwargs.items())}",
+                disk_cache=bool(serial_kwargs.get("cache")),
             )
             if cache_key and cache_key in _compiled_cache:
                 _log_jit(f"[JIT] {fn.__name__}: reusing cached auto_parallel compilation")
@@ -719,6 +1254,8 @@ def njit(*args, **kwargs):
                 parallel_policy=parallel_policy,
                 diagnostic=diagnostic,
                 operation_cost=operation_cost,
+                alias_pairs=(embedded_alias_pairs if callable(parallel_impl) else
+                             getattr(parallel_source_fn, "_infernux_parallel_alias_pairs", ())),
             )
             result.compiler_fingerprint = parallel_fingerprint or compiler_fingerprint(
                 fn,
@@ -735,7 +1272,7 @@ def njit(*args, **kwargs):
 
     # @njit  (bare decorator, no parentheses)
     if args and callable(args[0]):
-        return _compile_njit_cached(args[0], {})
+        return _compile_njit_cached(args[0], kwargs)
 
     # @njit(cache=True, ...)  (decorator factory)
     def _decorator(fn):
@@ -746,34 +1283,31 @@ def njit(*args, **kwargs):
 # ── warmup helper ─────────────────────────────────────────────────────
 
 def warmup(fn, *args, **kwargs):
-    """Pre-compile a ``@njit`` function by calling it once.
+    """Prepare a compute kernel before gameplay using representative inputs.
 
-    No-op when Numba is unavailable. Auto-parallel validation uses isolated
-    arguments; ``parallel_policy='required'`` propagates validation failures.
+    The compute dispatcher compiles the selected serial/parallel variant on
+    isolated arguments, including when the static cost model decides its mode.
+    Its preparation errors propagate. Numba remains an internal code-generation
+    backend and is not a public decorator.
 
     Usage::
 
-        @njit(cache=True, fastmath=True)
+        @jit.compile(cache=True)
         def burn(n: int) -> float: ...
 
         warmup(burn, 1)
     """
     custom_warmup = getattr(fn, "_infernux_warmup", None)
     if callable(custom_warmup):
-        try:
-            custom_warmup(*args, **kwargs)
-        except Exception as exc:
-            if getattr(fn, "parallel_policy", "auto") == "required":
-                raise
-            _log_jit(f"[JIT] warmup {getattr(fn, '__name__', '<kernel>')} failed: {exc}")
+        custom_warmup(*args, **kwargs)
         return
 
-    if not _HAS_NUMBA or _NUITKA_COMPILED:
-        return
-    try:
-        fn(*args, **kwargs)
-    except Exception as exc:
-        _log_jit(f"[JIT] warmup {getattr(fn, '__name__', '<kernel>')} failed: {exc}")
+    if not _HAS_NUMBA:
+        raise RuntimeError(
+            "Infernux CPU compilation requires the bundled Numba/llvmlite JIT runtime"
+        )
+    prepared_args, prepared_kwargs = clone_call_arguments(args, kwargs)
+    fn(*prepared_args, **prepared_kwargs)
 
 
 __all__ = [

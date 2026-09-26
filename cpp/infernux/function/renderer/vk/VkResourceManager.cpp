@@ -44,6 +44,7 @@ struct ReadbackFormatInfo
     uint32_t channels;
     uint32_t bytesPerPixel;
     const char *elementType;
+    bool bgra = false;
 };
 
 struct TextureFormatLayout
@@ -95,9 +96,10 @@ ReadbackFormatInfo GetReadbackFormatInfo(VkFormat format)
     switch (format) {
     case VK_FORMAT_R8G8B8A8_UNORM:
     case VK_FORMAT_R8G8B8A8_SRGB:
+        return {4, 4, "uint8"};
     case VK_FORMAT_B8G8R8A8_UNORM:
     case VK_FORMAT_B8G8R8A8_SRGB:
-        return {4, 4, "uint8"};
+        return {4, 4, "uint8", true};
     case VK_FORMAT_R16G16B16A16_SFLOAT:
         return {4, 8, "float16"};
     case VK_FORMAT_R32G32B32A32_SFLOAT:
@@ -810,6 +812,71 @@ std::shared_ptr<ImageReadbackTicket> VkResourceManager::BeginImageReadback(VkIma
     return recorder.Submit();
 }
 
+std::shared_ptr<ImageReadbackTicket>
+VkResourceManager::RecordFrameImageReadback(VkCommandBuffer commandBuffer, VkImage image, VkImageLayout layout,
+                                            VkImageAspectFlags aspect, VkPipelineStageFlags sourceStage,
+                                            VkAccessFlags sourceAccess, uint32_t width, uint32_t height,
+                                            VkFormat format, rhi::SubmissionSerial completionEpoch)
+{
+    AssertReadbackThread();
+    if (commandBuffer == VK_NULL_HANDLE || image == VK_NULL_HANDLE || width == 0 || height == 0 ||
+        completionEpoch == rhi::InvalidSubmissionSerial)
+        throw std::invalid_argument("Frame image readback requires a live frame submission and image");
+
+    const ReadbackFormatInfo formatInfo = GetReadbackFormatInfo(format);
+    const uint64_t pixelCount = static_cast<uint64_t>(width) * height;
+    if (pixelCount > std::numeric_limits<size_t>::max() / formatInfo.bytesPerPixel)
+        throw std::overflow_error("Frame image readback byte size overflow");
+
+    auto ticket = std::make_shared<ImageReadbackTicket>();
+    ticket->m_width = width;
+    ticket->m_height = height;
+    ticket->m_channelCount = formatInfo.channels;
+    ticket->m_elementType = formatInfo.elementType;
+    ticket->m_bgra = formatInfo.bgra;
+    ticket->m_byteSize = static_cast<size_t>(pixelCount * formatInfo.bytesPerPixel);
+    ticket->m_staging = AcquireStagingBuffer(ticket->m_byteSize);
+    if (!ticket->m_staging)
+        throw std::runtime_error("Failed to allocate frame image readback staging buffer");
+    ticket->m_frameCompletionEpoch = completionEpoch;
+
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = layout;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = aspect;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.srcAccessMask = sourceAccess;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, sourceStage, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                         &barrier);
+
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = aspect;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {width, height, 1};
+    vkCmdCopyImageToBuffer(commandBuffer, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, ticket->m_staging->GetBuffer(),
+                           1, &region);
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = layout;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.dstAccessMask = 0;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0,
+                         nullptr, 0, nullptr, 1, &barrier);
+
+    m_pendingImageReadbacks.push_back(ticket);
+    return ticket;
+}
+
 GraphicsImageReadbackRecorder VkResourceManager::BeginGraphicsImageReadback(uint32_t width, uint32_t height,
                                                                             VkFormat format)
 {
@@ -827,6 +894,7 @@ GraphicsImageReadbackRecorder VkResourceManager::BeginGraphicsImageReadback(uint
     ticket->m_height = height;
     ticket->m_channelCount = formatInfo.channels;
     ticket->m_elementType = formatInfo.elementType;
+    ticket->m_bgra = formatInfo.bgra;
     ticket->m_byteSize = static_cast<size_t>(pixelCount * formatInfo.bytesPerPixel);
     ticket->m_staging = AcquireStagingBuffer(ticket->m_byteSize);
     if (!ticket->m_staging)
@@ -917,6 +985,7 @@ void VkResourceManager::FinalizeImageReadback(const std::shared_ptr<ImageReadbac
     RecycleStagingBuffer(std::move(ticket->m_staging));
     ticket->m_submission = {};
     ticket->m_graphicsSubmission.reset();
+    ticket->m_frameCompletionEpoch = rhi::InvalidSubmissionSerial;
 }
 
 void VkResourceManager::PollImageReadbacks()
@@ -929,7 +998,10 @@ void VkResourceManager::PollImageReadbacks()
             ticket && ticket->m_graphicsSubmission && ticket->m_graphicsSubmission->IsComplete();
         const bool transferComplete = ticket && !ticket->m_graphicsSubmission && m_asyncReadback &&
                                       m_asyncReadback->IsComplete(ticket->m_submission);
-        if (graphicsComplete || transferComplete) {
+        const bool frameComplete = ticket && ticket->m_frameCompletionEpoch != rhi::InvalidSubmissionSerial &&
+                                   m_queueManager &&
+                                   m_queueManager->IsCompletionEpochComplete(ticket->m_frameCompletionEpoch);
+        if (graphicsComplete || transferComplete || frameComplete) {
             FinalizeImageReadback(ticket);
             continue;
         }
@@ -951,6 +1023,11 @@ void VkResourceManager::DrainImageReadbacks() noexcept
         if (!ticket)
             continue;
         if (ticket->m_graphicsSubmission && ticket->m_graphicsSubmission->IsComplete()) {
+            FinalizeImageReadback(ticket);
+            continue;
+        }
+        if (ticket->m_frameCompletionEpoch != rhi::InvalidSubmissionSerial) {
+            ticket->Cancel();
             FinalizeImageReadback(ticket);
             continue;
         }

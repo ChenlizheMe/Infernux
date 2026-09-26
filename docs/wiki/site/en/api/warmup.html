@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/en/api/njit.html" class="">njit</a><a href="/wiki/site/en/api/warmup.html" class="cur">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/compile.html" class="">compile</a><a href="/wiki/site/en/api/statistics.html" class="">statistics</a><a href="/wiki/site/en/api/warmup.html" class="cur">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -341,9 +341,13 @@ function in <b>Infernux.jit</b>
 <div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">warmup</span><span class="p">(</span><span class="n">fn</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="err">→</span> <span class="kc">None</span>
 </code></pre></div>
 <h2 id="description">Description<a class="headerlink" href="#description" title="Permanent link">&para;</a></h2>
-<p>Pre-compile a <code>@njit</code> function by calling it with representative args.</p>
+<p>Prepare a compiled CPU function on isolated inputs; errors propagate.</p>
 <!-- USER CONTENT START -->
-<p>description</p>
+<p>description
+Compile and validate one runtime signature using isolated argument copies.
+Preparation failures propagate and never cause a second execution through a
+different backend. A target without CPU JIT removes this call while cooking
+ordinary Python bytecode; the runtime API itself never becomes a no-op.</p>
 <!-- USER CONTENT END -->
 
 <h2 id="parameters">Parameters<a class="headerlink" href="#parameters" title="Permanent link">&para;</a></h2>
@@ -365,10 +369,9 @@ function in <b>Infernux.jit</b>
 </table>
 <h2 id="example">Example<a class="headerlink" href="#example" title="Permanent link">&para;</a></h2>
 <!-- USER CONTENT START -->
-<p>example</p>
-<blockquote>
-<p><strong>Example status:</strong> No curated example has been verified for this symbol in 0.4.0. Use the signatures above; do not infer behavior from similarly named APIs in other engines.</p>
-</blockquote>
+<p>example
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">jit</span><span class="o">.</span><span class="n">warmup</span><span class="p">(</span><span class="n">integrate</span><span class="p">,</span> <span class="n">positions</span><span class="p">,</span> <span class="n">velocities</span><span class="p">,</span> <span class="mf">1.0</span> <span class="o">/</span> <span class="mf">60.0</span><span class="p">)</span>
+</code></pre></div></p>
 <!-- USER CONTENT END -->
             
     <nav class="doc-trail" data-doc-trail aria-label="Document navigation and feedback">

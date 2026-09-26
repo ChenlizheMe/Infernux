@@ -151,6 +151,96 @@ class ProjectAssetCommandService:
         self._execute(command, origin)
         return asset_command.result
 
+    def save_mesh_copy(self, mesh: Any, target_path: str, *, origin: ActionOrigin = ActionOrigin.USER) -> str:
+        """Create an independent static mesh asset, with normal Project Undo/Redo."""
+        return self._save_resource_copy(mesh.serialize_source, target_path, ".inxmesh", "Save Mesh Copy", origin)
+
+    def extract_model_material(self, mesh: Any, slot: int, target_path: str,
+                               *, origin: ActionOrigin = ActionOrigin.USER) -> str:
+        """Extract one currently imported slot as an independent material asset.
+
+        The slot is an index in the current import, not a persistent remap key.
+        Extraction does not change source settings or existing scene overrides.
+        """
+        if type(slot) is not int or slot < 0:
+            raise ValueError("Model material slot must be a non-negative integer")
+        return self.save_material_copy(mesh.create_material_copy(slot), target_path, origin=origin)
+
+    def save_material_copy(self, material: Any, target_path: str,
+                           *, origin: ActionOrigin = ActionOrigin.USER) -> str:
+        """Save a detached material snapshot through normal Project history."""
+        import json
+
+        def content():
+            return json.dumps(material.serialize_document(), ensure_ascii=False, indent=2).encode("utf-8")
+
+        return self._save_resource_copy(content, target_path, ".mat", "Extract Model Material", origin)
+
+    def _save_resource_copy(self, content_factory: Callable[[], bytes], target_path: str,
+                            extension: str, description: str, origin: ActionOrigin) -> str:
+        from Infernux.core.document_store import DocumentStore
+        from Infernux.lib import DocumentFileState, DocumentWriteOptions
+        from Infernux.engine.ui.project_file_ops import _import_new_asset
+
+        self._require_configured()
+        target = self._project_path(target_path)
+        if os.path.splitext(target)[1].lower() != extension:
+            raise ValueError(f"{description} requires an {extension} target")
+        if not any(is_path_within(target, os.path.join(self._project_root, root)) for root in ("Assets", "Packages")):
+            raise ValueError("Asset copies must be saved under Assets or Packages")
+        if os.path.exists(target):
+            raise FileExistsError(target)
+        if not os.path.isdir(os.path.dirname(target)):
+            raise FileNotFoundError(os.path.dirname(target))
+        content = content_factory()
+        options = DocumentWriteOptions()
+        options.expected_file_state = DocumentFileState()  # Must still be absent at commit.
+
+        def create_copy():
+            # A conditional write failure created no file owned by this command.
+            # Propagate it; do not ask create-command cleanup to delete the target.
+            DocumentStore.instance().write_and_wait(target, content, options)
+            try:
+                _import_new_asset(target, self._asset_database)
+                return True, ""
+            except (OSError, RuntimeError, ValueError) as exc:
+                return False, str(exc)
+
+        return self.create_with_path(os.path.dirname(target), create_copy,
+                                     description=description, origin=origin)
+
+    def read_text(self, path: str) -> str:
+        """Read one registered project text asset as UTF-8."""
+        target = self._registered_file(path)
+        with open(target, "r", encoding="utf-8") as stream:
+            return stream.read()
+
+    def set_text(
+        self,
+        path: str,
+        content: str,
+        *,
+        origin: ActionOrigin = ActionOrigin.USER,
+    ) -> str:
+        """Replace one registered UTF-8 asset through global Project history."""
+        from Infernux.engine.undo import ProjectAssetTextCommand
+
+        target = self._registered_file(path)
+        with open(target, "r", encoding="utf-8") as stream:
+            previous = stream.read()
+        value = str(content)
+        if value == previous:
+            return target
+        command = ProjectAssetTextCommand(
+            target,
+            previous,
+            value,
+            asset_database=self._asset_database,
+            on_changed=self._notify_changed,
+        )
+        self._execute(command, origin)
+        return target
+
     def rename(
         self,
         source_path: str,
@@ -208,10 +298,11 @@ class ProjectAssetCommandService:
 
         self._require_configured()
         normalized = self.preflight_delete(paths)
+        deleted_guids = self._registered_guids_under(normalized)
 
         def on_deleted() -> None:
             if clear_asset_selection:
-                self._clear_project_selection_if_needed(normalized)
+                self._clear_project_selection_if_needed(deleted_guids)
             self._notify_changed()
 
         command = ProjectAssetDeleteCommand(
@@ -244,12 +335,17 @@ class ProjectAssetCommandService:
         from .documents import DocumentKind, DocumentRegistry
 
         registry = DocumentRegistry._instance
-        opened = tuple(
-            document
+        registered_guids = self._registered_guids_under(normalized)
+        opened_by_id = {
+            document.document_id: document
             for root in normalized
             if registry is not None
-            for document in registry.documents_under_resource(root)
-        )
+            for document in registry.documents_under_resource(
+                root,
+                guids=registered_guids,
+            )
+        }
+        opened = tuple(opened_by_id.values())
         opened_scene = next(
             (
                 document
@@ -570,6 +666,15 @@ class ProjectAssetCommandService:
             raise ValueError(f"Asset path is outside the project: {value}")
         return path
 
+    def _registered_file(self, value: str) -> str:
+        self._require_configured()
+        path = self._project_path(value)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(path)
+        if self._asset_database is None or not self._asset_database.get_guid_from_path(path):
+            raise ValueError(f"Text asset is not registered: {path}")
+        return path
+
     @staticmethod
     def _external_source_path(value: str) -> str:
         path = resolved_path(value)
@@ -594,7 +699,13 @@ class ProjectAssetCommandService:
     ) -> None:
         from .descriptors import SelectionTarget
 
-        targets = tuple(SelectionTarget.asset(path) for path in paths)
+        database = self._asset_database
+        targets = tuple(
+            SelectionTarget.asset(guid)
+            for path in paths
+            if database is not None
+            if (guid := str(database.get_guid_from_path(path) or "").strip())
+        )
         if not targets:
             return
         self._selection.replace(
@@ -605,9 +716,29 @@ class ProjectAssetCommandService:
             record_history=False,
         )
 
-    def _clear_project_selection_if_needed(self, paths: tuple[str, ...]) -> None:
+    def _registered_guids_under(self, paths: tuple[str, ...]) -> frozenset[str]:
+        database = self._asset_database
+        if database is None:
+            return frozenset()
+        candidates: list[str] = []
+        for path in paths:
+            if os.path.isdir(path):
+                for root, _directories, files in os.walk(path):
+                    candidates.extend(os.path.join(root, name) for name in files)
+            else:
+                candidates.append(path)
+        return frozenset(
+            guid.casefold()
+            for candidate in candidates
+            if not candidate.lower().endswith(".meta")
+            if (guid := str(database.get_guid_from_path(candidate) or "").strip())
+        )
+
+    def _clear_project_selection_if_needed(self, guids: frozenset[str]) -> None:
         from .descriptors import SelectionDomain
 
+        if not guids:
+            return
         snapshot = self._selection.snapshot
         if snapshot.domain not in {
             SelectionDomain.ASSET,
@@ -615,8 +746,8 @@ class ProjectAssetCommandService:
         }:
             return
         for target in snapshot.targets:
-            target_path = target.document_id or target.target_id
-            if any(is_path_within(target_path, path, allow_root=True) for path in paths):
+            target_guid = (target.document_id or target.target_id).casefold()
+            if target_guid in guids:
                 self._selection.clear(
                     reason="project_asset_delete",
                     record_history=False,

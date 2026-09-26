@@ -33,13 +33,19 @@ from hub_resources import ICON_PATH, FONT_PATH
 from hub_utils import HubLaunchContext, get_app_dir, is_frozen
 from python_runtime import PythonRuntimeManager
 from android_support import AndroidSupportManager
+from blender_support import BlenderSupportManager
 from version_manager import VersionManager
 
 from model.project_model import ProjectModel
 from viewmodel.control_pane_viewmodel import ControlPaneViewModel
 from view.control_pane_view import ControlPane
 from view.sidebar_view import SidebarView
-from view.installs_view import InstallsView, PythonRuntimesView, AndroidSupportView
+from view.installs_view import (
+    AndroidSupportView,
+    BlenderSupportView,
+    InstallsView,
+    PythonRuntimesView,
+)
 from view.install_queue_panel import InstallQueuePanel
 from install_queue import InstallQueue
 from installer_safety import can_remove_install_dir
@@ -83,6 +89,8 @@ class GameEngineLauncher(QMainWindow):
         self.runtime_manager = PythonRuntimeManager()
         self.android_support_manager = AndroidSupportManager()
         self.android_support_manager.activate_environment()
+        self.blender_support_manager = BlenderSupportManager()
+        self.blender_support_manager.activate_environment()
         self.version_manager = VersionManager(self.runtime_manager)
         self.install_queue = install_queue if install_queue is not None else InstallQueue(self.app)
         self._exit_when_idle = False
@@ -153,10 +161,12 @@ class GameEngineLauncher(QMainWindow):
         )
         self.python_view = PythonRuntimesView(self.runtime_manager, self.install_queue)
         self.android_view = AndroidSupportView(self.android_support_manager, self.install_queue)
+        self.blender_view = BlenderSupportView(self.blender_support_manager, self.install_queue)
         for view, label in (
             (self.installs_view, tr("Engine versions")),
             (self.python_view, tr("Runtime environment")),
             (self.android_view, tr("Android support")),
+            (self.blender_view, tr("Model authoring")),
         ):
             self.install_tabs.addTab(view, label)
         self.install_tabs.currentChanged.connect(self._on_install_tab_changed)
@@ -332,11 +342,11 @@ class GameEngineLauncher(QMainWindow):
             sys.exit(self.app.exec())
 
     def _bootstrap_hub(self):
-        # Resolve application updates before presenting runtime migration.
-        # This keeps an older Hub from offering engine/runtime actions that a
-        # newer release has made incompatible.
-        self._startup_update_pending = True
-        self.update_controller.check(silent=True)
+        if self.db.get_setting("automatic_update_checks", "enabled") == "enabled":
+            self._startup_update_pending = True
+            self.update_controller.check(silent=True)
+            return
+        self._bootstrap_python_runtime()
 
     def _on_startup_update_check_finished(self):
         if not self._startup_update_pending:
@@ -356,7 +366,8 @@ class GameEngineLauncher(QMainWindow):
 
     def _finish_startup(self):
         self.installs_view.refresh()
-        self.notification_controller.show_pending()
+        if self.db.get_setting("automatic_update_checks", "enabled") == "enabled":
+            self.notification_controller.show_pending()
 
     def _on_close(self):
         self.db.close()

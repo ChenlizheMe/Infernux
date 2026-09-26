@@ -1,9 +1,11 @@
 #pragma once
 
 #include <function/resources/AssetRegistry/AssetRegistry.h>
+#include <function/resources/InxMaterial/MaterialProperty.h>
 
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -15,41 +17,79 @@ class InxSkinnedMesh;
 
 struct MeshSourceImportResult
 {
+    struct MaterialDiagnostic
+    {
+        std::string code;
+        std::string material;
+        std::string property;
+        std::string detail;
+    };
+
+    struct TextureSource
+    {
+        uint32_t materialSlot;
+        std::string path;
+        uint32_t channel = 0; // ModelTexture index, shared with MaterialSlotData.
+        int32_t embeddedIndex = -1;
+        uint8_t uvSet = 0;
+        MaterialTextureSampler sampler;
+    };
+    struct EmbeddedImage
+    {
+        std::string key;
+        std::string name;
+        std::vector<unsigned char> bytes; // Encoded image, or RGBA8 when height != 0.
+        uint32_t width = 0;
+        uint32_t height = 0;
+    };
+    std::vector<TextureSource> textureSources;
+    std::vector<MaterialDiagnostic> materialDiagnostics;
+    std::vector<EmbeddedImage> embeddedImages;
     std::shared_ptr<InxMesh> mesh;
     std::shared_ptr<InxSkinnedMesh> skinnedMesh;
     uint64_t meshCount = 0;
     uint64_t vertexCount = 0;
     uint64_t indexCount = 0;
+    float sourceUnitScale = 1.0f;
+    float effectiveScale = 1.0f;
     std::vector<std::string> materialSlots;
     std::vector<std::string> boneNames;
     std::vector<std::string> animationNames;
+    nlohmann::json sourceAnimations = nlohmann::json::array();
 };
 
 /**
  * @brief IAssetLoader implementation for 3D model assets (.fbx, .obj, .gltf, …).
  *
- * Uses Assimp to parse the source model file and builds an InxMesh instance
- * containing all submeshes, vertices, and indices ready for GPU upload.
- *
- * The source file (.fbx etc.) is the single source of truth — no intermediate
- * binary format is written.  Import settings (scale, normals, tangents) are
- * read from the .meta file at load time.
- *
+ * Source import uses Assimp for interchange models or MeshArtifact for native
+ * .inxmesh sources. Native sources
+ * preserve authored geometry without applying
+ * Assimp conversion settings. Both produce the same imported binary
+ * artifacts;
+ * runtime Load reads those artifacts, not the original model.
  * Key design points:
- *   - Load() produces a new shared_ptr<InxMesh> with combined vertex/index
- *     arrays and one SubMesh per aiMesh in the Assimp scene.
- *   - Reload() replaces the geometry data in-place so all AssetRef holders
- *     see updated data without re-resolving.
- *   - ScanDependencies() returns {} — mesh assets do not reference other
- *     assets (material bindings are on the MeshRenderer, not the mesh).
+ *   - Load() produces a new shared_ptr<InxMesh> from imported geometry.
+ *   - Reload() replaces the geometry data
+ * in-place so all AssetRef holders see updated data without re-resolving.
+ *   - ScanDependencies() resolves external material textures to project GUIDs
+ *     at the authoring boundary so
+ * composite model sources are Cook-complete.
+ *     Renderer-authored material bindings remain independent.
  */
 class MeshLoader final : public IAssetLoader
 {
   public:
-    [[nodiscard]] static MeshSourceImportResult
-    ImportSourceDetailed(const std::string &filePath, const std::string &guid, const InxResourceMeta &metadata);
+    [[nodiscard]] static MeshSourceImportResult ImportSourceDetailed(const std::string &filePath,
+                                                                     const std::string &guid,
+                                                                     const InxResourceMeta &metadata,
+                                                                     const InxSkinnedMesh *copiedDefinition = nullptr);
     [[nodiscard]] static std::shared_ptr<InxMesh> ImportSource(const std::string &filePath, const std::string &guid,
                                                                const InxResourceMeta &metadata);
+
+    /// Enumerate regular external texture files referenced by a composite
+    /// model source. The AssetDatabase authoring boundary converts these
+    /// paths to GUID dependencies before publication.
+    [[nodiscard]] static std::set<std::string> ScanExternalTexturePaths(const std::string &filePath);
 
     RuntimeAssetPayload Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb) override;
     [[nodiscard]] bool SupportsWorkerLoad() const noexcept override

@@ -55,24 +55,26 @@ class TestAssetRefBase:
     def test_to_dict(self):
         ref = AssetRefBase(guid="abc", path_hint="textures/foo.png")
         d = ref.to_dict()
-        assert d == {"guid": "abc", "path_hint": "textures/foo.png"}
+        assert d == {"guid": "abc"}
 
-    def test_from_dict(self):
+    def test_from_dict_ignores_display_path(self):
         ref = AssetRefBase.from_dict({"guid": "xyz", "path_hint": "bar.mat"})
         assert ref.guid == "xyz"
-        assert ref.path_hint == "bar.mat"
+        assert ref.path_hint == ""
 
     @pytest.mark.parametrize(
         "document",
         [None, {}, {"guid": "xyz"}, {"guid": "xyz", "path_hint": "", "path": "old"}],
     )
-    def test_from_dict_rejects_noncanonical_documents(self, document):
-        with pytest.raises(ValueError, match="complete current field set"):
-            AssetRefBase.from_dict(document)
+    def test_from_dict_ignores_legacy_document_fields(self, document):
+        ref = AssetRefBase.from_dict(document)
+        expected_guid = "xyz" if isinstance(document, dict) and document.get("guid") == "xyz" else ""
+        assert ref.guid == expected_guid
 
-    def test_from_dict_rejects_non_string_values(self):
-        with pytest.raises(TypeError, match="must be strings"):
-            AssetRefBase.from_dict({"guid": 7, "path_hint": "bar.mat"})
+    def test_from_dict_ignores_non_string_identity_values(self):
+        ref = AssetRefBase.from_dict({"guid": 7, "path_hint": "bar.mat"})
+        assert ref.guid == ""
+        assert ref.path_hint == ""
 
     def test_display_name_with_path_hint(self):
         ref = AssetRefBase(guid="abc", path_hint="textures/foo.png")

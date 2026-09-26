@@ -29,7 +29,7 @@ class ParallelCapabilities:
 
 @dataclass(frozen=True)
 class ParallelBufferView:
-    """Opaque identity plus one C-contiguous array exchange surface."""
+    """Opaque identity and NumPy-compatible array metadata."""
 
     handle: str
     buffer: Any

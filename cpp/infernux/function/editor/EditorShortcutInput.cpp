@@ -36,79 +36,47 @@ void EditorShortcutInput::OnRender(InxGUIContext *ctx)
             routeShortcut(chord, textInputActive, allowTransientPopup ? modalActive : popupActive);
     };
 
-    if (ctrl && !alt && !super) {
-        if (pressedOnce(ImGuiKey_S))
-            dispatch(shift ? "Ctrl+Shift+S" : "Ctrl+S");
-        if (pressedOnce(ImGuiKey_N))
-            dispatch(shift ? "Ctrl+Shift+N" : "Ctrl+N");
-        if (pressedOnce(ImGuiKey_Z))
-            dispatch(shift ? "Ctrl+Shift+Z" : "Ctrl+Z", true);
-        if (!shift && pressedOnce(ImGuiKey_Y))
-            dispatch("Ctrl+Y", true);
-        if (!shift && pressedOnce(ImGuiKey_C))
-            dispatch("Ctrl+C");
-        if (!shift && pressedOnce(ImGuiKey_X))
-            dispatch("Ctrl+X");
-        if (!shift && pressedOnce(ImGuiKey_V))
-            dispatch("Ctrl+V");
-        if (!shift && pressedOnce(ImGuiKey_D))
-            dispatch("Ctrl+D");
-        if (pressedOnce(ImGuiKey_F))
-            dispatch(shift ? "Ctrl+Shift+F" : "Ctrl+F");
-        if (shift && pressedOnce(ImGuiKey_P))
-            dispatch("Ctrl+Shift+P");
-        return;
-    }
+    // The registry, not this input adapter, defines available shortcuts.
+    // Only keyboard edges cross into Python; held keys do not repeat commands.
+    for (int value = ImGuiKey_Tab; value < ImGuiKey_GamepadStart; ++value) {
+        const auto key = static_cast<ImGuiKey>(value);
+        if ((key >= ImGuiKey_LeftCtrl && key <= ImGuiKey_RightSuper) || !pressedOnce(key))
+            continue;
+        if (key == ImGuiKey_KeypadEnter && pressedOnce(ImGuiKey_Enter))
+            continue;
 
-    if (!ctrl && !shift && !alt && !super) {
-        if (pressedOnce(ImGuiKey_F))
-            dispatch("F");
-        if (pressedOnce(ImGuiKey_F2))
-            dispatch("F2");
-        if (pressedOnce(ImGuiKey_Delete))
-            dispatch("Delete");
-        if (pressedOnce(ImGuiKey_Escape))
-            dispatch("Escape");
-        if (pressedOnce(ImGuiKey_Space))
-            dispatch("Space");
-        if (pressedOnce(ImGuiKey_Q))
-            dispatch("Q");
-        if (pressedOnce(ImGuiKey_W))
-            dispatch("W");
-        if (pressedOnce(ImGuiKey_E))
-            dispatch("E");
-        if (pressedOnce(ImGuiKey_R))
-            dispatch("R");
-        if (pressedOnce(ImGuiKey_LeftArrow))
-            dispatch("Left");
-        if (pressedOnce(ImGuiKey_RightArrow))
-            dispatch("Right");
-        if (pressedOnce(ImGuiKey_UpArrow))
-            dispatch("Up");
-        if (pressedOnce(ImGuiKey_DownArrow))
-            dispatch("Down");
-        if (pressedOnce(ImGuiKey_Enter) || pressedOnce(ImGuiKey_KeypadEnter))
-            dispatch("Enter");
-        return;
-    }
-
-    if (!ctrl && shift && !alt && !super) {
-        if (pressedOnce(ImGuiKey_LeftArrow))
-            dispatch("Shift+Left");
-        if (pressedOnce(ImGuiKey_RightArrow))
-            dispatch("Shift+Right");
-        if (pressedOnce(ImGuiKey_UpArrow))
-            dispatch("Shift+Up");
-        if (pressedOnce(ImGuiKey_DownArrow))
-            dispatch("Shift+Down");
-        return;
-    }
-
-    if (!ctrl && !shift && alt && !super) {
-        if (pressedOnce(ImGuiKey_LeftArrow))
-            dispatch("Alt+Left");
-        if (pressedOnce(ImGuiKey_RightArrow))
-            dispatch("Alt+Right");
+        const char *name = ImGui::GetKeyName(key);
+        switch (key) {
+        case ImGuiKey_LeftArrow:
+            name = "Left";
+            break;
+        case ImGuiKey_RightArrow:
+            name = "Right";
+            break;
+        case ImGuiKey_UpArrow:
+            name = "Up";
+            break;
+        case ImGuiKey_DownArrow:
+            name = "Down";
+            break;
+        case ImGuiKey_KeypadEnter:
+            name = "Enter";
+            break;
+        default:
+            break;
+        }
+        std::string chord;
+        if (ctrl)
+            chord += "Ctrl+";
+        if (shift)
+            chord += "Shift+";
+        if (alt)
+            chord += "Alt+";
+        if (super)
+            chord += "Super+";
+        chord += name;
+        const bool historyChord = ctrl && !alt && !super && (key == ImGuiKey_Z || (!shift && key == ImGuiKey_Y));
+        dispatch(chord.c_str(), historyChord);
     }
 }
 

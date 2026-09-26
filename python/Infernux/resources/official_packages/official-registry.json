@@ -4,7 +4,7 @@
     {
       "reference": "infernux/mcp",
       "name": "Infernux MCP",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "intro": "Let an MCP-compatible AI agent drive the Infernux Editor.",
       "intros": {
         "zh-CN": "让兼容 MCP 的 AI Agent 直接操作 Infernux 编辑器。"
@@ -15,9 +15,9 @@
       "repository": "https://github.com/ChenlizheMe/infernux_mcp",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.mcp/0.1.1/infernux.mcp.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.mcp/0.1.2/infernux.mcp.inxpkg"
       },
-      "category": "Agent",
+      "category": "editor_tools",
       "targets": [],
       "pages": [
         {
@@ -64,7 +64,7 @@
         "type": "url",
         "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-windows/0.2.0/infernux.platform-windows.inxpkg"
       },
-      "category": "Platform",
+      "category": "platform_build",
       "targets": [
         "windows-x64"
       ],
@@ -86,7 +86,7 @@
         "type": "url",
         "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-linux/0.2.0/infernux.platform-linux.inxpkg"
       },
-      "category": "Platform",
+      "category": "platform_build",
       "targets": [
         "linux-x64"
       ],
@@ -108,7 +108,7 @@
         "type": "url",
         "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-android/0.2.2/infernux.platform-android.inxpkg"
       },
-      "category": "Platform",
+      "category": "platform_build",
       "targets": [
         "android-arm64",
         "android-x64-emulator"
@@ -131,7 +131,7 @@
         "type": "url",
         "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-web/0.2.0/infernux.platform-web.inxpkg"
       },
-      "category": "Platform",
+      "category": "platform_build",
       "targets": [
         "web-wasm32"
       ],

@@ -27,7 +27,10 @@ def test_selected_object_resolution_exposes_scene_manager_failure(monkeypatch):
 def test_selected_object_is_resolved_from_active_scene(monkeypatch):
     selected = object()
     scene = SimpleNamespace(find_by_id=lambda object_id: selected if object_id == 42 else None)
-    manager = SimpleNamespace(get_active_scene=lambda: scene)
+    manager = SimpleNamespace(
+        get_active_scene=lambda: scene,
+        find_runtime_object_by_id=lambda object_id: scene.find_by_id(object_id),
+    )
     scene_manager = SimpleNamespace(instance=lambda: manager)
     monkeypatch.setattr(native_lib, "SceneManager", scene_manager)
 

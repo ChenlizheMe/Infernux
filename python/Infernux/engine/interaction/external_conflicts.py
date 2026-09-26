@@ -208,12 +208,16 @@ class ExternalDocumentConflictService:
             return None
         return conflict
 
-    @staticmethod
-    def _stale_result() -> DocumentActionResult:
-        return DocumentActionResult(
+    def _stale_result(self) -> DocumentActionResult:
+        # Refresh presentation, but never apply an old choice to a newer
+        # revision (or to a different document that became active).
+        self.poll()
+        result = DocumentActionResult(
             DocumentActionStatus.REJECTED,
             "the external conflict changed before it was resolved",
         )
+        self._error = result.message
+        return result
 
     def _finish_active(self) -> None:
         self._active = None

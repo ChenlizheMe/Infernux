@@ -5,6 +5,10 @@
          <lastmod>2026-09-08</lastmod>
     </url>
     <url>
+         <loc>https://infernux-engine.com/wiki/site/en/editor-authoring.html</loc>
+         <lastmod>2026-09-08</lastmod>
+    </url>
+    <url>
          <loc>https://infernux-engine.com/wiki/site/en/plugin-package-content.html</loc>
          <lastmod>2026-09-08</lastmod>
     </url>
@@ -289,15 +293,15 @@
          <lastmod>2026-09-08</lastmod>
     </url>
     <url>
+         <loc>https://infernux-engine.com/wiki/site/en/api/compile.html</loc>
+         <lastmod>2026-09-08</lastmod>
+    </url>
+    <url>
          <loc>https://infernux-engine.com/wiki/site/en/api/disallow_multiple.html</loc>
          <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://infernux-engine.com/wiki/site/en/api/execute_in_edit_mode.html</loc>
-         <lastmod>2026-09-08</lastmod>
-    </url>
-    <url>
-         <loc>https://infernux-engine.com/wiki/site/en/api/njit.html</loc>
          <lastmod>2026-09-08</lastmod>
     </url>
     <url>
@@ -310,6 +314,10 @@
     </url>
     <url>
          <loc>https://infernux-engine.com/wiki/site/en/api/serialized_field.html</loc>
+         <lastmod>2026-09-08</lastmod>
+    </url>
+    <url>
+         <loc>https://infernux-engine.com/wiki/site/en/api/statistics.html</loc>
          <lastmod>2026-09-08</lastmod>
     </url>
     <url>
@@ -326,6 +334,10 @@
     </url>
     <url>
          <loc>https://infernux-engine.com/wiki/site/en/api/warmup.html</loc>
+         <lastmod>2026-09-08</lastmod>
+    </url>
+    <url>
+         <loc>https://infernux-engine.com/wiki/site/zh/editor-authoring.html</loc>
          <lastmod>2026-09-08</lastmod>
     </url>
     <url>
@@ -613,15 +625,15 @@
          <lastmod>2026-09-08</lastmod>
     </url>
     <url>
+         <loc>https://infernux-engine.com/wiki/site/zh/api/compile.html</loc>
+         <lastmod>2026-09-08</lastmod>
+    </url>
+    <url>
          <loc>https://infernux-engine.com/wiki/site/zh/api/disallow_multiple.html</loc>
          <lastmod>2026-09-08</lastmod>
     </url>
     <url>
          <loc>https://infernux-engine.com/wiki/site/zh/api/execute_in_edit_mode.html</loc>
-         <lastmod>2026-09-08</lastmod>
-    </url>
-    <url>
-         <loc>https://infernux-engine.com/wiki/site/zh/api/njit.html</loc>
          <lastmod>2026-09-08</lastmod>
     </url>
     <url>
@@ -634,6 +646,10 @@
     </url>
     <url>
          <loc>https://infernux-engine.com/wiki/site/zh/api/serialized_field.html</loc>
+         <lastmod>2026-09-08</lastmod>
+    </url>
+    <url>
+         <loc>https://infernux-engine.com/wiki/site/zh/api/statistics.html</loc>
          <lastmod>2026-09-08</lastmod>
     </url>
     <url>

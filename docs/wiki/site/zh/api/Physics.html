@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/zh/api/njit.html" class="">njit</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/zh/api/compile.html" class="">compile</a><a href="/wiki/site/zh/api/statistics.html" class="">statistics</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -362,6 +362,11 @@
 <td>Number of native physics bodies currently owned by the world. <em>(只读)</em></td>
 </tr>
 <tr>
+<td>query_generation</td>
+<td><code>int</code></td>
+<td>Monotonic token for the currently published physics query world. <em>(只读)</em></td>
+</tr>
+<tr>
 <td>gravity</td>
 <td><code>Any</code></td>
 <td>全局重力加速度。</td>
@@ -382,6 +387,54 @@
 </thead>
 <tbody>
 <tr>
+<td><code>static Physics.compute_penetration(collider_a: Any, position_a: Any, rotation_a: Any, collider_b: Any, position_b: Any, rotation_b: Any) → Optional[PenetrationResult]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>static Physics.get_rigidbody_states(rigidbodies: List[Any], out: Optional[dict[str, Any]] = ...) → dict[str, Any]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>static Physics.get_rigidbody_states_and_box_states(rigidbodies: List[Any], state_out: dict[str, Any], box_out: dict[str, Any], query_triggers: bool = ...) → tuple[dict[str, Any], dict[str, Any]]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>static Physics.get_rigidbody_box_states(rigidbodies: List[Any], out: Optional[dict[str, Any]] = ..., query_triggers: bool = ...) → dict[str, Any]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>static Physics.query_rigidbody_box_states_in_bounds(minimum: Any, maximum: Any, out: dict[str, Any], layer_mask: int = ..., query_triggers: bool = ...) → dict[str, Any]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>static Physics.query_rigidbody_states_and_box_states_in_bounds(minimum: Any, maximum: Any, state_out: dict[str, Any], box_out: dict[str, Any], layer_mask: int = ..., query_triggers: bool = ...) → tuple[dict[str, Any], dict[str, Any]]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>static Physics.apply_rigidbody_impulses(rigidbodies: List[Any], linear_impulses: Any, angular_impulses: Any) → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>static Physics.set_contact_event_stream_enabled(enabled: bool = ..., include_triggers: bool = ...) → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>static Physics.get_contact_events() → dict[str, Any]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>static Physics.set_contact_impulse_stream_enabled(enabled: bool = ...) → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>static Physics.get_contact_impulses() → dict[str, Any]</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>static Physics.query_rigidbodies_in_bounds(minimum: Any, maximum: Any, layer_mask: int = ..., query_triggers: bool = ...) → List[Any]</code></td>
+<td></td>
+</tr>
+<tr>
 <td><code>static Physics.get_gravity() → Any</code></td>
 <td>Get the global gravity vector.</td>
 </tr>
@@ -392,6 +445,14 @@
 <tr>
 <td><code>static Physics.raycast(origin: Any, direction: Any, max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ...) → Optional[Any]</code></td>
 <td>从原点沿方向发射射线检测碰撞。</td>
+</tr>
+<tr>
+<td><code>static Physics.raycast_screen(camera: Any, screen_position: Tuple[float, float], viewport_size: Tuple[float, float], max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ...) → Optional[Any]</code></td>
+<td>Cast from a top-left-origin camera viewport pixel position.</td>
+</tr>
+<tr>
+<td><code>static Physics.raycast_batch(origins: npt.NDArray[np.float32], directions: npt.NDArray[np.float32], out: RaycastBatchOutput, max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ..., profile: bool = ...) → RaycastBatchOutput</code></td>
+<td></td>
 </tr>
 <tr>
 <td><code>static Physics.raycast_all(origin: Any, direction: Any, max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ...) → List[Any]</code></td>
@@ -428,6 +489,14 @@
 <tr>
 <td><code>static Physics.get_ignore_layer_collision(layer1: int, layer2: int) → bool</code></td>
 <td>Check if collisions between two layers are ignored.</td>
+</tr>
+<tr>
+<td><code>static Physics.ignore_collision(collider1: Any, collider2: Any, ignore: bool = ...) → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>static Physics.get_ignore_collision(collider1: Any, collider2: Any) → bool</code></td>
+<td></td>
 </tr>
 </tbody>
 </table>

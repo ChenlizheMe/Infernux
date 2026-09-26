@@ -19,9 +19,9 @@
 #pragma once
 
 #include "InxRenderStruct.h"
+#include "RendererParameterBlock.h"
 #include "rhi/RhiTypes.h"
 
-#include <array>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -32,6 +32,8 @@ namespace infernux
 {
 
 class InxMaterial;
+class InxMesh;
+struct MeshGeometry;
 
 // ============================================================================
 // RenderTargetHandle — lightweight opaque identifier
@@ -77,10 +79,6 @@ enum class RenderCommandType : uint8_t
     SetRenderTarget,
     ClearRenderTarget,
     DrawMesh,
-    SetGlobalTexture,
-    SetGlobalFloat,
-    SetGlobalVector,
-    SetGlobalMatrix,
 };
 
 // ---- Per-command parameter structs ----
@@ -115,43 +113,25 @@ struct ClearRenderTargetParams
 
 struct DrawMeshParams
 {
+    std::shared_ptr<const MeshGeometry> geometry;
     const std::vector<Vertex> *vertices = nullptr;
     const std::vector<uint32_t> *indices = nullptr;
     glm::mat4 worldMatrix{1.0f};
     std::shared_ptr<InxMaterial> material;
+    std::shared_ptr<const RendererParameterBlock> parameterBlock;
+    AABB worldBounds;
+    uint64_t objectId = 0;
+    std::string meshGuid;
+    uint64_t meshGeneration = 0;
+    MeshIndexFormat meshIndexFormat = MeshIndexFormat::Auto;
     int submeshIndex = 0;
     int pass = 0;
-};
-
-struct SetGlobalTextureParams
-{
-    std::string name;
-    uint32_t handleId = UINT32_MAX;
-};
-
-struct SetGlobalFloatParams
-{
-    std::string name;
-    float value = 0.0f;
-};
-
-struct SetGlobalVectorParams
-{
-    std::string name;
-    float x = 0.0f, y = 0.0f, z = 0.0f, w = 0.0f;
-};
-
-struct SetGlobalMatrixParams
-{
-    std::string name;
-    std::array<float, 16> data{};
 };
 
 // ---- Variant-based command storage ----
 
 using RenderCommandData = std::variant<GetTemporaryRTParams, ReleaseTemporaryRTParams, SetRenderTargetParams,
-                                       ClearRenderTargetParams, DrawMeshParams, SetGlobalTextureParams,
-                                       SetGlobalFloatParams, SetGlobalVectorParams, SetGlobalMatrixParams>;
+                                       ClearRenderTargetParams, DrawMeshParams>;
 
 struct RenderCommand
 {
@@ -210,14 +190,10 @@ class CommandBuffer
     /// @brief Clear the currently-bound render target.
     void ClearRenderTarget(bool clearColor, bool clearDepth, float r, float g, float b, float a, float depth = 1.0f);
 
-    // ====================================================================
-    // Global Shader Parameters
-    // ====================================================================
-
-    void SetGlobalTexture(const std::string &name, RenderTargetHandle handle);
-    void SetGlobalFloat(const std::string &name, float value);
-    void SetGlobalVector(const std::string &name, float x, float y, float z, float w);
-    void SetGlobalMatrix(const std::string &name, const std::array<float, 16> &data);
+    /// @brief Record one explicit mesh draw and capture parameter values now.
+    void DrawMesh(const std::shared_ptr<InxMesh> &mesh, const glm::mat4 &worldMatrix,
+                  const std::shared_ptr<InxMaterial> &material, int submeshIndex = 0, int pass = 0,
+                  const DrawParameterBlock *parameters = nullptr);
 
     // ====================================================================
     // Accessors

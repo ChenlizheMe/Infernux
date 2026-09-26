@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; script-src-attr 'none'; style-src 'self'; style-src-attr 'none'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; worker-src 'self'; manifest-src 'self'; form-action 'self'; upgrade-insecure-requests">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <meta name="description" content="Official Infernux scripting API reference for statistics.">
+    
+    <meta name="theme-color" content="#0a0c11">
+    <meta name="color-scheme" content="dark light">
+    <title>statistics - Infernux Documentation</title>
+    
+    <link rel="canonical" href="https://infernux-engine.com/wiki/site/en/api/statistics.html">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="Infernux Engine">
+    <meta property="og:title" content="statistics - Infernux Documentation">
+    <meta property="og:description" content="Official Infernux scripting API reference for statistics.">
+    <meta property="og:url" content="https://infernux-engine.com/wiki/site/en/api/statistics.html">
+    <meta property="og:locale" content="en_US">
+    <meta property="og:locale:alternate" content="zh_CN">
+    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta property="og:image:type" content="image/jpeg">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status.">
+    
+    
+    
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="statistics - Infernux Documentation">
+    <meta name="twitter:description" content="Official Infernux scripting API reference for statistics.">
+    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status.">
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "TechArticle",
+          "@id": "https://infernux-engine.com/wiki/site/en/api/statistics.html#document",
+          "headline": "statistics",
+          "name": "statistics",
+          "description": "Official Infernux scripting API reference for statistics.",
+          "url": "https://infernux-engine.com/wiki/site/en/api/statistics.html",
+          "mainEntityOfPage": {
+            "@type": "WebPage",
+            "@id": "https://infernux-engine.com/wiki/site/en/api/statistics.html"
+          },
+          "inLanguage": "en",
+          "isAccessibleForFree": true,
+          "learningResourceType": "API reference",
+          "articleSection": "API Reference",
+          "image": {
+            "@type": "ImageObject",
+            "url": "https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg",
+            "width": 1200,
+            "height": 630,
+            "caption": "Infernux NASA Punk mission card with the editor, forge emblem, and technical preview status."
+          },
+          "author": {
+            "@type": "Organization",
+            "name": "Infernux Engine",
+            "url": "https://infernux-engine.com/"
+          },
+          "publisher": {
+            "@type": "Organization",
+            "name": "Infernux Engine",
+            "url": "https://infernux-engine.com/",
+            "logo": {
+              "@type": "ImageObject",
+              "url": "https://infernux-engine.com/assets/logo.png"
+            }
+          },
+          "isPartOf": { "@id": "https://infernux-engine.com/#website" },
+          "about": { "@id": "https://infernux-engine.com/#software" }
+        },
+        {
+          "@type": "BreadcrumbList",
+          "@id": "https://infernux-engine.com/wiki/site/en/api/statistics.html#breadcrumb",
+          "itemListElement": [
+            {
+              "@type": "ListItem",
+              "position": 1,
+              "name": "Start",
+              "item": "https://infernux-engine.com/start.html"
+            },
+            
+            {
+              "@type": "ListItem",
+              "position": 2,
+              "name": "API Reference",
+              "item": "https://infernux-engine.com/wiki/site/en/api/index.html"
+            },
+            {
+              "@type": "ListItem",
+              "position": 3,
+              "name": "statistics",
+              "item": "https://infernux-engine.com/wiki/site/en/api/statistics.html"
+            }
+            
+          ]
+        }
+      ]
+    }
+    </script>
+    
+    
+    <link rel="alternate" hreflang="en" href="https://infernux-engine.com/wiki/site/en/api/statistics.html">
+    <link rel="alternate" hreflang="zh-CN" href="https://infernux-engine.com/wiki/site/zh/api/statistics.html">
+    <link rel="alternate" hreflang="x-default" href="https://infernux-engine.com/wiki/site/en/api/statistics.html">
+    
+    <link rel="alternate" type="application/json" title="Infernux API index" href="/api-index.json">
+    <link rel="manifest" href="/site.webmanifest">
+    <link rel="icon" type="image/png" href="/assets/logo.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/infernux-apple-touch-icon.png">
+    <link rel="stylesheet" href="/css/fonts.css?v=1">
+    <link rel="stylesheet" href="/css/style.css?v=20">
+    <link rel="stylesheet" href="/css/fontawesome-subset.css?v=6.4.0">
+    <link rel="stylesheet" href="/css/docs-search.css?v=3">
+    <link rel="stylesheet" href="/css/wiki-generated.css?v=9">
+    <link rel="stylesheet" href="/css/wiki-template.8274a64753b131d2.css">
+</head>
+<body class="api-reference-page">
+    
+    
+    
+    
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <!-- Top Navigation -->
+    <nav class="navbar" aria-label="Primary navigation">
+        <div class="nav-container">
+            <a href="/index.html" class="nav-logo">
+                <span class="logo-icon"><img src="/assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
+                <span class="logo-text">Infernux</span>
+            </a>
+            <div class="nav-links" id="primary-navigation">
+                <a href="/start.html" class="nav-priority">Start</a>
+                <a href="/learn.html">Learn</a>
+                <a href="/wiki/site/en/api/index.html" class="active" aria-current="page">API</a>
+                <a href="/roadmap.html">Roadmap</a>
+                <a href="https://infernux-engine.discourse.group/" class="nav-priority">Community</a>
+                <a href="/download.html">Download</a>
+                <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener">
+                    <i class="fab fa-github" aria-hidden="true"></i> GitHub
+                </a>
+            </div>
+            <div class="nav-right">
+                <button type="button" class="docs-context-trigger" data-doc-context-trigger title="Copy version, sources, and canonical link" aria-label="Copy page context for an Agent">
+                    <i class="fas fa-copy" aria-hidden="true"></i><span data-doc-context-label>Copy for Agent</span>
+                </button>
+                <button type="button" class="docs-search-trigger" data-docs-search-trigger aria-haspopup="dialog" aria-controls="docs-search-dialog" aria-expanded="false">
+                    <i class="fas fa-magnifying-glass" aria-hidden="true"></i><span data-docs-search-trigger-label>Search docs</span><kbd aria-hidden="true">/</kbd>
+                </button>
+                <button type="button" class="theme-toggle" data-site-action="theme" title="Toggle theme" aria-label="Toggle theme" aria-pressed="false">
+                    <i class="fas fa-moon" id="theme-icon"></i>
+                </button>
+                <button type="button" class="mobile-menu-btn" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    
+    <!-- API Reference Layout -->
+    <div class="api-layout">
+        <!-- Sidebar — namespace / package tree -->
+        <aside class="api-sidebar" aria-label="API namespaces">
+            <div class="sidebar-hdr">
+                <div>
+                    <h3>Scripting API</h3>
+                    <span class="api-current-page" title="statistics">statistics</span>
+                </div>
+                <div class="lang-sw">
+                    <a href="/wiki/site/en/api/statistics.html"
+                       class="on" aria-current="page">EN</a>
+                    <a href="/wiki/site/zh/api/statistics.html"
+                       class="">中文</a>
+                </div>
+                <button type="button" class="api-sidebar-toggle" aria-controls="api-namespace-tree" aria-expanded="true" hidden>
+                    <span>Browse</span><span class="api-sidebar-toggle-mark" aria-hidden="true">⌄</span>
+                </button>
+            </div>
+
+            <div class="ns-tree" id="api-namespace-tree"><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/AudioClip.html" class="">AudioClip</a><a href="/wiki/site/en/api/AudioListener.html" class="">AudioListener</a><a href="/wiki/site/en/api/AudioSource.html" class="">AudioSource</a><a href="/wiki/site/en/api/BoxCollider.html" class="">BoxCollider</a><a href="/wiki/site/en/api/Camera.html" class="">Camera</a><a href="/wiki/site/en/api/CameraClearFlags.html" class="">CameraClearFlags</a><a href="/wiki/site/en/api/CameraProjection.html" class="">CameraProjection</a><a href="/wiki/site/en/api/CapsuleCollider.html" class="">CapsuleCollider</a><a href="/wiki/site/en/api/Collider.html" class="">Collider</a><a href="/wiki/site/en/api/CollisionDetectionMode.html" class="">CollisionDetectionMode</a><a href="/wiki/site/en/api/Component.html" class="">Component</a><a href="/wiki/site/en/api/ForceMode.html" class="">ForceMode</a><a href="/wiki/site/en/api/GameObject.html" class="">GameObject</a><a href="/wiki/site/en/api/Light.html" class="">Light</a><a href="/wiki/site/en/api/LightShadows.html" class="">LightShadows</a><a href="/wiki/site/en/api/LightType.html" class="">LightType</a><a href="/wiki/site/en/api/LogLevel.html" class="">LogLevel</a><a href="/wiki/site/en/api/MeshCollider.html" class="">MeshCollider</a><a href="/wiki/site/en/api/MeshRenderer.html" class="">MeshRenderer</a><a href="/wiki/site/en/api/Physics.html" class="">Physics</a><a href="/wiki/site/en/api/PrimitiveType.html" class="">PrimitiveType</a><a href="/wiki/site/en/api/Rigidbody.html" class="">Rigidbody</a><a href="/wiki/site/en/api/RigidbodyConstraints.html" class="">RigidbodyConstraints</a><a href="/wiki/site/en/api/Scene.html" class="">Scene</a><a href="/wiki/site/en/api/SceneManager.html" class="">SceneManager</a><a href="/wiki/site/en/api/Space.html" class="">Space</a><a href="/wiki/site/en/api/SphereCollider.html" class="">SphereCollider</a><a href="/wiki/site/en/api/Transform.html" class="">Transform</a><a href="/wiki/site/en/api/serialized_field.html" class="">serialized_field</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.components</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/InxComponent.html" class="">InxComponent</a><a href="/wiki/site/en/api/Space.html" class="">Space</a><a href="/wiki/site/en/api/add_component_menu.html" class="">add_component_menu</a><a href="/wiki/site/en/api/disallow_multiple.html" class="">disallow_multiple</a><a href="/wiki/site/en/api/execute_in_edit_mode.html" class="">execute_in_edit_mode</a><a href="/wiki/site/en/api/require_component.html" class="">require_component</a><a href="/wiki/site/en/api/serialized_field.html" class="">serialized_field</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.components.builtin</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/AudioListener.html" class="">AudioListener</a><a href="/wiki/site/en/api/AudioSource.html" class="">AudioSource</a><a href="/wiki/site/en/api/BoxCollider.html" class="">BoxCollider</a><a href="/wiki/site/en/api/Camera.html" class="">Camera</a><a href="/wiki/site/en/api/CapsuleCollider.html" class="">CapsuleCollider</a><a href="/wiki/site/en/api/Collider.html" class="">Collider</a><a href="/wiki/site/en/api/CollisionDetectionMode.html" class="">CollisionDetectionMode</a><a href="/wiki/site/en/api/Light.html" class="">Light</a><a href="/wiki/site/en/api/MeshCollider.html" class="">MeshCollider</a><a href="/wiki/site/en/api/MeshRenderer.html" class="">MeshRenderer</a><a href="/wiki/site/en/api/Rigidbody.html" class="">Rigidbody</a><a href="/wiki/site/en/api/RigidbodyConstraints.html" class="">RigidbodyConstraints</a><a href="/wiki/site/en/api/SphereCollider.html" class="">SphereCollider</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.core</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/AudioClip.html" class="">AudioClip</a><a href="/wiki/site/en/api/Material.html" class="">Material</a><a href="/wiki/site/en/api/Shader.html" class="">Shader</a><a href="/wiki/site/en/api/Texture.html" class="">Texture</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.coroutine</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/Coroutine.html" class="">Coroutine</a><a href="/wiki/site/en/api/WaitForEndOfFrame.html" class="">WaitForEndOfFrame</a><a href="/wiki/site/en/api/WaitForFixedUpdate.html" class="">WaitForFixedUpdate</a><a href="/wiki/site/en/api/WaitForSeconds.html" class="">WaitForSeconds</a><a href="/wiki/site/en/api/WaitForSecondsRealtime.html" class="">WaitForSecondsRealtime</a><a href="/wiki/site/en/api/WaitUntil.html" class="">WaitUntil</a><a href="/wiki/site/en/api/WaitWhile.html" class="">WaitWhile</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.debug</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/Debug.html" class="">Debug</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.gizmos</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/Gizmos.html" class="">Gizmos</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.input</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/Input.html" class="">Input</a><a href="/wiki/site/en/api/KeyCode.html" class="">KeyCode</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd open hi" aria-expanded="true">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.jit</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/compile.html" class="">compile</a><a href="/wiki/site/en/api/statistics.html" class="cur">statistics</a><a href="/wiki/site/en/api/warmup.html" class="">warmup</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.math</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/quaternion.html" class="">quaternion</a><a href="/wiki/site/en/api/vector2.html" class="">vector2</a><a href="/wiki/site/en/api/vector3.html" class="">vector3</a><a href="/wiki/site/en/api/vector4.html" class="">vector4</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.mathf</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/Mathf.html" class="">Mathf</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.physics</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/Physics.html" class="">Physics</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.rendergraph</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/Format.html" class="">Format</a><a href="/wiki/site/en/api/RenderGraph.html" class="">RenderGraph</a><a href="/wiki/site/en/api/RenderPassBuilder.html" class="">RenderPassBuilder</a><a href="/wiki/site/en/api/TextureHandle.html" class="">TextureHandle</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.renderstack</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/BloomEffect.html" class="">BloomEffect</a><a href="/wiki/site/en/api/ChromaticAberrationEffect.html" class="">ChromaticAberrationEffect</a><a href="/wiki/site/en/api/ColorAdjustmentsEffect.html" class="">ColorAdjustmentsEffect</a><a href="/wiki/site/en/api/FilmGrainEffect.html" class="">FilmGrainEffect</a><a href="/wiki/site/en/api/FullScreenEffect.html" class="">FullScreenEffect</a><a href="/wiki/site/en/api/RenderPass.html" class="">RenderPass</a><a href="/wiki/site/en/api/RenderPipeline.html" class="">RenderPipeline</a><a href="/wiki/site/en/api/RenderStack.html" class="">RenderStack</a><a href="/wiki/site/en/api/SharpenEffect.html" class="">SharpenEffect</a><a href="/wiki/site/en/api/ToneMappingEffect.html" class="">ToneMappingEffect</a><a href="/wiki/site/en/api/VignetteEffect.html" class="">VignetteEffect</a><a href="/wiki/site/en/api/WhiteBalanceEffect.html" class="">WhiteBalanceEffect</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.scene</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/SceneManager.html" class="">SceneManager</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.timing</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/Time.html" class="">Time</a></div>
+                    </div><div class="ns-group">
+                        <button type="button" class="ns-hd" aria-expanded="false">
+                            <span class="ns-arr">&#9654;</span>
+                            <span class="ns-nm">Infernux.ui</span>
+                        </button>
+                        <div class="ns-ch"><a href="/wiki/site/en/api/InxUIComponent.html" class="">InxUIComponent</a><a href="/wiki/site/en/api/PointerEventData.html" class="">PointerEventData</a><a href="/wiki/site/en/api/UIButton.html" class="">UIButton</a><a href="/wiki/site/en/api/UICanvas.html" class="">UICanvas</a><a href="/wiki/site/en/api/UIImage.html" class="">UIImage</a><a href="/wiki/site/en/api/UISelectable.html" class="">UISelectable</a><a href="/wiki/site/en/api/UIText.html" class="">UIText</a></div>
+                    </div></div>
+        </aside>
+
+        <!-- Main content -->
+        <main class="api-main" id="main-content">
+            
+    <nav class="doc-breadcrumb" aria-label="Breadcrumb">
+        <a href="/start.html">Start</a>
+        <span aria-hidden="true">/</span>
+        
+        <a href="/wiki/site/en/api/index.html">API</a>
+        <span aria-hidden="true">/</span>
+        
+        <span aria-current="page">statistics</span>
+    </nav>
+    
+            
+    <aside class="doc-outline" data-doc-outline hidden>
+        <div class="doc-outline-head">
+            <strong>On this page</strong>
+            <button type="button" class="doc-outline-toggle" aria-controls="doc-outline-links" aria-expanded="true">
+                <span>Hide sections</span>
+                <span class="doc-outline-toggle-mark" aria-hidden="true">⌄</span>
+            </button>
+        </div>
+        <nav class="doc-outline-links" id="doc-outline-links" aria-label="Sections on this page"></nav>
+    </aside>
+    
+            <h1 id="statistics">statistics<a class="headerlink" href="#statistics" title="Permanent link">&para;</a></h1>
+<div class="class-info">
+function in <b>Infernux.jit</b>
+</div>
+
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">statistics</span><span class="p">(</span><span class="n">fn</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[</span><span class="o">...</span><span class="p">,</span> <span class="n">Any</span><span class="p">])</span> <span class="err">→</span> <span class="n">Statistics</span>
+</code></pre></div>
+<h2 id="description">Description<a class="headerlink" href="#description" title="Permanent link">&para;</a></h2>
+<p>Detached compilation/decision/mapped-memory snapshot, without executing fn.</p>
+<!-- USER CONTENT START -->
+<p>description
+Returns a detached snapshot for a function produced by <code>jit.compile</code>, including
+the selected mode, preparation timings, specializations, cache decisions, and
+owned native-code memory when the bundled backend can report it.</p>
+<!-- USER CONTENT END -->
+
+<h2 id="parameters">Parameters<a class="headerlink" href="#parameters" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Name</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>fn</td>
+<td><code>Callable[..., Any]</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="example">Example<a class="headerlink" href="#example" title="Permanent link">&para;</a></h2>
+<!-- USER CONTENT START -->
+<p>example
+<div class="language-python highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="kn">import</span> <span class="n">jit</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">report</span> <span class="o">=</span> <span class="n">jit</span><span class="o">.</span><span class="n">statistics</span><span class="p">(</span><span class="n">integrate</span><span class="p">)</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="nb">print</span><span class="p">(</span><span class="n">report</span><span class="o">.</span><span class="n">selected_mode</span><span class="p">,</span> <span class="n">report</span><span class="o">.</span><span class="n">specializations</span><span class="p">)</span>
+</code></pre></div></p>
+<!-- USER CONTENT END -->
+            
+    <nav class="doc-trail" data-doc-trail aria-label="Document navigation and feedback">
+        <a class="doc-trail-fallback" href="/wiki/site/en/api/index.html">Back to API index</a>
+    </nav>
+    
+            
+    
+    <section class="doc-build-provenance" data-doc-build-provenance data-state="loading" aria-label="Documentation build evidence">
+        <span class="doc-build-label">Build evidence</span>
+        <div class="doc-build-facts" data-doc-build-facts aria-live="polite">
+            <span class="doc-build-loading">Reading release and source provenance…</span>
+        </div>
+        <a class="doc-build-manifest" href="/docs-manifest.json">Machine manifest JSON</a>
+    </section>
+    
+    
+        </main>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer api-ft">
+        <div class="container">
+            <div class="footer-bottom">
+                <p>&copy; 2024-2026 Infernux Engine. MIT License.</p>
+            </div>
+        </div>
+    </footer>
+    
+
+    <dialog class="docs-search-dialog" id="docs-search-dialog" role="dialog" aria-modal="true" aria-labelledby="docs-search-title">
+        <button type="button" class="docs-search-backdrop" data-docs-search-close tabindex="-1" aria-hidden="true"></button>
+        <div class="docs-search-panel">
+            <div class="docs-search-head">
+                <h2 id="docs-search-title">Search Infernux documentation</h2>
+                <button type="button" class="docs-search-close" data-docs-search-close aria-label="Close documentation search"><i class="fas fa-xmark" aria-hidden="true"></i></button>
+            </div>
+            <label class="docs-search-field" for="docs-search-input">
+                <i class="fas fa-magnifying-glass" aria-hidden="true"></i>
+                <input class="docs-search-input" id="docs-search-input" type="search" autocomplete="off" spellcheck="false" aria-controls="docs-search-results" aria-describedby="docs-search-status" aria-autocomplete="list" placeholder="API symbol, module, or method…">
+            </label>
+            <div class="docs-search-filters" id="docs-search-filters" aria-label="Documentation search filters"></div>
+            <p class="docs-search-status" id="docs-search-status" aria-live="polite" aria-atomic="true"></p>
+            <div class="docs-search-results" id="docs-search-results" role="list"></div>
+        </div>
+    </dialog>
+
+    <script src="/js/main.js?v=15"></script>
+    <script src="/js/docs-search.js?v=6"></script>
+    <script src="/js/wiki-generated.js?v=14"></script>
+</body>
+</html>

@@ -5,10 +5,12 @@
 
 #include <Jolt/Physics/Body/Body.h>
 #include <Jolt/Physics/Body/BodyInterface.h>
+#include <Jolt/Physics/Collision/CollideShape.h>
 #include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/Shape/CompoundShape.h>
 #include <algorithm>
 #include <glm/glm.hpp>
+#include <stdexcept>
 #include <thread>
 
 namespace infernux
@@ -16,6 +18,13 @@ namespace infernux
 
 namespace
 {
+uint64_t BodyPairKey(uint32_t bodyA, uint32_t bodyB)
+{
+    const uint32_t first = std::min(bodyA, bodyB);
+    const uint32_t second = std::max(bodyA, bodyB);
+    return (static_cast<uint64_t>(first) << 32U) | static_cast<uint64_t>(second);
+}
+
 bool IsTriggerEvent(ContactEventType type)
 {
     return type == ContactEventType::TriggerEnter || type == ContactEventType::TriggerStay ||
@@ -145,6 +154,121 @@ void InxContactListener::ClearAll()
         shard.events.clear();
     }
     m_contactPairs.clear();
+    {
+        std::unique_lock lock(m_ignoredPairMutex);
+        m_ignoredBodyPairs.clear();
+        m_hasIgnoredBodyPairs.store(false, std::memory_order_release);
+        m_ignoredColliderPairs.clear();
+        m_hasIgnoredColliderPairs.store(false, std::memory_order_release);
+    }
+}
+
+void InxContactListener::SetColliderPairIgnored(uint64_t componentIdA, uint64_t componentIdB, bool ignored)
+{
+    if (componentIdA == 0 || componentIdB == 0 || componentIdA == componentIdB)
+        throw std::invalid_argument("collision ignore requires two distinct attached Colliders");
+    const ColliderPairKey key = MakeColliderPairKey(componentIdA, componentIdB);
+    std::unique_lock lock(m_ignoredPairMutex);
+    if (ignored)
+        m_ignoredColliderPairs.insert(key);
+    else
+        m_ignoredColliderPairs.erase(key);
+    m_hasIgnoredColliderPairs.store(!m_ignoredColliderPairs.empty(), std::memory_order_release);
+}
+
+bool InxContactListener::GetColliderPairIgnored(uint64_t componentIdA, uint64_t componentIdB) const
+{
+    if (componentIdA == 0 || componentIdB == 0 || componentIdA == componentIdB)
+        return false;
+    if (!m_hasIgnoredColliderPairs.load(std::memory_order_acquire))
+        return false;
+    std::shared_lock lock(m_ignoredPairMutex);
+    return m_ignoredColliderPairs.find(MakeColliderPairKey(componentIdA, componentIdB)) != m_ignoredColliderPairs.end();
+}
+
+void InxContactListener::RemoveIgnoredPairsForCollider(uint64_t componentId)
+{
+    std::unique_lock lock(m_ignoredPairMutex);
+    for (auto it = m_ignoredColliderPairs.begin(); it != m_ignoredColliderPairs.end();) {
+        if (it->first == componentId || it->second == componentId)
+            it = m_ignoredColliderPairs.erase(it);
+        else
+            ++it;
+    }
+    m_hasIgnoredColliderPairs.store(!m_ignoredColliderPairs.empty(), std::memory_order_release);
+}
+
+void InxContactListener::SetBodyPairIgnored(uint32_t bodyIdA, uint32_t bodyIdB, bool ignored)
+{
+    if (bodyIdA == bodyIdB)
+        throw std::invalid_argument("cannot ignore collision between a body and itself");
+    const uint64_t key = BodyPairKey(bodyIdA, bodyIdB);
+    std::unique_lock lock(m_ignoredPairMutex);
+    if (ignored) {
+        ++m_ignoredBodyPairs[key];
+    } else {
+        auto it = m_ignoredBodyPairs.find(key);
+        if (it == m_ignoredBodyPairs.end())
+            throw std::logic_error("body-pair ignore ownership is unbalanced");
+        if (--it->second == 0)
+            m_ignoredBodyPairs.erase(it);
+    }
+    m_hasIgnoredBodyPairs.store(!m_ignoredBodyPairs.empty(), std::memory_order_release);
+}
+
+void InxContactListener::RemoveIgnoredPairsForBody(uint32_t bodyId)
+{
+    std::unique_lock lock(m_ignoredPairMutex);
+    for (auto it = m_ignoredBodyPairs.begin(); it != m_ignoredBodyPairs.end();) {
+        const uint32_t bodyA = static_cast<uint32_t>(it->first >> 32U);
+        const uint32_t bodyB = static_cast<uint32_t>(it->first);
+        if (bodyA == bodyId || bodyB == bodyId)
+            it = m_ignoredBodyPairs.erase(it);
+        else
+            ++it;
+    }
+    m_hasIgnoredBodyPairs.store(!m_ignoredBodyPairs.empty(), std::memory_order_release);
+}
+
+JPH::ValidateResult InxContactListener::OnContactValidate(const JPH::Body &inBody1, const JPH::Body &inBody2,
+                                                          JPH::RVec3Arg,
+                                                          const JPH::CollideShapeResult &inCollisionResult)
+{
+    const bool checkBodies = m_hasIgnoredBodyPairs.load(std::memory_order_acquire);
+    const bool checkColliders = m_hasIgnoredColliderPairs.load(std::memory_order_acquire);
+    if (!checkBodies && !checkColliders)
+        return JPH::ValidateResult::AcceptAllContactsForThisBodyPair;
+
+    std::shared_lock lock(m_ignoredPairMutex);
+    if (checkBodies) {
+        const uint64_t bodyKey =
+            BodyPairKey(inBody1.GetID().GetIndexAndSequenceNumber(), inBody2.GetID().GetIndexAndSequenceNumber());
+        if (m_ignoredBodyPairs.find(bodyKey) != m_ignoredBodyPairs.end())
+            return JPH::ValidateResult::RejectAllContactsForThisBodyPair;
+    }
+    if (checkColliders) {
+        const Collider *collider1 = ResolveContactCollider(inBody1, inCollisionResult.mSubShapeID1);
+        const Collider *collider2 = ResolveContactCollider(inBody2, inCollisionResult.mSubShapeID2);
+        if (collider1 && collider2 &&
+            m_ignoredColliderPairs.find(MakeColliderPairKey(
+                collider1->GetComponentID(), collider2->GetComponentID())) != m_ignoredColliderPairs.end())
+            return JPH::ValidateResult::RejectContact;
+    }
+    return JPH::ValidateResult::AcceptAllContactsForThisBodyPair;
+}
+
+InxContactListener::ColliderPairKey InxContactListener::MakeColliderPairKey(uint64_t componentIdA,
+                                                                            uint64_t componentIdB)
+{
+    return componentIdA < componentIdB ? ColliderPairKey{componentIdA, componentIdB}
+                                       : ColliderPairKey{componentIdB, componentIdA};
+}
+
+size_t InxContactListener::ColliderPairKeyHash::operator()(const ColliderPairKey &key) const
+{
+    const size_t first = std::hash<uint64_t>{}(key.first);
+    const size_t second = std::hash<uint64_t>{}(key.second);
+    return first ^ (second + 0x9e3779b97f4a7c15ULL + (first << 6U) + (first >> 2U));
 }
 
 void InxContactListener::InvalidatePairsForBody(uint32_t bodyId)

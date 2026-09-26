@@ -4,6 +4,7 @@
 #include "physics/PhysicsContactListener.h"
 #include <algorithm>
 #include <core/log/InxLog.h>
+#include <cstdio>
 #include <nlohmann/json.hpp>
 #include <tools/pybinding/JsonPyBridge.h>
 
@@ -382,13 +383,21 @@ void PyComponentProxy::Awake()
         return;
 
     try {
+        // Prepared Player components already carry their authored enabled
+        // state.  Binding the native mirror may initialize the native side
+        // with its default (false); retain the authored value across that
+        // hand-off so Awake cannot silently disable the component before
+        // Start/Update membership is built.
+        const bool authoredEnabled = m_pyComponent.attr("enabled").cast<bool>();
         BindPythonMirror();
-        SyncEnabledFromPython(m_pyComponent, m_enabled);
+        m_enabled = authoredEnabled;
+        m_pyComponent.attr("enabled") = py::bool_(authoredEnabled);
 
         // Call Python awake
         CallCachedLifecycleNoArg(m_callAwake, m_typeName, "awake");
         SyncPythonMirror();
     } catch (const py::error_already_set &e) {
+        std::fprintf(stderr, "[Infernux Player] %s.awake failed: %s\\n", m_typeName.c_str(), e.what());
         INXLOG_ERROR("[PyComponentProxy] Error in ", m_typeName, ".awake setup: ", e.what());
     }
 }
@@ -544,6 +553,8 @@ nlohmann::json PyComponentProxy::SerializeDocument() const
     }
     j["enabled"] = enabled;
     j["component_id"] = m_componentId;
+    if (m_prefabSourceId)
+        j["prefab_source_id"] = m_prefabSourceId;
     j["script_guid"] = m_scriptGuid;
 
     // Serialize Python component's serializable fields

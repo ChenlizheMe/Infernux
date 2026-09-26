@@ -46,11 +46,11 @@
 <p>Infernux <code>AudioSource</code> is a multi-track component. It has no single <code>clip</code> property. Set <code>track_count</code>, assign clips with <code>set_track_clip(index, clip)</code> or <code>set_track_clip_by_guid(index, guid)</code>, and control each zero-based track with <code>play(index)</code>, <code>pause(index)</code>, <code>un_pause(index)</code>, and <code>stop(index)</code>.</p>
 <p>All tracks share the source-level <code>volume</code>, <code>pitch</code>, <code>mute</code>, <code>loop</code>, <code>min_distance</code>, <code>max_distance</code>, and <code>output_bus</code> settings. Each track also has its own volume. The effective track level therefore includes both <code>source.volume</code> and <code>source.get_track_volume(index)</code>.</p>
 <p>Short gameplay sounds use <code>play_one_shot(clip, volume_scale)</code>. The source owns a pool of transient voices, so several hits can overlap without creating temporary GameObjects or consuming persistent tracks. <code>one_shot_pool_size</code> controls the maximum concurrent one-shot voices and defaults to 8.</p>
-<p>An <code>AudioListener</code> must exist in the scene. For screen-centered or effectively 2D sound, keep the source on or near the listener. Distance attenuation starts at <code>min_distance</code> and reaches its minimum at <code>max_distance</code>.</p>
+<p>Use <code>spatial_blend = 0</code> for music and screen-centered sound: it preserves the original stereo channels regardless of the source position. Use <code>spatial_blend = 1</code> for a 3D point source and keep one active <code>AudioListener</code> in the world. Distance attenuation starts at <code>min_distance</code> and reaches zero at <code>max_distance</code>.</p>
 <h2 id="editor-setup">Prepare the scene</h2>
 <p>This walkthrough builds on the collision scene from Chapter 5.</p>
 <ol>
-<li>Add <code>Assets/Audio/music_loop.wav</code> and <code>Assets/Audio/hit.wav</code> to the project. The runtime bundles four decoders: WAV (<code>SDL_LoadWAV</code>), OGG/Vorbis (<code>stb_vorbis</code>), MP3 (<code>dr_mp3</code>), and FLAC (<code>dr_flac</code>). WAV is the simplest path and the recommended first asset; there are currently no automated audio tests covering the decoders.</li>
+<li>Add <code>Assets/Audio/music_loop.wav</code> and <code>Assets/Audio/hit.wav</code> to the project. WAV, OGG/Vorbis, MP3, and FLAC support both resident and streaming playback. For long music, select the audio asset, set <strong>Load Type → Streaming</strong>, and click <strong>Apply</strong>. Streaming reads and decodes ahead into bounded buffers rather than keeping the entire decoded clip in memory. Keep short effects on <strong>Decompress on Load</strong>. <strong>Revert</strong> discards unapplied import settings.</li>
 <li>Select the main camera and add an <strong>AudioListener</strong> component. Keep one active listener in the scene.</li>
 <li>Select the player and add an <strong>AudioSource</strong> component. Leave <strong>Track Count</strong> at <code>1</code>; the script will assign track 0. Disable <strong>Play On Awake</strong> because the script starts playback after loading the clip.</li>
 <li>Keep the player's Collider and Rigidbody from the physics chapter, and keep a Collider on the object it will hit. <code>on_collision_enter()</code> requires a real collision pair.</li>
@@ -214,6 +214,10 @@
 <td>Pause or resume one persistent track.</td>
 </tr>
 <tr>
+<td><code>get_track_time(i=0)</code> / <code>set_track_time(i, seconds)</code></td>
+<td>Read or seek the source-mixing cursor in clip seconds. Seeking preserves pause; stopping resets it. This is runtime state, and device buffering may delay audible output.</td>
+</tr>
+<tr>
 <td><code>is_track_playing(i)</code> / <code>is_track_paused(i)</code></td>
 <td>Query one track.</td>
 </tr>
@@ -236,6 +240,13 @@
 </tbody>
 </table>
 <p>Use <code>set_track_clip_by_guid()</code> for authored asset references when the AssetRegistry/AssetDatabase is initialized. For a direct runtime load, use <code>AudioClip.load(path)</code> followed by <code>set_track_clip()</code> as in the example.</p>
+<h3 id="group-volume-and-audio-time">Group volume and audio time</h3>
+<p>Set <code>source.output_bus</code> to <code>Music</code>, <code>SFX</code>, <code>Ambience</code>, or <code>UI</code>; <code>Master</code> affects all of them. Use <code>AudioEngine.instance()</code> from <code>Infernux.lib</code> to call <code>fade_bus_volume("Music", 0.0, 1.0)</code>. The fade follows the audio device, even when game frames stall. <code>pause_all()</code> freezes that clock; muting a bus leaves its playback and fade running. A direct <code>set_bus_volume()</code> cancels its current fade, and <code>cancel_bus_fade()</code> holds the current level.</p>
+<p><code>output_time</code> reports mixed audio seconds, not the hardware playhead. <code>output_peak</code> reports the latest mixed block's peak. <code>saturated_sample_count</code> counts output samples at full scale after SDL mixing: it warns about saturation but cannot reconstruct peaks already clipped by SDL. <code>device_driver</code> and <code>device_name</code> identify the selected SDL output while the engine is initialized; <code>sample_rate</code> and <code>channel_count</code> report its format. <code>underrun_count</code> counts streaming callback requests that emitted silence while decoded frames were unavailable. It resets with each device session and does not measure operating-system or DAC underruns. These readings are runtime diagnostics, not scene properties or a compressor/limiter.</p>
+<h3 id="voice-limits-and-priority">Voice limits and priority</h3>
+<p><code>AudioEngine.instance().max_real_voices</code> limits the voices actually mixed by the device (default <code>64</code>, positive integer). Excess voices and inaudible sources become virtual: their playback position continues on the audio clock, but they do not produce samples. When capacity becomes available they resume at the current position, not the beginning. <code>pause()</code> freezes a track; virtualization does not.</p>
+<p>Set <code>source.priority</code> from <code>0</code> (highest) to <code>255</code> (lowest); the default is <code>128</code>. The scheduler first compares priority, then effective volume including distance and bus gain, then start order for stable ties. For example, give UI confirmations a lower number than ambient loops. Inspect <code>real_voice_count</code>, <code>virtual_voice_count</code>, and <code>source.is_track_virtual(index)</code> during Play. Arbitration runs on the engine update; virtual time and bus fades keep advancing between updates. A physical voice limit is not a total memory limit: clips and logical voice handles still occupy memory.</p>
+<p>A full one-shot pool rejects an incoming sound if its <code>volume_scale</code> is lower than every occupied slot. Otherwise it replaces the quietest slot, choosing the oldest on a tie. <code>source.rejected_one_shot_count</code> reports rejected requests without flooding the Console. This local pool policy is separate from the engine-wide priority scheduler. Size the pool for the intended gameplay concurrency instead of making it unbounded.</p>
 <h2 id="verify">Verify the result</h2>
 <ol>
 <li>Enter Play mode. Track 0 should begin and continue looping at a quieter level than the source volume.</li>
@@ -248,7 +259,7 @@
 <h2 id="common-errors">Common errors</h2>
 <ul>
 <li><strong>Using <code>source.clip</code></strong>: this property is not public. Assign a numbered track with <code>set_track_clip()</code>.</li>
-<li><strong>Loading MP3 or OGG based on old UI text</strong>: the runtime decodes OGG/Vorbis, MP3, FLAC, and WAV. WAV remains the simplest choice for the tutorial clips, and no automated test covers the decoders yet.</li>
+<li><strong>Loading MP3 or OGG based on old UI text</strong>: the runtime decodes OGG/Vorbis, MP3, FLAC, and WAV. WAV remains the simplest choice for the tutorial clips, with native decoding and playback regression coverage.</li>
 <li><strong>Unloading too early</strong>: keep each <code>AudioClip</code> wrapper alive until every source using it has stopped.</li>
 <li><strong>Playing in <code>on_collision_stay()</code></strong>: this callback repeats each fixed step. Use <code>on_collision_enter()</code> for one sound per contact.</li>
 <li><strong>No sound in the scene</strong>: confirm that one active AudioListener exists, the clip loaded, the source is not muted, and the source is inside the attenuation range.</li>
@@ -272,11 +283,11 @@
 <p>Infernux 的 <code>AudioSource</code> 是多轨组件，没有单一的 <code>clip</code> 属性。先设置 <code>track_count</code>，再用 <code>set_track_clip(index, clip)</code> 或 <code>set_track_clip_by_guid(index, guid)</code> 分配音频。轨道索引从 0 开始，可用 <code>play(index)</code>、<code>pause(index)</code>、<code>un_pause(index)</code> 和 <code>stop(index)</code> 分别控制。</p>
 <p>所有轨道共享 <code>volume</code>、<code>pitch</code>、<code>mute</code>、<code>loop</code>、<code>min_distance</code>、<code>max_distance</code> 与 <code>output_bus</code>。每条轨道还有独立音量，因此最终轨道音量同时受 <code>source.volume</code> 和 <code>source.get_track_volume(index)</code> 影响。</p>
 <p>短促的游戏音效使用 <code>play_one_shot(clip, volume_scale)</code>。音源内部持有瞬时声部池，多次命中可以重叠播放，无需创建临时 GameObject，也不会占用持续轨道。<code>one_shot_pool_size</code> 控制一次性声部的最大并发数，默认值为 8。</p>
-<p>场景中必须存在 <code>AudioListener</code>。屏幕中心音效或近似 2D 的音效可把音源放在监听器附近。距离衰减从 <code>min_distance</code> 开始，在 <code>max_distance</code> 处达到最低音量。</p>
+<p>音乐和屏幕音效使用 <code>spatial_blend = 0</code>，保留原始立体声，不受音源位置影响。三维点声源使用 <code>spatial_blend = 1</code>，并在世界中保留一个活动的 <code>AudioListener</code>。距离衰减从 <code>min_distance</code> 开始，在 <code>max_distance</code> 处降为零。</p>
 <h2 id="zh-editor-setup">准备场景</h2>
 <p>以下步骤沿用第 5 章的碰撞场景。</p>
 <ol>
-<li>把 <code>music_loop.wav</code> 和 <code>hit.wav</code> 放入 <code>Assets/Audio</code>。运行时内置四种解码器：WAV（<code>SDL_LoadWAV</code>）、OGG/Vorbis（<code>stb_vorbis</code>）、MP3（<code>dr_mp3</code>）与 FLAC（<code>dr_flac</code>）。WAV 路径最简单，建议把它作为第一份验收资产；当前没有自动化音频测试覆盖这些解码器。</li>
+<li>把 <code>music_loop.wav</code> 和 <code>hit.wav</code> 放入 <code>Assets/Audio</code>。WAV、OGG/Vorbis、MP3 和 FLAC 均支持常驻和流式播放。长音乐可在选中资产后，将 <strong>加载方式</strong> 改为 <strong>流式播放</strong>，再点击 <strong>应用</strong>；引擎会分段预读和解码，不会把整首音乐的 PCM 常驻内存。短音效保持 <strong>加载时解压</strong> 即可。点击 <strong>还原</strong> 可以撤销尚未应用的导入设置。</li>
 <li>选择主摄像机，添加 <strong>AudioListener</strong> 组件。场景中保留一个启用的监听器。</li>
 <li>选择玩家，添加 <strong>AudioSource</strong> 组件。<strong>Track Count</strong> 保持 <code>1</code>，脚本会设置轨道 0。关闭 <strong>Play On Awake</strong>，脚本会在音频加载完成后启动播放。</li>
 <li>保留物理章节中的玩家 Collider 与 Rigidbody，并给障碍物保留 Collider。<code>on_collision_enter()</code> 需要有效的碰撞组合。</li>
@@ -440,6 +451,10 @@
 <td>暂停或恢复一条持续轨道。</td>
 </tr>
 <tr>
+<td><code>get_track_time(i=0)</code> / <code>set_track_time(i, seconds)</code></td>
+<td>读取或设置轨道的混音读取位置，单位为音频原始时间的秒。跳转保留暂停状态，停止归零；该位置不写入场景，声卡缓冲可能使实际声音稍晚。</td>
+</tr>
+<tr>
 <td><code>is_track_playing(i)</code> / <code>is_track_paused(i)</code></td>
 <td>查询指定轨道。</td>
 </tr>
@@ -462,6 +477,13 @@
 </tbody>
 </table>
 <p>AssetRegistry/AssetDatabase 已初始化时，可用 <code>set_track_clip_by_guid()</code> 处理已编辑资源引用。运行时按路径直接加载时，使用示例中的 <code>AudioClip.load(path)</code> 和 <code>set_track_clip()</code>。</p>
+<h3 id="_2">分组音量与音频时间</h3>
+<p>把 <code>source.output_bus</code> 设为 <code>Music</code>、<code>SFX</code>、<code>Ambience</code> 或 <code>UI</code>，<code>Master</code> 则控制全部分组。从 <code>Infernux.lib</code> 获取 <code>AudioEngine.instance()</code> 后，可以调用 <code>fade_bus_volume("Music", 0.0, 1.0)</code>，让音乐在一秒内淡出。过渡由音频设备推进，游戏卡顿不会使它停止；<code>pause_all()</code> 会冻结音频时钟，分组静音则不会暂停播放或过渡。直接设置 <code>set_bus_volume()</code> 会取消原有过渡，<code>cancel_bus_fade()</code> 会保持当前音量。</p>
+<p><code>output_time</code> 是已经混音的秒数，不是声卡的实际播放位置。<code>output_peak</code> 是最近输出块的峰值，<code>saturated_sample_count</code> 是 SDL 混音后达到满幅的样本总数，可用来发现音量过高，但无法还原已被 SDL 截掉的峰值。<code>device_driver</code>、<code>device_name</code> 标识当前 SDL 输出后端与设备，<code>sample_rate</code>、<code>channel_count</code> 给出输出格式。<code>underrun_count</code> 统计流式解码帧未及时就绪而在回调中填充静音的请求次数；每次设备会话重新计数，不代表操作系统或 DAC 层的所有欠载。这些都是运行时观测数据，不写入场景，也不是压缩器或限幅器。</p>
+<h3 id="_3">声部限额与优先级</h3>
+<p><code>AudioEngine.instance().max_real_voices</code> 控制设备实际参与混音的声部数量，默认 <code>64</code>，必须为正整数。超过限额或不可听的声音转为虚拟播放：不生成音频样本，但播放位置仍按音频时钟推进。有空位后从当前进度恢复，不从头播放。<code>pause()</code> 会冻结轨道，虚拟播放则不会。</p>
+<p><code>source.priority</code> 的范围是 <code>0</code>（最高）到 <code>255</code>（最低），默认为 <code>128</code>。调度先比较优先级，再比较包含距离和分组增益的有效音量，完全相同时优先保留先开始的声音。例如，可以让 UI 确认声的数值小于环境循环声。Play 时可查看 <code>real_voice_count</code>、<code>virtual_voice_count</code> 和 <code>source.is_track_virtual(index)</code>。名额分配在引擎更新时执行，虚拟播放进度和分组淡入淡出不依赖逐帧调用。实际混音限额不是总内存限额，音频资产和逻辑声部句柄仍占用内存。</p>
+<p>一次性声部池满时，若新音效的 <code>volume_scale</code> 比所有在用声部都小，就拒绝这次播放；否则替换其中最轻的音效，音量相同时替换最早开始的。<code>source.rejected_one_shot_count</code> 可查看拒绝次数，不会反复刷 Console。这是单个音源内部的策略，与引擎全局的优先级调度不同。池大小应对应游戏实际并发需求，不宜无限增大。</p>
 <h2 id="zh-verify">验证结果</h2>
 <ol>
 <li>进入 Play 模式。轨道 0 应开始循环，音量低于音源总音量。</li>
@@ -474,7 +496,7 @@
 <h2 id="zh-common-errors">常见错误</h2>
 <ul>
 <li><strong>使用 <code>source.clip</code></strong>：当前公开 API 没有这个属性。请用 <code>set_track_clip()</code> 分配编号轨道。</li>
-<li><strong>根据旧界面文字加载 MP3 或 OGG</strong>：运行时支持解码 OGG/Vorbis、MP3、FLAC 与 WAV。教程音频仍建议使用 WAV，路径最简单；目前没有自动化测试覆盖解码器。</li>
+<li><strong>根据旧界面文字加载 MP3 或 OGG</strong>：运行时支持解码 OGG/Vorbis、MP3、FLAC 与 WAV。教程音频仍建议使用 WAV，路径最简单；已有原生解码与播放回归。</li>
 <li><strong>过早卸载</strong>：每个音频的所有使用者停止后，再调用 <code>unload()</code>。</li>
 <li><strong>在 <code>on_collision_stay()</code> 中播放</strong>：该回调每个固定步都会运行。一次接触一次音效应使用 <code>on_collision_enter()</code>。</li>
 <li><strong>场景中没有声音</strong>：检查是否存在一个启用的 AudioListener、音频是否加载成功、音源是否静音，以及音源是否位于衰减范围内。</li>

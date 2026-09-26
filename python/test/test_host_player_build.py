@@ -68,7 +68,7 @@ def _project(tmp_path: Path) -> Path:
         json.dumps(
             {
                 "game_name": "FixtureGame",
-                "scenes": ["Assets/Main.scene"],
+                "scene_guids": ["11111111111111111111111111111111"],
                 "output_dir": str(tmp_path / "Build"),
             }
         ),
@@ -98,6 +98,7 @@ def test_host_build_routes_registered_target_and_returns_structured_result(
     assert result["target"] == "fixture-x64"
     assert result["artifacts"][0]["kind"] == "fixture"
     assert result["executable_path"] == ""
+    assert result["jit_enabled"] is False
     assert result["progress"][-1]["phase"] == "complete"
     persisted = json.loads(
         (project / "ProjectSettings" / "BuildSettings.json").read_text(
@@ -105,6 +106,7 @@ def test_host_build_routes_registered_target_and_returns_structured_result(
         )
     )
     assert persisted["build_target"] == "fixture-x64"
+    assert "enable_jit" not in persisted
 
 
 def test_host_build_reports_available_targets_for_missing_plugin(tmp_path):

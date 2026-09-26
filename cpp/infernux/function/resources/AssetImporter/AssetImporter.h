@@ -4,12 +4,23 @@
 #include <function/resources/InxResource/InxResourceMeta.h>
 
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace infernux
 {
+
+/// Immutable companion artifact captured before an import worker starts.
+/// Runtime identity is owner GUID + stable local id, never this artifact's path.
+struct SkeletonDefinitionSnapshot
+{
+    std::string ownerGuid;
+    std::string sourceContentHash;
+    std::string artifactBytes;
+};
 
 /**
  * @brief Immutable input captured before importer execution.
@@ -21,6 +32,15 @@ struct ImportRequest
     ResourceType resourceType = ResourceType::DefaultText;
     InxResourceMeta metadata;
     bool isReimport = false;
+    // Editor-owned tool configuration is captured on the owner thread; worker
+    // imports never call Python or read mutable editor preferences.
+    std::string projectRoot;
+    std::string blenderExecutable;
+    std::string blenderExportScript;
+    // Native immutable catalog lookup, captured before worker execution.
+    // No AssetDatabase mutation or Python callback is permitted here.
+    std::function<std::string(const std::string &, bool linear)> resolveTextureGuid;
+    std::optional<SkeletonDefinitionSnapshot> skeletonDefinition;
 };
 
 /**
@@ -41,6 +61,14 @@ struct ImportArtifact
     std::vector<std::string> dependencies;
     bool dependenciesAuthoritative = false;
 
+    // Importers may report source-local paths only as an authoring hand-off.
+    // AssetDatabase resolves these paths against the current scan catalog and
+    // publishes only the resulting GUIDs. They never enter the durable graph.
+    std::vector<std::string> dependencyPathHints;
+    // Source-to-GUID bindings resolved by the immutable worker catalog. The
+    // publication boundary rejects asset identity changes during the import.
+    std::vector<std::pair<std::string, std::string>> resolvedTextureSources;
+
     enum class RuntimeArtifactKind : uint8_t
     {
         Primary,
@@ -52,6 +80,7 @@ struct ImportArtifact
         RuntimeArtifactKind kind = RuntimeArtifactKind::Primary;
         ResourceType resourceType = ResourceType::DefaultBinary;
         std::string bytes;
+        std::string guid; // Empty for the source itself; set for an owned imported Texture.
     };
 
     std::vector<RuntimeCpuArtifact> runtimeCpuArtifacts;

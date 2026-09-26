@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <function/renderer/rhi/RenderViewContext.h>
 #include <memory>
@@ -16,6 +17,8 @@ enum class CaptureSource
 {
     Scene,
     Game,
+    Editor,
+    Camera,
 };
 
 enum class CaptureStatus
@@ -51,6 +54,7 @@ class CaptureService
 {
   public:
     CaptureService();
+    explicit CaptureService(std::chrono::milliseconds gpuTimeout);
     ~CaptureService();
 
     CaptureService(const CaptureService &) = delete;
@@ -69,6 +73,7 @@ class CaptureService
     [[nodiscard]] bool Cancel(uint64_t captureId);
     void InvalidateSource(CaptureSource source, uint64_t sourceGeneration);
     void Poll();
+    [[nodiscard]] bool HasPending() const noexcept;
 
   private:
     struct Impl;

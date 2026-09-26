@@ -1,7 +1,6 @@
 # ------------------------------------------------------------------------------
 # Native regression tests
 # ------------------------------------------------------------------------------
-option(INFERNUX_BUILD_TESTS "Build Infernux native regression tests" ON)
 if(INFERNUX_BUILD_TESTS)
     enable_testing()
     find_package(Threads REQUIRED)
@@ -26,6 +25,151 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_path_tests PRIVATE /utf-8)
     endif()
     add_test(NAME infernux.path COMMAND infernux_path_tests)
+
+    add_executable(infernux_world_ui_occlusion_plan_tests
+        cpp/tests/WorldUIOcclusionPlanTests.cpp
+    )
+    target_include_directories(infernux_world_ui_occlusion_plan_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    if(MSVC)
+        target_compile_options(infernux_world_ui_occlusion_plan_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_world_ui_occlusion_plan_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.world_ui_occlusion_plan COMMAND infernux_world_ui_occlusion_plan_tests)
+
+    add_executable(infernux_gizmo_draw_buffer_tests
+        cpp/tests/GizmosDrawCallBufferTests.cpp
+    )
+    target_include_directories(infernux_gizmo_draw_buffer_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_gizmo_draw_buffer_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_gizmo_draw_buffer_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_gizmo_draw_buffer_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.gizmo_draw_buffer COMMAND infernux_gizmo_draw_buffer_tests)
+
+    add_executable(infernux_scene_icon_picking_tests
+        cpp/tests/SceneIconPickingTests.cpp
+    )
+    target_include_directories(infernux_scene_icon_picking_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_scene_icon_picking_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_scene_icon_picking_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_scene_icon_picking_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.scene_icon_picking COMMAND infernux_scene_icon_picking_tests)
+
+    set(_material_texture_readiness_vert "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.vert.spv")
+    set(_material_texture_readiness_frag "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.frag.spv")
+    foreach(_stage IN ITEMS vert frag)
+        add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.${_stage}.spv"
+            COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
+                "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/MaterialTextureReadiness.${_stage}"
+                -o "${CMAKE_CURRENT_BINARY_DIR}/MaterialTextureReadiness.${_stage}.spv"
+            DEPENDS "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/MaterialTextureReadiness.${_stage}"
+            VERBATIM)
+    endforeach()
+    add_executable(infernux_material_texture_readiness_vulkan_tests
+        cpp/tests/MaterialTextureReadinessVulkanTests.cpp
+        "${_material_texture_readiness_vert}" "${_material_texture_readiness_frag}")
+    target_include_directories(infernux_material_texture_readiness_vulkan_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_material_texture_readiness_vulkan_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_material_texture_readiness_vulkan_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_material_texture_readiness_vulkan_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.material_texture_readiness_vulkan
+        COMMAND infernux_material_texture_readiness_vulkan_tests
+            "${_material_texture_readiness_vert}" "${_material_texture_readiness_frag}")
+    set_tests_properties(infernux.material_texture_readiness_vulkan PROPERTIES
+        LABELS "requires_vulkan_device" TIMEOUT 60 FAIL_REGULAR_EXPRESSION "Validation Error:")
+
+    add_executable(infernux_web_index_packing_tests
+        cpp/tests/WebIndexPackingTests.cpp
+        external/plugins/infernux_web/native/WebIndexPacking.cpp
+    )
+    target_include_directories(infernux_web_index_packing_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+        ${CMAKE_SOURCE_DIR}/external/glm
+        ${CMAKE_SOURCE_DIR}/external/plugins/infernux_web/native
+    )
+    if(MSVC)
+        target_compile_options(infernux_web_index_packing_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_web_index_packing_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.web_index_packing COMMAND infernux_web_index_packing_tests)
+
+    add_executable(infernux_web_scene_world_contract_tests
+        cpp/tests/WebSceneWorldContractTests.cpp
+    )
+    target_include_directories(infernux_web_scene_world_contract_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+        ${CMAKE_SOURCE_DIR}/external/glm
+    )
+    target_link_libraries(infernux_web_scene_world_contract_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_web_scene_world_contract_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_web_scene_world_contract_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.web_scene_world_contract COMMAND infernux_web_scene_world_contract_tests)
+
+    add_executable(infernux_audio_mixer_tests
+        cpp/tests/AudioMixerTests.cpp
+    )
+    target_include_directories(infernux_audio_mixer_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    target_link_libraries(infernux_audio_mixer_tests PRIVATE Threads::Threads)
+    if(MSVC)
+        target_compile_options(infernux_audio_mixer_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_audio_mixer_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.audio_mixer COMMAND infernux_audio_mixer_tests)
+
+    add_executable(infernux_audio_clip_tests
+        cpp/tests/AudioClipTests.cpp
+    )
+    target_include_directories(infernux_audio_clip_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    target_link_libraries(infernux_audio_clip_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_audio_clip_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_audio_clip_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.audio_clip COMMAND infernux_audio_clip_tests)
+
+    add_executable(infernux_audio_playback_tests cpp/tests/AudioPlaybackTests.cpp)
+    target_include_directories(infernux_audio_playback_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_audio_playback_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_audio_playback_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_audio_playback_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.audio_playback COMMAND infernux_audio_playback_tests)
+    set_tests_properties(infernux.audio_playback PROPERTIES
+        TIMEOUT 20
+        ENVIRONMENT "SDL_AUDIODRIVER=dummy")
 
     add_executable(infernux_inxpack_tests
         cpp/tests/InxPackTests.cpp
@@ -102,6 +246,22 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.editor_theme_registry COMMAND infernux_editor_theme_registry_tests)
 
+    add_executable(infernux_text_layout_tests
+        cpp/tests/InxTextLayoutTests.cpp
+        cpp/infernux/core/log/InxLog.cpp
+    )
+    target_include_directories(infernux_text_layout_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external/imgui
+    )
+    target_link_libraries(infernux_text_layout_tests PRIVATE imgui)
+    if(MSVC)
+        target_compile_options(infernux_text_layout_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_text_layout_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.text_layout COMMAND infernux_text_layout_tests)
+
     add_executable(infernux_editor_window_bounds_tests cpp/tests/EditorWindowBoundsTests.cpp)
     target_include_directories(infernux_editor_window_bounds_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
@@ -114,6 +274,32 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_editor_window_bounds_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.editor_window_bounds COMMAND infernux_editor_window_bounds_tests)
+
+    add_executable(infernux_editor_shortcut_input_tests cpp/tests/EditorShortcutInputTests.cpp)
+    target_include_directories(infernux_editor_shortcut_input_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_editor_shortcut_input_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_editor_shortcut_input_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_editor_shortcut_input_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.editor_shortcut_input COMMAND infernux_editor_shortcut_input_tests)
+
+    add_executable(infernux_editor_tools_tests
+        cpp/tests/EditorToolsTests.cpp
+    )
+    target_include_directories(infernux_editor_tools_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_editor_tools_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_editor_tools_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_editor_tools_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.editor_tools COMMAND infernux_editor_tools_tests)
 
     add_executable(infernux_job_system_tests
         cpp/tests/JobSystemTests.cpp
@@ -210,6 +396,35 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.window_sizing_policy COMMAND infernux_window_sizing_policy_tests)
 
+    add_executable(infernux_android_presentation_lifecycle_tests
+        cpp/tests/AndroidPresentationLifecycleTests.cpp
+    )
+    target_include_directories(infernux_android_presentation_lifecycle_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+    )
+    target_link_libraries(infernux_android_presentation_lifecycle_tests PRIVATE
+        InfernuxFoundation
+        Threads::Threads
+    )
+    if(MSVC)
+        target_compile_options(infernux_android_presentation_lifecycle_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_android_presentation_lifecycle_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.android_presentation_lifecycle
+        COMMAND infernux_android_presentation_lifecycle_tests)
+
+    add_executable(infernux_editor_display_scale_tests cpp/tests/EditorDisplayScaleTests.cpp)
+    target_include_directories(infernux_editor_display_scale_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external/imgui
+    )
+    target_link_libraries(infernux_editor_display_scale_tests PRIVATE imgui)
+    if(MSVC)
+        target_compile_options(infernux_editor_display_scale_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.editor_display_scale COMMAND infernux_editor_display_scale_tests)
+
     if(WIN32)
         add_executable(infernux_windows_dpi_policy_tests
             cpp/tests/WindowsDpiPolicyTests.cpp
@@ -268,6 +483,21 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_document_transaction_tests PRIVATE /utf-8)
     endif()
     add_test(NAME infernux.document_transaction COMMAND infernux_document_transaction_tests)
+
+    add_executable(infernux_semantic_type_registry_tests
+        cpp/tests/SemanticTypeRegistryTests.cpp
+        cpp/infernux/core/reflection/SemanticTypeRegistry.cpp
+    )
+    target_include_directories(infernux_semantic_type_registry_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_semantic_type_registry_tests PRIVATE Threads::Threads)
+    if(MSVC)
+        target_compile_options(infernux_semantic_type_registry_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_semantic_type_registry_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.semantic_type_registry COMMAND infernux_semantic_type_registry_tests)
 
     add_executable(infernux_component_data_store_tests
         cpp/tests/ComponentDataStoreTests.cpp
@@ -348,7 +578,9 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux
     )
     if(MSVC)
-        target_compile_options(infernux_material_pass_pipeline_tests PRIVATE /utf-8)
+        target_compile_options(infernux_material_pass_pipeline_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_material_pass_pipeline_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.material_pass_pipeline COMMAND infernux_material_pass_pipeline_tests)
 
@@ -437,6 +669,35 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.rhi_contracts COMMAND infernux_rhi_contracts_tests)
 
+    add_executable(infernux_render_texture_tests cpp/tests/RenderTextureTests.cpp)
+    target_include_directories(infernux_render_texture_tests PRIVATE ${CMAKE_SOURCE_DIR}/cpp/infernux)
+    target_link_libraries(infernux_render_texture_tests PRIVATE InfernuxRenderCore)
+    add_test(NAME infernux.render_texture COMMAND infernux_render_texture_tests)
+
+    add_executable(infernux_capture_service_tests cpp/tests/CaptureServiceTests.cpp)
+    target_include_directories(infernux_capture_service_tests PRIVATE ${CMAKE_SOURCE_DIR}/cpp/infernux)
+    target_link_libraries(infernux_capture_service_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_capture_service_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_capture_service_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.capture_service COMMAND infernux_capture_service_tests)
+
+    add_executable(infernux_compute_resource_lifetime_tests cpp/tests/ComputeResourceLifetimeTests.cpp)
+    target_include_directories(infernux_compute_resource_lifetime_tests PRIVATE ${CMAKE_SOURCE_DIR}/cpp/infernux)
+    target_link_libraries(infernux_compute_resource_lifetime_tests PRIVATE InfernuxRenderCore)
+    add_test(NAME infernux.compute_resource_lifetime COMMAND infernux_compute_resource_lifetime_tests)
+
+    add_executable(infernux_render_texture_artifact_tests cpp/tests/RenderTextureArtifactTests.cpp)
+    target_include_directories(infernux_render_texture_artifact_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_render_texture_artifact_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_render_texture_artifact_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.render_texture_artifact COMMAND infernux_render_texture_artifact_tests)
+
     add_executable(infernux_vulkan_rhi_device_tests
         cpp/tests/VulkanRhiDeviceTests.cpp
         cpp/infernux/core/log/InxLog.cpp
@@ -478,6 +739,7 @@ if(INFERNUX_BUILD_TESTS)
     set_tests_properties(infernux.vulkan_submission_executor PROPERTIES
         LABELS "requires_vulkan_device"
         TIMEOUT 60
+        FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:"
     )
 
     add_executable(infernux_scene_render_graph_validation_tests
@@ -485,6 +747,7 @@ if(INFERNUX_BUILD_TESTS)
     )
     target_include_directories(infernux_scene_render_graph_validation_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
     )
     # SceneRenderGraph validation now reaches the full Scene/GameObject graph,
     # which includes PyComponentProxy.  Standalone executables must provide the
@@ -494,7 +757,9 @@ if(INFERNUX_BUILD_TESTS)
         infernux_runtime_test_support
     )
     if(MSVC)
-        target_compile_options(infernux_scene_render_graph_validation_tests PRIVATE /utf-8)
+        target_compile_options(infernux_scene_render_graph_validation_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_scene_render_graph_validation_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.scene_render_graph_validation COMMAND infernux_scene_render_graph_validation_tests)
 
@@ -546,6 +811,32 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.runtime_persistent_scene COMMAND infernux_runtime_persistent_scene_tests)
 
+    add_executable(infernux_additive_scene_world_tests
+        cpp/tests/AdditiveSceneWorldTests.cpp
+    )
+    target_include_directories(infernux_additive_scene_world_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_additive_scene_world_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_additive_scene_world_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_additive_scene_world_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.additive_scene_world COMMAND infernux_additive_scene_world_tests)
+
+    add_executable(infernux_ui_transform_dependencies_tests cpp/tests/UITransformDependenciesTests.cpp)
+    target_include_directories(infernux_ui_transform_dependencies_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_ui_transform_dependencies_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_ui_transform_dependencies_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_ui_transform_dependencies_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.ui_transform_dependencies COMMAND infernux_ui_transform_dependencies_tests)
+
     add_executable(infernux_camera_culling_isolation_tests
         cpp/tests/CameraCullingIsolationTests.cpp
     )
@@ -560,6 +851,39 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_camera_culling_isolation_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.camera_culling_isolation COMMAND infernux_camera_culling_isolation_tests)
+
+    add_executable(infernux_blend_model_import_tests
+        cpp/tests/BlendModelImportTests.cpp
+    )
+    target_include_directories(infernux_blend_model_import_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_blend_model_import_tests PRIVATE infernux_runtime_test_support)
+    target_compile_definitions(infernux_blend_model_import_tests PRIVATE
+        INFERNUX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    )
+    if(MSVC)
+        target_compile_options(infernux_blend_model_import_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_blend_model_import_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.blend_model_import COMMAND infernux_blend_model_import_tests)
+
+    add_executable(infernux_model_animation_import_settings_tests
+        cpp/tests/ModelAnimationImportSettingsTests.cpp
+    )
+    target_include_directories(infernux_model_animation_import_settings_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_model_animation_import_settings_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_model_animation_import_settings_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_model_animation_import_settings_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.model_animation_import_settings COMMAND infernux_model_animation_import_settings_tests)
 
     add_executable(infernux_particle_gpu_runtime_tests
         cpp/tests/ParticleGpuRuntimeTests.cpp
@@ -647,6 +971,112 @@ if(INFERNUX_BUILD_TESTS)
         TIMEOUT 180
     )
 
+    set(_render_texture_sample "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RenderTextureSample.comp.spv")
+    add_custom_command(OUTPUT "${_render_texture_sample}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}"
+        COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
+            "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RenderTextureSample.comp" -o "${_render_texture_sample}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RenderTextureSample.comp" VERBATIM)
+    set(_fullscreen_state_shaders)
+    foreach(_stage vert frag)
+        set(_state_shader "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/FullscreenRasterState.${_stage}.spv")
+        add_custom_command(OUTPUT "${_state_shader}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}"
+            COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
+                "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/FullscreenRasterState.${_stage}" -o "${_state_shader}"
+            DEPENDS "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/FullscreenRasterState.${_stage}" VERBATIM)
+        list(APPEND _fullscreen_state_shaders "${_state_shader}")
+    endforeach()
+    set(_fullscreen_sample_shaders)
+    foreach(_operation Write Read)
+        set(_sample_shader "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/FullscreenSample${_operation}.frag.spv")
+        add_custom_command(OUTPUT "${_sample_shader}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}"
+            COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
+                "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/FullscreenSample${_operation}.frag" -o "${_sample_shader}"
+            DEPENDS "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/FullscreenSample${_operation}.frag" VERBATIM)
+        list(APPEND _fullscreen_sample_shaders "${_sample_shader}")
+    endforeach()
+    set(_fullscreen_storage_shader "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/FullscreenStorageRead.frag.spv")
+    add_custom_command(OUTPUT "${_fullscreen_storage_shader}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}"
+        COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
+            "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/FullscreenStorageRead.frag" -o "${_fullscreen_storage_shader}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/FullscreenStorageRead.frag" VERBATIM)
+    set(_fullscreen_volume_shader "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/FullscreenVolumeRead.frag.spv")
+    add_custom_command(OUTPUT "${_fullscreen_volume_shader}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}"
+        COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
+            "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/FullscreenVolumeRead.frag" -o "${_fullscreen_volume_shader}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/FullscreenVolumeRead.frag" VERBATIM)
+    add_executable(infernux_render_texture_vulkan_tests
+        cpp/tests/RenderTextureVulkanTests.cpp "${_render_texture_sample}" ${_fullscreen_state_shaders}
+        ${_fullscreen_sample_shaders} "${_fullscreen_storage_shader}" "${_fullscreen_volume_shader}")
+    target_include_directories(infernux_render_texture_vulkan_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_render_texture_vulkan_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_render_texture_vulkan_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.render_texture_vulkan COMMAND infernux_render_texture_vulkan_tests
+        "${_render_texture_sample}" ${_fullscreen_state_shaders} ${_fullscreen_sample_shaders}
+        "${_fullscreen_storage_shader}" "${_fullscreen_volume_shader}")
+    set_tests_properties(infernux.render_texture_vulkan PROPERTIES
+        LABELS "requires_vulkan_device" TIMEOUT 60 FAIL_REGULAR_EXPRESSION "Validation Error:")
+
+    add_executable(infernux_screen_ui_vulkan_tests cpp/tests/ScreenUIVulkanTests.cpp)
+    target_include_directories(infernux_screen_ui_vulkan_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_screen_ui_vulkan_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_screen_ui_vulkan_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_screen_ui_vulkan_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.screen_ui_vulkan COMMAND infernux_screen_ui_vulkan_tests)
+    set_tests_properties(infernux.screen_ui_vulkan PROPERTIES
+        LABELS "requires_vulkan_device" TIMEOUT 60 FAIL_REGULAR_EXPRESSION "Validation Error:"
+        ENVIRONMENT "VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT")
+
+    add_executable(infernux_render_graph_queue_replay_tests
+        cpp/tests/RenderGraphQueueReplayTests.cpp "${_render_texture_sample}")
+    set(_renderer_parameter_shader_sources
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RendererParameterBuffer.comp"
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RendererParameterBuffer.vert"
+        "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/RendererParameterBuffer.frag")
+    set(_renderer_parameter_shader_outputs)
+    foreach(_shader_source IN LISTS _renderer_parameter_shader_sources)
+        get_filename_component(_shader_name "${_shader_source}" NAME)
+        set(_shader_output "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/${_shader_name}.spv")
+        add_custom_command(
+            OUTPUT "${_shader_output}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}"
+            COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V "${_shader_source}" -o "${_shader_output}"
+            DEPENDS "${_shader_source}"
+            VERBATIM)
+        list(APPEND _renderer_parameter_shader_outputs "${_shader_output}")
+    endforeach()
+    add_custom_target(infernux_renderer_parameter_shaders
+        DEPENDS ${_renderer_parameter_shader_outputs})
+    add_dependencies(infernux_render_graph_queue_replay_tests infernux_renderer_parameter_shaders)
+    target_include_directories(infernux_render_graph_queue_replay_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_render_graph_queue_replay_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_render_graph_queue_replay_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_render_graph_queue_replay_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.render_graph_queue_replay COMMAND infernux_render_graph_queue_replay_tests
+        "${_render_texture_sample}"
+        "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RendererParameterBuffer.comp.spv"
+        "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RendererParameterBuffer.vert.spv"
+        "${INFERNUX_COMPUTE_INDIRECT_SHADER_DIR}/RendererParameterBuffer.frag.spv")
+    set_tests_properties(infernux.render_graph_queue_replay PROPERTIES
+        LABELS "requires_vulkan_device" TIMEOUT 60
+        FAIL_REGULAR_EXPRESSION "\\[ERROR\\]|Validation Error:"
+        ENVIRONMENT "VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT")
+
     add_executable(infernux_renderer_list_tests
         cpp/tests/RendererListTests.cpp
     )
@@ -659,6 +1089,21 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_renderer_list_tests PRIVATE /utf-8)
     endif()
     add_test(NAME infernux.renderer_list COMMAND infernux_renderer_list_tests)
+
+    add_executable(infernux_command_buffer_tests
+        cpp/tests/CommandBufferTests.cpp
+    )
+    target_include_directories(infernux_command_buffer_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
+    )
+    target_link_libraries(infernux_command_buffer_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_command_buffer_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_command_buffer_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.command_buffer COMMAND infernux_command_buffer_tests)
 
     add_executable(infernux_render_world_tests
         cpp/tests/RenderWorldTests.cpp
@@ -676,18 +1121,12 @@ if(INFERNUX_BUILD_TESTS)
 
     add_executable(infernux_asset_index_tests
         cpp/tests/AssetIndexTests.cpp
-        cpp/infernux/core/log/InxLog.cpp
-        cpp/infernux/function/resources/AssetDatabase/AssetIndex.cpp
-        cpp/infernux/function/resources/InxResource/InxResourceMeta.cpp
-        cpp/infernux/core/reflection/InxTypeRegistry.cpp
-        cpp/infernux/platform/filesystem/DocumentStore.cpp
-        cpp/infernux/platform/filesystem/AtomicFile.cpp
     )
     target_include_directories(infernux_asset_index_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
         ${CMAKE_SOURCE_DIR}/external
     )
-    target_link_libraries(infernux_asset_index_tests PRIVATE Threads::Threads)
+    target_link_libraries(infernux_asset_index_tests PRIVATE InfernuxAssetRuntime)
     if(MSVC)
         target_compile_options(infernux_asset_index_tests PRIVATE /utf-8)
     endif()
@@ -701,6 +1140,9 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/external
     )
     target_link_libraries(infernux_asset_database_refresh_tests PRIVATE infernux_runtime_test_support)
+    target_compile_definitions(infernux_asset_database_refresh_tests PRIVATE
+        INFERNUX_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    )
     if(MSVC)
         target_compile_options(infernux_asset_database_refresh_tests PRIVATE /utf-8 /UNDEBUG)
     else()
@@ -710,12 +1152,11 @@ if(INFERNUX_BUILD_TESTS)
 
     add_executable(infernux_asset_dependency_graph_tests
         cpp/tests/AssetDependencyGraphTests.cpp
-        cpp/infernux/core/log/InxLog.cpp
-        cpp/infernux/function/resources/AssetDependencyGraph.cpp
     )
     target_include_directories(infernux_asset_dependency_graph_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
     )
+    target_link_libraries(infernux_asset_dependency_graph_tests PRIVATE InfernuxAssetRuntime)
     if(MSVC)
         target_compile_options(infernux_asset_dependency_graph_tests PRIVATE /utf-8)
     endif()
@@ -769,7 +1210,9 @@ if(INFERNUX_BUILD_TESTS)
     )
     target_link_libraries(infernux_mesh_artifact_tests PRIVATE Vulkan::Vulkan glm::glm)
     if(MSVC)
-        target_compile_options(infernux_mesh_artifact_tests PRIVATE /utf-8)
+        target_compile_options(infernux_mesh_artifact_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_mesh_artifact_tests PRIVATE -UNDEBUG)
     endif()
     add_test(NAME infernux.mesh_artifact COMMAND infernux_mesh_artifact_tests)
 
@@ -920,7 +1363,7 @@ if(INFERNUX_BUILD_TESTS)
         ENVIRONMENT "INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_InfernuxBootstrap>"
     )
     set_tests_properties(infernux.headless PROPERTIES
-        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;INFERNUX_PACKAGE_CACHE_ROOT=${CMAKE_BINARY_DIR}/test-package-cache"
         TIMEOUT 60
         RUN_SERIAL TRUE
     )
@@ -958,6 +1401,107 @@ if(INFERNUX_BUILD_TESTS)
     )
 
     add_test(
+        NAME infernux.mesh_index_format_gpu
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/mesh_index_format_gpu_test.py
+    )
+    set_tests_properties(infernux.mesh_index_format_gpu PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        LABELS "requires_vulkan_device"
+        TIMEOUT 30
+        RUN_SERIAL TRUE
+        SKIP_RETURN_CODE 77
+    )
+
+    if(TARGET infernux_gpu_jit_compiler)
+        foreach(contract compiler bit)
+            add_test(NAME infernux.compute_${contract}_contract
+                # The nested Taichi compiler project has its own explicit
+                # configuration, which can differ from the outer multi-config
+                # tree (for example RelWithDebInfo).  Use that shared value
+                # instead of letting CTest point at a directory it never
+                # produces.
+                COMMAND ${INFERNUX_GPU_JIT_BINARY_DIR}/tests/${INFERNUX_GPU_JIT_BUILD_CONFIG}/infernux_${contract}_contract_tests${CMAKE_EXECUTABLE_SUFFIX})
+            set_tests_properties(infernux.compute_${contract}_contract PROPERTIES
+                LABELS "compiler" TIMEOUT 30)
+        endforeach()
+        add_test(
+            NAME infernux.compute_compiler_only
+            COMMAND ${Python3_EXECUTABLE}
+                ${INFERNUX_GPU_JIT_SOURCE_DIR}/tests/infernux/compiler_only_kernel.py
+                ${INFERNUX_GPU_JIT_INSTALL_ROOT}/Infernux/_compiler/taichi/_vendor/taichi
+        )
+        set_tests_properties(infernux.compute_compiler_only PROPERTIES
+            LABELS "compiler"
+            TIMEOUT 30
+        )
+    endif()
+
+    add_test(
+        NAME infernux.compute_buffer_gpu
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/compute_buffer_gpu_test.py
+    )
+    add_test(
+        NAME infernux.compute_kernel_gpu
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/compute_kernel_gpu_test.py
+    )
+    add_test(
+        NAME infernux.compute_mesh_gpu
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/compute_mesh_gpu_test.py
+    )
+    add_test(
+        NAME infernux.compute_gizmo_gpu
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/compute_gizmo_gpu_test.py
+    )
+    add_test(
+        NAME infernux.compute_physics_exchange_gpu
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/compute_physics_exchange_gpu_test.py
+    )
+    set_tests_properties(
+        infernux.compute_buffer_gpu
+        infernux.compute_kernel_gpu
+        infernux.compute_mesh_gpu
+        infernux.compute_gizmo_gpu
+        infernux.compute_physics_exchange_gpu
+        PROPERTIES
+        FAIL_REGULAR_EXPRESSION "Validation Error:"
+        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;INFERNUX_GPU_JIT_VENDOR_DIR=${INFERNUX_GPU_JIT_INSTALL_ROOT}/Infernux/_compiler/taichi/_vendor/taichi"
+        LABELS "requires_vulkan_device"
+        TIMEOUT 60
+        RUN_SERIAL TRUE
+        SKIP_RETURN_CODE 77
+    )
+
+    add_test(
+        NAME infernux.mesh_publication_gpu
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/mesh_publication_gpu_test.py
+    )
+    add_test(
+        NAME infernux.mesh_publication_gpu_continuous
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/mesh_publication_gpu_test.py --continuous
+    )
+    add_test(
+        NAME infernux.runtime_mesh_retirement_gpu
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/runtime_mesh_retirement_gpu_test.py
+    )
+    add_test(
+        NAME infernux.runtime_mesh_retirement_multi_camera_gpu
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/runtime_mesh_retirement_gpu_test.py --multiple-cameras
+    )
+    add_test(
+        NAME infernux.runtime_mesh_resource_gpu
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/runtime_mesh_resource_gpu_test.py
+    )
+    set_tests_properties(infernux.mesh_publication_gpu infernux.mesh_publication_gpu_continuous
+        infernux.runtime_mesh_retirement_gpu infernux.runtime_mesh_retirement_multi_camera_gpu
+        infernux.runtime_mesh_resource_gpu PROPERTIES
+        FAIL_REGULAR_EXPRESSION "Validation Error:"
+        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        LABELS "requires_vulkan_device"
+        TIMEOUT 30
+        RUN_SERIAL TRUE
+    )
+
+    add_test(
         NAME infernux.scene_residency_soak
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/scene_residency_soak_test.py
     )
@@ -985,4 +1529,27 @@ if(INFERNUX_BUILD_TESTS)
         USES_TERMINAL
         VERBATIM
     )
+
+    # ELF test processes load the Python extension from the build tree, while
+    # its subsystem libraries are staged beside that extension.  Keep the
+    # runtime search path on every CTest entry so invoking ctest directly has
+    # the same deterministic environment as the build-time smoke commands.
+    if(UNIX AND NOT APPLE)
+        if(INFERNUX_USE_TARGET_PYTHON)
+            set(_infernux_test_python_library "${INFERNUX_TARGET_PYTHON_LIBRARY}")
+        else()
+            list(GET Python3_LIBRARIES 0 _infernux_test_python_library)
+        endif()
+        get_filename_component(
+            _infernux_test_python_library_dir
+            "${_infernux_test_python_library}"
+            DIRECTORY
+        )
+        get_property(_infernux_registered_tests DIRECTORY PROPERTY TESTS)
+        foreach(_infernux_test IN LISTS _infernux_registered_tests)
+            set_property(TEST ${_infernux_test} APPEND PROPERTY
+                ENVIRONMENT
+                    "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:_Infernux>:${INFERNUX_PYTHON_SYNC_DIR}:${_infernux_test_python_library_dir}")
+        endforeach()
+    endif()
 endif()

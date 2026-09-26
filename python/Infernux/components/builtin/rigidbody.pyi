@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from enum import IntEnum, IntFlag
 from typing import Any, Tuple, Union
+from numpy import float32
+from numpy.typing import NDArray
 
 from Infernux.components.builtin_component import BuiltinComponent
 
@@ -209,6 +211,9 @@ class Rigidbody(BuiltinComponent):
     def rotation(self, value: Any) -> None: ...
 
     # ---- Force / Torque API ----
+
+    def get_point_velocity(self, point: Any) -> Any: ...
+    def get_point_velocities(self, points: NDArray[float32], output: NDArray[float32]) -> NDArray[float32]: ...
 
     def add_force(self, force: Any, mode: Any = ...) -> None:
         """Apply a force to the rigidbody."""

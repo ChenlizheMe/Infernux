@@ -6,7 +6,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -27,11 +26,6 @@ _FORBIDDEN_WINDOWS_RUNTIME_IMPORTS = (
     "libwinpthread",
     "msys-",
 )
-_SIGNING_THUMBPRINT_ENV = "INFERNUX_SIGN_CERTIFICATE_THUMBPRINT"
-_SIGNING_TIMESTAMP_ENV = "INFERNUX_SIGN_TIMESTAMP_URL"
-_DEFAULT_TIMESTAMP_URL = "http://timestamp.digicert.com"
-
-
 def _validate_runtime_bundle(bundle_path: Path) -> None:
     archive = runtime_archive_for_machine()
     runtime_prefix = f"{DEFAULT_PYTHON_RUNTIME.directory_name}/"
@@ -310,51 +304,6 @@ def _common_nuitka_command(
     return command
 
 
-def _sign_windows_binary(executable: Path, env: Mapping[str, str]) -> bool:
-    thumbprint = os.environ.get(_SIGNING_THUMBPRINT_ENV, "").replace(" ", "")
-    if not thumbprint:
-        print(
-            f"Signing skipped for {executable.name}: set {_SIGNING_THUMBPRINT_ENV} "
-            "to a publicly trusted code-signing certificate thumbprint."
-        )
-        return False
-    if not re.fullmatch(r"[0-9A-Fa-f]{40}", thumbprint):
-        raise RuntimeError(
-            f"{_SIGNING_THUMBPRINT_ENV} must contain a 40-character SHA-1 thumbprint"
-        )
-    signtool = shutil.which("signtool.exe", path=env.get("PATH"))
-    if not signtool:
-        raise RuntimeError("signtool.exe is required when release signing is enabled")
-
-    timestamp_url = os.environ.get(_SIGNING_TIMESTAMP_ENV, _DEFAULT_TIMESTAMP_URL)
-    sign_command = [
-        signtool,
-        "sign",
-        "/sha1",
-        thumbprint,
-        "/fd",
-        "SHA256",
-        "/td",
-        "SHA256",
-        "/tr",
-        timestamp_url,
-        "/d",
-        executable.stem,
-        "/du",
-        "https://infernux-engine.com/",
-        str(executable),
-    ]
-    if os.environ.get("INFERNUX_SIGN_CERTIFICATE_STORE", "").casefold() == "machine":
-        sign_command.insert(2, "/sm")
-    _run(sign_command, cwd=executable.parent, env=env)
-    _run(
-        [signtool, "verify", "/pa", "/all", str(executable)],
-        cwd=executable.parent,
-        env=env,
-    )
-    return True
-
-
 def _validate_msvc_reports(output_dir: Path) -> list[Path]:
     reports = sorted(output_dir.rglob("scons-report.txt"))
     if not reports:
@@ -484,7 +433,7 @@ def _build_hub(
     command = _common_nuitka_command(
         output_dir,
         source_root,
-        product_name="Infernux Hub",
+        product_name="Infernux",
         description="Infernux game engine management platform",
         original_filename="Infernux Hub.exe" if os.name == "nt" else "Infernux Hub",
     ) + [
@@ -536,7 +485,6 @@ def _build_hub(
     )
     if os.name == "nt":
         assert build_env is not None and tools is not None
-        _sign_windows_binary(destination / "Infernux Hub.exe", build_env)
         _validate_windows_payload(destination, build_env)
         _write_toolchain_receipt(
             build_dir / "hub-build-toolchain.json",
@@ -568,7 +516,7 @@ def _build_installer(
     command = _common_nuitka_command(
         output_dir,
         source_root,
-        product_name="Infernux Hub Installer",
+        product_name="Infernux",
         description="Installer for the Infernux game engine management platform",
         original_filename=(
             "InfernuxHubInstaller.exe"
@@ -597,7 +545,6 @@ def _build_installer(
         raise RuntimeError(f"Nuitka did not produce the Hub installer at {produced}")
     if os.name == "nt":
         assert build_env is not None
-        _sign_windows_binary(produced, build_env)
         _validate_windows_pe(produced, build_env)
     release_dir.mkdir(parents=True, exist_ok=True)
     suffix = ".exe" if os.name == "nt" else ""

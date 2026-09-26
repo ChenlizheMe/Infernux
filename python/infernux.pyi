@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from Infernux import __version__ as __version__
+from Infernux import editor as editor
 from Infernux import Engine as Engine
 from Infernux import Application as Application
 from Infernux import Screen as Screen
@@ -20,6 +21,9 @@ from Infernux import vector2 as vector2
 from Infernux import vector3 as vector3
 from Infernux import vector4 as vector4
 from Infernux import quaternion as quaternion
+from Infernux import Buffer as Buffer
+from Infernux import buffer as buffer
+from Infernux import Mesh as Mesh
 from Infernux import GameObject as GameObject
 from Infernux import Transform as Transform
 from Infernux import Component as Component
@@ -50,11 +54,25 @@ from Infernux import MaterialRef as MaterialRef
 from Infernux import ComponentRef as ComponentRef
 from Infernux import PrefabRef as PrefabRef
 from Infernux import SerializableObject as SerializableObject
+from Infernux import DataAsset as DataAsset
 from Infernux import Light as Light
 from Infernux import MeshRenderer as MeshRenderer
 from Infernux import LineRenderer as LineRenderer
 from Infernux import SkinnedMeshRenderer as SkinnedMeshRenderer
 from Infernux import Camera as Camera
+from Infernux import RenderTexture as RenderTexture
+from Infernux import RenderTextureRef as RenderTextureRef
+from Infernux import UICanvas as UICanvas
+from Infernux import UIFrame as UIFrame
+from Infernux import UIGroup as UIGroup
+from Infernux import UIProgressBar as UIProgressBar
+from Infernux import UISlider as UISlider
+from Infernux import UIText as UIText
+from Infernux import UIImage as UIImage
+from Infernux import UIRawImage as UIRawImage
+from Infernux import UIButton as UIButton
+from Infernux import UIEvent as UIEvent
+from Infernux import UIEvent1 as UIEvent1
 from Infernux import Collider as Collider
 from Infernux import BoxCollider as BoxCollider
 from Infernux import SphereCollider as SphereCollider
@@ -65,6 +83,8 @@ from Infernux import Rigidbody as Rigidbody
 from Infernux import RigidbodyConstraints as RigidbodyConstraints
 from Infernux import CollisionDetectionMode as CollisionDetectionMode
 from Infernux import RigidbodyInterpolation as RigidbodyInterpolation
+from Infernux import HingeJoint as HingeJoint
+from Infernux import SliderJoint as SliderJoint
 from Infernux import AudioSource as AudioSource
 from Infernux import AudioListener as AudioListener
 from Infernux import SpriteRenderer as SpriteRenderer
@@ -85,6 +105,9 @@ from Infernux import ExecuteInEditMode as ExecuteInEditMode
 from Infernux import AddComponentMenu as AddComponentMenu
 from Infernux import HelpURL as HelpURL
 from Infernux import Icon as Icon
+from Infernux import DrivenTransformProperties as DrivenTransformProperties
+from Infernux import drives_transform as drives_transform
+from Infernux import DrivesTransform as DrivesTransform
 from Infernux import Material as Material
 from Infernux import Texture as Texture
 from Infernux import Shader as Shader
@@ -96,13 +119,16 @@ from Infernux import AnimState as AnimState
 from Infernux import AnimTransition as AnimTransition
 from Infernux import AnimCondition as AnimCondition
 from Infernux import AnimParameter as AnimParameter
+from Infernux import AssetFile as AssetFile
 from Infernux import AssetManager as AssetManager
+from Infernux import SandboxPath as SandboxPath
 from Infernux import TextureRef as TextureRef
 from Infernux import ShaderRef as ShaderRef
 from Infernux import AudioClipRef as AudioClipRef
 from Infernux import AnimationClipRef as AnimationClipRef
 from Infernux import AnimStateMachineRef as AnimStateMachineRef
 from Infernux import RenderEffectRef as RenderEffectRef
+from Infernux import DataAssetRef as DataAssetRef
 from Infernux import Debug as Debug
 from Infernux import core as core
 from Infernux import components as components
@@ -133,8 +159,7 @@ from Infernux import Instantiate as Instantiate
 from Infernux import Destroy as Destroy
 from Infernux import jit as jit
 from Infernux.jit import JIT_AVAILABLE as JIT_AVAILABLE
-from Infernux.jit import ensure_jit_runtime as ensure_jit_runtime
-from Infernux.jit import njit as njit
+from Infernux import compute as compute
 from Infernux.jit import warmup as warmup
 
 __all__: tuple[str, ...]

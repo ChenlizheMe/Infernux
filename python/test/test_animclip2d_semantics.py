@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -536,8 +537,22 @@ def test_loop_round_trips_document_session_and_saved_clip(monkeypatch, tmp_path)
     )
     from Infernux.core.assets import AssetManager
 
+    texture_path = tmp_path / "countdown.png"
+    texture_path.write_bytes(b"png")
+    saved_path = str(tmp_path / "Countdown.animclip2d")
+    database = SimpleNamespace(
+        get_path_from_guid=lambda guid: (
+            str(texture_path) if guid == "texture-guid" else saved_path
+        ),
+        get_guid_from_path=lambda path: (
+            "texture-guid"
+            if resolved_path(path) == resolved_path(str(texture_path))
+            else "saved-clip-guid"
+        ),
+    )
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
     panel = AnimClip2DEditorPanel()
-    panel._tex = _TextureState(file_path="Assets/countdown.png", guid="texture-guid")
+    panel._tex = _TextureState(file_path=str(texture_path), guid="texture-guid")
     clip = _ClipState(name="Countdown", frames=_frames(0, 1, 2), fps=3.0, loop=False)
     panel._clips = [clip]
 
@@ -558,7 +573,6 @@ def test_loop_round_trips_document_session_and_saved_clip(monkeypatch, tmp_path)
         "reimport_asset",
         classmethod(lambda cls, _path: True),
     )
-    saved_path = str(tmp_path / "Countdown.animclip2d")
     panel._replace_animclip_document(resource_path=saved_path, dirty=True)
     registry = DocumentRegistry.instance()
     result = registry.request_save(panel.document_id)
@@ -578,7 +592,8 @@ def test_loop_round_trips_document_session_and_saved_clip(monkeypatch, tmp_path)
     document = registry.require(panel.document_id)
     assert document.is_dirty is False
     assert document.resource_path == resolved_path(saved_path)
-    assert document.key.identity_kind is DocumentIdentityKind.RESOURCE_PATH
+    assert document.key.identity_kind is DocumentIdentityKind.ASSET_GUID
+    assert document.key.identity == "saved-clip-guid"
 
 
 def test_animclip_save_uses_ticket_resource_path_and_never_directly_marks_saved(
@@ -600,6 +615,14 @@ def test_animclip_save_uses_ticket_resource_path_and_never_directly_marks_saved(
         )
     ]
     target = resolved_path(str(tmp_path / "Authoritative.animclip2d"))
+    monkeypatch.setattr(
+        AssetManager,
+        "_asset_database",
+        SimpleNamespace(
+            get_guid_from_path=lambda _path: "authoritative-clip-guid",
+            get_path_from_guid=lambda _guid: target,
+        ),
+    )
     panel._replace_animclip_document(resource_path=target, dirty=True)
     registry = DocumentRegistry.instance()
     monkeypatch.setattr(
@@ -646,6 +669,14 @@ def test_animclip_save_absorbs_reimport_revision_when_content_is_unchanged(
         _ClipState(name="Smoke", frames=_frames(0, 1, 2), fps=12.0, loop=True)
     ]
     target = resolved_path(str(tmp_path / "Smoke.animclip2d"))
+    monkeypatch.setattr(
+        AssetManager,
+        "_asset_database",
+        SimpleNamespace(
+            get_guid_from_path=lambda _path: "smoke-clip-guid",
+            get_path_from_guid=lambda _guid: target,
+        ),
+    )
     panel._replace_animclip_document(resource_path=target, dirty=True)
     registry = DocumentRegistry.instance()
 

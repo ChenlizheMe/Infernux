@@ -295,6 +295,68 @@ class ProjectAssetCreateCommand(UndoCommand):
             self._delete_command = None
 
 
+class ProjectAssetTextCommand(UndoCommand):
+    """Replace one registered UTF-8 asset through Project history."""
+
+    marks_dirty = False
+
+    def __init__(
+        self,
+        path: str,
+        old_content: str,
+        new_content: str,
+        *,
+        asset_database: Any = None,
+        on_changed: Optional[Callable[[], None]] = None,
+        apply_fn: Optional[Callable[[str, str, Any], None]] = None,
+        description: str = "Edit Text Asset",
+    ) -> None:
+        super().__init__(description)
+        self._path = resolved_path(path)
+        self._old_content = str(old_content)
+        self._new_content = str(new_content)
+        self._asset_database = asset_database
+        self._on_changed = on_changed
+        self._apply_fn = apply_fn
+
+    def _publish(self, content: str) -> None:
+        if self._apply_fn is not None:
+            self._apply_fn(self._path, content, self._asset_database)
+            return
+
+        from Infernux.core.assets import AssetManager
+        from Infernux.core.document_store import write_document_text
+
+        write_document_text(self._path, content)
+        result = AssetManager.reimport_asset(
+            self._path,
+            database=self._asset_database,
+        )
+        if not result or not bool(getattr(result, "succeeded", True)):
+            detail = str(getattr(result, "error", "") or "asset reimport failed")
+            raise RuntimeError(detail)
+
+    def _apply(self, content: str, rollback_content: str) -> None:
+        if not os.path.isfile(self._path):
+            raise RuntimeError(f"text asset no longer exists: {self._path}")
+        try:
+            self._publish(content)
+        except Exception:
+            self._publish(rollback_content)
+            raise
+        if self._on_changed is not None:
+            self._on_changed()
+
+    def execute(self) -> None:
+        self._apply(self._new_content, self._old_content)
+
+    def undo(self) -> None:
+        self._apply(self._old_content, self._new_content)
+
+    def redo(self) -> None:
+        self.execute()
+
+
 class ProjectPrefabCreateCommand(UndoCommand):
     """Own Prefab asset creation and source-hierarchy linkage as one action."""
 

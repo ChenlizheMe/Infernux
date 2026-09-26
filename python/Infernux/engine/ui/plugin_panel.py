@@ -9,12 +9,14 @@ from Infernux.engine.i18n import get_locale, t
 from Infernux.engine.interaction import PanelInteractionDescriptor
 from Infernux.engine.path_utils import resolved_path
 from Infernux.plugins import (
+    OFFICIAL_PLUGIN_CATEGORIES,
     InxPackage,
     PluginManager,
     localized_intro,
     markdown_to_plain_text,
     parse_markdown_blocks,
     plugin_install_block_reason,
+    normalize_plugin_category,
 )
 
 from .asset_resource_preview import render_resource_preview_rect
@@ -48,6 +50,7 @@ class PluginPanel(EditorPanel):
         self._detail_reference = ""
         self._document_texture_settings = TextureImportSettings(texture_type=TextureType.UI)
         self._scope_index = 0
+        self._category_index = 0
         self._sort_index = 2
         from .plugin_versions import PluginVersionsView
 
@@ -63,6 +66,7 @@ class PluginPanel(EditorPanel):
         if not value:
             return False
         self._scope_index = 0
+        self._category_index = 0
         self._search = ""
         self._selected_reference = value
         return True
@@ -143,6 +147,13 @@ class PluginPanel(EditorPanel):
         ctx.set_next_item_width(_metric(ctx, 160.0))
         self._scope_index = ctx.combo("##plugins_scope", self._scope_index, scopes)
         ctx.same_line()
+        categories = [
+            t("plugins.category.all"),
+            *[t(f"plugins.category.{key}") for key in OFFICIAL_PLUGIN_CATEGORIES],
+        ]
+        ctx.set_next_item_width(_metric(ctx, 168.0))
+        self._category_index = ctx.combo("##plugins_category", self._category_index, categories)
+        ctx.same_line()
         sorts = [
             t("plugins.sort.name_asc"),
             t("plugins.sort.name_desc"),
@@ -218,6 +229,7 @@ class PluginPanel(EditorPanel):
             row = dict(value)
             key = str(row.get("reference", "")).casefold()
             row["_registry"] = True
+            row["_category_key"] = normalize_plugin_category(row.get("category", "other"))
             source = row.get("source", {})
             row["_official"] = bool(
                 isinstance(source, Mapping) and source.get("official", False)
@@ -239,6 +251,7 @@ class PluginPanel(EditorPanel):
                 merged["_installed"] = True
                 merged["_installed_version"] = installed_version
                 merged["_official"] = row["_official"]
+                merged["_category_key"] = row["_category_key"]
                 merged["_cached"] = row["_cached"]
                 merged["_install_block_reason"] = ""
                 row = merged
@@ -250,6 +263,7 @@ class PluginPanel(EditorPanel):
             value["_registry"] = False
             value["_installed"] = True
             value["_official"] = False
+            value["_category_key"] = normalize_plugin_category(value.get("category", "other"))
             value["_cached"] = False
             value["_install_block_reason"] = ""
             value["_installed_version"] = str(value.get("version", "")).strip()
@@ -263,6 +277,12 @@ class PluginPanel(EditorPanel):
             if self._scope_index == 2 and not row.get("_registry"):
                 continue
             if self._scope_index == 3 and not row.get("_cached"):
+                continue
+            if (
+                self._category_index
+                and row.get("_category_key")
+                != OFFICIAL_PLUGIN_CATEGORIES[self._category_index - 1]
+            ):
                 continue
             localized_intros = row.get("intros", {})
             intro_values = (
@@ -724,7 +744,18 @@ class PluginPanel(EditorPanel):
         )
         for label, value in (
             (t("plugins.detail.reference"), reference),
-            (t("plugins.detail.category"), str(row.get("category", "Other"))),
+            (
+                t("plugins.detail.category"),
+                t(
+                    "plugins.category."
+                    + str(
+                        row.get(
+                            "_category_key",
+                            normalize_plugin_category(row.get("category", "other")),
+                        )
+                    )
+                ),
+            ),
             (
                 t("plugins.detail.targets"),
                 ", ".join(str(value) for value in row.get("targets", [])) or "-",

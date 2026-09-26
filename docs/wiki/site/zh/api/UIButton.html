@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/zh/api/njit.html" class="">njit</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/zh/api/compile.html" class="">compile</a><a href="/wiki/site/zh/api/statistics.html" class="">statistics</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -366,13 +366,23 @@
 <td></td>
 </tr>
 <tr>
-<td>font_path</td>
-<td><code>str</code></td>
+<td>font</td>
+<td><code>FontAssetInfo | None</code></td>
+<td></td>
+</tr>
+<tr>
+<td>fallback_fonts</td>
+<td><code>list[FontAssetInfo | None]</code></td>
 <td></td>
 </tr>
 <tr>
 <td>label_color</td>
 <td><code>list</code></td>
+<td></td>
+</tr>
+<tr>
+<td>text_material</td>
+<td><code>Material | None</code></td>
 <td></td>
 </tr>
 <tr>
@@ -396,13 +406,18 @@
 <td></td>
 </tr>
 <tr>
-<td>texture_path</td>
-<td><code>str</code></td>
+<td>background_texture</td>
+<td><code>Texture | RenderTexture | None</code></td>
 <td></td>
 </tr>
 <tr>
 <td>background_color</td>
 <td><code>list</code></td>
+<td></td>
+</tr>
+<tr>
+<td>background_material</td>
+<td><code>Material | None</code></td>
 <td></td>
 </tr>
 <tr>

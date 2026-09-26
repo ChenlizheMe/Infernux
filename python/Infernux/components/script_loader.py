@@ -361,23 +361,8 @@ def _write_private_descriptor_value(descriptor, instance: object, value: object)
 def _prepare_transaction_schema_state(
     transaction: ComponentBodyReloadTransaction,
 ) -> None:
-    if transaction._cds_publication is not None or not transaction.cds_publish_types:
-        # A script may opt out of the native data store.  Its descriptor
-        # migration still needs the exact same value-preservation contract as
-        # CDS-backed components, so only skip when there is no schema work at
-        # all.  The publication itself is still optional below.
-        if transaction._cds_publication is not None:
-            return
-        if transaction.schema_migrations:
-            has_schema_work = any(
-                _serialized_schema_signature(migration.target_type)
-                != _serialized_schema_signature(migration.candidate_type)
-                for migration in transaction.schema_migrations
-            )
-            if not has_schema_work and not transaction.cds_publish_types:
-                return
-        elif not transaction.cds_publish_types:
-            return
+    if transaction._cds_publication is not None:
+        return
 
     from . import _cds_bridge
     from .fields import get_serialized_fields
@@ -402,8 +387,21 @@ def _prepare_transaction_schema_state(
             dict(prepare_instance_values(migration, instances)),
         )
 
+    if not migration_instances and not transaction.cds_publish_types:
+        return
+
     publication = (
-        _cds_bridge.prepare_schema_publication(transaction.cds_publish_types)
+        _cds_bridge.prepare_schema_publication(
+            transaction.cds_publish_types,
+            # Constraints can change stored values without changing numeric
+            # shape. Stage every changed live schema in private storage.
+            private_layout_types=(
+                migration.candidate_type
+                for migration in transaction.schema_migrations
+                if id(migration) in migration_instances
+                and migration_instances[id(migration)][0]
+            ),
+        )
         if transaction.cds_publish_types
         else None
     )
@@ -411,10 +409,7 @@ def _prepare_transaction_schema_state(
     images: list[_SchemaInstanceBeforeImage] = []
     try:
         for migration in transaction.schema_migrations:
-            if (
-                _serialized_schema_signature(migration.target_type)
-                == _serialized_schema_signature(migration.candidate_type)
-            ):
+            if id(migration) not in migration_instances:
                 continue
 
             instances, prepared_values = migration_instances[id(migration)]
@@ -434,30 +429,6 @@ def _prepare_transaction_schema_state(
                 entry = publication.entry(migration.candidate_type)
                 if entry.candidate_id is not None:
                     publication.reserve(migration.candidate_type, len(instances))
-
-            migration_pairs: list[tuple[int, int]] = []
-            if uses_cds and entry is not None:
-                for field in migration.fields:
-                    if field.source is None:
-                        continue
-                    if not _cds_bridge.is_cds_backed(field.target.field_type):
-                        continue
-                    if not _cds_bridge.is_cds_backed(field.source.field_type):
-                        continue
-                    source_descriptor = _serialized_descriptor(
-                        migration.target_type,
-                        field.source_name,
-                    )
-                    destination = entry.field_map.get(field.target_name)
-                    if (
-                        source_descriptor is None
-                        or source_descriptor._cds_field_id is None
-                        or destination is None
-                    ):
-                        continue
-                    migration_pairs.append(
-                        (int(source_descriptor._cds_field_id), int(destination[0]))
-                    )
 
             field_names = set(target_fields) | set(candidate_fields)
             for instance in instances:
@@ -486,26 +457,10 @@ def _prepare_transaction_schema_state(
                 )
 
                 if entry is not None and entry.candidate_id is not None:
-                    if (
-                        image.old_slot is not None
-                        and image.old_class_id is not None
-                        and migration_pairs
-                    ):
-                        image.new_slot = publication.migrate_slot(
-                            migration.candidate_type,
-                            int(image.old_class_id),
-                            image.old_slot,
-                            migration_pairs,
-                        )
-                    else:
-                        image.new_slot = publication.allocate_slot(
-                            migration.candidate_type
-                        )
-                    # Native slot migration is an optimization, not the
-                    # semantic source of truth.  Write every candidate CDS
-                    # field from the preflight snapshot so same-name fields
-                    # survive even when native layout migration has no direct
-                    # source mapping (for example after a schema rebuild).
+                    image.new_slot = publication.allocate_slot(migration.candidate_type)
+                    # The prepared semantic values already include renames,
+                    # defaults and conversions. Write them once; copying raw
+                    # native fields first would immediately be overwritten.
                     for field in migration.fields:
                         if not _cds_bridge.is_cds_backed(field.target.field_type):
                             continue
@@ -1097,6 +1052,7 @@ def retire_script_module(file_path: str) -> object | None:
 
 _BODY_PATCH_GENERATED_KEYS = frozenset({
     "_serialized_fields_",
+    "_field_schemas_",
     "_intrinsic_script_guid_",
     "_type_guid_",
     "_asset_script_guid_",
@@ -1216,6 +1172,7 @@ def _plan_component_class_body_patch(
     if schema_changed:
         from .fields import SerializedFieldDescriptor
 
+        operations.append(("_field_schemas_", True, candidate_type.__dict__["_field_schemas_"]))
         operations.append(
             (
                 "_serialized_fields_",
@@ -1246,6 +1203,8 @@ def _apply_component_body_patch_plans(
     plans: tuple[tuple[type, tuple[tuple[str, bool, object], ...]], ...],
 ) -> dict[type, tuple[str, ...]]:
     """Publish all validated class patches, rolling back on mutation failure."""
+    from .fields import SerializedFieldDescriptor
+
     snapshots = {}
     for target_type, operations in plans:
         target_body = target_type.__dict__
@@ -1259,9 +1218,13 @@ def _apply_component_body_patch_plans(
             for name, candidate_has, value in operations:
                 if candidate_has:
                     setattr(target_type, name, value)
-                    set_name = getattr(value, "__set_name__", None)
-                    if callable(set_name):
-                        set_name(target_type, name)
+                    # Serialized declarations were compiled on the candidate.
+                    # Re-running registration here turns inherited storage
+                    # bindings into new declarations on the live subclass.
+                    if not isinstance(value, SerializedFieldDescriptor):
+                        set_name = getattr(value, "__set_name__", None)
+                        if callable(set_name):
+                            set_name(target_type, name)
                 else:
                     delattr(target_type, name)
         _invalidate_serialized_field_caches(
@@ -1386,7 +1349,7 @@ def _clear_loaded_script_modules(
     *,
     preserve_classes: Iterable[type] = (),
 ) -> None:
-    """Drop cached script modules and clear serialized-field metadata."""
+    """Drop cached script modules without invalidating surviving instances."""
     if not module_names:
         return
 
@@ -1405,8 +1368,12 @@ def _clear_loaded_script_modules(
             if getattr(obj, '__module__', None) != old_module_name or id(obj) in preserved_ids:
                 continue
             if '_serialized_fields_' in obj.__dict__:
+                # Old class objects can outlive their module through authored
+                # documents, DataAsset caches, Undo history, or a retiring
+                # runtime epoch.  Their immutable schema remains authoritative
+                # for those instances; the replacement class receives its own
+                # independently compiled schema.
                 clear_serialized_fields_cache(obj)
-                obj._serialized_fields_ = {}
 
     for module_name in module_names:
         sys.modules.pop(module_name, None)
@@ -1713,7 +1680,18 @@ def load_and_create_component(
     # several components. Methods on one component may refer to sibling types
     # through their module globals, so binding only the requested class leaves
     # those references on provisional module GUIDs and breaks component lookup.
-    component_types = tuple(load_all_components_from_file(file_path, register=False))
+    from Infernux.components.registry import (
+        component_types_for_script_path,
+        publish_component_script_types,
+    )
+    # Instantiation consumes the published revision; only the script-refresh
+    # transaction replaces it. Re-executing here strands earlier instances.
+    component_types = component_types_for_script_path(file_path)
+    already_published = bool(component_types) and all(
+        candidate._asset_script_guid_ == guid for candidate in component_types
+    )
+    if not already_published:
+        component_types = tuple(load_all_components_from_file(file_path, register=False))
     if not component_types:
         return None
     if type_name:
@@ -1732,11 +1710,11 @@ def load_and_create_component(
             )
         component_class = component_types[0]
 
-    from Infernux.components.component_identity import bind_asset_script_guid
-    for candidate in component_types:
-        bind_asset_script_guid(candidate, guid, register=False)
-    from Infernux.components.registry import publish_component_script_types
-    publish_component_script_types(file_path, component_types)
+    if not already_published:
+        from Infernux.components.component_identity import bind_asset_script_guid
+        for candidate in component_types:
+            bind_asset_script_guid(candidate, guid, register=False)
+        publish_component_script_types(file_path, component_types)
 
     instance = create_component_instance(component_class)
     instance._script_guid = guid

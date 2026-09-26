@@ -256,7 +256,7 @@
                             <span class="ns-arr">&#9654;</span>
                             <span class="ns-nm">Infernux.jit</span>
                         </button>
-                        <div class="ns-ch"><a href="/wiki/site/zh/api/njit.html" class="">njit</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
+                        <div class="ns-ch"><a href="/wiki/site/zh/api/compile.html" class="">compile</a><a href="/wiki/site/zh/api/statistics.html" class="">statistics</a><a href="/wiki/site/zh/api/warmup.html" class="">warmup</a></div>
                     </div><div class="ns-group">
                         <button type="button" class="ns-hd" aria-expanded="false">
                             <span class="ns-arr">&#9654;</span>
@@ -358,6 +358,41 @@
 </thead>
 <tbody>
 <tr>
+<td>target_texture</td>
+<td><code>RenderTexture | RenderTextureRef | None</code></td>
+<td>Output owner, unresolved asset reference, or None for the screen.</td>
+</tr>
+<tr>
+<td>projection_matrix</td>
+<td><code>NDArray[np.float32]</code></td>
+<td></td>
+</tr>
+<tr>
+<td>view_matrix</td>
+<td><code>NDArray[np.float32]</code></td>
+<td></td>
+</tr>
+<tr>
+<td>camera_to_world_matrix</td>
+<td><code>NDArray[np.float32]</code></td>
+<td><em>(只读)</em></td>
+</tr>
+<tr>
+<td>has_custom_view_matrix</td>
+<td><code>bool</code></td>
+<td><em>(只读)</em></td>
+</tr>
+<tr>
+<td>invert_culling</td>
+<td><code>bool</code></td>
+<td></td>
+</tr>
+<tr>
+<td>has_custom_projection_matrix</td>
+<td><code>bool</code></td>
+<td><em>(只读)</em></td>
+</tr>
+<tr>
 <td>projection_mode</td>
 <td><code>int</code></td>
 <td>投影模式（0=透视，1=正交）。</td>
@@ -366,6 +401,76 @@
 <td>field_of_view</td>
 <td><code>float</code></td>
 <td>垂直视野角度（度）。</td>
+</tr>
+<tr>
+<td>use_physical_properties</td>
+<td><code>bool</code></td>
+<td>在透视投影下使用物理镜头与传感器属性。</td>
+</tr>
+<tr>
+<td>iso</td>
+<td><code>int</code></td>
+<td>物理相机的传感器感光度。</td>
+</tr>
+<tr>
+<td>shutter_speed</td>
+<td><code>float</code></td>
+<td>物理相机的曝光时间（秒）。</td>
+</tr>
+<tr>
+<td>aperture</td>
+<td><code>float</code></td>
+<td>物理相机光圈值。</td>
+</tr>
+<tr>
+<td>focus_distance</td>
+<td><code>float</code></td>
+<td>物理相机焦平面距离。</td>
+</tr>
+<tr>
+<td>blade_count</td>
+<td><code>int</code></td>
+<td>光圈叶片数量。</td>
+</tr>
+<tr>
+<td>curvature</td>
+<td><code>Vector2</code></td>
+<td>控制光圈叶片曲率的最小与最大光圈。</td>
+</tr>
+<tr>
+<td>barrel_clipping</td>
+<td><code>float</code></td>
+<td>光学暗角的猫眼强度。</td>
+</tr>
+<tr>
+<td>anamorphism</td>
+<td><code>float</code></td>
+<td>物理相机传感器拉伸。</td>
+</tr>
+<tr>
+<td>focal_length</td>
+<td><code>float</code></td>
+<td>Physical camera focal length in millimetres.</td>
+</tr>
+<tr>
+<td>sensor_type</td>
+<td><code>CameraSensorType</code></td>
+<td>由传感器尺寸推导的预设；Custom 保留当前尺寸。</td>
+</tr>
+<tr>
+<td>sensor_size</td>
+<td><code>Any</code></td>
+<td>Physical camera sensor size in millimetres (width, height).</td>
+</tr>
+<tr>
+<td>lens_shift</td>
+<td><code>Any</code></td>
+<td>Physical camera lens shift in normalized sensor units.</td>
+</tr>
+<tr>
+<td>gate_fit</td>
+<td><code>Any</code></td>
+<td></td>
 </tr>
 <tr>
 <td>orthographic_size</td>
@@ -395,7 +500,7 @@
 <tr>
 <td>culling_mask</td>
 <td><code>int</code></td>
-<td>用于剔除对象的图层遮罩。 <em>(只读)</em></td>
+<td>用于剔除对象的图层遮罩。</td>
 </tr>
 <tr>
 <td>clear_flags</td>
@@ -443,6 +548,26 @@
 </thead>
 <tbody>
 <tr>
+<td><code>set_clip_planes(near_clip: float, far_clip: float) → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>reset_view_matrix() → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>reset_history() → None</code></td>
+<td>Discard this camera's accumulated history before its next render.</td>
+</tr>
+<tr>
+<td><code>reset_projection_matrix() → None</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>calculate_oblique_matrix(clip_plane: ArrayLike) → NDArray[np.float32]</code></td>
+<td></td>
+</tr>
+<tr>
 <td><code>screen_to_world_point(x: float, y: float, depth: float = ...) → Optional[Tuple[float, float, float]]</code></td>
 <td>将屏幕空间坐标转换为世界坐标。</td>
 </tr>
@@ -451,7 +576,7 @@
 <td>将世界空间坐标转换为屏幕坐标。</td>
 </tr>
 <tr>
-<td><code>screen_point_to_ray(x: float, y: float) → Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]</code></td>
+<td><code>screen_point_to_ray(x: float, y: float, viewport_width: Optional[float] = ..., viewport_height: Optional[float] = ...) → Optional[Tuple[Tuple[float, float, float], Tuple[float, float, float]]]</code></td>
 <td>从屏幕空间坐标向场景发出射线。</td>
 </tr>
 <tr>

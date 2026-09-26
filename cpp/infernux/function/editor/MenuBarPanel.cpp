@@ -65,10 +65,12 @@ void MenuBarPanel::OnRender(InxGUIContext *ctx)
             onRequestClose();
     }
 
-    // Style overrides
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, EditorTheme::TOOLBAR_FRAME_PAD);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, EditorTheme::TOOLBAR_ITEM_SPC);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, EditorTheme::TOOLBAR_WIN_PAD);
+    // These authored overrides replace the already-scaled global style.
+    const float dpi = ctx->GetDpiScale();
+    const auto scaled = [dpi](ImVec2 size) { return ImVec2(size.x * dpi, size.y * dpi); };
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, scaled(EditorTheme::TOOLBAR_FRAME_PAD));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, scaled(EditorTheme::TOOLBAR_ITEM_SPC));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, scaled(EditorTheme::TOOLBAR_WIN_PAD));
     ImGui::PushStyleColor(ImGuiCol_MenuBarBg, EditorTheme::MENU_BAR_BG);
     ImGui::PushStyleColor(ImGuiCol_PopupBg, EditorTheme::POPUP_BG);
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, EditorTheme::HEADER_HOVERED);

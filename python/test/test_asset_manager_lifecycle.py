@@ -81,10 +81,27 @@ def test_release_engine_does_not_clear_a_newer_engine(monkeypatch):
     assert AssetManager._asset_database is database
 
 
+def test_asset_reference_does_not_reuse_retired_play_mode_database(monkeypatch):
+    from types import SimpleNamespace
+    from Infernux.core.asset_ref import AssetRefBase
+    from Infernux.engine.play_mode import PlayModeManager
+    from Infernux.engine.interaction import AssetMutationService
+
+    class RetiredDatabase:
+        def get_path_from_guid(self, _guid):
+            raise AssertionError("retired native database must never be queried")
+
+    reference = AssetRefBase(guid="a" * 32, path_hint="Assets/Original.inxdata")
+    monkeypatch.setattr(AssetMutationService, "instance", classmethod(lambda cls: None))
+    monkeypatch.setattr(PlayModeManager, "_instance", SimpleNamespace(_asset_database=RetiredDatabase()))
+    monkeypatch.setattr(AssetManager, "_asset_database", None)
+    assert reference.path_hint == "Assets/Original.inxdata"
+
+
 @pytest.mark.parametrize(
     "operation",
     [
-        lambda: AssetManager.find_assets("*.mat"),
+        lambda: AssetManager.find_assets("Assets/*.mat"),
         lambda: AssetManager._get_guid_from_path("Assets/Test.mat"),
         lambda: AssetManager._get_path_from_guid("test-guid"),
     ],

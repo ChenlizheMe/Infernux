@@ -9,15 +9,19 @@ from Infernux.lib import (
     GraphTextureDesc,
     MaterialPassType,
     PixelFormat,
+    DepthCompare as DepthCompare,
+    InxTexture,
 )
 from Infernux.renderstack.effect_stage import EffectScope, EffectStage
 from Infernux.renderstack.pass_result import PassResult
+from Infernux.core.render_texture import RenderTexture
+from .renderer_selection import RendererSelection
 
 Format = PixelFormat
 
 
 class TextureHandle:
-    """A handle to a transient texture resource in the render graph."""
+    """A graph-local reference to a declared or imported texture resource."""
 
     name: str
     format: Format
@@ -25,6 +29,9 @@ class TextureHandle:
     size: Optional[Tuple[int, int]]
     size_divisor: int
     samples: int
+    asset_guid: str
+    depth: int
+    is_volume: bool
 
     def __init__(
         self,
@@ -45,13 +52,21 @@ class TextureHandle:
 
 
 class BufferHandle:
-    """A handle to a transient buffer resource in the render graph."""
+    """A handle to a buffer resource in the render graph."""
 
     name: str
     byte_size: int
     usage: int
+    view_light_list: bool
 
-    def __init__(self, name: str, byte_size: int, usage: int) -> None: ...
+    def __init__(
+        self,
+        name: str,
+        byte_size: int,
+        usage: int,
+        *,
+        view_light_list: bool = ...,
+    ) -> None: ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...
     def __hash__(self) -> int: ...
@@ -93,6 +108,9 @@ class RenderPassBuilder:
     def set_texture(self, sampler_name: str, texture: str | TextureHandle) -> RenderPassBuilder:
         """Bind a texture to a sampler input for this pass."""
         ...
+    def set_buffer(self, resource_name: str, buffer: str | BufferHandle) -> RenderPassBuilder:
+        """Bind a read-only graph buffer to a fullscreen BufferUInt resource."""
+        ...
     def set_textures(self, bindings: Mapping[str, object]) -> RenderPassBuilder:
         """Bind multiple textures to sampler inputs for this pass."""
         ...
@@ -110,6 +128,8 @@ class RenderPassBuilder:
         pass_tag: str = ...,
         override_material: str = ...,
         material_pass: str = ...,
+        material_filter: str = ...,
+        renderer_selection: RendererSelection | None = ...,
     ) -> RenderPassBuilder:
         """Draw visible renderers filtered by queue range."""
         ...
@@ -130,12 +150,18 @@ class RenderPassBuilder:
     ) -> RenderPassBuilder:
         """Draw screen-space UI elements in this pass."""
         ...
+    def draw_world_ui(self, *, layer_mask: int = ...) -> RenderPassBuilder:
+        """Draw selected GameObject layers, also respecting Camera culling and pass depth."""
+        ...
     def fullscreen_quad(
         self,
         shader: str,
-        **push_constants: float,
+        *,
+        depth_test: DepthCompare | None = None,
+        depth_write: bool = False,
+        alpha_blend: bool = False,
     ) -> RenderPassBuilder:
-        """Draw a fullscreen quad with the specified shader."""
+        """Draw a fullscreen triangle with explicit optional depth/blend state."""
         ...
     def copy_texture(
         self, source: str | TextureHandle, destination: str | TextureHandle
@@ -164,7 +190,7 @@ class RenderPassBuilder:
 class RenderGraph:
     """A declarative render graph that defines texture resources and render passes."""
 
-    def __init__(self, name: str = ...) -> None: ...
+    def __init__(self, name: str = ..., *, output_samples: int = 0) -> None: ...
     @property
     def name(self) -> str:
         """The name of this render graph."""
@@ -193,8 +219,9 @@ class RenderGraph:
     def effect_stages(self) -> List[EffectStage]:
         """Pipeline-declared user attachment stages in topology order."""
         ...
-    def set_msaa_samples(self, samples: int) -> None:
-        """Set the MSAA sample count for all render targets."""
+    def set_temporal_jitter(self, enabled: bool = True) -> None: ...
+    def set_msaa_samples(self, samples: int) -> int:
+        """Set screen MSAA preference; return the effective Camera target sample count."""
         ...
     def create_texture(
         self,
@@ -211,6 +238,12 @@ class RenderGraph:
     def get_texture(self, name: str) -> Optional[TextureHandle]:
         """Get a texture handle by name, or None if not found."""
         ...
+    def import_texture(self, name: str, texture: RenderTexture | InxTexture, *, attachment: str = "color") -> TextureHandle:
+        """Import a persistent target attachment or a GUID-backed sample-only Texture asset."""
+        ...
+    def create_temporal_history(self, name: str, *, format: Format = Format.RGBA16_SFLOAT,
+                                size: Optional[Tuple[int, int]] = None,
+                                size_divisor: int = 0) -> Tuple[TextureHandle, TextureHandle]: ...
     def name_scope(self, prefix: str) -> AbstractContextManager[RenderGraph]: ...
     def effect_resources(
         self, resources: Mapping[str, TextureHandle]
@@ -233,6 +266,10 @@ class RenderGraph:
         transfer_destination: bool = ...,
     ) -> BufferHandle:
         """Declare a transient buffer resource in the render graph."""
+        ...
+    def create_view_light_list(self, name: str = "light_list") -> BufferHandle: ...
+    def import_buffer(self, name: str, buffer) -> BufferHandle:
+        """Import an open uint32 GPU inx.buffer into the render graph."""
         ...
     def get_buffer(self, name: str) -> Optional[BufferHandle]:
         """Get a buffer handle by name, or None if not found."""
@@ -270,7 +307,7 @@ class RenderGraph:
     def effects(self, stable_id: str, **kwargs: object) -> EffectStage:
         """Pipeline-author shorthand for ``effect_stage``."""
         ...
-    def screen_ui_section(self, *, resources: set | None = ...) -> None:
+    def screen_ui_section(self, *, resources: set | None = ..., world_ui_layer_mask: int = ...) -> None:
         """Declare a screen UI section in the graph topology."""
         ...
     def set_geometry_buffer_requirements(self, requirements) -> None: ...
@@ -286,7 +323,7 @@ class RenderGraph:
     @property
     def latest_pass_result(self) -> PassResult | None: ...
     def get_pass_result(self, source: str) -> PassResult | None: ...
-    def camera_ui_section(self, *, resources: set | None = ...) -> None:
+    def camera_ui_section(self, *, resources: set | None = ..., world_ui_layer_mask: int = ...) -> None:
         """Draw Camera UI and declare the after-camera-UI effect stage."""
         ...
     def screen_ui_overlay_section(self, *, resources: set | None = ...) -> None:

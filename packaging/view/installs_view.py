@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt, QThread, Signal
 from version_manager import VersionManager, EngineVersion
 from install_queue import InstallQueue
 from android_support import AndroidSupportManager
+from blender_support import BLENDER_VERSION, BlenderSupportManager
 from i18n import tr
 from view.hover_widgets import AnimatedSurfaceFrame
 
@@ -170,6 +171,50 @@ class _AndroidSupportCard(AnimatedSurfaceFrame):
         install.setFixedHeight(34)
         install.setMinimumWidth(96)
         install.setProperty("installationKey", "android")
+        install.setProperty("idleText", install.text())
+        install.clicked.connect(self.install_clicked.emit)
+        layout.addWidget(install)
+
+
+class _BlenderSupportCard(AnimatedSurfaceFrame):
+    install_clicked = Signal()
+
+    def __init__(self, manager: BlenderSupportManager, parent=None):
+        super().__init__("versionCard", parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(86)
+        status = manager.status()
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(12)
+        info = QVBoxLayout()
+        info.setSpacing(3)
+        title = QLabel(tr("Blender {version}", version=BLENDER_VERSION))
+        title.setObjectName("cardName")
+        info.addWidget(title)
+        if status.installed:
+            detail_text = tr(
+                "Used only by the Editor to import .blend source assets. Players never include Blender.\n{path}",
+                path=str(status.executable),
+            )
+        elif status.error:
+            detail_text = tr("Installed files need repair: {message}", message=status.error)
+        else:
+            detail_text = tr(
+                "Install the pinned Blender authoring tool once so every Infernux project can import .blend files."
+            )
+        detail = QLabel(detail_text)
+        detail.setObjectName("cardPath")
+        detail.setWordWrap(True)
+        info.addWidget(detail)
+        layout.addLayout(info, 1)
+
+        install = QPushButton(tr("Repair") if status.installed or status.error else tr("Install"))
+        install.setObjectName("normalBtn" if status.installed else "primaryBtn")
+        install.setFixedHeight(34)
+        install.setMinimumWidth(96)
+        install.setProperty("installationKey", "blender")
         install.setProperty("idleText", install.text())
         install.clicked.connect(self.install_clicked.emit)
         layout.addWidget(install)
@@ -576,6 +621,55 @@ class AndroidSupportView(QWidget):
         manager = self._manager
         return self._queue.submit(
             "android", tr("Android support"),
+            lambda report: manager.install(
+                on_progress=lambda done, total: report(tr("Downloading"), done, total),
+            ),
+        )
+
+
+class BlenderSupportView(QWidget):
+    def __init__(self, manager, queue: InstallQueue, parent=None):
+        super().__init__(parent)
+        self._manager = manager
+        self._queue = queue
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        title = QLabel(tr("Model authoring"))
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        description = QLabel(tr(
+            "Optional Editor tooling for importing Blender source assets. "
+            "Hub owns one compatible installation shared by all projects."
+        ))
+        description.setWordWrap(True)
+        description.setObjectName("pageSubtitle")
+        layout.addWidget(description)
+        self._cards = QVBoxLayout()
+        layout.addLayout(self._cards)
+        layout.addStretch()
+        queue.job_finished.connect(self._on_job_finished)
+        queue.changed.connect(self._update_actions)
+        self.refresh()
+
+    def _update_actions(self):
+        _update_install_buttons(self, self._queue)
+
+    def _on_job_finished(self, _job):
+        self.refresh()
+
+    def refresh(self):
+        while self._cards.count():
+            self._cards.takeAt(0).widget().deleteLater()
+        card = _BlenderSupportCard(self._manager)
+        card.install_clicked.connect(self.install)
+        self._cards.addWidget(card)
+        self._update_actions()
+
+    def install(self):
+        manager = self._manager
+        return self._queue.submit(
+            "blender",
+            tr("Blender authoring support"),
             lambda report: manager.install(
                 on_progress=lambda done, total: report(tr("Downloading"), done, total),
             ),

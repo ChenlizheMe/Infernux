@@ -4,14 +4,14 @@
     {
       "path": "infernux_mcp",
       "repository": "https://github.com/ChenlizheMe/infernux_mcp",
-      "category": "Agent",
+      "category": "editor_tools",
       "targets": [],
       "default": true
     },
     {
       "path": "infernux_windows",
       "repository": "https://github.com/ChenlizheMe/infernux_windows",
-      "category": "Platform",
+      "category": "platform_build",
       "targets": [
         "windows-x64"
       ],
@@ -20,7 +20,7 @@
     {
       "path": "infernux_linux",
       "repository": "https://github.com/ChenlizheMe/infernux_linux",
-      "category": "Platform",
+      "category": "platform_build",
       "targets": [
         "linux-x64"
       ],
@@ -29,7 +29,7 @@
     {
       "path": "infernux_android",
       "repository": "https://github.com/ChenlizheMe/infernux_android",
-      "category": "Platform",
+      "category": "platform_build",
       "targets": [
         "android-arm64",
         "android-x64-emulator"
@@ -39,7 +39,7 @@
     {
       "path": "infernux_web",
       "repository": "https://github.com/ChenlizheMe/infernux_web",
-      "category": "Platform",
+      "category": "platform_build",
       "targets": [
         "web-wasm32"
       ],

@@ -1,8 +1,8 @@
 """
 Asset Manager — Python-side unified asset loading & caching.
 
-Provides a singleton interface for loading assets by path or GUID,
-with WeakRef-based caching to avoid duplicate loads.
+Provides a singleton interface for loading GUID-backed managed assets and for
+explicitly accessing root-confined loose files.
 
 Usage::
 
@@ -14,8 +14,9 @@ Usage::
     # Load by GUID
     mat = AssetManager.load_by_guid("a1b2c3d4-e5f6-...")
 
-    # Search
-    mats = AssetManager.find_assets("*.mat")
+    # Search (returns GUID-backed managed file handles)
+    material_files = AssetManager.find_assets("Assets/Materials/*.mat")
+    mat = material_files[0].load()
 """
 
 from __future__ import annotations
@@ -28,11 +29,13 @@ import time
 import weakref
 import uuid
 from dataclasses import dataclass
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Dict, List, Optional, Type
 
 from Infernux.core.material import Material
 from Infernux.core.texture import Texture
 from Infernux.core.shader import Shader
+from Infernux.core.mesh import Mesh
 from Infernux.core.audio_clip import AudioClip
 from Infernux.core.asset_types import (
     IMAGE_EXTENSIONS, SHADER_EXTENSIONS, MATERIAL_EXTENSIONS, AUDIO_EXTENSIONS,
@@ -53,6 +56,23 @@ from Infernux.engine.path_utils import path_key, portable_path, resolved_path
 _META_SUPPRESSION_TIMEOUT: float = 2.0  # seconds
 _DEFAULT_DEBOUNCE_SEC: float = 0.35  # seconds
 _RUNTIME_VOLUME_TEXTURE_EXTENSIONS = frozenset({".inxvfield", ".inxsdf"})
+
+
+def _portable_glob_match(value: str, pattern: str) -> bool:
+    """Match a portable glob with ``**/`` representing zero or more levels."""
+    candidates = {pattern}
+    collapsed = pattern
+    while "**/" in collapsed:
+        collapsed = collapsed.replace("**/", "", 1)
+        candidates.add(collapsed)
+    for candidate in candidates:
+        if not fnmatch.fnmatchcase(value, candidate):
+            continue
+        if "**" in candidate or "/" not in candidate:
+            return True
+        if value.count("/") == candidate.count("/"):
+            return True
+    return False
 
 
 @dataclass(slots=True)
@@ -94,6 +114,69 @@ class _SelfWriteCommit:
     file_state: Any = None
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class AssetFile:
+    """Opaque handle for one managed file returned by an asset query.
+
+    The GUID remains an engine-owned identity.  Gameplay receives a loadable
+    file handle instead of the catalog key so Editor and Player use the same
+    API without making GUID strings part of ordinary file-query code.
+    """
+
+    _guid: str
+
+    def __post_init__(self) -> None:
+        guid = self._guid.strip() if isinstance(self._guid, str) else ""
+        if not guid:
+            raise ValueError("AssetFile requires a non-empty GUID")
+        object.__setattr__(self, "_guid", guid)
+
+    def __repr__(self) -> str:
+        return "AssetFile()"
+
+    def load(self, asset_type: Optional[Type] = None) -> Optional[Any]:
+        """Load the managed asset represented by this immutable handle."""
+        return AssetManager.load_by_guid(self._guid, asset_type=asset_type)
+
+    def _read_path(self) -> str:
+        """Resolve the current payload without exposing its catalog identity."""
+        from Infernux.application import Application
+
+        if Application.is_player():
+            from Infernux.engine.project_context import resolve_runtime_asset_guid
+
+            path = resolve_runtime_asset_guid(self._guid)
+            if not path or not os.path.isfile(path):
+                raise FileNotFoundError("Managed asset file is not available")
+            return path
+
+        path = AssetManager._get_path_from_guid(self._guid)
+        if not path:
+            raise FileNotFoundError("Managed asset file is not available")
+        project_root = Application.data_path()
+        if not project_root:
+            raise RuntimeError("Managed asset access requires an active Editor project")
+        assets_root = resolved_path(os.path.join(project_root, "Assets"))
+        candidate = resolved_path(path)
+        from Infernux.engine.path_utils import is_path_within
+
+        if not is_path_within(candidate, assets_root, allow_root=False):
+            raise PermissionError("Managed asset file resolves outside Assets")
+        if not os.path.isfile(candidate):
+            raise FileNotFoundError("Managed asset file is not available")
+        return candidate
+
+    def read_bytes(self) -> bytes:
+        """Read the current managed payload while retaining GUID identity."""
+        path = self._read_path()
+        with open(path, "rb") as stream:
+            return stream.read()
+
+    def read_text(self, encoding: str = "utf-8") -> str:
+        """Decode the current managed payload as text."""
+        return self.read_bytes().decode(encoding)
+
+
 class AssetManager:
     """Python-side asset loading & caching manager (singleton pattern).
 
@@ -103,6 +186,11 @@ class AssetManager:
 
     # Weak-ref cache: guid → weakref to loaded Python wrapper
     _cache: Dict[str, weakref.ref] = {}
+
+    # DataAsset values resolved by gameplay live in a separate strong cache.
+    # The cache exists only between the Play enter/exit boundaries, so runtime
+    # mutation cannot leak into the authored asset object.
+    _play_data_asset_cache: Optional[Dict[str, Any]] = None
 
     # Strong-ref cache for textures: guid → Texture
     # Textures are expensive to reload from disk, so keep them alive.
@@ -156,6 +244,7 @@ class AssetManager:
         tuple[str, str, str],
         tuple[int, int, int] | None,
     ] = {}
+    _pending_model_previous_scales: Dict[str, float] = {}
 
     @classmethod
     def initialize(cls, engine) -> None:
@@ -193,6 +282,7 @@ class AssetManager:
         if engine is not None and cls._engine is not engine:
             return
         cls._cache.clear()
+        cls._play_data_asset_cache = None
         cls._texture_cache.clear()
         with cls._pending_gpu_texture_reloads_lock:
             cls._pending_gpu_texture_reloads.clear()
@@ -206,6 +296,7 @@ class AssetManager:
         cls._self_write_commits.clear()
         cls._meta_write_suppression.clear()
         cls._watcher_echo_suppression.clear()
+        cls._pending_model_previous_scales.clear()
         cls._asset_database = None
         cls._registry = None
         cls._engine = None
@@ -227,34 +318,41 @@ class AssetManager:
             return False
 
     @classmethod
-    def load(cls, path: str, asset_type: Optional[Type] = None) -> Optional[Any]:
-        """Load an asset by file path.
+    def load(
+        cls,
+        path: str,
+        asset_type: Optional[Type] = None,
+        *,
+        raw_filesystem: bool = False,
+    ) -> Optional[Any]:
+        """Load a managed asset, or acquire an explicitly loose-file handle.
 
         Supports: .mat (Material)
         More types will be added as wrappers are implemented.
 
         Args:
-            path: File path to the asset (relative or absolute).
+            path: An asset GUID or an authored path below ``Assets``. Authored
+                paths are resolved to GUIDs before the asset is loaded in both
+                Editor and Player.
             asset_type: Optional type hint. If None, inferred from extension.
+            raw_filesystem: Opt into loose-file access.  The returned
+                :class:`SandboxPath` is rooted at the project ``Assets``
+                directory in Editor and beside the executable in Player.
 
         Returns:
             The loaded asset wrapper, or None if loading failed.
         """
-        # Try GUID-based cache first
-        guid = cls._get_guid_from_path(path)
-        if guid:
-            cached = cls._get_cached(guid)
-            if cached is not None:
-                return cached
+        if raw_filesystem:
+            if asset_type is not None:
+                raise TypeError("asset_type is not used for raw filesystem handles")
+            from Infernux.core.sandbox_files import SandboxPath
 
-        # Infer type from extension if not specified
-        ext = os.path.splitext(path)[1].lower()
-        resolved_type = asset_type or cls._type_from_extension(ext)
+            return SandboxPath.create(path)
 
-        asset = cls._load_by_type(path, resolved_type)
-        if asset is not None and guid:
-            cls._put_cache(guid, asset)
-        return asset
+        guid = cls._managed_guid(path)
+        if not guid:
+            return None
+        return cls.load_by_guid(guid, asset_type=asset_type)
 
     @classmethod
     def load_by_guid(cls, guid: str, asset_type: Optional[Type] = None) -> Optional[Any]:
@@ -272,8 +370,17 @@ class AssetManager:
         if cached is not None:
             return cached
 
-        # Resolve path from GUID
-        path = cls._get_path_from_guid(guid)
+        # Editor resolves through its live database. Player resolves the same
+        # GUID through the immutable cooked catalog and never consults an
+        # authored source path.
+        from Infernux.application import Application
+
+        if Application.is_player():
+            from Infernux.engine.project_context import resolve_runtime_asset_guid
+
+            path = resolve_runtime_asset_guid(guid)
+        else:
+            path = cls._get_path_from_guid(guid)
         if not path:
             return None
 
@@ -294,30 +401,185 @@ class AssetManager:
         return asset
 
     @classmethod
-    def find_assets(cls, pattern: str, asset_type: Optional[Type] = None) -> List[str]:
-        """Search for asset paths matching a glob pattern.
+    def find_assets(
+        cls,
+        pattern: str,
+        asset_type: Optional[Type] = None,
+        *,
+        raw_filesystem: bool = False,
+    ) -> List[Any]:
+        """Query managed asset files or explicitly sandboxed loose files.
 
         Args:
-            pattern: Glob pattern (e.g. "*.mat", "Assets/Textures/*.png").
+            pattern: Asset glob/GUID, or a sandbox-relative glob when
+                ``raw_filesystem`` is true.
             asset_type: If specified, filter by type.
+            raw_filesystem: Query real files rather than the asset database.
 
         Returns:
-            List of matching asset paths.
+            Managed mode returns GUID-backed :class:`AssetFile` handles. Raw mode returns
+            :class:`SandboxPath` handles. Player path/glob queries use the
+            build-frozen path-to-GUID index and never scan its filesystem.
         """
-        if not cls._asset_database:
-            return []
+        if raw_filesystem:
+            if asset_type is not None:
+                raise TypeError("asset_type is not used for raw filesystem queries")
+            from Infernux.core.sandbox_files import find_sandbox_paths
 
-        results = []
-        guids = cls._asset_database.get_all_guids()
+            return find_sandbox_paths(pattern)
+
+        token = str(pattern or "").strip()
+        if not token:
+            return []
+        portable_token = token.replace("\\", "/")
+        has_glob = any(char in token for char in "*?[")
+        guid_query = not has_glob and not cls._looks_like_asset_path(token)
+        if not guid_query and (
+            not portable_token.casefold().startswith("assets/")
+            and portable_token.casefold() != "assets"
+        ):
+            raise ValueError(
+                "managed asset queries must use a GUID or full Assets/... path"
+            )
+        if not guid_query:
+            cls._validate_author_asset_pattern(token)
+
+        from Infernux.application import Application
+
+        if Application.is_player():
+            from Infernux.engine.project_context import (
+                query_runtime_asset_guids,
+                runtime_asset_extension,
+            )
+
+            results = list(query_runtime_asset_guids(token))
+            if asset_type is None:
+                return [AssetFile(guid) for guid in results]
+            results = [
+                guid for guid in results
+                if cls._type_from_extension(
+                    runtime_asset_extension(guid)
+                ) == asset_type
+            ]
+            return [AssetFile(guid) for guid in results]
+
+        database = cls.require_asset_database()
+        if guid_query:
+            path = database.get_path_from_guid(token)
+            if not path or not os.path.isfile(path):
+                return []
+            if asset_type is not None:
+                ext = os.path.splitext(path)[1].lower()
+                if cls._type_from_extension(ext) != asset_type:
+                    return []
+            return [AssetFile(token)]
+        results: list[str] = []
+        normalized_pattern = portable_token.rstrip("/")
+        directory_query = not has_glob
+        guids = database.get_all_guids()
         for guid in guids:
-            path = cls._asset_database.get_path_from_guid(guid)
-            if path and fnmatch.fnmatch(os.path.basename(path), pattern):
+            path = database.get_path_from_guid(guid)
+            if not path or not os.path.isfile(path):
+                continue
+            logical = cls._author_asset_path(path) if path else ""
+            logical_glob_match = _portable_glob_match(logical, normalized_pattern)
+            if logical and (
+                logical_glob_match
+                or (
+                    directory_query
+                    and logical.rpartition("/")[0].casefold()
+                    == normalized_pattern.casefold()
+                )
+            ):
                 if asset_type is not None:
                     ext = os.path.splitext(path)[1].lower()
                     if cls._type_from_extension(ext) != asset_type:
                         continue
-                results.append(path)
-        return results
+                results.append(str(guid))
+        return [AssetFile(guid) for guid in sorted(results)]
+
+    @staticmethod
+    def _looks_like_asset_path(value: str) -> bool:
+        token = str(value or "").strip()
+        return (
+            token in {".", ".."}
+            or token.replace("\\", "/").casefold() == "assets"
+            or token.replace("\\", "/").casefold().startswith("assets/")
+            or os.path.isabs(token)
+            or bool(PureWindowsPath(token).anchor)
+            or "/" in token
+            or "\\" in token
+            or bool(os.path.splitext(token)[1])
+        )
+
+    @staticmethod
+    def _validate_author_asset_pattern(pattern: str) -> None:
+        portable = pattern.replace("\\", "/")
+        if (
+            os.path.isabs(pattern)
+            or PurePosixPath(pattern).is_absolute()
+            or bool(PureWindowsPath(pattern).anchor)
+        ):
+            raise ValueError("asset query patterns must stay below Assets")
+        parts = portable.split("/")
+        if any(part in {"", ".", ".."} for part in parts):
+            raise ValueError("asset query patterns must stay below Assets")
+        if (
+            portable.casefold() != "assets"
+            and not portable.casefold().startswith("assets/")
+        ):
+            raise ValueError("asset query patterns must be Assets-relative")
+
+    @staticmethod
+    def _author_asset_path(path: str) -> str:
+        from Infernux.application import Application
+        from Infernux.engine.path_utils import is_path_within, portable_path, relative_path, resolved_path
+
+        project_root = Application.data_path()
+        if project_root and os.path.isabs(path):
+            assets_root = resolved_path(os.path.join(project_root, "Assets"))
+            candidate = resolved_path(path)
+            if is_path_within(candidate, assets_root, allow_root=False):
+                return "Assets/" + portable_path(relative_path(candidate, assets_root))
+            return ""
+        portable = portable_path(path)
+        if not os.path.isabs(path):
+            return portable if portable.casefold().startswith("assets/") else ""
+        marker = portable.casefold().find("/assets/")
+        return portable[marker + 1 :] if marker >= 0 else portable
+
+    @classmethod
+    def _managed_guid(cls, value: str) -> str:
+        """Resolve a GUID or authored path to one authoritative GUID identity."""
+        token = str(value or "").strip()
+        if not token:
+            return ""
+        from Infernux.application import Application
+
+        if Application.is_player():
+            from Infernux.engine.project_context import (
+                query_runtime_asset_guids,
+                resolve_runtime_asset_guid,
+            )
+
+            if not cls._looks_like_asset_path(token):
+                return token if resolve_runtime_asset_guid(token) else ""
+            guids = query_runtime_asset_guids(token)
+            if len(guids) > 1:
+                raise RuntimeError(f"Player asset path is ambiguous: {token}")
+            return guids[0] if guids else ""
+
+        database = cls.require_asset_database()
+        if not cls._looks_like_asset_path(token):
+            return token if database.get_path_from_guid(token) else ""
+
+        cls._validate_author_asset_pattern(token)
+        project_root = Application.data_path()
+        if not project_root:
+            return ""
+        candidate = os.path.join(project_root, *token.replace("\\", "/").split("/"))
+        guid = database.get_guid_from_path(candidate)
+        return str(guid) if guid else ""
 
     @classmethod
     def invalidate(cls, guid: str) -> None:
@@ -341,6 +603,18 @@ class AssetManager:
         """Clear all cached assets."""
         cls._cache.clear()
         cls._texture_cache.clear()
+        if cls._play_data_asset_cache is not None:
+            cls._play_data_asset_cache.clear()
+
+    @classmethod
+    def _begin_play_data_asset_isolation(cls) -> None:
+        if cls._play_data_asset_cache is not None:
+            raise RuntimeError("DataAsset Play isolation is already active")
+        cls._play_data_asset_cache = {}
+
+    @classmethod
+    def _end_play_data_asset_isolation(cls) -> None:
+        cls._play_data_asset_cache = None
 
     # ======================================================================
     # Unified execution APIs (Inspector-facing)
@@ -361,14 +635,15 @@ class AssetManager:
         if cls._execution_strategies_initialized:
             return
 
-        from Infernux.core.asset_types import write_texture_import_settings, write_audio_import_settings, write_mesh_import_settings
+        from Infernux.core.asset_types import write_texture_import_settings, write_audio_import_settings
 
         cls.register_import_strategy("texture", write_texture_import_settings)
         cls.register_import_strategy("audio", write_audio_import_settings)
-        cls.register_import_strategy("mesh", write_mesh_import_settings)
         cls.register_save_strategy("material", cls._save_material_resource)
+        cls.register_save_strategy("data_asset", lambda resource: resource.save() is not False)
         cls.register_save_strategy("render_effect", cls._save_render_effect_resource)
         cls.register_save_strategy("physic_material", lambda resource: resource.save() is not False)
+        cls.register_save_strategy("render_texture", lambda resource: resource.save() is not False)
         cls.register_save_strategy("animclip", cls._save_animclip_resource)
         cls.register_save_strategy("animclip3d", cls._save_animclip3d_resource)
         cls.register_save_strategy("animfsm", cls._save_animfsm_resource)
@@ -381,6 +656,18 @@ class AssetManager:
     def apply_import_settings(cls, asset_category: str, path: str, settings_obj) -> bool:
         """Apply import settings by category and trigger reimport in one unified step."""
         cls._ensure_execution_strategies()
+
+        if asset_category == "texture" and "::subtex:" in path:
+            from Infernux.core.asset_types import TextureImportSettings
+            snapshot = TextureImportSettings.from_dict(settings_obj.to_dict()).to_dict()
+            return bool(cls.reimport_asset(path, import_settings=snapshot))
+
+        if asset_category == "mesh":
+            # Model settings are an import input, not an early sidecar write.
+            # Native import publishes this snapshot and its artifacts together.
+            from Infernux.core.asset_types import MeshImportSettings
+            snapshot = MeshImportSettings.from_dict(settings_obj.to_dict()).to_dict()
+            return bool(cls.reimport_asset(path, import_settings=snapshot))
 
         apply_fn = cls._import_apply_handlers.get(asset_category)
         if apply_fn is None:
@@ -398,6 +685,54 @@ class AssetManager:
             return True
         cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
         return False
+
+    @classmethod
+    def begin_model_reimport(cls, path: str, settings_obj):
+        """Submit an immutable model settings snapshot; return its owning database."""
+        from Infernux.core.asset_types import MeshImportSettings, TextureImportSettings
+
+        database = cls._mutation_database()
+        settings_type = TextureImportSettings if "::subtex:" in path else MeshImportSettings
+        snapshot = settings_type.from_dict(settings_obj.to_dict()).to_dict()
+        if settings_type is MeshImportSettings:
+            previous_scale = cls._model_effective_scale(database, path)
+            if previous_scale is not None:
+                cls._pending_model_previous_scales[path_key(path)] = previous_scale
+        database.begin_model_reimport(path, snapshot)
+        return database
+
+    @classmethod
+    def poll_model_reimport(cls, database):
+        """Publish a completed model Apply on the editor owner thread, once."""
+        result = database.try_commit_model_reimport()
+        if result is None:
+            return result
+        previous_scale = cls._pending_model_previous_scales.pop(path_key(result.path), None)
+        if not result:
+            return result
+        cls._suppress_meta_watcher(result.path)
+        return cls._publish_reimport_result(
+            result.path, result, database=database, previous_model_scale=previous_scale
+        )
+
+    @staticmethod
+    def _model_effective_scale(database, path: str) -> float | None:
+        guid = database.get_guid_from_path(path)
+        metadata = database.get_meta_by_guid(guid) if guid else None
+        if metadata is None:
+            return None
+        try:
+            if metadata.has_key("effective_scale"):
+                value = float(metadata.get_float("effective_scale"))
+            elif metadata.has_key("scale_factor"):
+                value = float(metadata.get_float("scale_factor"))
+                if metadata.has_key("source_unit_scale"):
+                    value *= float(metadata.get_float("source_unit_scale"))
+            else:
+                return None
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return None
+        return value if value > 0.0 else None
 
     @classmethod
     def _mutation_database(cls, database=None):
@@ -455,6 +790,23 @@ class AssetManager:
         }.get(origin_value, "editor")
         manager = ResourcesManager.instance()
         if manager is not None:
+            from Infernux.engine.project_context import package_script_role
+
+            project_root = (
+                manager.project_path
+                if isinstance(manager, ResourcesManager)
+                else None
+            )
+            if project_root and package_script_role(path, project_root) == "editor":
+                # Editor package code belongs to the package preload lifetime.
+                # Sending it through the gameplay component frontend rejects
+                # legitimate lifecycle declarations (threads, sockets, and
+                # process-owned services) before the package manager can
+                # publish the new generation.
+                manager.notify_script_catalog_changed(
+                    path, catalog_event or "modified"
+                )
+                return
             manager.submit_script_change(
                 path,
                 origin=collector_origin,
@@ -473,6 +825,7 @@ class AssetManager:
         if not result:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
+
         effect_error = cls._compile_render_effect_runtime(path, result.guid)
         if effect_error:
             from Infernux.lib import AssetMutationErrorCode
@@ -504,7 +857,8 @@ class AssetManager:
         return result
 
     @classmethod
-    def reimport_asset(cls, path: str, *, database=None, suppress_watcher_echo: bool = True):
+    def reimport_asset(cls, path: str, *, database=None, suppress_watcher_echo: bool = True,
+                       import_settings=None):
         """Reimport through AssetDatabase, then refresh any loaded runtime copy."""
         asset_database = cls._mutation_database(database)
         guid = asset_database.get_guid_from_path(path)
@@ -515,6 +869,11 @@ class AssetManager:
             )
 
         ext = os.path.splitext(path)[1].lower()
+        from Infernux.core.asset_types import MESH_EXTENSIONS
+        previous_model_scale = (
+            cls._model_effective_scale(asset_database, path)
+            if ext in MESH_EXTENSIONS else None
+        )
         previous_shader_id = ""
         if ext in SHADER_EXTENSIONS:
             metadata = asset_database.get_meta_by_guid(guid)
@@ -529,11 +888,27 @@ class AssetManager:
         # first and could abort reimport (and meta rebuild) on transient IO races
         # while DocumentStore was still publishing the asset or its .meta sidecar.
         cls._suppress_meta_watcher(path)
-        result = asset_database.reimport_asset(path)
+        result = (asset_database.reimport_asset(path) if import_settings is None
+                  else asset_database.reimport_asset(path, settings=import_settings))
         if not result:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
 
+        if "::subtex:" in path:
+            path = result.path
+            cls._suppress_meta_watcher(path)
+        return cls._publish_reimport_result(
+            path, result, database=asset_database, suppress_watcher_echo=suppress_watcher_echo,
+            native=native, has_shader_runtime=has_shader_runtime, previous_shader_id=previous_shader_id,
+            previous_model_scale=previous_model_scale,
+        )
+
+    @classmethod
+    def _publish_reimport_result(cls, path, result, *, database, suppress_watcher_echo=True,
+                                 native=None, has_shader_runtime=False, previous_shader_id="",
+                                 previous_model_scale=None):
+        guid = result.guid
+        ext = os.path.splitext(path)[1].lower()
         is_ordinary_script = ext == ".py" and not str(path).lower().endswith(".particle.py")
         if is_ordinary_script:
             # Ordinary scripts have their own validated collector and atomic
@@ -561,7 +936,7 @@ class AssetManager:
         particle_error = cls._compile_particle_runtime(
             path,
             guid,
-            database=asset_database,
+            database=database,
         )
         if particle_error:
             from Infernux.lib import AssetMutationErrorCode
@@ -609,7 +984,7 @@ class AssetManager:
             cls._schedule_gpu_texture_reload(path)
         from Infernux.core.asset_types import MESH_EXTENSIONS
         if ext in MESH_EXTENSIONS:
-            cls._reload_mesh_asset(path)
+            cls._reload_mesh_asset(path, previous_effective_scale=previous_model_scale)
         cls.note_imported_disk_change(path)
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("modified", path)
@@ -1693,6 +2068,11 @@ class AssetManager:
 
     @classmethod
     def _get_cached(cls, guid: str) -> Optional[Any]:
+        play_cache = cls._play_data_asset_cache
+        if play_cache is not None:
+            isolated = play_cache.get(guid)
+            if isolated is not None:
+                return isolated
         # Strong texture cache (never GC'd until explicit invalidation)
         tex = cls._texture_cache.get(guid)
         if tex is not None:
@@ -1701,6 +2081,13 @@ class AssetManager:
         if ref is not None:
             obj = ref()
             if obj is not None:
+                if play_cache is not None:
+                    from Infernux.core.data_asset import DataAsset
+
+                    if isinstance(obj, DataAsset):
+                        isolated = obj._clone_for_play()
+                        play_cache[guid] = isolated
+                        return isolated
                 return obj
             # Dead reference — clean up
             del cls._cache[guid]
@@ -1708,6 +2095,14 @@ class AssetManager:
 
     @classmethod
     def _put_cache(cls, guid: str, asset) -> None:
+        play_cache = cls._play_data_asset_cache
+        if play_cache is not None:
+            from Infernux.core.data_asset import DataAsset
+
+            if isinstance(asset, DataAsset):
+                asset._mark_play_isolated()
+                play_cache[guid] = asset
+                return
         if isinstance(asset, Texture):
             cls._texture_cache[guid] = asset
         try:
@@ -1722,6 +2117,13 @@ class AssetManager:
     def _type_from_extension(cls, ext: str) -> Optional[Type]:
         """Map file extension to Python asset type."""
         ext = ext.lower()
+        if ext == ".inxmesh":
+            return Mesh
+        if ext == ".inxtex":
+            return Texture
+        if ext == ".inxrtex":
+            from Infernux.core.render_texture import RenderTexture
+            return RenderTexture
         if ext in MATERIAL_EXTENSIONS:
             return Material
         if ext in IMAGE_EXTENSIONS:
@@ -1742,11 +2144,22 @@ class AssetManager:
         if ext in PARTICLE_GRAPH_EXTENSIONS:
             from Infernux.particle.asset import ParticleGraphAsset
             return ParticleGraphAsset
+        if ext == ".inxdata":
+            from Infernux.core.data_asset import DataAsset
+            return DataAsset
+        if ext == ".rendertexture":
+            from Infernux.core.render_texture import RenderTexture
+            return RenderTexture
         return None
 
     @classmethod
     def _load_by_type(cls, path: str, asset_type: Optional[Type]) -> Optional[Any]:
         """Load an asset given its path and resolved type."""
+        from Infernux.core.render_texture import RenderTexture
+        if asset_type is Mesh:
+            return Mesh.load(path)
+        if asset_type is RenderTexture:
+            return RenderTexture.load(path)
         if asset_type is Material or (asset_type is None and path.endswith(".mat")):
             return Material.load(path)
         if asset_type is Texture:
@@ -1808,6 +2221,11 @@ class AssetManager:
                 return ParticleGraphAsset.load(path)
             except (OSError, RuntimeError, TypeError, ValueError):
                 return None
+        from Infernux.core.data_asset import DataAsset
+        if asset_type is DataAsset or (
+            asset_type is None and path.lower().endswith(".inxdata")
+        ):
+            return DataAsset.load(path)
         return None
 
     @classmethod
@@ -1951,7 +2369,7 @@ class AssetManager:
         return False
 
     @classmethod
-    def _reload_mesh_asset(cls, path: str) -> None:
+    def _reload_mesh_asset(cls, path: str, *, previous_effective_scale=None) -> None:
         """Reload a mesh asset in AssetRegistry so updated import settings take effect."""
         guid = cls._get_guid_from_path(path)
         native = cls._native_engine()
@@ -1959,6 +2377,18 @@ class AssetManager:
             native.reload_mesh(path)
         if guid:
             cls._cache.pop(guid, None)
+            # A model import is a source publication. MeshRenderers already
+            # observe the new shared geometry; this reconciles the authored
+            # node hierarchy in every resident editor scene while preserving
+            # the instance root and user-authored component overrides. Import-
+            # scale changes rescale source-node offsets about that stable root.
+            from Infernux.engine.model_instance_sync import synchronize_loaded_model_instances
+
+            current_scale = cls._model_effective_scale(cls.require_asset_database(), path)
+            scale_ratio = 1.0
+            if previous_effective_scale is not None and current_scale is not None:
+                scale_ratio = current_scale / float(previous_effective_scale)
+            synchronize_loaded_model_instances(guid, scale_ratio=scale_ratio)
 
     @classmethod
     def _invalidate_project_panel_cache(cls) -> None:

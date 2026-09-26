@@ -423,11 +423,16 @@ void InxVkCoreModular::EnsureInstanceAuxBufferCapacity(uint32_t frameIndex, size
 
 void InxVkCoreModular::ResetPerFrameGpuStreamOffsets()
 {
-    if (m_lastInstanceFrame != m_currentFrame) {
+    // m_currentFrame is only the reusable frame-slot index. Comparing against
+    // it leaves offsets untouched whenever that slot comes around again,
+    // causing model matrices from later frames to be appended indefinitely
+    // and eventually read through the wrong instance range. The ensure frame
+    // is monotonic and identifies the actual engine frame.
+    if (m_lastInstanceFrame != m_ensureFrameCounter) {
         m_instanceWriteOffset = 0;
         m_skinPaletteWriteOffset = 0;
         m_skinPaletteFrameCache.clear();
-        m_lastInstanceFrame = m_currentFrame;
+        m_lastInstanceFrame = m_ensureFrameCounter;
     }
 }
 

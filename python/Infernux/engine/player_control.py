@@ -155,6 +155,15 @@ class PlayerControlChannel:
                         "up": bool(input_manager.get_mouse_button_up(button)),
                         "pending_input_count": int(native.pending_synthetic_input_count),
                     }
+                elif pending.get("kind") == "mouse_motion":
+                    response = {
+                        "sequence": sequence,
+                        "delivered": True,
+                        "x": float(input_manager.mouse_position_x),
+                        "y": float(input_manager.mouse_position_y),
+                        "game_focused": bool(Input.is_game_focused()),
+                        "pending_input_count": int(native.pending_synthetic_input_count),
+                    }
                 else:
                     scancode = int(pending["scancode"])
                     response = {
@@ -236,6 +245,20 @@ class PlayerControlChannel:
                     "sequence": sequence,
                     "button": button,
                     "pressed": pressed,
+                }
+                return None
+            if action == "mouse_motion":
+                x = _bounded_finite_float(command.get("x", 0.0), "x", minimum=0.0, maximum=100_000.0)
+                y = _bounded_finite_float(command.get("y", 0.0), "y", minimum=0.0, maximum=100_000.0)
+                delta_x = _bounded_finite_float(command.get("delta_x", 0.0), "delta_x", minimum=-100_000.0, maximum=100_000.0)
+                delta_y = _bounded_finite_float(command.get("delta_y", 0.0), "delta_y", minimum=-100_000.0, maximum=100_000.0)
+                sequence = int(native.queue_synthetic_mouse_motion_input(x, y, delta_x, delta_y))
+                self._pending_input = {
+                    "kind": "mouse_motion",
+                    "command_id": command_id,
+                    "sequence": sequence,
+                    "x": x,
+                    "y": y,
                 }
                 return None
             if action == "capture":
@@ -1095,13 +1118,16 @@ def _observe_player(
         for component in obj.get_py_components() or []:
             component_type = type(component)
             update_method = getattr(component_type, "update", None)
+            fixed_update_method = getattr(component_type, "fixed_update", None)
             update_globals = getattr(update_method, "__globals__", {})
             components.append({
                 "type_name": component_type.__name__,
+                "python_identity": id(component),
                 "enabled": bool(getattr(component, "enabled", False)),
                 "awake_called": bool(getattr(component, "_awake_called", False)),
                 "started": bool(getattr(component, "_has_started", False)),
                 "update_overridden": bool(update_method is not InxComponent.update),
+                "fixed_update_overridden": bool(fixed_update_method is not InxComponent.fixed_update),
                 "update_module": str(getattr(update_method, "__module__", "") or ""),
                 "update_input_is_canonical": update_globals.get("Input") is Input,
                 "load_requested": getattr(component, "_load_requested", None),
@@ -1124,6 +1150,12 @@ def _observe_player(
     from Infernux.application import _renderer_state_from_native
 
     renderer_state = _renderer_state_from_native(native)
+    try:
+        renderer_state["frame"]["scene_manager_profile"] = dict(
+            native_scene_manager.get_last_frame_profile() or {}
+        )
+    except (AttributeError, TypeError, ValueError):
+        pass
     python_lifecycle_ready = _scene_python_lifecycle_ready(scene)
     result = {
         "scene_name": str(getattr(scene, "name", "") or ""),
@@ -1131,6 +1163,13 @@ def _observe_player(
         "scene_manager_playing": manager_playing,
         "scene_manager_paused": manager_paused,
         "runtime_frame_count": runtime_frame_count,
+        "fixed_time": float(getattr(native_scene_manager, "fixed_time", 0.0)),
+        "fixed_time_step": float(
+            native_scene_manager.get_fixed_time_step()
+            if callable(getattr(native_scene_manager, "get_fixed_time_step", None))
+            else getattr(native_scene_manager, "fixed_time_step", 1.0 / 60.0)
+        ),
+        "time_scale": float(getattr(native_scene_manager, "time_scale", 1.0)),
         "gameplay_ready": bool(
             scene_playing
             and manager_playing
@@ -1148,6 +1187,33 @@ def _observe_player(
         "pending_input_count": int(native.pending_synthetic_input_count),
         "game_focused": bool(Input.is_game_focused()),
     }
+    gui_objects = getattr(engine, "_gui_objects", {})
+    player_gui = gui_objects.get("player_gui") if isinstance(gui_objects, dict) else None
+    pointer_debug = getattr(player_gui, "pointer_debug_state", None)
+    if callable(pointer_debug):
+        result["ui_pointer_debug"] = dict(pointer_debug() or {})
+    # Keep the Player control observation authoritative for lifecycle bugs:
+    # a running native frame alone does not prove Python phases are executing.
+    scheduler = getattr(engine, "_runtime_scheduler", None)
+    if scheduler is not None:
+        result["runtime_scheduler"] = {
+            "phase_counts": {
+                phase: len(scheduler.phase_plan_snapshot().get(phase, ()))
+                for phase in ("fixed_update", "update", "late_update")
+            },
+            "profiler": scheduler.profiler_snapshot(),
+            "fixed_components": [
+                {
+                    "type_name": type(component).__name__,
+                    "python_identity": id(component),
+                    "enabled_mirror": bool(getattr(component, "_enabled", True)),
+                    "active_mirror": bool(getattr(component, "_runtime_active_in_hierarchy", True)),
+                    "owner_scene_playing": bool(component.game_object.scene.is_playing()),
+                    "simulated_seconds": getattr(component, "simulated_seconds", None),
+                }
+                for component in scheduler.phase_plan_snapshot().get("fixed_update", ())
+            ],
+        }
     discovery_types = set(discovery_component_types or [])
     if include_scene_objects or discovery_types:
         discovered = []

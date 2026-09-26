@@ -1,10 +1,9 @@
 #include "SceneDocumentReadTask.h"
 
 #include <core/threading/JobSystem.h>
-#include <filesystem>
-#include <fstream>
 #include <function/scene/ComponentFactory.h>
 #include <function/scene/ComponentRecord.h>
+#include <function/scene/GameObject.h>
 #include <functional>
 #include <stdexcept>
 #include <thread>
@@ -100,8 +99,9 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
                     std::unordered_map<uint64_t, std::string> &componentTypes)
 {
     static const std::unordered_set<std::string> allowed = {
-        "name",        "id",          "active",    "is_static",  "tag",      "layer",
-        "prefab_guid", "prefab_root", "transform", "components", "children",
+        "name",      "id",          "active",      "is_static",        "tag",
+        "layer",     "prefab_guid", "prefab_root", "prefab_source_id", "prefab_source",
+        "transform", "components",  "children",    "model_source",
     };
     RequireExactFields(object, allowed, path);
     if (!object.contains("name") || !object["name"].is_string() || !object.contains("active") ||
@@ -112,12 +112,20 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
         throw std::invalid_argument(path + " has invalid GameObject fields");
     }
     const int layer = object["layer"].get<int>();
+    if (object.contains("model_source"))
+        GameObject::ValidateModelSourceDocument(object["model_source"]);
     if (layer < 0 || layer >= 32)
         throw std::invalid_argument(path + ".layer must be in [0, 31]");
     if (object.contains("prefab_guid") && !object["prefab_guid"].is_string())
         throw std::invalid_argument(path + ".prefab_guid must be a string");
     if (object.contains("prefab_root") && !object["prefab_root"].is_boolean())
         throw std::invalid_argument(path + ".prefab_root must be boolean");
+    if (object.contains("prefab_source_id"))
+        RequirePositiveId(object, "prefab_source_id", path);
+    if (object.contains("prefab_source") &&
+        (!object["prefab_source"].is_object() || !object.value("prefab_root", false) ||
+         object.value("prefab_guid", std::string{}).empty()))
+        throw std::invalid_argument(path + ".prefab_source requires a linked prefab root and an object document");
 
     const uint64_t objectId = RequirePositiveId(object, "id", path);
     if (!objectIds.insert(objectId).second)
@@ -173,22 +181,6 @@ void ValidateSceneDocument(const json &document)
     }
 }
 
-std::string ReadFile(const std::string &path)
-{
-    std::ifstream input(std::filesystem::u8path(path), std::ios::binary);
-    if (!input)
-        throw std::runtime_error("failed to open scene file: " + path);
-    input.seekg(0, std::ios::end);
-    const auto size = input.tellg();
-    if (size < 0)
-        throw std::runtime_error("failed to measure scene file: " + path);
-    std::string bytes(static_cast<size_t>(size), '\0');
-    input.seekg(0, std::ios::beg);
-    if (!bytes.empty() && !input.read(bytes.data(), static_cast<std::streamsize>(bytes.size())))
-        throw std::runtime_error("failed to read complete scene file: " + path);
-    return bytes;
-}
-
 } // namespace
 
 bool SceneDocumentReadTicket::IsComplete() const noexcept
@@ -238,6 +230,14 @@ std::string SceneDocumentReadTicket::GetError() const
     return m_state->error;
 }
 
+std::optional<AtomicFileState> SceneDocumentReadTicket::GetFileState() const
+{
+    if (!m_state)
+        return std::nullopt;
+    std::lock_guard<std::mutex> lock(m_state->mutex);
+    return m_state->fileState;
+}
+
 bool SceneDocumentReadTicket::Cancel()
 {
     if (!m_state)
@@ -250,6 +250,7 @@ bool SceneDocumentReadTicket::Cancel()
     }
     if (status == Status::Ready) {
         m_state->document = json();
+        m_state->fileState.reset();
         m_state->status.store(Status::Cancelled, std::memory_order_release);
         return true;
     }
@@ -284,7 +285,8 @@ SceneDocumentReadTicket ScheduleSceneDocumentRead(const std::string &path)
                 state->status.store(SceneDocumentReadTicket::Status::Cancelled, std::memory_order_release);
                 return;
             }
-            json document = json::parse(ReadFile(path));
+            const auto snapshot = ReadTextFileSnapshot(path);
+            json document = json::parse(snapshot.content);
             ValidateSceneDocument(document);
             std::lock_guard<std::mutex> lock(state->mutex);
             if (state->cancelRequested.load(std::memory_order_acquire)) {
@@ -292,6 +294,7 @@ SceneDocumentReadTicket ScheduleSceneDocumentRead(const std::string &path)
                 return;
             }
             state->document = std::move(document);
+            state->fileState = snapshot.state;
             state->status.store(SceneDocumentReadTicket::Status::Ready, std::memory_order_release);
         } catch (const std::exception &error) {
             std::lock_guard<std::mutex> lock(state->mutex);

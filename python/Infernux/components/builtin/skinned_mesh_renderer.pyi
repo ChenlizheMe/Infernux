@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import List
+from typing import List, Tuple
+from Infernux.lib import Vector3, quatf
 
 from Infernux.components.builtin.mesh_renderer import MeshRenderer
 
@@ -28,3 +29,7 @@ class SkinnedMeshRenderer(MeshRenderer):
 
     def get_animation_take_names(self) -> List[str]: ...
     def set_source_model_guid(self, guid: str) -> None: ...
+    def get_root_motion_delta(
+        self, take_name: str, from_seconds: float, to_seconds: float,
+        loop: bool = True, animation_source_guid: str = "",
+    ) -> Tuple[Vector3, quatf]: ...

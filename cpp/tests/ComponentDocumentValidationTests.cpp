@@ -21,17 +21,11 @@ json MakeDocument()
     };
 }
 
-void VerifyUnknownFieldsAreRejected()
+void VerifyUnknownFieldsAreIgnored()
 {
     auto document = MakeDocument();
     document["removed_field"] = "old asset payload";
-    bool rejected = false;
-    try {
-        ValidateComponentDocument(document, "Example", {"value"});
-    } catch (const std::invalid_argument &) {
-        rejected = true;
-    }
-    assert(rejected);
+    ValidateComponentDocument(document, "Example", {"value"});
 }
 
 void VerifyEnvelopeAndCurrentFieldsRemainStrict()
@@ -61,7 +55,7 @@ void VerifyEnvelopeAndCurrentFieldsRemainStrict()
 
 int main()
 {
-    VerifyUnknownFieldsAreRejected();
+    VerifyUnknownFieldsAreIgnored();
     VerifyEnvelopeAndCurrentFieldsRemainStrict();
     std::cout << "Component document validation tests passed\n";
     return 0;

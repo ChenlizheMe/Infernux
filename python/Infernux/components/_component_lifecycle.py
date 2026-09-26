@@ -25,6 +25,7 @@ import copy
 import threading
 import weakref
 from collections import defaultdict
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Dict, List, Mapping, Optional, TYPE_CHECKING, Type
@@ -32,9 +33,40 @@ from typing import Any, Dict, List, Mapping, Optional, TYPE_CHECKING, Type
 from Infernux.lib import GameObject
 
 
-_RUNTIME_PHASE_NAMES = ("update", "fixed_update", "late_update")
-_RUNTIME_SCHEDULER_PHASES = ("fixed_update", "update", "late_update")
+_RUNTIME_PHASE_NAMES = (
+    "update",
+    "fixed_update",
+    "late_update",
+    "physics_pre_step",
+    "physics_post_step",
+)
+_RUNTIME_SCHEDULER_PHASES = (
+    "fixed_update",
+    "physics_pre_step",
+    "physics_post_step",
+    "update",
+    "late_update",
+)
 _MISSING = object()
+
+
+@contextmanager
+def _compute_recording_scope():
+    """Batch GPU launches emitted by one runtime lifecycle phase.
+
+    Compute is optional for CPU-only projects, so importing the public compute
+    frontend is deliberately late. The normal path uses its authoritative
+    recording boundary; a missing frontend simply keeps the lifecycle path
+    usable for lightweight scheduler tests.
+    """
+    try:
+        from Infernux.compute import recording
+    except ImportError:
+        with nullcontext():
+            yield
+        return
+    with recording():
+        yield
 
 
 def _missing_runtime_phase(*_args):
@@ -53,6 +85,7 @@ class RuntimeExecutionScheduler:
     """
 
     _live_schedulers = weakref.WeakSet()
+    _runtime_service_phases: dict[str, set[str]] = {}
 
     def __init__(
         self,
@@ -99,12 +132,43 @@ class RuntimeExecutionScheduler:
         """Publish structural work state without adding a per-frame crossing."""
         if not self._native_bridge or self._native_scene_manager is None:
             return
-        has_work = any(
+        has_work = any(self._runtime_service_phases.values()) or any(
             self._active_coroutine_scheduler(component) is not None
             or any(self._has_phase(component, phase) for phase in _RUNTIME_SCHEDULER_PHASES)
             for component in self._components.values()
         )
         self._native_scene_manager.set_runtime_lifecycle_work_available(has_work)
+
+    @classmethod
+    def set_runtime_service_phase_active(
+        cls,
+        service: str,
+        phase: str,
+        active: bool,
+    ) -> None:
+        """Publish phase demand from one process-wide runtime service."""
+        if phase not in _RUNTIME_SCHEDULER_PHASES:
+            raise ValueError(f"unknown runtime phase: {phase}")
+        name = str(service).strip()
+        if not name:
+            raise ValueError("runtime service name must not be empty")
+        services = cls._runtime_service_phases.setdefault(phase, set())
+        changed = False
+        if active and name not in services:
+            services.add(name)
+            changed = True
+        elif not active and name in services:
+            services.remove(name)
+            changed = True
+        if not changed:
+            return
+        for scheduler in tuple(cls._live_schedulers):
+            scheduler._sync_native_work_availability()
+            scheduler._publish_native_plan()
+
+    @classmethod
+    def _runtime_service_count(cls, phase: str) -> int:
+        return len(cls._runtime_service_phases.get(phase, ()))
 
     def _publish_native_plan(self) -> None:
         """Publish one structural plan summary; never crosses per component/frame."""
@@ -112,9 +176,12 @@ class RuntimeExecutionScheduler:
             return
         self._native_scene_manager.set_runtime_lifecycle_plan(
             max(0, int(self._plan_revision)),
-            len(self._phase_plan["fixed_update"]),
-            len(self._phase_plan["update"]),
-            len(self._phase_plan["late_update"]),
+            len(self._phase_plan["fixed_update"])
+            + self._runtime_service_count("fixed_update"),
+            len(self._phase_plan["update"])
+            + self._runtime_service_count("update"),
+            len(self._phase_plan["late_update"])
+            + self._runtime_service_count("late_update"),
         )
 
     def bind_native_bridge(self, scene_manager: Any) -> None:
@@ -328,7 +395,7 @@ class RuntimeExecutionScheduler:
         self._counters["body_reload_updates"] += 1
         if phase_presence_changed:
             # Replacing a helper does not affect the phase plan.  Adding or
-            # removing update/fixed_update/late_update does.
+            # removing a runtime phase does.
             from Infernux.engine.runtime_change_journal import RuntimeChangeDomain
 
             type_id = (
@@ -445,6 +512,9 @@ class RuntimeExecutionScheduler:
         if owner is None:
             return False
         try:
+            scene = getattr(owner, "scene", None)
+            if scene is not None and scene.is_preview:
+                return False
             active = getattr(owner, "active_in_hierarchy", _MISSING)
             if active is _MISSING:
                 return True
@@ -491,7 +561,11 @@ class RuntimeExecutionScheduler:
     def _build_plan(self) -> None:
         components = []
         for component in self._components.values():
-            owner_active = self._ensure_owner_active_mirror(component)
+            # Re-read the native owner's active state when rebuilding a plan.
+            # A component can be deserialized before its GameObject is
+            # activated; retaining the first mirror would silently exclude it
+            # from fixed/update dispatch in a Player.
+            owner_active = self._refresh_owner_active_mirror(component)
             if not owner_active:
                 continue
             if self._eligible(component) or self._active_coroutine_scheduler(component) is not None:
@@ -581,58 +655,59 @@ class RuntimeExecutionScheduler:
         editor_only: bool = False,
     ) -> None:
         phase_index = _RUNTIME_PHASE_NAMES.index(phase)
-        for component in frame.phase_plan[phase]:
-            snapshot = frame.component_snapshots[id(component)]
-            _component, invokers = snapshot
-            if bool(getattr(component, "_is_destroyed", False)):
-                self._counters["phase_skips"] += 1
-                continue
+        with _compute_recording_scope():
+            for component in frame.phase_plan[phase]:
+                snapshot = frame.component_snapshots[id(component)]
+                _component, invokers = snapshot
+                if bool(getattr(component, "_is_destroyed", False)):
+                    self._counters["phase_skips"] += 1
+                    continue
 
-            # Owner activation is mirrored when the plan is invalidated or
-            # rebuilt.  Reading this Python bool here handles a same-frame
-            # disable callback without crossing the native boundary.
-            if not bool(getattr(component, "_runtime_active_in_hierarchy", True)):
-                self._counters["phase_skips"] += 1
-                continue
+                # Owner activation is mirrored when the plan is invalidated or
+                # rebuilt.  Reading this Python bool here handles a same-frame
+                # disable callback without crossing the native boundary.
+                if not bool(getattr(component, "_runtime_active_in_hierarchy", True)):
+                    self._counters["phase_skips"] += 1
+                    continue
 
-            if editor_only and not bool(getattr(component, "_execute_in_edit_mode", False)):
-                self._counters["phase_skips"] += 1
-                continue
+                if editor_only and not bool(getattr(component, "_execute_in_edit_mode", False)):
+                    self._counters["phase_skips"] += 1
+                    continue
 
-            enabled = bool(getattr(component, "_enabled", True))
+                enabled = bool(getattr(component, "_enabled", True))
 
-            try:
-                if enabled:
-                    invokers[phase_index](component, delta_time)
-            except Exception as exc:
-                reporter = getattr(component, "_report_lifecycle_exception", None)
-                if callable(reporter):
-                    reporter(exc)
-                else:
-                    # Keep the scheduler useful for lightweight test/runtime
-                    # component doubles without weakening real component error
-                    # isolation.
-                    self._counters["phase_errors"] += 1
+                try:
+                    if enabled:
+                        invokers[phase_index](component, delta_time)
+                except Exception as exc:
+                    reporter = getattr(component, "_report_lifecycle_exception", None)
+                    if callable(reporter):
+                        reporter(exc)
+                    else:
+                        # Keep the scheduler useful for lightweight test/runtime
+                        # component doubles without weakening real component error
+                        # isolation.
+                        self._counters["phase_errors"] += 1
 
-            # Keep the component/invoker tuple stable for the frame, but make
-            # enabled transitions visible between phases just like the legacy
-            # Scene traversal. A disable in fixed_update therefore suppresses
-            # the following update/late_update callbacks immediately.
-            # Component ``enabled`` gates the user callback, while the owning
-            # hierarchy independently gates coroutine work.
-            coroutine_scheduler = self._active_coroutine_scheduler(component)
-            if not bool(getattr(component, "_runtime_active_in_hierarchy", True)):
-                continue
-            if phase == "update":
-                if coroutine_scheduler is not None:
-                    coroutine_scheduler.tick_update(delta_time, epoch=frame.epoch)
-            elif phase == "fixed_update":
-                if coroutine_scheduler is not None:
-                    coroutine_scheduler.tick_fixed_update(delta_time, epoch=frame.epoch)
-            else:
-                if coroutine_scheduler is not None:
-                    coroutine_scheduler.tick_late_update(delta_time, epoch=frame.epoch)
-            self._counters["phase_dispatches"] += 1
+                # Keep the component/invoker tuple stable for the frame, but make
+                # enabled transitions visible between phases just like the legacy
+                # Scene traversal. A disable in fixed_update therefore suppresses
+                # the following update/late_update callbacks immediately.
+                # Component ``enabled`` gates the user callback, while the owning
+                # hierarchy independently gates coroutine work.
+                coroutine_scheduler = self._active_coroutine_scheduler(component)
+                if not bool(getattr(component, "_runtime_active_in_hierarchy", True)):
+                    continue
+                if phase == "update":
+                    if coroutine_scheduler is not None:
+                        coroutine_scheduler.tick_update(delta_time, epoch=frame.epoch)
+                elif phase == "fixed_update":
+                    if coroutine_scheduler is not None:
+                        coroutine_scheduler.tick_fixed_update(delta_time, epoch=frame.epoch)
+                elif phase == "late_update":
+                    if coroutine_scheduler is not None:
+                        coroutine_scheduler.tick_late_update(delta_time, epoch=frame.epoch)
+                self._counters["phase_dispatches"] += 1
 
     def execute_frame(
         self,
@@ -650,6 +725,8 @@ class RuntimeExecutionScheduler:
         frame = self.begin_frame()
         try:
             frame.execute_phase("fixed_update", fixed_delta_time)
+            frame.execute_phase("physics_pre_step", fixed_delta_time)
+            frame.execute_phase("physics_post_step", fixed_delta_time)
             frame.execute_phase("update", delta_time)
             frame.execute_phase(
                 "late_update",
@@ -718,26 +795,28 @@ class RuntimeExecutionScheduler:
 
     def execute_native_phase(self, phase: str, delta_time: float) -> None:
         if self._native_frame is None:
-            self.begin_native_frame()
+            raise RuntimeError("native lifecycle phase requires SceneManager.begin_native_frame")
         self._native_frame.execute_phase(phase, float(delta_time))
+        self._last_native_phase = (phase, float(delta_time))
+        if phase == "fixed_update":
+            self._counters["native_fixed_callbacks"] += 1
+            self._counters["native_fixed_delta_sum"] += float(delta_time)
         self._counters["native_phase_dispatches"] += 1
 
     def execute_native_editor_update(self, delta_time: float) -> None:
         if self._native_frame is None:
-            self.begin_native_frame()
+            raise RuntimeError("native editor phase requires SceneManager.begin_native_frame")
         from Infernux.engine.runtime_change_journal import RuntimeFrameBarrier
 
-        self.consume_runtime_changes(
-            RuntimeFrameBarrier.UPDATE_SCRIPT,
-            frame=self._native_frame,
-        )
-        with self._change_journal.transaction():
-            self._execute_frame_phase(
-                self._native_frame,
-                "update",
-                float(delta_time),
-                editor_only=True,
-            )
+        for phase, barrier in (
+            ("update", RuntimeFrameBarrier.UPDATE_SCRIPT),
+            ("late_update", RuntimeFrameBarrier.LATE_SCRIPT),
+        ):
+            self.consume_runtime_changes(barrier, frame=self._native_frame)
+            with self._change_journal.transaction():
+                self._execute_frame_phase(
+                    self._native_frame, phase, float(delta_time), editor_only=True,
+                )
         self._counters["native_editor_dispatches"] += 1
 
     def consume_native_barrier(self, barrier: Any) -> Any:
@@ -841,6 +920,8 @@ class RuntimeExecutionFrame:
 
         barriers = {
             "fixed_update": RuntimeFrameBarrier.FIXED_SCRIPT,
+            "physics_pre_step": RuntimeFrameBarrier.PHYSICS_PRE_SCRIPT,
+            "physics_post_step": RuntimeFrameBarrier.PHYSICS_POST_SCRIPT,
             "update": RuntimeFrameBarrier.UPDATE_SCRIPT,
             "late_update": RuntimeFrameBarrier.LATE_SCRIPT,
         }
@@ -965,6 +1046,10 @@ class ComponentLifecycleMixin:
             callback(*args)
             return True
         except Exception as exc:
+            # Keep Player diagnostics visible even when the debug console is
+            # not attached; lifecycle failures otherwise silently disable the
+            # component and make authored scenes appear inert.
+            print(f"[Infernux lifecycle] {type(self).__name__}.{method_name} failed: {exc!r}", flush=True)
             # Route to DebugConsole so the Console Panel shows the error.
             try:
                 from Infernux.debug import debug
@@ -977,6 +1062,7 @@ class ComponentLifecycleMixin:
 
     def _report_lifecycle_exception(self, exc: Exception) -> None:
         """Route a phase exception without adding work to the success path."""
+        print(f"[Infernux lifecycle] {type(self).__name__} phase failed: {exc!r}", flush=True)
         try:
             from Infernux.debug import debug
             debug.log_exception(exc, context=self)

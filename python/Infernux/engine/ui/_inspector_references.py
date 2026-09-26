@@ -197,7 +197,6 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
 
     if element_type == FieldType.COMPONENT:
         from Infernux.lib import SceneManager as _SM
-        from Infernux.components.ref_wrappers import ComponentRef
 
         scene = _SM.instance().get_active_scene()
         if scene is None:
@@ -207,22 +206,7 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
         if game_object is None:
             return None
 
-        comp_type = required_component or ''
-        if comp_type:
-            if not _game_object_has_required_component(game_object, comp_type):
-                from Infernux.debug import Debug
-                Debug.log_warning(
-                    f"GameObject '{game_object.name}' has no '{comp_type}' component."
-                )
-                return None
-        else:
-            # No type filter — pick the first Python component on this GO
-            from Infernux.components.component import InxComponent
-            py_comps = InxComponent._active_instances.get(obj_id, [])
-            if py_comps:
-                comp_type = py_comps[0].__class__.__name__
-
-        return ComponentRef(go_id=obj_id, component_type=comp_type)
+        return _create_component_ref_from_go(game_object, required_component or "")
 
     return None
 
@@ -421,11 +405,11 @@ def _create_asset_ref_from_payload(metadata, payload):
         raise ValueError("ASSET reference payload requires an explicit asset_type")
     guid, file_path = _resolve_guid_and_path(payload)
     from Infernux.core.asset_ref import create_asset_ref
-    from Infernux.core.asset_reference_types import asset_type_registry
+    from Infernux.core.asset_reference_types import AssetReferenceCodec
 
-    descriptor = asset_type_registry.require(asset_type)
+    concrete = AssetReferenceCodec.normalize(asset_type, payload)["asset_type"]
     return create_asset_ref(
-        descriptor.type_id,
+        concrete,
         guid=guid,
         path_hint=_portable_asset_path_hint(file_path),
     )
@@ -433,7 +417,7 @@ def _create_asset_ref_from_payload(metadata, payload):
 
 def _render_asset_reference_field(
     ctx, comp, field_name, metadata, current_value, field_type, lw,
-    *, builtin_attr=None,
+    *, builtin_attr=None, label_override=None,
 ):
     """Render a MATERIAL / TEXTURE / SHADER / ASSET reference field."""
     from Infernux.components.fields import FieldType as _FT
@@ -474,22 +458,30 @@ def _render_asset_reference_field(
             asset_type, left
         ) == AssetReferenceCodec.normalize(asset_type, right)
 
-    validate_callback = getattr(comp, "_call_on_validate", None)
-    transaction = make_attribute_property_transaction(
-        (comp,),
-        attr_name,
-        property_path=f"{type(comp).__name__}.{attr_name}",
-        value_type=asset_type,
-        description=f"Set {field_name}",
-        read_only=bool(getattr(metadata, "readonly", False)),
-        normalize=_normalize_reference,
-        equivalent=_same_reference,
-        publish=(validate_callback if callable(validate_callback) else None),
-        clear_value=None,
-    )
+    from Infernux.components.fields import SerializedFieldDescriptor
+    if isinstance(getattr(type(comp), attr_name, None), SerializedFieldDescriptor):
+        from Infernux.engine.interaction import make_python_component_property_transaction
+        # Authoring edits operate on the saved reference, never an eagerly
+        # resolved GPU owner or a transient override. This also clears missing
+        # references and keeps scene Undo on the normal document transaction.
+        transaction = make_python_component_property_transaction(
+            (comp,), attr_name, description=f"Set {field_name}",
+            decode_input=_normalize_reference, equivalent=_same_reference,
+        )
+    else:
+        validate_callback = getattr(comp, "_call_on_validate", None)
+        transaction = make_attribute_property_transaction(
+            (comp,), attr_name,
+            property_path=f"{type(comp).__name__}.{attr_name}",
+            value_type=asset_type, description=f"Set {field_name}",
+            read_only=bool(getattr(metadata, "readonly", False)),
+            normalize=_normalize_reference, equivalent=_same_reference,
+            publish=(validate_callback if callable(validate_callback) else None),
+            clear_value=None,
+        )
 
     label_key = str(getattr(metadata, "display_name_key", "") or "")
-    label = t(label_key) if label_key else pretty_field_name(field_name)
+    label = label_override or (t(label_key) if label_key else pretty_field_name(field_name))
     if label == label_key:
         label = pretty_field_name(field_name)
     field_label(ctx, label, lw)
@@ -501,7 +493,6 @@ def _render_asset_reference_field(
 
     render_asset_reference_field(
         ctx, f"{prefix}_ref_{field_name}", display, type_hint,
-        accept_drag_type=drag_type,
         on_ping=_on_ping if current_value is not None and display != "None" else None,
         ping_path=_resolve_asset_disk_path(current_value),
         has_value=current_value is not None and display != "None",
@@ -525,7 +516,7 @@ def _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw):
     _ct = metadata.component_type
 
     def _comp_scene(filt, _ct=_ct):
-        return _picker_scene_gameobjects(filt, required_component=_ct)
+        return _picker_scene_components(filt, required_component=_ct)
 
     def _comp_on_pick(go, _fn=field_name, _comp=py_comp, _ct=_ct):
         ref = _create_component_ref_from_go(go, _ct)
@@ -686,18 +677,38 @@ def _game_object_has_required_component(game_object, required_component: str) ->
 
 
 def _create_component_ref_from_go(game_object, component_type: str = ""):
-    """Create a ComponentRef from a picked GameObject (for picker popup)."""
-    from Infernux.components.ref_wrappers import ComponentRef, _infer_component_type_on_game_object
+    """Bind an exact picker selection, or the first matching component on a dropped object."""
+    from Infernux.components.ref_wrappers import ComponentRef, _resolve_component_on_game_object
     if game_object is None:
         return None
-    go_id = game_object.id
-    ct = component_type or ''
-    if ct:
-        if not _game_object_has_required_component(game_object, ct):
+    if isinstance(game_object, ComponentRef):
+        if component_type and game_object.component_type != component_type:
             return None
-    else:
-        ct = _infer_component_type_on_game_object(game_object)
-    return ComponentRef(go_id=go_id, component_type=ct)
+        return game_object
+    component = _resolve_component_on_game_object(game_object, component_type or "")
+    return ComponentRef(component) if component is not None else None
+
+
+def _picker_scene_components(filter_text: str, required_component: str = None):
+    """Offer individual components, including repeated types on the same object."""
+    from Infernux.components.ref_wrappers import ComponentRef
+    from Infernux.lib import SceneManager
+    scene = SceneManager.instance().get_active_scene()
+    if scene is None:
+        return []
+    items = []
+    filt = filter_text.lower()
+    for go in scene.get_all_objects():
+        occurrences = {}
+        for component in go.get_components():
+            type_name = getattr(component, "type_name", type(component).__name__)
+            if required_component and type_name != required_component:
+                continue
+            occurrences[type_name] = occurrences.get(type_name, 0) + 1
+            label = f"{go.name} / {type_name} [{occurrences[type_name]}]"
+            if not filt or filt in label.lower():
+                items.append((label, ComponentRef(component)))
+    return items
 
 
 def _picker_scene_gameobjects(filter_text: str, required_component: str = None):
@@ -717,11 +728,13 @@ def _picker_scene_gameobjects(filter_text: str, required_component: str = None):
     return items
 
 
-def _project_texture_guid_and_path(payload) -> tuple[str, str]:
+def _project_texture_guid_and_path(payload, *, allow_render_texture: bool = False) -> tuple[str, str]:
     """Resolve a picker/drop payload to a project-owned texture GUID and path."""
     import os
     from Infernux.core.asset_types import IMAGE_EXTENSIONS
     from Infernux.core.assets import AssetManager
+
+    extensions = IMAGE_EXTENSIONS | {'.rendertexture'} if allow_render_texture else IMAGE_EXTENSIONS
 
     supplied_guid = ""
     supplied_path = ""
@@ -730,7 +743,7 @@ def _project_texture_guid_and_path(payload) -> tuple[str, str]:
         supplied_path = str(payload.get("path_hint", "") or "").strip()
     else:
         token = str(payload or "").strip()
-        if os.path.splitext(token)[1].lower() in IMAGE_EXTENSIONS:
+        if "::subtex:" in token or os.path.splitext(token)[1].lower() in extensions:
             supplied_path = token
         else:
             supplied_guid = token
@@ -746,9 +759,12 @@ def _project_texture_guid_and_path(payload) -> tuple[str, str]:
             path = ""
 
     extension = os.path.splitext(path)[1].lower()
+    if "::subtex:" in path and database is not None and _is_project_asset_path(path):
+        guid = database.get_guid_from_path(path)
+        return (guid, path) if guid else ("", "")
     if (
         not path
-        or extension not in IMAGE_EXTENSIONS
+        or extension not in extensions
         or extension.startswith(".inx")
         or not _is_project_asset_path(path)
     ):
@@ -800,7 +816,7 @@ def _resolve_asset_disk_path(value) -> str:
             if candidate:
                 text = str(candidate)
                 # Embedded sub-assets use virtual paths; ping the host file.
-                for token in ("::submat:", "::subanim:", "::subbone:"):
+                for token in ("::submat:", "::subanim:", "::subbone:", "::submesh:", "::subtex:"):
                     if token in text:
                         text = text.split(token, 1)[0]
                         break
@@ -830,7 +846,7 @@ def ping_asset_in_project(path: str) -> bool:
     disk_path = str(path or "").strip()
     if not disk_path:
         return False
-    for token in ("::submat:", "::subanim:", "::subbone:"):
+    for token in ("::submat:", "::subanim:", "::subbone:", "::submesh:", "::subtex:"):
         if token in disk_path:
             disk_path = disk_path.split(token, 1)[0]
             break
@@ -843,8 +859,15 @@ def ping_asset_in_project(path: str) -> bool:
         core = EditorInteractionCore.instance()
         if core is None:
             return False
+        from Infernux.core.assets import AssetManager
+
+        guid = str(
+            AssetManager.require_asset_database().get_guid_from_path(disk_path) or ""
+        ).strip()
+        if not guid:
+            return False
         return bool(core.navigation.locate(
-            SelectionTarget.asset(disk_path),
+            SelectionTarget.asset(guid),
             owner_id="project",
             reason="ping_asset",
             record_history=True,
@@ -905,6 +928,7 @@ def open_asset_reference(file_path: str) -> bool:
         ".animclip2d": DocumentKind.ANIMATION_CLIP,
         ".mat": DocumentKind.MATERIAL,
         ".physicmaterial": DocumentKind.PHYSIC_MATERIAL,
+        ".rendertexture": DocumentKind.RENDER_TEXTURE,
         ".effect": DocumentKind.RENDER_EFFECT,
         ".effectgroup": DocumentKind.RENDER_EFFECT,
     }
@@ -947,6 +971,23 @@ def render_object_field(ctx: InxGUIContext, field_id: str, display_text: str,
         ping_path=ping_path,
         has_value=has_value,
         semantic_id=semantic_id,
+    )
+
+
+def render_component_reference_field(
+    ctx: InxGUIContext,
+    field_id: str,
+    display_text: str,
+    component_type: str,
+    **kwargs,
+) -> bool:
+    """Render a scene-component reference through the shared object picker."""
+    return render_object_field(
+        ctx,
+        field_id,
+        display_text,
+        component_type,
+        **kwargs,
     )
 
 

@@ -28,8 +28,9 @@ class FullscreenRendererHost
     /// Return a module registration owned by the caller. The renderer releases
     /// it after pipeline creation; the concrete backend decides whether the
     /// underlying shader object is shared or newly created.
-    [[nodiscard]] virtual rhi::ShaderModuleHandle AcquireShaderModule(const std::string &name,
-                                                                      rhi::ShaderStage stage) = 0;
+    [[nodiscard]] virtual rhi::ShaderModuleHandle AcquireShaderModule(const std::string &name, rhi::ShaderStage stage,
+                                                                      uint32_t inputCount,
+                                                                      uint32_t inputBufferMask) = 0;
     [[nodiscard]] virtual rhi::BindingLayoutHandle GetPerViewLayout() const noexcept = 0;
     [[nodiscard]] virtual rhi::BindingLayoutHandle GetGlobalsLayout() const noexcept = 0;
     [[nodiscard]] virtual rhi::BindGroupHandle GetCurrentGlobalsGroup() = 0;
@@ -54,7 +55,11 @@ struct FullscreenPipelineKey
     rhi::RenderTargetLayoutHandle renderTargetLayout;
     rhi::SampleCount samples = rhi::SampleCount::One;
     rhi::PixelFormat colorFormat = rhi::PixelFormat::RGBA8UNorm;
-    uint32_t inputTextureCount = 0;
+    rhi::PixelFormat depthFormat = rhi::PixelFormat::Undefined;
+    rhi::DepthState depth;
+    bool alphaBlend = false;
+    uint32_t inputResourceCount = 0;
+    uint32_t inputBufferMask = 0;
     uint32_t depthInputMask = 0;
     bool useDynamicRendering = false;
 
@@ -74,11 +79,14 @@ struct FullscreenPipelineEntry
     bool hasGlobals = false;
 };
 
-struct FullscreenTextureInput
+struct FullscreenResourceInput
 {
     rhi::TextureViewHandle view;
     rhi::PixelFormat format = rhi::PixelFormat::Undefined;
     bool depthRead = false;
+    rhi::BufferHandle buffer;
+    uint64_t byteSize = 0;
+    rhi::SamplerHandle sampler;
 };
 
 class FullscreenRenderer
@@ -100,7 +108,7 @@ class FullscreenRenderer
     /// record resolves the newly published module and builds a fresh pipeline.
     void InvalidateShader(const std::string &shaderName);
 
-    rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout, const FullscreenTextureInput *inputs,
+    rhi::BindGroupHandle AllocateBindGroup(rhi::BindingLayoutHandle layout, const FullscreenResourceInput *inputs,
                                            uint32_t inputCount, rhi::SamplerHandle colorSampler);
 
     void Draw(rhi::GraphicsCommandEncoder &encoder, const FullscreenPipelineEntry &entry,

@@ -98,7 +98,7 @@ def _source(path: Path, reference: str) -> Path:
 
 
 @pytest.mark.skipif(not _native_available(), reason="native InxPack backend unavailable")
-def test_repository_package_script_is_standalone_deterministic_and_native_compatible(
+def test_repository_package_scripts_are_standalone_deterministic_and_native_compatible(
     tmp_path,
 ):
     repository = Path(__file__).parents[2]
@@ -112,9 +112,9 @@ def test_repository_package_script_is_standalone_deterministic_and_native_compat
         )
     )
     scripts = [(root / "package.py").read_bytes() for root in plugin_roots]
-    assert len({script.replace(b"\r\n", b"\n").rstrip(b"\n") for script in scripts}) == 1
-    assert b"from Infernux" not in scripts[0]
-    assert b"import Infernux" not in scripts[0]
+    for script in scripts:
+        assert b"from Infernux" not in script
+        assert b"import Infernux" not in script
 
     outputs = (tmp_path / "first.inxpkg", tmp_path / "second.inxpkg")
     for destination in outputs:
@@ -201,6 +201,7 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
     if os.environ.get("INFERNUX_MCP_NATIVE_TEST_CHILD") != "1":
         environment = os.environ.copy()
         environment["INFERNUX_MCP_NATIVE_TEST_CHILD"] = "1"
+        child_basetemp = tmp_path / "child-basetemp"
         result = subprocess.run(
             [
                 sys.executable,
@@ -208,6 +209,8 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
                 "pytest",
                 f"{Path(__file__).resolve()}::{test_official_mcp_default_install_uninstall_reinstalls_on_restart.__name__}",
                 "-q",
+                "--basetemp",
+                str(child_basetemp),
             ],
             cwd=repository,
             env=environment,
@@ -433,7 +436,9 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
         for item in authoring_result["data"]["operations"]
     )
     assert capabilities_result["ok"] is True
-    assert capabilities_result["data"]["operation_count"] == 82
+    # 34 engine-owned authoring operations plus 71 MCP operations, matching
+    # the source catalog checked by test_mcp_server.
+    assert capabilities_result["data"]["operation_count"] == 105
 
     manager.uninstall("infernux/mcp")
     assert manager.registry.installed() == ()

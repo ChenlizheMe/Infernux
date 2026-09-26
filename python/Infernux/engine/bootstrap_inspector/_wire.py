@@ -62,12 +62,7 @@ def _wire_cache_init(ctx):
 
     def _resolve_scene_object(object_id):
         manager = ctx.SceneManager.instance()
-        resolver = getattr(manager, "find_runtime_object_by_id", None)
-        if callable(resolver):
-            obj = resolver(int(object_id or 0))
-        else:
-            scene = manager.get_active_scene()
-            obj = scene.find_by_id(int(object_id or 0)) if scene else None
+        obj = manager.find_runtime_object_by_id(int(object_id or 0))
         scene = getattr(obj, "scene", None) if obj is not None else None
         if scene is None:
             scene = manager.get_active_scene()
@@ -280,7 +275,14 @@ def _wire_object_info(ctx):
         info.tag = getattr(obj, 'tag', 'Untagged')
         info.layer = getattr(obj, 'layer', 0)
         info.prefab_guid = getattr(obj, 'prefab_guid', '') or ''
-        info.hide_transform = getattr(obj, 'hide_transform', False)
+        info.hide_transform = bool(getattr(obj, 'hide_transform', False))
+        from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent
+        from Infernux.components.transform_authoring import driven_transform_properties
+        info.hide_transform_scale = any(
+            isinstance(component, InxUIScreenComponent)
+            for component in obj.get_py_components()
+        )
+        info.driven_transform_properties = int(driven_transform_properties(obj))
         transform = obj.get_transform()
         info.transform_component_id = int(
             getattr(transform, 'component_id', 0) or 0
@@ -1365,8 +1367,26 @@ def _wire_asset_preview(ctx):
 
     def _render_asset_inspector(ctx_arg, file_path, category):
         from Infernux.engine.ui.asset_details_renderer import render_asset_inspector
+        from Infernux.engine.interaction import SelectionDomain, SelectionService
         try:
-            render_asset_inspector(ctx_arg, ip, file_path, category)
+            snapshot = SelectionService.instance().snapshot
+            selected_paths = ()
+            if snapshot.domain is SelectionDomain.ASSET:
+                from Infernux.core.assets import AssetManager
+
+                database = AssetManager.require_asset_database()
+                selected_paths = tuple(
+                    str(database.get_path_from_guid(target.target_id) or "")
+                    for target in snapshot.targets
+                    if target.domain is SelectionDomain.ASSET
+                )
+            render_asset_inspector(
+                ctx_arg,
+                ip,
+                file_path,
+                category,
+                selected_paths=selected_paths,
+            )
         except Exception as exc:
             Debug.log_error(f"Asset inspector render failed for '{file_path}': {exc}")
 
@@ -1396,7 +1416,7 @@ def _wire_prefab_and_misc(ctx):
     _t = ctx._t
     SceneManager = ctx.SceneManager
 
-    from Infernux.lib import InspectorPrefabInfo
+    from Infernux.lib import InspectorPrefabInfo, InspectorPrefabStructuralRow
 
     def _get_prefab_info(obj_id):
         pinfo = InspectorPrefabInfo()
@@ -1408,13 +1428,23 @@ def _wire_prefab_and_misc(ctx):
             return pinfo
         from Infernux.engine.prefab_overrides import (
             compute_overrides,
+            get_structural_overrides,
             resolve_prefab_instance_root,
         )
         root = resolve_prefab_instance_root(obj)
         adb = engine.get_asset_database()
         path = adb.get_path_from_guid(guid) if adb else ""
         if root is not None and path:
-            pinfo.override_count = len(compute_overrides(root, path, adb))
+            overrides = compute_overrides(root, path, adb)
+            pinfo.override_count = len(overrides)
+            rows = []
+            for item in get_structural_overrides(root, path, adb):
+                row = InspectorPrefabStructuralRow()
+                row.kind = item.kind
+                row.node_path = item.node_path
+                row.key = item.key
+                rows.append(row)
+            pinfo.structural_rows = rows
         return pinfo
 
     ip.get_prefab_info = _get_prefab_info

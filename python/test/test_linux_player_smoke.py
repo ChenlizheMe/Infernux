@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import os
 import subprocess
@@ -159,12 +160,69 @@ def test_linux_smoke_parser_defaults_to_managed_cleanup():
     arguments = module._parser().parse_args(["Balance"])
 
     assert arguments.xvfb == "auto"
+    assert arguments.video_driver == "default"
     assert arguments.object == "PlayerBall"
     assert arguments.press_scancode == 26
     assert arguments.axis == "z"
     assert arguments.minimum_final_y is None
     assert not arguments.validation
     assert arguments.component_probe == []
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    (
+        ({"SDL_VIDEODRIVER": "x11", "DISPLAY": ":0"}, True),
+        ({"SDL_VIDEODRIVER": "x11", "WAYLAND_DISPLAY": "wayland-1"}, False),
+        ({"SDL_VIDEODRIVER": "wayland", "WAYLAND_DISPLAY": "wayland-1"}, True),
+        ({"SDL_VIDEODRIVER": "wayland", "DISPLAY": ":0"}, False),
+        ({"WAYLAND_DISPLAY": "wayland-1"}, True),
+        ({}, False),
+    ),
+)
+def test_linux_smoke_recognizes_the_selected_display_server(environment, expected):
+    module = _module()
+
+    assert module._display_server_available(environment) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    (
+        ("SDL/Vulkan window backend contract accepted: backend=x11, extensions=2", "x11"),
+        ("selected backend=wayland, extensions=2\nselected backend=x11, extensions=2", "x11"),
+        ("SDL chose video backend 'x11'", "x11"),
+        ("SDL initialized without a Vulkan window", ""),
+    ),
+)
+def test_linux_smoke_reports_the_selected_sdl_video_backend(text, expected):
+    module = _module()
+
+    assert module._selected_video_driver(text) == expected
+
+
+def test_linux_smoke_backend_evidence_is_emitted_at_info_level():
+    source = (ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp").read_text(
+        encoding="utf-8"
+    )
+
+    marker = '", selected backend=", videoDriver.empty() ? "<none>" : videoDriver'
+    marker_index = source.index(marker)
+    info_index = source.rfind("INXLOG_INFO", 0, marker_index)
+    debug_index = source.rfind("INXLOG_DEBUG", 0, marker_index)
+    assert info_index > debug_index
+    assert source[info_index:marker_index].count("INXLOG_INFO") == 1
+
+
+def test_linux_smoke_captures_only_after_renderer_submission_is_ready():
+    module = _module()
+    source = inspect.getsource(module._run)
+
+    readiness = source.index('if not bool(feature_observation.get("submission_ready"))')
+    capture = source.index('control.call(\n                "capture"')
+    shutdown = source.index('control.call("shutdown"')
+
+    assert readiness < capture < shutdown
 
 
 def test_linux_smoke_component_probe_asserts_nested_public_state():
@@ -247,3 +305,22 @@ def test_linux_smoke_fatal_scan_includes_vulkan_validation():
     )
 
     assert lines == ["Vulkan Validation Error: VUID-RuntimeSpirv-test"]
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        "X Error of failed request: BadWindow",
+        "VK_ERROR_DEVICE_LOST",
+        "device lost while presenting",
+        "Aborted (core dumped)",
+        "Aborted",
+        "SIGABRT",
+        "Segmentation fault",
+        "SIGSEGV",
+    ],
+)
+def test_linux_smoke_fatal_scan_includes_native_process_failures(diagnostic):
+    module = _module()
+
+    assert module._fatal_lines(f"normal line\n{diagnostic}\n") == [diagnostic]

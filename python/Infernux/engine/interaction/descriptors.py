@@ -50,35 +50,31 @@ class SelectionTarget:
         return cls(SelectionDomain.SCENE_OBJECT, str(object_id))
 
     @classmethod
-    def asset(cls, path: str) -> "SelectionTarget":
-        from Infernux.engine.path_utils import lexical_path
-
-        normalized = lexical_path(path)
-        if not normalized:
-            raise ValueError("asset selection requires a path")
-        return cls(SelectionDomain.ASSET, normalized)
+    def asset(cls, guid: str) -> "SelectionTarget":
+        identity = str(guid or "").strip()
+        if not identity:
+            raise ValueError("asset selection requires a GUID")
+        return cls(SelectionDomain.ASSET, identity)
 
     @classmethod
     def asset_subresource(
         cls,
-        asset_path: str,
+        asset_guid: str,
         subresource_id: str,
         *,
         sub_kind: str,
     ) -> "SelectionTarget":
-        from Infernux.engine.path_utils import lexical_path
-
-        normalized = lexical_path(asset_path)
+        owner_guid = str(asset_guid or "").strip()
         identifier = str(subresource_id or "").strip()
         kind = str(sub_kind or "").strip()
-        if not normalized or not identifier or not kind:
+        if not owner_guid or not identifier or not kind:
             raise ValueError(
-                "asset subresource selection requires asset path, id, and kind"
+                "asset subresource selection requires asset GUID, id, and kind"
             )
         return cls(
             SelectionDomain.ASSET_SUBRESOURCE,
             identifier,
-            document_id=normalized,
+            document_id=owner_guid,
             sub_kind=kind,
         )
 

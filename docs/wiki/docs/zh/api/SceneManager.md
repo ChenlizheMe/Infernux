@@ -27,17 +27,22 @@
 | 方法 | 描述 |
 |------|------|
 | `static SceneManager.get_active_scene() → Optional[object]` | 获取当前活动场景。 |
-| `static SceneManager.get_scene_by_name(name: str) → Optional[str]` | Get a scene path by its name. |
-| `static SceneManager.get_scene_by_build_index(build_index: int) → Optional[str]` | Get a scene path by its build index. |
-| `static SceneManager.get_scene_at(index: int) → Optional[str]` | 按索引获取已加载的场景。 |
-| `static SceneManager.load_scene(scene: Union[int, str]) → bool` | 按名称或路径加载场景。 |
-| `static SceneManager.wait_for_load_scene(scene: Union[int, str]) → bool` | Prepare a scene asynchronously and switch when it is ready. |
-| `static SceneManager.prepare_scene(scene: Union[int, str]) → bool` | Prepare a scene asynchronously without publishing it. |
+| `static SceneManager.get_scene_by_name(name: str) → Optional[object]` | Get a loaded scene by its name. |
+| `static SceneManager.get_scene_by_world_id(world_id: int) → Optional[object]` | Get a loaded scene by its stable runtime World identity. |
+| `static SceneManager.get_scene_by_build_index(build_index: int) → Optional[object]` | Get a loaded scene corresponding to a build-list entry. |
+| `static SceneManager.get_scene_at(index: int) → Optional[object]` | 按索引获取已加载的场景。 |
+| `static SceneManager.set_active_scene(scene: object) → None` | 设置当前活动场景。 |
+| `static SceneManager.unload_scene(scene: object) → None` | Unload one resident scene. |
+| `static SceneManager.move_game_object_to_scene(game_object: object, destination: object) → None` | Move a root hierarchy to another loaded Scene without cloning it. |
+| `static SceneManager.load_scene(scene: Union[int, str], mode: LoadSceneMode = ...) → bool` | 按名称或路径加载场景。 |
+| `static SceneManager.wait_for_load_scene(scene: Union[int, str], mode: LoadSceneMode = ...) → bool` | Prepare a scene asynchronously and switch when it is ready. |
+| `static SceneManager.prepare_scene(scene: Union[int, str], mode: LoadSceneMode = ...) → bool` | Prepare a scene asynchronously without publishing it. |
 | `static SceneManager.is_scene_prepared() → bool` | Return whether a held scene is ready to publish. |
 | `static SceneManager.activate_prepared_scene() → bool` | Publish the scene previously prepared by prepare_scene. |
 | `static SceneManager.process_pending_load() → None` | Process any pending scene load request. |
 | `static SceneManager.is_scene_load_pending() → bool` | Return whether a deferred runtime scene load is queued or executing. |
 | `static SceneManager.get_scene_count() → int` | 获取已加载的场景数量。 |
+| `static SceneManager.get_scene_count_in_build_settings() → int` | Get the number of scenes available through Build Settings. |
 | `static SceneManager.get_scene_name(build_index: int) → Optional[str]` | Get a scene name by build index. |
 | `static SceneManager.get_scene_path(build_index: int) → Optional[str]` | Get a scene file path by build index. |
 | `static SceneManager.get_build_index(name: str) → int` | Get the build index of a scene by name. |

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "RendererParameterBlock.h"
 #include "rhi/GpuRetirementQueue.h"
 #include "rhi/RhiTexture.h"
 #include "shader/ShaderProgram.h"
@@ -58,6 +59,7 @@ class MaterialUBO
      * @param material The material containing property values
      */
     void Update(const InxMaterial &material);
+    void Apply(const RendererParameterBlock &parameters);
 
     /**
      * @brief Update a specific property in the UBO
@@ -68,6 +70,8 @@ class MaterialUBO
     void SetVec4(const std::string &name, const glm::vec4 &value);
     void SetInt(const std::string &name, int value);
     void SetMat4(const std::string &name, const glm::mat4 &value);
+    void SetFloatArray(const std::string &name, const std::vector<float> &values);
+    void SetVec4Array(const std::string &name, const std::vector<glm::vec4> &values);
 
     /// Update the fixed bindless material-index ABI (set 0, binding 15).
     void UpdateTextureIndices(const std::array<uint32_t, ShaderProgram::MaterialTextureIndexCapacity> &indices);
@@ -136,6 +140,7 @@ struct MaterialDescriptorSet
     std::unique_ptr<MaterialUBO> textureIndexUBO;   // Bindless ABI (binding 15)
     std::vector<MergedDescriptorBinding> bindings;
     std::unordered_map<uint32_t, VkDescriptorBufferInfo> bufferBindings;
+    std::unordered_map<uint32_t, std::shared_ptr<rhi::ComputeBuffer>> storageBufferBindings;
 
     // Texture bindings (binding -> imageView, sampler)
     struct TextureBinding
@@ -145,13 +150,20 @@ struct MaterialDescriptorSet
         std::shared_ptr<rhi::TextureGpuViewSlot> gpuSlot;
         std::shared_ptr<const rhi::TextureGpuView> gpuView;
         rhi::ResourceIndex resourceIndex{};
+        bool resolvedExplicitTexture = false;
     };
     std::unordered_map<uint32_t, TextureBinding> textureBindings;
     std::vector<rhi::ResourceIndex> bindlessTextureIndices;
 
     bool isValid = false;
     bool hasPendingTextures = false;
+    // At least one authored texture reference has no complete GPU binding.
+    // This is distinct from `hasPendingTextures`: hard failures do not need a
+    // per-frame retry, but dedicated draws must not expose the default white
+    // descriptor as if it were the requested asset.
+    bool hasUnresolvedExplicitTextures = false;
     bool usesBindlessTextureABI = false;
+    bool hasUnboundRequiredBuffers = false;
 };
 
 enum class TextureResolveStatus
@@ -177,11 +189,13 @@ struct TextureResolveResult
  *
  * failure so asynchronous residency does not produce a false error while the default texture is bound.
  */
-using TextureResolver =
-    std::function<TextureResolveResult(const std::string &textureGuid, const std::string &bindingName)>;
+using TextureResolver = std::function<TextureResolveResult(
+    const std::string &textureGuid, const std::string &bindingName, const MaterialTextureSampler *sampler)>;
 
 using BindlessTextureResolver =
     std::function<rhi::ResourceIndex(const std::shared_ptr<const rhi::TextureGpuView> &view)>;
+
+using BufferResolver = std::function<VkDescriptorBufferInfo(const std::shared_ptr<rhi::ComputeBuffer> &buffer)>;
 
 /**
  * @brief MaterialDescriptorManager - Manages material-specific descriptor sets
@@ -225,10 +239,20 @@ class MaterialDescriptorManager
     {
         m_textureResolver = std::move(resolver);
     }
+    void SetRenderTextureResolver(
+        std::function<MaterialDescriptorSet::TextureBinding(const std::shared_ptr<rhi::RenderTexture> &)> resolver)
+    {
+        m_renderTextureResolver = std::move(resolver);
+    }
 
     void SetBindlessTextureResolver(BindlessTextureResolver resolver)
     {
         m_bindlessTextureResolver = std::move(resolver);
+    }
+
+    void SetBufferResolver(BufferResolver resolver)
+    {
+        m_bufferResolver = std::move(resolver);
     }
 
     void SetBindlessMaterialMode(bool enabled) noexcept
@@ -243,6 +267,8 @@ class MaterialDescriptorManager
 
     [[nodiscard]] const std::vector<rhi::ResourceIndex> *
     GetBindlessTextureIndices(const std::string &materialName) const noexcept;
+    [[nodiscard]] const std::vector<rhi::ResourceIndex> *
+    GetBindlessTextureIndices(VkDescriptorSet descriptorSet) const noexcept;
 
     /**
      * @brief Get or create descriptor set for a material
@@ -251,6 +277,9 @@ class MaterialDescriptorManager
      * @return Pointer to descriptor set info, or nullptr on failure
      */
     MaterialDescriptorSet *GetOrCreateDescriptorSet(const InxMaterial &material, const ShaderProgram &program);
+    MaterialDescriptorSet *
+    GetOrCreateRendererDescriptorSet(const InxMaterial &material, const ShaderProgram &program,
+                                     const std::shared_ptr<const RendererParameterBlock> &parameters);
 
     /**
      * @brief Update descriptor set with new material values
@@ -267,6 +296,7 @@ class MaterialDescriptorManager
                                   const ShaderProgram &program);
 
     [[nodiscard]] bool HasPendingTextureProperties(const std::string &materialName) const;
+    [[nodiscard]] bool HasUnresolvedExplicitTextureProperties(const std::string &materialName) const;
 
     /**
      * @brief Bind texture to material
@@ -337,6 +367,10 @@ class MaterialDescriptorManager
     {
         return m_pendingDescriptorSetReleases->load(std::memory_order_relaxed);
     }
+    /// Retire per-renderer descriptor generations whose immutable CPU
+    /// parameter publication no longer has an owner. Returns the number
+    /// removed from the live cache; GPU objects remain serial-gated.
+    size_t CollectExpiredRendererDescriptorSets();
     [[nodiscard]] size_t GetDescriptorPoolCount() const noexcept
     {
         return m_descriptorManager ? m_descriptorManager->GetStats().poolCount : 0;
@@ -363,12 +397,19 @@ class MaterialDescriptorManager
     vk::VkDescriptorManager *m_descriptorManager = nullptr;
 
     std::unordered_map<std::string, std::unique_ptr<MaterialDescriptorSet>> m_descriptorSets;
+    struct RendererDescriptorEntry
+    {
+        std::weak_ptr<const RendererParameterBlock> parameters;
+        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+        std::unique_ptr<MaterialDescriptorSet> descriptor;
+    };
+    std::unordered_map<std::string, RendererDescriptorEntry> m_rendererDescriptorSets;
     std::shared_ptr<std::atomic_size_t> m_pendingDescriptorSetReleases = std::make_shared<std::atomic_size_t>(0);
 
     /// Tracks currently active descriptor sets referenced by m_descriptorSets.
     /// Retired sets are removed from this set immediately so draw-time checks
     /// can detect stale material handles and refresh pipelines safely.
-    std::unordered_set<uint64_t> m_liveDescriptorHandles;
+    std::unordered_map<uint64_t, const MaterialDescriptorSet *> m_liveDescriptorHandles;
 
     // Default texture for fallback
     VkImageView m_defaultImageView = VK_NULL_HANDLE;
@@ -405,13 +446,19 @@ class MaterialDescriptorManager
     {
         if (ds == VK_NULL_HANDLE)
             return false;
-        return m_liveDescriptorHandles.count(reinterpret_cast<uint64_t>(ds)) > 0;
+        return m_liveDescriptorHandles.find(reinterpret_cast<uint64_t>(ds)) != m_liveDescriptorHandles.end();
     }
+    [[nodiscard]] bool IsDescriptorSetComplete(VkDescriptorSet ds) const;
 
   private:
     // Texture resolver callback (set via SetTextureResolver)
     TextureResolver m_textureResolver;
+    std::function<MaterialDescriptorSet::TextureBinding(const std::shared_ptr<rhi::RenderTexture> &)>
+        m_renderTextureResolver;
+    TextureResolveStatus ResolveRenderTextureBinding(const std::shared_ptr<rhi::RenderTexture> &texture,
+                                                     MaterialDescriptorSet::TextureBinding &binding) const;
     BindlessTextureResolver m_bindlessTextureResolver;
+    BufferResolver m_bufferResolver;
 
     // Optional submission-serial queue for descriptor-owned resource cleanup.
     GpuRetirementQueue *m_deletionQueue = nullptr;
@@ -434,7 +481,8 @@ class MaterialDescriptorManager
 
     [[nodiscard]] TextureResolveStatus
     ResolveExplicitTextureBinding(const std::string &texturePath, const std::string &bindingName,
-                                  MaterialDescriptorSet::TextureBinding &outBinding) const;
+                                  MaterialDescriptorSet::TextureBinding &outBinding,
+                                  const MaterialTextureSampler *sampler = nullptr) const;
 
     /**
      * @brief Update descriptor set bindings

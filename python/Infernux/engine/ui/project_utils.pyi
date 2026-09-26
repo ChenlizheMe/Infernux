@@ -39,8 +39,8 @@ def open_in_pycharm(
     ...
 
 def open_file_with_system(
-    file_path: str, project_root: str = "",
-) -> None:
+    file_path: str, project_root: str = "", line: int = 0,
+) -> bool:
     """Open *file_path* with the OS default application."""
     ...
 

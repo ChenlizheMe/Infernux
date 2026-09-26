@@ -70,6 +70,7 @@ class TemporalAAEffect(FullScreenEffect):
                 + ", ".join(missing)
             )
 
+        graph.set_temporal_jitter()
         history_read, history_write = graph.create_temporal_history(
             "_taa_history",
             format=Format.RGBA16_SFLOAT,

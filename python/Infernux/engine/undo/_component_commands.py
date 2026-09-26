@@ -8,7 +8,7 @@ from typing import Any, Callable, Optional
 from Infernux.debug import Debug
 from Infernux.engine.undo._base import CompoundCommand, UndoCommand
 from Infernux.engine.undo._helpers import (
-    _get_active_scene, _comp_type_name_of,
+    _comp_type_name_of, _find_runtime_object,
     _require_scene_object, _find_live_native_component,
     _invalidate_builtin_wrapper,
     _bump_inspector_structure, _notify_gizmos_scene_changed,
@@ -36,10 +36,7 @@ def _snapshot_py_enabled(py_comp: Any) -> bool:
 
 
 def _find_py_ordinal(object_id: int, py_comp: Any) -> int:
-    scene = _get_active_scene()
-    if not scene:
-        return 0
-    obj = scene.find_by_id(object_id)
+    obj = _find_runtime_object(object_id)
     if obj is None or not hasattr(obj, 'get_py_components'):
         return 0
     target_type = _comp_type_name_of(py_comp)

@@ -16,6 +16,8 @@ def test_windows_player_native_library_contract_is_complete() -> None:
     assert player_native_library_filenames("win32") == frozenset(
         {
             "InfernuxFoundation.dll",
+            "InfernuxAudioRuntime.dll",
+            "InfernuxAssetRuntime.dll",
             "InfernuxParticleRuntime.dll",
             "InfernuxRenderCore.dll",
             "InfernuxRendererRuntime.dll",
@@ -32,6 +34,8 @@ def test_linux_player_native_library_contract_is_complete() -> None:
     assert player_native_library_filenames("linux") == frozenset(
         {
             "libInfernuxFoundation.so",
+            "libInfernuxAudioRuntime.so",
+            "libInfernuxAssetRuntime.so",
             "libInfernuxParticleRuntime.so",
             "libInfernuxRenderCore.so",
             "libInfernuxRendererRuntime.so",

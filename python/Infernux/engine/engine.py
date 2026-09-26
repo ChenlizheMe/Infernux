@@ -39,6 +39,9 @@ class Engine():
             else "editor"
         )
         self._engine = Infernux(_safe_path(lib_dir), self._mode)
+        if not _PLAYER_MODE:
+            from Infernux.engine.model_import.toolchain import configure_database
+            configure_database(self._engine.get_asset_database())
         self.set_log_level(engine_log_level)
         self._gui_objects = {}
         self._play_mode_manager = None
@@ -59,6 +62,10 @@ class Engine():
         self._render_submission_frame = 0
         self._gizmos_collector = None  # lazy-init GizmosCollector
         self._scene_view_visible = self._mode == RuntimeMode.Graphical and not _PLAYER_MODE
+        # Authoritative Scene View Gizmos switch. Keep this Python-side so it
+        # gates user callbacks and geometry construction before any native or
+        # GPU work is recorded.
+        self._show_gizmos = True
         self._next_reload_poll_time = 0.0
         self._next_gizmo_collect_time = 0.0
         # Script candidates are prepared off-thread. Publish completed work at
@@ -77,11 +84,11 @@ class Engine():
         self._headless_scene_file_manager = None
         self._before_exit_callback = None
         self._editor_frame_sync_callback = None
-        # Standalone Editor/Player entry points terminate the entire process
+        # The packaged Player entry point terminates the entire process
         # immediately after persistent writes and native cleanup complete.
-        # Their plugin threads, modules, sockets and heaps are process-owned;
+        # The packaged Player's plugin threads and sockets are process-owned;
         # running per-plugin unload hooks on this path only serializes work the
-        # operating system is about to reclaim. Embedded/headless callers keep
+        # operating system is about to reclaim. Editor/headless callers keep
         # the normal unload contract because their Python process survives.
         self._process_owned_exit = False
         from Infernux.application import Application
@@ -286,7 +293,36 @@ class Engine():
                 # owner-thread safe point. Typed changes merge here and become
                 # visible when SceneManager begins the runtime frame.
                 with engine._runtime_scheduler.change_journal.transaction():
+                    if not _PLAYER_MODE:
+                        from Infernux.host import MainThreadCommandQueue
+
+                        # MCP authoring can retire script dispatch entries.
+                        # Drain before begin_native_frame, never from pre-GUI
+                        # while that frame still owns the old dispatch epoch.
+                        MainThreadCommandQueue.instance().drain()
+                        from Infernux.engine.undo import UndoManager
+
+                        # History may restore a scene and publish script types.
+                        # UI callbacks only enqueue replay; never restore that
+                        # graph while a native frame owns the dispatch epoch.
+                        undo = UndoManager.instance()
+                        if undo is not None:
+                            undo.process_pending_replay()
                     engine.tick_play_mode(float(delta_time))
+                # Publish the immutable phase plan before SceneManager enters
+                # its native frame. Scene loads may register components from
+                # this callback; preparing here keeps the native work gate and
+                # fixed/update counts coherent for the first simulation step.
+            scheduler = getattr(engine, "_runtime_scheduler", None)
+            prepare_frame = getattr(scheduler, "prepare_frame", None)
+            if callable(prepare_frame):
+                prepare_frame()
+                # A paused Step is intentionally executed outside the
+                # authoring transaction above.  This is the single owner
+                # safe point where the runtime journal may be consumed.
+                play_mode_manager = getattr(engine, "_play_mode_manager", None)
+                if not _PLAYER_MODE and play_mode_manager is not None:
+                    play_mode_manager.process_pending_step()
 
         self._engine.set_pre_scene_update_callback(_pre_scene_tick)
 
@@ -345,7 +381,8 @@ class Engine():
             RuntimeFrameBarrier,
         )
 
-        if RuntimeFrameBarrier(barrier) == RuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
+        barrier = RuntimeFrameBarrier(barrier)
+        if barrier == RuntimeFrameBarrier.SNAPSHOT_PUBLICATION:
             scene_manager = getattr(self, "_runtime_scene_manager", None)
             getter = getattr(scene_manager, "get_global_transform_serial", None)
             if callable(getter):
@@ -360,7 +397,55 @@ class Engine():
                     journal = self._runtime_scheduler.change_journal
                     journal.publish(RuntimeChangeDomain.TRANSFORM_LOCAL, broad=True)
                     journal.publish(RuntimeChangeDomain.TRANSFORM_WORLD, broad=True)
-        return self._runtime_scheduler.consume_native_barrier(barrier)
+        changes = self._runtime_scheduler.consume_native_barrier(barrier)
+        if barrier == RuntimeFrameBarrier.TRANSFORM_TO_PHYSICS:
+            if changes is not None:
+                self._runtime_scheduler.execute_native_phase(
+                    "physics_pre_step",
+                    float(self._runtime_scene_manager.get_fixed_time_step()),
+                )
+        elif barrier == RuntimeFrameBarrier.PHYSICS_TO_TRANSFORM:
+            if changes is not None:
+                self._runtime_scheduler.execute_native_phase(
+                    "physics_post_step",
+                    float(self._runtime_scene_manager.get_fixed_time_step()),
+                )
+            # Simulation-owned pose anchors join the same authoritative
+            # physics-to-Transform publication point as native rigidbodies.
+            # The Transform frame cache is still active here, so publication
+            # is applied atomically before Update/LateUpdate and rendering.
+            from Infernux.compute import _poll_transform_bindings
+            _poll_transform_bindings()
+        if barrier == RuntimeFrameBarrier.RENDER_EXTRACTION:
+            scene_manager = getattr(self, "_runtime_scene_manager", None)
+            if scene_manager is not None and (
+                not scene_manager.is_playing() or scene_manager.is_paused()
+            ):
+                # Edit mode and paused Play have no physics barrier. Keep the
+                # same Transform-anchor authority exchange alive immediately
+                # before their render extraction so W/E/R remains interactive.
+                from Infernux.compute import _poll_transform_bindings
+                _poll_transform_bindings()
+            # Gizmos describe the exact world which is about to render.  This
+            # barrier is after FixedUpdate/physics/Update/LateUpdate and after
+            # their compute submissions, but before render-list extraction.
+            if (
+                getattr(self, "_scene_view_visible", False)
+                and getattr(self, "_show_gizmos", True)
+            ):
+                now = time.monotonic()
+                is_playing = bool(scene_manager and scene_manager.is_playing())
+                interval = (
+                    self._gizmo_collect_interval_play
+                    if is_playing
+                    else self._gizmo_collect_interval_edit
+                )
+                if interval <= 0.0 or now >= self._next_gizmo_collect_time:
+                    self._tick_gizmos()
+                    self._next_gizmo_collect_time = now + interval
+            else:
+                self._clear_uploaded_gizmos()
+        return changes
 
     @staticmethod
     def _apply_project_settings(project_path):
@@ -418,8 +503,7 @@ class Engine():
 
     def run(self):
         if self._mode == RuntimeMode.Headless:
-            self._engine.run()
-            self.exit()
+            self._run_native_loop()
             return
 
         if self._resources_manager and not self._resources_manager.is_running():
@@ -436,19 +520,13 @@ class Engine():
         def _pre_gui_tick():
             if not _PLAYER_MODE:
                 from Infernux.engine.deferred_task import DeferredTaskRunner
-                from Infernux.host import MainThreadCommandQueue
                 from Infernux.engine.ui.window_manager import WindowManager
-                from Infernux.engine.undo import UndoManager
 
                 DeferredTaskRunner.instance().tick()
-                MainThreadCommandQueue.instance().drain()
                 manager = WindowManager.instance()
                 if manager is not None:
                     manager.process_pending_actions()
                     manager.sync_native_gui_focus()
-                undo_manager = UndoManager.instance()
-                if undo_manager is not None:
-                    undo_manager.process_pending_replay()
         self._engine.set_pre_gui_callback(_pre_gui_tick)
 
         # Install a post-draw callback that runs AFTER GPU submit + present.
@@ -547,16 +625,40 @@ class Engine():
 
         # Disable automatic GC to eliminate unpredictable pauses during
         # rendering.  Manual collection runs in _post_draw_tick above.
+        self._run_native_loop()
+
+    def _run_native_loop(self):
+        import signal
+        import threading
+
+        interrupted = False
+
+        def interrupt_loop(_signum, _frame):
+            nonlocal interrupted
+            interrupted = True
+            self._engine.exit()
+
+        # Raising inside a Python render callback is handled as a script error
+        # by the native callback boundary. Request loop termination instead,
+        # and propagate the interrupt only after the current frame completes.
+        owns_signals = threading.current_thread() is threading.main_thread()
+        if owns_signals:
+            previous_sigint = signal.signal(signal.SIGINT, interrupt_loop)
+        gc_enabled = gc.isenabled()
         gc.disable()
-        self._engine.run()
-        gc.enable()  # Restore automatic GC for shutdown cleanup
-        # C++ Run() returned (main loop ended, but Cleanup not yet called).
-        # Optimised shutdown order:
-        #  1. Signal ResourcesManager to stop (non-blocking).
-        #  2. Run C++ Cleanup (Vulkan teardown — the heavy part).
-        #  3. Join the ResourcesManager thread (should already have exited
-        #     during step 2, so the join returns instantly).
-        self.exit()
+        try:
+            self._engine.run()
+            if interrupted:
+                raise KeyboardInterrupt()
+        finally:
+            if owns_signals:
+                signal.signal(signal.SIGINT, previous_sigint)
+            if gc_enabled:
+                gc.enable()
+            # Includes KeyboardInterrupt and native loop failures, not just
+            # the SDL window-close path. Cleanup must run before Python joins
+            # the non-daemon resource observer during interpreter shutdown.
+            self.exit()
 
     def tick(self, delta_time: float):
         if self._mode != RuntimeMode.Headless:
@@ -570,9 +672,6 @@ class Engine():
 
         from Infernux.engine.deferred_task import DeferredTaskRunner
         DeferredTaskRunner.instance().tick()
-
-        from Infernux.host import MainThreadCommandQueue
-        MainThreadCommandQueue.instance().drain()
 
         # Headless has no post-present phase, so advance the same scene
         # document work that the graphical editor drains between frames here.
@@ -667,15 +766,6 @@ class Engine():
         if not is_playing:
             self._flush_pending_material_saves()
 
-        # Collect/upload gizmos only when Scene View is visible.
-        if self._scene_view_visible:
-            interval = self._gizmo_collect_interval_play if is_playing else self._gizmo_collect_interval_edit
-            if interval <= 0.0 or current_time >= self._next_gizmo_collect_time:
-                self._tick_gizmos()
-                self._next_gizmo_collect_time = current_time + interval if interval > 0.0 else current_time
-        else:
-            self._clear_uploaded_gizmos()
-        
         return delta_time
 
     @staticmethod
@@ -711,7 +801,9 @@ class Engine():
         if self._gizmos_collector is None:
             from Infernux.gizmos.collector import GizmosCollector
             self._gizmos_collector = GizmosCollector()
-        self._gizmos_collector.collect_and_upload(self)
+        from Infernux.compute import _record_commands
+        with _record_commands():
+            self._gizmos_collector.collect_and_upload(self)
         self._gizmos_uploaded = True
 
     @staticmethod
@@ -725,14 +817,17 @@ class Engine():
 
     def _clear_uploaded_gizmos(self):
         """Clear uploaded gizmo buffers once when Scene View is hidden."""
-        if not self._gizmos_uploaded:
+        if not getattr(self, "_gizmos_uploaded", False):
             return
         native = self.get_native_engine()
         if not native:
             self._gizmos_uploaded = False
             return
-        native.clear_component_gizmos()
-        native.clear_component_gizmo_icons()
+        collector = getattr(self, "_gizmos_collector", None)
+        if collector is not None:
+            collector.retire_uploaded(native)
+        else:
+            native.clear_component_gizmos()
         self._gizmos_uploaded = False
 
     def set_scene_view_visible(self, visible: bool):
@@ -748,6 +843,48 @@ class Engine():
             self._next_gizmo_collect_time = 0.0
         else:
             self._clear_uploaded_gizmos()
+
+    def set_show_gizmos(self, show: bool):
+        """Enable or disable all component Gizmos in the Scene View.
+
+        Disabling is a collection gate, not only a render mask: Python Gizmo
+        callbacks, resident compute expansion, packing, and GPU uploads all
+        stop immediately. Editor transform tools remain available because
+        they are a separate native interaction pass.
+        """
+        show = bool(show)
+        if self._show_gizmos == show:
+            return
+        self._show_gizmos = show
+        if show:
+            self._next_gizmo_collect_time = 0.0
+        else:
+            self._clear_uploaded_gizmos()
+
+    def is_show_gizmos(self) -> bool:
+        """Return whether component-authored Scene View Gizmos are enabled."""
+        return bool(self._show_gizmos)
+
+    def get_gizmo_collection_observation(self) -> dict:
+        """Return the last CPU collection/upload marker for acceptance tooling.
+
+        GPU pass timing intentionally is not inferred here; renderer profiling
+        remains the authority for draw execution and waits.
+        """
+        collector = getattr(self, "_gizmos_collector", None)
+        observation = getattr(collector, "last_observation", None)
+        payload = {
+            "enabled": bool(getattr(self, "_show_gizmos", True)),
+            "scene_view_visible": bool(
+                getattr(self, "_scene_view_visible", False)
+            ),
+            "uploaded": bool(getattr(self, "_gizmos_uploaded", False)),
+        }
+        if observation is None:
+            return payload
+        for name in observation.__dataclass_fields__:
+            payload[name] = getattr(observation, name)
+        return payload
     
     def get_play_mode_manager(self) -> "PlayModeManager":
         """Get the play mode manager for controlling play/pause/stop."""
@@ -794,6 +931,9 @@ class Engine():
           1. Stop ResourcesManager and drain coalesced events on the main thread
           2. C++ Cleanup (GPU drain + resource destruction)
         """
+        if self._engine is None:
+            return
+
         # Dirty-panel decisions are completed by SceneFileManager's non-blocking
         # Editor modal before native close is confirmed. This call is now only a
         # teardown audit and must never open a platform dialog.
@@ -809,17 +949,6 @@ class Engine():
                 self._before_exit_callback()
             except Exception as exc:
                 Debug.log_suppressed("Engine.exit.before_exit_callback", exc)
-
-        # Safety net: if cleanup hangs (C++ deadlock, thread stuck), force-kill
-        # the process after a generous timeout so we never leave zombie procs.
-        import threading as _th
-        shutdown_complete = _th.Event()
-
-        def _force_exit():
-            if not shutdown_complete.wait(15):
-                os._exit(1)
-
-        _th.Thread(target=_force_exit, daemon=True, name="ShutdownWatchdog").start()
 
         # 0. If still in play mode, tear down Python components before C++
         #    objects are destroyed.  Without this, the C++ renderer
@@ -912,6 +1041,9 @@ class Engine():
 
         # 2. C++ Cleanup — destroys renderer, Vulkan device, etc.
         if self._engine:
+            from Infernux.compute import _release_engine_resources
+
+            _release_engine_resources()
             self._engine.cleanup()
         
         # Clear all references
@@ -920,7 +1052,6 @@ class Engine():
         self._resources_manager = None
         from Infernux.application import Application
         Application._unbind_engine(self)
-        shutdown_complete.set()
 
     def _shutdown_play_mode(self):
         """Immediately tear down play-mode components for a clean shutdown.
@@ -965,6 +1096,8 @@ class Engine():
 
         # 3. Flip state to EDIT so nothing else treats us as playing
         pmm._state = PlayModeState.EDIT
+        from Infernux.core.assets import AssetManager
+        AssetManager._end_play_data_asset_isolation()
 
     def _confirm_dirty_panels_before_exit(self) -> bool:
         """Audit dirty state after native close confirmation without prompting."""
@@ -991,7 +1124,11 @@ class Engine():
         self._engine.set_gui_player_mode(bool(enabled))
 
     def get_display_scale(self) -> float:
-        """Return the OS display scale factor (e.g. 2.0 for 200% Windows scaling)."""
+        """Return authored Editor UI units to SDL window units.
+
+        This is the OS window display scale divided by pixel density. The
+        renderer separately converts window units to framebuffer pixels.
+        """
         return self._engine.get_display_scale()
 
     def set_log_level(self, engine_log_level):
@@ -1084,7 +1221,7 @@ class Engine():
         self._engine.hide()
 
     def is_window_minimized(self) -> bool:
-        """Return whether the editor window is minimized or occluded."""
+        """Return whether native presentation is suspended by window state."""
         return bool(self._engine and self._engine.is_window_minimized())
 
     def set_window_icon(self, icon_path):
@@ -1211,9 +1348,9 @@ class Engine():
         """Return a non-blocking ticket for the latest submitted render target."""
         return self._engine.request_render_target_readback(game_view)
 
-    def request_capture(self, source: str, output_path: str) -> int:
-        """Capture a Scene or Game render target to an engine-encoded PNG."""
-        return int(self._engine.request_capture(source, output_path))
+    def request_capture(self, source: str, output_path: str, camera_component_id: int = 0) -> int:
+        """Capture Scene, Game, Editor or a Camera target_texture to PNG."""
+        return int(self._engine.request_capture(source, output_path, camera_component_id))
 
     def query_capture(self, capture_id: int) -> dict:
         """Return status and renderer metadata for an engine capture."""
@@ -1265,12 +1402,12 @@ class Engine():
             self._engine.set_editor_tool_highlight(axis)
 
     def set_editor_tool_mode(self, mode: int):
-        """Set the active editor tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale."""
+        """Set the active editor tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale, 4=Rect."""
         if self._engine:
             self._engine.set_editor_tool_mode(mode)
 
     def get_editor_tool_mode(self) -> int:
-        """Get the active editor tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale."""
+        """Get the active editor tool mode. 0=None, 1=Translate, 2=Rotate, 3=Scale, 4=Rect."""
         if self._engine:
             return self._engine.get_editor_tool_mode()
         return 0
@@ -1317,6 +1454,12 @@ class Engine():
         if self._engine is None:
             return []
         return list(self._engine.pick_scene_object_ids(screen_x, screen_y, viewport_width, viewport_height))
+
+    def pick_scene_icon_object_ids(self, screen_x: float, screen_y: float, viewport_width: float, viewport_height: float):
+        """Return component icon owners beneath a Scene-view pixel."""
+        if self._engine is None:
+            return []
+        return list(self._engine.pick_scene_icon_object_ids(screen_x, screen_y, viewport_width, viewport_height))
 
     def request_scene_object_pick(self, screen_x: float, screen_y: float, viewport_width: float, viewport_height: float) -> int:
         if self._engine is None:

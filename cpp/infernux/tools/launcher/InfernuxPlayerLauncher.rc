@@ -22,7 +22,7 @@ BEGIN
             VALUE "FileVersion", "0.4.0.0"
             VALUE "InternalName", "InfernuxPlayerHost"
             VALUE "OriginalFilename", "InfernuxPlayerHost.exe"
-            VALUE "ProductName", "Infernux Player"
+            VALUE "ProductName", "Infernux"
             VALUE "ProductVersion", "0.4.0.0"
         END
     END

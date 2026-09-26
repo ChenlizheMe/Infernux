@@ -166,6 +166,39 @@ class GameObject
         m_prefabRoot = isRoot;
     }
 
+    /// Asset-local node identity, independent of scene ID, name and sibling order.
+    [[nodiscard]] uint64_t GetPrefabSourceID() const
+    {
+        return m_prefabSourceId;
+    }
+    void SetPrefabSourceID(uint64_t id)
+    {
+        m_prefabSourceId = id;
+    }
+
+    /// Immutable authoring baseline; cloned instances share it until source publication.
+    [[nodiscard]] const nlohmann::json &GetPrefabSourceDocument() const;
+    void SetPrefabSourceDocument(const nlohmann::json &document);
+
+    /// Imported model ownership is independent of display name and renderer overrides.
+    /// An empty node path identifies the model instance container.
+    [[nodiscard]] const std::string &GetModelSourceGuid() const
+    {
+        return m_modelSourceGuid;
+    }
+    [[nodiscard]] const std::vector<std::string> &GetModelSourcePath() const
+    {
+        return m_modelSourcePath;
+    }
+    void SetModelSource(std::string guid, std::vector<std::string> path);
+    static void ValidateModelSourceDocument(const nlohmann::json &document);
+
+    /// Reserve an identity for a document transaction without creating a live object.
+    static uint64_t ReserveDocumentID()
+    {
+        return GenerateID();
+    }
+
     /// @brief True if this object belongs to a prefab instance (has a non-empty prefab GUID)
     [[nodiscard]] bool IsPrefabInstance() const
     {
@@ -477,6 +510,10 @@ class GameObject
 
     void SetScene(Scene *scene);
 
+    [[nodiscard]] std::unique_ptr<GameObject> CloneGraph(Scene *scene,
+                                                         std::unordered_map<uint64_t, uint64_t> &componentIdRemap,
+                                                         std::vector<Component *> &clonedComponents) const;
+
     Component *AttachComponent(std::unique_ptr<Component> component, bool enforceUserAddable);
     [[nodiscard]] std::vector<std::string> GetAttachmentBlockers(const std::string &constraintTypeId,
                                                                  const std::string &typeName,
@@ -520,6 +557,10 @@ class GameObject
 
     std::string m_prefabGuid;  // GUID of source .prefab asset
     bool m_prefabRoot = false; // true only on the root of a prefab instance
+    uint64_t m_prefabSourceId = 0;
+    std::shared_ptr<const nlohmann::json> m_prefabSourceDocument;
+    std::string m_modelSourceGuid;
+    std::vector<std::string> m_modelSourcePath;
 };
 
 } // namespace infernux

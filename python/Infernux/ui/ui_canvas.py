@@ -1,9 +1,9 @@
 """UICanvas — root container for screen-space UI elements.
 
 A UICanvas is attached to a GameObject in the Hierarchy.
-All UI elements (UIText, etc.) are children of the Canvas's GameObject.
-The Canvas itself only stores configuration; rendering is handled by
-the UI Editor panel & Game View overlay via ImGui draw primitives.
+UI elements (UIText, etc.) are children of the Canvas's GameObject.
+The Canvas owns layout configuration and input geometry. Runtime submission
+builds GPU UI commands; the UI Editor previews the same logical layout.
 
 The canvas defines a *design* reference resolution (default 1920×1080).
 At runtime the Game View scales from design resolution to actual viewport
@@ -22,6 +22,7 @@ from Infernux.components import (
     int_field,
 )
 from .inx_ui_component import InxUIComponent
+from .inx_ui_screen_component import is_ui_screen_component
 from .enums import RenderMode, UIScaleMode, ScreenMatchMode
 from .ui_render_revision import is_unchanged_ui_scalar, mark_runtime_ui_dirty
 
@@ -43,6 +44,9 @@ class UICanvas(InxUIComponent):
     They are user-editable and default to 1920×1080.  At runtime the Game
     View overlay scales all element positions, sizes and font sizes
     proportionally from this reference to the actual viewport.
+
+    The owner's Transform (and its ancestors) never changes screen geometry.
+    Child controls keep their own local layout positions and rotations.
 
     Attributes:
         render_mode: ScreenOverlay or CameraOverlay.
@@ -184,6 +188,17 @@ class UICanvas(InxUIComponent):
     # ------------------------------------------------------------------
     _cached_elements: list = None
     _cached_elements_version: int = -1
+    _input_logical_size: tuple[float, float] | None = None
+
+    def set_input_logical_size(self, width: float, height: float) -> None:
+        """Publish the layout extent used by the current pointer snapshot."""
+        self._input_logical_size = (max(1.0, float(width)), max(1.0, float(height)))
+
+    @property
+    def input_logical_size(self) -> tuple[float, float]:
+        if self._input_logical_size is not None:
+            return self._input_logical_size
+        return float(self.reference_width), float(self.reference_height)
 
     def invalidate_element_cache(self):
         """Mark the cached element list as stale.
@@ -231,64 +246,102 @@ class UICanvas(InxUIComponent):
         from .inx_ui_screen_component import InxUIScreenComponent
 
         for comp in go.get_py_components():
-            if isinstance(comp, InxUIScreenComponent):
+            if is_ui_screen_component(comp):
                 yield comp
         yield from self._walk_children(go)
 
     def _walk_children(self, parent):
-        from .inx_ui_screen_component import InxUIScreenComponent
+        from .ui_canvas_utils import _is_uicanvas_component
+
         for child in parent.get_children():
-            for comp in child.get_py_components():
-                if isinstance(comp, InxUIScreenComponent):
+            components = child.get_py_components()
+            if any(_is_uicanvas_component(comp, UICanvas) for comp in components):
+                continue
+            for comp in components:
+                if is_ui_screen_component(comp):
                     yield comp
             yield from self._walk_children(child)
 
-    def raycast(self, canvas_x: float, canvas_y: float, tolerance: float = 0.0):
+    def raycast(
+        self,
+        canvas_x: float,
+        canvas_y: float,
+        tolerance: float = 0.0,
+        layout_width: float | None = None,
+        layout_height: float | None = None,
+    ):
         """Return the front-most element hit at (canvas_x, canvas_y), or None.
 
         Iterates children in reverse depth-first order (last drawn = top).
         Only elements with ``raycast_target = True`` participate.
         Uses AABB pre-rejection before the full rotated hit-test.
         """
-        ref_w = float(self.reference_width)
-        ref_h = float(self.reference_height)
-        elements = self._get_elements()
-        for elem in reversed(elements):
-            elem_go = getattr(elem, "game_object", None)
-            if elem_go is not None and not elem_go.active_in_hierarchy:
-                continue
-            if not getattr(elem, "raycast_target", True):
-                continue
-            if not getattr(elem, "enabled", True):
-                continue
-            # AABB pre-rejection: skip expensive contains_point if outside visual rect
-            vx, vy, vw, vh = elem.get_visual_rect(ref_w, ref_h)
-            if not (vx - tolerance <= canvas_x <= vx + vw + tolerance
-                    and vy - tolerance <= canvas_y <= vy + vh + tolerance):
-                continue
-            if elem.contains_point(canvas_x, canvas_y, ref_w, ref_h, tolerance):
-                return elem
-        return None
+        return next(self._raycast_hits(canvas_x, canvas_y, tolerance, layout_width, layout_height), None)
 
-    def raycast_all(self, canvas_x: float, canvas_y: float, tolerance: float = 0.0):
+    def raycast_all(
+        self,
+        canvas_x: float,
+        canvas_y: float,
+        tolerance: float = 0.0,
+        layout_width: float | None = None,
+        layout_height: float | None = None,
+    ):
         """Return all elements hit at (canvas_x, canvas_y), front-to-back order."""
-        ref_w = float(self.reference_width)
-        ref_h = float(self.reference_height)
-        elements = self._get_elements()
-        hits = []
-        for elem in reversed(elements):
-            elem_go = getattr(elem, "game_object", None)
-            if elem_go is not None and not elem_go.active_in_hierarchy:
+        return list(self._raycast_hits(canvas_x, canvas_y, tolerance, layout_width, layout_height))
+
+    def _raycast_hits(self, canvas_x, canvas_y, tolerance, layout_width, layout_height):
+        if (layout_width is None) != (layout_height is None):
+            raise ValueError("layout_width and layout_height must be provided together")
+        ref_w, ref_h = (
+            self.input_logical_size
+            if layout_width is None
+            else (max(1.0, float(layout_width)), max(1.0, float(layout_height)))
+        )
+        for elem, left, top, right, bottom, clip in self._hit_candidates(ref_w, ref_h):
+            if not (left - tolerance <= canvas_x <= right + tolerance
+                    and top - tolerance <= canvas_y <= bottom + tolerance):
                 continue
-            if not getattr(elem, "raycast_target", True):
+            if clip is not None and not (clip[0] <= canvas_x <= clip[2] and clip[1] <= canvas_y <= clip[3]):
                 continue
-            if not getattr(elem, "enabled", True):
-                continue
-            # AABB pre-rejection
-            vx, vy, vw, vh = elem.get_visual_rect(ref_w, ref_h)
-            if not (vx - tolerance <= canvas_x <= vx + vw + tolerance
-                    and vy - tolerance <= canvas_y <= vy + vh + tolerance):
-                continue
+            # Preserve custom control hit shapes; only broad-phase candidates
+            # enter Python geometry/field access, not every decorative sibling.
             if elem.contains_point(canvas_x, canvas_y, ref_w, ref_h, tolerance):
-                hits.append(elem)
-        return hits
+                yield elem
+
+    def _hit_candidates(self, ref_w, ref_h):
+        """Retain broad-phase bounds until topology, pose, layout or policy changes."""
+        from .ui_transform_dependencies import create_ui_transform_dependencies
+        from .inx_ui_screen_component import clear_rect_cache, _get_layout_revision
+        from .ui_render_revision import _get_hit_policy_revision
+
+        elements = self._get_elements()
+        if not elements:
+            return ()
+        owner = self.game_object
+        scene = owner.scene
+        topology = (owner, scene.world_id, scene.structure_version,
+                    scene.temporal_discontinuity_revision, id(elements))
+        if self.__dict__.get('_hit_topology') != topology:
+            self._hit_geometry = create_ui_transform_dependencies([e.game_object for e in elements], [])
+            self._hit_topology = topology
+            self._hit_pose = None
+            self._hit_key = None
+        pose = self._hit_geometry.poll()
+        if pose != self._hit_pose:
+            # A child's cached rect depends on its UI ancestors too, not just
+            # its own local Transform signature.
+            clear_rect_cache((id(self), pose))
+            self._hit_pose = pose
+        key = (pose, _get_hit_policy_revision(), _get_layout_revision(), ref_w, ref_h)
+        if self._hit_key != key:
+            candidates = []
+            for element in reversed(elements):
+                if (not element.game_object.active_in_hierarchy or not element.enabled
+                        or not element.effectively_blocks_raycast()):
+                    continue
+                x, y, width, height = element.get_visual_rect(ref_w, ref_h)
+                clip = element.get_effective_clip_rect(ref_w, ref_h)
+                candidates.append((element, x, y, x + width, y + height, clip))
+            self._hit_candidates_cache = tuple(candidates)
+            self._hit_key = key
+        return self._hit_candidates_cache

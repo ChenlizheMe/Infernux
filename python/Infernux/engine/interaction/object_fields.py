@@ -85,7 +85,7 @@ class AssetReferenceCatalog:
 
     def _items_for_type(self, asset_type: str) -> tuple[tuple[str, str], ...]:
         from Infernux.core.asset_reference_types import asset_type_registry
-        from Infernux.engine.path_utils import lexical_path, lexical_path_key
+        from Infernux.engine.path_utils import lexical_path, lexical_path_key, path_key
         from Infernux.engine.project_context import get_project_root
 
         descriptor = asset_type_registry.require(asset_type)
@@ -97,12 +97,16 @@ class AssetReferenceCatalog:
 
         shader_type = cache_key.startswith("shader")
         project_root = get_project_root()
-        assets_root = (
-            lexical_path_key(os.path.join(project_root, "Assets"))
-            if project_root
-            else ""
+        # Resolve the root once when building the cached catalog, not every
+        # candidate on every picker frame. Windows may expose the project via
+        # an 8.3 alias while imported subresources use the canonical spelling.
+        assets_roots = (
+            {
+                lexical_path_key(os.path.join(project_root, "Assets")),
+                path_key(os.path.join(project_root, "Assets")),
+            }
+            if project_root else set()
         )
-        assets_prefix = assets_root.rstrip("\\/") + os.sep if assets_root else ""
         matches: list[tuple[str, str]] = []
         for path in paths:
             portable = path.replace("\\", "/")
@@ -114,13 +118,15 @@ class AssetReferenceCatalog:
             )
             if not shader_type:
                 candidate_key = lexical_path_key(candidate_path)
-                inside_assets = bool(assets_root) and (
-                    candidate_key == assets_root
-                    or candidate_key.startswith(assets_prefix)
+                inside_assets = any(
+                    candidate_key == root
+                    or candidate_key.startswith(root.rstrip("\\/") + os.sep)
+                    for root in assets_roots
                 )
                 if not inside_assets:
                     continue
-            if not any(folded.endswith(extension) for extension in descriptor.extensions):
+            is_virtual = any(marker in portable for marker in descriptor.virtual_path_markers)
+            if not is_virtual and not any(folded.endswith(extension) for extension in descriptor.extensions):
                 continue
             if shader_type:
                 from Infernux.engine.ui.inspector_shader_utils import is_shader_hidden
@@ -128,6 +134,11 @@ class AssetReferenceCatalog:
                 if is_shader_hidden(lexical_path(candidate_path)):
                     continue
             name = os.path.basename(portable)
+            if "::subtex:" in portable:
+                from Infernux.core.assets import AssetManager
+                metadata = AssetManager._asset_database.get_meta_by_path(candidate_path)
+                if metadata is not None:
+                    name = f"{metadata.get_string('resource_name')} ({os.path.basename(portable.partition('::subtex:')[0])})"
             matches.append((name, path))
         matches.sort(key=lambda item: (item[0].casefold(), item[1].casefold()))
         result = tuple(matches)
@@ -344,6 +355,14 @@ class AssetReferenceFieldModel(ObjectReferenceFieldModel):
             transaction_type = str(
                 getattr(self.transaction, "value_type", "") or ""
             ).strip()
+            if transaction_type == "FieldType.ASSET":
+                transaction_type = str(self.transaction.handle.schema.attributes["asset_type"])
+            else:
+                transaction_type = {
+                    "FieldType.MATERIAL": "Material",
+                    "FieldType.TEXTURE": "Texture",
+                    "FieldType.SHADER": "Shader",
+                }.get(transaction_type, transaction_type)
             if transaction_type.casefold() not in {
                 descriptor.type_id.casefold(),
                 "asset_reference",
@@ -499,7 +518,13 @@ class AssetReferenceFieldModel(ObjectReferenceFieldModel):
         current_guid = current["guid"].casefold()
         candidate_guid = candidate["guid"].casefold()
         if current_guid and candidate_guid:
-            return current_guid == candidate_guid
+            if current_guid != candidate_guid:
+                return False
+            if self.asset_type == "Mesh":
+                from Infernux.lib._Infernux import split_model_mesh_reference
+                return (split_model_mesh_reference(current["path_hint"])[1]
+                        == split_model_mesh_reference(candidate["path_hint"])[1])
+            return True
         current_builtin = current["builtin"].casefold()
         candidate_builtin = candidate["builtin"].casefold()
         if current_builtin and candidate_builtin:

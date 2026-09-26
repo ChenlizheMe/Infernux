@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -34,33 +35,37 @@ def test_ci_software_driver_is_included_in_the_staged_wheel(tmp_path):
     cmake = shutil.which("cmake")
     if cmake is None:
         pytest.skip("CMake is required to exercise its install hook")
-    project = tmp_path / "project"
-    driver = project / "out/toolchains/windows-swiftshader/runtime/vk_swiftshader.dll"
-    driver.parent.mkdir(parents=True)
-    driver.write_bytes(b"software driver fixture")
-    (project / "CMakeLists.txt").write_text(
-        "cmake_minimum_required(VERSION 3.25)\n"
-        "project(Infernux LANGUAGES NONE)\n"
-        'set(INFERNUX_PYTHON_INSTALL_COMPONENT "PythonWheel")\n'
-        'install(FILES CMakeLists.txt DESTINATION . COMPONENT PythonWheel)\n',
-        encoding="utf-8",
-    )
-    build = tmp_path / "build"
-    hook = ROOT / "scripts/acceptance/windows_software_vulkan.cmake"
-    subprocess.run([cmake, "-S", str(project), "-B", str(build),
-                    f"-DCMAKE_PROJECT_Infernux_INCLUDE={hook}"], check=True, capture_output=True)
-    destination = tmp_path / "wheel-source"
-    subprocess.run([cmake, "--install", str(build), "--prefix", str(destination),
-                    "--component", "PythonWheel"], check=True, capture_output=True)
-    assert (destination / "python/Infernux/lib/vulkan-1.dll").read_bytes() == driver.read_bytes()
-    # Reconfiguring for delivery must remove the test-only install rule.
-    subprocess.run([cmake, "-S", str(project), "-B", str(build),
-                    "-U", "CMAKE_PROJECT_Infernux_INCLUDE"], check=True, capture_output=True)
-    public_destination = tmp_path / "public-wheel-source"
-    subprocess.run([cmake, "--install", str(build), "--prefix", str(public_destination),
-                    "--component", "PythonWheel"], check=True, capture_output=True)
-    assert (public_destination / "CMakeLists.txt").is_file()
-    assert not (public_destination / "python/Infernux/lib/vulkan-1.dll").exists()
+    scratch_root = ROOT / "out" / "pytest-cmake"
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="software-driver-", dir=scratch_root) as scratch:
+        scratch_path = Path(scratch)
+        project = scratch_path / "project"
+        driver = project / "out/toolchains/windows-swiftshader/runtime/vk_swiftshader.dll"
+        driver.parent.mkdir(parents=True)
+        driver.write_bytes(b"software driver fixture")
+        (project / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.25)\n"
+            "project(Infernux LANGUAGES NONE)\n"
+            'set(INFERNUX_PYTHON_INSTALL_COMPONENT "PythonWheel")\n'
+            'install(FILES CMakeLists.txt DESTINATION . COMPONENT PythonWheel)\n',
+            encoding="utf-8",
+        )
+        build = scratch_path / "build"
+        hook = ROOT / "scripts/acceptance/windows_software_vulkan.cmake"
+        subprocess.run([cmake, "-S", str(project), "-B", str(build),
+                        f"-DCMAKE_PROJECT_Infernux_INCLUDE={hook}"], check=True, capture_output=True)
+        destination = scratch_path / "wheel-source"
+        subprocess.run([cmake, "--install", str(build), "--prefix", str(destination),
+                        "--component", "PythonWheel"], check=True, capture_output=True)
+        assert (destination / "python/Infernux/lib/vulkan-1.dll").read_bytes() == driver.read_bytes()
+        # Reconfiguring for delivery must remove the test-only install rule.
+        subprocess.run([cmake, "-S", str(project), "-B", str(build),
+                        "-U", "CMAKE_PROJECT_Infernux_INCLUDE"], check=True, capture_output=True)
+        public_destination = scratch_path / "public-wheel-source"
+        subprocess.run([cmake, "--install", str(build), "--prefix", str(public_destination),
+                        "--component", "PythonWheel"], check=True, capture_output=True)
+        assert (public_destination / "CMakeLists.txt").is_file()
+        assert not (public_destination / "python/Infernux/lib/vulkan-1.dll").exists()
 
 
 def test_desktop_distribution_disables_the_test_driver_install_hook():
@@ -134,15 +139,19 @@ def test_scheduled_android_acceptance_does_not_restore_build_intermediates():
 
 def test_platform_workflow_reuses_repository_build_and_acceptance_entry_points():
     text = _text() + "\n" + _android_driver_text()
+    linux_job = text.split("  linux-player:", 1)[1].split("  web-player:", 1)[0]
 
     assert "scripts/acceptance/build_player.py" in text
     assert "scripts\\acceptance\\windows_player_smoke.py" in text
     assert "scripts/acceptance/linux_player_smoke.py" in text
+    assert "--video-driver x11" in text
     assert "scripts/acceptance/web_mobile_input_smoke.cjs" in text
     assert "scripts/acceptance/android_player_smoke.py" in text
     assert "scripts/acceptance/android_multitouch_smoke.py" in text
     assert "scripts/setup/build_web_toolchain.sh" in text
     assert "scripts/setup/build_android_python_runtime.sh" in text
+    assert "scripts/setup/install_linux_dependencies.sh" in linux_job
+    assert "sudo apt-get install" not in linux_job
 
 
 def test_android_runtime_builder_creates_build_python_before_cross_build():
@@ -192,14 +201,16 @@ def test_windows_native_build_can_load_the_vulkan_linked_module():
 
 def test_windows_publisher_has_a_system_loader_independent_of_sdk_cache():
     # Publication imports a staged wheel outside the source/build DLL folders.
+    # The SDK installer is intentionally not run as a separate Vulkan runtime
+    # installer: the workflow supplies the pinned loader to the build and the
+    # published wheel/player closure explicitly.
     for name in ("ci.yml", "platform-player.yml"):
         text = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
-        step = text.split("- name: Install Vulkan Runtime", 1)[1].split("- name:", 1)[0]
-        assert "if:" not in step
-        assert "VulkanRT-$env:VULKAN_SDK_VERSION-Installer.exe" in step
-        assert "-WindowStyle Hidden" in step
-        assert "ExitCode -ne 0" in step
-        assert "-ArgumentList '/auto'" in step
+        assert "- name: Install Vulkan Runtime" not in text
+        assert "Cache Vulkan SDK" in text
+        assert "Install Vulkan SDK" in text
+        assert "vulkan-1.dll" in text
+        assert "windows_software_vulkan.cmake" in text
 
 
 def test_platform_workflow_keeps_product_graphics_contracts_explicit():
@@ -305,7 +316,10 @@ def test_android_emulator_driver_splits_build_work_from_software_avd_smoke():
     assert '"$python_executable" scripts/acceptance/android_player_smoke.py' in driver
     assert "--startup-timeout 240" in driver
     assert '"$python_executable" scripts/acceptance/android_multitouch_smoke.py' in driver
-    assert "-PinfernuxTargetPackage=com.infernux.bootstrap" in driver
+    assert 'target_package="com.infernux.infernuxplatformfixture"' in driver
+    assert '-PinfernuxTargetPackage="$target_package"' in driver
+    assert '--package "$target_package"' in driver
+    assert '--target-package "$target_package"' in driver
     assert "--wait-milliseconds 20000" in driver
     checkout_step = workflow.index("- uses: actions/checkout@v4", workflow.index("  android-player:"))
     require_kvm = workflow.index("- name: Require KVM acceleration")
@@ -423,6 +437,53 @@ def test_web_visual_acceptance_consumes_the_linux_built_artifact_in_chromium():
     assert "infernuxWebGpuAdapter=fallback" in workflow
     assert "--report out/test-results/web-browser-player-smoke.json" in workflow
     assert "--skip-frame-checks" not in workflow
+
+
+def test_web_player_job_assembles_an_out_of_source_working_plugin():
+    workflow = (ROOT / ".github" / "workflows" / "platform-player.yml").read_text(
+        encoding="utf-8"
+    )
+    tools_cmake = (
+        ROOT
+        / "external/plugins/infernux_web/native/tools/CMakeLists.txt"
+    ).read_text(encoding="utf-8")
+
+    assert "INFERNUX_WEB_NUMPY_RUNTIME_ROOT" in workflow
+    # The cache must be invalidated by Web plugin source changes.  Otherwise
+    # a changed native renderer/exporter can silently reuse an older Player
+    # while the browser job still reports that stale binary as accepted.
+    assert "'external/plugins/infernux_web/native/**'" in workflow
+    assert "'external/plugins/infernux_web/package/editor/infernux_web/**'" in workflow
+    assert "'external/plugins/infernux_web/native/python_runtime/**'" not in workflow
+    assert "'external/plugins/infernux_web/package/editor/infernux_web/native_payload.py'" not in workflow
+    assert "Prepare pinned Web NumPy runtime" in workflow
+    assert '--python-runtime-manifest "$INFERNUX_WEB_PYTHON_RUNTIME_MANIFEST"' in workflow
+    assert '--numpy-payload-root "$INFERNUX_WEB_NUMPY_PAYLOAD_ROOT"' in workflow
+    assert '--host-python "$CONDA_PREFIX/bin/python"' in workflow
+    assert "INFERNUX_WEB_WORK_PLUGIN_ROOT" in workflow
+    assert (
+        '--plugin-editor-root "$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor"'
+        in workflow
+    )
+    assert (
+        "-k 'web_dependency_gate or web_jit_fixture_verifier or "
+        "web_fixture_public_jit_cooks' --noconftest"
+        in workflow
+    )
+    assert (
+        "-DINFERNUX_WEB_TOOLS_OUTPUT_DIR=$INFERNUX_WEB_WORK_PLUGIN_ROOT/"
+        "package/editor/infernux_web/tools"
+        in workflow
+    )
+    assert (
+        'set(INFERNUX_WEB_TOOLS_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/publish/tools"'
+        in tools_cmake
+    )
+    assert (
+        'set(_tools "${INFERNUX_WEB_TOOLS_OUTPUT_DIR}/${_host}")'
+        in tools_cmake
+    )
+    assert "${CMAKE_CURRENT_SOURCE_DIR}/../../package/editor/infernux_web/tools" not in tools_cmake
 
 
 def test_windows_smoke_can_capture_the_engine_game_render_target():

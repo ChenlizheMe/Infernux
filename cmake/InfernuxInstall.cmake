@@ -150,6 +150,7 @@ add_custom_target(prebuild_player_runtime
         "-DMODULE_OUTPUT_ROOT=${INFERNUX_PREBUILT_RUNTIME_MODULE_DIR}"
         "-DPLATFORM_PLAYER_OUTPUT=${INFERNUX_PLATFORM_PLAYER_OUTPUT_DIR}"
         "-DBUILD_CACHE_ROOT=${CMAKE_BINARY_DIR}/build-cache/player-runtime"
+        "-DINFERNUX_STRIP_TOOL=${CMAKE_STRIP}"
         -P "${CMAKE_SOURCE_DIR}/cmake/prebuild_player_runtime.cmake"
     COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_SOURCE_DIR}/external/plugins/infernux_${_infernux_player_platform}/release.py"
@@ -234,11 +235,13 @@ install(
     LIBRARY DESTINATION "python/Infernux/lib"
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
-install(
-    FILES "${PYTHON_TARGET_DIR}/PlayerNativeContract.json"
-    DESTINATION "python/Infernux/lib"
-    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
-)
+if(INFERNUX_RUNTIME_STATIC)
+    install(
+        FILES "${PYTHON_TARGET_DIR}/PlayerNativeContract.json"
+        DESTINATION "python/Infernux/lib"
+        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+    )
+endif()
 
 install(
     TARGETS assimp SDL3-shared Jolt
@@ -253,6 +256,21 @@ install(
     DESTINATION "python/Infernux/lib"
     COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
 )
+
+if(TARGET infernux_gpu_jit_compiler)
+    install(
+        DIRECTORY "${INFERNUX_GPU_JIT_INSTALL_ROOT}/Infernux/_compiler/"
+        DESTINATION "python/Infernux/_compiler"
+        COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+        # The compiler stage may be imported by build-time contract tests,
+        # which can create Python bytecode beside the source modules.  Those
+        # caches are never part of the engine ABI and must not leak into the
+        # wheel or Player payload.
+        PATTERN "__pycache__" EXCLUDE
+        PATTERN "*.pyc" EXCLUDE
+        PATTERN "*.pyo" EXCLUDE
+    )
+endif()
 
 install(
     FILES
