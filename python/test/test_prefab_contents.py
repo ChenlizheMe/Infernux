@@ -840,7 +840,7 @@ def test_variant_batch_failure_does_not_leave_partial_history(contents_project, 
             interrupted = []
 
             def write(path, document, asset_database=None):
-                if Path(path) == variant_path and not interrupted:
+                if Path(path).samefile(variant_path) and not interrupted:
                     interrupted.append(True)
                     raise OSError("Injected dependent write failure")
                 return original_write(path, document, asset_database)
@@ -1127,7 +1127,7 @@ def test_prefab_mode_save_updates_variant_assets_and_suspended_and_additive_worl
             attempts = []
 
             def write(path, document, asset_database=None):
-                if Path(path) == paths[1] and not attempts:
+                if Path(path).samefile(paths[1]) and not attempts:
                     attempts.append(path)
                     raise OSError("Injected Variant save failure")
                 original_write(path, document, asset_database)

@@ -118,7 +118,9 @@ def test_owned_clip_identity_survives_rename_mode_toggle_refresh_and_move(model)
     source.rename(moved)
     try:
         assert database.move_asset(str(source), str(moved))
-        assert database.get_path_from_guid(first["guid"]).replace("\\", "/").startswith(moved.as_posix())
+        owner, marker, identity = database.get_path_from_guid(first["guid"]).partition("::subanim:")
+        assert Path(owner).samefile(moved)
+        assert marker and identity == first["id"]
         assert reference.resolve().name == "Renamed"
     finally:
         moved.rename(source)

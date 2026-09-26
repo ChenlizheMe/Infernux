@@ -85,7 +85,7 @@ class AssetReferenceCatalog:
 
     def _items_for_type(self, asset_type: str) -> tuple[tuple[str, str], ...]:
         from Infernux.core.asset_reference_types import asset_type_registry
-        from Infernux.engine.path_utils import lexical_path, lexical_path_key
+        from Infernux.engine.path_utils import lexical_path, lexical_path_key, path_key
         from Infernux.engine.project_context import get_project_root
 
         descriptor = asset_type_registry.require(asset_type)
@@ -97,12 +97,16 @@ class AssetReferenceCatalog:
 
         shader_type = cache_key.startswith("shader")
         project_root = get_project_root()
-        assets_root = (
-            lexical_path_key(os.path.join(project_root, "Assets"))
-            if project_root
-            else ""
+        # Resolve the root once when building the cached catalog, not every
+        # candidate on every picker frame. Windows may expose the project via
+        # an 8.3 alias while imported subresources use the canonical spelling.
+        assets_roots = (
+            {
+                lexical_path_key(os.path.join(project_root, "Assets")),
+                path_key(os.path.join(project_root, "Assets")),
+            }
+            if project_root else set()
         )
-        assets_prefix = assets_root.rstrip("\\/") + os.sep if assets_root else ""
         matches: list[tuple[str, str]] = []
         for path in paths:
             portable = path.replace("\\", "/")
@@ -114,9 +118,10 @@ class AssetReferenceCatalog:
             )
             if not shader_type:
                 candidate_key = lexical_path_key(candidate_path)
-                inside_assets = bool(assets_root) and (
-                    candidate_key == assets_root
-                    or candidate_key.startswith(assets_prefix)
+                inside_assets = any(
+                    candidate_key == root
+                    or candidate_key.startswith(root.rstrip("\\/") + os.sep)
+                    for root in assets_roots
                 )
                 if not inside_assets:
                     continue

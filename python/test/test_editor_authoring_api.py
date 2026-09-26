@@ -174,7 +174,7 @@ def test_public_data_asset_and_folder_share_grouped_undo(asset_authoring):
     source = AuthoringLevelData(title="压力板", difficulty=7)
     folder = Path(asset_authoring.assets_root) / "AuthoringDataContract"
     with editor.edit_scene("创建关卡数据"):
-        assert Path(editor.create_folder(folder)) == folder
+        assert Path(editor.create_folder(folder)).samefile(folder)
         target = Path(editor.create_data_asset(source, folder / "Level.inxdata"))
     assert not source.is_persistent
     loaded = DataAsset.load(str(target))

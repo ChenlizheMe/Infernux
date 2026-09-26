@@ -314,7 +314,7 @@ def test_material_extraction_undo_redo_and_independent_asset(imported_model):
     service.configure(str(Path(database.assets_root).parent), database)
     original = renderer.serialize_document()
     try:
-        assert Path(service.extract_model_material(mesh, 1, str(target))) == target
+        assert Path(service.extract_model_material(mesh, 1, str(target))).samefile(target)
         guid = database.get_guid_from_path(str(target))
         assert guid and guid != mesh.guid
         content = target.read_bytes()

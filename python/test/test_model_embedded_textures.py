@@ -2,6 +2,7 @@
 import base64
 import io
 import json
+import os
 import time
 from pathlib import Path
 
@@ -131,7 +132,8 @@ def test_failed_embedded_decode_does_not_publish_partial_children(imported_model
     assert records(database, source) == before
 
 
-def test_embedded_texture_is_in_picker_and_accepts_guid_or_path_drop(imported_model, monkeypatch):
+@pytest.mark.parametrize("short_project_root", [False, True])
+def test_embedded_texture_is_in_picker_and_accepts_guid_or_path_drop(imported_model, monkeypatch, short_project_root):
     from Infernux.engine import project_context
     from Infernux.engine.interaction.object_fields import AssetReferenceCatalog
     from Infernux.engine.ui._inspector_references import _project_texture_guid_and_path
@@ -144,7 +146,18 @@ def test_embedded_texture_is_in_picker_and_accepts_guid_or_path_drop(imported_mo
     record, = records(database, source)
     guid = record["guid"]
     path = database.get_path_from_guid(guid)
-    monkeypatch.setattr(project_context, "_project_root", str(Path(database.assets_root).parent))
+    project_root = str(Path(database.assets_root).parent.resolve())
+    if short_project_root:
+        if os.name != "nt":
+            pytest.skip("Windows 8.3 project-root alias regression")
+        import ctypes
+
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = ctypes.windll.kernel32.GetShortPathNameW(project_root, buffer, len(buffer))
+        if not length or buffer.value == project_root:
+            pytest.skip("8.3 short paths are unavailable on this volume")
+        project_root = buffer.value
+    monkeypatch.setattr(project_context, "_project_root", project_root)
     assert any(value == path for label, value in AssetReferenceCatalog().items("Texture", "Embedded Color"))
     for value in (guid, path):
         resolved_guid, resolved_path = _project_texture_guid_and_path(value)
