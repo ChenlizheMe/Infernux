@@ -30,6 +30,8 @@ from ..kernel_contract import (
     attribute_name,
     implicit_receiver_attribute,
     implicit_receiver_name,
+    receiver_field_names,
+    receiver_issue,
 )
 from ..cache import compiler_cache_root, prune_cache_files
 
@@ -95,18 +97,18 @@ def _is_class_qualified(function) -> bool:
     return len(parts) >= 2 and parts[-2] != "<locals>"
 
 
-def _validate_kernel_method(function, definition: ast.FunctionDef, *, target: str | None = None) -> None:
-    """Enforce the explicit receiver contract for class-contained kernels.
-
-    ``Kernel`` deliberately is not a descriptor: a conventional ``self`` or
-    ``cls`` method would make Python inject an implicit receiver that cannot be
-    represented in the GPU argument ABI.  Static methods are explicit and keep
-    the runtime identity (``Class.method``), so they remain fully supported.
-    """
+def _validate_kernel_method(
+    function,
+    definition: ast.FunctionDef,
+    *,
+    target: str | None = None,
+    receiver_fields: tuple[str, ...] | None = None,
+) -> None:
+    """Validate class identity and keep Python objects out of the GPU ABI."""
     if not _is_class_qualified(function):
         return
     first = implicit_receiver_name(definition, in_class=True)
-    if first is not None:
+    if first is not None and receiver_fields is None:
         raise TypeError(_kernel_diagnostic(
             function,
             f"class-contained kernels cannot use an implicit instance receiver '{first}'",
@@ -115,8 +117,15 @@ def _validate_kernel_method(function, definition: ast.FunctionDef, *, target: st
             line=definition.lineno,
             column=definition.col_offset + 1,
         ))
+    issue = receiver_issue(definition)
+    if issue is not None:
+        node, reason = issue
+        raise TypeError(_kernel_diagnostic(
+            function, reason, "read numeric fields or mutate inx.buffer elements only",
+            target=target, line=node.lineno, column=node.col_offset + 1,
+        ))
     access = implicit_receiver_attribute(definition)
-    if access is not None:
+    if access is not None and access[1].attr not in (receiver_fields or ()):
         receiver, attribute = access
         raise TypeError(_kernel_diagnostic(
             function,
@@ -126,6 +135,27 @@ def _validate_kernel_method(function, definition: ast.FunctionDef, *, target: st
             line=attribute.lineno,
             column=attribute.col_offset + 1,
         ))
+
+
+class _ReceiverLowering(ast.NodeTransformer):
+    """Replace the small, explicit instance receiver ABI with parameters."""
+
+    def __init__(self, receiver: str, fields: tuple[str, ...]):
+        self._receiver = receiver
+        self._fields = frozenset(fields)
+
+    def visit_Attribute(self, node: ast.Attribute):
+        node = self.generic_visit(node)
+        if (
+            isinstance(node.value, ast.Name)
+            and node.value.id == self._receiver
+            and node.attr in self._fields
+        ):
+            return ast.copy_location(
+                ast.Name(id=f"_infernux_receiver_{node.attr}", ctx=node.ctx),
+                node,
+            )
+        return node
 
 
 class _IntrinsicLowering(ast.NodeTransformer):
@@ -498,6 +528,47 @@ def _function_source(value) -> str:
     return textwrap.dedent(inspect.getsource(value))
 
 
+def receiver_fields(function) -> tuple[str, ...]:
+    """Analyze a declaration once; no receiver or live values are cached."""
+
+    source = _function_source(function)
+    tree = ast.parse(source)
+    definition = next(
+        (node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))),
+        None,
+    )
+    if not isinstance(definition, ast.FunctionDef):
+        raise TypeError("GPU kernel must be a synchronous Python function")
+    positional = (*definition.args.posonlyargs, *definition.args.args)
+    if not positional or positional[0].arg not in {"self", "cls"}:
+        raise TypeError("instance GPU kernel receiver is not a conventional self/cls parameter")
+    names = receiver_field_names(definition)
+    _validate_kernel_method(function, definition, receiver_fields=names)
+    return names
+
+
+def receiver_bindings(function, receiver, fields: tuple[str, ...]) -> tuple[tuple[str, object], ...]:
+    """Snapshot numeric fields/buffer owners once at the launch boundary."""
+    from Infernux.compute import Buffer
+
+    bindings: list[tuple[str, object]] = []
+    for name in fields:
+        try:
+            value = getattr(receiver, name)
+        except AttributeError as exception:
+            raise TypeError(_kernel_diagnostic(
+                function, f"receiver field '{name}' is not initialized",
+                "initialize the scalar or inx.buffer before prepare/launch",
+            )) from exception
+        if not isinstance(value, (Buffer, bool, int, float, np.integer, np.floating)):
+            raise TypeError(_kernel_diagnostic(
+                function, f"receiver field '{name}' has unsupported type {type(value).__name__}",
+                "pass an inx.buffer or numeric scalar; Python objects cannot enter the GPU ABI",
+            ))
+        bindings.append((name, value))
+    return tuple(bindings)
+
+
 def _helper_definitions(kernel_definition: ast.FunctionDef, globals_map: dict) -> list[ast.FunctionDef]:
     """Collect explicitly declared helpers and reject recursive call graphs."""
     from Infernux.compute import Function
@@ -638,7 +709,7 @@ def _store_artifact(key: str, artifact: CompilerArtifact) -> None:
     prune_cache_files(root, "*.inxgpu", file_limit=_CACHE_FILE_LIMIT, byte_limit=_CACHE_BYTE_LIMIT)
 
 
-def compile_kernel(function, params) -> CompilerArtifact:
+def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object], ...] | None = None) -> CompilerArtifact:
     """Lower one Infernux kernel specialization without creating a GPU."""
     from Infernux.compute import Buffer
 
@@ -646,8 +717,20 @@ def compile_kernel(function, params) -> CompilerArtifact:
     if any(parameter.kind not in {parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD}
            or parameter.default is not parameter.empty for parameter in signature.parameters.values()):
         raise TypeError("GPU kernels currently require positional parameters without defaults")
-    if len(signature.parameters) != len(params):
-        raise TypeError(f"GPU kernel requires {len(signature.parameters)} parameters, got {len(params)}")
+    bound_receiver = receiver_fields is not None
+    bound_fields = tuple(receiver_fields or ())
+    field_names = tuple(name for name, _ in bound_fields)
+    positional = (*signature.parameters.values(),)
+    receiver_name = (
+        positional[0].name
+        if positional and positional[0].name in {"self", "cls"}
+        else None
+    )
+    expected_parameters = len(signature.parameters) - (
+        1 if receiver_name and bound_receiver else 0
+    ) + len(field_names)
+    if len(params) != expected_parameters:
+        raise TypeError(f"GPU kernel requires {expected_parameters} parameters, got {len(params)}")
 
     if function.__closure__:
         captured = ", ".join(str(name) for name in getattr(function.__code__, "co_freevars", ()))
@@ -661,7 +744,40 @@ def compile_kernel(function, params) -> CompilerArtifact:
     definition = next((node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
     if not isinstance(definition, ast.FunctionDef):
         raise TypeError("GPU kernel must be a synchronous Python function")
-    _validate_kernel_method(function, definition, target=_kernel_target())
+    _validate_kernel_method(
+        function,
+        definition,
+        target=_kernel_target(),
+        receiver_fields=field_names if bound_receiver else None,
+    )
+    if receiver_name and bound_receiver:
+        declared_fields = receiver_field_names(definition)
+        if declared_fields != field_names:
+            raise TypeError(_kernel_diagnostic(
+                function,
+                "receiver field binding does not match the source receiver fields "
+                f"({', '.join(declared_fields) or 'none'})",
+                "bind every self/cls field explicitly or remove the receiver access",
+                target=_kernel_target(),
+                line=definition.lineno,
+                column=definition.col_offset + 1,
+            ))
+        if definition.args.posonlyargs and definition.args.posonlyargs[0].arg == receiver_name:
+            definition.args.posonlyargs = definition.args.posonlyargs[1:]
+        elif definition.args.args and definition.args.args[0].arg == receiver_name:
+            definition.args.args = definition.args.args[1:]
+        remaining = [*definition.args.posonlyargs, *definition.args.args]
+        reserved = {item.id for item in ast.walk(definition) if isinstance(item, ast.Name)}
+        if any(f"_infernux_receiver_{name}" in reserved for name in field_names):
+            raise TypeError("GPU kernel source uses a reserved _infernux_receiver_ name")
+        synthetic = [ast.arg(
+            arg=f"_infernux_receiver_{name}",
+            annotation=None,
+        ) for name in field_names]
+        definition.args.posonlyargs = []
+        definition.args.args = [*synthetic, *remaining]
+        definition = _ReceiverLowering(receiver_name, field_names).visit(definition)
+        ast.fix_missing_locations(definition)
     definition.decorator_list = []
     if any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
            and node.func.id == function.__name__ for node in ast.walk(definition)):
@@ -674,7 +790,9 @@ def compile_kernel(function, params) -> CompilerArtifact:
     if len(declarations) != 1:
         raise TypeError("GPU kernel must declare exactly one execution domain with inx.compute.index(buffer)")
     declaration_position, (index_name, domain_name) = declarations[0]
-    parameter_names = tuple(signature.parameters)
+    parameter_names = tuple(
+        argument.arg for argument in (*definition.args.posonlyargs, *definition.args.args)
+    )
     if domain_name not in parameter_names:
         raise TypeError("inx.compute.index must refer to an inx.buffer parameter")
     domain_parameter = parameter_names.index(domain_name)
@@ -788,4 +906,4 @@ def compile_kernel(function, params) -> CompilerArtifact:
         return artifact
 
 
-__all__ = ["CompilerArtifact", "compile_kernel", "parameter_key"]
+__all__ = ["CompilerArtifact", "compile_kernel", "parameter_key", "receiver_fields", "receiver_bindings"]

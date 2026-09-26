@@ -1504,11 +1504,17 @@ void RegisterGUIBindings(py::module_ &m)
         .def_readwrite("is_native", &InspectorPanel::AddComponentEntry::isNative)
         .def_readwrite("script_path", &InspectorPanel::AddComponentEntry::scriptPath);
 
+    py::class_<InspectorPanel::PrefabInfo::StructuralRow>(m, "InspectorPrefabStructuralRow")
+        .def(py::init<>())
+        .def_readwrite("kind", &InspectorPanel::PrefabInfo::StructuralRow::kind)
+        .def_readwrite("node_path", &InspectorPanel::PrefabInfo::StructuralRow::nodePath)
+        .def_readwrite("key", &InspectorPanel::PrefabInfo::StructuralRow::key);
     py::class_<InspectorPanel::PrefabInfo>(m, "InspectorPrefabInfo")
         .def(py::init<>())
         .def_readwrite("override_count", &InspectorPanel::PrefabInfo::overrideCount)
         .def_readwrite("is_readonly", &InspectorPanel::PrefabInfo::isReadonly)
-        .def_readwrite("is_transform_readonly", &InspectorPanel::PrefabInfo::isTransformReadonly);
+        .def_readwrite("is_transform_readonly", &InspectorPanel::PrefabInfo::isTransformReadonly)
+        .def_readwrite("structural_rows", &InspectorPanel::PrefabInfo::structuralRows);
 
     py::class_<InspectorPanel, EditorPanel, std::shared_ptr<InspectorPanel>>(m, "InspectorPanel")
         .def(py::init<>())

@@ -73,6 +73,10 @@ int main()
 {
     auto &engine = infernux::AudioEngine::Instance();
     assert(engine.Initialize());
+    assert(!engine.GetDeviceDriver().empty());
+    assert(!engine.GetDeviceName().empty());
+    assert(engine.GetSampleRate() > 0 && engine.GetChannelCount() > 0);
+    assert(engine.GetUnderrunCount() == 0);
     const auto path = std::filesystem::temp_directory_path() /
                       ("infernux-audio-playback-" + std::to_string(SDL_GetPerformanceCounter()) + ".wav");
     WriteWave(path);
@@ -247,7 +251,13 @@ int main()
     assert(engine.GetActiveVoiceCount() == 0);
     assert(engine.GetOutputTime() == 0.0);
     assert(engine.GetSaturatedSampleCount() == 0);
+    assert(engine.GetUnderrunCount() == 0);
+    assert(engine.GetDeviceDriver().empty());
+    assert(engine.GetDeviceName().empty());
     assert(engine.Initialize());
+    assert(!engine.GetDeviceDriver().empty());
+    assert(!engine.GetDeviceName().empty());
+    assert(engine.GetUnderrunCount() == 0);
     WaitFor([&] { return engine.GetOutputTime() > 0.03; });
 
     engine.SetMaxRealVoices(4);

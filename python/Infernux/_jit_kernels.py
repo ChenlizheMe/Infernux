@@ -982,6 +982,8 @@ def _build_auto_parallel_dispatcher(
     never caught and replayed through the serial kernel.
     """
     decisions = BoundedLRU(64)
+    hotness = BoundedLRU(64)
+    tier_threshold = 8
     parameter_names = tuple(inspect.signature(fn).parameters)
     safe_pairs = frozenset(pair for left, right in alias_pairs for pair in ((left, right), (right, left)))
 
@@ -1007,6 +1009,37 @@ def _build_auto_parallel_dispatcher(
         dispatcher.selected_mode = decision.mode
         dispatcher.last_diagnostic = decision.reason
 
+    def _promote(args, kwargs):
+        """Validate and publish the optimized tier at one safe boundary.
+
+        The probe uses isolated arguments and is never replayed into the
+        caller's objects.  A mismatch is a hard compiler contract error rather
+        than an implicit serial fallback; the optimized tier is published only
+        after result and mutation equivalence is proven.
+        """
+        serial_args, serial_kwargs = clone_call_arguments(args, kwargs)
+        parallel_args, parallel_kwargs = clone_call_arguments(args, kwargs)
+        serial_result = serial_compiled(*serial_args, **serial_kwargs)
+        parallel_result = parallel_compiled(*parallel_args, **parallel_kwargs)
+        if not calls_equivalent(
+            serial_result, serial_args, serial_kwargs,
+            parallel_result, parallel_args, parallel_kwargs,
+        ):
+            raise RuntimeError(
+                f"JIT kernel {fn.__name__!r}: optimized tier changed results or mutations"
+            )
+        serial_args, serial_kwargs = clone_call_arguments(args, kwargs)
+        parallel_args, parallel_kwargs = clone_call_arguments(args, kwargs)
+        serial_elapsed = _benchmark_callable(serial_compiled, *serial_args, **serial_kwargs)
+        parallel_elapsed = _benchmark_callable(parallel_compiled, *parallel_args, **parallel_kwargs)
+        choose_parallel = parallel_elapsed <= serial_elapsed * 0.90
+        mode = "parallel" if choose_parallel else "serial"
+        reason = (
+            f"tier=optimized {mode} published after {tier_threshold} hot calls; "
+            f"serial={serial_elapsed * 1000:.3f}ms, parallel={parallel_elapsed * 1000:.3f}ms"
+        )
+        return DispatchDecision(mode, reason, serial_elapsed, parallel_elapsed, 1)
+
     @functools.wraps(fn)
     def dispatcher(*args, **kwargs):
         if parallel_compiled is serial_compiled and parallel_policy != "required":
@@ -1014,14 +1047,26 @@ def _build_auto_parallel_dispatcher(
             # there is no execution-mode choice to hash, probe, or cache here.
             return serial_compiled(*args, **kwargs)
         key = _signature(args, kwargs)
+        hot_count = int(hotness.get(key, 0)) + 1
+        hotness[key] = hot_count
         decision = _alias_decision() if key[1] else decisions.get(key)
         if decision is None:
             if parallel_policy == "required":
                 decision = DispatchDecision("parallel", "parallel required by policy")
             else:
                 static = _static(args, kwargs)
-                decision = DispatchDecision(static.mode, static.reason)
                 if static.confidence == "high":
+                    decision = DispatchDecision(static.mode, static.reason)
+                elif hot_count >= tier_threshold:
+                    decision = _promote(args, kwargs)
+                else:
+                    decision = DispatchDecision(
+                        "serial",
+                        f"tier=baseline serial until hotness {tier_threshold} ({hot_count}/{tier_threshold}); {static.reason}",
+                    )
+                if static.confidence == "high":
+                    decisions[key] = decision
+                elif hot_count >= tier_threshold:
                     decisions[key] = decision
         dispatcher.selected_mode = decision.mode
         dispatcher.last_diagnostic = decision.reason
@@ -1130,6 +1175,8 @@ def _build_auto_parallel_dispatcher(
     dispatcher.selected_mode = "parallel" if parallel_policy == "required" else "serial"
     dispatcher.last_diagnostic = diagnostic or "runtime signature has not been validated"
     dispatcher.decisions = decisions
+    dispatcher.hotness = hotness
+    dispatcher.optimized_tier_threshold = tier_threshold
     dispatcher._infernux_warmup = _warmup
     return dispatcher
 

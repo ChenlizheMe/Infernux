@@ -1416,7 +1416,7 @@ def _wire_prefab_and_misc(ctx):
     _t = ctx._t
     SceneManager = ctx.SceneManager
 
-    from Infernux.lib import InspectorPrefabInfo
+    from Infernux.lib import InspectorPrefabInfo, InspectorPrefabStructuralRow
 
     def _get_prefab_info(obj_id):
         pinfo = InspectorPrefabInfo()
@@ -1428,13 +1428,23 @@ def _wire_prefab_and_misc(ctx):
             return pinfo
         from Infernux.engine.prefab_overrides import (
             compute_overrides,
+            get_structural_overrides,
             resolve_prefab_instance_root,
         )
         root = resolve_prefab_instance_root(obj)
         adb = engine.get_asset_database()
         path = adb.get_path_from_guid(guid) if adb else ""
         if root is not None and path:
-            pinfo.override_count = len(compute_overrides(root, path, adb))
+            overrides = compute_overrides(root, path, adb)
+            pinfo.override_count = len(overrides)
+            rows = []
+            for item in get_structural_overrides(root, path, adb):
+                row = InspectorPrefabStructuralRow()
+                row.kind = item.kind
+                row.node_path = item.node_path
+                row.key = item.key
+                rows.append(row)
+            pinfo.structural_rows = rows
         return pinfo
 
     ip.get_prefab_info = _get_prefab_info

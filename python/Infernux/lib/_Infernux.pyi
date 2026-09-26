@@ -1331,6 +1331,12 @@ class AudioEngine:
     def sample_rate(self) -> int: ...
     @property
     def channel_count(self) -> int: ...
+    @property
+    def device_driver(self) -> str: ...
+    @property
+    def device_name(self) -> str: ...
+    @property
+    def underrun_count(self) -> int: ...
 
 
 # =============================================================================
@@ -3103,6 +3109,15 @@ class InspectorAddComponentEntry:
     script_path: str
 
 
+class InspectorPrefabStructuralRow:
+    """One structural Prefab override shown by the Inspector."""
+
+    def __init__(self) -> None: ...
+    kind: str
+    node_path: str
+    key: str
+
+
 class InspectorPrefabInfo:
     """Prefab info for inspector display."""
 
@@ -3110,6 +3125,7 @@ class InspectorPrefabInfo:
     override_count: int
     is_readonly: bool
     is_transform_readonly: bool
+    structural_rows: list[InspectorPrefabStructuralRow]
 
 
 class InspectorPanel(EditorPanel):

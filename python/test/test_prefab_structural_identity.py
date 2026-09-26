@@ -9,7 +9,8 @@ from Infernux.components.ref_wrappers import GameObjectRef, ComponentRef
 from Infernux.engine.component_restore import clone_game_object_transactionally
 from Infernux.engine.prefab_manager import PrefabDocumentError, _read_prefab_document, instantiate_prefab, save_prefab, _make_prefab_baseline
 from Infernux.engine.prefab_overrides import (
-    apply_overrides_to_prefab, build_prefab_apply_command, compute_overrides, revert_overrides,
+    apply_overrides_to_prefab, build_prefab_apply_command, compute_overrides,
+    get_structural_overrides, revert_overrides,
 )
 
 
@@ -73,6 +74,20 @@ def test_separate_instance_additions_are_not_merged_together(scene, tmp_path):
     assert revert_overrides(second, path)
     assert {child.name for child in second.get_children()} == {"Original", "Published"}
     assert {node["name"] for node in _read_prefab_document(path)["root_object"]["children"]} == {"Original", "Published"}
+
+
+def test_structural_override_projection_keeps_topology_rows_separate(scene, tmp_path):
+    path, _first, second = _make_prefab(scene, tmp_path)
+    private = scene.create_game_object("Private")
+    private.set_parent(second)
+
+    rows = get_structural_overrides(second, path)
+
+    assert [(row.kind, row.key) for row in rows] == [
+        ("child_added", "added_child:Private"),
+    ]
+    assert rows[0].source_value is None
+    assert rows[0].instance_value == "Private"
 
 
 def test_apply_keeps_other_instances_external_scene_reference_overrides(scene, tmp_path):

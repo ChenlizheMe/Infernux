@@ -693,6 +693,57 @@ def test_class_kernel_diagnostics_identify_receiver_and_rewrite():
     assert ":2:1 is invalid for target" in message
 
 
+def test_class_kernel_instance_receiver_lowers_engine_owned_scalar(monkeypatch):
+    from Infernux._compiler.taichi import frontend
+
+    class Host:
+        identity = 1901
+
+    class CompilerBuffer:
+        device = "gpu"
+        dtype = "float32"
+        _host = Host()
+
+    class Executable:
+        def __init__(self, artifact, host, params):
+            self.artifact = artifact
+            self.host = host
+            self.params = params
+
+        def close(self):
+            pass
+
+    captured = {}
+    monkeypatch.setattr(inx.compute, "Buffer", CompilerBuffer)
+    monkeypatch.setattr(frontend, "parameter_key", lambda params: tuple(type(v).__name__ for v in params))
+    monkeypatch.setattr(inx.compute, "_KernelExecutable", Executable)
+
+    def compile_receiver(function, params, *, receiver_fields=None):
+        captured["function"] = function
+        captured["params"] = params
+        captured["receiver_fields"] = receiver_fields
+        return "receiver-artifact"
+
+    monkeypatch.setattr(frontend, "compile_kernel", compile_receiver)
+
+    class Component:
+        @inx.compute.kernel
+        def step(self, domain):
+            index = inx.compute.index(domain)
+            domain[index] = self.scale
+
+        def __init__(self):
+            self.scale = 2.5
+
+    domain = CompilerBuffer()
+    component = Component()
+    executable = component.step._executable((domain,))
+
+    assert captured["params"] == (2.5, domain)
+    assert captured["receiver_fields"] == (("scale", 2.5),)
+    assert executable.params == (2.5, domain)
+
+
 def test_class_kernel_diagnostics_reject_unbound_receiver_field():
     from Infernux._compiler.taichi import frontend
 

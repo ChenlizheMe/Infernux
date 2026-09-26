@@ -183,7 +183,13 @@ void RegisterAudioBindings(py::module_ &m)
         .def_property_readonly("saturated_sample_count", &AudioEngine::GetSaturatedSampleCount,
                                "Cumulative output samples at full scale after SDL mixing")
         .def_property_readonly("sample_rate", &AudioEngine::GetSampleRate, "Output sample rate in Hz")
-        .def_property_readonly("channel_count", &AudioEngine::GetChannelCount, "Output channel count");
+        .def_property_readonly("channel_count", &AudioEngine::GetChannelCount, "Output channel count")
+        .def_property_readonly("device_driver", &AudioEngine::GetDeviceDriver,
+                               "SDL audio backend selected for the current device session")
+        .def_property_readonly("device_name", &AudioEngine::GetDeviceName,
+                               "Output device name for the current device session")
+        .def_property_readonly("underrun_count", &AudioEngine::GetUnderrunCount,
+                               "Streaming fill requests that emitted silence while waiting for decoded data");
 
     // ========================================================================
     // Register AudioSource and AudioListener with ComponentBindingRegistry

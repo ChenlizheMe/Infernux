@@ -317,6 +317,16 @@ class PrefabCommandService:
             return ()
         return get_property_modifications(root, self._require_instance_path(root))
 
+    def structural_overrides(self, object_id: int):
+        """Return added, removed and reordered Prefab topology rows."""
+        from Infernux.engine.prefab_overrides import get_structural_overrides
+
+        root = self._instance_root(object_id)
+        if root is None:
+            return ()
+        return get_structural_overrides(root, self._require_instance_path(root),
+                                        self._project_assets.asset_database)
+
     def is_property_override(self, component, field_name: str) -> bool:
         from Infernux.engine.prefab_overrides import is_property_override
 

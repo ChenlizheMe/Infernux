@@ -217,6 +217,19 @@ class AudioEngine
         return m_deviceSpec.channels;
     }
 
+    /// SDL backend selected for the current device session, or an empty string
+    /// when audio is not initialized. The returned value is copied from SDL.
+    [[nodiscard]] std::string GetDeviceDriver() const;
+    /// Human-readable output device name for the current session, or empty when
+    /// no output device is open. The returned value is copied from SDL.
+    [[nodiscard]] std::string GetDeviceName() const;
+    /// Number of device callback fill requests that had to emit silence because
+    /// a streaming voice could not provide its requested frame in time.
+    [[nodiscard]] uint64_t GetUnderrunCount() const
+    {
+        return m_underrunCount.load(std::memory_order_relaxed);
+    }
+
     ~AudioEngine();
 
   private:
@@ -254,6 +267,7 @@ class AudioEngine
     std::atomic<double> m_outputTime{0.0};
     std::atomic<float> m_outputPeak{0.0f};
     std::atomic<uint64_t> m_saturatedSamples{0};
+    std::atomic<uint64_t> m_underrunCount{0};
 
     SDL_AudioDeviceID m_deviceId = 0;
     SDL_AudioSpec m_deviceSpec = {};

@@ -1453,6 +1453,38 @@ void InspectorPanel::RenderPrefabHeader(InxGUIContext *ctx, uint64_t objId, cons
         ImGui::PopStyleColor();
     }
 
+    if (!pinfo.structuralRows.empty()) {
+        ImGui::Separator();
+        ImGui::TextUnformatted(Tr("inspector.prefab_structure").c_str());
+        if (captureSemantics)
+            ctx->RecordSemanticItem("prefab_structure_header", Tr("inspector.prefab_structure"), false,
+                                    semanticBase + ".structure", std::nullopt,
+                                    static_cast<double>(pinfo.structuralRows.size()));
+        for (size_t index = 0; index < pinfo.structuralRows.size(); ++index) {
+            const auto &row = pinfo.structuralRows[index];
+            const char *kindKey = "inspector.prefab_structure_change";
+            if (row.kind == "child_added")
+                kindKey = "inspector.prefab_structure_child_added";
+            else if (row.kind == "child_removed")
+                kindKey = "inspector.prefab_structure_child_removed";
+            else if (row.kind == "component_added")
+                kindKey = "inspector.prefab_structure_component_added";
+            else if (row.kind == "component_removed")
+                kindKey = "inspector.prefab_structure_component_removed";
+            else if (row.kind == "child_reordered")
+                kindKey = "inspector.prefab_structure_child_reordered";
+            else if (row.kind == "component_reordered")
+                kindKey = "inspector.prefab_structure_component_reordered";
+            std::string label = Tr(kindKey) + " · " + row.nodePath;
+            if (!row.key.empty())
+                label += " · " + row.key;
+            ImGui::BulletText("%s", label.c_str());
+            if (captureSemantics)
+                ctx->RecordSemanticItem("prefab_structure_row", label, false,
+                                        semanticBase + ".structure." + std::to_string(index));
+        }
+    }
+
     ImGui::EndChild();
     ImGui::PopStyleColor();
 }

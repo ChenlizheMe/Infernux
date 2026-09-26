@@ -5,7 +5,7 @@ Register contributions from an editor preload, not from gameplay callbacks.
 """
 
 from .engine.interaction.documents import DocumentActionResult, DocumentActionStatus
-from .engine.prefab_overrides import PropertyModification
+from .engine.prefab_overrides import PropertyModification, StructuralOverride
 
 from .engine.interaction.commands import (
     CommandContext, CommandResult, CommandSource, CommandStatus,
@@ -34,7 +34,8 @@ __all__ = (
     "revert_property_override",
     "load_data_asset", "set_data_asset_fields", "save_data_asset",
     "add_component",
-    "PropertyModification", "get_property_modifications", "is_property_override",
+    "PropertyModification", "StructuralOverride", "get_property_modifications",
+    "get_structural_overrides", "is_property_override",
     "defer", "EditorHandleContext", "EditorHandleKind", "EditorHandleProvider",
     "EditorHandleRegistry", "EditorHandleSnapshot", "HandleRegistration",
     "register_handle_provider",
@@ -325,6 +326,15 @@ def get_property_modifications(game_object) -> tuple[PropertyModification, ...]:
     are not property modifications. An ordinary scene object returns ().
     """
     return _authoring_core().prefabs.property_modifications(game_object.id)
+
+
+def get_structural_overrides(game_object) -> tuple[StructuralOverride, ...]:
+    """Read added, removed and reordered Prefab hierarchy rows.
+
+    Structural rows are separate from field modifications so an Inspector can
+    present topology actions without treating them as scalar properties.
+    """
+    return _authoring_core().prefabs.structural_overrides(game_object.id)
 
 
 def is_property_override(component, field_name: str) -> bool:

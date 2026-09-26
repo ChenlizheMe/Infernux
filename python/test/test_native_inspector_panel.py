@@ -166,6 +166,21 @@ class TestInspectorDataStructs:
         assert pi.override_count == 3
         assert pi.is_readonly is True
 
+    def test_prefab_info_exposes_structural_rows(self):
+        source = Path("cpp/infernux/function/editor/InspectorPanel.cpp").read_text(
+            encoding="utf-8"
+        )
+        header = Path("cpp/infernux/function/editor/InspectorPanel.h").read_text(
+            encoding="utf-8"
+        )
+        binding = Path("cpp/infernux/tools/pybinding/BindingGUI.cpp").read_text(
+            encoding="utf-8"
+        )
+        assert "struct StructuralRow" in header
+        assert "structural_rows" in binding
+        assert "prefab_structure_row" in source
+        assert "prefab.apply" in source and "prefab.revert" in source
+
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Callbacks
@@ -377,6 +392,14 @@ class TestInspectorCallbacks:
         ip.get_prefab_info = _get_pi
         result = ip.get_prefab_info(1)
         assert result.override_count == 2
+
+    def test_prefab_callback_projects_structural_rows(self):
+        source = Path("python/Infernux/engine/bootstrap_inspector/_wire.py").read_text(
+            encoding="utf-8"
+        )
+        assert "get_structural_overrides" in source
+        assert "InspectorPrefabStructuralRow()" in source
+        assert "pinfo.structural_rows = rows" in source
 
     def test_tag_layer_settings_open_through_global_window_command(self):
         source = Path("cpp/infernux/function/editor/InspectorPanel.cpp").read_text(encoding="utf-8")

@@ -129,6 +129,7 @@ bool AudioEngine::Initialize()
 
     m_busMailbox.Publish(m_busEnvelopes);
     m_outputDsp.ResetDeviceSession();
+    m_underrunCount.store(0, std::memory_order_relaxed);
     if (!SDL_SetAudioPostmixCallback(m_deviceId, &AudioEngine::ProcessOutput, this) ||
         !SDL_ResumeAudioDevice(m_deviceId)) {
         INXLOG_ERROR("Failed to resume audio device: ", SDL_GetError());
@@ -228,6 +229,23 @@ void AudioEngine::Shutdown()
     m_outputTime.store(0.0, std::memory_order_relaxed);
     m_outputPeak.store(0.0f, std::memory_order_relaxed);
     m_saturatedSamples.store(0, std::memory_order_relaxed);
+    m_underrunCount.store(0, std::memory_order_relaxed);
+}
+
+std::string AudioEngine::GetDeviceDriver() const
+{
+    if (!m_initialized)
+        return {};
+    const char *driver = SDL_GetCurrentAudioDriver();
+    return driver ? std::string(driver) : std::string();
+}
+
+std::string AudioEngine::GetDeviceName() const
+{
+    if (!m_initialized || m_deviceId == 0)
+        return {};
+    const char *name = SDL_GetAudioDeviceName(m_deviceId);
+    return name ? std::string(name) : std::string();
 }
 
 void SDLCALL AudioEngine::ProcessOutput(void *userdata, const SDL_AudioSpec *spec, float *buffer, int length)
@@ -287,6 +305,7 @@ void SDLCALL AudioEngine::FeedVoiceStream(void *userdata, SDL_AudioStream *strea
     const float smoothingStep = 1.0f / static_cast<float>(std::max(1, voice->sampleRate / 200));
 
     bool finished = false;
+    bool underrun = false;
     const size_t frameCount = voice->frameCount;
     std::array<float, 2048> output{};
     while (remainingFrames > 0 && !finished) {
@@ -317,6 +336,7 @@ void SDLCALL AudioEngine::FeedVoiceStream(void *userdata, SDL_AudioStream *strea
                     output[static_cast<size_t>(writtenFrames) * 2] = 0;
                     output[static_cast<size_t>(writtenFrames) * 2 + 1] = 0;
                     voice->currentGain = 0.0f;
+                    underrun = true;
                     continue;
                 }
             } else {
@@ -348,6 +368,8 @@ void SDLCALL AudioEngine::FeedVoiceStream(void *userdata, SDL_AudioStream *strea
     }
     if (finished)
         SDL_FlushAudioStream(stream);
+    if (underrun)
+        voice->engine->m_underrunCount.fetch_add(1, std::memory_order_relaxed);
     voice->finished.store(finished, std::memory_order_release);
 }
 

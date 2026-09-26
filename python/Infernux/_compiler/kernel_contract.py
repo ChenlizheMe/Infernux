@@ -64,20 +64,14 @@ def implicit_receiver_name(
 ) -> str | None:
     """Return a conventionally implicit receiver for a class kernel.
 
-    ``inx.compute.kernel`` creates a non-descriptor ``Kernel`` object, so a
-    class nesting alone does not inject an argument.  Only the conventional
-    ``self``/``cls`` names claim a receiver and violate the source-less GPU
-    ABI; other first parameters remain explicit kernel arguments.
+    Only conventional ``self``/``cls`` names request descriptor binding;
+    other first parameters remain explicit kernel arguments.
     """
 
     if not in_class or has_decorator(node, "staticmethod"):
         return None
     positional = (*node.args.posonlyargs, *node.args.args)
     first = positional[0].arg if positional else "<missing>"
-    # A Kernel object is intentionally not a descriptor.  A class function
-    # whose first argument is the actual domain therefore does not receive an
-    # implicit Python receiver.  Reserve the diagnostic for conventional
-    # receiver names, which is the source form that can silently inject self.
     return first if first in {"self", "cls"} else None
 
 
@@ -93,11 +87,56 @@ def implicit_receiver_attribute(
     the same failure instead of diverging during lowering.
     """
 
-    for item in ast.walk(node):
+    for item in sorted(ast.walk(node), key=lambda item: (
+        getattr(item, "lineno", 0), getattr(item, "col_offset", 0)
+    )):
         if not isinstance(item, ast.Attribute) or not isinstance(item.value, ast.Name):
             continue
         if item.value.id in {"self", "cls"}:
             return item.value.id, item
+    return None
+
+
+def receiver_field_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ...]:
+    """Return stable, source-order fields read through ``self``/``cls``.
+
+    Receiver lowering is deliberately narrow: the receiver itself never enters
+    the GPU ABI.  Only fields that are explicitly read through the conventional
+    receiver name become ordinary buffer/scalar parameters.  The caller still
+    validates their runtime values before compilation.
+    """
+
+    positional = (*node.args.posonlyargs, *node.args.args)
+    receiver = positional[0].arg if positional and positional[0].arg in {"self", "cls"} else None
+    if receiver is None:
+        return ()
+    names: list[str] = []
+    for item in ast.walk(node):
+        if not isinstance(item, ast.Attribute) or not isinstance(item.value, ast.Name):
+            continue
+        if item.value.id == receiver and item.attr not in names:
+            names.append(item.attr)
+    return tuple(names)
+
+
+def receiver_issue(node: ast.FunctionDef | ast.AsyncFunctionDef):
+    """Locate receiver uses that cannot be expressed as value parameters."""
+    receiver = implicit_receiver_name(node, in_class=True)
+    if receiver is None:
+        return None
+    parents = {child: parent for parent in ast.walk(node) for child in ast.iter_child_nodes(parent)}
+    for item in ast.walk(node):
+        if isinstance(item, ast.Name) and item.id == receiver:
+            parent = parents.get(item)
+            if not isinstance(parent, ast.Attribute) or parent.value is not item:
+                return item, "the receiver object cannot be passed, assigned or captured by GPU code"
+            if not isinstance(parent.ctx, ast.Load):
+                return parent, "GPU kernels cannot assign receiver fields; write an inx.buffer element instead"
+            grandparent = parents.get(parent)
+            if isinstance(grandparent, ast.Call) and grandparent.func is parent:
+                return parent, "receiver method calls are not GPU helpers; use @inx.compute.function"
     return None
 
 
@@ -126,6 +165,8 @@ __all__ = [
     "has_decorator",
     "implicit_receiver_attribute",
     "implicit_receiver_name",
+    "receiver_field_names",
+    "receiver_issue",
     "kernel_diagnostic",
     "qualified_kernel_name",
     "source_module_name",

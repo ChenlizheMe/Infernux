@@ -176,6 +176,13 @@ class InspectorPanel : public EditorPanel
         int overrideCount = 0;
         bool isReadonly = false;
         bool isTransformReadonly = false;
+        struct StructuralRow
+        {
+            std::string kind;
+            std::string nodePath;
+            std::string key;
+        };
+        std::vector<StructuralRow> structuralRows;
     };
     std::function<PrefabInfo(uint64_t)> getPrefabInfo;
 

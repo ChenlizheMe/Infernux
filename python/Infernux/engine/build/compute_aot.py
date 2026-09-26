@@ -16,6 +16,7 @@ from Infernux._compiler.kernel_contract import (
     implicit_receiver_attribute,
     implicit_receiver_name,
     kernel_diagnostic,
+    receiver_field_names,
 )
 
 
@@ -95,24 +96,52 @@ def _validate_class_kernel_source(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     target: str,
+    declared_fields: frozenset[str] = frozenset(),
 ) -> None:
     """Reject implicit Python receivers before AOT artifact lookup.
 
-    A class method using the conventional ``self``/``cls`` receiver cannot be
-    represented by the fixed GPU ABI: ``Kernel`` is intentionally not a
-    descriptor and no implicit receiver value can be serialized.  A
-    ``@staticmethod`` declaration is explicit and remains legal.  Performing
-    this validation from source gives Android/Web build diagnostics the same
-    identity and location as Editor compilation.
+    A class method using the conventional ``self``/``cls`` receiver is legal
+    only when every receiver field is explicitly declared as an engine-owned
+    scalar or ``inx.buffer``.  The runtime descriptor lowers those fields into
+    the fixed GPU ABI; the AOT pass mirrors that contract from source so
+    Android/Web diagnostics have the same identity and location as Editor
+    compilation.  A ``@staticmethod`` declaration remains explicit and legal.
     """
     first = implicit_receiver_name(node, in_class=True)
     if first is not None:
+        fields = receiver_field_names(node)
+        if not fields:
+            raise ComputeAotBuildError(_kernel_source_diagnostic(
+                source_path,
+                qualified,
+                node,
+                f"class-contained kernels cannot use an implicit instance receiver '{first}'",
+                "put @staticmethod above @inx.compute.kernel (decorator order: @staticmethod, then @inx.compute.kernel) or move the kernel to module scope",
+                target=target,
+            ), missing=(qualified,))
+        missing = tuple(name for name in fields if name not in declared_fields)
+        if not missing:
+            return
+        missing_name = missing[0]
+        if not declared_fields:
+            access = implicit_receiver_attribute(node)
+            receiver, attribute = access if access is not None else (first, node)
+            raise ComputeAotBuildError(_kernel_source_diagnostic(
+                source_path,
+                qualified,
+                node,
+                f"class-contained kernels cannot access unbound receiver field '{receiver}.{getattr(attribute, 'attr', missing_name)}'",
+                "pass the required scalar or inx.buffer explicitly, or declare an engine-owned receiver field",
+                target=target,
+                line=getattr(attribute, "lineno", None),
+                column=(getattr(attribute, "col_offset", 0) + 1),
+            ), missing=(qualified,))
         raise ComputeAotBuildError(_kernel_source_diagnostic(
             source_path,
             qualified,
             node,
-            f"class-contained kernels cannot use an implicit instance receiver '{first}'",
-            "put @staticmethod above @inx.compute.kernel (decorator order: @staticmethod, then @inx.compute.kernel) or move the kernel to module scope",
+            f"class-contained kernel receiver field '{first}.{missing_name}' is not declared as an engine-owned scalar or inx.buffer",
+            "declare the field with a numeric annotation/class value, pass it explicitly, or put @staticmethod above @inx.compute.kernel",
             target=target,
         ), missing=(qualified,))
     access = implicit_receiver_attribute(node)
@@ -160,7 +189,7 @@ def declared_kernel_names(
 
         class Collector(ast.NodeVisitor):
             def __init__(self) -> None:
-                self.scope: list[tuple[str, bool]] = []
+                self.scope: list[tuple[str, bool, frozenset[str]]] = []
 
             def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
                 if any(
@@ -169,18 +198,23 @@ def declared_kernel_names(
                     for item in node.decorator_list
                 ):
                     qualified: list[str] = []
-                    for scope_name, is_function in self.scope:
+                    for scope_name, is_function, _ in self.scope:
                         qualified.append(scope_name)
                         if is_function:
                             qualified.append("<locals>")
                     qualified.append(node.name)
                     runtime_name = f"{module_name}.{'.'.join(qualified)}"
-                    if any(not is_function for _, is_function in self.scope):
+                    classes = [fields for _, is_function, fields in self.scope if not is_function]
+                    if classes:
                         _validate_class_kernel_source(
-                            source_path, runtime_name, node, target=target
+                            source_path,
+                            runtime_name,
+                            node,
+                            target=target,
+                            declared_fields=classes[-1],
                         )
                     names.add(runtime_name)
-                self.scope.append((node.name, True))
+                self.scope.append((node.name, True, frozenset()))
                 self.generic_visit(node)
                 self.scope.pop()
 
@@ -188,7 +222,23 @@ def declared_kernel_names(
             visit_AsyncFunctionDef = _visit_function
 
             def visit_ClassDef(self, node: ast.ClassDef) -> None:
-                self.scope.append((node.name, False))
+                fields: set[str] = set()
+                for statement in node.body:
+                    if isinstance(statement, (ast.AnnAssign, ast.Assign)):
+                        targets = [statement.target] if isinstance(statement, ast.AnnAssign) else statement.targets
+                        for target_node in targets:
+                            if isinstance(target_node, ast.Name):
+                                fields.add(target_node.id)
+                    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        for item in ast.walk(statement):
+                            if (
+                                isinstance(item, ast.Attribute)
+                                and isinstance(item.value, ast.Name)
+                                and item.value.id in {"self", "cls"}
+                                and isinstance(item.ctx, ast.Store)
+                            ):
+                                fields.add(item.attr)
+                self.scope.append((node.name, False, frozenset(fields)))
                 self.generic_visit(node)
                 self.scope.pop()
 

@@ -1143,11 +1143,23 @@ class Kernel:
         self.function = function
         self._executables = OrderedDict()
         self._lock = threading.RLock()
+        # Receiver source analysis is a declaration property.  Bound launches
+        # still snapshot live field values every time, but do not re-parse the
+        # method source on every frame.
+        self._receiver_field_names = None
         for attribute in ("__name__", "__qualname__", "__module__", "__doc__"):
             setattr(self, attribute, getattr(function, attribute, None))
         _kernel_declarations.add(self)
 
-    def _executable(self, params):
+    def __get__(self, instance, owner=None):
+        # Keep class access (`Component.step`) stable for source inspection and
+        # AOT discovery, while an instance access carries only the explicit,
+        # engine-owned receiver fields into the GPU ABI.
+        if instance is None:
+            return self
+        return _BoundKernel(self, instance)
+
+    def _executable(self, params, *, receiver_fields=None):
         from Infernux._compiler.taichi import CompilerInstallationError
         from Infernux._compiler.taichi.frontend import compile_kernel, parameter_key
 
@@ -1168,7 +1180,14 @@ class Kernel:
             executable = self._executables.pop(key, None)
             if executable is None:
                 try:
-                    artifact = compile_kernel(self.function, params)
+                    if receiver_fields is None:
+                        artifact = compile_kernel(self.function, params)
+                    else:
+                        artifact = compile_kernel(
+                            self.function,
+                            params,
+                            receiver_fields=receiver_fields,
+                        )
                 except CompilerInstallationError as exception:
                     raise ComputeCompilerError(
                         f"Infernux GPU compiler initialization failed: {exception}"
@@ -1188,6 +1207,13 @@ class Kernel:
                 self._executables[key] = executable
             return executable
 
+    def _get_receiver_field_names(self):
+        if self._receiver_field_names is None:
+            from Infernux._compiler.taichi.frontend import receiver_fields
+
+            self._receiver_field_names = receiver_fields(self.function)
+        return self._receiver_field_names
+
     def _release_engine_resources(self) -> None:
         with self._lock:
             executables = tuple(self._executables.values())
@@ -1199,6 +1225,51 @@ class Kernel:
         with self._lock:
             for executable in self._executables.values():
                 executable.discard_buffer_launches(value)
+
+
+class _BoundKernel(Kernel):
+    """Descriptor view that lowers a narrow instance receiver explicitly."""
+
+    def __init__(self, declaration: Kernel, receiver) -> None:
+        # Do not register a second declaration: the unbound declaration owns
+        # executable lifetime and is already tracked by the engine teardown.
+        self._declaration = declaration
+        self._receiver = receiver
+        self.function = declaration.function
+        for attribute in ("__name__", "__qualname__", "__module__", "__doc__"):
+            setattr(self, attribute, getattr(declaration, attribute, None))
+
+    def _effective_params(self, params):
+        from Infernux._compiler.taichi.frontend import receiver_bindings
+
+        fields = self._declaration._get_receiver_field_names()
+        bindings = receiver_bindings(self.function, self._receiver, fields)
+        values = tuple(value for _, value in bindings)
+        supported = (Buffer, bool, int, float, np.integer, np.floating)
+        for name, value in bindings:
+            if not isinstance(value, supported):
+                raise TypeError(
+                    f"GPU kernel receiver field '{name}' has unsupported type "
+                    f"{type(value).__name__}; bind an inx.buffer or numeric scalar explicitly"
+                )
+        return bindings, (*values, *tuple(params))
+
+    def _executable(self, params):
+        return self._resolve(params)[0]
+
+    def _resolve(self, params):
+        bindings, effective = self._effective_params(params)
+        executable = self._declaration._executable(
+            effective,
+            receiver_fields=bindings,
+        )
+        return executable, effective
+
+    def _release_engine_resources(self) -> None:
+        self._declaration._release_engine_resources()
+
+    def _discard_buffer_launches(self, value: Buffer) -> None:
+        self._declaration._discard_buffer_launches(value)
 
 
 class Function:
@@ -1279,7 +1350,10 @@ def prepare(declaration: Kernel, params) -> None:
         raise TypeError("inx.compute.prepare requires an @inx.compute.kernel declaration")
     if not isinstance(params, tuple):
         raise TypeError("inx.compute.prepare params must be a tuple")
-    declaration._executable(params)
+    if isinstance(declaration, _BoundKernel):
+        declaration._resolve(params)
+    else:
+        declaration._executable(params)
 
 
 @kernel
@@ -1550,8 +1624,12 @@ def launch(declaration: Kernel, params) -> None:
         raise TypeError("inx.compute.launch requires an @inx.compute.kernel declaration")
     if not isinstance(params, tuple):
         raise TypeError("inx.compute.launch params must be a tuple")
-    executable = declaration._executable(params)
-    updates, dispatches = executable.prepare(params)
+    if isinstance(declaration, _BoundKernel):
+        executable, effective_params = declaration._resolve(params)
+    else:
+        executable = declaration._executable(params)
+        effective_params = params
+    updates, dispatches = executable.prepare(effective_params)
     batch = _pending_batch(executable.host)
     for native, payload, offset in updates:
         native_identity = id(native)
@@ -1561,7 +1639,7 @@ def launch(declaration: Kernel, params) -> None:
         batch["updates"].append((native, payload, offset))
         batch["updated"].add(native_identity)
     batch["dispatches"].extend(dispatches)
-    for value in params:
+    for value in effective_params:
         if isinstance(value, Buffer) and value._mesh_attribute_state is not None:
             batch["mesh_attributes"][id(value)] = value
     if _recording_depth() == 0:

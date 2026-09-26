@@ -42,8 +42,8 @@ int main()
     const glm::vec3 rotatedEye(10.0f, 2.0f, -10.0f);
     const glm::mat4 rotatedView = glm::lookAt(rotatedEye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     const glm::mat4 rotatedCameraToWorld = glm::inverse(rotatedView);
-    const auto rotated = infernux::ProjectSceneIcon(glm::vec3(0.0f), rotatedCameraToWorld, rotatedView, projection,
-                                                    800, 1.0f, glm::vec2(800.0f));
+    const auto rotated = infernux::ProjectSceneIcon(glm::vec3(0.0f), rotatedCameraToWorld, rotatedView, projection, 800,
+                                                    1.0f, glm::vec2(800.0f));
     assert(rotated);
     assert(infernux::SceneIconContains(*rotated, {400.0f, 400.0f}));
 

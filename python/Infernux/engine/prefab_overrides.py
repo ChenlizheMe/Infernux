@@ -55,6 +55,24 @@ class PropertyModification:
 
 
 @dataclass(frozen=True, slots=True)
+class StructuralOverride:
+    """A topology change on a Prefab instance.
+
+    Structural edits are deliberately separate from ``PropertyModification``:
+    an added/removed node or component has no property value to revert and its
+    identity must remain visible to an authoring panel.  ``kind`` is one of
+    ``child_added``, ``child_removed``, ``component_added``,
+    ``component_removed``, ``child_reordered`` or ``component_reordered``.
+    """
+
+    node_path: str
+    kind: str
+    key: str
+    source_value: object
+    instance_value: object
+
+
+@dataclass(frozen=True, slots=True)
 class _PrefabApplyState:
     prefab_document: dict
     instance_documents: tuple[tuple[int, int, dict, object], ...]
@@ -109,6 +127,44 @@ def compute_overrides(instance_obj, prefab_path: str,
     object_ids, component_ids = _comparison_identities(instance_data, prefab_data)
     _diff_node(instance_data, prefab_data, "", overrides, object_ids, component_ids, is_root=True)
     return overrides
+
+
+def get_structural_overrides(instance_obj, prefab_path: str,
+                             asset_database=None) -> tuple[StructuralOverride, ...]:
+    """Return topology changes for the containing Prefab instance.
+
+    The existing generic diff intentionally exposes structural changes as
+    ``Override`` rows for backwards compatibility.  Authoring UI needs a
+    stable category and key, however, so this projection keeps those rows
+    machine-readable without duplicating hierarchy matching logic.
+    """
+    structural: list[StructuralOverride] = []
+    for item in compute_overrides(instance_obj, prefab_path, asset_database):
+        key = str(item.key)
+        if key == "children.order":
+            kind = "child_reordered"
+        elif key == "components.order":
+            kind = "component_reordered"
+        elif key.startswith("added_child:"):
+            kind = "child_added"
+        elif key.startswith("removed_child:"):
+            kind = "child_removed"
+        elif key.startswith("added_components:"):
+            kind = "component_added"
+        elif key.startswith("removed_components:"):
+            kind = "component_removed"
+        else:
+            continue
+        structural.append(
+            StructuralOverride(
+                node_path=item.node_path,
+                kind=kind,
+                key=key,
+                source_value=item.prefab_value,
+                instance_value=item.instance_value,
+            )
+        )
+    return tuple(structural)
 
 
 def _comparison_identities(instance, source):

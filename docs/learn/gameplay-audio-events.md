@@ -148,7 +148,7 @@ Use `set_track_clip_by_guid()` for authored asset references when the AssetRegis
 
 Set `source.output_bus` to `Music`, `SFX`, `Ambience`, or `UI`; `Master` affects all of them. Use `AudioEngine.instance()` from `Infernux.lib` to call `fade_bus_volume("Music", 0.0, 1.0)`. The fade follows the audio device, even when game frames stall. `pause_all()` freezes that clock; muting a bus leaves its playback and fade running. A direct `set_bus_volume()` cancels its current fade, and `cancel_bus_fade()` holds the current level.
 
-`output_time` reports mixed audio seconds, not the hardware playhead. `output_peak` reports the latest mixed block's peak. `saturated_sample_count` counts output samples at full scale after SDL mixing: it warns about saturation but cannot reconstruct peaks already clipped by SDL. These readings are runtime diagnostics, not scene properties or a compressor/limiter.
+`output_time` reports mixed audio seconds, not the hardware playhead. `output_peak` reports the latest mixed block's peak. `saturated_sample_count` counts output samples at full scale after SDL mixing: it warns about saturation but cannot reconstruct peaks already clipped by SDL. `device_driver` and `device_name` identify the selected SDL output while the engine is initialized; `sample_rate` and `channel_count` report its format. `underrun_count` counts streaming callback requests that emitted silence while decoded frames were unavailable. It resets with each device session and does not measure operating-system or DAC underruns. These readings are runtime diagnostics, not scene properties or a compressor/limiter.
 
 ### Voice limits and priority
 
@@ -333,7 +333,7 @@ AssetRegistry/AssetDatabase 已初始化时，可用 `set_track_clip_by_guid()` 
 
 把 `source.output_bus` 设为 `Music`、`SFX`、`Ambience` 或 `UI`，`Master` 则控制全部分组。从 `Infernux.lib` 获取 `AudioEngine.instance()` 后，可以调用 `fade_bus_volume("Music", 0.0, 1.0)`，让音乐在一秒内淡出。过渡由音频设备推进，游戏卡顿不会使它停止；`pause_all()` 会冻结音频时钟，分组静音则不会暂停播放或过渡。直接设置 `set_bus_volume()` 会取消原有过渡，`cancel_bus_fade()` 会保持当前音量。
 
-`output_time` 是已经混音的秒数，不是声卡的实际播放位置。`output_peak` 是最近输出块的峰值，`saturated_sample_count` 是 SDL 混音后达到满幅的样本总数，可用来发现音量过高，但无法还原已被 SDL 截掉的峰值。这些都是运行时观测数据，不写入场景，也不是压缩器或限幅器。
+`output_time` 是已经混音的秒数，不是声卡的实际播放位置。`output_peak` 是最近输出块的峰值，`saturated_sample_count` 是 SDL 混音后达到满幅的样本总数，可用来发现音量过高，但无法还原已被 SDL 截掉的峰值。`device_driver`、`device_name` 标识当前 SDL 输出后端与设备，`sample_rate`、`channel_count` 给出输出格式。`underrun_count` 统计流式解码帧未及时就绪而在回调中填充静音的请求次数；每次设备会话重新计数，不代表操作系统或 DAC 层的所有欠载。这些都是运行时观测数据，不写入场景，也不是压缩器或限幅器。
 
 ### 声部限额与优先级
 
