@@ -470,6 +470,9 @@ jobs:
               --startup-timeout-ms 360000 `
               --verify-native-multitouch `
               --verify-fixture-ui-click `
+              --track-object "Render Probe" `
+              --movement-key w `
+              --min-displacement 0.02 `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PACKAGE_RESOURCE_READY value=Package resource reached UIText on every Player target." `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_PRELOAD_RESOURCE_READY value=Package resource reached UIText on every Player target." `
               --require-diagnostic "INFERNUX_PLATFORM_FIXTURE_MANAGED_GUID_READ_READY guid=8b7148eba8303c90b0589315c16f7cba" `
