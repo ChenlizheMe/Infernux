@@ -142,7 +142,24 @@ def _write_native_payload(root: Path, *, abi: str) -> Path:
     }), encoding="utf-8")
     java = root / "java/org/libsdl/app/SDLActivity.java"
     java.parent.mkdir(parents=True)
-    java.write_text("// SDL fixture", encoding="utf-8")
+    java.write_text(
+        """class SDLActivity extends Activity {
+    static class ShowTextInputTask implements Runnable {
+        public void run() {
+            mTextEdit.setVisibility(View.VISIBLE);
+            mTextEdit.requestFocus();
+            InputMethodManager imm = (InputMethodManager) getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+            imm.showSoftInput(mTextEdit, 0);
+
+            if (imm.isAcceptingText()) {
+                onNativeScreenKeyboardShown();
+            }
+        }
+    }
+}
+""",
+        encoding="utf-8",
+    )
     (java.parent / "SDLInputConnection.java").write_text(
         """class SDLInputConnection extends BaseInputConnection {
     public boolean sendKeyEvent(KeyEvent event) {
@@ -187,6 +204,9 @@ def test_android_native_payload_stages_without_build_tools(monkeypatch, tmp_path
     input_text = input_connection.read_text(encoding="utf-8")
     assert "if (keyCode == KeyEvent.KEYCODE_DEL)" in input_text
     assert "SDLActivity.onNativeKeyDown(keyCode)" in input_text
+    activity_text = (staging / "app/src/main/java/org/libsdl/app/SDLActivity.java").read_text(encoding="utf-8")
+    assert "imm.restartInput(mTextEdit);" in activity_text
+    assert "mTextEdit.post(() ->" in activity_text
 
 
 @pytest.mark.parametrize("failure", [
