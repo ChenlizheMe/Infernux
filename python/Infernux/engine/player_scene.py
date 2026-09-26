@@ -357,10 +357,14 @@ class PlayerSceneService:
         Time._reset_frame_delta()
         if start_for_play:
             scene_manager._start_active_scene_for_play()
+        authored_camera = scene is not None and scene.main_camera is not None
+        effective_camera = (
+            scene is not None and scene.effective_game_camera is not None
+        )
         message = (
             f"Player loaded scene: {os.path.basename(path)} "
             f"(objects={len(scene.get_all_objects()) if scene is not None else 0}, "
-            f"camera={scene is not None and scene.main_camera is not None})"
+            f"authored_camera={authored_camera}, effective_camera={effective_camera})"
         )
         _player_log(f"[SceneLoad] {message}")
 
@@ -371,9 +375,12 @@ class PlayerSceneService:
 
         SceneManager.instance()._start_scene_for_play(scene)
         self._last_error = ""
+        authored_camera = scene.main_camera is not None
+        effective_camera = scene.effective_game_camera is not None
         _player_log(
             f"[SceneLoad] Player added scene: {os.path.basename(path)} "
-            f"(objects={len(scene.get_all_objects())}, camera={scene.main_camera is not None})"
+            f"(objects={len(scene.get_all_objects())}, "
+            f"authored_camera={authored_camera}, effective_camera={effective_camera})"
         )
 
 
