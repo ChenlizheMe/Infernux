@@ -264,8 +264,10 @@ class SceneManager:
     @staticmethod
     def _load_build_list() -> List[str]:
         """Return build scene GUIDs in Player, resolved paths in Editor."""
-        from Infernux.engine.build_settings import load_build_settings
-        from Infernux.engine.interaction.project_settings import normalize_build_settings
+        from Infernux.engine.build_settings import (
+            load_build_settings,
+            normalize_build_settings,
+        )
 
         scene_guids = list(
             normalize_build_settings(load_build_settings())["scene_guids"]
