@@ -583,6 +583,7 @@ class PlayerRuntimeAssetCatalog:
     _asset_paths: Mapping[str, str]
     _asset_guids_by_path: Mapping[str, str]
     _primary_paths_by_guid: Mapping[str, str]
+    _source_paths_by_guid: Mapping[str, str]
     _source_extensions_by_guid: Mapping[str, str]
     _package_directories: Mapping[str, str]
     _scene_paths_by_guid: Mapping[str, str]
@@ -657,6 +658,7 @@ class PlayerRuntimeAssetCatalog:
         asset_guids_by_path: dict[str, str] = {}
         primary_paths_by_guid: dict[str, str] = {}
         source_extensions_by_guid: dict[str, str] = {}
+        source_paths_by_guid: dict[str, str] = {}
         # Raw package payloads retain sibling layout. Derive their directory
         # membership once from cataloged assets, never from a filesystem walk.
         package_directories: dict[str, str] = {}
@@ -705,6 +707,7 @@ class PlayerRuntimeAssetCatalog:
             source_alias = record.get("runtime_path")
             if source_alias:
                 normalized_alias = cls._normalized_runtime_path(source_alias)
+                source_paths_by_guid[guid] = normalized_alias
                 source_extensions_by_guid[guid] = Path(normalized_alias).suffix.casefold()
                 alias_key = normalized_alias.casefold()
                 existing_guid = asset_guids_by_path.get(alias_key)
@@ -740,6 +743,7 @@ class PlayerRuntimeAssetCatalog:
             _asset_paths=MappingProxyType(dict(asset_paths)),
             _asset_guids_by_path=MappingProxyType(asset_guids_by_path),
             _primary_paths_by_guid=MappingProxyType(primary_paths_by_guid),
+            _source_paths_by_guid=MappingProxyType(source_paths_by_guid),
             _source_extensions_by_guid=MappingProxyType(source_extensions_by_guid),
             _package_directories=MappingProxyType(package_directories),
             _scene_paths_by_guid=MappingProxyType(scene_paths_by_guid),
@@ -829,6 +833,14 @@ class PlayerRuntimeAssetCatalog:
     def source_extension_for_guid(self, guid: str) -> str:
         """Return the frozen authored suffix without touching a payload file."""
         return self._source_extensions_by_guid.get(str(guid), "")
+
+    def source_path_for_guid(self, guid: str) -> str:
+        """Return the authored relative path for a cataloged asset.
+
+        Player scene-name resolution uses this immutable catalog alias.  It
+        never scans the shipped project or reconstructs a path from a GUID.
+        """
+        return self._source_paths_by_guid.get(str(guid), "")
 
     def resolve_package(
         self,

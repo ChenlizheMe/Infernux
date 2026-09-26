@@ -213,6 +213,7 @@ def test_runtime_asset_catalog_resolves_scene_guid_to_cooked_document(tmp_path):
     )
 
     assert runtime_catalog.resolve_scene("scene-guid") == str(cooked)
+    assert runtime_catalog.source_path_for_guid("scene-guid") == "Assets/Scenes/Main.scene"
     assert runtime_catalog.resolve_scene("Assets/Scenes/Main.scene") is None
     assert runtime_catalog.resolve_scene(str(cooked)) is None
 

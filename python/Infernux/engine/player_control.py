@@ -155,6 +155,15 @@ class PlayerControlChannel:
                         "up": bool(input_manager.get_mouse_button_up(button)),
                         "pending_input_count": int(native.pending_synthetic_input_count),
                     }
+                elif pending.get("kind") == "mouse_motion":
+                    response = {
+                        "sequence": sequence,
+                        "delivered": True,
+                        "x": float(input_manager.mouse_position_x),
+                        "y": float(input_manager.mouse_position_y),
+                        "game_focused": bool(Input.is_game_focused()),
+                        "pending_input_count": int(native.pending_synthetic_input_count),
+                    }
                 else:
                     scancode = int(pending["scancode"])
                     response = {
@@ -236,6 +245,20 @@ class PlayerControlChannel:
                     "sequence": sequence,
                     "button": button,
                     "pressed": pressed,
+                }
+                return None
+            if action == "mouse_motion":
+                x = _bounded_finite_float(command.get("x", 0.0), "x", minimum=0.0, maximum=100_000.0)
+                y = _bounded_finite_float(command.get("y", 0.0), "y", minimum=0.0, maximum=100_000.0)
+                delta_x = _bounded_finite_float(command.get("delta_x", 0.0), "delta_x", minimum=-100_000.0, maximum=100_000.0)
+                delta_y = _bounded_finite_float(command.get("delta_y", 0.0), "delta_y", minimum=-100_000.0, maximum=100_000.0)
+                sequence = int(native.queue_synthetic_mouse_motion_input(x, y, delta_x, delta_y))
+                self._pending_input = {
+                    "kind": "mouse_motion",
+                    "command_id": command_id,
+                    "sequence": sequence,
+                    "x": x,
+                    "y": y,
                 }
                 return None
             if action == "capture":
@@ -1164,6 +1187,11 @@ def _observe_player(
         "pending_input_count": int(native.pending_synthetic_input_count),
         "game_focused": bool(Input.is_game_focused()),
     }
+    gui_objects = getattr(engine, "_gui_objects", {})
+    player_gui = gui_objects.get("player_gui") if isinstance(gui_objects, dict) else None
+    pointer_debug = getattr(player_gui, "pointer_debug_state", None)
+    if callable(pointer_debug):
+        result["ui_pointer_debug"] = dict(pointer_debug() or {})
     # Keep the Player control observation authoritative for lifecycle bugs:
     # a running native frame alone does not prove Python phases are executing.
     scheduler = getattr(engine, "_runtime_scheduler", None)

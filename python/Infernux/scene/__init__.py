@@ -286,6 +286,15 @@ class SceneManager:
     def _build_scene_display_path(identity: str) -> str:
         if SceneManager._runtime_scene_service is None:
             return identity
+        # A packaged Player has no authoring AssetDatabase.  Resolve the
+        # display/source alias from its immutable runtime catalog so Unity-
+        # style name and filename loads remain usable without scanning Assets.
+        runtime_catalog = getattr(SceneManager._runtime_scene_service, "_runtime_catalog", None)
+        source_path_for_guid = getattr(runtime_catalog, "source_path_for_guid", None)
+        if callable(source_path_for_guid):
+            source_path = str(source_path_for_guid(identity) or "")
+            if source_path:
+                return source_path
         from Infernux.core.assets import AssetManager
 
         return str(

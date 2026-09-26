@@ -310,6 +310,10 @@ class PlayerGUI(InxGUIRenderable):
         scene_hit = self._process_ui_events(display_w, display_h, mouse_frame=mouse_frame)
         self._process_mouse_events(display_w, display_h, scene_hit=scene_hit, mouse_frame=mouse_frame)
 
+    def pointer_debug_state(self) -> dict:
+        """Return the last runtime UI pointer transition for Player diagnostics."""
+        return self._ui_event_processor.debug_state()
+
     def _process_mouse_events(self, game_w: int, game_h: int, *, scene_hit=None, mouse_frame=None) -> None:
         dispatcher = getattr(self, "_mouse_event_dispatcher", None)
         if dispatcher is None:
