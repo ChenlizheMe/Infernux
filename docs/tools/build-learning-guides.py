@@ -68,7 +68,7 @@ def page_shell(course: dict, chapter: dict, previous: dict | None, following: di
     <title>{title} · Infernux Learn</title>
     <link rel="icon" type="image/png" href="../assets/logo.png">
     <link rel="stylesheet" href="../css/fonts.css?v=1">
-    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/style.css?v=21">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
     <link rel="stylesheet" href="../css/learn.css?v=6">
@@ -188,7 +188,7 @@ def course_index_shell(course: dict, chapters: list[dict]) -> str:
     <title>{title} · Infernux Learn</title>
     <link rel="icon" type="image/png" href="../assets/logo.png">
     <link rel="stylesheet" href="../css/fonts.css?v=1">
-    <link rel="stylesheet" href="../css/style.css?v=20">
+    <link rel="stylesheet" href="../css/style.css?v=21">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
     <link rel="stylesheet" href="../css/learn.css?v=6">

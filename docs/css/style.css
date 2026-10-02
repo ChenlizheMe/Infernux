@@ -1885,3 +1885,238 @@ table { max-width: 100%; }
         color: HighlightText;
     }
 }
+
+/* =====================================================================
+   TAPE FUTURISM / SITE SYSTEM 01
+   A hard-edged, dimensional layer shared by the public site and docs.
+   The Infernux red remains the signal colour; cyan and violet are
+   instrumentation colours used to make the interface feel live.
+   ===================================================================== */
+
+:root {
+    --tape-ink: #07080c;
+    --tape-ink-2: #0d1018;
+    --tape-panel: #151824;
+    --tape-panel-hi: #202538;
+    --tape-cyan: #72f0dd;
+    --tape-violet: #a896ff;
+    --tape-yellow: #ffd166;
+    --accent-readable: #ff9797;
+    --tape-ghost: rgba(255, 255, 255, 0.25);
+    --tape-shadow: rgba(0, 0, 0, 0.62);
+    --tape-grid: rgba(114, 240, 221, 0.08);
+    --tape-line: rgba(244, 241, 232, 0.15);
+    --tape-corner: 3px;
+}
+
+[data-theme="light"] {
+    --tape-ink: #e5e0d4;
+    --tape-ink-2: #f0eadf;
+    --tape-panel: #fbf7ed;
+    --tape-panel-hi: #e7dfd0;
+    --tape-grid: rgba(89, 66, 150, 0.11);
+    --tape-line: rgba(19, 24, 36, 0.18);
+    --tape-shadow: rgba(47, 32, 28, 0.22);
+    --accent-readable: #8f2330;
+    --tape-ghost: rgba(19, 24, 36, 0.38);
+}
+
+body {
+    background-color: var(--tape-ink);
+    background-image:
+        linear-gradient(var(--tape-grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--tape-grid) 1px, transparent 1px),
+        radial-gradient(circle at 10% 18%, rgba(235, 87, 87, 0.18), transparent 27rem),
+        radial-gradient(circle at 92% 9%, rgba(114, 240, 221, 0.1), transparent 22rem),
+        radial-gradient(circle at 76% 78%, rgba(168, 150, 255, 0.11), transparent 30rem);
+    background-size: 38px 38px, 38px 38px, auto, auto, auto;
+}
+
+body::before {
+    background-image:
+        repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.028) 0 1px, transparent 1px 5px),
+        linear-gradient(90deg, transparent 0 49.8%, rgba(235, 87, 87, 0.07) 50%, transparent 50.2%);
+    background-size: 100% 6px, 100% 100%;
+    opacity: 0.32;
+    mix-blend-mode: screen;
+}
+
+.site-header {
+    background: rgba(7, 8, 12, 0.86);
+    border-bottom: 1px solid rgba(114, 240, 221, 0.3);
+    box-shadow: 0 12px 0 rgba(0, 0, 0, 0.18), 0 18px 46px rgba(0, 0, 0, 0.28);
+}
+
+[data-theme="light"] .site-header { background: rgba(240, 234, 223, 0.9); }
+
+.mission-ribbon {
+    position: relative;
+    height: 42px;
+    background:
+        repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.11) 0 1px, transparent 1px 8px),
+        linear-gradient(90deg, #8b1826 0%, var(--accent-fill) 42%, #5f1220 100%);
+    box-shadow: inset 0 -1px rgba(0, 0, 0, 0.45), inset 0 1px rgba(255, 255, 255, 0.16);
+}
+
+.mission-ribbon::after {
+    content: "REC  •  SIGNAL LOCKED  •  3N";
+    position: absolute;
+    right: 2vw;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--tape-ghost);
+    font: 0.58rem var(--font-mono);
+    letter-spacing: 0.2em;
+}
+
+.mission-ribbon-inner { position: relative; z-index: 1; }
+
+.navbar {
+    height: 72px;
+    background: linear-gradient(180deg, rgba(27, 30, 44, 0.95), rgba(9, 11, 17, 0.92));
+    border-bottom: 1px solid rgba(168, 150, 255, 0.24);
+}
+
+[data-theme="light"] .navbar {
+    background: linear-gradient(180deg, rgba(255, 252, 244, 0.98), rgba(229, 224, 212, 0.94));
+}
+
+.nav-container { max-width: 1420px; }
+
+.logo-icon {
+    width: 42px;
+    height: 42px;
+    border-radius: var(--tape-corner);
+    background: var(--accent);
+    border: 2px solid rgba(255, 255, 255, 0.46);
+    box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.45), 0 0 24px rgba(235, 87, 87, 0.38);
+    transform: rotate(-3deg);
+}
+
+.nav-logo { letter-spacing: 0.2em; text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.55); }
+.nav-links { gap: 20px; }
+.nav-links a { font-size: 0.72rem; letter-spacing: 0.1em; }
+
+.lang-toggle, .theme-toggle, .mobile-menu-btn {
+    border-radius: var(--tape-corner);
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(114, 240, 221, 0.38);
+    box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.38);
+}
+
+.lang-toggle:hover, .theme-toggle:hover, .mobile-menu-btn:hover {
+    background: rgba(114, 240, 221, 0.12);
+    border-color: var(--tape-cyan);
+    color: var(--tape-cyan);
+    transform: translate(-1px, -1px);
+}
+
+.page-shell { padding-top: 52px; }
+.container { max-width: 1420px; }
+
+.hero-slab, .subpage-hero, .hub-hero {
+    border-radius: var(--tape-corner);
+    border: 1px solid rgba(114, 240, 221, 0.38);
+    background:
+        linear-gradient(110deg, rgba(235, 87, 87, 0.12), transparent 30%),
+        linear-gradient(145deg, #171a28 0%, #0a0d14 62%, #211b37 100%);
+    box-shadow: 14px 14px 0 rgba(0, 0, 0, 0.28), 0 26px 70px var(--tape-shadow);
+    transform: perspective(1400px) rotateX(0.7deg);
+}
+
+[data-theme="light"] .hero-slab,
+[data-theme="light"] .subpage-hero,
+[data-theme="light"] .hub-hero {
+    background: linear-gradient(145deg, #fffdf4 0%, #e9e1d2 65%, #ded4ec 100%);
+}
+
+.hero-slab::after, .subpage-hero::after {
+    background:
+        repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.04) 0 1px, transparent 1px 4px),
+        linear-gradient(115deg, transparent 0 48%, rgba(114, 240, 221, 0.05) 48.2% 48.5%, transparent 48.7%);
+    opacity: 0.72;
+}
+
+.hero-grid { gap: 64px; padding: 76px 72px 78px; }
+.hero-title { max-width: 11ch; font-size: clamp(3.4rem, 7.2vw, 7.6rem); line-height: 0.91; letter-spacing: -0.08em; text-shadow: 5px 5px 0 rgba(0, 0, 0, 0.45); }
+.hero-title .accent, .accent { color: var(--accent); text-shadow: 3px 3px 0 #591522, 0 0 28px rgba(235, 87, 87, 0.48); }
+.hero-subtitle { max-width: 47ch; color: var(--tape-cyan); font-family: var(--font-mono); letter-spacing: 0.04em; }
+.hero-description { max-width: 62ch; }
+
+.hero-codename .badge, .mini-tag, .section-kicker, .manifesto-tag {
+    border-radius: var(--tape-corner);
+    letter-spacing: 0.18em;
+    box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.32);
+}
+
+.hero-codename .badge { background: rgba(235, 87, 87, 0.16); color: var(--accent-readable); border-color: var(--accent); }
+.hero-actions { gap: 16px; }
+.btn { border-radius: var(--tape-corner); border-width: 1px; text-transform: uppercase; letter-spacing: 0.1em; box-shadow: 5px 5px 0 rgba(0, 0, 0, 0.42); transform: translateZ(0); }
+.btn:hover, .btn:focus-visible { transform: translate(-2px, -2px); box-shadow: 8px 8px 0 rgba(0, 0, 0, 0.44); }
+.btn-primary { background: var(--accent); border-color: #ff9a9a; }
+.btn-secondary { background: rgba(114, 240, 221, 0.08); border-color: var(--tape-cyan); color: var(--tape-cyan); }
+
+.hero-meta { gap: 12px; }
+.metric-card, .pillar-card, .capability-card, .status-card, .stack-board, .cta-panel {
+    border-radius: var(--tape-corner);
+    border-color: var(--tape-line);
+    background: linear-gradient(145deg, rgba(36, 40, 57, 0.92), rgba(13, 15, 23, 0.96));
+    box-shadow: 7px 7px 0 rgba(0, 0, 0, 0.28), inset 0 1px rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="light"] .metric-card,
+[data-theme="light"] .pillar-card,
+[data-theme="light"] .capability-card,
+[data-theme="light"] .status-card,
+[data-theme="light"] .stack-board,
+[data-theme="light"] .cta-panel { background: linear-gradient(145deg, #fffdf5, #e8e0d5); }
+
+.metric-card strong { color: var(--tape-cyan); font-family: var(--font-mono); }
+.metric-card:hover, .pillar-card:hover, .capability-card:hover, .status-card:hover { transform: translate(-3px, -4px) rotateX(1deg); border-color: var(--tape-cyan); box-shadow: 10px 10px 0 rgba(0, 0, 0, 0.32), 0 0 22px rgba(114, 240, 221, 0.1); }
+
+.code-preview { border-radius: var(--tape-corner); border: 1px solid var(--tape-cyan); box-shadow: 12px 12px 0 rgba(0, 0, 0, 0.42), -6px -6px 0 rgba(168, 150, 255, 0.16); transform: perspective(900px) rotateY(-3deg) rotateX(2deg); }
+.code-header { background: linear-gradient(90deg, rgba(235, 87, 87, 0.2), rgba(114, 240, 221, 0.12)); }
+.code-preview pre { background: rgba(5, 7, 12, 0.88); }
+
+.section { position: relative; }
+.section::before { content: "//"; position: absolute; top: 0; left: -42px; color: var(--accent); font: 700 1rem var(--font-mono); opacity: 0.8; }
+.section-title { letter-spacing: -0.05em; }
+.section-kicker { color: var(--tape-cyan); }
+.manifesto-strip, .cta-panel { border-radius: var(--tape-corner); border: 1px solid var(--accent); box-shadow: 8px 8px 0 rgba(0, 0, 0, 0.35); }
+.manifesto-strip { background: linear-gradient(100deg, rgba(235, 87, 87, 0.18), rgba(114, 240, 221, 0.06)); }
+.manifesto-tag { color: var(--tape-yellow); }
+
+.demo-frame { border-radius: var(--tape-corner); border-color: var(--tape-violet); box-shadow: 12px 12px 0 rgba(0, 0, 0, 0.38); }
+.demo-frame img { filter: saturate(1.08) contrast(1.06); }
+.footer { border-top-color: rgba(114, 240, 221, 0.3); background: linear-gradient(180deg, rgba(7, 8, 12, 0.6), rgba(5, 6, 10, 0.96)); }
+
+@media (max-width: 820px) {
+    .hero-grid { padding: 48px 30px 52px; }
+    .hero-title { max-width: 12ch; font-size: clamp(3.1rem, 13vw, 5rem); }
+    .section::before { left: 0; top: -20px; }
+}
+
+@media (max-width: 520px) {
+    .mission-ribbon::after { display: none; }
+    .page-shell { padding-top: 28px; }
+    .nav-logo .logo-text { display: none; }
+    .nav-container { min-width: 0; overflow: hidden; }
+    .nav-container { justify-content: flex-start; }
+    .nav-right { flex: 0 0 auto; margin-left: auto; gap: 4px; }
+    .lang-toggle { min-width: 44px; padding-inline: 4px; font-size: 0.68rem; }
+    .mobile-menu-btn { display: inline-flex; }
+    .hero-grid { min-width: 0; padding: 34px 20px 40px; }
+    .hero-copy, .hero-panel, .hero-title, .hero-subtitle, .hero-description { min-width: 0; max-width: 100%; }
+    .hero-title { font-size: clamp(2.4rem, 12vw, 3.5rem); overflow-wrap: anywhere; }
+    .hero-codename { max-width: 100%; flex-wrap: wrap; row-gap: 8px; overflow-wrap: anywhere; white-space: normal; }
+    .hero-codename .badge { max-width: 100%; white-space: normal; }
+    .hero-subtitle, .hero-description, .hero-platform-note { width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+    .manifesto-strip { grid-template-columns: 1fr; }
+    .manifesto-strip .manifesto-tag { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+    .hero-slab, .subpage-hero, .hub-hero { box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.28); }
+    .code-preview { transform: none; box-shadow: 6px 6px 0 rgba(0, 0, 0, 0.36); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .hero-slab, .code-preview, .btn, .metric-card, .pillar-card, .capability-card, .status-card { transform: none; }
+}

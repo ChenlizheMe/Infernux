@@ -95,16 +95,50 @@
         });
     }
 
+    async function loadGithubStars() {
+        const deck = document.querySelector("[data-github-stars]");
+        const value = deck?.querySelector("[data-github-stars-value]");
+        const caption = deck?.querySelector("[data-github-stars-caption]");
+        if (!deck || !value || typeof globalThis.fetch !== "function") return;
+
+        const zh = homeLanguage() === "zh";
+        deck.dataset.githubStarsState = "loading";
+        value.textContent = "…";
+        if (caption) caption.textContent = zh ? "正在同步 GitHub" : "syncing GitHub";
+        try {
+            const response = await globalThis.fetch("https://api.github.com/repos/ChenlizheMe/Infernux", {
+                headers: { Accept: "application/vnd.github+json" },
+                cache: "no-store"
+            });
+            if (!response.ok) throw new Error(`GitHub responded ${response.status}`);
+            const repository = await response.json();
+            const stars = Number(repository.stargazers_count);
+            if (!Number.isSafeInteger(stars) || stars < 0) throw new Error("GitHub returned an invalid star count");
+            value.textContent = new Intl.NumberFormat(zh ? "zh-CN" : "en-US").format(stars);
+            if (caption) caption.textContent = zh ? "GitHub 实时 Star" : "live GitHub stars";
+            deck.dataset.githubStarsState = "ready";
+        } catch (error) {
+            value.textContent = "—";
+            if (caption) caption.textContent = zh ? "暂时无法读取 GitHub" : "GitHub signal unavailable";
+            deck.dataset.githubStarsState = "error";
+            console.warn("Infernux GitHub star signal could not be loaded.", error);
+        }
+    }
+
     document.addEventListener("DOMContentLoaded", () => {
         document.querySelectorAll("[data-home-code-copy]").forEach((button) => {
             button.dataset.state = "idle";
             setHomeCopyLabel(button, "idle");
             button.addEventListener("click", () => activateHomeCodeCopy(button));
         });
+        loadGithubStars();
     });
-    document.addEventListener("site:language-changed", syncHomeCopy);
+    document.addEventListener("site:language-changed", () => {
+        syncHomeCopy();
+        loadGithubStars();
+    });
 
     if (globalThis.__INFERNUX_HOME_TEST__) {
-        globalThis.__infernuxHomeTest = { homeCopy, extractStarterCode, copyHomeText };
+        globalThis.__infernuxHomeTest = { homeCopy, extractStarterCode, copyHomeText, loadGithubStars };
     }
 })();

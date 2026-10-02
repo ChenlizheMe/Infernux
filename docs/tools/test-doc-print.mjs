@@ -45,7 +45,7 @@ assert.match(styles, /\.site-header,[\s\S]*?\.doc-code-copy,[\s\S]*?display:\s*n
 assert.match(styles, /\.api-main table\s*\{[\s\S]*?display:\s*table\s*!important;[\s\S]*?width:\s*100%\s*!important;/, "printed tables should use page-width table layout");
 assert.ok(template.includes('/css/wiki-generated.css?v=9'));
 assert.ok(template.includes('/js/wiki-generated.js?v=14'));
-assert.ok(template.includes('/css/style.css?v=20'));
+assert.ok(template.includes('/css/style.css?v=21'));
 
 async function htmlFiles(directory) {
     const files = [];
