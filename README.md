@@ -51,7 +51,7 @@ The 3N roadmap connects engine foundations to model workflows, shared world sche
 
 The fastest path is [InfernuxHub](https://infernux-engine.com/download.html): install Hub, choose an engine version, create a project and launch the editor. Hub manages the project’s Python runtime for you.
 
-Continue with the [learning guides](https://infernux-engine.com/learn.html) and [API reference](https://infernux-engine.com/wiki/site/en/api/index.html). Plugin authors can use the [authoring guide](https://infernux-engine.com/wiki/site/en/plugin-package-content.html) and [plugin template](https://github.com/ChenlizheMe/infernux_plugin_template).
+Continue with the [learning guides](https://infernux-engine.com/learn.html) and [API reference](https://infernux-engine.com/wiki/site/en/api/index.html). Plugin authors can use the [authoring guide](https://infernux-engine.com/wiki/site/en/plugin-package-content.html) and [plugin template](https://github.com/ChenlizheMe/infernux_plugin_template). Keep distributable content in `package/`, metadata in `inx_package.json`, runtime code in `runtime/`, editor tools in `editor/`, optional plugin pages in `plugin_pages/`, and package it with `package.py`.
 
 ### Build from source
 

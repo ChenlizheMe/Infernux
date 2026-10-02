@@ -51,7 +51,7 @@ Infernux 是一款开源游戏引擎，让你用 Python 创造可以游玩的世
 
 最快的方式是安装 [InfernuxHub](https://infernux-engine.com/download.html)，选择引擎版本、创建项目并启动编辑器。Hub 会管理项目所需的 Python 环境。
 
-接着阅读[学习指南](https://infernux-engine.com/learn.html)与 [API 文档](https://infernux-engine.com/wiki/site/zh/api/index.html)。插件作者可以参考[创作指南](https://infernux-engine.com/wiki/site/zh/plugin-package-content.html)和[插件模板](https://github.com/ChenlizheMe/infernux_plugin_template)。
+接着阅读[学习指南](https://infernux-engine.com/learn.html)与 [API 文档](https://infernux-engine.com/wiki/site/zh/api/index.html)。插件作者可以参考[创作指南](https://infernux-engine.com/wiki/site/zh/plugin-package-content.html)和[插件模板](https://github.com/ChenlizheMe/infernux_plugin_template)。 分发内容放在 `package/`，元数据放在 `inx_package.json`，运行时代码放在 `runtime/`，编辑器工具放在 `editor/`，可选的插件页面放在 `plugin_pages/`，使用 `package.py` 打包。
 
 ### 从源码构建
 
