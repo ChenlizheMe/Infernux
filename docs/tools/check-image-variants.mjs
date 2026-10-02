@@ -92,7 +92,7 @@ if (!picture) {
     fail("index.html: runtime evidence must use a picture element");
 } else {
     const avifSource = '<source srcset="assets/demo-0.3.4.avif" type="image/avif">';
-    const fallback = '<img src="assets/demo-0.3.4.webp" width="1920" height="1032" alt="Infernux 0.3.4 editor rendering the 65,536-object Voxel Continent showcase with a custom RenderStack" loading="lazy" decoding="async">';
+    const fallback = '<img src="assets/demo-0.3.4.webp" width="1920" height="1032" alt="Infernux editor rendering the 65,536-object Voxel Continent showcase with a custom RenderStack" loading="lazy" decoding="async">';
     for (const token of [avifSource, fallback]) if (!picture.includes(token)) fail(`index.html: picture is missing '${token}'`);
     if (picture.includes('<source srcset="assets/demo-0.3.4.webp"')) fail("index.html: WebP should be the img fallback, not a redundant source candidate");
     if (!(picture.indexOf(avifSource) < picture.indexOf(fallback))) fail("index.html: picture sources must prefer AVIF and fall back to WebP");

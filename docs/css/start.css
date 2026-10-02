@@ -132,7 +132,7 @@
 }
 
 .start-next a {
-    color: var(--info);
+    color: var(--accent);
     font-weight: 700;
 }
 

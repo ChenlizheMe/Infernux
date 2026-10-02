@@ -454,7 +454,7 @@
     margin: 18px 0 0;
     padding: 14px 16px;
     border: 1px solid var(--border-strong);
-    border-left: 3px solid var(--info);
+    border-left: 3px solid var(--accent);
     border-radius: var(--radius-md);
     background: var(--bg-panel);
 }
@@ -502,7 +502,7 @@
 
 .doc-build-fact a,
 .doc-build-manifest {
-    color: var(--info);
+    color: var(--accent);
     text-underline-offset: 3px;
 }
 
@@ -589,7 +589,7 @@
 }
 
 .doc-diagram--timeline { border-left-color: var(--signal); }
-.doc-diagram--pipeline { border-left-color: var(--info); }
+.doc-diagram--pipeline { border-left-color: var(--accent); }
 .doc-diagram--decision { border-left-color: var(--hazard); }
 
 @media (max-width: 768px) {

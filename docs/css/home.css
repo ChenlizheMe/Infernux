@@ -1,3 +1,61 @@
+.hero-panel {
+    position: relative;
+    isolation: isolate;
+}
+
+.hero-orbit-art {
+    position: relative;
+    height: 220px;
+    margin-bottom: 18px;
+    overflow: hidden;
+    border: 1px solid var(--border-accent);
+    perspective: 850px;
+    background:
+        linear-gradient(rgba(235, 87, 87, .08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(235, 87, 87, .08) 1px, transparent 1px),
+        radial-gradient(circle at 50% 48%, color-mix(in srgb, var(--accent) 34%, transparent), transparent 12%),
+        radial-gradient(circle at 50% 48%, color-mix(in srgb, var(--accent-deep) 62%, transparent), transparent 42%),
+        linear-gradient(160deg, rgba(16, 12, 18, 0.96), rgba(7, 10, 16, 0.98));
+    background-size: 48px 48px, 48px 48px, auto, auto, auto;
+    box-shadow: inset 0 0 70px rgba(255, 110, 110, 0.07), 0 18px 45px rgba(0, 0, 0, 0.26);
+    transform: perspective(900px) rotateX(calc(var(--orbit-tilt-y, 0) * 1deg)) rotateY(calc(var(--orbit-tilt-x, 0) * 1deg));
+    transition: transform 180ms ease-out;
+}
+
+.hero-orbit-art::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(1px 1px at 18% 30%, rgba(255,255,255,.7) 0 1px, transparent 2px), radial-gradient(1px 1px at 75% 24%, rgba(255,255,255,.55) 0 1px, transparent 2px), radial-gradient(1px 1px at 82% 70%, rgba(255,160,130,.65) 0 1px, transparent 2px), radial-gradient(1px 1px at 28% 78%, rgba(255,255,255,.45) 0 1px, transparent 2px);
+    opacity: .8;
+}
+
+.orbit-core,
+.orbit-ring,
+.orbit-scanline { position: absolute; display: block; left: 50%; top: 50%; }
+.orbit-core { width: 82px; height: 82px; margin: -41px; border: 1px solid color-mix(in srgb, var(--accent) 74%, white); border-radius: 50%; background: radial-gradient(circle at 35% 30%, #ffd8c8, var(--accent) 26%, var(--accent-deep) 72%, #250c14); box-shadow: 0 0 28px color-mix(in srgb, var(--accent) 70%, transparent), inset -14px -12px 24px rgba(0,0,0,.32); transform: translateZ(28px); }
+.orbit-ring { width: 210px; height: 66px; margin: -33px -105px; border: 1px solid color-mix(in srgb, var(--accent) 64%, transparent); border-radius: 50%; transform: rotate(-22deg) rotateX(62deg); animation: orbit-spin 12s linear infinite; }
+.orbit-ring-b { width: 170px; height: 54px; margin: -27px -85px; border-color: color-mix(in srgb, var(--hazard) 70%, transparent); transform: rotate(62deg) rotateX(66deg); animation-duration: 9s; animation-direction: reverse; }
+.orbit-scanline { width: 100%; height: 1px; margin-top: -1px; left: 0; background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 70%, transparent), transparent); animation: orbit-scan 4.5s ease-in-out infinite; }
+.orbit-label { position: absolute; right: 16px; bottom: 14px; color: var(--text-soft); font: .62rem var(--font-mono); letter-spacing: .16em; }
+
+.orbit-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: -6px 0 2px; color: var(--text-soft); font: .67rem var(--font-mono); letter-spacing: .13em; text-transform: uppercase; }
+.orbit-readout { display: inline-flex; align-items: center; gap: 8px; }
+.orbit-readout-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 10px var(--signal); }
+.orbit-control { min-height: 40px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg-elevated); color: var(--text); cursor: pointer; font: inherit; letter-spacing: .1em; text-transform: uppercase; }
+.orbit-control:hover, .orbit-control:focus-visible { border-color: var(--accent); color: var(--accent); }
+.hero-orbit-art.is-spinning .orbit-ring { animation-duration: 2.8s; }
+.hero-orbit-art.is-spinning .orbit-ring-b { animation-duration: 2.1s; }
+.hero-orbit-art.is-spinning .orbit-core { animation: core-pulse 1.5s ease-in-out infinite; }
+
+@keyframes orbit-spin { to { transform: rotate(338deg) rotateX(62deg); } }
+@keyframes orbit-scan { 0%, 100% { transform: translateY(-78px); opacity: 0; } 50% { transform: translateY(78px); opacity: .8; } }
+@keyframes core-pulse { 50% { transform: translateZ(42px) scale(1.08); } }
+
+@media (prefers-reduced-motion: reduce) {
+    .hero-orbit-art, .orbit-ring, .orbit-scanline, .orbit-core { animation: none; transition: none; }
+}
+
 .pillar-card-accent {
     border-color: var(--border-accent);
     background:
@@ -91,4 +149,18 @@
         border-color: Highlight;
         color: Highlight;
     }
+}
+
+/* Keep the desktop mission deck readable at laptop widths instead of
+   collapsing navigation and squeezing the hero into awkward single letters. */
+@media (min-width: 1081px) and (max-width: 1280px) {
+    .hero-grid { grid-template-columns: minmax(0, 1.08fr) minmax(390px, .92fr); gap: 34px; padding-inline: 36px; }
+    .hero-title { max-width: 12ch; font-size: clamp(3.2rem, 5vw, 4.45rem); line-height: .98; }
+    .hero-panel { max-width: 50ch; }
+    .code-preview code { font-size: .78rem; line-height: 1.64; }
+}
+
+@media (min-width: 1041px) {
+    .nav-links { display: flex; }
+    .mobile-menu-btn { display: none; }
 }

@@ -72,7 +72,7 @@ for (const file of runtimeFiles.filter((file) => file.endsWith(".js"))) {
 }
 
 const main = await readFile(path.join(docsRoot, "js", "main.js"), "utf8");
-for (const contract of ["classList.toggle('is-scrolled'", "classList.add('reveal-pending'", "classList.remove('reveal-pending'", "classList.add('animate-in'", "monitorServiceWorkerUpdates", "serviceWorkerReloadRequested", "worker.postMessage(\"SKIP_WAITING\")", "site-update-notice"]) {
+for (const contract of ["classList.toggle('is-scrolled'", "classList.add('reveal-pending'", "classList.remove('reveal-pending'", "classList.add('animate-in'", "registerOfflineShell", "navigator.serviceWorker.register"]) {
     if (!main.includes(contract)) fail(`docs/js/main.js: missing class-driven visual state '${contract}'`);
 }
 for (const deadRuntime of ["function copyCode", "function showTab", "#27ca40"]) {
@@ -80,7 +80,7 @@ for (const deadRuntime of ["function copyCode", "function showTab", "#27ca40"]) 
 }
 
 const sharedStyle = await readFile(path.join(docsRoot, "css", "style.css"), "utf8");
-for (const contract of [".navbar.is-scrolled", ".reveal-pending", "transition: opacity 0.5s ease, transform 0.5s ease", ".site-update-notice", ".site-update-actions", "data-update-state=\"applying\""]) {
+for (const contract of [".navbar.is-scrolled", ".reveal-pending", "transition: opacity 0.5s ease, transform 0.5s ease"]) {
     if (!sharedStyle.includes(contract)) fail(`docs/css/style.css: missing class-driven visual contract '${contract}'`);
 }
 const generatedStyle = await readFile(path.join(docsRoot, "css", "wiki-generated.css"), "utf8");

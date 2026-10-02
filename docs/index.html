@@ -124,6 +124,17 @@
                         </div>
                     </div>
                     <div class="hero-panel">
+                        <div class="hero-orbit-art" data-orbit-art aria-hidden="true">
+                            <span class="orbit-ring orbit-ring-a"></span>
+                            <span class="orbit-ring orbit-ring-b"></span>
+                            <span class="orbit-core"></span>
+                            <span class="orbit-scanline"></span>
+                            <span class="orbit-label">WORLD / PYTHON / RUNTIME</span>
+                        </div>
+                        <div class="orbit-controls" role="group" aria-label="Preview controls">
+                            <span class="orbit-readout"><span class="orbit-readout-dot" aria-hidden="true"></span><span data-orbit-status>PREVIEW / IDLE</span></span>
+                            <button type="button" class="orbit-control" data-orbit-action="spin" aria-pressed="false">Spin preview</button>
+                        </div>
                         <div class="code-preview">
                             <div class="code-header">
                                 <span class="dot red"></span>
@@ -184,7 +195,7 @@
             <section class="section" id="runtime-capture">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.demo.kicker">Technology showcase · 0.3.4</div>
+                        <div class="section-kicker" data-i18n="home.demo.kicker">Technology showcase</div>
                         <h2 class="section-title" data-i18n="home.demo.title">A voxel continent of 65,536 objects, built in the editor and rendered in the editor.</h2>
                     </div>
                     <p class="section-intro" data-i18n="home.demo.intro">Not an offline render and not a concept image. Those blocks are ordinary GameObjects going through the ordinary Scene and Hierarchy, with no dedicated batching path. The tilt-shift, fog and colour on top are a RenderStack written in Python.</p>
@@ -193,7 +204,7 @@
                     <div class="demo-frame" data-reveal>
                         <picture>
                             <source srcset="assets/demo-0.3.4.avif" type="image/avif">
-                            <img src="assets/demo-0.3.4.webp" width="1920" height="1032" alt="Infernux 0.3.4 editor rendering the 65,536-object Voxel Continent showcase with a custom RenderStack" loading="lazy" decoding="async">
+                            <img src="assets/demo-0.3.4.webp" width="1920" height="1032" alt="Infernux editor rendering the 65,536-object Voxel Continent showcase with a custom RenderStack" loading="lazy" decoding="async">
                         </picture>
                     </div>
                     <div class="stack-board" data-reveal>
@@ -201,7 +212,7 @@
                             <ul class="list-clean">
                             <li data-i18n="home.demo.panel.item1">65,536 standard GameObjects sharing one mesh and one material. You can still select them in the Hierarchy and edit them. They are no different from a cube you dropped in by hand.</li>
                             <li data-i18n="home.demo.panel.item2">Tilt-shift focus, distance fog, height fog, colour controls and MSAA all come from one custom RenderStack. Change it in the editor and you see the result immediately.</li>
-                            <li data-i18n="home.demo.panel.item3">The raw 1920 × 1032 capture from the 0.3.4 showcase. Nothing retouched.</li>
+                            <li data-i18n="home.demo.panel.item3">The raw editor capture. Nothing retouched.</li>
                         </ul>
                     </div>
                 </div>

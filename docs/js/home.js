@@ -95,14 +95,42 @@
         });
     }
 
+    function syncOrbitControl(button, spinning) {
+        const zh = homeLanguage() === "zh";
+        const labels = spinning
+            ? (zh ? ["停止预览", "预览 / 运行"] : ["Stop preview", "PREVIEW / RUNNING"])
+            : (zh ? ["旋转预览", "预览 / 空闲"] : ["Spin preview", "PREVIEW / IDLE"]);
+        const status = button.closest(".hero-panel")?.querySelector("[data-orbit-status]");
+        button.textContent = labels[0];
+        button.setAttribute("aria-pressed", String(spinning));
+        if (status) status.textContent = labels[1];
+    }
+
+    function syncOrbitLanguage() {
+        document.querySelectorAll("[data-orbit-action=spin]").forEach((button) => {
+            syncOrbitControl(button, button.getAttribute("aria-pressed") === "true");
+        });
+    }
+
     document.addEventListener("DOMContentLoaded", () => {
         document.querySelectorAll("[data-home-code-copy]").forEach((button) => {
             button.dataset.state = "idle";
             setHomeCopyLabel(button, "idle");
             button.addEventListener("click", () => activateHomeCodeCopy(button));
         });
+
+        document.querySelectorAll("[data-orbit-action=spin]").forEach((button) => {
+            syncOrbitControl(button, false);
+            button.addEventListener("click", () => {
+                const art = button.closest(".hero-panel")?.querySelector("[data-orbit-art]");
+                const spinning = art?.classList.toggle("is-spinning") || false;
+                syncOrbitControl(button, spinning);
+            });
+        });
+
     });
     document.addEventListener("site:language-changed", syncHomeCopy);
+    document.addEventListener("site:language-changed", syncOrbitLanguage);
 
     if (globalThis.__INFERNUX_HOME_TEST__) {
         globalThis.__infernuxHomeTest = { homeCopy, extractStarterCode, copyHomeText };

@@ -17,7 +17,7 @@
     --hazard-soft: rgba(247, 185, 85, 0.16);
     --signal: #74e0a3;
     --signal-soft: rgba(116, 224, 163, 0.14);
-    --info: #6ec0ff;
+    --info: #ff8a8a;
 
     /* ── Surfaces ────────────────────────────────────────────────── */
     --bg: #0a0c11;
@@ -76,9 +76,9 @@
     --code-text-default: #d6cfbe;
     --code-hl-keyword: #ff8a8a;
     --code-hl-class: #ffd479;
-    --code-hl-fn: #8ac2ff;
+    --code-hl-fn: #ffb08f;
     --code-hl-param: #ff8787;
-    --code-hl-type: #82d4d4;
+    --code-hl-type: #f59a8f;
     --code-hl-string: #a6d97a;
     --code-hl-number: #f3b36a;
     --code-hl-comment: #8c94a4;
@@ -102,7 +102,7 @@
     --hazard-soft: rgba(247, 185, 85, 0.18);
     --signal: #176947;
     --signal-soft: rgba(116, 224, 163, 0.18);
-    --info: #205e9f;
+    --info: #891c29;
 
     --bg: #f4f1e8;
     --bg-deep: #ebe6da;
@@ -133,9 +133,9 @@
     --code-text-default: #1e2128;
     --code-hl-keyword: #b12d2d;
     --code-hl-class: #8a4b00;
-    --code-hl-fn: #1a5f9e;
+    --code-hl-fn: #8b2c35;
     --code-hl-param: #9a2d4a;
-    --code-hl-type: #17666b;
+    --code-hl-type: #8a3f38;
     --code-hl-string: #2d6a3a;
     --code-hl-number: #8c4d00;
     --code-hl-comment: #5c6370;
@@ -1580,99 +1580,6 @@ table { max-width: 100%; }
     letter-spacing: 0.18em;
 }
 
-/* ── Service Worker update uplink ───────────────────────────────── */
-.site-update-notice {
-    position: fixed;
-    right: var(--page-padding);
-    right: max(var(--page-padding), env(safe-area-inset-right));
-    bottom: var(--page-padding);
-    bottom: max(var(--page-padding), env(safe-area-inset-bottom));
-    z-index: 1300;
-    width: min(560px, calc(100vw - (var(--page-padding) * 2)));
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: end;
-    gap: 20px;
-    padding: 20px;
-    border: 1px solid var(--border-strong);
-    border-left: 4px solid var(--signal);
-    border-radius: var(--radius-md);
-    background: var(--bg-elevated);
-    color: var(--text);
-    box-shadow: var(--shadow);
-}
-
-.site-update-notice[hidden] { display: none; }
-
-.site-update-notice[data-update-state="applying"] {
-    border-left-color: var(--hazard);
-}
-
-.site-update-copy {
-    display: grid;
-    min-width: 0;
-    gap: 4px;
-}
-
-.site-update-kicker {
-    color: var(--signal);
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    font-weight: 700;
-    letter-spacing: 0.16em;
-    text-transform: uppercase;
-}
-
-.site-update-title {
-    font-family: var(--font-display);
-    font-size: 1rem;
-    line-height: 1.35;
-}
-
-.site-update-status {
-    color: var(--text-muted);
-    font-size: 0.86rem;
-    line-height: 1.5;
-}
-
-.site-update-actions {
-    display: flex;
-    gap: 8px;
-}
-
-.site-update-apply,
-.site-update-later {
-    min-height: 44px;
-    padding: 0 14px;
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius-xs);
-    cursor: pointer;
-    font-family: var(--font-mono);
-    font-size: 0.76rem;
-    font-weight: 700;
-}
-
-.site-update-apply {
-    border-color: var(--accent-fill);
-    background: var(--accent-fill);
-    color: var(--on-accent);
-}
-
-.site-update-apply:hover:not(:disabled) { background: var(--accent-fill-hover); }
-
-.site-update-later {
-    background: var(--bg-panel);
-    color: var(--text);
-}
-
-.site-update-later:hover:not(:disabled) { border-color: var(--accent); }
-
-.site-update-apply:disabled,
-.site-update-later:disabled {
-    cursor: wait;
-    opacity: 0.72;
-}
-
 /* ── Responsive ──────────────────────────────────────────────────── */
 @media (max-width: 1180px) {
     body.mobile-menu-open { overflow: hidden; }
@@ -1804,19 +1711,7 @@ table { max-width: 100%; }
     .release-card { padding: 22px 20px; }
     .footer-bottom { letter-spacing: 0.08em; }
 
-    .site-update-notice {
-        right: var(--page-padding);
-        bottom: max(var(--page-padding), env(safe-area-inset-bottom));
-        grid-template-columns: 1fr;
-        align-items: stretch;
-        gap: 14px;
-        padding: 18px;
-    }
 
-    .site-update-actions {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1872,16 +1767,6 @@ table { max-width: 100%; }
         color: Canvas;
     }
 
-    .site-update-notice {
-        background: Canvas;
-        color: CanvasText;
-    }
 
-    .site-update-kicker,
-    .site-update-status { color: CanvasText; }
 
-    .site-update-apply {
-        background: Highlight;
-        color: HighlightText;
-    }
 }

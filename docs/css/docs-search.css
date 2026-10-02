@@ -188,7 +188,7 @@
     grid-column: 1 / -1;
     min-height: 20px;
     margin: 0;
-    color: var(--info);
+    color: var(--accent);
 }
 
 .docs-search-status {

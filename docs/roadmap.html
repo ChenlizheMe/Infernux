@@ -92,6 +92,31 @@
                 </div>
             </section>
 
+            <section class="roadmap-orbit" aria-labelledby="roadmap-orbit-title" data-roadmap-orbit>
+                <div class="section-head roadmap-orbit-head">
+                    <div>
+                        <div class="section-kicker" data-i18n="roadmap.orbit.kicker">SYSTEM MAP · LIVE VIEW</div>
+                        <h2 class="section-title" id="roadmap-orbit-title" data-i18n="roadmap.orbit.title">Choose a system. Follow its dependencies.</h2>
+                    </div>
+                    <p class="section-intro" data-i18n="roadmap.orbit.intro">Connections show capability paths, not a release schedule. Inspect a node for its status and source.</p>
+                </div>
+                <div class="roadmap-orbit-shell">
+                    <div class="roadmap-orbit-toolbar" role="tablist" aria-label="Roadmap systems" data-roadmap-tabs></div>
+                    <div class="roadmap-orbit-stage">
+                        <div class="roadmap-orbit-grid" aria-hidden="true"></div>
+                        <svg class="roadmap-orbit-svg" viewBox="0 0 900 560" role="img" aria-labelledby="roadmap-orbit-title roadmap-orbit-caption"></svg>
+                        <div class="roadmap-orbit-caption" id="roadmap-orbit-caption" data-i18n="roadmap.orbit.caption">Select a node by click, tap or keyboard. Arrows connect foundations to the capabilities they support.</div>
+                        <div class="roadmap-orbit-legend" aria-label="Roadmap status legend"><span class="roadmap-legend-item"><i class="roadmap-legend-swatch roadmap-legend-shipped"></i><span data-i18n="roadmap.orbit.legend.shipped">Shipped</span></span><span class="roadmap-legend-item"><i class="roadmap-legend-swatch roadmap-legend-planned"></i><span data-i18n="roadmap.orbit.legend.planned">Planned</span></span><span class="roadmap-legend-item"><i class="roadmap-legend-swatch roadmap-legend-horizon"></i><span data-i18n="roadmap.orbit.legend.horizon">Horizon</span></span></div>
+                    </div>
+                    <aside class="roadmap-node-detail" data-roadmap-detail aria-live="polite">
+                        <span class="mini-tag" data-roadmap-detail-status>SHIPPED</span>
+                        <h3 data-roadmap-detail-title>Render graph</h3>
+                        <p data-roadmap-detail-body>Vulkan and WebGPU share the same engine-facing scene and material contracts.</p>
+                        <div class="roadmap-detail-meta" data-roadmap-detail-meta>0.4.1 · foundation</div>
+                    </aside>
+                </div>
+            </section>
+
             <section class="release-grid">
                 <article class="release-card">
                     <div class="mini-tag" data-i18n="roadmap.release.current.tag">041 · WORLD AUTHORING</div>
@@ -238,6 +263,7 @@
     <script src="js/i18n-roadmap.js?v=2"></script>
     <script src="js/i18n.js?v=19"></script>
     <script src="js/main.js?v=15"></script>
+    <script src="js/roadmap-orbit.js?v=1"></script>
     <script src="js/docs-search.js?v=6"></script>
     <script type="application/ld+json">
     {

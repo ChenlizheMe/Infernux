@@ -59,10 +59,10 @@
         "home.capabilities.vfx.tag": "SUBSYSTEM · GPU VFX",
         "home.capabilities.vfx.title": "Particle Graph on the GPU",
         "home.demo.intro": "Not an offline render and not a concept image. Those blocks are ordinary GameObjects going through the ordinary Scene and Hierarchy, with no dedicated batching path. The tilt-shift, fog and colour on top are a RenderStack written in Python.",
-        "home.demo.kicker": "Technology showcase · 0.3.4",
+        "home.demo.kicker": "Technology showcase",
         "home.demo.panel.item1": "65,536 standard GameObjects sharing one mesh and one material. You can still select them in the Hierarchy and edit them. They are no different from a cube you dropped in by hand.",
         "home.demo.panel.item2": "Tilt-shift focus, distance fog, height fog, colour controls and MSAA all come from one custom RenderStack. Change it in the editor and you see the result immediately.",
-        "home.demo.panel.item3": "The raw 1920 × 1032 capture from the 0.3.4 showcase. Nothing retouched.",
+        "home.demo.panel.item3": "The raw editor capture. Nothing retouched.",
         "home.demo.title": "A voxel continent of 65,536 objects, built in the editor and rendered in the editor.",
         "home.hero.badge": "NEURAL NETWORK-NATIVE ENGINE · 0.4.1",
         "home.hero.browseDemo": "See what it renders",
@@ -170,7 +170,14 @@
         "roadmap.release.next.tag": "0.4.1 · PUBLISHED",
         "roadmap.release.next.title": "Worlds, Compute and Live Tools",
         "nav.changelog": "Changelog",
-        "pageTitle.changelog": "Changelog · Infernux"
+        "pageTitle.changelog": "Changelog · Infernux",
+        "roadmap.orbit.kicker": "SYSTEM MAP · LIVE VIEW",
+        "roadmap.orbit.title": "Choose a system. Follow its dependencies.",
+        "roadmap.orbit.intro": "Connections show capability paths, not a release schedule. Inspect a node for its status and source.",
+        "roadmap.orbit.caption": "Select a node by click, tap or keyboard. Arrows connect foundations to the capabilities they support.",
+        "roadmap.orbit.legend.shipped": "Shipped",
+        "roadmap.orbit.legend.planned": "Planned",
+        "roadmap.orbit.legend.horizon": "Horizon"
     },
     "zh": {
         "brand.footerTitle": "熔炉 · INFERNUX",
@@ -232,10 +239,10 @@
         "home.capabilities.vfx.tag": "子系统 · GPU VFX",
         "home.capabilities.vfx.title": "跑在 GPU 上的 Particle Graph",
         "home.demo.intro": "不是离线渲染，也不是概念图。这些方块是普通 GameObject，走的是普通的 Scene 和 Hierarchy，没有专门的批渲染通道。上面那层移轴、雾和色彩，是一条用 Python 写出来的 RenderStack。",
-        "home.demo.kicker": "技术展示 · 0.3.4",
+        "home.demo.kicker": "技术展示",
         "home.demo.panel.item1": "65,536 个标准 GameObject 共享一套网格和材质。它们在 Hierarchy 里照样能选中、能改，和你手动放进去的那个方块没有任何区别。",
         "home.demo.panel.item2": "移轴对焦、距离雾、高度雾、色彩控制、MSAA，全部来自同一条自定义 RenderStack。在编辑器里改完，当场就能看到结果。",
-        "home.demo.panel.item3": "0.3.4 技术展示的原始截图，1920 × 1032，没做后期。",
+        "home.demo.panel.item3": "技术展示的原始截图，1920 × 1032，没做后期。",
         "home.demo.title": "65,536 个物体的体素大陆，在编辑器里搭的，也在编辑器里渲的。",
         "home.hero.badge": "NEURAL NETWORK-NATIVE ENGINE · 0.4.1",
         "home.hero.browseDemo": "看看它渲出来什么样",
@@ -343,6 +350,13 @@
         "roadmap.release.next.tag": "0.4.1 · 已发布",
         "roadmap.release.next.title": "世界、计算与实时创作工具",
         "nav.changelog": "更新日志",
-        "pageTitle.changelog": "更新日志 · Infernux"
+        "pageTitle.changelog": "更新日志 · Infernux",
+        "roadmap.orbit.kicker": "系统地图 · 实时视图",
+        "roadmap.orbit.title": "选择一个系统，沿着依赖关系前进。",
+        "roadmap.orbit.intro": "连线表示能力路径，并非发布日期。选择节点查看状态与来源。",
+        "roadmap.orbit.caption": "点击、轻触或使用键盘选择节点。箭头从基础能力指向其支持的能力。",
+        "roadmap.orbit.legend.shipped": "已实现",
+        "roadmap.orbit.legend.planned": "已规划",
+        "roadmap.orbit.legend.horizon": "远期"
     }
 }
