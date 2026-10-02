@@ -2,6 +2,8 @@
 
 Infernux is an open-source game engine for building interactive worlds with Python authoring, a native C++ runtime, and Vulkan/WebGPU rendering. It is designed for projects that want gameplay code, tools, simulation, and future model workflows to live in one coherent engine.
 
+<img src="docs/assets/demo.png" alt="Infernux editor preview" width="960">
+
 ## What it is
 
 - Python-first gameplay, components, scenes, prefabs, UI, tools, and automation

@@ -2,6 +2,8 @@
 
 Infernux 是一个开源游戏引擎：用 Python 编写玩法、组件、工具和模拟逻辑，用原生 C++ 运行时承载性能关键路径，并通过 Vulkan / WebGPU 把世界渲染出来。它希望把创作、运行、调试和未来的模型工作流放进同一套清晰的引擎体系。
 
+<img src="docs/assets/demo.png" alt="Infernux 编辑器预览" width="960">
+
 ## 它是什么
 
 - Python 优先的玩法、组件、场景、Prefab、UI、工具和自动化
