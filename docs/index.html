@@ -18,12 +18,12 @@
     <meta property="og:image:type" content="image/jpeg">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
-    <meta property="og:image:alt" content="Infernux Red Space mission card with the editor and forge emblem">
+    <meta property="og:image:alt" content="Infernux red-space engine card with the editor and forge emblem">
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Infernux · Neural Network-Native Engine">
     <meta name="twitter:description" content="Build worlds with Python, C++, Vulkan and WebGPU. Infernux is an open-source game engine advancing toward a Neural Network-Native Engine (3N).">
     <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
-    <meta name="twitter:image:alt" content="Infernux Red Space mission card with the editor and forge emblem">
+    <meta name="twitter:image:alt" content="Infernux red-space engine card with the editor and forge emblem">
     <title>Infernux · Neural Network-Native Engine</title>
     <link rel="icon" type="image/png" href="assets/logo.png">
     <link rel="apple-touch-icon" sizes="180x180" href="assets/infernux-apple-touch-icon.png">
@@ -79,11 +79,28 @@
 
     <main class="page-shell home-shell" id="main-content">
         <div class="container">
+            <section class="command-deck" aria-labelledby="command-deck-title">
+                <div class="command-deck-copy">
+                    <div class="hero-codename"><span class="badge" data-i18n="home.deck.badge">INFERNUX ENGINE · CORE ONLINE</span><span data-i18n="home.deck.kicker">RED-CORE SYSTEMS MAP</span></div>
+                    <h1 id="command-deck-title" data-i18n="home.deck.title">A living engine for worlds that move.</h1>
+                    <p data-i18n="home.deck.body">Compose a world from scenes, code, particles, physics and tools. Follow the signal from authoring to Player without leaving the engine.</p>
+                    <div class="command-deck-actions"><a class="btn btn-primary" href="start.html" data-i18n="home.deck.primary">Enter the engine</a><a class="btn btn-secondary" href="roadmap.html" data-i18n="home.deck.secondary">Explore the system map</a></div>
+                    <div class="command-deck-readouts" aria-label="Engine readouts"><div><span>01</span><b data-i18n="home.deck.readout1">PYTHON AUTHORING</b></div><div><span>02</span><b data-i18n="home.deck.readout2">NATIVE RUNTIME</b></div><div><span>03</span><b data-i18n="home.deck.readout3">GPU WORLDS</b></div></div>
+                </div>
+                <div class="command-deck-stage" data-core-stage>
+                    <div class="command-deck-stars" aria-hidden="true"></div>
+                    <div class="command-deck-radar" aria-hidden="true"></div>
+                    <img src="assets/infernux-station-sketch.webp" width="1200" height="900" alt="Blender-rendered Infernux orbital station technical pencil sketch" loading="eager" decoding="async">
+                    <span class="command-deck-label command-deck-label-a">STATION / 001</span><span class="command-deck-label command-deck-label-b">BLENDER / FREESTYLE SKETCH</span>
+                    <a class="command-deck-asset" href="assets/infernux-station.glb" download data-i18n="home.deck.asset">Download the core asset</a>
+                </div>
+            </section>
+
             <section id="home" class="hero-slab">
                 <div class="hero-grid">
                     <div class="hero-copy">
                         <div class="hero-codename">
-                            <span class="badge" data-i18n="home.hero.badge">NEURAL NETWORK-NATIVE ENGINE · 0.4.1</span>
+                            <span class="badge" data-i18n="home.hero.badge">NEURAL NETWORK-NATIVE ENGINE · RED-CORE</span>
                             <span data-i18n="home.hero.kicker">MIT · open source · built around Python</span>
                         </div>
                         <h1 class="hero-title" data-i18n="home.hero.title">The <span class="accent">forge</span> is lit. Come feed the fire.</h1>
@@ -99,7 +116,7 @@
                                 <span data-i18n="download.hubInstaller">Download InfernuxHub</span>
                             </a>
                         </div>
-                        <p class="hero-platform-note" id="hero-platform-note" data-i18n="home.hero.platform">Editors: Windows / Linux · Players: Windows / Linux / Android / Web · 0.4.1</p>
+                        <p class="hero-platform-note" id="hero-platform-note" data-i18n="home.hero.platform">Editors: Windows / Linux · Players: Windows / Linux / Android / Web</p>
                         <div class="hero-text-links" aria-label="More ways to explore Infernux" data-i18n-aria-label="home.hero.moreActions">
                             <a href="#runtime-capture" data-i18n="home.hero.browseDemo">See what it renders</a>
                             <span aria-hidden="true">/</span>
@@ -126,13 +143,13 @@
                     <div class="hero-panel forge-panel">
                         <div class="forge-stage" data-orbit-art aria-label="Interactive Infernux engine core preview">
                             <div class="forge-grid-lines" aria-hidden="true"></div>
-                            <img class="engine-core-render" src="assets/engine-core.webp" width="900" height="900" alt="Glowing red Infernux engine core with orbital rings" loading="eager" decoding="async">
+                            <img class="engine-core-render" src="assets/infernux-station-sketch.webp" width="900" height="900" alt="Glowing red Infernux engine core with orbital rings" loading="eager" decoding="async">
                             <span class="forge-crosshair forge-crosshair-a" aria-hidden="true"></span><span class="forge-crosshair forge-crosshair-b" aria-hidden="true"></span>
                             <span class="telemetry telemetry-top"><b>CORE TEMP</b><strong>742 K</strong><i></i></span>
                             <span class="telemetry telemetry-left"><b>FRAME TIME</b><strong>4.6 ms</strong><i></i></span>
                             <span class="telemetry telemetry-right"><b>WORLD NODES</b><strong>65,536</strong><i></i></span>
                             <span class="telemetry telemetry-bottom"><b>RENDER PATH</b><strong>VULKAN / WEBGPU</strong><i></i></span>
-                            <span class="forge-corner forge-corner-tl" aria-hidden="true">INX / 041</span><span class="forge-corner forge-corner-br" aria-hidden="true">SIGNAL LOCKED</span>
+                            <span class="forge-corner forge-corner-tl" aria-hidden="true">INX / RED-CORE</span><span class="forge-corner forge-corner-br" aria-hidden="true">SIGNAL LOCKED</span>
                         </div>
                         <div class="orbit-controls" role="group" aria-label="Preview controls">
                             <span class="orbit-readout"><span class="orbit-readout-dot" aria-hidden="true"></span><span data-orbit-status>PREVIEW / IDLE</span></span>
@@ -156,6 +173,45 @@
                             <p class="visually-hidden" id="home-code-copy-status" role="status" aria-live="polite" aria-atomic="true"></p>
                         </div>
                     </div>
+                </div>
+            </section>
+
+            <section class="example-deck section" id="examples" aria-labelledby="examples-title" data-example-deck>
+                <div class="section-head example-deck-head">
+                    <div>
+                        <div class="section-kicker" data-i18n="home.examples.kicker">EXAMPLE DOCK · EMPTY SLOTS READY</div>
+                        <h2 class="section-title" id="examples-title" data-i18n="home.examples.title">See the same world cross the runtime boundary.</h2>
+                    </div>
+                    <p class="section-intro" data-i18n="home.examples.intro">A home for small, verifiable examples: one scene, one idea, and a package you can run on the target you care about.</p>
+                </div>
+                <div class="example-toolbar" role="tablist" aria-label="Example platforms" data-example-tabs>
+                    <button type="button" class="example-tab is-active" role="tab" aria-selected="true" data-example-filter="all" data-i18n="home.examples.filter.all">All targets</button>
+                    <button type="button" class="example-tab" role="tab" aria-selected="false" data-example-filter="web" data-i18n="home.examples.filter.web">Web</button>
+                    <button type="button" class="example-tab" role="tab" aria-selected="false" data-example-filter="android" data-i18n="home.examples.filter.android">Android</button>
+                    <button type="button" class="example-tab" role="tab" aria-selected="false" data-example-filter="desktop" data-i18n="home.examples.filter.desktop">Desktop</button>
+                </div>
+                <div class="example-grid" data-example-grid>
+                    <article class="example-card example-card-empty" data-example-target="all web android desktop">
+                        <div class="example-card-art" aria-hidden="true"><span class="example-orbit example-orbit-a"></span><span class="example-orbit example-orbit-b"></span><span class="example-signal">EXAMPLE<br>SLOT 00</span></div>
+                        <div class="example-card-copy">
+                            <div class="mini-tag" data-i18n="home.examples.empty.tag">OPEN SLOT</div>
+                            <h3 data-i18n="home.examples.empty.title">Your first world belongs here.</h3>
+                            <p data-i18n="home.examples.empty.body">This deliberately empty card is ready for a playable demo, a GIF, and a downloadable package when the example is ready.</p>
+                            <span class="example-package" data-i18n="home.examples.empty.package">Package pending</span>
+                        </div>
+                    </article>
+                    <article class="example-card" data-example-target="web">
+                        <div class="example-card-art example-card-art-web" aria-hidden="true"><span class="example-platform-mark">WEB</span><span class="example-scanline"></span></div>
+                        <div class="example-card-copy"><div class="mini-tag" data-i18n="home.examples.web.tag">TARGET · WEB</div><h3 data-i18n="home.examples.web.title">Browser playground</h3><p data-i18n="home.examples.web.body">Drop in the first WebGPU showcase here without changing the tutorial route.</p><span class="example-package" data-i18n="home.examples.web.package">GIF + ZIP slot</span></div>
+                    </article>
+                    <article class="example-card" data-example-target="android">
+                        <div class="example-card-art example-card-art-android" aria-hidden="true"><span class="example-platform-mark">ANDROID</span><span class="example-scanline"></span></div>
+                        <div class="example-card-copy"><div class="mini-tag" data-i18n="home.examples.android.tag">TARGET · ANDROID</div><h3 data-i18n="home.examples.android.title">Pocket build</h3><p data-i18n="home.examples.android.body">Reserve a touch-first example with an APK download and a short capture of the running scene.</p><span class="example-package" data-i18n="home.examples.android.package">APK slot</span></div>
+                    </article>
+                    <article class="example-card" data-example-target="desktop">
+                        <div class="example-card-art example-card-art-desktop" aria-hidden="true"><span class="example-platform-mark">DESKTOP</span><span class="example-scanline"></span></div>
+                        <div class="example-card-copy"><div class="mini-tag" data-i18n="home.examples.desktop.tag">TARGET · DESKTOP</div><h3 data-i18n="home.examples.desktop.title">Editor to Player</h3><p data-i18n="home.examples.desktop.body">A native showcase can live here with a GIF, a release package, and the source scene behind it.</p><span class="example-package" data-i18n="home.examples.desktop.package">ZIP slot</span></div>
+                    </article>
                 </div>
             </section>
 
@@ -247,7 +303,7 @@
             <section id="capabilities" class="section">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.capabilities.kicker">ENGINE FOUNDATIONS · 0.4.1</div>
+                        <div class="section-kicker" data-i18n="home.capabilities.kicker">ENGINE FOUNDATIONS · RED-CORE</div>
                         <h2 class="section-title" data-i18n="home.capabilities.title">From an idea to an interactive world.</h2>
                     </div>
                     <p class="section-intro" data-i18n="home.capabilities.intro">Build on Python gameplay, native rendering and physics, imported content and extensible tools. The 041 development line deepens multi-scene editing, compute, world UI and live plugin authoring.</p>
@@ -311,13 +367,13 @@
                 </div>
                 <div class="status-grid">
                     <article class="status-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.status.card1.tag">0.4.1 · PUBLISHED FOUNDATION</div>
+                        <div class="mini-tag" data-i18n="home.status.card1.tag">PUBLISHED FOUNDATION</div>
                         <h3 data-i18n="home.status.card1.title">Four platforms, packed assets, plugins</h3>
                         <div class="status-value">v0.4.1</div>
                         <p data-i18n="home.status.card1.body">Start with Windows and Linux Editors, Windows/Linux/Android/Web Players, InxPackage assets and Hub-managed environments. Check the download page for available release artifacts.</p>
                     </article>
                     <article class="status-card" data-reveal>
-                        <div class="mini-tag" data-i18n="home.status.card2.tag">041 · DEVELOPMENT LINE</div>
+                        <div class="mini-tag" data-i18n="home.status.card2.tag">ACTIVE DEVELOPMENT</div>
                         <h3 data-i18n="home.status.card2.title">Worlds, compute and live tools</h3>
                         <div class="status-value" data-i18n="home.status.card2.value">041</div>
                         <p data-i18n="home.status.card2.body">Multi-scene editing, model import, CPU/GPU JIT, physics queries and world UI grow alongside plugin hot reload, Player type registration and platform-specific build settings. Read the branch changelog for the full scope.</p>
@@ -381,6 +437,7 @@
     <script src="js/main.js?v=15"></script>
     <script src="js/docs-search.js?v=6"></script>
     <script src="js/home.js?v=1"></script>
+    <script src="js/examples.js?v=1"></script>
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",

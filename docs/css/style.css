@@ -20,19 +20,19 @@
     --info: #ff8a8a;
 
     /* ── Surfaces ────────────────────────────────────────────────── */
-    --bg: #0a0c11;
-    --bg-deep: #06080c;
-    --bg-panel: #11141b;
-    --bg-elevated: #181b23;
-    --bg-tile: #1d212b;
-    --bg-contrast: #060810;
+    --bg: #0d090c;
+    --bg-deep: #080507;
+    --bg-panel: #151014;
+    --bg-elevated: #1d151a;
+    --bg-tile: #24191f;
+    --bg-contrast: #090609;
 
     /* ── Type ────────────────────────────────────────────────────── */
     --text: #f3eee2;
-    --text-muted: #aab1bc;
-    --text-soft: #858d9e;
-    --decorative-faint: #44495a;
-    --text-mono: #d6cfbe;
+    --text-muted: #b7a9aa;
+    --text-soft: #99888b;
+    --decorative-faint: #5b464b;
+    --text-mono: #e0d0c8;
 
     /* ── Printed documentation ─────────────────────────────────── */
     --print-paper: #ffffff;
@@ -68,12 +68,12 @@
     --font-mono: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", monospace;
 
     /* ── Nav backgrounds ────────────────────────────────────────── */
-    --nav-bg: rgba(8, 10, 15, 0.78);
-    --nav-bg-scroll: rgba(8, 10, 15, 0.96);
-    --code-bg: #0b0d12;
-    --code-surface-2: #10141b;
+    --nav-bg: rgba(14, 8, 12, 0.82);
+    --nav-bg-scroll: rgba(14, 8, 12, 0.97);
+    --code-bg: #0f090d;
+    --code-surface-2: #171016;
     --code-border-strong: #687181;
-    --code-text-default: #d6cfbe;
+    --code-text-default: #e0d0c8;
     --code-hl-keyword: #ff8a8a;
     --code-hl-class: #ffd479;
     --code-hl-fn: #ffb08f;
@@ -1769,4 +1769,37 @@ table { max-width: 100%; }
 
 
 
+}
+
+/* ── Red-core space skin ──────────────────────────────────────────
+   The site uses the engine's red as its identity colour. Blue-grey
+   remnants stay reserved for readable body text and never compete with it. */
+body::before {
+    background:
+        radial-gradient(1px 1px at 9% 19%, rgba(255, 238, 219, .56) 50%, transparent 60%),
+        radial-gradient(1px 1px at 17% 74%, rgba(255, 126, 108, .48) 50%, transparent 60%),
+        radial-gradient(2px 2px at 31% 12%, rgba(255, 238, 219, .42) 50%, transparent 60%),
+        radial-gradient(1px 1px at 46% 82%, rgba(255, 126, 108, .36) 50%, transparent 60%),
+        radial-gradient(1px 1px at 61% 22%, rgba(255, 238, 219, .5) 50%, transparent 60%),
+        radial-gradient(2px 2px at 74% 68%, rgba(255, 96, 76, .42) 50%, transparent 60%),
+        radial-gradient(1px 1px at 88% 31%, rgba(255, 238, 219, .52) 50%, transparent 60%),
+        radial-gradient(1px 1px at 93% 86%, rgba(255, 126, 108, .4) 50%, transparent 60%),
+        linear-gradient(rgba(255, 110, 110, .035) 1px, transparent 1px) 0 0 / 40px 40px,
+        linear-gradient(90deg, rgba(255, 110, 110, .035) 1px, transparent 1px) 0 0 / 40px 40px;
+    opacity: .86;
+}
+body::after {
+    background:
+        radial-gradient(circle at 25% 20%, rgba(194, 23, 35, .24) 0%, transparent 46%),
+        radial-gradient(circle at 80% 76%, rgba(255, 106, 78, .12) 0%, transparent 42%),
+        radial-gradient(circle at 56% 52%, rgba(125, 22, 29, .12) 0%, transparent 58%);
+}
+
+.site-header, .navbar, .mission-ribbon { border-color: rgba(255, 110, 110, .3); }
+.navbar.is-scrolled { box-shadow: 0 10px 36px rgba(125, 22, 29, .22); }
+.nav-links a:hover, .nav-links a.active { color: var(--accent-strong); }
+.btn-primary { box-shadow: 0 10px 28px rgba(165, 43, 54, .28); }
+
+@media (prefers-reduced-motion: reduce) {
+    body::before, body::after { opacity: .72; }
 }
