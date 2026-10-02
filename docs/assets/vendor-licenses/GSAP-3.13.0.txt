@@ -1,0 +1,6 @@
+GSAP 3.13.0
+
+Copyright (c) GreenSock
+Licensed under the GSAP Standard No Charge License.
+License text: https://gsap.com/standard-license/
+Source package: https://www.npmjs.com/package/gsap/v/3.13.0

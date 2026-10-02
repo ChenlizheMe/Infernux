@@ -16,13 +16,15 @@ const limits = {
   generatedWikiTotal: 8 * 1024 * 1024,
 };
 const rootRouteBudgets = new Map([
-  ["index.html", 500 * 1024],
-  ["start.html", 320 * 1024],
-  ["learn.html", 320 * 1024],
-  ["roadmap.html", 300 * 1024],
-  ["changelog.html", 320 * 1024],
-  ["community.html", 360 * 1024],
-  ["download.html", 320 * 1024],
+  // These routes ship the fixed local GSAP + ScrollTrigger runtime so their
+  // first view remains deterministic and animation-ready without a CDN.
+  ["index.html", 640 * 1024],
+  ["start.html", 450 * 1024],
+  ["learn.html", 450 * 1024],
+  ["roadmap.html", 450 * 1024],
+  ["changelog.html", 450 * 1024],
+  ["community.html", 480 * 1024],
+  ["download.html", 450 * 1024],
 ]);
 
 async function files(directory) {

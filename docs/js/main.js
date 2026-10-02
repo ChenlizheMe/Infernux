@@ -402,7 +402,15 @@ const observer = !reduceMotion && 'IntersectionObserver' in window
 
 document.addEventListener('DOMContentLoaded', function() {
     const animatedElements = document.querySelectorAll('[data-reveal], .hero-slab, .subpage-hero, .hub-hero, .cta-panel');
+    const gsapMotionEnabled = !reduceMotion && Boolean(globalThis.gsap && globalThis.ScrollTrigger);
     animatedElements.forEach(el => {
+        if (gsapMotionEnabled) {
+            // The GSAP motion layer owns visibility and transform state when its
+            // fixed local runtime is available. Keeping this branch here avoids
+            // the observer's !important class fighting ScrollTrigger timelines.
+            el.classList.remove('reveal-pending', 'animate-in');
+            return;
+        }
         if (!observer) {
             el.classList.add('animate-in');
             return;

@@ -2120,3 +2120,16 @@ body::before {
 @media (prefers-reduced-motion: reduce) {
     .hero-slab, .code-preview, .btn, .metric-card, .pillar-card, .capability-card, .status-card { transform: none; }
 }
+
+/* GSAP motion surfaces: keep the composited layers stable while ScrollTrigger
+   moves them through the tape-futurist depth stack. */
+.hero-slab, .subpage-hero, .hub-hero { perspective: 1400px; transform-style: preserve-3d; }
+.hero-copy, .hero-panel, .code-preview, .section-head, .manifesto-strip, .cta-panel,
+.pillar-card, .capability-card, .status-card, .demo-frame, .stack-board { will-change: transform, opacity; }
+.section-title { transform-origin: left center; }
+.github-live-dot, .code-header .dot { transform-origin: center; }
+
+@media (prefers-reduced-motion: reduce) {
+    .hero-copy, .hero-panel, .code-preview, .section-head, .manifesto-strip, .cta-panel,
+    .pillar-card, .capability-card, .status-card, .demo-frame, .stack-board { will-change: auto; }
+}
