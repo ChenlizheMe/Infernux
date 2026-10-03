@@ -1,4 +1,4 @@
-/* Deterministic roadmap atlas: one visible radial cluster, selectable nodes, and local pan/zoom. */
+/* Deterministic roadmap atlas: one visible freeform vector cluster, selectable nodes, and local pan/zoom. */
 (function () {
     const app = document.querySelector("[data-roadmap-app]");
     if (!app) return;
@@ -9,8 +9,24 @@
     const aliases = { architecture: "foundation", rendering: "pipeline", gameplay: "runtime", neural: "agents" };
     const cameras = new WeakMap();
 
+    function defaultCamera(shell) {
+        if (!window.matchMedia("(max-width: 820px)").matches) return { x: 0, y: 0 };
+        const svg = shell.querySelector("svg");
+        if (!svg) return { x: -420, y: 0 };
+        const rect = svg.getBoundingClientRect();
+        if (!rect.width) return { x: 0, y: 0 };
+        const scale = rect.width / 1600;
+        return {
+            x: shell.clientWidth / (2 * scale) - 800,
+            y: shell.clientHeight / (2 * scale) - 600,
+        };
+    }
+
     function cameraFor(shell) {
-        if (!cameras.has(shell)) cameras.set(shell, { x: 0, y: 0, scale: 1, dragging: false, moved: false });
+        if (!cameras.has(shell)) {
+            const initial = defaultCamera(shell);
+            cameras.set(shell, { ...initial, scale: 1, dragging: false, moved: false, initialized: false });
+        }
         return cameras.get(shell);
     }
 
@@ -22,9 +38,11 @@
 
     function resetCamera(shell) {
         const camera = cameraFor(shell);
-        camera.x = 0;
-        camera.y = 0;
+        const initial = defaultCamera(shell);
+        camera.x = initial.x;
+        camera.y = initial.y;
         camera.scale = 1;
+        camera.initialized = true;
         applyCamera(shell);
     }
 
@@ -71,6 +89,17 @@
         });
         if (updateHistory) history.replaceState(null, "", `#tree-${pageName}`);
         const activePage = pages.find((page) => page.dataset.treePanel === pageName);
+        const activeShell = activePage?.querySelector("[data-graph-canvas]");
+        if (activeShell) {
+            const camera = cameraFor(activeShell);
+            if (!camera.initialized) {
+                const initial = defaultCamera(activeShell);
+                camera.x = initial.x;
+                camera.y = initial.y;
+                camera.initialized = true;
+            }
+            applyCamera(activeShell);
+        }
         if (!activePage || reduceMotion || !globalThis.gsap) return;
         globalThis.gsap.fromTo(activePage.querySelectorAll(".graph-panel-heading, .graph-edge, .graph-node"),
             { autoAlpha: 0, y: 12 },

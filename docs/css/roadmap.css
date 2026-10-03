@@ -1,4 +1,4 @@
-/* Roadmap graph atlas: one visible SVG node cluster with a release log below. */
+/* Roadmap graph atlas: one visible freeform vector cluster with a release log below. */
 .roadmap-hero {
     max-width: 980px;
     margin: 0 auto 54px;
@@ -64,24 +64,20 @@
 .graph-edge.state-future { stroke: var(--decorative-faint); opacity: 0.22; stroke-dasharray: 3 10; }
 .graph-camera { transform-origin: 0 0; }
 .graph-node { cursor: pointer; outline: none; }
-.graph-node circle, .graph-node ellipse { vector-effect: non-scaling-stroke; pointer-events: none; }
-.graph-node .planet-body { stroke: var(--border-strong); stroke-width: 2.5; transition: stroke .2s ease, filter .2s ease; }
-.graph-node .planet-highlight { fill: rgba(255, 255, 255, .42); filter: blur(1px); }
-.graph-node .planet-ring { fill: none; stroke: rgba(244, 234, 219, .56); stroke-width: 2; stroke-dasharray: 7 5; opacity: .72; }
-.graph-node .planet-moon { fill: var(--text-soft); stroke: rgba(244, 234, 219, .75); stroke-width: 1.5; opacity: .84; }
-.graph-node text { fill: var(--text); font: 700 12px var(--font-mono); letter-spacing: .045em; pointer-events: none; }
-.graph-node .graph-status { fill: var(--text-muted); font-size: 10px; letter-spacing: .11em; }
-.graph-node .graph-leaf-label { fill: var(--text-soft); font: 500 12px var(--font-body); letter-spacing: 0; }
-.graph-node.state-live .planet-body { stroke: var(--signal); filter: drop-shadow(0 0 10px rgba(131, 184, 173, .58)); }
-.graph-node.state-planned .planet-body { stroke: var(--accent); animation: nodePulse 2.1s ease-in-out infinite; }
-.graph-node.state-planned .planet-ring { stroke: var(--accent); animation: orbitPulse 2.1s ease-in-out infinite; }
-.graph-node.state-future .planet-body { stroke: var(--decorative-faint); opacity: .42; }
-.graph-node.state-future .planet-ring, .graph-node.state-future .planet-moon { opacity: .32; }
+.graph-node circle { vector-effect: non-scaling-stroke; }
+.graph-node .graph-hit { fill: transparent; stroke: none; pointer-events: all; }
+.graph-node .graph-dot { stroke: var(--border-strong); stroke-width: 2; pointer-events: none; transition: fill .2s ease, stroke .2s ease, opacity .2s ease; }
+.graph-node text { fill: var(--text); font: 700 16px var(--font-mono); letter-spacing: .025em; pointer-events: none; paint-order: stroke; stroke: #09080c; stroke-width: 5px; stroke-linejoin: round; }
+.graph-node .graph-status { fill: var(--text-muted); font-size: 13px; letter-spacing: .08em; }
+.graph-node .graph-leaf-label { fill: var(--text-soft); font: 500 15px var(--font-body); letter-spacing: 0; }
+.graph-node.state-live .graph-dot { fill: var(--signal); stroke: #c5efe4; }
+.graph-node.state-planned .graph-dot { fill: var(--accent); stroke: #ffd1c7; animation: nodePulse 2.1s ease-in-out infinite; }
+.graph-node.state-future .graph-dot { fill: var(--decorative-faint); stroke: #8f7da0; opacity: .48; }
 .graph-node.state-future text { fill: var(--decorative-faint); }
-.graph-node:hover .planet-body, .graph-node:focus-visible .planet-body, .graph-node.is-selected .planet-body { stroke: var(--hazard); filter: drop-shadow(0 0 15px rgba(255, 194, 92, .68)); }
-.graph-root .planet-body { stroke-width: 3.5; }
-.graph-branch .planet-body { stroke-width: 3; }
-.graph-leaf .planet-body { stroke-width: 2; }
+.graph-node:hover .graph-dot, .graph-node:focus-visible .graph-dot, .graph-node.is-selected .graph-dot { stroke: var(--hazard); stroke-width: 4; }
+.graph-root .graph-dot { stroke-width: 3; }
+.graph-branch .graph-dot { stroke-width: 2.5; }
+.graph-leaf .graph-dot { stroke-width: 1.5; }
 
 .roadmap-changelog { margin: 72px auto 0; padding-top: 54px; border-top: 1px solid var(--border-strong); }
 .roadmap-changelog-heading { max-width: 760px; margin: 0 auto 28px; text-align: center; }
@@ -93,7 +89,6 @@
 @keyframes treePulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
 @keyframes nodePulse { 0%, 100% { opacity: .58; } 50% { opacity: 1; } }
 @keyframes edgePulse { 0%, 100% { opacity: .28; } 50% { opacity: .9; } }
-@keyframes orbitPulse { 0%, 100% { opacity: .42; } 50% { opacity: .96; } }
 
 @media (max-width: 1080px) {
     .tree-workspace-head { grid-template-columns: 1fr; gap: 18px; }
@@ -122,5 +117,5 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .tree-legend-item.state-planned i, .graph-node.state-planned circle, .graph-node.state-planned ellipse, .graph-edge.state-planned { animation: none; }
+    .tree-legend-item.state-planned i, .graph-node.state-planned circle, .graph-edge.state-planned { animation: none; }
 }
