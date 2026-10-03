@@ -160,13 +160,8 @@ void TestPortableMetadataPath()
                 "Assets/Scripts/Player.py::subanim:idle",
             "model sub-asset retained a local absolute path");
     metadata.AddMetadata("file_path", infernux::FromFsPath(root.parent_path() / "outside.py"));
-    bool rejected = false;
-    try {
-        (void)metadata.SerializeDocumentPortable(infernux::FromFsPath(root));
-    } catch (const std::invalid_argument &) {
-        rejected = true;
-    }
-    Require(rejected, "project sidecar accepted an external absolute path");
+    Require(!metadata.SerializeDocumentPortable(infernux::FromFsPath(root)).at("metadata").contains("file_path"),
+            "external sidecar persisted a machine-specific path hint");
 
     std::filesystem::remove_all(root);
 }

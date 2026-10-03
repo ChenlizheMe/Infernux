@@ -259,6 +259,52 @@ def test_clone_restores_project_pip_requirements_without_another_users_baseline(
     assert manager.registry.load()["python_dependencies"][0]["baseline_version"] == "1"
 
 
+def test_pinned_github_snapshot_uses_its_commit_without_release_lookup(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from Infernux.plugins import github_releases
+
+    project = _project(tmp_path / "project")
+    source = _source(tmp_path / "source/package", "vendor/plugin")
+    (source / "Data.bin").write_bytes(b"payload")
+    manager = PluginManager(str(project), runtime=False)
+    revision = "a" * 40
+    requested = []
+
+    def download(location, workspace, **kwargs):
+        requested.append(kwargs["revision"])
+        return SimpleNamespace(root=str(source.parent), commit=revision)
+
+    def release(*args, **kwargs):
+        raise AssertionError("A pinned source snapshot must not resolve a new release")
+
+    monkeypatch.setattr(github_releases, "download_github_source", download)
+    monkeypatch.setattr(github_releases, "resolve_github_release", release)
+    with manager._package_cache().workspace("snapshot") as workspace:
+        archive, descriptor = manager._materialize_source(
+            {"type": "github", "location": "https://github.com/vendor/plugin",
+             "commit": revision, "source_snapshot": True}, workspace,
+        )
+        assert InxPackage.inspect(archive).metadata["reference"] == "vendor/plugin"
+    assert requested == [revision]
+    assert descriptor["commit"] == revision
+
+
+def test_download_rejects_an_archive_with_a_different_pinned_version(tmp_path, monkeypatch):
+    project = _project(tmp_path / "project")
+    source = _source(tmp_path / "source", "vendor/plugin", version="2.0.0")
+    (source / "Data.bin").write_bytes(b"payload")
+    archive = tmp_path / "wrong.inxpkg"
+    InxPackage.export_source(str(source), str(archive))
+    manager = PluginManager(str(project), runtime=False)
+    manager.registry.add_package("vendor/plugin", version="1.0.0",
+                                 source={"type": "url", "location": "https://example.invalid/plugin.inxpkg"})
+    registry_before = Path(manager.registry.path).read_bytes()
+    monkeypatch.setattr(manager, "_materialize_source", lambda descriptor, workspace, **kwargs: (str(archive), descriptor))
+    with pytest.raises(RuntimeError, match="version mismatch"):
+        manager.download_reference("vendor/plugin")
+    assert Path(manager.registry.path).read_bytes() == registry_before
+
+
 def test_bytecode_is_removed_with_retired_source(installed):
     manager, source, root = installed
     # An owned source is required; a user-added script and its cache remain untouched.

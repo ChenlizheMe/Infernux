@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <string_view>
@@ -146,7 +147,7 @@ std::string NormalizeMetadataFilePath(const std::string &filePath)
     return ResolveFilesystemPath(filePath);
 }
 
-std::string PortableMetadataFilePath(const std::string &filePath, const std::string &projectRoot)
+std::optional<std::string> PortableMetadataFilePath(const std::string &filePath, const std::string &projectRoot)
 {
     const auto virtualSuffix = filePath.find("::");
     const std::string filesystemPath = filePath.substr(0, virtualSuffix);
@@ -159,7 +160,10 @@ std::string PortableMetadataFilePath(const std::string &filePath, const std::str
     if (TryMakeRelativeFilesystemPath(resolved, projectRoot, relative))
         return relative + suffix;
 
-    throw std::invalid_argument("project metadata path is outside the project: " + filePath);
+    // Tools may explicitly import an external source for temporary authoring.
+    // Its sidecar owns the GUID; its physical caller path supplies the location.
+    // There is no project-relative path hint to persist for that source.
+    return std::nullopt;
 }
 
 void MakeMetadataPortable(nlohmann::json &document, const std::string &projectRoot)
@@ -177,8 +181,13 @@ void MakeMetadataPortable(nlohmann::json &document, const std::string &projectRo
         fields->erase("last_modified");
         for (const auto *key : {"file_path"}) {
             auto entry = fields->find(key);
-            if (entry != fields->end() && entry->at("type") == "string")
-                (*entry)["value"] = PortableMetadataFilePath(entry->at("value").get<std::string>(), projectRoot);
+            if (entry != fields->end() && entry->at("type") == "string") {
+                const auto portable = PortableMetadataFilePath(entry->at("value").get<std::string>(), projectRoot);
+                if (portable)
+                    (*entry)["value"] = *portable;
+                else
+                    fields->erase(entry);
+            }
         }
         // Model tables contain serialized metadata documents inside strings.
         for (const auto *key : {"model_textures", "model_animations"}) {

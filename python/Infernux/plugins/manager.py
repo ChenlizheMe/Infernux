@@ -1015,6 +1015,11 @@ class PluginManager:
                     f"is {ENGINE_VERSION}"
                 )
             version = str(preview.metadata.get("version", ""))
+            pinned_version = str(record.get("version", "")).strip()
+            if pinned_version and not release_tag and version != pinned_version:
+                raise RuntimeError(
+                    f"Downloaded plugin version mismatch: expected {reference}@{pinned_version}, found {version}"
+                )
             cache = self._package_cache()
             destination = cache.store(
                 package_path,
@@ -1689,20 +1694,20 @@ class PluginManager:
                 fallback_source["acquisition"] = "github-release"
                 return released.path, fallback_source
             return target, descriptor
-        revision = str(descriptor.get("revision", "")).strip()
+        revision = str(descriptor.get("commit") or descriptor.get("revision", "")).strip()
         if source_type == "github":
             from .github_releases import (
                 download_github_source,
                 resolve_github_release,
             )
-
+        if source_type == "github" and not descriptor.get("source_snapshot"):
             _report_progress(progress, "resolve_releases", 0.06)
             released = resolve_github_release(
                 location,
                 workspace,
                 expected_reference=str(descriptor.get("reference", "")),
                 progress=progress,
-                release_tag=release_tag,
+                release_tag=release_tag or str(descriptor.get("release_tag", "")),
             )
             if released is not None:
                 released_source = dict(descriptor)
@@ -1741,7 +1746,7 @@ class PluginManager:
         command = ["git", "clone", "--depth", "1", "--progress"]
         if subdirectory:
             command.extend(["--filter=blob:none", "--sparse"])
-        if revision:
+        if revision and not descriptor.get("commit"):
             command.extend(["--branch", revision])
         command.extend([location, checkout])
         _report_progress(progress, "clone_repository", 0.08)
@@ -1752,6 +1757,9 @@ class PluginManager:
             start=0.08,
             end=0.24,
         )
+        if descriptor.get("commit"):
+            self._run_process(["git", "fetch", "--depth", "1", "origin", revision], cwd=checkout)
+            self._run_process(["git", "checkout", "--detach", "FETCH_HEAD"], cwd=checkout)
         if subdirectory:
             self._run_process(
                 ["git", "sparse-checkout", "set", subdirectory],
@@ -1764,6 +1772,8 @@ class PluginManager:
             character not in "0123456789abcdefABCDEF" for character in commit
         ):
             raise RuntimeError("Git plugin source did not resolve to a commit SHA")
+        if descriptor.get("commit") and commit.casefold() != revision.casefold():
+            raise RuntimeError("Git plugin checkout does not match its pinned commit")
         descriptor["commit"] = commit.casefold()
         descriptor["source_snapshot"] = True
         _report_progress(progress, "read_repository", 0.28)
