@@ -654,7 +654,7 @@ class PluginManager:
             except BaseException:
                 transaction.rollback()
                 if registry_changed:
-                    self.registry.save(registry_before)
+                    self.registry.restore(registry_before)
                 raise
             self._prune_package_directories(removed)
             self._acknowledge_installed_scripts(planned)
@@ -753,7 +753,7 @@ class PluginManager:
             except BaseException:
                 transaction.rollback()
                 if registry_changed:
-                    self.registry.save(registry_before)
+                    self.registry.restore(registry_before)
                 raise
             self._acknowledge_installed_scripts(planned)
             if threading.current_thread() is threading.main_thread():
@@ -1595,7 +1595,7 @@ class PluginManager:
         except BaseException as uninstall_error:
             transaction.rollback()
             if registry_changed:
-                self.registry.save(registry_before)
+                self.registry.restore(registry_before)
             python_rollback_error = None
             if python_baseline is not None:
                 try:

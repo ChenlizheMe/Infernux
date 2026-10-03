@@ -11,7 +11,7 @@ from typing import Iterable, Mapping
 
 from packaging.utils import canonicalize_name
 
-from Infernux.core.document_store import write_document_text
+from Infernux.core.document_store import capture_document_file_state, submit_document_text, write_document_text
 from Infernux.engine.path_utils import resolved_path, is_path_within, relative_path, portable_path
 
 from .content import normalize_locale, normalize_page_descriptor
@@ -23,6 +23,12 @@ LOCK_RELATIVE_PATH = os.path.join("ProjectSettings", "InxPackages.lock.json")
 REGISTRY_SCHEMA = "infernux.plugin_registry"
 
 
+class _RegistrySnapshot(dict):
+    def __init__(self, document, file_state):
+        super().__init__(document)
+        self.file_state = file_state
+
+
 class PluginRegistry:
     def __init__(self, project_root: str) -> None:
         self.project_root = resolved_path(project_root)
@@ -31,10 +37,12 @@ class PluginRegistry:
         self.path = os.path.join(self.project_root, REGISTRY_RELATIVE_PATH)
         self.lock_path = os.path.join(self.project_root, LOCK_RELATIVE_PATH)
         self.environment_path = os.path.join(self.project_root, "Library", "Plugins", "PythonEnvironment.json")
+        self._last_committed_state = None
 
     def load(self) -> dict[str, object]:
+        file_state = capture_document_file_state(self.path)
         if not os.path.isfile(self.path):
-            return self._empty()
+            return _RegistrySnapshot(self._empty(), file_state)
         try:
             with open(self.path, "r", encoding="utf-8") as stream:
                 value = json.load(stream)
@@ -67,7 +75,7 @@ class PluginRegistry:
                 state = states.get(dependency["name"])
                 if state is not None:
                     dependency.update(state)
-        return value
+        return _RegistrySnapshot(value, file_state)
 
     def save(self, value: Mapping[str, object]) -> None:
         document = copy.deepcopy(dict(value))
@@ -97,8 +105,6 @@ class PluginRegistry:
                 for item in document["python_dependencies"]
             },
         }
-        os.makedirs(os.path.dirname(self.environment_path), exist_ok=True)
-        write_document_text(self.environment_path, json.dumps(environment, indent=2, ensure_ascii=False) + "\n")
         shared = copy.deepcopy(document)
         shared["python_installs"] = []
         for dependency in shared["python_dependencies"]:
@@ -107,10 +113,25 @@ class PluginRegistry:
         # Registry readers include the UI, script scanner and preload workers.
         # Use the shared IO service's durable publication and Windows sharing
         # semantics instead of a separate, immediate os.replace implementation.
-        write_document_text(
-            self.path, json.dumps(shared, indent=2, ensure_ascii=False) + "\n"
+        ticket = submit_document_text(
+            self.path, json.dumps(shared, indent=2, ensure_ascii=False) + "\n",
+            expected_file_state=(value.file_state if isinstance(value, _RegistrySnapshot)
+                                 else capture_document_file_state(self.path)),
         )
+        ticket.wait()
+        self._last_committed_state = ticket.committed_file_state
+        if isinstance(value, _RegistrySnapshot):
+            value.file_state = self._last_committed_state
+        os.makedirs(os.path.dirname(self.environment_path), exist_ok=True)
+        write_document_text(self.environment_path, json.dumps(environment, indent=2, ensure_ascii=False) + "\n")
         self._write_lock(document)
+
+    def restore(self, snapshot: Mapping[str, object]) -> None:
+        """Rollback our own transaction without overwriting a concurrent checkout."""
+        if self._last_committed_state is None:
+            self.save(snapshot)
+        else:
+            self.save(_RegistrySnapshot(snapshot, self._last_committed_state))
 
     def _portable_paths(self, document: dict[str, object]) -> None:
         """Keep machine cache locations out of the shared ownership ledger."""

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +21,35 @@ def test_registry_and_lock_use_the_shared_document_writer(tmp_path):
         assert metrics.latest_succeeded_generation > 0
         with open(path, encoding="utf-8") as stream:
             assert isinstance(json.load(stream), dict)
+
+
+def test_external_checkout_change_cannot_be_overwritten_by_a_stale_snapshot(tmp_path):
+    registry = PluginRegistry(str(tmp_path))
+    registry.save(registry.load())
+    snapshot = registry.load()
+    external = dict(snapshot)
+    external["packages"] = [{"reference": "team/new", "source": {"type": "local", "location": "Packages/team/new"}}]
+    external_bytes = (json.dumps(external) + "\n").encode("utf-8")
+    Path(registry.path).write_bytes(external_bytes)
+    with pytest.raises(RuntimeError, match="changed outside"):
+        registry.save(snapshot)
+    assert Path(registry.path).read_bytes() == external_bytes
+    registry.save(registry.load())
+
+
+def test_transaction_rollback_does_not_overwrite_a_concurrent_registry_change(tmp_path):
+    registry = PluginRegistry(str(tmp_path))
+    before = registry.load()
+    registry.save(before)
+    changed = registry.load()
+    changed["packages"] = [{"reference": "team/ours"}]
+    registry.save(changed)
+    registry.restore(before)
+    assert registry.load()["packages"] == []
+    Path(registry.path).write_text(json.dumps(dict(changed)), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="changed outside"):
+        registry.restore(before)
+    assert registry.load()["packages"] == [{"reference": "team/ours"}]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows delete-sharing contract")
