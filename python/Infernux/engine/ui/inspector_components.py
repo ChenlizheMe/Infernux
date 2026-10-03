@@ -1403,30 +1403,36 @@ def _render_py_nonscalar_field(ctx, py_comp, field_name, metadata, current_value
     """Render a non-scalar field (list, serializable object, component ref, etc.). Returns True if handled."""
     from Infernux.components.fields import FieldType
     ft = metadata.field_type
+    if ft not in (
+        FieldType.LIST, FieldType.SERIALIZABLE_OBJECT, FieldType.COMPONENT,
+        FieldType.GAME_OBJECT, FieldType.ASSET,
+    ) and ft not in _get_asset_ref_config():
+        return False
+    flush_fn()
+    if metadata.header:
+        ctx.separator()
+        ctx.label(metadata.header)
+    if metadata.space and metadata.space > 0:
+        ctx.dummy(0, metadata.space)
     if ft == FieldType.LIST:
-        flush_fn()
         from Infernux.components.fields import get_raw_field_value
         _raw_list = get_raw_field_value(py_comp, field_name)
         _render_list_field(ctx, py_comp, field_name, metadata, _raw_list, lw)
         _tooltip_and_info(ctx, metadata)
         return True
     if ft == FieldType.SERIALIZABLE_OBJECT:
-        flush_fn()
         _render_serializable_object_field(ctx, py_comp, field_name, metadata, current_value, lw)
         _tooltip_and_info(ctx, metadata)
         return True
     if ft == FieldType.COMPONENT:
-        flush_fn()
         _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw)
         _tooltip_and_info(ctx, metadata)
         return True
     if ft == FieldType.GAME_OBJECT:
-        flush_fn()
         _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_value, lw)
         _tooltip_and_info(ctx, metadata)
         return True
     if ft == FieldType.ASSET or ft in _get_asset_ref_config():
-        flush_fn()
         _render_asset_reference_field(ctx, py_comp, field_name, metadata, current_value, metadata.field_type, lw)
         _tooltip_and_info(ctx, metadata)
         return True
