@@ -121,6 +121,29 @@ _PURE_CALL_NAMES = frozenset(
     }
 )
 _PURE_CALL_MODULES = frozenset({"typing", "math", "enum", "dataclasses"})
+# Inspector metadata constructors are declaration data.  They are safe while
+# evaluating a class body (where ``serialized_field`` and annotations are
+# collected), but must remain guarded at module scope so an arbitrary import
+# still cannot execute engine work during candidate discovery.
+_DECLARATION_FIELD_MARKERS = frozenset(
+    {
+        "Range", "Tooltip", "Header", "Space", "Group", "InfoText",
+        "DragSpeed", "RequiredComponent", "FormerlySerializedAs",
+        "Multiline", "ReadOnly", "HideInInspector", "NonSerialized", "HDR",
+    }
+)
+_DECLARATION_FIELD_MODULES = frozenset(
+    {
+        ("Infernux", "components"),
+        ("Infernux", "components", "fields"),
+        ("infernux", "components"),
+        ("infernux", "components", "fields"),
+        ("Infernux.components",),
+        ("Infernux.components.fields",),
+        ("infernux.components",),
+        ("infernux.components.fields",),
+    }
+)
 # NumPy is intentionally not treated as a generally pure module.  These are
 # the small, value-oriented surface needed for declarations and defaults;
 # mutators such as save/seterr/config are rejected as unknown calls.
@@ -278,14 +301,17 @@ class _PolicyVisitor(ast.NodeVisitor):
         try:
             for decorator in node.decorator_list:
                 self.visit(decorator)
+            for base in node.bases:
+                self.visit(base)
+            for keyword in node.keywords:
+                self.visit(keyword.value)
+            # Field marker constructors in annotations are declaration data;
+            # keep the declaration capability active for the complete class
+            # body while still skipping function bodies below.
+            for statement in node.body:
+                self.visit(statement)
         finally:
             self._declaration_decorator_depth -= 1
-        for base in node.bases:
-            self.visit(base)
-        for keyword in node.keywords:
-            self.visit(keyword.value)
-        for statement in node.body:
-            self.visit(statement)
 
     def _target_is_imported(self, target: ast.AST) -> bool:
         root = _root_name(target)
@@ -392,13 +418,14 @@ class _PolicyVisitor(ast.NodeVisitor):
             return path[-1] in _PURE_CALL_NAMES
         return module in _PURE_CALL_MODULES
 
-    def _is_controlled_declaration_decorator(self, node: ast.Call) -> bool:
-        """Admit public, declaration-only decorators with no eager work.
+    def _is_controlled_declaration_call(self, node: ast.Call) -> bool:
+        """Admit public, declaration-only calls with no eager work.
 
         ``Infernux.jit.compile`` creates a lazy dispatcher when the function is
         declared, while ``render_effect_feature`` publishes class metadata.
-        Keep these capabilities scoped to decorator expressions so equivalent
-        module-level calls cannot borrow the same permission.
+        Field marker constructors likewise only create class metadata. Keep
+        these capabilities scoped to declarations so equivalent module-level
+        calls cannot borrow the same permission.
         """
 
         if self._declaration_decorator_depth <= 0:
@@ -423,6 +450,8 @@ class _PolicyVisitor(ast.NodeVisitor):
             "HelpURL",
         }
         if isinstance(node.func, ast.Name):
+            if node.func.id in _DECLARATION_FIELD_MARKERS:
+                return True
             imported = self.imported_members.get(node.func.id)
             if imported in controlled_paths:
                 return True
@@ -445,6 +474,8 @@ class _PolicyVisitor(ast.NodeVisitor):
             return True
         if path in controlled_paths:
             return True
+        if path[-1] in _DECLARATION_FIELD_MARKERS and path[:-1] in _DECLARATION_FIELD_MODULES:
+            return True
         return path[-1] in component_decorators and path[:-1] in {
             ("Infernux",),
             ("infernux",),
@@ -456,7 +487,7 @@ class _PolicyVisitor(ast.NodeVisitor):
         path = self._imported_path(node.func)
         direct_name = node.func.id if isinstance(node.func, ast.Name) else None
 
-        if self._is_controlled_declaration_decorator(node):
+        if self._is_controlled_declaration_call(node):
             pass
         elif direct_name in _DYNAMIC_CODE_NAMES or (path and path[-1] in _DYNAMIC_CODE_NAMES):
             self._blocked(

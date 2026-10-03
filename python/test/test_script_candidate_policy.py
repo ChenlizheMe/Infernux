@@ -98,6 +98,44 @@ def test_lowercase_public_namespace_supports_declaration_only_component_scripts(
     assert report.runtime_guard_required == ()
 
 
+def test_annotated_field_markers_are_allowed_inside_component_declarations():
+    report = _report(
+        """
+        from typing import Annotated
+        import infernux as inx
+
+        @inx.disallow_multiple
+        @inx.require_component(inx.Rigidbody)
+        class TargetReporter(inx.InxComponent):
+            speed: Annotated[
+                float,
+                inx.components.Header("Movement"),
+                inx.components.Range(0.0, 12.0),
+                inx.components.Tooltip("Maximum movement speed."),
+            ] = 3.0
+            target: Annotated[
+                inx.GameObject,
+                inx.components.Header("References"),
+                inx.components.RequiredComponent("MeshRenderer"),
+            ]
+        """
+    )
+
+    assert report.blocked == ()
+    assert report.runtime_guard_required == ()
+
+
+def test_field_markers_remain_guarded_at_module_scope():
+    report = _report(
+        "import infernux as inx\n"
+        "marker = inx.components.Header('not a declaration')\n"
+    )
+
+    assert report.blocked == ()
+    assert len(report.runtime_guard_required) == 1
+    assert report.runtime_guard_required[0].operation == "infernux.components.Header"
+
+
 def test_lowercase_public_namespace_supports_render_declaration_decorator():
     report = _report(
         "import infernux as inx\n"

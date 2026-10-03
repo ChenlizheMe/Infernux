@@ -44,27 +44,25 @@
 
 <h2 id="build-the-component">Build the component</h2>
 <p>Create <code>TargetReporter.py</code> under <code>Assets</code> and use this complete script:</p>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Annotated</span>
-
-<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
 <span class="nd">@inx</span><span class="o">.</span><span class="n">disallow_multiple</span>
 <span class="nd">@inx</span><span class="o">.</span><span class="n">require_component</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">Rigidbody</span><span class="p">)</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">TargetReporter</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
-    <span class="n">speed</span><span class="p">:</span> <span class="n">Annotated</span><span class="p">[</span>
-        <span class="nb">float</span><span class="p">,</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Header</span><span class="p">(</span><span class="s2">"Movement"</span><span class="p">),</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Range</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">12.0</span><span class="p">),</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Maximum movement speed in units per second."</span><span class="p">),</span>
-    <span class="p">]</span> <span class="o">=</span> <span class="mf">3.0</span>
+    <span class="n">speed</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="mf">3.0</span><span class="p">,</span>
+        <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">12.0</span><span class="p">),</span>
+        <span class="n">header</span><span class="o">=</span><span class="s2">"Movement"</span><span class="p">,</span>
+        <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Maximum movement speed in units per second."</span><span class="p">,</span>
+    <span class="p">)</span>
 
-    <span class="n">target</span><span class="p">:</span> <span class="n">Annotated</span><span class="p">[</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">GameObject</span><span class="p">,</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Header</span><span class="p">(</span><span class="s2">"References"</span><span class="p">),</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">RequiredComponent</span><span class="p">(</span><span class="s2">"MeshRenderer"</span><span class="p">),</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Target must have a MeshRenderer."</span><span class="p">),</span>
-    <span class="p">]</span>
+    <span class="n">target</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">GameObject</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+        <span class="n">header</span><span class="o">=</span><span class="s2">"References"</span><span class="p">,</span>
+        <span class="n">required_component</span><span class="o">=</span><span class="s2">"MeshRenderer"</span><span class="p">,</span>
+        <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Target must have a MeshRenderer."</span><span class="p">,</span>
+    <span class="p">)</span>
 
     <span class="n">body</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">Rigidbody</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">component_field</span><span class="p">(</span>
         <span class="n">component_type</span><span class="o">=</span><span class="s2">"Rigidbody"</span><span class="p">,</span>
@@ -82,7 +80,7 @@
         <span class="p">)</span>
 </code></pre></div>
 
-<p>The imports and declarations above are public APIs. <code>Annotated</code> metadata controls Inspector presentation and validation. <code>component_field()</code> creates a typed component-reference slot.</p>
+<p>The imports and declarations above are public APIs. <code>serialized_field()</code> makes the Inspector contract explicit: its keyword metadata controls presentation and validation, while <code>component_field()</code> creates a typed component-reference slot.</p>
 <h2 id="author-the-scene">Author the scene</h2>
 <ol>
 <li>Create a <strong>Cube</strong> in Hierarchy and name it <code>Target</code>. Keep its <code>MeshRenderer</code>.</li>
@@ -95,7 +93,7 @@
 <p>The expected log is <code>Reporter -&gt; Target; speed=6.0</code>. The exact numeric formatting follows Python's float formatting.</p>
 <h2 id="fields">Serialized fields</h2>
 <p>Supported public annotations include <code>int</code>, <code>float</code>, <code>bool</code>, <code>str</code>, vectors, enums, known asset references, <code>GameObject</code>, component subclasses, lists of supported types, and serializable objects. A supported public class attribute is collected as a serialized field. Explicit <code>serialized_field(...)</code> remains useful when keyword metadata is clearer.</p>
-<p><code>Range(0.0, 12.0)</code> supplies a slider and enforces the numeric bounds on Inspector edits, deserialization, and script assignment. <code>Header</code> adds a section label and <code>Tooltip</code> adds hover help. The scene stores the edited value, so changing the class default later does not overwrite an already-authored scene value.</p>
+<p>The <code>range</code>, <code>header</code>, and <code>tooltip</code> arguments to <code>serialized_field()</code> supply a slider, section label, and hover help. The same numeric bounds apply to Inspector edits, deserialization, and script assignment. The scene stores the edited value, so changing the class default later does not overwrite an already-authored scene value.</p>
 <p>Use private <code>_name</code> attributes for transient state. Use <code>serialized_field(..., hidden=True)</code> when data must be saved but omitted from the Inspector. Regular mutable runtime caches should be rebuilt in lifecycle callbacks and kept out of serialized fields.</p>
 <p>Under the hood, numeric fields (<code>int</code>, <code>float</code>, <code>bool</code>, <code>Vector2/3/4</code>) are backed by the native ComponentDataStore, a column store that keeps script data cache-friendly and outside Python objects; other field kinds live in the Python descriptor. The Inspector reads the same collected metadata to build its controls, and the scene document stores the values on save. Runtime assignments change the in-memory value only; Play mode restores the authored scene from its snapshot when you stop, so a script that writes a serialized field does not persist that write unless the scene is saved.</p>
 <h2 id="references">Inspector references</h2>
@@ -142,27 +140,25 @@
 
 <h2 id="build-the-component_1">编写组件</h2>
 <p>在 <code>Assets</code> 下创建 <code>TargetReporter.py</code>，写入下面的完整脚本：</p>
-<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Annotated</span>
-
-<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 
 <span class="nd">@inx</span><span class="o">.</span><span class="n">disallow_multiple</span>
 <span class="nd">@inx</span><span class="o">.</span><span class="n">require_component</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">Rigidbody</span><span class="p">)</span>
 <span class="k">class</span><span class="w"> </span><span class="nc">TargetReporter</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
-    <span class="n">speed</span><span class="p">:</span> <span class="n">Annotated</span><span class="p">[</span>
-        <span class="nb">float</span><span class="p">,</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Header</span><span class="p">(</span><span class="s2">"Movement"</span><span class="p">),</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Range</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">12.0</span><span class="p">),</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Maximum movement speed in units per second."</span><span class="p">),</span>
-    <span class="p">]</span> <span class="o">=</span> <span class="mf">3.0</span>
+    <span class="n">speed</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="mf">3.0</span><span class="p">,</span>
+        <span class="nb">range</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">12.0</span><span class="p">),</span>
+        <span class="n">header</span><span class="o">=</span><span class="s2">"Movement"</span><span class="p">,</span>
+        <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Maximum movement speed in units per second."</span><span class="p">,</span>
+    <span class="p">)</span>
 
-    <span class="n">target</span><span class="p">:</span> <span class="n">Annotated</span><span class="p">[</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">GameObject</span><span class="p">,</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Header</span><span class="p">(</span><span class="s2">"References"</span><span class="p">),</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">RequiredComponent</span><span class="p">(</span><span class="s2">"MeshRenderer"</span><span class="p">),</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">components</span><span class="o">.</span><span class="n">Tooltip</span><span class="p">(</span><span class="s2">"Target must have a MeshRenderer."</span><span class="p">),</span>
-    <span class="p">]</span>
+    <span class="n">target</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">GameObject</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span>
+        <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+        <span class="n">header</span><span class="o">=</span><span class="s2">"References"</span><span class="p">,</span>
+        <span class="n">required_component</span><span class="o">=</span><span class="s2">"MeshRenderer"</span><span class="p">,</span>
+        <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Target must have a MeshRenderer."</span><span class="p">,</span>
+    <span class="p">)</span>
 
     <span class="n">body</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">Rigidbody</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">component_field</span><span class="p">(</span>
         <span class="n">component_type</span><span class="o">=</span><span class="s2">"Rigidbody"</span><span class="p">,</span>
@@ -180,7 +176,7 @@
         <span class="p">)</span>
 </code></pre></div>
 
-<p>这里的导入和声明都来自公开 API。<code>Annotated</code> 元数据控制 Inspector 展示与校验，<code>component_field()</code> 创建带类型筛选的组件引用槽。</p>
+<p>这里的导入和声明都来自公开 API。<code>serialized_field()</code> 用关键字明确表达 Inspector 的展示与校验契约，<code>component_field()</code> 创建带类型筛选的组件引用槽。</p>
 <h2 id="author-the-scene_1">编辑场景</h2>
 <ol>
 <li>在 Hierarchy 中创建 <strong>Cube</strong>，命名为 <code>Target</code>，保留它的 <code>MeshRenderer</code>。</li>
@@ -193,7 +189,7 @@
 <p>预期日志为 <code>Reporter -&gt; Target; speed=6.0</code>。具体数值格式遵循 Python 的浮点格式化结果。</p>
 <h2 id="fields_1">序列化字段</h2>
 <p>公开注解支持 <code>int</code>、<code>float</code>、<code>bool</code>、<code>str</code>、向量、枚举、已知资产引用、<code>GameObject</code>、组件子类、受支持类型的列表和可序列化对象。带受支持类型的公开类属性会被收集为序列化字段。需要用关键字集中表达元数据时，可以显式使用 <code>serialized_field(...)</code>。</p>
-<p><code>Range(0.0, 12.0)</code> 提供滑块，并对 Inspector 编辑、反序列化和脚本赋值统一执行数值边界。<code>Header</code> 添加分区标题，<code>Tooltip</code> 添加悬停提示。场景会保存编辑后的值；以后修改类默认值，不会覆盖场景里已经写入的值。</p>
+<p><code>serialized_field()</code> 的 <code>range</code>、<code>header</code> 和 <code>tooltip</code> 参数分别提供滑块、分区标题和悬停提示。相同的数值边界会用于 Inspector 编辑、反序列化和脚本赋值。场景会保存编辑后的值；以后修改类默认值，不会覆盖场景里已经写入的值。</p>
 <p>临时状态适合放在私有 <code>_name</code> 属性中。数据需要保存且无需出现在 Inspector 时，使用 <code>serialized_field(..., hidden=True)</code>。普通运行时缓存应在生命周期回调中重建，并避开序列化字段。</p>
 <p>底层实现上，数值字段（<code>int</code>、<code>float</code>、<code>bool</code>、<code>Vector2/3/4</code>）由原生 ComponentDataStore 支撑，这是一种列式存储，让脚本数据留在 Python 对象之外、访问更快；其余字段种类存在 Python 描述符里。Inspector 读取同一份收集到的元数据来生成控件，保存场景时这些值写入场景文档。运行时赋值只改变内存中的值；停止 Play 时引擎从快照恢复已编辑的场景，脚本对序列化字段的写入只有保存场景后才会落盘。</p>
 <h2 id="references_1">Inspector 引用</h2>
