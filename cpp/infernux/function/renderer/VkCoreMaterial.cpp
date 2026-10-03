@@ -1493,9 +1493,23 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     const ShaderProgram *forwardProgram = forwardRenderData ? forwardRenderData->shaderProgram.get() : nullptr;
     const ShaderStagePair stagePair{vertShaderName, fragShaderName};
     const ShaderProgramArtifact *linkedArtifact = m_shaderCache.FindProgramArtifact(stagePair);
+    // A shadow pass can be the first consumer of a material after a fresh
+    // scene is opened.  The Forward pipeline may already be valid while the
+    // linked program publication is still absent, so resolve the authoritative
+    // artifact here instead of reporting an initialization error.  The
+    // resolver is cached and deterministic; this does not introduce a
+    // fallback shader or a second publication path.
+    if ((!linkedArtifact || !linkedArtifact->FindVariant(ShaderCompileTarget::Shadow)) &&
+        m_shaderProgramArtifactResolver) {
+        m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
+        linkedArtifact = m_shaderCache.FindProgramArtifact(stagePair);
+    }
     if (!linkedArtifact || !linkedArtifact->FindVariant(ShaderCompileTarget::Shadow)) {
-        INXLOG_ERROR("EnsureMaterialShadowPipeline: linked Shadow variant is unavailable for material '",
-                     material->GetName(), "'");
+        // An unsupported or not-yet-imported material simply has no shadow
+        // caster.  The renderer must not turn this expected absence into a
+        // release-visible error during first-frame scene bootstrap.
+        INXLOG_DEBUG_INTERNAL("EnsureMaterialShadowPipeline: linked Shadow variant is unavailable for material '",
+                              material->GetName(), "'");
         return VK_NULL_HANDLE;
     }
     ShaderProgramPublication linkedShadowPublication =
