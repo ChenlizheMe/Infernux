@@ -200,6 +200,10 @@ class TestDebugStaticMethods:
         entries = console.get_entries()
         assert any(e.log_type == LogType.ERROR for e in entries)
 
+    def test_log_debug_is_filtered_from_python_console(self, console):
+        Debug.log_debug("internal marker")
+        assert console.get_entries() == []
+
     def test_log_with_context(self, console):
         ctx = object()
         Debug.log("ctx_test", context=ctx)

@@ -3486,6 +3486,10 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         "Write an internal INFO-level message to the engine log without surfacing it in the editor console.");
 
     m.def(
+        "inflog_debug_internal", [](const std::string &msg) { INXLOG_DEBUG_INTERNAL(msg); }, py::arg("msg"),
+        "Write a debug-only internal message; release builds filter it before formatting or output.");
+
+    m.def(
         "_show_native_file_dialog",
         [](const std::string &kind, const std::string &title, const std::string &defaultLocation,
            const std::vector<std::pair<std::string, std::string>> &filters) {

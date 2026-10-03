@@ -232,7 +232,7 @@ class PlayerStartupWarmup:
                 f"{declaration_elapsed:.1f} ms, hook={hook_elapsed:.1f} ms, "
                 f"queued_gpu={len(pending)}"
             )
-            Debug.log(
+            Debug.log_debug(
                 "INFERNUX_PLAYER_WARMUP_DECLARED "
                 f"type={record['module']}.{record['qualname']} "
                 f"prepares={len(pending)} "
@@ -251,7 +251,7 @@ class PlayerStartupWarmup:
             f"cpu_elapsed_ms={self._cpu_elapsed_ms:.1f} "
             f"gpu_specializations={self._prepare_count} elapsed_ms={elapsed_ms:.1f}"
         )
-        Debug.log(
+        Debug.log_debug(
             f"INFERNUX_PLAYER_WARMUP_READY scope={self._scope} "
             f"elapsed_ms={elapsed_ms:.1f}"
         )
@@ -516,7 +516,7 @@ def invalidate_source(file_path: str, *, project_path: str | None = None) -> int
             del entries[key]
         document["updated_at"] = time.time()
         _write(path, document)
-        Debug.log(f"INFERNUX_STARTUP_WARMUP_INVALIDATED source={source} entries={len(removed)}")
+        Debug.log_debug(f"INFERNUX_STARTUP_WARMUP_INVALIDATED source={source} entries={len(removed)}")
     return len(removed)
 
 
@@ -554,7 +554,7 @@ def run_component_warmups(
         if ready is False:
             continue
         executed += 1
-        Debug.log(
+        Debug.log_debug(
             f"INFERNUX_STARTUP_WARMUP_HOOK key={key} elapsed_ms={hook_elapsed:.1f}"
         )
         if path:
@@ -567,7 +567,7 @@ def run_component_warmups(
             document["updated_at"] = time.time()
             _write(path, document)
     elapsed = (time.perf_counter() - started) * 1000.0
-    Debug.log(
+    Debug.log_debug(
         f"INFERNUX_STARTUP_WARMUP_READY scope={scope} hooks={executed} "
         f"cached={cached} elapsed_ms={elapsed:.1f}"
     )

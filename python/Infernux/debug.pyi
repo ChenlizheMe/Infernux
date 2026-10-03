@@ -143,6 +143,10 @@ class Debug:
     def log_internal(message: Any, context: Any = ...) -> None:
         """Log an internal engine message (hidden from user by default)."""
         ...
+    @staticmethod
+    def log_debug(message: Any, context: Any = ...) -> None:
+        """Emit a debug-only internal marker filtered from release output."""
+        ...
 
 
 def log(message: Any, context: Any = ...) -> None:

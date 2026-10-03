@@ -497,6 +497,18 @@ class Debug:
         entry = Debug._create_entry(message, LogType.LOG, context, internal=True)
         DebugConsole.instance().log(entry)
 
+    @staticmethod
+    def log_debug(message: Any, context: Any = None):
+        """Emit a debug-only internal marker without release output."""
+        try:
+            from Infernux.lib import inflog_debug_internal
+
+            inflog_debug_internal(_sanitize_text(message))
+        except Exception:
+            # The pure-Python editor test/runtime has no native logger bridge.
+            # Debug markers are diagnostic only and must never affect the path.
+            return
+
 
 # Convenience aliases for Unity-style usage
 log = Debug.log

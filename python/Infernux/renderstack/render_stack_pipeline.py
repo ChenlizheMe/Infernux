@@ -149,7 +149,7 @@ class RenderStackPipeline(RenderPipeline):
                 for render_pass in description.passes
                 if "ScreenUI" in render_pass.name
             )
-            Debug.log(
+            Debug.log_debug(
                 "INFERNUX_RENDER_GRAPH_READY pipeline='Default Forward' "
                 f"passes={len(description.passes)} "
                 f"screen_ui={','.join(screen_ui_passes) or 'none'}"

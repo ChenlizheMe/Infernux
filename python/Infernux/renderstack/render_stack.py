@@ -789,7 +789,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             for render_pass in description.passes
             if "ScreenUI" in render_pass.name
         )
-        Debug.log(
+        Debug.log_debug(
             "INFERNUX_RENDER_GRAPH_READY "
             f"pipeline={self.pipeline.name!r} passes={len(description.passes)} "
             f"screen_ui={','.join(screen_ui_passes) or 'none'}"
