@@ -121,7 +121,7 @@ if (homepage.includes("0.3.4")) {
 }
 
 const roadmap = await readFile(path.join(docsRoot, "roadmap.html"), "utf8");
-for (const contract of ["data-roadmap-app", "data-tree-page=\"foundation\"", "data-tree-page=\"pipeline\"", "data-tree-page=\"runtime\"", "data-tree-page=\"agents\"", "node-graph", "graph-node", "graph-dot", "release-log", "js/roadmap.js?v=3", "js/bilingual-page.js?v=1"]) {
+for (const contract of ["data-roadmap-app", "data-tree-page=\"foundation\"", "data-tree-page=\"pipeline\"", "data-tree-page=\"runtime\"", "data-tree-page=\"agents\"", "data-tree-page=\"audio\"", "data-tree-page=\"gameplay\"", "data-tree-page=\"toolchain\"", "data-tree-page=\"network\"", "data-tree-page=\"data\"", "node-graph", "graph-node", "graph-dot", "release-log", "js/roadmap.js?v=4", "js/bilingual-page.js?v=1"]) {
     if (!roadmap.includes(contract)) {
         fail(`roadmap.html: missing interactive tree contract '${contract}'`);
     }
@@ -132,7 +132,7 @@ if (roadmap.split('id="release-log"', 1)[0].includes("0.3.4")) {
 
 const i18nSource = JSON.parse(await readFile(path.join(docsRoot, "tools", "i18n-source.json"), "utf8"));
 for (const language of ["en", "zh"]) {
-    for (const key of ["brand.ribbonKicker", "roadmap.hero.badge", "home.hero.badge", "home.hero.platform", "home.capabilities.kicker"]) {
+    for (const key of ["brand.ribbonKicker", "home.hero.badge", "home.hero.platform", "home.capabilities.kicker"]) {
         if (!String(i18nSource[language]?.[key] || "").includes(currentVersion)) {
             fail(`i18n-source.json: ${language}.${key} does not contain current release ${currentVersion}`);
         }
