@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -19,8 +20,6 @@ def installed(tmp_path, monkeypatch):
     (runtime / "retired.txt").write_text("retired", encoding="utf-8")
     (runtime / "retired.py").write_text("value = 1\n", encoding="utf-8")
     manager = PluginManager(str(project), runtime=True)
-    # The test archive backend is in-memory; retain the original archive identity.
-    monkeypatch.setattr(manager, "_cache_package", lambda path, ref, version: (path, f"{ref}/{version}.inxpkg"))
     old = tmp_path / "first.inxpkg"
     InxPackage.export_source(str(source), str(old))
     manager.install_package(str(old), install_dependencies=False)
@@ -176,10 +175,88 @@ def test_editor_generated_file_observations_are_not_author_edits(installed):
 def test_missing_original_cache_does_not_silently_overwrite(installed):
     manager, source, root = installed
     record = manager.registry.installed_record("vendor/plugin")
-    Path(record["package_path"]).unlink()
+    Path(manager._installed_archive_path(record)).unlink()
     with pytest.raises(PackageUpdateConflict):
         manager.install_package(next_package(source), update=True, install_dependencies=False)
     assert (root / "runtime/note.txt").read_text() == "first"
+
+
+def test_cloned_project_updates_using_the_new_users_cache(installed, tmp_path, monkeypatch):
+    from Infernux.plugins.cache import SharedPackageCache
+
+    manager, source, root = installed
+    original_project = Path(manager.project_root)
+    record = manager.registry.installed_record("vendor/plugin")
+    original_archive = manager._installed_archive_path(record)
+    clone = tmp_path / "another-checkout"
+    shutil.copytree(original_project, clone, ignore=shutil.ignore_patterns("Library", "Cache", ".runtime"))
+    new_cache = SharedPackageCache(tmp_path / "another-user-cache")
+    new_archive = new_cache.store(original_archive, reference="vendor/plugin", version="1.0.0")
+    monkeypatch.setenv("INFERNUX_PACKAGE_CACHE_ROOT", new_cache.root)
+    registry_text = (clone / "ProjectSettings/InxPlugins.json").read_text(encoding="utf-8")
+    assert str(original_project) not in registry_text
+    assert str(tmp_path / "hub-package-cache") not in registry_text
+    cloned_manager = PluginManager(str(clone), runtime=False)
+    cloned_manager.install_package(next_package(source), update=True, install_dependencies=False)
+    assert (clone / "Packages/vendor/plugin/runtime/note.txt").read_text() == "second"
+    assert (root / "runtime/note.txt").read_text() == "first"
+    assert cloned_manager.registry.installed_record("vendor/plugin")["control"]["guid"] == record["control"]["guid"]
+    assert Path(new_archive).is_file()
+
+
+def test_missing_synced_package_file_blocks_player_startup(installed):
+    manager, source, root = installed
+    manager.shutdown()
+    (root / "runtime/note.txt").unlink()
+    with pytest.raises(RuntimeError, match="Project package checkout is incomplete"):
+        PluginManager.startup(manager.project_root, runtime=True)
+    assert PluginManager.instance() is None
+
+
+def test_package_import_relocates_legacy_absolute_metadata(installed):
+    manager, source, root = installed
+    meta = source / "runtime/note.txt.meta"
+    document = json.loads((root / "runtime/note.txt.meta").read_text(encoding="utf-8"))
+    guid = document["metadata"]["guid"]["value"]
+    document["metadata"]["file_path"] = {"type": "string", "value": "D:/AuthorsMachine/Source/runtime/note.txt"}
+    document["metadata"]["last_modified"] = {"type": "string", "value": "local"}
+    meta.write_text(json.dumps(document), encoding="utf-8")
+    manager.install_package(next_package(source), update=True, install_dependencies=False)
+    installed_meta = json.loads((root / "runtime/note.txt.meta").read_text(encoding="utf-8"))
+    assert installed_meta["metadata"]["guid"]["value"] == guid
+    assert installed_meta["metadata"]["file_path"]["value"] == "Packages/vendor/plugin/runtime/note.txt"
+    assert "last_modified" not in installed_meta["metadata"]
+
+
+def test_clone_restores_project_pip_requirements_without_another_users_baseline(installed, tmp_path, monkeypatch):
+    manager, source, root = installed
+    manager.registry.record_python_install(
+        syntax="pip install demo>=2", command=[str(tmp_path / "LocalPython/python.exe"), "-m", "pip"],
+        output="local diagnostic", owner="@project", requirements=["demo>=2"],
+        dependency_requirements=[{"name": "demo", "requirement": "demo>=2"}],
+        changes=[{"name": "demo", "before": "1", "after": "2"}],
+    )
+    clone = tmp_path / "collaborator"
+    shutil.copytree(manager.project_root, clone, ignore=shutil.ignore_patterns("Library", "Cache", ".runtime"))
+    cloned_manager = PluginManager(str(clone), runtime=False)
+    before = cloned_manager.registry.load()
+    assert before["python_installs"] == []
+    assert before["python_dependencies"][0]["baseline_version"] == ""
+    assert before["python_dependencies"][0]["managed"] is False
+    assert "LocalPython" not in (clone / "ProjectSettings/InxPlugins.json").read_text(encoding="utf-8")
+    environment = {}
+    monkeypatch.setattr(cloned_manager, "_project_python_executable", lambda: "project-python")
+    monkeypatch.setattr(cloned_manager, "_python_environment_snapshot", lambda _exe: dict(environment))
+
+    def install(requirements, *, executable):
+        assert tuple(requirements) == ("demo>=2",)
+        environment["demo"] = "2"
+
+    monkeypatch.setattr(cloned_manager, "_run_pip_requirement_file", install)
+    monkeypatch.setattr(cloned_manager, "_activate_installed_python_paths", lambda *args, **kwargs: None)
+    assert cloned_manager._reconcile_python_requirements_for_startup() == ("@project",)
+    assert environment == {"demo": "2"}
+    assert manager.registry.load()["python_dependencies"][0]["baseline_version"] == "1"
 
 
 def test_bytecode_is_removed_with_retired_source(installed):
@@ -294,7 +371,6 @@ def test_shared_asset_replacement_cannot_be_forced(installed):
 
 def test_selective_import_does_not_reintroduce_unselected_members(tmp_path, monkeypatch):
     manager = PluginManager(str(_project(tmp_path / "project")), runtime=True)
-    monkeypatch.setattr(manager, "_cache_package", lambda path, ref, version: (path, f"{version}.inxpkg"))
     source = _source(tmp_path / "source", "vendor/plugin")
     (source / "runtime").mkdir()
     (source / "runtime/note.txt").write_text("first", encoding="utf-8")
@@ -366,8 +442,8 @@ def test_update_with_real_binary_archives_and_shared_cache(tmp_path):
     manager.install_package(next_package(source), update=True, install_dependencies=False)
     assert (project / "Packages/vendor/plugin/runtime/note.txt").read_text() == "second"
     installed = manager.registry.installed_record("vendor/plugin")
-    assert InxPackage.inspect(installed["package_path"]).metadata["version"] == "2.0.0"
-    assert str(tmp_path / "hub-package-cache").replace("\\", "/") in installed["package_path"].replace("\\", "/")
+    assert InxPackage.inspect(manager._installed_archive_path(installed)).metadata["version"] == "2.0.0"
+    assert installed["package_path"] == "packages/vendor/plugin/2.0.0.inxpkg"
 
 
 def test_publisher_rename_moves_unmodified_location_but_keeps_guid(installed):

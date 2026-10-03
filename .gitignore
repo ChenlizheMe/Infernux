@@ -8,6 +8,10 @@
 /tests/fixtures/*/Library/
 /tests/fixtures/*/Logs/
 /tests/fixtures/*/.runtime/
+# Project package working copies are source and remain tracked. Only package
+# manager staging/cache directories are generated state.
+**/Packages/.staging/
+**/Packages/.cache/
 /packaging/runtime/
 /packaging/InfernuxHubData/
 # Local scratch work is outside version control and removed by workspace cleanup.
@@ -33,7 +37,6 @@ Makefile
 *.exe
 *.ilk
 *.exp
-*.meta
 
 # ============================================================================
 # Python packaging & distribution

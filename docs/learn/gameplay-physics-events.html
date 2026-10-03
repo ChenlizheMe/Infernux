@@ -76,7 +76,7 @@
 <div class="learn-note"><strong>Use the physics clock.</strong><p><code>fixed_update(self, fixed_delta_time)</code> runs on the fixed physics step, whose default is 50 Hz. Apply continuous forces and kinematic movement there. Frame-rate presentation and ordinary per-frame input polling can remain in <code>update</code>.</p></div>
 
 <h2 id="build-physics-scene">Build the test scene</h2>
-<p>Start from a scene with a Camera that can see the origin, then create these objects:</p>
+<p>Start from a scene with a Camera that can see the origin. Move the Cubes and other colliders from earlier chapters away from the test area; they can block the Probe before it reaches the Sensor. Then create these objects:</p>
 <ol>
 <li>Create a <strong>Cube</strong> named <code>Ground</code>. Set Position to <code>(0, -0.5, 0)</code> and Scale to <code>(12, 1, 4)</code>. The primitive already has a <code>BoxCollider</code>; leave its <strong>Is Trigger</strong> disabled and do not add a Rigidbody.</li>
 <li>Create a <strong>Sphere</strong> named <code>Probe</code>. Set Position to <code>(-4, 2, 0)</code>. The primitive already has a <code>SphereCollider</code>; use <strong>Add Component</strong> to add only <code>Rigidbody</code>. Set <strong>Mass</strong> to <code>1</code> and <strong>Drag</strong> to <code>0</code>, keep <strong>Use Gravity</strong> enabled and <strong>Is Kinematic</strong> disabled. Enable the Rigidbody's <strong>Freeze Position Z</strong> and all three <strong>Freeze Rotation</strong> controls so the example stays on one line. Leave Position X and Y unfrozen and use the default physics material on both Probe and Ground.</li>
@@ -301,7 +301,7 @@
 <div class="learn-note"><strong>使用物理时钟。</strong><p><code>fixed_update(self, fixed_delta_time)</code> 按固定物理步运行，默认频率为 50 Hz。连续施力与运动学移动适合放在这里。逐帧显示逻辑和普通输入轮询可以留在 <code>update</code>。</p></div>
 
 <h2 id="build-physics-scene_1">搭建测试场景</h2>
-<p>先准备一个能看见原点的 Camera，再创建以下物体：</p>
+<p>先准备一个能看见原点的 Camera，把前几章的 Cube 和其他 Collider 移出测试区域，避免它们在 Probe 到达 Sensor 前挡住路径，再创建以下物体：</p>
 <ol>
 <li>创建 <strong>Cube</strong>，命名为 <code>Ground</code>。把 Position 设为 <code>(0, -0.5, 0)</code>，Scale 设为 <code>(12, 1, 4)</code>。该基础几何体已经带有 <code>BoxCollider</code>；保持 <strong>Is Trigger</strong> 关闭，不添加 Rigidbody。</li>
 <li>创建 <strong>Sphere</strong>，命名为 <code>Probe</code>。把 Position 设为 <code>(-4, 2, 0)</code>。该基础几何体已经带有 <code>SphereCollider</code>；通过 <strong>Add Component</strong> 只添加 <code>Rigidbody</code>。把 <strong>Mass</strong> 设为 <code>1</code>、<strong>Drag</strong> 设为 <code>0</code>，保持 <strong>Use Gravity</strong> 开启、<strong>Is Kinematic</strong> 关闭。开启 Rigidbody 的 <strong>Freeze Position Z</strong> 和三个 <strong>Freeze Rotation</strong>，让运动稳定在一条直线上。Position X、Y 不冻结，Probe 和 Ground 都使用默认物理材质。</li>

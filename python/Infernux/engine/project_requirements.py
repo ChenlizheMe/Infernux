@@ -2,7 +2,7 @@
 
 On every engine startup (editor or player) this module reads
 ``<project>/ProjectSettings/requirements.txt`` and ensures that every
-listed package is importable.  In editor mode missing packages are
+listed package satisfies its version/source constraint and is importable. In editor mode missing packages are
 installed automatically; in player mode the check is informational only.
 
 Users can customise their project environment by editing the file.
@@ -11,11 +11,13 @@ Users can customise their project environment by editing the file.
 from __future__ import annotations
 
 import importlib.util
+import importlib.metadata
 import logging
 import os
-import re
 import subprocess
 import sys
+
+from packaging.requirements import Requirement
 
 from Infernux.engine.path_utils import resolved_path
 
@@ -90,13 +92,31 @@ def _parse_requirements(path: str) -> list[tuple[str, str]]:
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
             line = line.strip()
-            if not line or line.startswith("#") or line.startswith("-"):
+            if not line or line.startswith("#"):
                 continue
-            # Extract bare package name for import check
-            pkg = re.split(r"[><=!;\[\s]", line, maxsplit=1)[0].strip()
-            if pkg:
-                entries.append((line, _pip_name_to_import(pkg)))
+            if line.startswith("-"):
+                raise ValueError("Project requirements must contain PEP 508 requirements, not pip options")
+            spec = line.split(" #", 1)[0].strip()
+            requirement = Requirement(spec)
+            if requirement.marker is None or requirement.marker.evaluate():
+                entries.append((spec, _pip_name_to_import(requirement.name)))
     return entries
+
+
+def _has_requirement(spec: str, import_name: str) -> bool:
+    requirement = Requirement(spec)
+    try:
+        distribution = importlib.metadata.distribution(requirement.name)
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    if not requirement.specifier.contains(distribution.version, prereleases=True):
+        return False
+    if requirement.url:
+        import json
+        direct_url = distribution.read_text("direct_url.json")
+        if direct_url is None or json.loads(direct_url).get("url") != requirement.url:
+            return False
+    return _has_module(import_name)
 
 
 def _install_packages(specs: list[str]) -> bool:
@@ -129,7 +149,7 @@ def ensure_project_requirements(
 ) -> bool:
     """Check (and optionally install) packages listed in ProjectSettings/requirements.txt.
 
-    Returns ``True`` when all listed packages are importable after the check.
+    Returns ``True`` when all active requirements are satisfied after the check.
     The check runs at most once per process (guarded by an env-var flag).
     """
     req_file = requirements_path(project_path)
@@ -151,7 +171,7 @@ def ensure_project_requirements(
     # Find missing packages
     missing: list[tuple[str, str]] = []  # (pip_spec, import_name)
     for pip_spec, import_name in entries:
-        if not _has_module(import_name):
+        if not _has_requirement(pip_spec, import_name):
             missing.append((pip_spec, import_name))
 
     if not missing:
@@ -181,7 +201,7 @@ def ensure_project_requirements(
 
     # Verify that all packages are now importable
     importlib.invalidate_caches()
-    still_missing = [m for _, m in missing if not _has_module(m)]
+    still_missing = [m for spec, m in entries if not _has_requirement(spec, m)]
     if still_missing:
         _log.warning(
             "Project requirements check: still missing after install: %s",

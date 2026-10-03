@@ -101,6 +101,18 @@ class _FakeInxPack:
 
 @pytest.fixture(autouse=True)
 def _fake_inxpack(tmp_path, monkeypatch):
+    from Infernux.plugins.cache import SharedPackageCache
+    original_store = SharedPackageCache.store
+
+    def store(cache, source, **kwargs):
+        destination = original_store(cache, source, **kwargs)
+        if os.path.abspath(source) in _FakeInxPack.archives:
+            _FakeInxPack.archives[os.path.abspath(destination)] = dict(
+                _FakeInxPack.archives[os.path.abspath(source)]
+            )
+        return destination
+
+    monkeypatch.setattr(SharedPackageCache, "store", store)
     monkeypatch.setenv(
         "INFERNUX_PACKAGE_CACHE_ROOT",
         str(tmp_path / "hub-package-cache"),
@@ -1022,7 +1034,7 @@ def test_resources_root_inxpackages_are_mandatory_and_idempotent(tmp_path):
     assert second == ()
     record = manager.registry.installed_record("infernux/platform-fixture")
     assert record is not None
-    assert record["source"]["location"] == str(package.resolve())
+    assert record["source"]["location"] == record["source"]["cache_location"]
     assert record["source"]["builtin"] is True
     assert (project / "Packages/infernux/platform-fixture/runtime/fixture.py").is_file()
 
@@ -1043,7 +1055,7 @@ def test_resources_root_updates_an_installed_builtin_when_payload_changes(tmp_pa
     )
     record = manager.registry.installed_record("infernux/platform-fixture")
     assert record is not None
-    cached = Path(str(record["package_path"]))
+    cached = Path(manager._installed_archive_path(record))
     _FakeInxPack.archives[str(cached.resolve())] = dict(
         _FakeInxPack.archives[str(package.resolve())]
     )
@@ -1061,7 +1073,7 @@ def test_resources_root_updates_an_installed_builtin_when_payload_changes(tmp_pa
 
     record = manager.registry.installed_record("infernux/platform-fixture")
     assert record is not None
-    cached = Path(str(record["package_path"]))
+    cached = Path(manager._installed_archive_path(record))
     _FakeInxPack.archives[str(cached.resolve())] = dict(
         _FakeInxPack.archives[str(package.resolve())]
     )
@@ -1122,7 +1134,7 @@ def test_resources_root_package_ignores_an_older_shared_cache_entry(tmp_path):
     ).read_text(encoding="utf-8") == "RELEASE = 'bundled'\n"
     record = manager.registry.installed_record("infernux/platform-fixture")
     assert record is not None
-    assert record["source"]["location"] == str(bundled_package.resolve())
+    assert record["source"]["location"] == record["source"]["cache_location"]
     assert record["source"]["builtin"] is True
 
 
@@ -1156,7 +1168,7 @@ def test_resources_root_preserves_existing_project_plugin_release(tmp_path):
     ).read_text(encoding="utf-8") == "RELEASE = 'project'\n"
     record = manager.registry.installed_record("infernux/platform-fixture")
     assert record is not None
-    assert record["source"]["location"] == str(project_package.resolve())
+    assert record["source"]["location"] == record["source"]["cache_location"]
     assert record["source"].get("builtin") is not True
 
 
@@ -2168,8 +2180,8 @@ def test_arbitrary_pip_syntax_is_project_scoped_and_written_to_lock(tmp_path, mo
     lock = json.loads(
         (project / "ProjectSettings/InxPackages.lock.json").read_text(encoding="utf-8")
     )
-    assert lock["python"][0]["syntax"].startswith("pip install")
-    assert lock["python"][0]["output"] == "installed wheel"
+    assert lock["python"] == ["demo[vision]>=2"]
+    assert result["output"] == "installed wheel"
     assert lock["python_dependencies"][0]["name"] == "demo"
     assert lock["python_dependencies"][0]["owners"][0]["reference"] == "@project"
 

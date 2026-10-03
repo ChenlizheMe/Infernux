@@ -17,7 +17,7 @@ This chapter builds a two-scene loop: `MainMenu.scene` contains a Play Button, a
 
 ## Prepare two authored scenes {#prepare-scenes}
 
-Create an `Assets/Scenes` folder, then prepare these saved scene assets:
+Create an `Assets/Scenes` folder, then prepare these saved scene assets. Keep an enabled Camera and a RenderStack in both scenes. **New Scene** supplies the default rendering objects; if you created an empty scene asset, add **Rendering > Camera** and **Rendering > RenderStack** in Hierarchy before testing the menu:
 
 1. Save the first scene as `Assets/Scenes/MainMenu.scene`.
 2. In Hierarchy, create **UI > Canvas**.
@@ -161,7 +161,7 @@ You now have a complete authored action path: pointer click, serialized componen
 
 ## 准备两个场景 {#prepare-scenes_1}
 
-创建 `Assets/Scenes` 文件夹，再准备以下场景资产：
+创建 `Assets/Scenes` 文件夹，再准备以下场景资产。两个场景都需要启用的 Camera 和 RenderStack。**新建场景** 会提供默认渲染物体；如果创建的是空场景资产，先在 Hierarchy 中添加 **Rendering > Camera** 与 **Rendering > RenderStack**，再测试菜单：
 
 1. 把第一个场景保存为 `Assets/Scenes/MainMenu.scene`。
 2. 在 Hierarchy 中创建 **UI > Canvas**。

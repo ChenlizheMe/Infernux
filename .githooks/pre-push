@@ -18,7 +18,15 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     continue
   fi
   if [ "$remote_sha" = "$zero" ]; then
-    base=$(git hash-object -t tree /dev/null)
+    # New feature branches share the repository's default-branch baseline.
+    # Comparing with an empty tree rechecks every historical source file.
+    remote_name=$1
+    default_ref=$(git symbolic-ref --quiet "refs/remotes/$remote_name/HEAD" || true)
+    if [ -n "$default_ref" ]; then
+      base=$(git merge-base "$default_ref" "$local_sha")
+    else
+      base=$(git hash-object -t tree /dev/null)
+    fi
   else
     base=$remote_sha
   fi

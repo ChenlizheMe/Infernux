@@ -10,6 +10,10 @@
 /.runtime/
 /.venv/
 
+# Package manager staging is disposable; Packages source files are tracked.
+/Packages/.staging/
+/Packages/.cache/
+
 # Game build outputs
 /Build/
 /Builds/
@@ -29,6 +33,7 @@ __pycache__/
 .ruff_cache/
 
 # Temporary asset sidecars (asset .meta files must remain tracked)
+!*.meta
 *.meta.tmp
 *.tmp
 *.bak

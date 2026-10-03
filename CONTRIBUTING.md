@@ -2,6 +2,10 @@
 
 Thanks for contributing.
 
+多人协作、项目资产和 Packages 的同步边界见
+[`COLLABORATION.md`](COLLABORATION.md)。结构化项目文件默认拒绝 Git 自动合并，提交前
+请运行其中的同步审计。
+
 ## Before you start
 
 - Read the main `README.md` for project scope and current limitations.

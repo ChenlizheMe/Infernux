@@ -1,1 +1,33 @@
+# Keep repository and project text deterministic across platforms.
+* text=auto
 *.sh text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.scene text eol=lf merge=binary
+*.prefab text eol=lf merge=binary
+*.mat text eol=lf merge=binary
+*.effect text eol=lf merge=binary
+*.effectgroup text eol=lf merge=binary
+*.particlegraph text eol=lf merge=binary
+*.meta text eol=lf merge=binary
+**/ProjectSettings/*.json text eol=lf merge=binary
+**/InxPlugins.json text eol=lf merge=binary
+
+# Project payloads are immutable bytes; Git must never rewrite them as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.tga binary
+*.dds binary
+*.ktx binary
+*.ktx2 binary
+*.fbx binary
+*.glb binary
+*.blend binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.flac binary
+*.inxpkg binary

@@ -10,7 +10,7 @@
         },
         "file_path": {
             "type": "string",
-            "value": "E:/project/InfEngine/tests/fixtures/multiplatform_player/Assets/Scripts/Bootstrap.py"
+            "value": "Assets/Scripts/Bootstrap.py"
         },
         "file_size": {
             "type": "size_t",

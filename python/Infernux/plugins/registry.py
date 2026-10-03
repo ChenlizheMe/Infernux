@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import os
 import time
 import uuid
@@ -11,7 +12,7 @@ from typing import Iterable, Mapping
 from packaging.utils import canonicalize_name
 
 from Infernux.core.document_store import write_document_text
-from Infernux.engine.path_utils import resolved_path
+from Infernux.engine.path_utils import resolved_path, is_path_within, relative_path, portable_path
 
 from .content import normalize_locale, normalize_page_descriptor
 from .package import validate_reference
@@ -29,6 +30,7 @@ class PluginRegistry:
             raise ValueError("PluginRegistry requires a project root")
         self.path = os.path.join(self.project_root, REGISTRY_RELATIVE_PATH)
         self.lock_path = os.path.join(self.project_root, LOCK_RELATIVE_PATH)
+        self.environment_path = os.path.join(self.project_root, "Library", "Plugins", "PythonEnvironment.json")
 
     def load(self) -> dict[str, object]:
         if not os.path.isfile(self.path):
@@ -56,10 +58,19 @@ class PluginRegistry:
             raise ValueError("Plugin registry catalog, install, and Python fields must be lists")
         self._validate_installed(value["installed"])
         _validate_python_dependencies(value["python_dependencies"])
+        if os.path.isfile(self.environment_path):
+            with open(self.environment_path, "r", encoding="utf-8") as stream:
+                environment = json.load(stream)
+            value["python_installs"] = environment["python_installs"]
+            states = environment["dependencies"]
+            for dependency in value["python_dependencies"]:
+                state = states.get(dependency["name"])
+                if state is not None:
+                    dependency.update(state)
         return value
 
     def save(self, value: Mapping[str, object]) -> None:
-        document = dict(value)
+        document = copy.deepcopy(dict(value))
         document["$schema"] = REGISTRY_SCHEMA
         if set(document) != {
             "$schema", "packages", "installed", "python_installs",
@@ -75,14 +86,55 @@ class PluginRegistry:
             raise ValueError("Plugin registry catalog, install, and Python fields must be lists")
         self._validate_installed(document["installed"])
         _validate_python_dependencies(document["python_dependencies"])
+        self._portable_paths(document)
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        # Installation output, interpreter paths and pre-install versions belong
+        # to this checkout's environment, never to a collaborator's runtime.
+        environment = {
+            "python_installs": document["python_installs"],
+            "dependencies": {
+                item["name"]: {key: item[key] for key in ("managed", "baseline_version", "installed_version")}
+                for item in document["python_dependencies"]
+            },
+        }
+        os.makedirs(os.path.dirname(self.environment_path), exist_ok=True)
+        write_document_text(self.environment_path, json.dumps(environment, indent=2, ensure_ascii=False) + "\n")
+        shared = copy.deepcopy(document)
+        shared["python_installs"] = []
+        for dependency in shared["python_dependencies"]:
+            dependency["managed"] = False
+            dependency["baseline_version"] = ""
         # Registry readers include the UI, script scanner and preload workers.
         # Use the shared IO service's durable publication and Windows sharing
         # semantics instead of a separate, immediate os.replace implementation.
         write_document_text(
-            self.path, json.dumps(document, indent=2, ensure_ascii=False) + "\n"
+            self.path, json.dumps(shared, indent=2, ensure_ascii=False) + "\n"
         )
         self._write_lock(document)
+
+    def _portable_paths(self, document: dict[str, object]) -> None:
+        """Keep machine cache locations out of the shared ownership ledger."""
+        from .cache import SharedPackageCache
+
+        for record in [*document["packages"], *document["installed"]]:
+            source = record.get("source", {})
+            if not isinstance(source, dict):
+                continue
+            cache_location = str(source.get("cache_location", ""))
+            if source.get("cache_scope") == "hub" and cache_location:
+                cache_location = SharedPackageCache.validate_location(cache_location)
+                if "package_path" in record:
+                    record["package_path"] = cache_location
+                if source.get("type") == "local":
+                    location = str(source.get("location", ""))
+                    if os.path.isabs(location) and is_path_within(location, self.project_root, allow_root=False):
+                        source["location"] = portable_path(relative_path(location, self.project_root))
+                    elif os.path.isabs(location):
+                        source["location"] = cache_location
+            elif source.get("type") == "local":
+                location = str(source.get("location", ""))
+                if os.path.isabs(location) and is_path_within(location, self.project_root, allow_root=False):
+                    source["location"] = portable_path(relative_path(location, self.project_root))
 
     def available(self) -> tuple[dict[str, object], ...]:
         return tuple(
@@ -575,8 +627,6 @@ class PluginRegistry:
                         "reference",
                         "version",
                         "engine",
-                        "transaction_id",
-                        "installed_at",
                         "source",
                         "dependencies",
                         "enabled",
@@ -588,10 +638,16 @@ class PluginRegistry:
         document = {
             "$schema": "infernux.package_lock",
             "packages": packages,
-            "python": list(registry.get("python_installs", [])),
-            "python_dependencies": list(
-                registry.get("python_dependencies", [])
-            ),
+            "python": sorted({
+                str(requirement)
+                for dependency in registry.get("python_dependencies", [])
+                for owner in dependency.get("owners", [])
+                for requirement in owner.get("requirements", [])
+            }),
+            "python_dependencies": [
+                {key: item[key] for key in ("name", "installed_version", "owners")}
+                for item in registry.get("python_dependencies", [])
+            ],
         }
         os.makedirs(os.path.dirname(self.lock_path), exist_ok=True)
         write_document_text(

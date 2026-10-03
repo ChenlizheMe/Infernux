@@ -18,7 +18,7 @@
         },
         "file_path": {
             "type": "string",
-            "value": "E:/project/InfEngine/tests/fixtures/multiplatform_player/Assets/Scenes/Main.scene"
+            "value": "Assets/Scenes/Main.scene"
         },
         "file_size": {
             "type": "size_t",

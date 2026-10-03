@@ -348,6 +348,9 @@ def install_bundled_packages(
         # package can resolve another regardless of filename ordering.
         for package_path, preview in previews:
             metadata = preview.metadata
+            _cached, cache_location = manager._cache_package(
+                package_path, str(metadata["reference"]), str(metadata.get("version", ""))
+            )
             manager.registry.add_package(
                 str(metadata["reference"]),
                 name=str(metadata.get("name", "")),
@@ -359,7 +362,9 @@ def install_bundled_packages(
                 pages=metadata.get("pages", ()),
                 source={
                     "type": "local",
-                    "location": package_path,
+                    "location": cache_location,
+                    "cache_scope": "hub",
+                    "cache_location": cache_location,
                     "builtin": True,
                 },
             )

@@ -3,7 +3,7 @@ name: Desktop Release And Tests
 on:
   pull_request:
   push:
-    branches: [master, main]
+    branches: [master, main, '041-post/**']
   workflow_call:
     inputs:
       sign_windows_release:
@@ -78,6 +78,8 @@ jobs:
           sudo apt-get install --yes --no-install-recommends libegl1 libopengl0 libgl1
       - name: Install portable test dependencies
         run: python -m pip install pytest PySide6 packaging PyYAML
+      - name: Audit project synchronization contract
+        run: python scripts/maintenance/audit_project_sync.py tests/fixtures/multiplatform_player --tracked
       # Keep this focused list synchronized with TESTING.md.
       - name: Test critical Hub workflows without a native engine
         run: >-
@@ -93,6 +95,7 @@ jobs:
           packaging/tests/test_hub_utils.py
           packaging/tests/test_bundle_resources.py
           packaging/tests/test_workspace_cleanup.py
+          packaging/tests/test_project_sync_audit.py
           tests/contracts
           -q -ra --junitxml out/test-results/portable-hub.xml
       - uses: actions/upload-artifact@v4

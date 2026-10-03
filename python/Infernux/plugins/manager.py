@@ -53,6 +53,7 @@ from .package import (
     REPOSITORY_PACKAGE_DIRECTORY,
     SOURCE_MANIFEST,
     current_meta_bytes,
+    portable_meta_bytes,
     package_control_root,
     package_destination,
     validate_reference,
@@ -283,6 +284,12 @@ class PluginManager:
         # without unloading those live instances and importing them again.
         manager.preloads.catch_up()
         manager._rebuild_states()
+        if runtime:
+            missing = [state.error for state in manager.states.values()
+                       if state.enabled and "Missing package asset" in state.error]
+            if missing:
+                manager.shutdown()
+                raise RuntimeError("Project package checkout is incomplete: " + "; ".join(missing))
         if not runtime:
             manager._attach_resource_events()
         return manager
@@ -312,9 +319,10 @@ class PluginManager:
     def _rebuild_states(self) -> tuple[PluginState, ...]:
         snapshots = self.preloads.snapshots()
         installed = self.registry.installed()
+        guid_index = self._guid_index() if installed else {}
         self.states.clear()
         for record in installed:
-            state = self._state_for_record(record, snapshots)
+            state = self._state_for_record(record, snapshots, guid_index)
             self.states[state.reference.casefold()] = state
         return tuple(self.states.values())
 
@@ -588,7 +596,7 @@ class PluginManager:
                         for bytecode in _script_bytecode_paths(item.destination):
                             transaction.remove(bytecode)
                     transaction.write(item.destination, item.payload)
-                    transaction.write(item.destination + ".meta", item.meta_payload)
+                    transaction.write(item.destination + ".meta", portable_meta_bytes(item.meta_payload, item.destination_relative))
                 control_payload = (
                     json.dumps(preview.metadata, ensure_ascii=False, indent=2) + "\n"
                 ).encode("utf-8")
@@ -724,7 +732,7 @@ class PluginManager:
                 for item in planned:
                     if item.owned:
                         transaction.write(item.destination, item.payload)
-                        transaction.write(item.destination + ".meta", item.meta_payload)
+                        transaction.write(item.destination + ".meta", portable_meta_bytes(item.meta_payload, item.destination_relative))
                 document = self.registry.load()
                 record = next(
                     item for item in document["installed"]
@@ -943,10 +951,9 @@ class PluginManager:
         cache = self._package_cache()
         source = record.get("source")
         if isinstance(source, Mapping):
-            location = portable_path(
-                str(source.get("cache_location", ""))
-            ).strip("/")
+            location = str(source.get("cache_location", ""))
             if location:
+                location = SharedPackageCache.validate_location(location)
                 candidate = resolved_path(
                     os.path.join(cache.root, *location.split("/"))
                 )
@@ -954,6 +961,14 @@ class PluginManager:
                     return candidate
         version = str(record.get("version", "")).strip()
         return cache.resolve(reference, version) if version else ""
+
+    def _installed_archive_path(self, record: Mapping[str, object]) -> str:
+        source = record.get("source", {})
+        if isinstance(source, Mapping) and source.get("cache_scope") == "hub":
+            location = SharedPackageCache.validate_location(str(source.get("cache_location", "")))
+            return resolved_path(os.path.join(self._package_cache().root, *location.split("/")))
+        # Compatibility with project registries written before portable caches.
+        return resolved_path(str(record.get("package_path", "")))
 
     def download_reference(
         self,
@@ -975,13 +990,6 @@ class PluginManager:
         if not isinstance(source, Mapping):
             raise ValueError(f"Plugin registry source is invalid: {reference}")
         descriptor = self._source_descriptor(source)
-        descriptor.update(
-            {
-                key: value
-                for key, value in source.items()
-                if key not in {"cache_location", "cache_scope"}
-            }
-        )
         with self._package_cache().workspace("download") as workspace:
             package_path, acquired_source = self._materialize_source(
                 descriptor,
@@ -1160,6 +1168,16 @@ class PluginManager:
             if requirements:
                 requirements_by_plugin[reference] = requirements
                 all_requirements.extend(requirements)
+        project_requirements = tuple(dict.fromkeys(
+            str(requirement)
+            for dependency in self.registry.load()["python_dependencies"]
+            for owner in dependency["owners"]
+            if str(owner["reference"]).startswith("@")
+            for requirement in owner["requirements"]
+        ))
+        if project_requirements:
+            requirements_by_plugin["@project"] = project_requirements
+            all_requirements.extend(project_requirements)
         if not all_requirements:
             return ()
 
@@ -1621,6 +1639,12 @@ class PluginManager:
             raise ValueError("A release version can only be selected for a GitHub plugin source")
         if source_type == "local":
             _report_progress(progress, "read_local_source", 0.16)
+            if descriptor.get("cache_scope") == "hub" and location == descriptor.get("cache_location"):
+                location = SharedPackageCache.validate_location(location)
+                local = resolved_path(os.path.join(self._package_cache().root, *location.split("/")))
+                if not os.path.isfile(local):
+                    raise FileNotFoundError(f"Install the pinned local package archive first: {location}")
+                return self._materialize_local(local, descriptor, workspace, progress)
             local = resolved_path(
                 location
                 if os.path.isabs(location)
@@ -1909,7 +1933,7 @@ class PluginManager:
     ) -> tuple[list[_PlannedFile], dict[str, object], list[str]]:
         """Compare only at the update boundary; reuse the normal GUID routing."""
         reference = str(current["reference"])
-        previous_path = str(current.get("package_path", ""))
+        previous_path = self._installed_archive_path(current)
         previous = InxPackage.inspect(previous_path) if os.path.isfile(previous_path) else None
         old_files = {str(item["guid"]).casefold(): item for item in current["files"]}
         old_contents = {
@@ -2134,6 +2158,7 @@ class PluginManager:
         self,
         record: Mapping[str, object],
         lifecycle: tuple[dict[str, object], ...],
+        guid_index: Mapping[str, str],
     ) -> PluginState:
         reference = str(record.get("reference", ""))
         package_lifecycle = tuple(
@@ -2144,16 +2169,16 @@ class PluginManager:
         )
         errors = [str(item.get("error", "")) for item in package_lifecycle if item.get("error")]
         enabled = bool(record.get("enabled", True))
-        resources = {
-            str(item.get("logical_path", "")): resolved_path(
-                os.path.join(
-                    self.project_root,
-                    *portable_path(str(item.get("path_hint", ""))).split("/"),
-                )
-            )
-            for item in record.get("files", [])
-            if isinstance(item, Mapping)
-        }
+        resources = {}
+        for item in [*record.get("files", []), record.get("control")]:
+            if not isinstance(item, Mapping):
+                continue
+            guid = str(item.get("guid", "")).casefold()
+            path = guid_index.get(guid)
+            if not path:
+                errors.append(f"Missing package asset {reference}: {item.get('logical_path', '')} ({guid})")
+            elif item.get("role") != "control":
+                resources[str(item.get("logical_path", ""))] = path
         return PluginState(
             reference,
             f"Packages/{reference}",

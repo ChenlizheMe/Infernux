@@ -33,7 +33,7 @@ A GameObject can participate in this exercise in three ways:
 
 ## Build the test scene {#build-physics-scene}
 
-Start from a scene with a Camera that can see the origin, then create these objects:
+Start from a scene with a Camera that can see the origin. Move the Cubes and other colliders from earlier chapters away from the test area; they can block the Probe before it reaches the Sensor. Then create these objects:
 
 1. Create a **Cube** named `Ground`. Set Position to `(0, -0.5, 0)` and Scale to `(12, 1, 4)`. The primitive already has a `BoxCollider`; leave its **Is Trigger** disabled and do not add a Rigidbody.
 2. Create a **Sphere** named `Probe`. Set Position to `(-4, 2, 0)`. The primitive already has a `SphereCollider`; use **Add Component** to add only `Rigidbody`. Set **Mass** to `1` and **Drag** to `0`, keep **Use Gravity** enabled and **Is Kinematic** disabled. Enable the Rigidbody's **Freeze Position Z** and all three **Freeze Rotation** controls so the example stays on one line. Leave Position X and Y unfrozen and use the default physics material on both Probe and Ground.
@@ -214,7 +214,7 @@ The Probe now turns low-level physics transitions into clean gameplay events. In
 
 ## 搭建测试场景 {#build-physics-scene_1}
 
-先准备一个能看见原点的 Camera，再创建以下物体：
+先准备一个能看见原点的 Camera，把前几章的 Cube 和其他 Collider 移出测试区域，避免它们在 Probe 到达 Sensor 前挡住路径，再创建以下物体：
 
 1. 创建 **Cube**，命名为 `Ground`。把 Position 设为 `(0, -0.5, 0)`，Scale 设为 `(12, 1, 4)`。该基础几何体已经带有 `BoxCollider`；保持 **Is Trigger** 关闭，不添加 Rigidbody。
 2. 创建 **Sphere**，命名为 `Probe`。把 Position 设为 `(-4, 2, 0)`。该基础几何体已经带有 `SphereCollider`；通过 **Add Component** 只添加 `Rigidbody`。把 **Mass** 设为 `1`、**Drag** 设为 `0`，保持 **Use Gravity** 开启、**Is Kinematic** 关闭。开启 Rigidbody 的 **Freeze Position Z** 和三个 **Freeze Rotation**，让运动稳定在一条直线上。Position X、Y 不冻结，Probe 和 Ground 都使用默认物理材质。

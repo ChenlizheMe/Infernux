@@ -65,7 +65,7 @@ class CoroutineTour(inx.InxComponent):
         inx.Debug.log("3. two more update frames passed", self)
 
         yield inx.WaitForSeconds(0.5)
-        inx.Debug.log("4. 0.5 scaled seconds passed", self)
+        inx.Debug.log("4. 0.5 unscaled seconds passed", self)
 
         yield inx.WaitForSecondsRealtime(0.25)
         inx.Debug.log("5. 0.25 real seconds passed", self)
@@ -280,7 +280,7 @@ class CoroutineTour(inx.InxComponent):
         inx.Debug.log("3. two more update frames passed", self)
 
         yield inx.WaitForSeconds(0.5)
-        inx.Debug.log("4. 0.5 scaled seconds passed", self)
+        inx.Debug.log("4. 0.5 unscaled seconds passed", self)
 
         yield inx.WaitForSecondsRealtime(0.25)
         inx.Debug.log("5. 0.25 real seconds passed", self)

@@ -118,10 +118,11 @@ class SharedPackageCache:
 
     @staticmethod
     def validate_location(location: str) -> str:
-        value = str(location).replace("\\", "/").strip("/")
+        value = str(location).replace("\\", "/")
         path = PurePosixPath(value)
         if (
             not value
+            or any(part in {"", ".", ".."} for part in value.split("/"))
             or path.is_absolute()
             or not path.parts
             or path.parts[0] != "packages"

@@ -29,9 +29,9 @@ This walkthrough builds on the collision scene from Chapter 5.
 
 1. Add `Assets/Audio/music_loop.wav` and `Assets/Audio/hit.wav` to the project. WAV, OGG/Vorbis, MP3, and FLAC support both resident and streaming playback. For long music, select the audio asset, set **Load Type → Streaming**, and click **Apply**. Streaming reads and decodes ahead into bounded buffers rather than keeping the entire decoded clip in memory. Keep short effects on **Decompress on Load**. **Revert** discards unapplied import settings.
 2. Select the main camera and add an **AudioListener** component. Keep one active listener in the scene.
-3. Select the player and add an **AudioSource** component. Leave **Track Count** at `1`; the script will assign track 0. Disable **Play On Awake** because the script starts playback after loading the clip.
-4. Keep the player's Collider and Rigidbody from the physics chapter, and keep a Collider on the object it will hit. `on_collision_enter()` requires a real collision pair.
-5. Create `Assets/Scripts/gameplay_audio.py`, paste the component below, and attach `GameplayAudio` to the same player GameObject as the AudioSource.
+3. Select `Probe` from Chapter 5 and add an **AudioSource** component. Leave **Track Count** at `1`; the script will assign track 0. Disable **Play On Awake** because the script starts playback after loading the clip.
+4. Keep Probe's Collider and Rigidbody from the physics chapter, and keep a Collider on the object it will hit. `on_collision_enter()` requires a real collision pair.
+5. Create `Assets/Scripts/gameplay_audio.py`, paste the component below, and attach `GameplayAudio` to the same Probe GameObject as the AudioSource.
 
 The AudioSource Inspector exposes source settings first, followed by a **Tracks** section. Each track has a Clip reference and Volume slider. During Play mode it also shows a Play/Stop control and status. This tutorial assigns the clips in code so the complete example has one reproducible setup path.
 
@@ -219,9 +219,9 @@ Infernux 的 `AudioSource` 是多轨组件，没有单一的 `clip` 属性。先
 
 1. 把 `music_loop.wav` 和 `hit.wav` 放入 `Assets/Audio`。WAV、OGG/Vorbis、MP3 和 FLAC 均支持常驻和流式播放。长音乐可在选中资产后，将 **加载方式** 改为 **流式播放**，再点击 **应用**；引擎会分段预读和解码，不会把整首音乐的 PCM 常驻内存。短音效保持 **加载时解压** 即可。点击 **还原** 可以撤销尚未应用的导入设置。
 2. 选择主摄像机，添加 **AudioListener** 组件。场景中保留一个启用的监听器。
-3. 选择玩家，添加 **AudioSource** 组件。**Track Count** 保持 `1`，脚本会设置轨道 0。关闭 **Play On Awake**，脚本会在音频加载完成后启动播放。
-4. 保留物理章节中的玩家 Collider 与 Rigidbody，并给障碍物保留 Collider。`on_collision_enter()` 需要有效的碰撞组合。
-5. 创建 `Assets/Scripts/gameplay_audio.py`，粘贴下面的组件，再把 `GameplayAudio` 挂到 AudioSource 所在的玩家 GameObject。
+3. 选择第 5 章的 `Probe`，添加 **AudioSource** 组件。**Track Count** 保持 `1`，脚本会设置轨道 0。关闭 **Play On Awake**，脚本会在音频加载完成后启动播放。
+4. 保留 Probe 的 Collider 与 Rigidbody，并给障碍物保留 Collider。`on_collision_enter()` 需要有效的碰撞组合。
+5. 创建 `Assets/Scripts/gameplay_audio.py`，粘贴下面的组件，再把 `GameplayAudio` 挂到 AudioSource 所在的 Probe GameObject。
 
 AudioSource Inspector 先显示音源级设置，后面是 **Tracks** 区域。每条轨道都有 Clip 引用和 Volume 滑块；Play 模式下还会显示 Play/Stop 控件与状态。本教程在代码中分配音频，便于完整复现。
 

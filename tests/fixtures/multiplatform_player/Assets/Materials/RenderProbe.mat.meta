@@ -6,7 +6,7 @@
         },
         "file_path": {
             "type": "string",
-            "value": "E:/project/InfEngine/tests/fixtures/multiplatform_player/Assets/Materials/RenderProbe.mat"
+            "value": "Assets/Materials/RenderProbe.mat"
         },
         "guid": {
             "type": "string",

@@ -310,7 +310,8 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     assert "/Library/" in gitignore
     assert "/.venv/" in gitignore
     assert "/.runtime/" in gitignore
-    assert "*.meta\n" not in gitignore
+    assert "*.meta" not in gitignore.splitlines()
+    assert "!*.meta" in gitignore.splitlines()
     gitattributes = (Path(result) / ".gitattributes").read_text(encoding="utf-8")
     assert "*.scene text eol=lf" in gitattributes
     assert "*.meta text eol=lf" in gitattributes

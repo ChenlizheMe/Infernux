@@ -15,6 +15,7 @@ All paths below are pytest modules. Run one with `python -m pytest PATH -q -ra`.
 | Critical workflow | Owning regression modules | Execution lane |
 | --- | --- | --- |
 | Hub project creation, validation and Python binding | `packaging/tests/test_hub_project_workflow.py`, `packaging/tests/test_project_python_runtime.py`, `packaging/tests/test_hub_new_project_python_binding.py` | Portable Hub; full desktop CI |
+| Project checkout, Packages and asset synchronization contract | `packaging/tests/test_project_sync_audit.py`, `python/test/test_plugin_updates.py`, `python/test/test_project_requirements_versions.py` | Portable audit; native package/clone tests; full desktop CI |
 | Source/installed Hub paths and onefile Installer resources | `packaging/tests/test_hub_utils.py`, `packaging/tests/test_bundle_resources.py` | Portable Hub; full desktop CI |
 | Generated-output cleanup, tracked-file and link protection | `packaging/tests/test_workspace_cleanup.py` | Disposable repositories; PowerShell 7 and Git required |
 | Editor/Player service graph, source-module ownership and manifest policy | `tests/contracts/test_runtime_product_contract.py` | Portable contracts; no native engine required |
@@ -79,7 +80,7 @@ equivalent is:
 
 ```sh
 python -m pip install pytest PySide6 packaging PyYAML
-python -m pytest packaging/tests/test_hub_project_workflow.py packaging/tests/test_project_python_runtime.py packaging/tests/test_hub_new_project_python_binding.py packaging/tests/test_hub_launch_state.py packaging/tests/test_project_runtime_strictness.py packaging/tests/test_regression_guide.py packaging/tests/test_cpu_jit_dependency_packaging.py packaging/tests/test_release_signing.py packaging/tests/test_hub_utils.py packaging/tests/test_bundle_resources.py packaging/tests/test_workspace_cleanup.py tests/contracts -q -ra
+python -m pytest packaging/tests/test_hub_project_workflow.py packaging/tests/test_project_python_runtime.py packaging/tests/test_hub_new_project_python_binding.py packaging/tests/test_hub_launch_state.py packaging/tests/test_project_runtime_strictness.py packaging/tests/test_regression_guide.py packaging/tests/test_cpu_jit_dependency_packaging.py packaging/tests/test_release_signing.py packaging/tests/test_hub_utils.py packaging/tests/test_bundle_resources.py packaging/tests/test_workspace_cleanup.py packaging/tests/test_project_sync_audit.py tests/contracts -q -ra
 ```
 
 For a session without a display, set `QT_QPA_PLATFORM=offscreen` first

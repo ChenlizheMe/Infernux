@@ -292,7 +292,9 @@ class InxPackage:
             )
             _atomic_write(
                 destination + ".meta",
-                read_entry(preview.package_path, str(record["meta_archive_path"])),
+                portable_meta_bytes(
+                    read_entry(preview.package_path, str(record["meta_archive_path"])), destination_relative
+                ),
                 project,
             )
             extracted.append(destination)
@@ -506,6 +508,36 @@ class InxPackage:
             return guid, current_meta_bytes(guid, content, existing=payload)
         guid = uuid.uuid5(_GUID_NAMESPACE, f"{reference}\0{logical}").hex
         return guid, current_meta_bytes(guid, content)
+
+
+def portable_meta_bytes(payload: bytes, destination_relative: str) -> bytes:
+    """Relocate archived sidecars at the project publication boundary."""
+    document = json.loads(payload)
+
+    def relocate(value):
+        if isinstance(value, list):
+            for item in value:
+                relocate(item)
+        elif isinstance(value, dict):
+            fields = value.get("metadata")
+            if isinstance(fields, dict):
+                fields.pop("last_modified", None)
+                entry = fields.get("file_path")
+                if isinstance(entry, dict) and entry.get("type") == "string":
+                    old = str(entry["value"])
+                    suffix = "::" + old.split("::", 1)[1] if "::" in old else ""
+                    entry["value"] = destination_relative + suffix
+                for key in ("model_textures", "model_animations"):
+                    entry = fields.get(key)
+                    if isinstance(entry, dict) and isinstance(entry.get("value"), str):
+                        table = json.loads(entry["value"])
+                        relocate(table)
+                        entry["value"] = json.dumps(table, ensure_ascii=False, separators=(",", ":"))
+            for item in value.values():
+                relocate(item)
+
+    relocate(document)
+    return (json.dumps(document, indent=4, ensure_ascii=False) + "\n").encode("utf-8")
 
 
 def validate_reference(value: str) -> str:
