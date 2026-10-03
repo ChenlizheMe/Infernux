@@ -132,6 +132,12 @@ class GameEngineLauncher(QMainWindow):
         self.viewmodel = viewmodel
         self.project_list.remove_requested.connect(self._remove_project_from_card)
         self.project_list.migrate_requested.connect(self._migrate_project_from_card)
+        # Engine and Python installs change which project cards are launchable.
+        # Rebuild the cards after the queue completes so a blocked project
+        # becomes selectable as soon as its matching local version is ready.
+        self.install_queue.job_finished.connect(
+            lambda _job: self.project_list.refresh()
+        )
         self.controls = ControlPane(viewmodel, parent=projects_page)
 
         self.controls.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)

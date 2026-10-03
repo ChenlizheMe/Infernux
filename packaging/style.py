@@ -436,6 +436,15 @@ class StyleManager:
                 background: transparent;
                 border: none;
             }}
+            QFrame#projectCard:disabled {{
+                background: {disabled_surface};
+                border: 1px solid rgba(128, 128, 128, 0.20);
+            }}
+            QFrame#projectCard:disabled QLabel#cardName,
+            QFrame#projectCard:disabled QLabel#cardPath,
+            QFrame#projectCard:disabled QLabel#projectVersion {{
+                color: {disabled_text};
+            }}
             QPushButton#cardAvatar {{
                 background-color: {bg_surface_selected};
                 color: {accent};

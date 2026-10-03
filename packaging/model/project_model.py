@@ -748,10 +748,22 @@ class ProjectModel:
             return os.path.join(venv_dir, "Scripts", "python.exe")
         return os.path.join(venv_dir, "bin", "python")
 
-    def _create_project_runtime(self, project_dir: str, *, on_status=None) -> None:
+    def _create_project_runtime(
+        self,
+        project_dir: str,
+        *,
+        on_status=None,
+        replace_existing: bool = False,
+    ) -> None:
         if is_frozen():
             target_version = read_project_python_version(project_dir)
             runtime_path = project_runtime_directory(project_dir, target_version)
+            if replace_existing and os.path.exists(runtime_path):
+                # The project runtime is generated state and is deliberately
+                # ignored by Git.  A missing executable means a partial clone
+                # or interrupted copy; rebuild that cache from the Hub-owned
+                # runtime before launch.
+                _remove_tree(runtime_path)
             try:
                 self.runtime_manager.create_project_runtime(
                     runtime_path,

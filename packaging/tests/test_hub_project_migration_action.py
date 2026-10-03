@@ -1,10 +1,11 @@
 from types import SimpleNamespace
 
-from PySide6.QtWidgets import QApplication, QScrollArea
+from PySide6.QtWidgets import QApplication, QLabel, QScrollArea
 
 from i18n import tr
 from launcher import GameEngineLauncher
 from ui_project_list import ProjectListPane
+import ui_project_list as ui_project_list_module
 
 
 def test_project_menu_migrates_the_clicked_project_not_previous_selection(tmp_path):
@@ -65,5 +66,42 @@ def test_refresh_hides_retired_widgets_before_opening_a_modal(tmp_path):
         pane.refresh()
         # The caller may enter a modal loop before deferred deletion runs.
         assert not empty_state.isVisible()
+    finally:
+        pane.close()
+
+
+def test_project_with_missing_local_engine_version_is_disabled(
+    tmp_path, monkeypatch
+):
+    app = QApplication.instance() or QApplication([])
+    project = tmp_path / "Project"
+    (project / "ProjectSettings").mkdir(parents=True)
+    (project / "ProjectSettings" / "PythonRuntime.json").write_text(
+        '{"pythonVersion": "3.13"}\n', encoding="utf-8"
+    )
+    (project / ".infernux-version").write_text("0.4.1\n", encoding="utf-8")
+
+    class VersionManager:
+        @staticmethod
+        def is_installed(_version, _python_version=None):
+            return False
+
+    monkeypatch.setattr(ui_project_list_module, "is_frozen", lambda: True)
+    record = SimpleNamespace(
+        project_id="missing", name="Missing runtime", created_at="", path=str(project)
+    )
+    pane = ProjectListPane(
+        SimpleNamespace(all_projects=lambda: [record]), VersionManager()
+    )
+    try:
+        card = pane.project_cards["missing"]
+        assert card.isEnabled() is False
+        assert card.can_select is False
+        assert any(
+            label.text().startswith(tr("Install required version"))
+            for label in card.findChildren(QLabel)
+        )
+        pane.select_project("missing")
+        assert pane.get_selected_project_id() is None
     finally:
         pane.close()

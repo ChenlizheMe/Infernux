@@ -10,8 +10,9 @@ from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 
 from database import ProjectDatabase
-from hub_utils import is_project_open
+from hub_utils import is_frozen, is_project_open
 from i18n import tr
+from project_python_runtime import read_project_python_version
 from version_manager import VersionManager
 from view.hover_widgets import AnimatedSurfaceFrame
 
@@ -29,6 +30,7 @@ class _ProjectCard(AnimatedSurfaceFrame):
         self.project_name = name
         self.project_id = project_id
         self.project_path = path
+        self._selectable = True
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(72)
 
@@ -67,9 +69,33 @@ class _ProjectCard(AnimatedSurfaceFrame):
         else:
             version_label = QLabel(f"Infernux {version}" if version else tr("Unversioned"))
             version_label.setObjectName("projectVersion")
-            if version and version_manager is not None and not version_manager.is_installed(version):
+            unavailable_reason = ""
+            if is_frozen() and version_manager is not None:
+                try:
+                    python_version = read_project_python_version(path, required=True)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    python_version = ""
+                    unavailable_reason = str(exc)
+                if not version:
+                    unavailable_reason = tr("Project engine version is missing")
+                elif not python_version:
+                    unavailable_reason = tr("Project Python version is missing")
+                elif not version_manager.is_installed(version, python_version):
+                    unavailable_reason = (
+                        f"Infernux {version} / Python {python_version} "
+                        f"{tr('is not installed')}"
+                    )
+
+            if unavailable_reason:
+                self._selectable = False
+                self.setEnabled(False)
+                self.setProperty("unavailable", True)
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+                version_label.setText(
+                    f"{tr('Install required version')} · {version or tr('Unknown')}"
+                )
                 version_label.setProperty("kind", "warning")
-                version_label.setToolTip(tr("Engine Version Not Installed"))
+                version_label.setToolTip(unavailable_reason)
             elif is_project_open(path):
                 version_label.setProperty("kind", "active")
                 version_label.setToolTip(tr("Project Already Open"))
@@ -112,6 +138,10 @@ class _ProjectCard(AnimatedSurfaceFrame):
     def set_selected(self, selected: bool):
         self.setProperty("selected", selected)
         self.set_selected_animated(selected)
+
+    @property
+    def can_select(self) -> bool:
+        return self._selectable
 
 
 class ProjectListPane(QWidget):
@@ -204,7 +234,10 @@ class ProjectListPane(QWidget):
             self.card_layout.addWidget(empty)
         self.card_layout.addStretch()
         self._apply_filter(self.search_edit.text())
-        if previous_selection in self.project_cards:
+        if (
+            previous_selection in self.project_cards
+            and self.project_cards[previous_selection].can_select
+        ):
             self._on_select(previous_selection)
         else:
             self.selected_project_id = None
@@ -217,6 +250,14 @@ class ProjectListPane(QWidget):
             card.setVisible(needle in searchable if needle else True)
 
     def _on_select(self, project_id: str):
+        card = self.project_cards.get(project_id)
+        if card is None:
+            self.selected_project_id = None
+            for candidate in self.project_cards.values():
+                candidate.set_selected(False)
+            return
+        if not card.can_select:
+            return
         self.selected_project_id = project_id
         for candidate_id, card in self.project_cards.items():
             card.set_selected(candidate_id == project_id)

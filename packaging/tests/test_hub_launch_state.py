@@ -191,6 +191,126 @@ def test_frozen_launch_preparation_does_not_cold_start_python_twice(
     assert finished == [str(runtime_python)]
 
 
+def test_frozen_launch_preparation_rebuilds_missing_project_runtime(
+    tmp_path: Path,
+    monkeypatch,
+):
+    runtime_python = tmp_path / ".runtime" / "python313" / "python.exe"
+    calls = []
+
+    class RuntimeManager:
+        @staticmethod
+        def has_runtime(version):
+            return version == "3.13"
+
+    class Model:
+        runtime_manager = RuntimeManager()
+
+        def _create_project_runtime(self, project, *, on_status=None, replace_existing=False):
+            calls.append(("create", project, replace_existing))
+            if on_status:
+                on_status("Copying Python runtime into the project...")
+            runtime_python.parent.mkdir(parents=True)
+            runtime_python.write_bytes(b"runtime")
+
+        def _install_infernux_in_runtime(
+            self, project, version, *, on_status=None, validate_current=True
+        ):
+            calls.append(("install", project, version, validate_current))
+            if on_status:
+                on_status("Installing Infernux engine files...")
+
+    class VersionManager:
+        @staticmethod
+        def read_project_version(_path):
+            return "0.4.1"
+
+        @staticmethod
+        def is_installed(_version, _python_version=None):
+            return True
+
+    monkeypatch.setattr(control_pane_viewmodel, "is_project_open", lambda _path: False)
+    monkeypatch.setattr(
+        control_pane_viewmodel.ProjectModel,
+        "get_project_python_version",
+        staticmethod(lambda _path: "3.13"),
+    )
+    monkeypatch.setattr(
+        control_pane_viewmodel.ProjectModel,
+        "_get_project_python",
+        staticmethod(lambda _path: str(runtime_python)),
+    )
+
+    worker = LaunchPreparationWorker(
+        Model(), VersionManager(), str(tmp_path), HubLaunchContext.INSTALLED
+    )
+    finished = []
+    errors = []
+    worker.finished.connect(finished.append)
+    worker.error.connect(errors.append)
+
+    worker.run()
+
+    assert errors == []
+    assert finished == [str(runtime_python)]
+    assert calls == [
+        ("create", str(tmp_path), True),
+        ("install", str(tmp_path), "0.4.1", False),
+    ]
+
+
+def test_frozen_launch_preparation_blocks_when_global_runtime_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+):
+    runtime_python = tmp_path / ".runtime" / "python313" / "python.exe"
+    calls = []
+
+    class RuntimeManager:
+        @staticmethod
+        def has_runtime(_version):
+            return False
+
+    class Model:
+        runtime_manager = RuntimeManager()
+
+        def _create_project_runtime(self, **_kwargs):
+            calls.append("create")
+
+    class VersionManager:
+        @staticmethod
+        def read_project_version(_path):
+            return "0.4.1"
+
+        @staticmethod
+        def is_installed(_version, _python_version=None):
+            return True
+
+    monkeypatch.setattr(control_pane_viewmodel, "is_project_open", lambda _path: False)
+    monkeypatch.setattr(
+        control_pane_viewmodel.ProjectModel,
+        "get_project_python_version",
+        staticmethod(lambda _path: "3.13"),
+    )
+    monkeypatch.setattr(
+        control_pane_viewmodel.ProjectModel,
+        "_get_project_python",
+        staticmethod(lambda _path: str(runtime_python)),
+    )
+
+    worker = LaunchPreparationWorker(
+        Model(), VersionManager(), str(tmp_path), HubLaunchContext.INSTALLED
+    )
+    errors = []
+    worker.error.connect(errors.append)
+
+    worker.run()
+
+    assert len(errors) == 1
+    assert "Install Python 3.13 in Hub" in errors[0]
+    assert calls == []
+
+
 def test_source_launch_preparation_uses_current_python_without_catalog_gate(
     tmp_path: Path, monkeypatch
 ):

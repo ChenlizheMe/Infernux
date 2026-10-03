@@ -155,15 +155,44 @@ class LaunchPreparationWorker(QObject):
                 )
 
             if self.launch_context.uses_installed_versions:
+                if not pinned_version:
+                    raise RuntimeError(
+                        "This project does not pin an Infernux engine version.\n\n"
+                        "Commit .infernux-version with the project before opening it "
+                        "from an installed Hub."
+                    )
                 self.progress.emit("Checking project runtime...", 7)
                 python_exe = ProjectModel._get_project_python(project_path)
                 if not os.path.isfile(python_exe):
-                    raise RuntimeError(
-                        "Project Python runtime not found at:\n"
-                        f"{os.path.dirname(python_exe)}\n\n"
-                        f"Install Python {python_version} in Hub, then repair this "
-                        "project runtime."
+                    runtime_manager = getattr(self.model, "runtime_manager", None)
+                    if runtime_manager is None or not runtime_manager.has_runtime(
+                        python_version
+                    ):
+                        raise RuntimeError(
+                            f"Infernux {pinned_version} requires Python {python_version}.\n\n"
+                            f"Install Python {python_version} in Hub before launching "
+                            "this project."
+                        )
+
+                    self.progress.emit("Preparing project runtime...", 8)
+                    status = lambda message: self.progress.emit(message, 9)
+                    self.model._create_project_runtime(
+                        project_path,
+                        on_status=status,
+                        replace_existing=True,
                     )
+                    self.model._install_infernux_in_runtime(
+                        project_path,
+                        pinned_version,
+                        on_status=status,
+                        validate_current=False,
+                    )
+                    python_exe = ProjectModel._get_project_python(project_path)
+                    if not os.path.isfile(python_exe):
+                        raise RuntimeError(
+                            "Project Python runtime could not be rebuilt at:\n"
+                            f"{os.path.dirname(python_exe)}"
+                        )
                 # Starting the editor is the authoritative native import check.
                 # A separate smoke-test process here used to double cold-start
                 # Python before the splash screen could even become responsive.
