@@ -52,7 +52,7 @@
 
         timeline.from(hero, { autoAlpha: 0, y: 48, rotateX: -3, duration: 1.05 })
             .from(copyItems, { autoAlpha: 0, y: 28, duration: 0.7, stagger: 0.075 }, '-=0.68')
-            .from(panel, { autoAlpha: 0, x: 68, rotateY: -12, duration: 0.92 }, '-=0.72');
+            .from(panel, { autoAlpha: 0, x: 68, duration: 0.92 }, '-=0.72');
 
         if (panel) {
             gsap.to(panel, {
@@ -70,22 +70,20 @@
         return timeline;
     }
 
-    function addCodeTilt() {
-        if (!window.matchMedia('(pointer: fine)').matches) return;
-        all('.code-preview').forEach(panel => {
-            const tiltX = gsap.quickTo(panel, 'rotationX', { duration: 0.38, ease: 'power3.out' });
-            const tiltY = gsap.quickTo(panel, 'rotationY', { duration: 0.38, ease: 'power3.out' });
-            panel.addEventListener('pointermove', event => {
-                const bounds = panel.getBoundingClientRect();
-                const x = (event.clientX - bounds.left) / bounds.width - 0.5;
-                const y = (event.clientY - bounds.top) / bounds.height - 0.5;
-                tiltX(-y * 8 + 2);
-                tiltY(x * 10 - 3);
-            }, { passive: true });
-            panel.addEventListener('pointerleave', () => {
-                tiltX(2);
-                tiltY(-3);
-            }, { passive: true });
+    function addTapeAnimations() {
+        const rails = all('.hero-panel-rail-line');
+        if (rails.length) {
+            gsap.fromTo(rails,
+                { scaleX: 0.18, transformOrigin: 'left center', autoAlpha: 0.45 },
+                { scaleX: 1, autoAlpha: 1, duration: 1.8, repeat: -1, yoyo: true, ease: 'sine.inOut', stagger: 0.16 }
+            );
+        }
+        gsap.to(all('.hero-panel'), {
+            '--signal-offset': '8px',
+            duration: 2.4,
+            repeat: -1,
+            yoyo: true,
+            ease: 'sine.inOut'
         });
     }
 
@@ -136,7 +134,7 @@
             });
         });
 
-        addCodeTilt();
+        addTapeAnimations();
         addMicroSignals();
         addLinkFeedback();
         ScrollTrigger.refresh();

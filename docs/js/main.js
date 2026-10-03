@@ -190,56 +190,6 @@ if (canRegisterOfflineShell && !globalThis.__INFERNUX_SW_UPDATE_TEST__) {
     window.addEventListener("load", registerOfflineShell);
 }
 
-// ── Theme toggle ─────────────────────────────
-const SITE_THEME_COLORS = Object.freeze({ dark: "#0a0c11", light: "#f4f1e8" });
-
-function updateThemeColor(theme) {
-    const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute("content", SITE_THEME_COLORS[theme] || SITE_THEME_COLORS.dark);
-}
-
-function toggleTheme() {
-    const html = document.documentElement;
-    const current = html.getAttribute('data-theme');
-    const next = current === 'light' ? 'dark' : 'light';
-    html.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    updateThemeColor(next);
-    updateThemeIcon(next);
-    applyNavbarBackground();
-    document.dispatchEvent(new CustomEvent('site:theme-changed', { detail: { theme: next } }));
-}
-
-function updateThemeIcon(theme) {
-    const icon = document.getElementById('theme-icon');
-    const button = document.querySelector('.theme-toggle');
-    if (icon) {
-        icon.className = theme === 'light' ? 'fas fa-sun' : 'fas fa-moon';
-    }
-    if (button) {
-        const isLight = theme === 'light';
-        const zh = document.documentElement.lang?.toLowerCase().startsWith('zh');
-        button.setAttribute('aria-pressed', String(isLight));
-        const label = isLight
-            ? (zh ? '切换到深色主题' : 'Switch to dark theme')
-            : (zh ? '切换到浅色主题' : 'Switch to light theme');
-        button.setAttribute('aria-label', label);
-        button.title = label;
-    }
-}
-
-// Apply saved theme on load
-(function() {
-    const saved = localStorage.getItem('theme') || 'dark';
-    if (saved === 'light') {
-        document.documentElement.setAttribute('data-theme', 'light');
-    }
-    updateThemeColor(saved);
-    document.addEventListener('DOMContentLoaded', function() {
-        updateThemeIcon(saved);
-    });
-})();
-
 // Mobile menu toggle
 function toggleMobileMenu() {
     const navLinks = document.querySelector('.nav-links');
@@ -250,7 +200,6 @@ function toggleMobileMenu() {
 
 function bindSiteActions() {
     const handlers = {
-        theme: toggleTheme,
         language: () => {
             if (typeof toggleLanguage === 'function') toggleLanguage();
         },
@@ -353,8 +302,8 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 
-// Navbar state remains class-driven so theme, forced-colors and future design
-// tokens can resolve the final surface in CSS.
+// Navbar state remains class-driven so forced-colors and future design tokens
+// can resolve the final surface in CSS.
 function applyNavbarBackground() {
     const navbar = document.querySelector('.navbar');
     if (!navbar) return;
@@ -368,8 +317,6 @@ window.addEventListener('resize', () => {
 document.addEventListener('keydown', handleMobileMenuKeydown);
 document.addEventListener('pointerdown', handleMobileMenuPointerDown);
 document.addEventListener('site:language-changed', () => {
-    const theme = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-    updateThemeIcon(theme);
     const zh = document.documentElement.lang?.toLowerCase().startsWith('zh');
     const languageButton = document.querySelector('.lang-toggle');
     if (languageButton) languageButton.setAttribute('aria-label', zh ? '切换到英文' : 'Switch to Chinese');

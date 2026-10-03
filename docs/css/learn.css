@@ -353,18 +353,6 @@
     --syntax-punctuation: #b8c0ca;
 }
 
-[data-theme="light"] .learn-page {
-    --syntax-comment: #626b74;
-    --syntax-preprocessor: #a13f2d;
-    --syntax-keyword: #a62935;
-    --syntax-name: #252a31;
-    --syntax-callable: #006f82;
-    --syntax-number: #815b00;
-    --syntax-string: #3f6d24;
-    --syntax-operator: #7a3d75;
-    --syntax-punctuation: #4f5863;
-}
-
 .learn-article-body .highlight .c,
 .learn-article-body .highlight .c1,
 .learn-article-body .highlight .cm,

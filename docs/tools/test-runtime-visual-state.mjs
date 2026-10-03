@@ -22,16 +22,11 @@ function classList(initial = []) {
     };
 }
 
-function runScenario({ reduceMotion = false, savedTheme = null } = {}) {
+function runScenario({ reduceMotion = false } = {}) {
     const documentListeners = new Map();
     const windowListeners = new Map();
     const navbar = { classList: classList() };
     const reveal = { classList: classList() };
-    const themeMeta = {
-        attributes: new Map([["content", "#0a0c11"]]),
-        getAttribute(name) { return this.attributes.get(name) ?? null; },
-        setAttribute(name, value) { this.attributes.set(name, value); }
-    };
     let observerInstance = null;
 
     class IntersectionObserver {
@@ -65,7 +60,6 @@ function runScenario({ reduceMotion = false, savedTheme = null } = {}) {
         getElementById() { return null; },
         querySelector(selector) {
             if (selector === ".navbar") return navbar;
-            if (selector === 'meta[name="theme-color"]') return themeMeta;
             return null;
         },
         querySelectorAll(selector) {
@@ -89,7 +83,7 @@ function runScenario({ reduceMotion = false, savedTheme = null } = {}) {
         console,
         document,
         globalThis: null,
-        localStorage: { getItem(key) { return key === "theme" ? savedTheme : null; }, setItem() {} },
+        localStorage: { getItem() { return null; }, setItem() {} },
         navigator: {},
         setTimeout() {},
         window
@@ -98,7 +92,7 @@ function runScenario({ reduceMotion = false, savedTheme = null } = {}) {
     vm.createContext(sandbox);
     new vm.Script(source, { filename: "main.js" }).runInContext(sandbox);
     for (const handler of documentListeners.get("DOMContentLoaded") || []) handler();
-    return { documentElement, documentListeners, navbar, observerInstance, reveal, sandbox, themeMeta, window, windowListeners };
+    return { documentElement, documentListeners, navbar, observerInstance, reveal, sandbox, window, windowListeners };
 }
 
 const animated = runScenario();
@@ -123,12 +117,6 @@ assert.equal(reduced.observerInstance, null);
 assert.equal(reduced.reveal.classList.contains("reveal-pending"), false);
 assert.equal(reduced.reveal.classList.contains("animate-in"), true);
 
-assert.equal(animated.themeMeta.getAttribute("content"), "#0a0c11", "dark mode should keep the installed-app system bar aligned with the page");
-const light = runScenario({ savedTheme: "light" });
-assert.equal(light.documentElement.getAttribute("data-theme"), "light");
-assert.equal(light.themeMeta.getAttribute("content"), "#f4f1e8", "restored light mode should update the installed-app system bar before interaction");
-light.sandbox.toggleTheme();
-assert.equal(light.themeMeta.getAttribute("content"), "#0a0c11", "manual theme changes should update the system bar immediately");
-
 assert.doesNotMatch(source, /\.style(?:\.|\[|\s*=)|#27ca40|function copyCode|function showTab/);
-console.log("Runtime visual-state test passed: scroll surface, reveal lifecycle, reduced motion, synchronized PWA theme color, and zero inline visual mutation.");
+assert.doesNotMatch(source, /theme-toggle|toggleTheme|data-theme|color-scheme/);
+console.log("Runtime visual-state test passed: scroll surface, reveal lifecycle, reduced motion, dark-only shell, and zero inline visual mutation.");

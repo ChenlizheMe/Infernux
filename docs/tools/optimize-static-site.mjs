@@ -65,9 +65,8 @@ function hardenGeneratedHtml(html) {
     );
   }
   return hardened
-    .replace(/\s+onclick="toggleTheme\(\)"/g, ' data-site-action="theme"')
     .replace(/\s+onclick="toggleMobileMenu\(\)"/g, ' data-site-action="menu"')
-        .replace(/\/js\/main\.js\?v=(?:9|10|11|12|13|14)/g, "/js/main.js?v=15")
+        .replace(/\/js\/main\.js\?v=(?:9|10|11|12|13|14|15)/g, "/js/main.js?v=16")
         .replace(/\/js\/docs-search\.js\?v=(?:1|2|3|4|5)/g, "/js/docs-search.js?v=6");
 }
 

@@ -136,8 +136,6 @@
 .github-star-link { display: inline-flex; align-items: center; gap: 7px; margin-top: 12px; color: var(--accent-strong); font: 0.67rem var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; }
 .github-star-link:hover { color: var(--tape-cyan); }
 
-[data-theme="light"] .github-star-deck { background: linear-gradient(135deg, rgba(235, 87, 87, 0.13), rgba(255, 252, 244, 0.88)); }
-
 @media (max-width: 820px) {
     .github-star-deck { grid-column: span 2; }
 }
