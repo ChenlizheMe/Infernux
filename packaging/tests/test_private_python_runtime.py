@@ -8,6 +8,7 @@ import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -98,6 +99,52 @@ def test_python_312_runtime_remains_addressable() -> None:
 
     assert artifact.name.startswith("cpython-3.12.13+20260805-")
     assert artifact.sha256 == "d731ce7dddcfad4a9521aac48626ca06326003fe4771a366e0fce6eb58709451"
+
+
+def test_runtime_archive_download_uses_the_configured_ca_context(
+    tmp_path, monkeypatch
+):
+    artifact = SimpleNamespace(
+        name="python-runtime.tar.gz",
+        url="https://example.test/python-runtime.tar.gz",
+        sha256="a" * 64,
+    )
+    context = object()
+    manager = embed_runtime_manager.PythonRuntimeManager(
+        runtime_dir=str(tmp_path / "Runtimes"),
+        download_ca_bundle=str(tmp_path / "proxy-ca.pem"),
+    )
+    requests = []
+
+    monkeypatch.setattr(
+        embed_runtime_manager,
+        "runtime_archive_for_machine",
+        lambda **_kwargs: artifact,
+    )
+    monkeypatch.setattr(
+        embed_runtime_manager,
+        "create_download_ssl_context",
+        lambda path: requests.append(("context", path)) or context,
+    )
+    monkeypatch.setattr(
+        embed_runtime_manager.urllib.request,
+        "urlopen",
+        lambda request, **kwargs: (
+            requests.append((request.full_url, kwargs["context"])),
+            io.BytesIO(b"runtime archive"),
+        )[1],
+    )
+    monkeypatch.setattr(
+        embed_runtime_manager, "verify_runtime_archive", lambda *_args: None
+    )
+
+    archive_path = manager._ensure_runtime_archive()
+
+    assert Path(archive_path).read_bytes() == b"runtime archive"
+    assert requests == [
+        ("context", str(tmp_path / "proxy-ca.pem")),
+        (artifact.url, context),
+    ]
 
 
 @pytest.mark.parametrize(

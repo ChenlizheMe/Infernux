@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 import pytest
+import ssl
 import hub_network
 
 
@@ -31,3 +32,27 @@ def test_missing_trust_store_remains_an_error(monkeypatch, caplog, linux_without
     hub_network.configure_system_certificates()
     assert "SSL_CERT_FILE" not in hub_network.os.environ
     assert "ca-certificates" in caplog.text
+
+
+def test_custom_download_ca_is_added_without_disabling_default_verification(
+    monkeypatch, tmp_path
+):
+    loaded = []
+
+    class _Context:
+        check_hostname = True
+        verify_mode = ssl.CERT_REQUIRED
+
+        def load_verify_locations(self, *, cafile):
+            loaded.append(cafile)
+
+    context = _Context()
+    monkeypatch.setattr(hub_network.ssl, "create_default_context", lambda: context)
+    ca_file = tmp_path / "proxy-ca.pem"
+
+    result = hub_network.create_download_ssl_context(str(ca_file))
+
+    assert result is context
+    assert loaded == [str(ca_file)]
+    assert context.check_hostname
+    assert context.verify_mode == ssl.CERT_REQUIRED

@@ -52,6 +52,36 @@ def test_automatic_update_checks_default_on_and_preserve_the_user_choice(saved, 
     assert database.settings["automatic_update_checks"] == "disabled"
 
 
+def test_python_runtime_ca_certificate_is_validated_persisted_and_cleared(
+    tmp_path, monkeypatch
+):
+    certificate = tmp_path / "proxy-ca.pem"
+    certificate.write_text("certificate", encoding="utf-8")
+    database = _Database()
+    loaded = []
+    view = settings_view.SettingsView(database)
+    changed = []
+    view.runtime_ca_bundle_changed.connect(changed.append)
+    monkeypatch.setattr(
+        settings_view,
+        "create_download_ssl_context",
+        lambda path: loaded.append(path),
+    )
+
+    view.runtime_ca_bundle_edit.setText(str(certificate))
+    view._save_runtime_ca_bundle()
+
+    assert database.settings["python_runtime_ca_bundle"] == str(certificate.resolve())
+    assert changed == [str(certificate.resolve())]
+    assert loaded
+    assert "added to the default trust store" in view.runtime_ca_bundle_status.text()
+
+    view._clear_runtime_ca_bundle()
+
+    assert database.settings["python_runtime_ca_bundle"] == ""
+    assert changed[-1] == ""
+
+
 def test_settings_show_the_shared_plugin_library_and_cleanup_capacity(
     tmp_path, monkeypatch
 ):

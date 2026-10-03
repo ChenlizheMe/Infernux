@@ -86,7 +86,9 @@ class GameEngineLauncher(QMainWindow):
         self.resize(1080, 720)
 
         # Version and runtime managers
-        self.runtime_manager = PythonRuntimeManager()
+        self.runtime_manager = PythonRuntimeManager(
+            download_ca_bundle=self.db.get_setting("python_runtime_ca_bundle", "")
+        )
         self.android_support_manager = AndroidSupportManager()
         self.android_support_manager.activate_environment()
         self.blender_support_manager = BlenderSupportManager()
@@ -191,6 +193,9 @@ class GameEngineLauncher(QMainWindow):
         self._startup_update_pending = False
         self.settings_view.update_check_requested.connect(
             lambda: self.update_controller.check(silent=False)
+        )
+        self.settings_view.runtime_ca_bundle_changed.connect(
+            self.runtime_manager.set_download_ca_bundle
         )
         self.settings_view.language_changed.connect(self._on_language_changed)
 
