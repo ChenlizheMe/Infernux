@@ -66,8 +66,11 @@ def test_script_loader_falls_back_to_sole_class_after_rename(tmp_path):
         "    value: int = 1\n",
         encoding="utf-8",
     )
-    # Multi-component scripts stay strict to avoid picking the wrong class.
-    assert load_component_class_from_file(str(script), "RemovedComponent") is None
+    # A file-backed attachment uses the first authored component when the
+    # historical class name no longer exists.
+    remapped = load_component_class_from_file(str(script), "RemovedComponent")
+    assert remapped is not None
+    assert remapped.__name__ == "CurrentComponent"
 
 
 def test_script_loader_can_execute_the_captured_source_snapshot(tmp_path):

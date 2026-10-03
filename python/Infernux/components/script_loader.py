@@ -619,11 +619,18 @@ def _component_classes_from_module(
     module: types.ModuleType,
     module_name: str,
 ) -> list[Type[InxComponent]]:
-    """Extract direct component declarations from an already executed module."""
+    """Extract component declarations in source execution order.
+
+    ``inspect.getmembers`` sorts names alphabetically.  That is the wrong
+    ordering for a script asset: the first component declaration is the
+    deterministic attachment target when the authored class name changes.
+    Module dictionaries retain execution order, so use that order directly.
+    """
     components = []
-    for _name, obj in inspect.getmembers(module, inspect.isclass):
+    for _name, obj in vars(module).items():
         if (
-            obj is not InxComponent
+            inspect.isclass(obj)
+            and obj is not InxComponent
             and issubclass(obj, InxComponent)
             and obj.__module__ == module_name
         ):
@@ -911,6 +918,36 @@ def stage_component_body_reload_batch(
                 (target_type.__name__, target_type.__qualname__): target_type
                 for target_type in targets
             }
+            target_by_candidate: dict[type, type] = {}
+            for candidate_type in candidates:
+                target_type = target_by_identity.get(
+                    (candidate_type.__name__, candidate_type.__qualname__)
+                )
+                if target_type is not None:
+                    target_by_candidate[candidate_type] = target_type
+
+            # A script GUID identifies the asset independently of the Python
+            # class name.  Preserve the live class/instance identity when the
+            # authored class is renamed, pairing unmatched declarations in
+            # source order.  Equal cardinality is required so adding/removing
+            # a second component cannot silently attach an old instance to a
+            # different class.
+            unmatched_targets = [
+                target_type
+                for target_type in targets
+                if target_type not in target_by_candidate.values()
+            ]
+            unmatched_candidates = [
+                candidate_type
+                for candidate_type in candidates
+                if candidate_type not in target_by_candidate
+            ]
+            if unmatched_targets and len(unmatched_targets) == len(unmatched_candidates):
+                for target_type, candidate_type in zip(unmatched_targets, unmatched_candidates):
+                    target_by_candidate[candidate_type] = target_type
+                    target_by_identity[
+                        (candidate_type.__name__, candidate_type.__qualname__)
+                    ] = target_type
             effective_targets = list(targets)
             if request.script_guid:
                 from .registry import get_type_by_identity
@@ -953,8 +990,15 @@ def stage_component_body_reload_batch(
                     raise ScriptReloadRejected(
                         f"component type '{target_type.__qualname__}' script identity changed; reload rejected"
                     )
-                candidate_type = candidate_by_identity.get(
-                    (target_type.__name__, target_type.__qualname__)
+                candidate_type = next(
+                    (
+                        candidate
+                        for candidate, mapped_target in target_by_candidate.items()
+                        if mapped_target is target_type
+                    ),
+                    candidate_by_identity.get(
+                        (target_type.__name__, target_type.__qualname__)
+                    ),
                 )
                 if candidate_type is None:
                     raise ScriptReloadRejected(
@@ -1121,12 +1165,11 @@ def _plan_component_class_body_patch(
     candidate_type: type,
 ) -> tuple[tuple[str, bool, object], ...]:
     """Validate one candidate and return its mutation-free body patch plan."""
-    if target_type.__name__ != candidate_type.__name__ or (
-        target_type.__qualname__ != candidate_type.__qualname__
-    ):
-        raise ScriptReloadRejected(
-            "component type identity changed; class rename is not supported during Play Mode"
-        )
+    # The script GUID and declaration order identify the authored component;
+    # the Python class name is editable source, not a scene identity.  Keep
+    # the stable live class object and patch its body even when the candidate
+    # was renamed.  This preserves native slots, serialized references, and
+    # inspector selection across the edit.
     if target_type.__bases__ != candidate_type.__bases__:
         raise ScriptReloadRejected(
             f"component '{target_type.__name__}' base classes changed; reload rejected"
@@ -1608,13 +1651,10 @@ def load_component_class_from_file(file_path: str, type_name: str = "") -> Optio
         for component_class in components:
             if component_class.__name__ == type_name:
                 return component_class
-        if len(components) == 1:
-            return components[0]
-        return None
 
-    if len(components) != 1:
-        return None
-
+    # A script asset is attached by file/GUID, not by a fragile class-name
+    # convention.  When the authored name differs (or the file declares more
+    # than one component), the first declaration is the stable editor target.
     return components[0]
 
 
@@ -1694,21 +1734,10 @@ def load_and_create_component(
         component_types = tuple(load_all_components_from_file(file_path, register=False))
     if not component_types:
         return None
-    if type_name:
-        component_class = next(
-            (candidate for candidate in component_types if candidate.__name__ == type_name),
-            component_types[0] if len(component_types) == 1 else None,
-        )
-        if component_class is None:
-            return None
-    else:
-        if len(component_types) != 1:
-            names = ", ".join(candidate.__name__ for candidate in component_types)
-            raise ScriptLoadError(
-                f"Script '{file_path}' defines multiple InxComponent classes ({names}). "
-                "Dragging or attaching by script file requires exactly one component class."
-            )
-        component_class = component_types[0]
+    component_class = next(
+        (candidate for candidate in component_types if type_name and candidate.__name__ == type_name),
+        component_types[0],
+    )
 
     if not already_published:
         from Infernux.components.component_identity import bind_asset_script_guid

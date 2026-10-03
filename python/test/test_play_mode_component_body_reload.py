@@ -1550,7 +1550,7 @@ def test_reload_result_uses_frontend_code_in_edit_and_play_without_recompile(
         assert live.get_py_components()[0].helper() == "new"
 
 
-def test_multi_type_validation_rejects_all_before_first_publish(
+def test_multi_type_rename_reloads_all_types_atomically(
     component_script,
     monkeypatch,
 ):
@@ -1597,9 +1597,11 @@ def test_multi_type_validation_rejects_all_before_first_publish(
             def helper(self): return "beta-new"
     """), encoding="utf-8")
 
-    assert manager.reload_components_from_script_result(str(path)).reloaded_count == 0
-    assert alpha.helper() == "alpha-old"
-    assert beta.helper() == "beta-old"
+    outcome = manager.reload_components_from_script_result(str(path))
+    assert outcome.success is True
+    assert outcome.reloaded_count == 2
+    assert alpha.helper() == "alpha-new"
+    assert beta.helper() == "beta-new"
 
 
 def test_play_batch_without_live_instances_publishes_candidate_registry_and_rolls_back(
@@ -1871,9 +1873,9 @@ def test_syntax_and_import_failure_keep_lkg_and_registry(
 
 
 @pytest.mark.parametrize(
-    "candidate_source",
+    "candidate_source, expected_success",
     (
-        """
+        ("""
         from Infernux.components import InxComponent
         class ReplacementBase(InxComponent):
             _uses_component_data_store = False
@@ -1881,20 +1883,21 @@ def test_syntax_and_import_failure_keep_lkg_and_registry(
             _uses_component_data_store = False
             value: int = 1
             def helper(self): return "new"
-        """,
-        """
+        """, False),
+        ("""
         from Infernux.components import InxComponent
         class RenamedRejectionProbe(InxComponent):
             _uses_component_data_store = False
             value: int = 1
             def helper(self): return "new"
-        """,
+        """, True),
     ),
 )
-def test_schema_base_and_type_rename_are_rejected(
+def test_schema_base_change_is_rejected_but_type_rename_reloads(
     component_script,
     monkeypatch,
     candidate_source,
+    expected_success,
 ):
     guid = "play-body-rejection-guid"
     path, (component_type,) = component_script(
@@ -1914,11 +1917,11 @@ def test_schema_base_and_type_rename_are_rejected(
     path.write_text(textwrap.dedent(candidate_source), encoding="utf-8")
 
     outcome = manager.reload_components_from_script_result(str(path))
-    assert outcome.success is False
+    assert outcome.success is expected_success
     assert outcome.had_live_targets is True
-    assert outcome.reloaded_count == 0
+    assert outcome.reloaded_count == (1 if expected_success else 0)
     assert type(component) is component_type
-    assert component.helper() == "old"
+    assert component.helper() == ("new" if expected_success else "old")
 
 
 def test_script_delete_batch_is_transactional_in_edit_and_play(
