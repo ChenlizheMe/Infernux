@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 else:
     _MetaWriteFuture = Any
 
-# Shared IO thread pool for background file writes (meta, fallback saves).
+# Serial IO queue for background sidecar read-modify-write operations.
 # It is created only when editor authoring asks for an asynchronous write.
 # CPython/Emscripten intentionally omits concurrent.futures.thread, and a
 # Player must still be able to import immutable asset reference models.
@@ -40,8 +40,8 @@ def _asset_io_pool():
         raise RuntimeError(
             "Asynchronous asset writes are unavailable on this platform."
         ) from exc
-    # Max 2 workers: meta writes and material-save fallback are infrequent.
-    _io_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="asset-io")
+    # Preserve submission order and read each edit from the preceding commit.
+    _io_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="asset-io")
     return _io_pool
 
 
@@ -623,14 +623,15 @@ def write_meta_fields(asset_path: str, updates: Dict[str, Any]) -> bool:
     if not os.path.isfile(meta_path):
         return False
     try:
+        from Infernux.core.document_store import capture_document_file_state, write_document_text
+        file_state = capture_document_file_state(meta_path)
         root = _load_strict_meta_root(meta_path)
         entries = root["metadata"]
         for key, value in updates.items():
             type_tag = _python_type_to_meta_tag(value)
             entries[key] = {"type": type_tag, "value": value}
         blob = json.dumps(root, indent=4) + "\n"
-        from Infernux.core.document_store import write_document_text
-        write_document_text(meta_path, blob)
+        write_document_text(meta_path, blob, expected_file_state=file_state)
         return True
     except Exception as e:
         from Infernux.debug import Debug

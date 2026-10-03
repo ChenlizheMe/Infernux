@@ -36,6 +36,53 @@ from Infernux.core.asset_types import (
 )
 
 
+def test_import_settings_preserve_a_concurrent_sidecar_update(tmp_path, monkeypatch):
+    from Infernux.core import asset_types
+
+    asset = tmp_path / "texture.png"
+    sidecar = tmp_path / "texture.png.meta"
+    document = {"metadata": {
+        "guid": {"type": "string", "value": "1" * 32},
+        "file_path": {"type": "string", "value": "Assets/texture.png"},
+        "srgb": {"type": "bool", "value": True},
+    }}
+    sidecar.write_text(json.dumps(document), encoding="utf-8")
+    read_root = asset_types._load_strict_meta_root
+    external_bytes = b'{"metadata":{"guid":{"type":"string","value":"22222222222222222222222222222222"}}}\n'
+
+    def concurrent_checkout(path):
+        original = read_root(path)
+        sidecar.write_bytes(external_bytes)
+        return original
+
+    monkeypatch.setattr(asset_types, "_load_strict_meta_root", concurrent_checkout)
+    assert asset_types.write_meta_fields(str(asset), {"srgb": False}) is False
+    assert sidecar.read_bytes() == external_bytes
+
+    monkeypatch.setattr(asset_types, "_load_strict_meta_root", read_root)
+    assert asset_types.write_meta_fields(str(asset), {"srgb": False}) is True
+    updated = json.loads(sidecar.read_text(encoding="utf-8"))["metadata"]
+    assert updated["guid"]["value"] == "2" * 32
+    assert updated["srgb"]["value"] is False
+
+
+def test_queued_sidecar_edits_preserve_all_fields(tmp_path):
+    from Infernux.core import asset_types
+
+    asset = tmp_path / "texture.png"
+    sidecar = tmp_path / "texture.png.meta"
+    sidecar.write_text('{"metadata":{}}', encoding="utf-8")
+    edits = [
+        asset_types.write_meta_fields_async(str(asset), {f"setting_{index}": index})
+        for index in range(16)
+    ]
+    assert all(edit.result(timeout=5) is True for edit in edits)
+    fields = json.loads(sidecar.read_text(encoding="utf-8"))["metadata"]
+    assert {name: field["value"] for name, field in fields.items()} == {
+        f"setting_{index}": index for index in range(16)
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Enums
 # ═══════════════════════════════════════════════════════════════════════════
