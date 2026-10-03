@@ -153,8 +153,47 @@ jobs:
       - name: Verify committed Wiki output is current
         shell: bash
         run: |
-          changes="$(git status --short --untracked-files=all -- docs/wiki/site docs/sitemap.xml ':(glob)docs/css/wiki-template.*.css')"
-          if [ -n "$changes" ]; then
-            printf '%s\n' "$changes"
-            exit 1
-          fi
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          tracked = set(subprocess.check_output(
+              ["git", "ls-files", "docs/wiki/site", "docs/sitemap.xml", "docs/css/wiki-template.*.css"],
+              text=True,
+          ).splitlines())
+
+          actual = {
+              path.as_posix()
+              for root in (Path("docs/wiki/site"),)
+              for path in root.rglob("*")
+              if path.is_file()
+          }
+          actual.add("docs/sitemap.xml")
+          actual.update(path.as_posix() for path in Path("docs/css").glob("wiki-template.*.css"))
+
+          missing = sorted(tracked - actual)
+          unexpected = sorted(actual - tracked)
+          changed = []
+
+          def comparable(path: Path, data: bytes) -> bytes:
+              if path.suffix == ".gz":
+                  return data
+              # MkDocs may write the final newline differently on Windows and Linux.
+              # Normalize only that transport detail; every content byte still matters.
+              return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n").rstrip(b"\n")
+
+          for name in sorted(tracked & actual):
+              path = Path(name)
+              generated = comparable(path, path.read_bytes())
+              committed = comparable(path, subprocess.check_output(["git", "show", f"HEAD:{name}"]))
+              if generated != committed:
+                  changed.append(name)
+
+          problems = missing + unexpected + changed
+          if problems:
+              print("Wiki output drift detected:")
+              print("\n".join(problems))
+              sys.exit(1)
+          print("Wiki output matches committed content (EOF newline differences ignored).")
+          PY
