@@ -85,6 +85,7 @@ const learningChapters = (await Promise.all(learningCourses.map(async (course) =
 )))).flat();
 const rootPages = [
     "index.html",
+    "tutorials.html",
     "start.html",
     "learn.html",
     ...learningCourses.map((course) => `learn/${course.slug}.html`),
@@ -99,7 +100,7 @@ const rootPages = [
 ];
 for (const page of rootPages) {
     const html = await readFile(path.join(docsRoot, page), "utf8");
-    if (!html.includes("start.html")) fail(`${page}: missing the hand-maintained Start route`);
+    if (!html.includes("tutorials.html")) fail(`${page}: missing the merged Tutorials route`);
     if (/data-i18n=["']nav\.manual["']|>\s*(?:Manual|手册)\s*<\/a>/i.test(html)) fail(`${page}: obsolete Manual navigation is still present`);
     if (/wiki\/site\/(?:en|zh)\/(?:learn|manual|architecture)\//i.test(html)) fail(`${page}: links to a removed guide tree`);
     const ribbon = html.match(/<span class="mission-kicker" data-i18n="brand\.ribbonKicker">([^<]+)<\/span>/);
@@ -120,13 +121,13 @@ if (homepage.includes("0.3.4")) {
 }
 
 const roadmap = await readFile(path.join(docsRoot, "roadmap.html"), "utf8");
-for (const contract of ["data-roadmap-app", "data-tree-page=\"architecture\"", "data-tree-page=\"rendering\"", "data-tree-page=\"gameplay\"", "data-tree-page=\"neural\"", "js/roadmap.js?v=1"]) {
+for (const contract of ["data-roadmap-app", "data-tree-page=\"foundation\"", "data-tree-page=\"pipeline\"", "data-tree-page=\"runtime\"", "data-tree-page=\"agents\"", "node-graph", "graph-node", "release-log", "js/roadmap.js?v=1", "js/bilingual-page.js?v=1"]) {
     if (!roadmap.includes(contract)) {
         fail(`roadmap.html: missing interactive tree contract '${contract}'`);
     }
 }
-if (roadmap.includes("0.3.4")) {
-    fail("roadmap.html: stale 0.3.4 reference remains on the roadmap page");
+if (roadmap.split('id="release-log"', 1)[0].includes("0.3.4")) {
+    fail("roadmap.html: stale 0.3.4 reference remains in the roadmap scene");
 }
 
 const i18nSource = JSON.parse(await readFile(path.join(docsRoot, "tools", "i18n-source.json"), "utf8"));
@@ -145,6 +146,10 @@ for (const language of ["en", "zh"]) {
     }
 }
 
+const tutorials = await readFile(path.join(docsRoot, "tutorials.html"), "utf8");
+for (const contract of ["data-tutorial-app", "data-tutorial-page=\"start\"", "data-tutorial-page=\"learn\"", "data-tutorial-panel=\"start\"", "data-tutorial-panel=\"learn\"", "js/tutorials.js?v=1"]) {
+    if (!tutorials.includes(contract)) fail(`tutorials.html: missing '${contract}'`);
+}
 const start = await readFile(path.join(docsRoot, "start.html"), "utf8");
 for (const contract of [
     "Edit this file directly",

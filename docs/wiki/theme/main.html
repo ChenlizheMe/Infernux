@@ -160,8 +160,8 @@
     <link rel="manifest" href="/site.webmanifest">
     <link rel="icon" type="image/png" href="/assets/logo.png">
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/infernux-apple-touch-icon.png">
-    <link rel="stylesheet" href="/css/fonts.css?v=1">
-    <link rel="stylesheet" href="/css/style.css?v=22">
+    <link rel="stylesheet" href="/css/fonts.css?v=2">
+    <link rel="stylesheet" href="/css/style.css?v=23">
     <link rel="stylesheet" href="/css/fontawesome-subset.css?v=6.4.0">
     <link rel="stylesheet" href="/css/docs-search.css?v=3">
     <link rel="stylesheet" href="/css/wiki-generated.css?v=9">
@@ -594,7 +594,7 @@
 <body class="{% if page.url and '/api/' in '/' + page.url %}api-reference-page{% else %}guide-page{% endif %}">
     {% macro document_breadcrumb() %}
     <nav class="doc-breadcrumb" aria-label="{% if page.url and 'zh/' in page.url %}面包屑{% else %}Breadcrumb{% endif %}">
-        <a href="/start.html">{% if page.url and 'zh/' in page.url %}开始使用{% else %}Start{% endif %}</a>
+        <a href="/tutorials.html">{% if page.url and 'zh/' in page.url %}教程{% else %}Tutorials{% endif %}</a>
         <span aria-hidden="true">/</span>
         {% if page.url and '/api/' in '/' + page.url %}
         <a href="/wiki/site/{% if 'zh/' in page.url %}zh{% else %}en{% endif %}/api/index.html">API</a>
@@ -640,11 +640,9 @@
                 <span class="logo-text">Infernux</span>
             </a>
             <div class="nav-links" id="primary-navigation">
-                <a href="/start.html" class="nav-priority">{% if is_zh %}开始使用{% else %}Start{% endif %}</a>
-                <a href="/learn.html">{% if is_zh %}学习{% else %}Learn{% endif %}</a>
+                <a href="/tutorials.html" class="nav-priority">{% if is_zh %}教程{% else %}Tutorials{% endif %}</a>
                 <a href="/wiki/site/{% if is_zh %}zh{% else %}en{% endif %}/api/index.html"{% if is_api %} class="active" aria-current="page"{% endif %}>API</a>
                 <a href="/roadmap.html">{% if page.url and 'zh/' in page.url %}路线图{% else %}Roadmap{% endif %}</a>
-                <a href="/changelog.html">{% if page.url and 'zh/' in page.url %}更新日志{% else %}Changelog{% endif %}</a>
                 <a href="https://infernux-engine.discourse.group/" class="nav-priority">{% if is_zh %}社区{% else %}Community{% endif %}</a>
                 <a href="/download.html">{% if is_zh %}下载{% else %}Download{% endif %}</a>
                 <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener">

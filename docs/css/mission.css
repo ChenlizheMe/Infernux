@@ -61,6 +61,6 @@
     .mission-ribbon::before,
     .mission-ribbon::after { width: 28px; }
 
-    .mission-name { font-size: 0.86rem; letter-spacing: 0.22em; }
-    .mission-sub { font-size: 0.74rem; letter-spacing: 0.28em; padding-left: 10px; }
+    .mission-name { font-size: 12px; letter-spacing: 0.22em; }
+    .mission-sub { font-size: 12px; letter-spacing: 0.28em; padding-left: 10px; }
 }

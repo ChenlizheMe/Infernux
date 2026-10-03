@@ -1,5 +1,4 @@
-/* Interactive tree selector for the roadmap. Every tree is authored in HTML;
-   this file only changes which subtree is visible and adds deterministic motion. */
+/* Deterministic roadmap atlas: one visible radial cluster, selectable nodes, and local pan/zoom. */
 (function () {
     const app = document.querySelector("[data-roadmap-app]");
     if (!app) return;
@@ -7,10 +6,54 @@
     const tabs = Array.from(app.querySelectorAll("[data-tree-page]"));
     const pages = Array.from(app.querySelectorAll("[data-tree-panel]"));
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const aliases = { architecture: "foundation", rendering: "pipeline", gameplay: "runtime", neural: "agents" };
+    const cameras = new WeakMap();
+
+    function cameraFor(shell) {
+        if (!cameras.has(shell)) cameras.set(shell, { x: 0, y: 0, scale: 1, dragging: false, moved: false });
+        return cameras.get(shell);
+    }
+
+    function applyCamera(shell) {
+        const camera = cameraFor(shell);
+        const group = shell.querySelector("[data-graph-camera]");
+        if (group) group.setAttribute("transform", `translate(${camera.x} ${camera.y}) scale(${camera.scale})`);
+    }
+
+    function resetCamera(shell) {
+        const camera = cameraFor(shell);
+        camera.x = 0;
+        camera.y = 0;
+        camera.scale = 1;
+        applyCamera(shell);
+    }
+
+    function graphPoint(shell, event) {
+        const svg = shell.querySelector("svg");
+        const rect = svg.getBoundingClientRect();
+        return {
+            x: ((event.clientX - rect.left) / rect.width) * 1600,
+            y: ((event.clientY - rect.top) / rect.height) * 1200,
+        };
+    }
 
     function pageFromHash() {
-        const value = window.location.hash.replace(/^#tree-/, "");
-        return tabs.some((tab) => tab.dataset.treePage === value) ? value : "architecture";
+        const raw = window.location.hash.replace(/^#tree-/, "");
+        const value = aliases[raw] || raw;
+        return tabs.some((tab) => tab.dataset.treePage === value) ? value : "foundation";
+    }
+
+    function selectNode(node) {
+        const panel = node.closest("[data-tree-panel]");
+        if (!panel) return;
+        panel.querySelectorAll(".graph-node").forEach((candidate) => {
+            const selected = candidate === node;
+            candidate.classList.toggle("is-selected", selected);
+            candidate.setAttribute("aria-pressed", String(selected));
+        });
+        if (!reduceMotion && globalThis.gsap) {
+            globalThis.gsap.fromTo(node, { scale: 0.96 }, { scale: 1, duration: 0.24, ease: "back.out(2)", overwrite: "auto" });
+        }
     }
 
     function selectPage(name, updateHistory = true) {
@@ -29,9 +72,9 @@
         if (updateHistory) history.replaceState(null, "", `#tree-${pageName}`);
         const activePage = pages.find((page) => page.dataset.treePanel === pageName);
         if (!activePage || reduceMotion || !globalThis.gsap) return;
-        globalThis.gsap.fromTo(activePage.querySelectorAll(".tree-page-heading, .tree-branch"),
-            { autoAlpha: 0, y: 18 },
-            { autoAlpha: 1, y: 0, duration: 0.48, stagger: 0.045, ease: "power3.out", overwrite: "auto" });
+        globalThis.gsap.fromTo(activePage.querySelectorAll(".graph-panel-heading, .graph-edge, .graph-node"),
+            { autoAlpha: 0, y: 12 },
+            { autoAlpha: 1, y: 0, duration: 0.42, stagger: 0.012, ease: "power3.out", overwrite: "auto" });
     }
 
     tabs.forEach((tab, index) => {
@@ -48,6 +91,67 @@
             selectPage(next.dataset.treePage);
         });
     });
+
+    app.querySelectorAll(".graph-node").forEach((node) => {
+        node.setAttribute("aria-pressed", "false");
+        node.addEventListener("click", () => selectNode(node));
+        node.addEventListener("keydown", (event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            selectNode(node);
+        });
+    });
+
+    app.querySelectorAll("[data-graph-canvas]").forEach((shell) => {
+        const camera = cameraFor(shell);
+        shell.addEventListener("pointerdown", (event) => {
+            if (event.target.closest(".graph-node")) return;
+            camera.dragging = true;
+            camera.moved = false;
+            camera.startX = event.clientX;
+            camera.startY = event.clientY;
+            camera.originX = camera.x;
+            camera.originY = camera.y;
+            shell.classList.add("is-panning");
+            shell.setPointerCapture(event.pointerId);
+        });
+        shell.addEventListener("pointermove", (event) => {
+            if (!camera.dragging) return;
+            const svg = shell.querySelector("svg");
+            const rect = svg.getBoundingClientRect();
+            const dx = (event.clientX - camera.startX) * 1600 / rect.width / camera.scale;
+            const dy = (event.clientY - camera.startY) * 1200 / rect.height / camera.scale;
+            camera.x = camera.originX + dx;
+            camera.y = camera.originY + dy;
+            camera.moved = Math.abs(dx) + Math.abs(dy) > 2;
+            applyCamera(shell);
+        });
+        const endDrag = (event) => {
+            if (!camera.dragging) return;
+            camera.dragging = false;
+            shell.classList.remove("is-panning");
+            if (shell.hasPointerCapture(event.pointerId)) shell.releasePointerCapture(event.pointerId);
+        };
+        shell.addEventListener("pointerup", endDrag);
+        shell.addEventListener("pointercancel", endDrag);
+        shell.addEventListener("wheel", (event) => {
+            event.preventDefault();
+            const before = graphPoint(shell, event);
+            const nextScale = Math.min(2.2, Math.max(0.65, camera.scale * (event.deltaY < 0 ? 1.1 : 0.9)));
+            const ratio = nextScale / camera.scale;
+            camera.x = before.x - (before.x - camera.x) * ratio;
+            camera.y = before.y - (before.y - camera.y) * ratio;
+            camera.scale = nextScale;
+            applyCamera(shell);
+        }, { passive: false });
+    });
+
+    app.querySelector("[data-graph-reset]")?.addEventListener("click", () => {
+        const active = pages.find((page) => !page.hidden);
+        const shell = active?.querySelector("[data-graph-canvas]");
+        if (shell) resetCamera(shell);
+    });
+
     window.addEventListener("hashchange", () => selectPage(pageFromHash(), false));
     selectPage(pageFromHash(), false);
 }());

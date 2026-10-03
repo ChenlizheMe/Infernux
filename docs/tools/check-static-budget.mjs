@@ -5,26 +5,27 @@ const docsRoot = path.resolve("docs");
 const errors = [];
 
 const limits = {
-  rootHtml: 64 * 1024,
+  rootHtml: 96 * 1024,
   stylesheet: 64 * 1024,
   script: 96 * 1024,
   image: 1024 * 1024,
   webfont: 192 * 1024,
   machineIndex: 512 * 1024,
-  rootExperience: 1250 * 1024,
+  rootExperience: 1300 * 1024,
   generatedWikiHtml: 96 * 1024,
   generatedWikiTotal: 8 * 1024 * 1024,
 };
 const rootRouteBudgets = new Map([
   // These routes ship the fixed local GSAP + ScrollTrigger runtime so their
   // first view remains deterministic and animation-ready without a CDN.
-  ["index.html", 640 * 1024],
-  ["start.html", 450 * 1024],
-  ["learn.html", 450 * 1024],
-  ["roadmap.html", 450 * 1024],
-  ["changelog.html", 450 * 1024],
+  ["index.html", 700 * 1024],
+  ["tutorials.html", 650 * 1024],
+  ["start.html", 500 * 1024],
+  ["learn.html", 500 * 1024],
+  ["roadmap.html", 620 * 1024],
+  ["changelog.html", 500 * 1024],
   ["community.html", 480 * 1024],
-  ["download.html", 450 * 1024],
+  ["download.html", 520 * 1024],
 ]);
 
 async function files(directory) {

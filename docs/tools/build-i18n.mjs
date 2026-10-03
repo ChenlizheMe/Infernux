@@ -11,7 +11,8 @@ const pageConfigs = {
     start: ["bilingual-page.js"],
     changelog: ["bilingual-page.js"],
     learn: ["learn.js", "bilingual-page.js"],
-    roadmap: ["roadmap.js"],
+    roadmap: ["roadmap.js", "bilingual-page.js"],
+    tutorials: ["tutorials.js", "bilingual-page.js"],
     download: ["download.js", "bilingual-page.js"],
 };
 

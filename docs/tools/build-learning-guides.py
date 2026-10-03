@@ -67,8 +67,8 @@ def page_shell(course: dict, chapter: dict, previous: dict | None, following: di
     <link rel="canonical" href="https://infernux-engine.com/learn/{slug}.html">
     <title>{title} · Infernux Learn</title>
     <link rel="icon" type="image/png" href="../assets/logo.png">
-    <link rel="stylesheet" href="../css/fonts.css?v=1">
-    <link rel="stylesheet" href="../css/style.css?v=22">
+    <link rel="stylesheet" href="../css/fonts.css?v=2">
+    <link rel="stylesheet" href="../css/style.css?v=23">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
     <link rel="stylesheet" href="../css/learn.css?v=6">
@@ -80,7 +80,7 @@ def page_shell(course: dict, chapter: dict, previous: dict | None, following: di
         <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">{RIBBON_KICKER}</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
             <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
-            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-links" id="primary-navigation"><a href="../tutorials.html#learn" class="active nav-priority" aria-current="page" data-i18n="nav.tutorials">Tutorials</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
             <div class="nav-right"><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
         </div></nav>
     </header>
@@ -97,9 +97,9 @@ def page_shell(course: dict, chapter: dict, previous: dict | None, following: di
         </nav>
     </article></div></main>
 
-    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../tutorials.html#learn" data-i18n="nav.tutorials">Tutorials</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
     <script src="../js/i18n-learn.js?v=1"></script>
-    <script src="../js/i18n.js?v=19"></script>
+    <script src="../js/i18n.js?v=20"></script>
 <script src="../js/vendor/gsap.min.js?v=3.13.0"></script>
 <script src="../js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
 <script src="../js/main.js?v=16"></script>
@@ -190,8 +190,8 @@ def course_index_shell(course: dict, chapters: list[dict]) -> str:
     <link rel="canonical" href="https://infernux-engine.com/learn/{course['slug']}.html">
     <title>{title} · Infernux Learn</title>
     <link rel="icon" type="image/png" href="../assets/logo.png">
-    <link rel="stylesheet" href="../css/fonts.css?v=1">
-    <link rel="stylesheet" href="../css/style.css?v=22">
+    <link rel="stylesheet" href="../css/fonts.css?v=2">
+    <link rel="stylesheet" href="../css/style.css?v=23">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
     <link rel="stylesheet" href="../css/mission.css?v=2">
     <link rel="stylesheet" href="../css/learn.css?v=6">
@@ -203,21 +203,21 @@ def course_index_shell(course: dict, chapters: list[dict]) -> str:
         <div class="mission-ribbon" aria-label="Engine identity strip"><div class="mission-ribbon-inner"><span class="mission-kicker" data-i18n="brand.ribbonKicker">{RIBBON_KICKER}</span><span class="mission-name" data-i18n="brand.ribbonName">INFER<span class="mission-accent">NUX</span></span><span class="mission-sub" data-i18n="brand.ribbonSub">熔炉 · ENG-CORE</span></div></div>
         <nav class="navbar" aria-label="Primary navigation"><div class="nav-container">
             <a href="../index.html" class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.navShort">熔炉 · INFERNUX</span></a>
-            <div class="nav-links" id="primary-navigation"><a href="../start.html" class="nav-priority" data-i18n="nav.start">Start</a><a href="../learn.html" class="active" aria-current="page" data-i18n="nav.learn">Learn</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
+            <div class="nav-links" id="primary-navigation"><a href="../tutorials.html#learn" class="active nav-priority" aria-current="page" data-i18n="nav.tutorials">Tutorials</a><a href="../wiki/site/en/api/index.html" data-href-en="../wiki/site/en/api/index.html" data-href-zh="../wiki/site/zh/api/index.html" data-i18n="nav.api">API</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="https://infernux-engine.discourse.group/" class="nav-priority" data-i18n="nav.community">Community</a><a href="../download.html" data-i18n="nav.download">Download</a><a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener"><i class="fab fa-github" aria-hidden="true"></i> GitHub</a></div>
             <div class="nav-right"><button class="lang-toggle" type="button" data-site-action="language" aria-label="Switch language"><span id="lang-text">中文</span></button><button class="mobile-menu-btn" type="button" data-site-action="menu" aria-label="Open navigation menu" aria-controls="primary-navigation" aria-expanded="false"><i class="fas fa-bars" aria-hidden="true"></i></button></div>
         </div></nav>
     </header>
 
     <main class="page-shell learn-page" id="main-content"><div class="container learn-shell">
         <div data-page-language="en">
-            <a class="learn-course-back" href="../learn.html">← All courses</a>
+            <a class="learn-course-back" href="../tutorials.html#learn">← All courses</a>
             <header class="learn-heading"><span class="mini-tag">{html.escape(course['short_en'])}</span><h1>{html.escape(course['title_en'])}</h1><p>{html.escape(course['summary_en'])}</p></header>
             <section class="learn-controls" aria-label="Filter course chapters"><label class="learn-search"><span class="visually-hidden">Search chapters</span><i class="fas fa-magnifying-glass" aria-hidden="true"></i><input type="search" data-learn-search placeholder="Search this course"></label><div class="learn-tags" aria-label="Chapter tags">{filter_buttons('en')}</div><p class="learn-result-status" data-learn-status role="status" aria-live="polite"></p></section>
             <section class="learn-track-intro"><span>{total} chapters · {html.escape(course['level_en'])}</span><h2>{html.escape(course['promise_en'])}</h2><p>{html.escape(course['detail_en'])}</p></section>
             <section class="learn-list" aria-label="Course chapters">{chapter_entries('en')}</section>
         </div>
         <div data-page-language="zh" lang="zh-CN" hidden>
-            <a class="learn-course-back" href="../learn.html">← 全部板块</a>
+            <a class="learn-course-back" href="../tutorials.html#learn">← 全部板块</a>
             <header class="learn-heading"><span class="mini-tag">{html.escape(course['short_zh'])}</span><h1>{html.escape(course['title_zh'])}</h1><p>{html.escape(course['summary_zh'])}</p></header>
             <section class="learn-controls" aria-label="筛选课程章节"><label class="learn-search"><span class="visually-hidden">搜索章节</span><i class="fas fa-magnifying-glass" aria-hidden="true"></i><input type="search" data-learn-search placeholder="搜索这个板块"></label><div class="learn-tags" aria-label="章节标签">{filter_buttons('zh')}</div><p class="learn-result-status" data-learn-status role="status" aria-live="polite"></p></section>
             <section class="learn-track-intro"><span>共 {total} 章 · {html.escape(course['level_zh'])}</span><h2>{html.escape(course['promise_zh'])}</h2><p>{html.escape(course['detail_zh'])}</p></section>
@@ -225,8 +225,8 @@ def course_index_shell(course: dict, chapters: list[dict]) -> str:
         </div>
     </div></main>
 
-    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../start.html" data-i18n="nav.start">Start</a><a href="../learn.html" data-i18n="nav.learn">Learn</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a><a href="../changelog.html" data-i18n="nav.changelog">Changelog</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
-<script src="../js/i18n-learn.js?v=1"></script><script src="../js/i18n.js?v=19"></script><script src="../js/vendor/gsap.min.js?v=3.13.0"></script><script src="../js/vendor/ScrollTrigger.min.js?v=3.13.0"></script><script src="../js/main.js?v=16"></script><script src="../js/motion.js?v=1"></script><script src="../js/docs-search.js?v=6"></script><script src="../js/bilingual-page.js?v=1"></script><script src="../js/learn.js?v=3"></script>
+    <footer class="footer"><div class="container"><div class="footer-content"><div class="footer-brand"><div class="nav-logo"><span class="logo-icon"><img src="../assets/logo.png" width="256" height="256" alt="Infernux logo"></span><span class="logo-text" data-i18n="brand.footerTitle">熔炉 · INFERNUX</span></div><p data-i18n="footer.tagline">Open code, explicit architecture, and a render stack you can actually reason about.</p></div><div class="footer-links"><div class="footer-column"><h4 data-i18n="footer.resources">Resources</h4><a href="../tutorials.html#learn" data-i18n="nav.tutorials">Tutorials</a><a href="../roadmap.html" data-i18n="nav.roadmap">Roadmap</a></div><div class="footer-column"><h4 data-i18n="footer.community">Community</h4><a href="https://infernux-engine.discourse.group/" data-i18n="nav.community">Community</a><a href="https://github.com/ChenlizheMe/Infernux/issues" target="_blank" rel="noopener" data-i18n="footer.issues">Issues</a></div></div></div><div class="footer-bottom">© 2024–2026 Lizhe Chen · MIT License · 熔炉 · INFERNUX</div></div></footer>
+<script src="../js/i18n-learn.js?v=1"></script><script src="../js/i18n.js?v=20"></script><script src="../js/vendor/gsap.min.js?v=3.13.0"></script><script src="../js/vendor/ScrollTrigger.min.js?v=3.13.0"></script><script src="../js/main.js?v=16"></script><script src="../js/motion.js?v=1"></script><script src="../js/docs-search.js?v=6"></script><script src="../js/bilingual-page.js?v=1"></script><script src="../js/learn.js?v=3"></script>
 </body>
 </html>
 '''

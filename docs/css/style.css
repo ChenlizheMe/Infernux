@@ -50,8 +50,8 @@
     --radius-lg: 18px;
     --radius-xl: 26px;
 
-    --font-display: "Space Grotesk", "Inter", "Segoe UI", sans-serif;
-    --font-body: "Inter", "Space Grotesk", "Segoe UI", sans-serif;
+    --font-display: "Source Han Sans SC", "Space Grotesk", "Inter", "Segoe UI", sans-serif;
+    --font-body: "Source Han Sans SC", "Inter", "Space Grotesk", "Segoe UI", "Microsoft YaHei", sans-serif;
     --font-mono: "JetBrains Mono", "IBM Plex Mono", "Cascadia Code", monospace;
 
     --code-bg: #0b0a0e;
@@ -166,7 +166,7 @@ img { max-width: 100%; }
 .mission-ribbon-inner {
     width: min(1460px, calc(100vw - 56px)); height: 100%; margin: auto; padding: 0 8px;
     display: flex; align-items: center; justify-content: space-between; gap: 24px;
-    color: var(--on-accent); font: 700 0.68rem var(--font-mono); letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--on-accent); font: 700 12px var(--font-mono); letter-spacing: 0.16em; text-transform: uppercase;
 }
 .mission-kicker { display: inline-flex; align-items: center; gap: 10px; }
 .mission-kicker::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 12px var(--signal); }
@@ -185,7 +185,7 @@ img { max-width: 100%; }
 .nav-logo { display: inline-flex; align-items: center; gap: 12px; flex: 0 0 auto; padding-right: 28px; border-right: 1px solid rgba(244, 234, 219, 0.18); font: 700 1.05rem var(--font-display); letter-spacing: 0.16em; text-transform: uppercase; }
 .logo-icon { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--accent-soft); border: 1px solid var(--border-accent); overflow: hidden; }
 .logo-icon img { width: 100%; height: 100%; object-fit: cover; }
-.nav-links { display: flex; align-items: center; justify-content: flex-end; gap: 20px; flex: 1; color: var(--text-muted); font: 700 0.875rem var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase; }
+.nav-links { display: flex; align-items: center; justify-content: flex-end; gap: 20px; flex: 1; color: var(--text-muted); font: 700 12px var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase; }
 .nav-links a { position: relative; padding: 10px 0; white-space: nowrap; transition: color 160ms ease; }
 .nav-links a::after { content: ""; position: absolute; right: 0; bottom: 3px; left: 0; height: 2px; transform: scaleX(0); transform-origin: left; background: var(--accent); transition: transform 180ms ease; }
 .nav-links a:hover, .nav-links a:focus-visible, .nav-links a.active { color: var(--text); }
@@ -217,7 +217,7 @@ ul, ol { padding-left: 1.35rem; }
 .btn {
     min-height: 46px; padding: 0 18px; display: inline-flex; align-items: center; justify-content: center; gap: 9px;
     border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg-elevated); color: var(--text);
-    font: 700 0.74rem var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer;
+    font: 700 12px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer;
     box-shadow: 5px 5px 0 rgba(0, 0, 0, 0.32); transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease;
 }
 .btn:hover, .btn:focus-visible { transform: translate(-2px, -2px); box-shadow: 8px 8px 0 rgba(0, 0, 0, 0.38); }
@@ -384,8 +384,8 @@ button:disabled { cursor: not-allowed; }
 @media (max-width: 520px) {
     :root { --page-padding: 20px; }
     .container, .nav-container { width: calc(100vw - 40px); } .mission-ribbon-inner { width: calc(100vw - 40px); padding: 0; }
-    .mission-kicker { font-size: 0.56rem; letter-spacing: 0.1em; } .mission-name { font-size: 0.82rem; letter-spacing: 0.2em; }
-    .nav-container { gap: 10px; } .nav-logo { gap: 8px; font-size: 0.78rem; letter-spacing: 0.08em; } .logo-icon { width: 32px; height: 32px; }
+    .mission-kicker { font-size: 12px; letter-spacing: 0.1em; } .mission-name { font-size: 12px; letter-spacing: 0.2em; }
+    .nav-container { gap: 10px; } .nav-logo { gap: 8px; font-size: 12px; letter-spacing: 0.08em; } .logo-icon { width: 32px; height: 32px; }
     .nav-links { right: 20px; left: 20px; } .lang-toggle { min-width: 48px; padding: 0 8px; }
     .page-shell { padding-top: 30px; } .hero-grid { padding: 38px 20px 44px; gap: 40px; }
     .hero-title { font-size: clamp(2.55rem, 13vw, 4.2rem); } .hero-panel { margin-top: 0; padding-top: 14px; }
@@ -397,7 +397,7 @@ button:disabled { cursor: not-allowed; }
     .code-preview pre { font-size: 0.73rem; } .code-copy-action { width: 44px; min-width: 44px; padding: 0; } .code-copy-action span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 }
 @media (max-width: 1180px) { .nav-links { gap: 13px; } }
-@media (max-width: 1080px) { .hero-grid { gap: 44px; } .nav-links { font-size: 0.66rem; } }
+@media (max-width: 1080px) { .hero-grid { gap: 44px; } .nav-links { font-size: 12px; } }
 @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior: auto; }
     *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }

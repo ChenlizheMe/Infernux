@@ -1,3 +1,11 @@
+@font-face {
+    font-family: "Source Han Sans SC";
+    font-style: normal;
+    font-weight: 400 700;
+    font-display: swap;
+    src: url("../assets/fonts/source-han-sans-sc-subset.woff2") format("woff2");
+}
+
 /* Self-hosted subsets from Google Fonts. See assets/vendor-licenses/*. */
 @font-face {
     font-family: "Inter";

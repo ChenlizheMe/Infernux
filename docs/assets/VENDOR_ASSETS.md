@@ -4,6 +4,7 @@ These files are committed so the GitHub Pages experience does not depend on thir
 
 | Local file | Upstream | Version/source | SHA-256 |
 |---|---|---|---|
+| `fonts/source-han-sans-sc-subset.woff2` | Google Noto Sans SC (Source Han Sans family) | `NotoSansSC-VF.ttf`; website character subset | `98038ca3eba66feb91ddec25f83bf0115e54a021b1e1a2f480b173f012b5ed8c` |
 | `fonts/inter-latin.woff2` | Google Fonts / Inter | `fonts.gstatic.com/s/inter/v20` | `3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62` |
 | `fonts/jetbrains-mono-latin.woff2` | Google Fonts / JetBrains Mono | `fonts.gstatic.com/s/jetbrainsmono/v24` | `83c005d49d8a6a50474c73a5a36ac0468076e9c4a29da7bdb14995d80560a5be` |
 | `fonts/space-grotesk-latin.woff2` | Google Fonts / Space Grotesk | `fonts.gstatic.com/s/spacegrotesk/v22` | `0640890476fc1198ab4de571fb658de443c4d85b66466ec09534a8737ab1ce9d` |
@@ -11,6 +12,8 @@ These files are committed so the GitHub Pages experience does not depend on thir
 | `fonts/fa-brands-subset-400.woff2` | Font Awesome Free | `6.4.0`; GitHub + Python subset | `7d7c0b8449df96bbfdc8b4e6c6740ce2337af2c90363a5213713977df3e7ae76` |
 
 Font license texts are preserved in `vendor-licenses/`. When any asset changes, update its version/source, checksum, license, and the static-site verifier in the same change.
+
+The `source-han-sans-sc-subset.woff2` file is a character subset of Google Noto Sans SC, a Source Han Sans family font, distributed under SIL OFL 1.1; its license is preserved in `vendor-licenses/Noto-Sans-SC-OFL.txt`.
 
 ## Project-authored visual assets
 

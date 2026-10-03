@@ -26,6 +26,7 @@ function assertBreakpoint(css, breakpoint, surface) {
 
 const rootPages = [
     ["index.html", "Home"],
+    ["tutorials.html", "Tutorials"],
     ["start.html", "Start"],
     ["learn.html", "Learn"],
     ["learn/gameplay.html", "Gameplay course"],
@@ -46,7 +47,7 @@ for (const [relativePath, surface] of rootPages) {
     assert.doesNotMatch(html, /\sstyle\s*=/i, `${surface} must not reintroduce fixed inline layout styles`);
 }
 
-for (const relativePath of ["index.html", "start.html", "learn.html", "learn/gameplay.html", "learn/rendering.html", "learn/gameplay-first-component.html", "learn/rendering-overview.html", "roadmap.html", "community.html", "download.html", "404.html"]) {
+for (const relativePath of ["index.html", "tutorials.html", "start.html", "learn.html", "learn/gameplay.html", "learn/rendering.html", "learn/gameplay-first-component.html", "learn/rendering-overview.html", "roadmap.html", "community.html", "download.html", "404.html"]) {
     const html = await read(relativePath);
     assert.match(html, /<a[^>]+class=["'][^"']*skip-link[^"']*["'][^>]+href=["']#main-content["']/i, `${relativePath} must retain a skip link`);
     assert.match(html, /<main\b[^>]*\bid=["']main-content["']/i, `${relativePath} must retain one addressable main region`);
@@ -56,6 +57,7 @@ const styles = {
     shared: await read("css/style.css"),
     home: await read("css/home.css"),
     start: await read("css/start.css"),
+    tutorials: await read("css/tutorials.css"),
     learn: await read("css/learn.css"),
     download: await read("css/download.css"),
     roadmap: await read("css/roadmap.css"),
@@ -70,6 +72,7 @@ const templateStyles = await read(`css/${hashedTemplateStyles[0]}`);
 
 for (const breakpoint of [1180, 1080, 820, 520]) assertBreakpoint(styles.shared, breakpoint, "Shared shell");
 assertBreakpoint(styles.start, 700, "Start");
+assertBreakpoint(styles.tutorials, 520, "Tutorials");
 assertBreakpoint(styles.learn, 720, "Learn");
 assertBreakpoint(styles.download, 700, "Download");
 for (const breakpoint of [1080, 820]) assertBreakpoint(styles.roadmap, breakpoint, "Roadmap");
@@ -84,6 +87,7 @@ for (const css of [template, templateStyles]) {
 const surfaces = {
     Home: `${styles.shared}\n${styles.home}`,
     "Not-found recovery": `${styles.shared}\n${styles.search}`,
+    Tutorials: `${styles.shared}\n${styles.tutorials}\n${styles.start}\n${styles.learn}\n${styles.search}`,
     Start: `${styles.shared}\n${styles.start}\n${styles.search}`,
     Learn: `${styles.shared}\n${styles.learn}\n${styles.search}`,
     Roadmap: `${styles.shared}\n${styles.roadmap}\n${styles.search}`,

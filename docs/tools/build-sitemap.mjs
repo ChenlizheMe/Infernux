@@ -15,6 +15,7 @@ const origin = manifest.canonical_origin.replace(/\/$/, "");
 const defaultLastmod = manifest.last_verified;
 const rootPages = [
     "index.html",
+    "tutorials.html",
     "start.html",
     "learn.html",
     ...learningCourses.map((course) => `learn/${course.slug}.html`),

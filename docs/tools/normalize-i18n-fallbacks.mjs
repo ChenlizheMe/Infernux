@@ -4,7 +4,7 @@ import process from "node:process";
 
 const docsRoot = path.resolve("docs");
 const check = process.argv.includes("--check");
-const pages = ["index.html", "start.html", "learn.html", "roadmap.html", "download.html", "404.html"];
+const pages = ["index.html", "tutorials.html", "start.html", "learn.html", "roadmap.html", "download.html", "404.html"];
 // Nested same-tag markup defeats the closing-tag match, so these two stay hand-maintained.
 const handWritten = new Set(["brand.ribbonName", "home.hero.title"]);
 

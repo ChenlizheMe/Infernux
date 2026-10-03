@@ -7,7 +7,7 @@ const docsRoot = path.resolve("docs");
 const failures = [];
 let maskableRadiusEvidence = null;
 const expectedShortcuts = [
-  { short_name: "Start", url: "/start.html" },
+  { short_name: "Tutorials", url: "/tutorials.html" },
   { short_name: "API", url: "/wiki/site/en/api/index.html" },
   { short_name: "Community", url: "/community.html" },
   { short_name: "Download", url: "/download.html" },
@@ -251,7 +251,7 @@ if (manifest) {
   }
 }
 
-const rootPages = ["index.html", "start.html", "learn.html", "roadmap.html", "community.html", "download.html", "offline.html"];
+const rootPages = ["index.html", "tutorials.html", "start.html", "learn.html", "roadmap.html", "community.html", "download.html", "offline.html"];
 for (const page of rootPages) {
   try {
     const html = await readFile(path.join(docsRoot, page), "utf8");

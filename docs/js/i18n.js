@@ -15,12 +15,10 @@ const translations = {
     "footer.resources": "Resources",
     "footer.tagline": "A Python-first game engine on the road to a Neural Network-Native Engine. Open source under MIT.",
     "nav.api": "API",
-    "nav.changelog": "Changelog",
     "nav.community": "Community",
     "nav.download": "Download",
-    "nav.learn": "Learn",
     "nav.roadmap": "Roadmap",
-    "nav.start": "Start"
+    "nav.tutorials": "Tutorials"
 }, ...(pageTranslations.en || {}) },
     zh: { ...{
     "brand.footerTitle": "熔炉 · INFERNUX",
@@ -34,12 +32,10 @@ const translations = {
     "footer.resources": "资源",
     "footer.tagline": "以 Python 为主要创作语言，致力于成为 Neural Network-Native Engine。MIT 开源。",
     "nav.api": "API",
-    "nav.changelog": "更新日志",
     "nav.community": "社区",
     "nav.download": "下载",
-    "nav.learn": "学习",
     "nav.roadmap": "路线图",
-    "nav.start": "开始使用"
+    "nav.tutorials": "教程"
 }, ...(pageTranslations.zh || {}) }
 };
 
