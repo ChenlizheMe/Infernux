@@ -166,10 +166,10 @@ A full one-shot pool rejects an incoming sound if its `volume_scale` is lower th
 ## Verify the result {#verify}
 
 1. Enter Play mode. Track 0 should begin and continue looping at a quieter level than the source volume.
-2. Move the player into the obstacle. `hit.wav` should play once when contact begins.
+2. Let `Probe` contact `Ground`. `hit.wav` should play once when contact begins.
 3. Separate the colliders and collide again. A second hit should play. Holding the colliders together should produce no repeated hit.
 4. Trigger several distinct collisions quickly. Overlapping hit sounds should use the one-shot pool while music continues on track 0.
-5. Select the player during Play mode. The Track 0 status should read **Playing**. Stop Play mode and confirm that no clip-loading error appears in Console.
+5. Select `Probe` during Play mode. The Track 0 status should read **Playing**. Stop Play mode and confirm that no clip-loading error appears in Console.
 
 For a quick API check, add temporary logs for `self._source.is_track_playing(0)`, `self._music_clip.duration`, and `self._hit_clip.channels`, then remove them after verification.
 
@@ -356,10 +356,10 @@ AssetRegistry/AssetDatabase 已初始化时，可用 `set_track_clip_by_guid()` 
 ## 验证结果 {#zh-verify}
 
 1. 进入 Play 模式。轨道 0 应开始循环，音量低于音源总音量。
-2. 让玩家撞上障碍物。接触开始时，`hit.wav` 应播放一次。
+2. 让 `Probe` 接触 `Ground`。接触开始时，`hit.wav` 应播放一次。
 3. 分开两个 Collider，再次碰撞。应听到第二次音效；持续贴住时不会重复播放。
 4. 快速制造多次独立碰撞。命中音效应通过一次性声部池重叠，轨道 0 的音乐继续播放。
-5. Play 模式下选择玩家，轨道 0 状态应显示 **Playing**。停止 Play 模式，确认 Console 中没有音频加载错误。
+5. Play 模式下选择 `Probe`，轨道 0 状态应显示 **Playing**。停止 Play 模式，确认 Console 中没有音频加载错误。
 
 需要快速核对 API 时，可临时记录 `self._source.is_track_playing(0)`、`self._music_clip.duration` 与 `self._hit_clip.channels`，验证后删除日志。
 

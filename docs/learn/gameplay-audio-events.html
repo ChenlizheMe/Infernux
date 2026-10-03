@@ -254,10 +254,10 @@
 <h2 id="verify">Verify the result</h2>
 <ol>
 <li>Enter Play mode. Track 0 should begin and continue looping at a quieter level than the source volume.</li>
-<li>Move the player into the obstacle. <code>hit.wav</code> should play once when contact begins.</li>
+<li>Let <code>Probe</code> contact <code>Ground</code>. <code>hit.wav</code> should play once when contact begins.</li>
 <li>Separate the colliders and collide again. A second hit should play. Holding the colliders together should produce no repeated hit.</li>
 <li>Trigger several distinct collisions quickly. Overlapping hit sounds should use the one-shot pool while music continues on track 0.</li>
-<li>Select the player during Play mode. The Track 0 status should read <strong>Playing</strong>. Stop Play mode and confirm that no clip-loading error appears in Console.</li>
+<li>Select <code>Probe</code> during Play mode. The Track 0 status should read <strong>Playing</strong>. Stop Play mode and confirm that no clip-loading error appears in Console.</li>
 </ol>
 <p>For a quick API check, add temporary logs for <code>self._source.is_track_playing(0)</code>, <code>self._music_clip.duration</code>, and <code>self._hit_clip.channels</code>, then remove them after verification.</p>
 <h2 id="common-errors">Common errors</h2>
@@ -495,10 +495,10 @@
 <h2 id="zh-verify">验证结果</h2>
 <ol>
 <li>进入 Play 模式。轨道 0 应开始循环，音量低于音源总音量。</li>
-<li>让玩家撞上障碍物。接触开始时，<code>hit.wav</code> 应播放一次。</li>
+<li>让 <code>Probe</code> 接触 <code>Ground</code>。接触开始时，<code>hit.wav</code> 应播放一次。</li>
 <li>分开两个 Collider，再次碰撞。应听到第二次音效；持续贴住时不会重复播放。</li>
 <li>快速制造多次独立碰撞。命中音效应通过一次性声部池重叠，轨道 0 的音乐继续播放。</li>
-<li>Play 模式下选择玩家，轨道 0 状态应显示 <strong>Playing</strong>。停止 Play 模式，确认 Console 中没有音频加载错误。</li>
+<li>Play 模式下选择 <code>Probe</code>，轨道 0 状态应显示 <strong>Playing</strong>。停止 Play 模式，确认 Console 中没有音频加载错误。</li>
 </ol>
 <p>需要快速核对 API 时，可临时记录 <code>self._source.is_track_playing(0)</code>、<code>self._music_clip.duration</code> 与 <code>self._hit_clip.channels</code>，验证后删除日志。</p>
 <h2 id="zh-common-errors">常见错误</h2>
