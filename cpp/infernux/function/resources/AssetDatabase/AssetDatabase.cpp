@@ -1842,7 +1842,8 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
                 workingSet.importResults[asset.guid] = {false, "Pending import has no metadata to persist"};
             } else {
                 const std::string metaPath = InxResourceMeta::GetMetaFilePath(asset.path);
-                state->metadataWrites.push_back({metaPath, metadata->second->SerializeDocument().dump(4) + "\n"});
+                state->metadataWrites.push_back(
+                    {metaPath, metadata->second->SerializeDocumentPortable(m_projectRoot).dump(4) + "\n"});
             }
         }
         ++processed;
@@ -3082,7 +3083,7 @@ void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportAr
         const std::string metaPath = InxResourceMeta::GetMetaFilePath(path);
         if (metaPath.empty())
             throw std::runtime_error("Failed to resolve importer metadata path");
-        writes.push_back({metaPath, artifact.metadata.SerializeDocument().dump(4) + "\n"});
+        writes.push_back({metaPath, artifact.metadata.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n"});
     }
     auto runtimeArtifactWrites =
         TakeRuntimeArtifactWrites(artifact.runtimeCpuArtifacts, guid, request.resourceType, m_projectRoot);
@@ -3290,12 +3291,13 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
             MeshImportSettings::InitializeDefaults(metaFile);
         ApplyBuiltinSceneIconMetadata(metaFile, filePath, readOnly);
         if (!readOnly && persistMetadata) {
-            if (!metaFile.SaveToFile(metaFilePath))
-                throw std::runtime_error("Failed to persist asset metadata: " + metaFilePath);
+            DocumentStore::Instance().WriteAndWait(metaFilePath,
+                                                   metaFile.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n");
         }
     } else {
         if (metaFile.GetResourceType() != type)
             throw std::runtime_error("Asset metadata resource_type does not match its file extension: " + metaFilePath);
+        metaFile.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(filePath));
     }
 
     std::string guid = metaFile.GetGuid();
@@ -3335,8 +3337,8 @@ void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &
         existingGuid = meta.GetGuid();
 
         meta.UpdateFilePath(newPath);
-        if (!meta.SaveToFile(newMetaPath))
-            throw std::runtime_error("Failed to persist moved asset metadata: " + newMetaPath);
+        DocumentStore::Instance().WriteAndWait(newMetaPath,
+                                               meta.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n");
         std::error_code removeError;
         if (!fs::remove(oldMetaFsPath, removeError) || removeError) {
             std::error_code rollbackError;

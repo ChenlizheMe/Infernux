@@ -153,7 +153,9 @@ void TestNonGuidRenderEffectFieldsDoNotCreateDependenciesOnInitialRefresh()
 void TestScriptReimportRefreshesContentHashAndPreservesGuid()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-script-reimport-content-hash";
+    const auto clone = std::filesystem::temp_directory_path() / "infernux-script-reimport-clone";
     std::filesystem::remove_all(root);
+    std::filesystem::remove_all(clone);
     const auto script = root / "Assets" / "Scripts" / "Gameplay.py";
     WriteText(script, "VALUE = 1\n");
 
@@ -196,7 +198,28 @@ void TestScriptReimportRefreshesContentHashAndPreservesGuid()
         Require(entry != nullptr && entry->guid == originalGuid, "script reimport index lost the original identity");
         Require(entry->contentHash == rebuiltMetadata->GetDataAs<std::string>("content_hash"),
                 "script reimport index did not publish the rebuilt source hash");
+        const auto readMetadata = [](const std::filesystem::path &path) {
+            std::ifstream stream(path);
+            return nlohmann::json::parse(stream);
+        };
+        const auto sharedMetadata = readMetadata(script.string() + ".meta");
+        Require(sharedMetadata.at("metadata").at("file_path").at("value") == "Assets/Scripts/Gameplay.py",
+                "reimport persisted an absolute path");
 
+        registry.Shutdown();
+        std::filesystem::create_directories(clone);
+        std::filesystem::copy(root / "Assets", clone / "Assets", std::filesystem::copy_options::recursive);
+        auto clonedDatabase = std::make_unique<infernux::AssetDatabase>();
+        clonedDatabase->Initialize(infernux::FromFsPath(clone));
+        registry.Initialize(std::move(clonedDatabase));
+        registry.RegisterLoader(infernux::ResourceType::Script, std::make_unique<infernux::InxPythonScriptLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        registry.GetAssetDatabase()->Refresh();
+        const auto clonedScript = clone / "Assets" / "Scripts" / "Gameplay.py";
+        Require(registry.GetAssetDatabase()->GetGuidFromPath(infernux::FromFsPath(clonedScript)) == originalGuid,
+                "clone changed the shared asset GUID");
+        Require(readMetadata(clonedScript.string() + ".meta") == sharedMetadata,
+                "opening a clone changed its shared sidecar");
         registry.Shutdown();
         infernux::JobSystem::Shutdown();
     } catch (...) {
@@ -204,9 +227,11 @@ void TestScriptReimportRefreshesContentHashAndPreservesGuid()
             infernux::AssetRegistry::Instance().Shutdown();
         infernux::JobSystem::Shutdown();
         std::filesystem::remove_all(root);
+        std::filesystem::remove_all(clone);
         throw;
     }
     std::filesystem::remove_all(root);
+    std::filesystem::remove_all(clone);
 }
 
 void TestValidButStaleSidecarIsRebuiltFromCurrentSource()
@@ -552,7 +577,8 @@ void TestModelSettingsPublishOnlyAfterSuccessfulImport()
         Require(readBytes(infernux::ToFsPath(artifactPath)) != originalArtifact, "settings did not change geometry");
         infernux::InxResourceMeta disk;
         Require(disk.LoadFromFile(metaPath), "could not read committed settings");
-        Require(disk.SerializeDocument() == published->SerializeDocument(), "disk and live settings differ");
+        Require(disk.SerializeDocument() == published->SerializeDocumentPortable(infernux::FromFsPath(root)),
+                "disk and live authored settings differ");
         Require(db->GetGuidFromPath(path) == guid, "Apply replaced source identity");
         Require(db->ReimportAsset(path).succeeded, "source reimport failed after Apply");
         Require(db->GetMetaByGuid(guid)->GetDataAs<float>("scale_factor") == 3.0f,

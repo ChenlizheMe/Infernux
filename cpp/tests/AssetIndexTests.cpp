@@ -125,6 +125,52 @@ void TestMetadataFilePathCanonicalization()
     std::filesystem::remove_all(tempRoot);
 }
 
+void TestPortableMetadataPath()
+{
+    const auto root = std::filesystem::temp_directory_path() / "infernux-portable-metadata";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "Assets" / "Scripts");
+    const auto source = root / "Assets" / "Scripts" / "Player.py";
+    {
+        std::ofstream output(source);
+        output << "class Player: pass\n";
+    }
+
+    infernux::InxResourceMeta metadata;
+    const std::string sourcePath = infernux::FromFsPath(source);
+    const std::string content = "class Player: pass\n";
+    metadata.Init(content.data(), content.size(), sourcePath, ResourceType::Script);
+    const auto document = metadata.SerializeDocumentPortable(infernux::FromFsPath(root));
+    Require(document.at("metadata").at("file_path").at("value") == "Assets/Scripts/Player.py",
+            "portable metadata retained the checkout's absolute path");
+    Require(!document.at("metadata").contains("last_modified"), "portable metadata retained a local timestamp");
+    metadata.AddMetadata("last_modified", "different checkout timestamp");
+    Require(document == metadata.SerializeDocumentPortable(infernux::FromFsPath(root)),
+            "local observation changed portable metadata");
+    infernux::InxResourceMeta child;
+    child.Init(content.data(), content.size(), sourcePath, ResourceType::Script);
+    child.AddMetadata("file_path", sourcePath + "::subanim:idle");
+    metadata.AddMetadata("model_animations", nlohmann::json::array({{{"metadata", child.SerializeDocument()}}}).dump());
+    const auto nested = nlohmann::json::parse(metadata.SerializeDocumentPortable(infernux::FromFsPath(root))
+                                                  .at("metadata")
+                                                  .at("model_animations")
+                                                  .at("value")
+                                                  .get<std::string>());
+    Require(nested.at(0).at("metadata").at("metadata").at("file_path").at("value") ==
+                "Assets/Scripts/Player.py::subanim:idle",
+            "model sub-asset retained a local absolute path");
+    metadata.AddMetadata("file_path", infernux::FromFsPath(root.parent_path() / "outside.py"));
+    bool rejected = false;
+    try {
+        (void)metadata.SerializeDocumentPortable(infernux::FromFsPath(root));
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    Require(rejected, "project sidecar accepted an external absolute path");
+
+    std::filesystem::remove_all(root);
+}
+
 void TestScaleAndStrictRoundTrip()
 {
     constexpr size_t entryCount = 10'000;
@@ -203,6 +249,7 @@ int main()
         TestResourceTypeMetadataRoundTrip();
         TestSpriteFramesStructuredMetadata();
         TestMetadataFilePathCanonicalization();
+        TestPortableMetadataPath();
         TestScaleAndStrictRoundTrip();
         return 0;
     } catch (const std::exception &error) {

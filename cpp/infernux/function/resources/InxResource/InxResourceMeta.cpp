@@ -145,6 +145,54 @@ std::string NormalizeMetadataFilePath(const std::string &filePath)
 {
     return ResolveFilesystemPath(filePath);
 }
+
+std::string PortableMetadataFilePath(const std::string &filePath, const std::string &projectRoot)
+{
+    const auto virtualSuffix = filePath.find("::");
+    const std::string filesystemPath = filePath.substr(0, virtualSuffix);
+    const std::string suffix = virtualSuffix == std::string::npos ? "" : filePath.substr(virtualSuffix);
+
+    const auto resolved = ToFsPath(filesystemPath).is_absolute()
+                              ? filesystemPath
+                              : FromFsPath(ToFsPath(projectRoot) / ToFsPath(filesystemPath));
+    std::string relative;
+    if (TryMakeRelativeFilesystemPath(resolved, projectRoot, relative))
+        return relative + suffix;
+
+    throw std::invalid_argument("project metadata path is outside the project: " + filePath);
+}
+
+void MakeMetadataPortable(nlohmann::json &document, const std::string &projectRoot)
+{
+    if (document.is_array()) {
+        for (auto &item : document)
+            MakeMetadataPortable(item, projectRoot);
+        return;
+    }
+    if (!document.is_object())
+        return;
+    auto fields = document.find("metadata");
+    if (fields != document.end() && fields->is_object()) {
+        // This is a local observation, not an authored importer setting.
+        fields->erase("last_modified");
+        for (const auto *key : {"file_path"}) {
+            auto entry = fields->find(key);
+            if (entry != fields->end() && entry->at("type") == "string")
+                (*entry)["value"] = PortableMetadataFilePath(entry->at("value").get<std::string>(), projectRoot);
+        }
+        // Model tables contain serialized metadata documents inside strings.
+        for (const auto *key : {"model_textures", "model_animations"}) {
+            auto entry = fields->find(key);
+            if (entry != fields->end()) {
+                auto table = nlohmann::json::parse(entry->at("value").get<std::string>());
+                MakeMetadataPortable(table, projectRoot);
+                (*entry)["value"] = table.dump();
+            }
+        }
+    }
+    for (auto &value : document)
+        MakeMetadataPortable(value, projectRoot);
+}
 } // namespace
 
 // ----------------------------------
@@ -416,6 +464,15 @@ nlohmann::json InxResourceMeta::SerializeDocument() const
         entries[key] = std::move(entry);
     }
     root["metadata"] = std::move(entries);
+    return root;
+}
+
+nlohmann::json InxResourceMeta::SerializeDocumentPortable(const std::string &projectRoot) const
+{
+    if (projectRoot.empty())
+        throw std::invalid_argument("portable metadata requires a project root");
+    auto root = SerializeDocument();
+    MakeMetadataPortable(root, projectRoot);
     return root;
 }
 
