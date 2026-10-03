@@ -1,5 +1,6 @@
 """Model-owned images are reusable, read-only, GUID-addressed Texture assets."""
 import base64
+import copy
 import io
 import json
 import os
@@ -238,7 +239,12 @@ def test_owned_texture_import_settings_publish_in_model_sidecar(imported_model, 
     assert after["metadata"]["metadata"]["artifact_width"]["value"] == 4
     assert after["metadata"]["metadata"]["artifact_height"]["value"] == 2
     stored = json.loads(Path(str(source) + ".meta").read_text(encoding="utf-8"))
-    assert json.loads(stored["metadata"]["model_textures"]["value"])[0] == after
+    expected = copy.deepcopy(after)
+    project_root = Path(database.assets_root).parent
+    expected["metadata"]["metadata"]["file_path"]["value"] = (
+        source.relative_to(project_root).as_posix() + "::subtex:" + after["guid"]
+    )
+    assert json.loads(stored["metadata"]["model_textures"]["value"])[0] == expected
     assert not Path(path + ".meta").exists()
     embed(document, (20, 40, 60))
     source.write_text(json.dumps(document), encoding="utf-8")
