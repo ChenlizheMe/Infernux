@@ -1,17 +1,31 @@
 /* Roadmap star charts: flat vector constellations with a restrained tape-futurist signal palette. */
 .roadmap-hero {
+    position: relative;
     margin: 0 auto;
-    padding: 64px 0 24px;
+    padding: 32px 20px 24px;
     max-width: 1600px;
+    border-left: 3px solid var(--accent);
+    background:
+        linear-gradient(90deg, rgba(255, 110, 110, .09), transparent 34%),
+        linear-gradient(180deg, rgba(131, 184, 173, .055), transparent 70%);
+    box-shadow: inset 0 1px 0 rgba(255, 228, 216, .16), inset 0 -1px 0 rgba(255, 110, 110, .12);
 }
 
 .roadmap-hero h1 {
     margin: 0;
     color: var(--text);
-    font-size: clamp(3rem, 8vw, 7rem);
-    letter-spacing: 0.08em;
+    font-size: clamp(2.45rem, 3.6vw, 3.35rem);
+    letter-spacing: 0.1em;
     line-height: .95;
     text-transform: uppercase;
+}
+
+.roadmap-hero p {
+    max-width: 62ch;
+    margin: 18px 0 0;
+    color: var(--text-soft);
+    font-size: 1.08rem;
+    line-height: 1.65;
 }
 
 .tree-workspace {
@@ -71,25 +85,6 @@
     text-transform: uppercase;
 }
 
-.graph-reset {
-    width: 36px;
-    height: 36px;
-    flex: 0 0 auto;
-    border: 1px solid var(--border-strong);
-    background: transparent;
-    color: var(--text-soft);
-    font: 700 21px/1 var(--font-body);
-    cursor: pointer;
-    transition: border-color .2s ease, color .2s ease, transform .2s ease;
-}
-
-.graph-reset:hover,
-.graph-reset:focus-visible {
-    border-color: var(--accent);
-    color: var(--accent);
-    transform: rotate(-20deg);
-}
-
 .tree-page[hidden] { display: none; }
 
 .galaxy-panel { padding-top: 10px; }
@@ -147,12 +142,28 @@
 
 .node-graph-shell.is-panning { cursor: grabbing; }
 .node-graph {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
     display: block;
     width: 100%;
-    min-width: 1020px;
-    height: min(72vh, 760px);
-    min-height: 640px;
+    min-width: 0;
+    height: 100%;
+    min-height: 0;
     user-select: none;
+    overflow: visible;
+    pointer-events: none;
+}
+
+.galaxy-canvas {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    display: block;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    pointer-events: none;
 }
 
 .galaxy-stars,
@@ -183,6 +194,7 @@
 .graph-edge.state-future { stroke: #657084; opacity: .27; stroke-dasharray: 1 10; }
 
 .graph-node { cursor: pointer; outline: none; }
+.graph-node { pointer-events: auto; }
 .graph-node circle { vector-effect: non-scaling-stroke; }
 .graph-node .graph-hit { fill: transparent; stroke: none; pointer-events: all; }
 .graph-node .graph-dot {
@@ -272,18 +284,21 @@
     .roadmap-hero { padding-top: 40px; }
     .galaxy-toolbar { padding: 0 2px; }
     .node-graph-shell { min-height: 560px; }
-    .node-graph { min-width: 940px; min-height: 560px; height: 620px; }
+    .node-graph-shell { height: 620px; }
+    .node-graph { height: 100%; }
     .graph-node text { font-size: 16px; }
     .graph-node .graph-leaf-label { font-size: 15px; }
 }
 
 @media (max-width: 560px) {
-    .roadmap-hero h1 { font-size: clamp(2.6rem, 15vw, 4.5rem); }
+    .roadmap-hero { padding-inline: 14px; }
+    .roadmap-hero h1 { font-size: clamp(2.2rem, 12vw, 3.2rem); }
+    .roadmap-hero p { font-size: 1rem; }
     .tree-page-tab { min-height: 54px; padding-inline: 15px; font-size: 12px; }
     .galaxy-toolbar { font-size: 11px; }
     .release-list { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .tree-page-tab, .graph-reset, .release-card { transition: none; }
+    .tree-page-tab, .release-card { transition: none; }
 }

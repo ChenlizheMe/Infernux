@@ -129,7 +129,6 @@
         "roadmap.hero.title": "ROADMAP",
         "roadmap.changelog.title": "CHANGELOG",
         "roadmap.graph.hint": "Drag to drift · wheel to zoom",
-        "roadmap.graph.reset": "Reset star map",
         "roadmap.galaxy.foundation.title": "FOUNDATION",
         "roadmap.galaxy.foundation.branch.0": "DETERMINISTIC CORE",
         "roadmap.galaxy.foundation.leaf.0.0": "Scene ownership",
@@ -318,7 +317,8 @@
         "roadmap.galaxy.data.leaf.3.0": "Observation tensors",
         "roadmap.galaxy.data.leaf.3.1": "Replay datasets",
         "roadmap.galaxy.data.leaf.3.2": "Batch stepping",
-        "roadmap.galaxy.data.leaf.3.3": "Inference buffers"
+        "roadmap.galaxy.data.leaf.3.3": "Inference buffers",
+        "roadmap.hero.description": "Nine system galaxies: shipped nodes, work in motion, and distant possibilities."
     },
     "zh": {
         "brand.footerTitle": "熔炉 · INFERNUX",
@@ -450,7 +450,6 @@
         "roadmap.hero.title": "路线图",
         "roadmap.changelog.title": "更新日志",
         "roadmap.graph.hint": "拖拽漫游 · 滚轮缩放",
-        "roadmap.graph.reset": "重置星图",
         "roadmap.galaxy.foundation.title": "基础架构",
         "roadmap.galaxy.foundation.branch.0": "确定性核心",
         "roadmap.galaxy.foundation.leaf.0.0": "场景所有权",
@@ -639,6 +638,7 @@
         "roadmap.galaxy.data.leaf.3.0": "观测张量",
         "roadmap.galaxy.data.leaf.3.1": "回放数据集",
         "roadmap.galaxy.data.leaf.3.2": "批量步进",
-        "roadmap.galaxy.data.leaf.3.3": "推理缓冲"
+        "roadmap.galaxy.data.leaf.3.3": "推理缓冲",
+        "roadmap.hero.description": "九个系统星系，记录已经落地、正在靠近和仍在远方的工程节点。"
     }
 }

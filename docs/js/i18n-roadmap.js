@@ -193,7 +193,7 @@ globalThis.INFERNUX_PAGE_TRANSLATIONS = {
         "roadmap.galaxy.toolchain.leaf.3.3": "Agent sessions",
         "roadmap.galaxy.toolchain.title": "TOOLCHAIN",
         "roadmap.graph.hint": "Drag to drift · wheel to zoom",
-        "roadmap.graph.reset": "Reset star map",
+        "roadmap.hero.description": "Nine system galaxies: shipped nodes, work in motion, and distant possibilities.",
         "roadmap.hero.title": "ROADMAP"
     },
     "zh": {
@@ -389,7 +389,7 @@ globalThis.INFERNUX_PAGE_TRANSLATIONS = {
         "roadmap.galaxy.toolchain.leaf.3.3": "Agent 会话",
         "roadmap.galaxy.toolchain.title": "工具链",
         "roadmap.graph.hint": "拖拽漫游 · 滚轮缩放",
-        "roadmap.graph.reset": "重置星图",
+        "roadmap.hero.description": "九个系统星系，记录已经落地、正在靠近和仍在远方的工程节点。",
         "roadmap.hero.title": "路线图"
     }
 };
