@@ -185,7 +185,7 @@ img { max-width: 100%; }
 .nav-logo { display: inline-flex; align-items: center; gap: 12px; flex: 0 0 auto; padding-right: 28px; border-right: 1px solid rgba(244, 234, 219, 0.18); font: 700 1.05rem var(--font-display); letter-spacing: 0.16em; text-transform: uppercase; }
 .logo-icon { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 10px; background: var(--accent-soft); border: 1px solid var(--border-accent); overflow: hidden; }
 .logo-icon img { width: 100%; height: 100%; object-fit: cover; }
-.nav-links { display: flex; align-items: center; justify-content: flex-start; gap: 21px; flex: 1; color: var(--text-muted); font: 700 0.68rem var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; }
+.nav-links { display: flex; align-items: center; justify-content: flex-end; gap: 20px; flex: 1; color: var(--text-muted); font: 700 0.875rem var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase; }
 .nav-links a { position: relative; padding: 10px 0; white-space: nowrap; transition: color 160ms ease; }
 .nav-links a::after { content: ""; position: absolute; right: 0; bottom: 3px; left: 0; height: 2px; transform: scaleX(0); transform-origin: left; background: var(--accent); transition: transform 180ms ease; }
 .nav-links a:hover, .nav-links a:focus-visible, .nav-links a.active { color: var(--text); }
@@ -266,7 +266,8 @@ ul, ol { padding-left: 1.35rem; }
 .hero-codename { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-bottom: 22px; color: var(--text-soft); font: 0.71rem var(--font-mono); letter-spacing: 0.17em; text-transform: uppercase; }
 .hero-codename .badge { padding: 7px 10px; border: 1px solid var(--accent); border-radius: var(--radius-xs); background: var(--accent-soft); color: var(--accent-readable); }
 .hero-codename .badge::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
-.hero-title { max-width: 9.3ch; font-size: clamp(3.6rem, 6.7vw, 7.1rem); line-height: 0.86; text-shadow: 5px 5px 0 rgba(0, 0, 0, 0.42); }
+.hero-title { max-width: 10ch; font-size: clamp(3.6rem, 5.6vw, 6rem); line-height: 0.96; text-shadow: 5px 5px 0 rgba(0, 0, 0, 0.42); }
+:lang(zh) .hero-title { font-size: clamp(3rem, 4.5vw, 5.2rem); line-height: 1.14; }
 .hero-title .accent, .accent { color: var(--accent); text-shadow: 3px 3px 0 #5d1d2a, 0 0 22px rgba(240, 92, 92, 0.34); }
 .hero-subtitle { max-width: 48ch; margin-top: 24px; color: var(--signal); font: 700 0.77rem/1.8 var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase; }
 .hero-description { max-width: 61ch; margin-top: 8px; color: var(--text-muted); font-size: 1.02rem; }
@@ -276,6 +277,10 @@ ul, ol { padding-left: 1.35rem; }
 .hero-text-links a { color: var(--hazard); text-decoration: underline; text-decoration-color: rgba(215, 174, 109, 0.4); text-underline-offset: 4px; }
 .hero-text-links a:hover { color: var(--text); }
 .hero-meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; width: 100%; margin-top: 34px; }
+.engineering-board { margin-top: 30px; padding-top: 20px; border-top: 1px solid var(--signal); }
+.engineering-board-head { display: flex; justify-content: space-between; gap: 16px; color: var(--signal); font: 700 0.875rem var(--font-mono); letter-spacing: 0.06em; }
+.engineering-board .hero-meta { margin-top: 18px; }
+.engineering-board .hero-subtitle { max-width: none; margin-top: 16px; }
 .metric-card, .github-star-deck { min-width: 0; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-xs); background: rgba(28, 20, 27, 0.86); box-shadow: 5px 5px 0 rgba(0, 0, 0, 0.24); }
 .metric-card { display: grid; gap: 6px; }
 .metric-card strong { color: var(--text); font: 700 0.72rem var(--font-mono); }
@@ -360,16 +365,6 @@ button:disabled { cursor: not-allowed; }
 /* State classes are owned by main.js; motion remains a stylesheet concern. */
 .reveal-pending { opacity: 0; transform: translateY(22px); transition: opacity 0.5s ease, transform 0.5s ease; }
 .reveal-pending.animate-in { opacity: 1; transform: none; }
-.site-update-notice { position: fixed; right: 22px; bottom: 22px; z-index: 1200; width: min(430px, calc(100vw - 44px)); padding: 18px; border: 1px solid var(--accent); border-radius: var(--radius-xs); background: var(--bg-panel); color: var(--text); box-shadow: var(--shadow); }
-.site-update-notice[hidden] { display: none; }
-.site-update-copy { display: grid; gap: 6px; }
-.site-update-kicker { color: var(--hazard); font: 700 0.65rem var(--font-mono); letter-spacing: 0.14em; text-transform: uppercase; }
-.site-update-title { font-family: var(--font-display); }
-.site-update-status { margin: 0; color: var(--text-soft); font-size: 0.86rem; }
-.site-update-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
-.site-update-actions button { min-height: 40px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--bg-elevated); color: var(--text); cursor: pointer; }
-.site-update-actions button:hover, .site-update-actions button:focus-visible { border-color: var(--accent); }
-.site-update-notice[data-update-state="applying"] { border-color: var(--signal); }
 
 @media (max-width: 1040px) {
     .nav-links { gap: 13px; } .hero-grid { grid-template-columns: 1fr; } .hero-panel { max-width: 56ch; justify-self: start; width: 100%; }
@@ -394,7 +389,7 @@ button:disabled { cursor: not-allowed; }
     .nav-links { right: 20px; left: 20px; } .lang-toggle { min-width: 48px; padding: 0 8px; }
     .page-shell { padding-top: 30px; } .hero-grid { padding: 38px 20px 44px; gap: 40px; }
     .hero-title { font-size: clamp(2.55rem, 13vw, 4.2rem); } .hero-panel { margin-top: 0; padding-top: 14px; }
-    .hero-panel-rail { margin-inline: 10px; padding-inline: 7px; font-size: 0.46rem; letter-spacing: 0.16em; } .hero-panel::after { bottom: 4px; }
+    .hero-panel-rail { margin-inline: 10px; padding-inline: 7px; font-size: 0.5rem; letter-spacing: 0.14em; } .hero-panel::after { bottom: 4px; }
     .hero-meta, .grid-3, .capability-grid, .status-grid { grid-template-columns: 1fr; } .github-star-deck { grid-column: span 1; }
     .manifesto-strip { grid-template-columns: 1fr; gap: 10px; padding: 18px; } .section { margin-top: 78px; }
     .section::before { left: 0; top: -22px; } .cta-panel { padding: 24px; } .footer-links { flex-wrap: wrap; gap: 28px; }

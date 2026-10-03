@@ -2,7 +2,7 @@
 
 <div class="class-info">
 版本 0.4.1
- &nbsp;|&nbsp; <a href="../../en/api/index.html">English</a>
+ | <a href="../../en/api/index.html">English</a>
 </div>
 
 ## 描述

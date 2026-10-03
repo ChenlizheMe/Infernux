@@ -4,179 +4,13 @@
 
 // Register the root-scoped offline shell. HTML and machine-readable evidence
 // remain network-first inside the worker so a cache cannot silently replace a
-// newer authoritative document. An already controlled page never reloads
-// without an explicit user action when a replacement worker is ready.
-let serviceWorkerUpdateRegistration = null;
-let serviceWorkerUpdateWorker = null;
-let dismissedServiceWorkerUpdate = null;
-let serviceWorkerReloadRequested = false;
-let serviceWorkerReloaded = false;
-let serviceWorkerControllerBound = false;
-let serviceWorkerUpdateState = "ready";
-const SERVICE_WORKER_UPDATE_DISMISSED_KEY = "infernux.site-update.dismissed-for-session";
-
-// A reader who chooses Later should not meet the same waiting update again on
-// every chapter navigation. The next browser session may announce it again.
-function serviceWorkerUpdateDismissedForSession() {
-    try {
-        return globalThis.sessionStorage?.getItem(SERVICE_WORKER_UPDATE_DISMISSED_KEY) === "true";
-    } catch (_) {
-        return false;
-    }
-}
-
-function rememberServiceWorkerUpdateDismissal(dismissed) {
-    try {
-        if (dismissed) globalThis.sessionStorage?.setItem(SERVICE_WORKER_UPDATE_DISMISSED_KEY, "true");
-        else globalThis.sessionStorage?.removeItem(SERVICE_WORKER_UPDATE_DISMISSED_KEY);
-    } catch (_) {
-        // Storage can be unavailable in privacy-restricted browsing contexts.
-    }
-}
-
-function serviceWorkerUpdateCopy() {
-    const zh = document.documentElement.lang?.toLowerCase().startsWith("zh");
-    return zh ? {
-        label: "网站更新",
-        kicker: "站点同步",
-        title: "新版本文档已准备好。",
-        body: "刷新后即可使用最新页面与离线文件。",
-        apply: "立即更新",
-        later: "稍后",
-        applying: "正在切换到新版本……"
-    } : {
-        label: "Website update",
-        kicker: "SITE SYNC",
-        title: "New documentation is ready.",
-        body: "Refresh to use the latest pages and offline files.",
-        apply: "Update now",
-        later: "Later",
-        applying: "Switching to the new version…"
-    };
-}
-
-function createServiceWorkerUpdateNotice() {
-    const existing = document.getElementById("site-update-notice");
-    if (existing) return existing;
-
-    const notice = document.createElement("aside");
-    notice.id = "site-update-notice";
-    notice.className = "site-update-notice";
-    notice.hidden = true;
-
-    const copyBlock = document.createElement("div");
-    copyBlock.className = "site-update-copy";
-    const kicker = document.createElement("span");
-    kicker.className = "site-update-kicker";
-    kicker.dataset.siteUpdateKicker = "";
-    const title = document.createElement("strong");
-    title.className = "site-update-title";
-    title.dataset.siteUpdateTitle = "";
-    const status = document.createElement("p");
-    status.id = "site-update-status";
-    status.className = "site-update-status";
-    status.setAttribute("role", "status");
-    status.setAttribute("aria-live", "polite");
-    status.setAttribute("aria-atomic", "true");
-    copyBlock.append(kicker, title, status);
-
-    const actions = document.createElement("div");
-    actions.className = "site-update-actions";
-    const applyButton = document.createElement("button");
-    applyButton.id = "site-update-apply";
-    applyButton.className = "site-update-apply";
-    applyButton.type = "button";
-    applyButton.addEventListener("click", applyServiceWorkerUpdate);
-    const laterButton = document.createElement("button");
-    laterButton.id = "site-update-later";
-    laterButton.className = "site-update-later";
-    laterButton.type = "button";
-    laterButton.addEventListener("click", dismissServiceWorkerUpdate);
-    actions.append(applyButton, laterButton);
-
-    notice.append(copyBlock, actions);
-    document.body.appendChild(notice);
-    renderServiceWorkerUpdateNotice();
-    return notice;
-}
-
-function renderServiceWorkerUpdateNotice() {
-    const notice = document.getElementById("site-update-notice");
-    if (!notice) return;
-    const copy = serviceWorkerUpdateCopy();
-    notice.setAttribute("aria-label", copy.label);
-    notice.dataset.updateState = serviceWorkerUpdateState;
-    notice.querySelector("[data-site-update-kicker]").textContent = copy.kicker;
-    notice.querySelector("[data-site-update-title]").textContent = copy.title;
-    notice.querySelector("#site-update-status").textContent = serviceWorkerUpdateState === "applying" ? copy.applying : copy.body;
-    const applyButton = notice.querySelector("#site-update-apply");
-    const laterButton = notice.querySelector("#site-update-later");
-    applyButton.textContent = copy.apply;
-    laterButton.textContent = copy.later;
-    applyButton.disabled = serviceWorkerUpdateState === "applying";
-    laterButton.disabled = serviceWorkerUpdateState === "applying";
-}
-
-function showServiceWorkerUpdate(registration, worker = registration?.waiting) {
-    if (!worker || worker === dismissedServiceWorkerUpdate || serviceWorkerUpdateDismissedForSession()) return;
-    serviceWorkerUpdateRegistration = registration;
-    serviceWorkerUpdateWorker = worker;
-    serviceWorkerUpdateState = "ready";
-    const notice = createServiceWorkerUpdateNotice();
-    renderServiceWorkerUpdateNotice();
-    notice.hidden = false;
-}
-
-function dismissServiceWorkerUpdate() {
-    dismissedServiceWorkerUpdate = serviceWorkerUpdateWorker;
-    rememberServiceWorkerUpdateDismissal(true);
-    const notice = document.getElementById("site-update-notice");
-    if (notice) notice.hidden = true;
-}
-
-function applyServiceWorkerUpdate() {
-    const worker = serviceWorkerUpdateRegistration?.waiting || serviceWorkerUpdateWorker;
-    if (!worker || serviceWorkerUpdateState === "applying") return;
-    serviceWorkerReloadRequested = true;
-    rememberServiceWorkerUpdateDismissal(false);
-    serviceWorkerUpdateState = "applying";
-    renderServiceWorkerUpdateNotice();
-    worker.postMessage("SKIP_WAITING");
-}
-
-function handleServiceWorkerControllerChange() {
-    if (!serviceWorkerReloadRequested || serviceWorkerReloaded) return;
-    serviceWorkerReloaded = true;
-    window.location.reload();
-}
-
-function monitorServiceWorkerUpdates(registration) {
-    serviceWorkerUpdateRegistration = registration;
-    if (!serviceWorkerControllerBound) {
-        navigator.serviceWorker.addEventListener("controllerchange", handleServiceWorkerControllerChange);
-        serviceWorkerControllerBound = true;
-    }
-    if (registration.waiting && navigator.serviceWorker.controller) {
-        showServiceWorkerUpdate(registration, registration.waiting);
-    }
-    registration.addEventListener("updatefound", () => {
-        const installing = registration.installing;
-        if (!installing) return;
-        installing.addEventListener("statechange", () => {
-            if (installing.state === "installed" && navigator.serviceWorker.controller) {
-                showServiceWorkerUpdate(registration, registration.waiting || installing);
-            }
-        });
-    });
-}
-
+// newer authoritative document.
 async function registerOfflineShell() {
     try {
         const registration = await navigator.serviceWorker.register("/sw.js", {
             scope: "/",
             updateViaCache: "none"
         });
-        monitorServiceWorkerUpdates(registration);
         registration.update().catch(() => {});
     } catch (error) {
         console.warn("Infernux offline shell could not be registered.", error);
@@ -186,7 +20,7 @@ async function registerOfflineShell() {
 const serviceWorkerHostname = window.location?.hostname || "";
 const canRegisterOfflineShell = "serviceWorker" in navigator
     && (window.isSecureContext || serviceWorkerHostname === "localhost" || serviceWorkerHostname === "127.0.0.1");
-if (canRegisterOfflineShell && !globalThis.__INFERNUX_SW_UPDATE_TEST__) {
+if (canRegisterOfflineShell) {
     window.addEventListener("load", registerOfflineShell);
 }
 
@@ -322,7 +156,6 @@ document.addEventListener('site:language-changed', () => {
     if (languageButton) languageButton.setAttribute('aria-label', zh ? '切换到英文' : 'Switch to Chinese');
     const skipLink = document.querySelector('.skip-link');
     if (skipLink) skipLink.textContent = zh ? '跳到正文' : 'Skip to content';
-    renderServiceWorkerUpdateNotice();
     setMobileMenuState(false);
 });
 document.addEventListener('site:docs-search-opened', () => setMobileMenuState(false));
@@ -375,24 +208,5 @@ if (globalThis.__INFERNUX_NAV_TEST__) {
         mobileMenuFocusables,
         setMobileMenuState,
         toggleMobileMenu
-    };
-}
-
-if (globalThis.__INFERNUX_SW_UPDATE_TEST__) {
-    globalThis.__infernuxServiceWorkerUpdate = {
-        applyServiceWorkerUpdate,
-        dismissServiceWorkerUpdate,
-        getState: () => ({
-            dismissedWorker: dismissedServiceWorkerUpdate,
-            reloadRequested: serviceWorkerReloadRequested,
-            reloaded: serviceWorkerReloaded,
-            updateState: serviceWorkerUpdateState,
-            worker: serviceWorkerUpdateWorker
-        }),
-        handleServiceWorkerControllerChange,
-        monitorServiceWorkerUpdates,
-        registerOfflineShell,
-        renderServiceWorkerUpdateNotice,
-        showServiceWorkerUpdate
     };
 }

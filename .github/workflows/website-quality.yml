@@ -114,9 +114,6 @@ jobs:
       - name: Test vendored GSAP motion layer
         run: node docs/tools/test-motion-client.mjs
 
-      - name: Test installed website update flow
-        run: node docs/tools/test-service-worker-update.mjs
-
       - name: Enforce static performance budget
         run: node docs/tools/check-static-budget.mjs
 

@@ -127,7 +127,7 @@ for (const file of await files(path.join(docsRoot, "js"))) {
 }
 rootExperience += await enforce(path.join(docsRoot, "sw.js"), limits.script, "service worker");
 const responsiveImageSets = [
-  ["demo-0.3.4.webp", "demo-0.3.4.avif"],
+  ["demo-runtime.webp", "demo-runtime.avif"],
 ];
 // The original PNG remains under docs/assets because the repository README uses
 // it as review evidence. It is not referenced by a website page and therefore

@@ -1456,7 +1456,7 @@ def generate_index_page(modules: Dict[str, ModuleInfo], lang: str, existing: str
     lines.append(f'{t("version", lang)}')
     lang_other = "zh" if lang == "en" else "en"
     lang_labels = {"en": "English", "zh": "中文"}
-    lines.append(f' &nbsp;|&nbsp; <a href="../../{lang_other}/api/index.html">{lang_labels[lang_other]}</a>')
+    lines.append(f' | <a href="../../{lang_other}/api/index.html">{lang_labels[lang_other]}</a>')
     lines.append(f'</div>\n')
 
     lines.append(f"## {t('description', lang)}\n")

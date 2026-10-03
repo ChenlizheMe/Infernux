@@ -115,10 +115,18 @@ if (!homepage.includes(`"softwareVersion": "${currentVersion}"`)) {
 if (!homepage.includes(`>v${currentVersion}</div>`)) {
     fail(`index.html: current status card does not show v${currentVersion}`);
 }
+if (homepage.includes("0.3.4")) {
+    fail("index.html: stale 0.3.4 reference remains in the homepage scene");
+}
 
 const roadmap = await readFile(path.join(docsRoot, "roadmap.html"), "utf8");
-if (!roadmap.includes(`<strong>v${currentVersion}</strong>`)) {
-    fail(`roadmap.html: current release card does not show v${currentVersion}`);
+for (const contract of ["data-roadmap-app", "data-tree-page=\"architecture\"", "data-tree-page=\"rendering\"", "data-tree-page=\"gameplay\"", "data-tree-page=\"neural\"", "js/roadmap.js?v=1"]) {
+    if (!roadmap.includes(contract)) {
+        fail(`roadmap.html: missing interactive tree contract '${contract}'`);
+    }
+}
+if (roadmap.includes("0.3.4")) {
+    fail("roadmap.html: stale 0.3.4 reference remains on the roadmap page");
 }
 
 const i18nSource = JSON.parse(await readFile(path.join(docsRoot, "tools", "i18n-source.json"), "utf8"));

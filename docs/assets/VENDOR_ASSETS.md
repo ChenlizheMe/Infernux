@@ -21,8 +21,8 @@ The repository keeps `demo.png` as the canonical 1920×1032 review source used b
 | Local file | Encoding and review evidence | Bytes | SHA-256 |
 |---|---|---:|---|
 | `demo.png` | Original 1920×1032 repository-owned editor capture | 1,121,375 | `4be6e30abfd71f3e4a31593ce6e44817cffdb83ec170cee489a3b40b162d3d91` |
-| `demo-0.3.4.webp` | Pillow 12.2.0 WebP, quality 88; high-quality browser fallback | 151,802 | `10a141e9c795829ded555363d0866c1508403e19fb4fdc14401e1532f313384c` |
-| `demo-0.3.4.avif` | Pillow 12.2.0 AVIF, quality 80, 4:4:4; visually reviewed against the PNG | 136,520 | `4cbe016a9eedfefebb8d7a2bbd107e829ca706f045de2aa4d5c381c456efa9f5` |
+| `demo-runtime.webp` | Pillow 12.2.0 WebP, quality 88; high-quality browser fallback | 151,802 | `10a141e9c795829ded555363d0866c1508403e19fb4fdc14401e1532f313384c` |
+| `demo-runtime.avif` | Pillow 12.2.0 AVIF, quality 80, 4:4:4; visually reviewed against the PNG | 136,520 | `4cbe016a9eedfefebb8d7a2bbd107e829ca706f045de2aa4d5c381c456efa9f5` |
 
 AVIF is preferred and high-quality WebP is the final website fallback. The image gate locks all three reviewed files by content hash; it also verifies that both README files retain the PNG while the homepage contains no PNG reference. The performance budget counts the largest browser-delivered representation and separately excludes the repository-only review source, so neither hidden fallback weight nor unused evidence files distort the site budget.
 

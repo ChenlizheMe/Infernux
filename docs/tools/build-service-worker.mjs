@@ -240,10 +240,6 @@ self.addEventListener("fetch", (event) => {
         event.respondWith(staleWhileRevalidate(request));
     }
 });
-
-self.addEventListener("message", (event) => {
-    if (event.data === "SKIP_WAITING") self.skipWaiting();
-});
 `;
 
 let current = null;

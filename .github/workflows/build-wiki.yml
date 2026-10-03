@@ -128,9 +128,6 @@ jobs:
       - name: Test runtime visual state
         run: node docs/tools/test-runtime-visual-state.mjs
 
-      - name: Test installed website update flow
-        run: node docs/tools/test-service-worker-update.mjs
-
       - name: Enforce static performance budget
         run: node docs/tools/check-static-budget.mjs
 

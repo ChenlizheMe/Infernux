@@ -14,7 +14,7 @@
     <meta property="og:title" content="Infernux · Neural Network-Native Engine">
     <meta property="og:description" content="Build worlds with Python, C++, Vulkan and WebGPU. Infernux is an open-source game engine advancing toward a Neural Network-Native Engine (3N).">
     <meta property="og:url" content="https://infernux-engine.com/">
-    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card.jpg">
     <meta property="og:image:type" content="image/jpeg">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -22,7 +22,7 @@
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Infernux · Neural Network-Native Engine">
     <meta name="twitter:description" content="Build worlds with Python, C++, Vulkan and WebGPU. Infernux is an open-source game engine advancing toward a Neural Network-Native Engine (3N).">
-    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card.jpg">
     <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor and forge emblem">
     <title>Infernux · Neural Network-Native Engine</title>
     <link rel="icon" type="image/png" href="assets/logo.png">
@@ -111,33 +111,6 @@
                                 <span data-i18n="hero.viewGithub">Read the source</span>
                             </a>
                         </div>
-                        <div class="hero-meta">
-                            <div class="metric-card">
-                        <strong>Vulkan / WebGPU</strong>
-                                <span data-i18n="home.hero.metric.render">Native and browser rendering</span>
-                            </div>
-                            <div class="metric-card">
-                                <strong>Python 3.13</strong>
-                                <span data-i18n="home.hero.metric.python">Gameplay, tools, rendering</span>
-                            </div>
-                            <div class="metric-card">
-                                <strong>MIT</strong>
-                                <span data-i18n="home.hero.metric.license">Free forever, no royalties</span>
-                            </div>
-                            <article class="github-star-deck" data-github-stars aria-live="polite">
-                                <div class="github-star-heading">
-                                    <span class="github-live-dot" aria-hidden="true"></span>
-                                    <span class="github-star-kicker">GITHUB SIGNAL</span>
-                                    <i class="fas fa-star" aria-hidden="true"></i>
-                                </div>
-                                <strong class="github-star-value" data-github-stars-value>—</strong>
-                                <span class="github-star-caption" data-github-stars-caption>stars in orbit</span>
-                                <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener" class="github-star-link">
-                                    <span data-github-stars-link>View repository</span>
-                                    <i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i>
-                                </a>
-                            </article>
-                        </div>
                     </div>
                     <div class="hero-panel">
                         <div class="hero-panel-rail" aria-hidden="true">
@@ -165,6 +138,39 @@
     <span class="keyword">def</span> <span class="function">update</span>(<span class="param">self</span>, delta_time: float) -&gt; <span class="type">None</span>:
         <span class="param">self</span>.transform.rotate(Vector3(<span class="number">0.0</span>, <span class="param">self</span>.speed * delta_time, <span class="number">0.0</span>))</code></pre>
                             <p class="visually-hidden" id="home-code-copy-status" role="status" aria-live="polite" aria-atomic="true"></p>
+                        </div>
+                        <div class="engineering-board">
+                            <div class="engineering-board-head">
+                                <span>ENGINEERING / RUNTIME</span>
+                                <span>3N READY LINE</span>
+                            </div>
+                            <div class="hero-meta">
+                                <div class="metric-card">
+                                    <strong>Vulkan / WebGPU</strong>
+                                    <span data-i18n="home.hero.metric.render">Native and browser rendering</span>
+                                </div>
+                                <div class="metric-card">
+                                    <strong>Python 3.13</strong>
+                                    <span data-i18n="home.hero.metric.python">Gameplay, tools, rendering</span>
+                                </div>
+                                <div class="metric-card">
+                                    <strong>MIT</strong>
+                                    <span data-i18n="home.hero.metric.license">Free forever, no royalties</span>
+                                </div>
+                                <article class="github-star-deck" data-github-stars aria-live="polite">
+                                    <div class="github-star-heading">
+                                        <span class="github-live-dot" aria-hidden="true"></span>
+                                        <span class="github-star-kicker">GITHUB SIGNAL</span>
+                                        <i class="fas fa-star" aria-hidden="true"></i>
+                                    </div>
+                                    <strong class="github-star-value" data-github-stars-value>—</strong>
+                                    <span class="github-star-caption" data-github-stars-caption>stars in orbit</span>
+                                    <a href="https://github.com/ChenlizheMe/Infernux" target="_blank" rel="noopener" class="github-star-link">
+                                        <span data-github-stars-link>View repository</span>
+                                        <i class="fas fa-arrow-up-right-from-square" aria-hidden="true"></i>
+                                    </a>
+                                </article>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -211,7 +217,7 @@
             <section class="section" id="runtime-capture">
                 <div class="section-head">
                     <div>
-                        <div class="section-kicker" data-i18n="home.demo.kicker">Technology showcase · 0.3.4</div>
+                        <div class="section-kicker" data-i18n="home.demo.kicker">Technology showcase · RUNTIME CAPTURE</div>
                         <h2 class="section-title" data-i18n="home.demo.title">A voxel continent of 65,536 objects, built in the editor and rendered in the editor.</h2>
                     </div>
                     <p class="section-intro" data-i18n="home.demo.intro">Not an offline render and not a concept image. Those blocks are ordinary GameObjects going through the ordinary Scene and Hierarchy, with no dedicated batching path. The tilt-shift, fog and colour on top are a RenderStack written in Python.</p>
@@ -219,8 +225,8 @@
                 <div class="stack-layout demo-layout">
                     <div class="demo-frame" data-reveal>
                         <picture>
-                            <source srcset="assets/demo-0.3.4.avif" type="image/avif">
-                            <img src="assets/demo-0.3.4.webp" width="1920" height="1032" alt="Infernux 0.3.4 editor rendering the 65,536-object Voxel Continent showcase with a custom RenderStack" loading="lazy" decoding="async">
+                            <source srcset="assets/demo-runtime.avif" type="image/avif">
+                            <img src="assets/demo-runtime.webp" width="1920" height="1032" alt="Infernux editor rendering the 65,536-object Voxel Continent showcase with a custom RenderStack" loading="lazy" decoding="async">
                         </picture>
                     </div>
                     <div class="stack-board" data-reveal>
@@ -228,7 +234,7 @@
                             <ul class="list-clean">
                             <li data-i18n="home.demo.panel.item1">65,536 standard GameObjects sharing one mesh and one material. You can still select them in the Hierarchy and edit them. They are no different from a cube you dropped in by hand.</li>
                             <li data-i18n="home.demo.panel.item2">Tilt-shift focus, distance fog, height fog, colour controls and MSAA all come from one custom RenderStack. Change it in the editor and you see the result immediately.</li>
-                            <li data-i18n="home.demo.panel.item3">The raw 1920 × 1032 capture from the 0.3.4 showcase. Nothing retouched.</li>
+                            <li data-i18n="home.demo.panel.item3">The raw 1920 × 1032 capture from the voxel showcase. Nothing retouched.</li>
                         </ul>
                     </div>
                 </div>
@@ -422,7 +428,7 @@
           "url": "https://infernux-engine.com/",
           "downloadUrl": "https://github.com/ChenlizheMe/Infernux/releases/latest",
           "codeRepository": "https://github.com/ChenlizheMe/Infernux",
-          "screenshot": "https://infernux-engine.com/assets/demo-0.3.4.webp",
+          "screenshot": "https://infernux-engine.com/assets/demo-runtime.webp",
           "sameAs": "https://github.com/ChenlizheMe/Infernux",
           "isAccessibleForFree": true
         }

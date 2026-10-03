@@ -13,11 +13,11 @@ const expected = {
         type: "png",
         sha256: "4be6e30abfd71f3e4a31593ce6e44817cffdb83ec170cee489a3b40b162d3d91",
     },
-    "demo-0.3.4.webp": {
+    "demo-runtime.webp": {
         type: "webp",
         sha256: "10a141e9c795829ded555363d0866c1508403e19fb4fdc14401e1532f313384c",
     },
-    "demo-0.3.4.avif": {
+    "demo-runtime.avif": {
         type: "avif",
         sha256: "4cbe016a9eedfefebb8d7a2bbd107e829ca706f045de2aa4d5c381c456efa9f5",
     },
@@ -80,8 +80,8 @@ for (const [name, contract] of Object.entries(expected)) {
 }
 
 const pngBytes = assets.get("demo.png").length;
-const webpBytes = assets.get("demo-0.3.4.webp").length;
-const avifBytes = assets.get("demo-0.3.4.avif").length;
+const webpBytes = assets.get("demo-runtime.webp").length;
+const avifBytes = assets.get("demo-runtime.avif").length;
 if (webpBytes >= pngBytes * 0.2) fail(`WebP must save at least 80% over PNG; found ${webpBytes} versus ${pngBytes} bytes`);
 if (avifBytes >= pngBytes * 0.2) fail(`AVIF must save at least 80% over PNG; found ${avifBytes} versus ${pngBytes} bytes`);
 if (webpBytes <= avifBytes) fail("AVIF should remain the smallest preferred representation");
@@ -91,13 +91,13 @@ const picture = homepage.match(/<picture>([\s\S]*?)<\/picture>/i)?.[1];
 if (!picture) {
     fail("index.html: runtime evidence must use a picture element");
 } else {
-    const avifSource = '<source srcset="assets/demo-0.3.4.avif" type="image/avif">';
-    const fallback = '<img src="assets/demo-0.3.4.webp" width="1920" height="1032" alt="Infernux 0.3.4 editor rendering the 65,536-object Voxel Continent showcase with a custom RenderStack" loading="lazy" decoding="async">';
+    const avifSource = '<source srcset="assets/demo-runtime.avif" type="image/avif">';
+    const fallback = '<img src="assets/demo-runtime.webp" width="1920" height="1032" alt="Infernux editor rendering the 65,536-object Voxel Continent showcase with a custom RenderStack" loading="lazy" decoding="async">';
     for (const token of [avifSource, fallback]) if (!picture.includes(token)) fail(`index.html: picture is missing '${token}'`);
-    if (picture.includes('<source srcset="assets/demo-0.3.4.webp"')) fail("index.html: WebP should be the img fallback, not a redundant source candidate");
+    if (picture.includes('<source srcset="assets/demo-runtime.webp"')) fail("index.html: WebP should be the img fallback, not a redundant source candidate");
     if (!(picture.indexOf(avifSource) < picture.indexOf(fallback))) fail("index.html: picture sources must prefer AVIF and fall back to WebP");
 }
-if (!homepage.includes('"screenshot": "https://infernux-engine.com/assets/demo-0.3.4.webp"')) fail("index.html: structured evidence must use the delivered WebP screenshot");
+if (!homepage.includes('"screenshot": "https://infernux-engine.com/assets/demo-runtime.webp"')) fail("index.html: structured evidence must use the delivered WebP screenshot");
 if (homepage.includes("assets/demo.png")) fail("index.html: the repository-only PNG evidence source must not be part of website delivery");
 if (/<link\b[^>]*rel=["']preload["'][^>]*demo-/i.test(homepage)) fail("index.html: below-the-fold runtime evidence must not compete with first-view content via preload");
 
@@ -117,7 +117,7 @@ for (const readmeName of ["README.md", "README-zh.md"]) {
 }
 
 const provenance = await readFile(path.join(docsRoot, "assets", "VENDOR_ASSETS.md"), "utf8");
-for (const contract of ["demo-0.3.4.webp", "demo-0.3.4.avif", "1920×1032", "Pillow 12.2.0", "quality 88"]) {
+for (const contract of ["demo-runtime.webp", "demo-runtime.avif", "1920×1032", "Pillow 12.2.0", "quality 88"]) {
     if (!provenance.includes(contract)) fail(`VENDOR_ASSETS.md: missing reviewed image provenance '${contract}'`);
 }
 

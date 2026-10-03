@@ -2,7 +2,7 @@
 
 <div class="class-info">
 Version 0.4.1
- &nbsp;|&nbsp; <a href="../../zh/api/index.html">中文</a>
+ | <a href="../../zh/api/index.html">中文</a>
 </div>
 
 ## Description

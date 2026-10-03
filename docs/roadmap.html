@@ -14,7 +14,7 @@
     <meta property="og:title" content="Infernux roadmap — 0.4.1 to 0.5.2">
     <meta property="og:description" content="From a complete engine on Windows to cross-platform shipping, models running through the data plane, and agents that can build tools safely.">
     <meta property="og:url" content="https://infernux-engine.com/roadmap.html">
-    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta property="og:image" content="https://infernux-engine.com/assets/infernux-social-card.jpg">
     <meta property="og:image:type" content="image/jpeg">
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
@@ -22,7 +22,7 @@
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Infernux roadmap — 0.4.1 to 0.5.2">
     <meta name="twitter:description" content="Cross-platform Players, Torch workflows, replayable worlds, and tools an agent can safely build.">
-    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card-0.3.4.jpg">
+    <meta name="twitter:image" content="https://infernux-engine.com/assets/infernux-social-card.jpg">
     <meta name="twitter:image:alt" content="Infernux NASA Punk mission card with the editor and forge emblem">
     <title>Infernux · 熔炉 — Roadmap</title>
     <link rel="icon" type="image/png" href="assets/logo.png">
@@ -89,117 +89,65 @@
                 </div>
             </section>
 
-            <section class="release-grid">
-                <article class="release-card">
-                    <div class="mini-tag" data-i18n="roadmap.release.current.tag">041 · WORLD AUTHORING</div>
-                    <strong>041</strong>
-                    <h3 data-i18n="roadmap.release.current.title">Multi-scene worlds and live tools</h3>
-                    <ul>
-                        <li data-i18n="roadmap.release.current.item1">The 041 development line deepens multi-scene editing, model import and source synchronization, world UI, CPU/GPU JIT preparation and physics queries.</li>
-                        <li data-i18n="roadmap.release.current.item2">Plugin components share live reload with project scripts. Player type registration, preload cleanup, localization and platform build options make extensions part of the everyday workflow.</li>
-                    </ul>
-                </article>
-                <article class="release-card">
-                    <div class="mini-tag" data-i18n="roadmap.release.next.tag">0.4.1 · PUBLISHED</div>
-                    <strong>v0.4.1</strong>
-                    <h3 data-i18n="roadmap.release.next.title">Worlds, Compute and Live Tools</h3>
-                    <ul>
-                        <li data-i18n="roadmap.release.next.item1">0.4.1 brings larger worlds, live Python authoring and target-aware computation into the same engine workflow. This release expands multi-scene editing, prefab authoring, model import, rendering and audio, then carries their resource and component lifecycles into exported Players. It also rebuilds key parts of the plugin experience in response to community reports.</li>
-                        <li data-i18n="roadmap.release.next.item2">Read the Changelog for features, fixes, platform boundaries and upgrade notes.</li>
-                    </ul>
-                </article>
-                <article class="release-card">
-                    <div class="mini-tag" data-i18n="roadmap.release.mid.tag">0.4.1–0.4.4 · PLUMBING</div>
-                    <strong>v0.4.1–0.4.4</strong>
-                    <h3 data-i18n="roadmap.release.mid.title">Headless, semantics, replay, batch data</h3>
-                    <ul>
-                        <li data-i18n="roadmap.release.mid.item1">041 establishes the cross-platform runtime and authoring foundation. The planned 0.4.2–0.4.4 stages focus on shared schemas, snapshots and replay, then batch worlds and the tensor data plane.</li>
-                        <li data-i18n="roadmap.release.mid.item2">Each stage needs usable public APIs and measurable behavior so games, tools and model workflows can build on the same contracts.</li>
-                    </ul>
-                </article>
-                <article class="release-card">
-                    <div class="mini-tag" data-i18n="roadmap.release.long.tag">0.5.0–0.5.2 · CONVERGENCE</div>
-                    <strong>v0.5.0–0.5.2</strong>
-                    <h3 data-i18n="roadmap.release.long.title">Tools an agent can build, on an engine that holds together</h3>
-                    <ul>
-                        <li data-i18n="roadmap.release.long.item1">0.5.0 formalises Engine Tools and draws a hard line between trusted and untrusted execution. 0.5.1 ships the distribution format for plugins and models, with their own tests run in a sandbox before anything lands in your project.</li>
-                        <li data-i18n="roadmap.release.long.item2">0.5.2 has to string cross-platform Players, models, schemas, replay, batch worlds and tool governance into one path somebody can walk end to end, live.</li>
-                    </ul>
-                </article>
-            </section>
-
-            <section class="roadmap-bands">
-                <div class="section-head">
+            <section class="tree-workspace" data-roadmap-app>
+                <div class="tree-workspace-head">
                     <div>
-                        <div class="section-kicker" data-i18n="roadmap.lanes.kicker">Four tracks</div>
-                        <h2 class="section-title" data-i18n="roadmap.lanes.title">Four tracks, and they all have to end up in one engine.</h2>
+                        <div class="section-kicker" data-i18n="roadmap.tree.kicker">SELECT A SYSTEM TREE</div>
+                        <h2 class="section-title" data-i18n="roadmap.tree.title">One engine. Four living trees.</h2>
+                        <p class="tree-intro" data-i18n="roadmap.tree.intro">Choose a subsystem to inspect its layers. Bright nodes are shipped. Pulsing nodes are planned. Dim nodes have no committed path yet.</p>
                     </div>
-                    <p class="section-intro" data-i18n="roadmap.lanes.intro">They share their plumbing. Platform contracts decide where a Player can run. Schemas decide who is allowed to change the world. Replay serves debugging and training equally well. Tool governance covers plugins and agents with the same machinery.</p>
+                    <div class="tree-legend" aria-label="Roadmap status legend">
+                        <span class="tree-legend-item state-live"><i></i><span data-i18n="roadmap.tree.legend.live">SHIPPED / STABLE</span></span>
+                        <span class="tree-legend-item state-planned"><i></i><span data-i18n="roadmap.tree.legend.planned">PLANNED / IN MOTION</span></span>
+                        <span class="tree-legend-item state-future"><i></i><span data-i18n="roadmap.tree.legend.future">UNCOMMITTED / DIM</span></span>
+                    </div>
                 </div>
-                <div class="lane-grid">
-                    <article class="lane-card">
-                        <div class="card-mark"><i class="fas fa-toolbox"></i></div>
-                        <h3 data-i18n="roadmap.lanes.card1.title">Shipping</h3>
-                        <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card1.item1">One project exporting an Android APK/AAB and a Web package you can deploy as it is.</li>
-                            <li data-i18n="roadmap.lanes.card1.item2">A Linux Player, plus windowless and offscreen runs for CI, servers and large-scale simulation.</li>
-                            <li data-i18n="roadmap.lanes.card1.item3">Platform capabilities declared up front, and missing ones failing loudly. No silent downgrades; quiet fallback is a debugging nightmare.</li>
-                        </ul>
-                    </article>
-                    <article class="lane-card">
-                        <div class="card-mark"><i class="fas fa-layer-group"></i></div>
-                        <h3 data-i18n="roadmap.lanes.card2.title">Model data</h3>
-                        <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card2.item1">Standard PyTorch right in the editor: develop, train, evaluate and export without switching environments.</li>
-                            <li data-i18n="roadmap.lanes.card2.item2">A Player that carries only the inference runtime its platform needs. No CUDA Toolkit, no entire training stack riding along.</li>
-                            <li data-i18n="roadmap.lanes.card2.item3">Every hop between Torch, DLPack and GPU buffers measured, and every copy written down in the docs.</li>
-                        </ul>
-                    </article>
-                    <article class="lane-card">
-                        <div class="card-mark"><i class="fas fa-ship"></i></div>
-                        <h3 data-i18n="roadmap.lanes.card3.title">Semantic world</h3>
-                        <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card3.item1">Versioned reflection plus Command/Query schemas, so UI, Python and MCP read one definition instead of each reimplementing it.</li>
-                            <li data-i18n="roadmap.lanes.card3.item2">World snapshot and delta, deterministic replay contracts, and batched create, step and reset.</li>
-                        </ul>
-                    </article>
-                    <article class="lane-card">
-                        <div class="card-mark"><i class="fas fa-microchip"></i></div>
-                        <h3 data-i18n="roadmap.lanes.card4.title">Tools and ecosystem</h3>
-                        <ul class="list-clean">
-                            <li data-i18n="roadmap.lanes.card4.item1">An Engine Tool ships with its schema, permissions, tests, provenance, resource limits and lifecycle attached.</li>
-                            <li data-i18n="roadmap.lanes.card4.item2">Plugins and models get a real distribution format, and their own tests run in a sandbox before anything enters your project.</li>
-                            <li data-i18n="roadmap.lanes.card4.item3">Anything an agent builds clears the same bar as human-written code before it goes near someone else's project.</li>
-                        </ul>
-                    </article>
-                </div>
-            </section>
+                <nav class="tree-page-tabs" role="tablist" aria-label="Roadmap trees">
+                    <button class="tree-page-tab is-active" role="tab" type="button" data-tree-page="architecture" aria-controls="tree-architecture" aria-selected="true" data-i18n="roadmap.tree.page.architecture">ENGINE CORE</button>
+                    <button class="tree-page-tab" role="tab" type="button" data-tree-page="rendering" aria-controls="tree-rendering" aria-selected="false" data-i18n="roadmap.tree.page.rendering">RENDERING FABRIC</button>
+                    <button class="tree-page-tab" role="tab" type="button" data-tree-page="gameplay" aria-controls="tree-gameplay" aria-selected="false" data-i18n="roadmap.tree.page.gameplay">GAMEPLAY SYSTEMS</button>
+                    <button class="tree-page-tab" role="tab" type="button" data-tree-page="neural" aria-controls="tree-neural" aria-selected="false" data-i18n="roadmap.tree.page.neural">3N DATA PLANE</button>
+                </nav>
 
-            <section class="section">
-                <div class="section-head">
-                    <div>
-                        <div class="section-kicker" data-i18n="roadmap.priorities.kicker">NEXT FOUNDATIONS FOR 3N</div>
-                        <h2 class="section-title" data-i18n="roadmap.priorities.title">Connect models, worlds and deployment.</h2>
+                <article class="tree-page is-active" id="tree-architecture" role="tabpanel" data-tree-panel="architecture">
+                    <div class="tree-page-heading"><span class="tree-index">A / 01</span><div><h3 data-i18n="roadmap.tree.architecture.root">ENGINE CORE</h3><p data-i18n="roadmap.tree.architecture.note">Scene, runtime, assets and contracts form the deterministic spine.</p></div></div>
+                    <div class="tree-branches">
+                        <section class="tree-branch state-live"><h4 data-i18n="roadmap.tree.architecture.branch.world">WORLD & SCENE</h4><ul class="tree-leaves"><li class="state-live" data-i18n="roadmap.tree.architecture.world.1">Scene graph and ownership</li><li class="state-live" data-i18n="roadmap.tree.architecture.world.2">Multi-scene authoring</li><li class="state-live" data-i18n="roadmap.tree.architecture.world.3">Prefab source and overrides</li><li class="state-live" data-i18n="roadmap.tree.architecture.world.4">GUID references and remapping</li></ul></section>
+                        <section class="tree-branch state-live"><h4 data-i18n="roadmap.tree.architecture.branch.runtime">RUNTIME & PLAYER</h4><ul class="tree-leaves"><li class="state-live" data-i18n="roadmap.tree.architecture.runtime.1">Python component lifecycle</li><li class="state-live" data-i18n="roadmap.tree.architecture.runtime.2">Native launcher and private runtime</li><li class="state-live" data-i18n="roadmap.tree.architecture.runtime.3">Jolt physics and scene queries</li><li class="state-planned" data-i18n="roadmap.tree.architecture.runtime.4">Headless and offscreen execution</li></ul></section>
+                        <section class="tree-branch state-live"><h4 data-i18n="roadmap.tree.architecture.branch.assets">ASSETS & BUILD</h4><ul class="tree-leaves"><li class="state-live" data-i18n="roadmap.tree.architecture.assets.1">Indexed assets and dependencies</li><li class="state-live" data-i18n="roadmap.tree.architecture.assets.2">Content.inxpkg packaging</li><li class="state-live" data-i18n="roadmap.tree.architecture.assets.3">Platform capability contracts</li><li class="state-live" data-i18n="roadmap.tree.architecture.assets.4">Deterministic release evidence</li></ul></section>
+                        <section class="tree-branch state-planned"><h4 data-i18n="roadmap.tree.architecture.branch.contracts">WORLD CONTRACTS</h4><ul class="tree-leaves"><li class="state-planned" data-i18n="roadmap.tree.architecture.contracts.1">Versioned reflection schema</li><li class="state-planned" data-i18n="roadmap.tree.architecture.contracts.2">Command and query bridge</li><li class="state-planned" data-i18n="roadmap.tree.architecture.contracts.3">Snapshot and delta records</li><li class="state-planned" data-i18n="roadmap.tree.architecture.contracts.4">Replay timeline and checkpoints</li></ul></section>
                     </div>
-                    <p class="section-intro" data-i18n="roadmap.priorities.intro">Four-platform exports are in place. Further work focuses on compute boundaries, repeatable world operations and model deployment across those targets.</p>
-                </div>
-                <div class="priority-grid">
-                    <article class="priority-card">
-                        <div class="card-mark"><i class="fas fa-link"></i></div>
-                        <h3 data-i18n="roadmap.priorities.card1.title">A shared language for world state</h3>
-                        <p data-i18n="roadmap.priorities.card1.body">Define shared schemas for state, commands and queries, building on the existing editor command path and batch APIs. Tools and models should be able to discover exactly what they can read and change.</p>
-                    </article>
-                    <article class="priority-card">
-                        <div class="card-mark"><i class="fas fa-cubes"></i></div>
-                        <h3 data-i18n="roadmap.priorities.card2.title">Repeatable simulation and data exchange</h3>
-                        <p data-i18n="roadmap.priorities.card2.body">Develop snapshot, delta and replay contracts, then batch stepping and tensor exchange. Make copying, synchronization and ownership explicit so workloads can be measured and improved.</p>
-                    </article>
-                    <article class="priority-card">
-                        <div class="card-mark"><i class="fas fa-vector-square"></i></div>
-                        <h3 data-i18n="roadmap.priorities.card3.title">Model workflows and portable inference</h3>
-                        <p data-i18n="roadmap.priorities.card3.body">Keep the Python ML ecosystem close to authoring. Choose deployment backends using model coverage, latency, memory and package size on each target, and ship only the runtime the game needs.</p>
-                    </article>
-                </div>
+                </article>
+
+                <article class="tree-page" id="tree-rendering" role="tabpanel" data-tree-panel="rendering" hidden>
+                    <div class="tree-page-heading"><span class="tree-index">R / 02</span><div><h3 data-i18n="roadmap.tree.rendering.root">RENDERING FABRIC</h3><p data-i18n="roadmap.tree.rendering.note">A shared scene model feeds native Vulkan and browser WebGPU paths.</p></div></div>
+                    <div class="tree-branches">
+                        <section class="tree-branch state-live"><h4 data-i18n="roadmap.tree.rendering.branch.vulkan">VULKAN PLAYER</h4><ul class="tree-leaves"><li class="state-live" data-i18n="roadmap.tree.rendering.vulkan.1">Forward and Forward+ routes</li><li class="state-live" data-i18n="roadmap.tree.rendering.vulkan.2">Deferred geometry buffers</li><li class="state-live" data-i18n="roadmap.tree.rendering.vulkan.3">Shadow and light resources</li><li class="state-live" data-i18n="roadmap.tree.rendering.vulkan.4">Frame-safe resource retirement</li></ul></section>
+                        <section class="tree-branch state-live"><h4 data-i18n="roadmap.tree.rendering.branch.webgpu">WEBGPU PLAYER</h4><ul class="tree-leaves"><li class="state-live" data-i18n="roadmap.tree.rendering.webgpu.1">Browser scene and material path</li><li class="state-live" data-i18n="roadmap.tree.rendering.webgpu.2">WebGPU descriptor contracts</li><li class="state-planned" data-i18n="roadmap.tree.rendering.webgpu.3">Cross-route visual parity</li><li class="state-planned" data-i18n="roadmap.tree.rendering.webgpu.4">Portable browser compute policy</li></ul></section>
+                        <section class="tree-branch state-live"><h4 data-i18n="roadmap.tree.rendering.branch.materials">MATERIALS & EFFECTS</h4><ul class="tree-leaves"><li class="state-live" data-i18n="roadmap.tree.rendering.materials.1">Structured shader stages</li><li class="state-live" data-i18n="roadmap.tree.rendering.materials.2">RenderStack authoring</li><li class="state-live" data-i18n="roadmap.tree.rendering.materials.3">Typed RenderGraph passes</li><li class="state-planned" data-i18n="roadmap.tree.rendering.materials.4">Custom compute-buffer inputs</li></ul></section>
+                        <section class="tree-branch state-planned"><h4 data-i18n="roadmap.tree.rendering.branch.diagnostics">FRAME DIAGNOSTICS</h4><ul class="tree-leaves"><li class="state-planned" data-i18n="roadmap.tree.rendering.diagnostics.1">Deterministic frame capture</li><li class="state-planned" data-i18n="roadmap.tree.rendering.diagnostics.2">RenderGraph profiler</li><li class="state-future" data-i18n="roadmap.tree.rendering.diagnostics.3">GPU markers and budgets</li><li class="state-future" data-i18n="roadmap.tree.rendering.diagnostics.4">Cross-device replay view</li></ul></section>
+                    </div>
+                </article>
+
+                <article class="tree-page" id="tree-gameplay" role="tabpanel" data-tree-panel="gameplay" hidden>
+                    <div class="tree-page-heading"><span class="tree-index">G / 03</span><div><h3 data-i18n="roadmap.tree.gameplay.root">GAMEPLAY SYSTEMS</h3><p data-i18n="roadmap.tree.gameplay.note">Authoring tools and runtime behavior share one explicit lifecycle.</p></div></div>
+                    <div class="tree-branches">
+                        <section class="tree-branch state-live"><h4 data-i18n="roadmap.tree.gameplay.branch.authoring">AUTHORING LAYER</h4><ul class="tree-leaves"><li class="state-live" data-i18n="roadmap.tree.gameplay.authoring.1">Python components and fields</li><li class="state-live" data-i18n="roadmap.tree.gameplay.authoring.2">Transactional hot reload</li><li class="state-live" data-i18n="roadmap.tree.gameplay.authoring.3">Coroutines and scene requests</li><li class="state-live" data-i18n="roadmap.tree.gameplay.authoring.4">World UI and input routing</li></ul></section>
+                        <section class="tree-branch state-live"><h4 data-i18n="roadmap.tree.gameplay.branch.motion">MOTION & VFX</h4><ul class="tree-leaves"><li class="state-live" data-i18n="roadmap.tree.gameplay.motion.1">Animation clips and Timeline</li><li class="state-live" data-i18n="roadmap.tree.gameplay.motion.2">Skeletal and skinned meshes</li><li class="state-live" data-i18n="roadmap.tree.gameplay.motion.3">Particle Graph on the GPU</li><li class="state-planned" data-i18n="roadmap.tree.gameplay.motion.4">State-machine graph authoring</li></ul></section>
+                        <section class="tree-branch state-live"><h4 data-i18n="roadmap.tree.gameplay.branch.simulation">SIMULATION LOOP</h4><ul class="tree-leaves"><li class="state-live" data-i18n="roadmap.tree.gameplay.simulation.1">Fixed-step physics</li><li class="state-live" data-i18n="roadmap.tree.gameplay.simulation.2">Batched scene queries</li><li class="state-live" data-i18n="roadmap.tree.gameplay.simulation.3">Collision layers and callbacks</li><li class="state-live" data-i18n="roadmap.tree.gameplay.simulation.4">Persistent world ownership</li></ul></section>
+                        <section class="tree-branch state-planned"><h4 data-i18n="roadmap.tree.gameplay.branch.scale">SCALE OPERATIONS</h4><ul class="tree-leaves"><li class="state-planned" data-i18n="roadmap.tree.gameplay.scale.1">Batched instantiate and reset</li><li class="state-planned" data-i18n="roadmap.tree.gameplay.scale.2">Server-safe simulation loop</li><li class="state-future" data-i18n="roadmap.tree.gameplay.scale.3">Large-world streaming policy</li><li class="state-planned" data-i18n="roadmap.tree.gameplay.scale.4">Deterministic gameplay replay</li></ul></section>
+                    </div>
+                </article>
+
+                <article class="tree-page" id="tree-neural" role="tabpanel" data-tree-panel="neural" hidden>
+                    <div class="tree-page-heading"><span class="tree-index">N / 04</span><div><h3 data-i18n="roadmap.tree.neural.root">3N DATA PLANE</h3><p data-i18n="roadmap.tree.neural.note">The neural-native layer starts where world state becomes observable and controllable.</p></div></div>
+                    <div class="tree-branches">
+                        <section class="tree-branch state-planned"><h4 data-i18n="roadmap.tree.neural.branch.observation">WORLD OBSERVATION</h4><ul class="tree-leaves"><li class="state-planned" data-i18n="roadmap.tree.neural.observation.1">Semantic reflection for state</li><li class="state-planned" data-i18n="roadmap.tree.neural.observation.2">Command and query schemas</li><li class="state-future" data-i18n="roadmap.tree.neural.observation.3">Observation tensors and views</li><li class="state-future" data-i18n="roadmap.tree.neural.observation.4">Camera and sensor feeds</li></ul></section>
+                        <section class="tree-branch state-planned"><h4 data-i18n="roadmap.tree.neural.branch.model">MODEL LOOP</h4><ul class="tree-leaves"><li class="state-planned" data-i18n="roadmap.tree.neural.model.1">PyTorch authoring workflow</li><li class="state-planned" data-i18n="roadmap.tree.neural.model.2">DLPack and GPU buffer bridge</li><li class="state-future" data-i18n="roadmap.tree.neural.model.3">Portable inference runtime</li><li class="state-future" data-i18n="roadmap.tree.neural.model.4">Model package and provenance</li></ul></section>
+                        <section class="tree-branch state-planned"><h4 data-i18n="roadmap.tree.neural.branch.training">TRAINING OPERATIONS</h4><ul class="tree-leaves"><li class="state-planned" data-i18n="roadmap.tree.neural.training.1">Batch world create and step</li><li class="state-planned" data-i18n="roadmap.tree.neural.training.2">Reset and seed contracts</li><li class="state-future" data-i18n="roadmap.tree.neural.training.3">Replay datasets for learning</li><li class="state-future" data-i18n="roadmap.tree.neural.training.4">Evaluation and regression harness</li></ul></section>
+                        <section class="tree-branch state-future"><h4 data-i18n="roadmap.tree.neural.branch.agent">AGENT TOOLING</h4><ul class="tree-leaves"><li class="state-future" data-i18n="roadmap.tree.neural.agent.1">MCP world schema exposure</li><li class="state-future" data-i18n="roadmap.tree.neural.agent.2">Permission and mutation gates</li><li class="state-future" data-i18n="roadmap.tree.neural.agent.3">Sandboxed tool execution</li><li class="state-future" data-i18n="roadmap.tree.neural.agent.4">Provenance and reproducible runs</li></ul></section>
+                    </div>
+                </article>
             </section>
         </div>
     </main>
@@ -232,9 +180,9 @@
         </div>
     </footer>
 
-    <script src="js/i18n-roadmap.js?v=2"></script>
+    <script src="js/i18n-roadmap.js?v=3"></script>
     <script src="js/i18n.js?v=19"></script>
-    <script src="js/vendor/gsap.min.js?v=3.13.0"></script><script src="js/vendor/ScrollTrigger.min.js?v=3.13.0"></script><script src="js/main.js?v=16"></script><script src="js/motion.js?v=1"></script>
+    <script src="js/vendor/gsap.min.js?v=3.13.0"></script><script src="js/vendor/ScrollTrigger.min.js?v=3.13.0"></script><script src="js/main.js?v=17"></script><script src="js/motion.js?v=1"></script><script src="js/roadmap.js?v=1"></script>
     <script src="js/docs-search.js?v=6"></script>
     <script type="application/ld+json">
     {
