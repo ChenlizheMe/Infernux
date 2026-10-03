@@ -3,6 +3,25 @@ from __future__ import annotations
 import pytest
 
 
+def test_required_component_removal_is_rejected_before_journal_mutation(monkeypatch):
+    from types import SimpleNamespace
+    from Infernux.engine.interaction import ComponentCommandService
+
+    component = SimpleNamespace(type_name="Rigidbody")
+    owner = SimpleNamespace(
+        id=17,
+        get_remove_component_blockers=lambda target: ["TargetReporter"]
+        if target is component else [],
+    )
+    service = ComponentCommandService()
+    monkeypatch.setattr(service, "_manager", lambda: pytest.fail("must reject before journal access"))
+    try:
+        with pytest.raises(ValueError, match="required by TargetReporter"):
+            service.remove(owner, component)
+    finally:
+        service.shutdown()
+
+
 def test_component_add_resolves_engine_python_and_native_targets(monkeypatch):
     import Infernux.components.registry as component_registry
     import Infernux.engine.undo as undo_module
@@ -59,7 +78,8 @@ def test_component_add_resolves_engine_python_and_native_targets(monkeypatch):
         service.shutdown()
 
 
-def test_project_component_add_binds_asset_database_guid(monkeypatch, tmp_path):
+@pytest.mark.parametrize('script_error', [None, 'candidate schema failed'])
+def test_project_component_add_binds_asset_database_guid(monkeypatch, tmp_path, script_error):
     import types
 
     import Infernux.components.registry as component_registry
@@ -107,6 +127,12 @@ def test_project_component_add_binds_asset_database_guid(monkeypatch, tmp_path):
         return loaded
 
     monkeypatch.setattr(script_loader, "load_and_create_component", load)
+    monkeypatch.setattr(script_loader, "get_script_error_by_path", lambda _path: script_error)
+    if script_error:
+        with pytest.raises(ValueError, match='current revision failed to load'):
+            ComponentCommandService._resolve_add_target(object(), 'ProjectController', None)
+        assert calls == {}
+        return
     resolved = ComponentCommandService._resolve_add_target(
         object(), "ProjectController", None
     )

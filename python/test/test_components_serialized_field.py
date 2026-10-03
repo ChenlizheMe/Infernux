@@ -51,6 +51,26 @@ def test_annotation_only_class_var_is_not_a_serialized_field():
     assert set(get_serialized_fields(ClassVarComponent)) == {"speed"}
 
 
+def test_null_serialized_reference_uses_annotation_and_retains_constraints():
+    from Infernux.lib import GameObject
+    from Infernux.components.ref_wrappers import GameObjectRef
+
+    class Reporter(InxComponent):
+        target: GameObject = serialized_field(
+            default=None, header="References", tooltip="Select a renderer",
+            required_component="MeshRenderer",
+        )
+
+    metadata = get_serialized_fields(Reporter)['target']
+    assert metadata.field_type == FieldType.GAME_OBJECT
+    assert isinstance(metadata.default, GameObjectRef)
+    assert metadata.header == "References"
+    assert metadata.tooltip == "Select a renderer"
+    assert metadata.required_component == "MeshRenderer"
+    assert Reporter().target is None
+    assert Reporter._field_schemas_['target'].value_type == 'FieldType.GAME_OBJECT'
+
+
 def test_raw_path_assignment_resolves_guid_at_editor_boundary(monkeypatch):
     from Infernux.components import fields as serialized_field_module
     from Infernux.core.assets import AssetManager

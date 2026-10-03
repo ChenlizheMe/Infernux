@@ -247,6 +247,38 @@ def test_attribute_property_transactions_merge_continuous_edits():
         UndoManager._instance = previous
 
 
+def test_python_reference_transaction_enforces_required_component(monkeypatch):
+    from Infernux.components import InxComponent, serialized_field
+    from Infernux.lib import GameObject
+    from Infernux.components import ref_wrappers
+    from Infernux.components.fields import get_raw_field_value
+    from Infernux.engine.interaction import make_python_component_property_transaction
+    from Infernux.engine.undo import UndoManager
+
+    class Probe(InxComponent):
+        target: GameObject = serialized_field(default=None, required_component="MeshRenderer")
+
+    component = Probe()
+    monkeypatch.setattr(ref_wrappers.GameObjectRef, 'resolve', lambda self: self.persistent_id)
+    monkeypatch.setattr(ref_wrappers, '_resolve_component_on_game_object',
+                        lambda target, required: object() if target == 13 and required == 'MeshRenderer' else None)
+    previous = UndoManager._instance
+    manager = UndoManager()
+    try:
+        transaction = make_python_component_property_transaction((component,), 'target')
+        assert transaction.commit({'object_id': 14}).value == 'rejected'
+        assert get_raw_field_value(component, 'target').persistent_id == 0
+        assert manager.action_journal.applied_entries() == ()
+        transaction.commit_or_raise({'object_id': 13})
+        assert get_raw_field_value(component, 'target').persistent_id == 13
+        assert transaction.commit({'object_id': 14}).value == 'rejected'
+        assert get_raw_field_value(component, 'target').persistent_id == 13
+        manager.undo()
+        assert get_raw_field_value(component, 'target').persistent_id == 0
+    finally:
+        UndoManager._instance = previous
+
+
 def test_python_component_multi_edit_is_one_atomic_document_action():
     from Infernux.components import InxComponent
     from Infernux.engine.interaction import (

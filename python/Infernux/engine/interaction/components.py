@@ -177,9 +177,15 @@ class ComponentCommandService:
                             f"project component script has no AssetDatabase GUID: {script_path}"
                         )
                     from Infernux.components.script_loader import (
+                        get_script_error_by_path,
                         load_and_create_component,
                     )
 
+                    error = get_script_error_by_path(script_path)
+                    if error:
+                        raise ValueError(
+                            f"cannot attach script '{script_path}': the current revision failed to load; {error}"
+                        )
                     python_instance = load_and_create_component(
                         script_path,
                         asset_database=database,
@@ -228,6 +234,11 @@ class ComponentCommandService:
         type_name = str(
             getattr(component, "type_name", "") or type(component).__name__
         )
+        blockers = game_object.get_remove_component_blockers(component)
+        if blockers:
+            raise ValueError(
+                f"Cannot remove '{type_name}': required by {', '.join(blockers)}"
+            )
         if self._is_python_component(component):
             command = RemovePyComponentCommand(
                 object_id,

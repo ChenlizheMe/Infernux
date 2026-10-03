@@ -92,12 +92,12 @@
 </ol>
 <p>The expected log is <code>Reporter -&gt; Target; speed=6.0</code>. The exact numeric formatting follows Python's float formatting.</p>
 <h2 id="fields">Serialized fields</h2>
-<p>Supported public annotations include <code>int</code>, <code>float</code>, <code>bool</code>, <code>str</code>, vectors, enums, known asset references, <code>GameObject</code>, component subclasses, lists of supported types, and serializable objects. A supported public class attribute is collected as a serialized field. Explicit <code>serialized_field(...)</code> remains useful when keyword metadata is clearer.</p>
+<p>Supported public annotations include <code>int</code>, <code>float</code>, <code>bool</code>, <code>str</code>, vectors, enums, known asset references, <code>GameObject</code>, component subclasses, lists of supported types, and serializable objects. A supported public class attribute is collected as a serialized field. Use <code>serialized_field(...)</code> to declare authored fields and their Inspector metadata explicitly.</p>
 <p>The <code>range</code>, <code>header</code>, and <code>tooltip</code> arguments to <code>serialized_field()</code> supply a slider, section label, and hover help. The same numeric bounds apply to Inspector edits, deserialization, and script assignment. The scene stores the edited value, so changing the class default later does not overwrite an already-authored scene value.</p>
 <p>Use private <code>_name</code> attributes for transient state. Use <code>serialized_field(..., hidden=True)</code> when data must be saved but omitted from the Inspector. Regular mutable runtime caches should be rebuilt in lifecycle callbacks and kept out of serialized fields.</p>
 <p>Under the hood, numeric fields (<code>int</code>, <code>float</code>, <code>bool</code>, <code>Vector2/3/4</code>) are backed by the native ComponentDataStore, a column store that keeps script data cache-friendly and outside Python objects; other field kinds live in the Python descriptor. The Inspector reads the same collected metadata to build its controls, and the scene document stores the values on save. Runtime assignments change the in-memory value only; Play mode restores the authored scene from its snapshot when you stop, so a script that writes a serialized field does not persist that write unless the scene is saved.</p>
 <h2 id="references">Inspector references</h2>
-<p><code>target</code> is a GameObject field. Its stored form is a persistent scene-object reference; reading <code>self.target</code> resolves and returns the live <code>GameObject</code>, or <code>None</code> when the target is missing or destroyed. <code>RequiredComponent("MeshRenderer")</code> filters the picker and rejects Hierarchy drops whose object has no matching component.</p>
+<p><code>target</code> is a GameObject field. Its stored form is a persistent scene-object reference; reading <code>self.target</code> resolves and returns the live <code>GameObject</code>, or <code>None</code> when the target is missing or destroyed. <code>required_component="MeshRenderer"</code> filters the picker and rejects Hierarchy drops whose object has no matching component.</p>
 <p><code>body</code> stores a component reference constrained to <code>Rigidbody</code>. Reading <code>self.body</code> returns the resolved component wrapper or <code>None</code>. A reference field does not add the referenced component and does not keep a destroyed object alive. Always handle <code>None</code>, especially for optional targets or objects that can be destroyed during play.</p>
 <p>Scene-object and component slots accept Hierarchy selections through drag-and-drop or their picker. Save the scene after assignment so the persistent IDs are written to the scene document.</p>
 <h2 id="constraints">Component constraints</h2>
@@ -106,7 +106,7 @@
 <li><code>@require_component(Rigidbody)</code> declares that <code>TargetReporter</code> depends on a <code>Rigidbody</code> on the same GameObject. When the dependency is missing, the engine adds it automatically during attachment; if any required component cannot be added, the whole operation rolls back and returns <code>None</code> with a warning. Removing a component that another component still requires is blocked.</li>
 <li><code>@disallow_multiple</code> allows one <code>TargetReporter</code> instance per GameObject. A second add attempt is rejected.</li>
 </ul>
-<p>These decorators constrain the owner's component set. <code>RequiredComponent("MeshRenderer")</code> belongs to a GameObject reference field and constrains which target can be assigned. The two mechanisms solve different authoring problems.</p>
+<p>These decorators constrain the owner's component set. <code>required_component="MeshRenderer"</code> belongs to a GameObject reference field and constrains which target can be assigned. The two mechanisms solve different authoring problems.</p>
 <h2 id="verify">Verify the contracts</h2>
 <p>Run these checks in order:</p>
 <ol>
@@ -193,7 +193,7 @@
 <p>临时状态适合放在私有 <code>_name</code> 属性中。数据需要保存且无需出现在 Inspector 时，使用 <code>serialized_field(..., hidden=True)</code>。普通运行时缓存应在生命周期回调中重建，并避开序列化字段。</p>
 <p>底层实现上，数值字段（<code>int</code>、<code>float</code>、<code>bool</code>、<code>Vector2/3/4</code>）由原生 ComponentDataStore 支撑，这是一种列式存储，让脚本数据留在 Python 对象之外、访问更快；其余字段种类存在 Python 描述符里。Inspector 读取同一份收集到的元数据来生成控件，保存场景时这些值写入场景文档。运行时赋值只改变内存中的值；停止 Play 时引擎从快照恢复已编辑的场景，脚本对序列化字段的写入只有保存场景后才会落盘。</p>
 <h2 id="references_1">Inspector 引用</h2>
-<p><code>target</code> 是 GameObject 字段。存储层保存持久场景物体引用；读取 <code>self.target</code> 时会解析并返回实时 <code>GameObject</code>，目标缺失或已销毁时返回 <code>None</code>。<code>RequiredComponent("MeshRenderer")</code> 会筛选选择器，并拒绝缺少对应组件的 Hierarchy 拖放对象。</p>
+<p><code>target</code> 是 GameObject 字段。存储层保存持久场景物体引用；读取 <code>self.target</code> 时会解析并返回实时 <code>GameObject</code>，目标缺失或已销毁时返回 <code>None</code>。<code>required_component="MeshRenderer"</code> 会筛选选择器，并拒绝缺少对应组件的 Hierarchy 拖放对象。</p>
 <p><code>body</code> 保存限定为 <code>Rigidbody</code> 的组件引用。读取 <code>self.body</code> 会得到解析后的组件包装器，无法解析时返回 <code>None</code>。引用字段不会添加目标组件，也不会让已销毁物体继续存活。可选目标或运行中可能销毁的物体都要处理 <code>None</code>。</p>
 <p>场景物体槽与组件槽支持从 Hierarchy 拖放，也可以使用选择器。赋值后保存场景，持久 ID 才会写入场景文档。</p>
 <h2 id="constraints_1">组件约束</h2>
@@ -202,7 +202,7 @@
 <li><code>@require_component(Rigidbody)</code> 声明 <code>TargetReporter</code> 依赖同一 GameObject 上的 <code>Rigidbody</code>。依赖缺失时，引擎会在挂载过程中自动补加；任何必需组件无法添加时，整个操作回滚并返回 <code>None</code>，同时给出警告。删除仍被其他组件依赖的组件会被阻止。</li>
 <li><code>@disallow_multiple</code> 让每个 GameObject 最多拥有一个 <code>TargetReporter</code>，第二次添加会被拒绝。</li>
 </ul>
-<p>这两个装饰器约束所属物体的组件集合。<code>RequiredComponent("MeshRenderer")</code> 用在 GameObject 引用字段上，负责限制可赋值目标。两类机制处理不同的编辑关系。</p>
+<p>这两个装饰器约束所属物体的组件集合。<code>required_component="MeshRenderer"</code> 用在 GameObject 引用字段上，负责限制可赋值目标。两类机制处理不同的编辑关系。</p>
 <h2 id="verify_1">验证约束与保存结果</h2>
 <p>按顺序完成以下检查：</p>
 <ol>

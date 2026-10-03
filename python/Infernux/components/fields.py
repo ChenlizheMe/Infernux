@@ -1822,6 +1822,20 @@ def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
         if isinstance(attr, SerializedFieldDescriptor):
             if ann is not None:
                 _base, markers = _unwrap_annotation(ann)
+                # A null default cannot identify a reference kind. Resolve
+                # that declaration from its annotation before compiling the
+                # immutable schema, while retaining explicit Inspector options.
+                if attr.metadata.field_type == FieldType.UNKNOWN:
+                    inferred = resolve_annotation(_base)
+                    if inferred is not None:
+                        for semantic_name in (
+                            'field_type', 'enum_type', 'element_type',
+                            'element_class', 'serializable_class',
+                            'component_type', 'asset_type', 'python_type',
+                        ):
+                            setattr(attr.metadata, semantic_name, getattr(inferred, semantic_name))
+                        if attr.metadata.default is None:
+                            attr.metadata.default = inferred.default
                 if markers and _apply_markers(attr.metadata, markers) is None:
                     # NonSerialized marker wins: drop the field entirely.
                     delattr(cls, attr_name)

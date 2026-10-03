@@ -69,7 +69,7 @@ The expected log is `Reporter -> Target; speed=6.0`. The exact numeric formattin
 
 ## Serialized fields {#fields}
 
-Supported public annotations include `int`, `float`, `bool`, `str`, vectors, enums, known asset references, `GameObject`, component subclasses, lists of supported types, and serializable objects. A supported public class attribute is collected as a serialized field. Explicit `serialized_field(...)` remains useful when keyword metadata is clearer.
+Supported public annotations include `int`, `float`, `bool`, `str`, vectors, enums, known asset references, `GameObject`, component subclasses, lists of supported types, and serializable objects. A supported public class attribute is collected as a serialized field. Use `serialized_field(...)` to declare authored fields and their Inspector metadata explicitly.
 
 The `range`, `header`, and `tooltip` arguments to `serialized_field()` supply a slider, section label, and hover help. The same numeric bounds apply to Inspector edits, deserialization, and script assignment. The scene stores the edited value, so changing the class default later does not overwrite an already-authored scene value.
 
@@ -79,7 +79,7 @@ Under the hood, numeric fields (`int`, `float`, `bool`, `Vector2/3/4`) are backe
 
 ## Inspector references {#references}
 
-`target` is a GameObject field. Its stored form is a persistent scene-object reference; reading `self.target` resolves and returns the live `GameObject`, or `None` when the target is missing or destroyed. `RequiredComponent("MeshRenderer")` filters the picker and rejects Hierarchy drops whose object has no matching component.
+`target` is a GameObject field. Its stored form is a persistent scene-object reference; reading `self.target` resolves and returns the live `GameObject`, or `None` when the target is missing or destroyed. `required_component="MeshRenderer"` filters the picker and rejects Hierarchy drops whose object has no matching component.
 
 `body` stores a component reference constrained to `Rigidbody`. Reading `self.body` returns the resolved component wrapper or `None`. A reference field does not add the referenced component and does not keep a destroyed object alive. Always handle `None`, especially for optional targets or objects that can be destroyed during play.
 
@@ -92,7 +92,7 @@ The two class decorators govern attachment:
 - `@require_component(Rigidbody)` declares that `TargetReporter` depends on a `Rigidbody` on the same GameObject. When the dependency is missing, the engine adds it automatically during attachment; if any required component cannot be added, the whole operation rolls back and returns `None` with a warning. Removing a component that another component still requires is blocked.
 - `@disallow_multiple` allows one `TargetReporter` instance per GameObject. A second add attempt is rejected.
 
-These decorators constrain the owner's component set. `RequiredComponent("MeshRenderer")` belongs to a GameObject reference field and constrains which target can be assigned. The two mechanisms solve different authoring problems.
+These decorators constrain the owner's component set. `required_component="MeshRenderer"` belongs to a GameObject reference field and constrains which target can be assigned. The two mechanisms solve different authoring problems.
 
 ## Verify the contracts {#verify}
 
@@ -199,7 +199,7 @@ class TargetReporter(inx.InxComponent):
 
 ## Inspector 引用 {#references_1}
 
-`target` 是 GameObject 字段。存储层保存持久场景物体引用；读取 `self.target` 时会解析并返回实时 `GameObject`，目标缺失或已销毁时返回 `None`。`RequiredComponent("MeshRenderer")` 会筛选选择器，并拒绝缺少对应组件的 Hierarchy 拖放对象。
+`target` 是 GameObject 字段。存储层保存持久场景物体引用；读取 `self.target` 时会解析并返回实时 `GameObject`，目标缺失或已销毁时返回 `None`。`required_component="MeshRenderer"` 会筛选选择器，并拒绝缺少对应组件的 Hierarchy 拖放对象。
 
 `body` 保存限定为 `Rigidbody` 的组件引用。读取 `self.body` 会得到解析后的组件包装器，无法解析时返回 `None`。引用字段不会添加目标组件，也不会让已销毁物体继续存活。可选目标或运行中可能销毁的物体都要处理 `None`。
 
@@ -212,7 +212,7 @@ class TargetReporter(inx.InxComponent):
 - `@require_component(Rigidbody)` 声明 `TargetReporter` 依赖同一 GameObject 上的 `Rigidbody`。依赖缺失时，引擎会在挂载过程中自动补加；任何必需组件无法添加时，整个操作回滚并返回 `None`，同时给出警告。删除仍被其他组件依赖的组件会被阻止。
 - `@disallow_multiple` 让每个 GameObject 最多拥有一个 `TargetReporter`，第二次添加会被拒绝。
 
-这两个装饰器约束所属物体的组件集合。`RequiredComponent("MeshRenderer")` 用在 GameObject 引用字段上，负责限制可赋值目标。两类机制处理不同的编辑关系。
+这两个装饰器约束所属物体的组件集合。`required_component="MeshRenderer"` 用在 GameObject 引用字段上，负责限制可赋值目标。两类机制处理不同的编辑关系。
 
 ## 验证约束与保存结果 {#verify_1}
 
@@ -237,3 +237,4 @@ class TargetReporter(inx.InxComponent):
 ## 下一章
 
 [输入、时间与移动](gameplay-input-movement.html)会使用这些编辑值与组件查询，构建不受帧率影响的控制逻辑。
+

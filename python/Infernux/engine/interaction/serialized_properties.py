@@ -664,7 +664,22 @@ def make_python_component_property_transaction(
             value = coerce_serialized_field_input(
                 decode_input(candidate), field_metadata, f"{type(component).__name__}.{field}"
             )
-            return normalize_runtime_field_value(value, field_metadata)
+            value = normalize_runtime_field_value(value, field_metadata)
+            if field_metadata.required_component:
+                from Infernux.components.ref_wrappers import (
+                    GameObjectRef, _resolve_component_on_game_object,
+                )
+
+                if isinstance(value, GameObjectRef) and value.persistent_id:
+                    target = value.resolve()
+                    if target is None or _resolve_component_on_game_object(
+                        target, field_metadata.required_component
+                    ) is None:
+                        raise ValueError(
+                            f"{type(component).__name__}.{field}: target requires "
+                            f"{field_metadata.required_component}"
+                        )
+            return value
 
         def _command_factory(old, new, text, component=component):
             old_document = component._serialize_fields_document()
