@@ -883,13 +883,6 @@ def test_msaa_retirement_helpers_defer_destruction_without_idle_waits() -> None:
     assert "WaitIdle" in cleanup_outline
 
 
-def test_outline_fallback_material_descriptor_uses_its_actual_buffer_range() -> None:
-    outline_source = (RENDERER / "OutlineRenderer.cpp").read_text(encoding="utf-8")
-
-    assert "vertMatBufInfo.range = VK_WHOLE_SIZE;" in outline_source
-    assert "vertMatBufInfo.range = sizeof(UniformBufferObject);" not in outline_source
-
-
 def test_particle_contact_diagnostics_are_explicit_bounded_readbacks() -> None:
     manager = (
         RENDERER / "particle" / "ParticleGpuSystemManager.cpp"

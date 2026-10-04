@@ -757,7 +757,7 @@ void InxVkCoreModular::InitializeMaterialSystem()
                 INXLOG_WARN("InitializeMaterialSystem: error material pipeline deferred to lazy build");
             }
         } else {
-            INXLOG_WARN("InitializeMaterialSystem: error shader SPIR-V not yet in cache "
+            INXLOG_DEBUG("InitializeMaterialSystem: error shader SPIR-V not yet in cache "
                         "(vert='",
                         errVertId, "', frag='", errFragId, "'), will be built lazily on first use");
         }

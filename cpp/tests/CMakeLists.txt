@@ -1422,7 +1422,7 @@ if(INFERNUX_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/python/Infernux/test/material_first_shadow_gpu_test.py
     )
-    foreach(_outline_check background deformation multiple reload game-alpha gizmo)
+    foreach(_outline_check background deformation multiple reload game-alpha gizmo properties)
         set(_outline_test "infernux.selection_outline_${_outline_check}_gpu")
         add_test(NAME ${_outline_test}
             COMMAND ${Python3_EXECUTABLE}

@@ -33,6 +33,16 @@ void vertex(inout VertexInput v) {
 }
 '''
 
+VERTEX_PROPERTIES = '''#version 450
+ShaderInfo {
+    Name "Outline Shift Probe"
+    Properties { Float xShift = 0.0 Float yShift = 0.0 }
+}
+void vertex(inout VertexInput v) {
+    v.position.xy += vec2(material.xShift, material.yShift);
+}
+'''
+
 
 class BackgroundGizmoProbe(inx.InxComponent):
     def on_draw_gizmos(self):
@@ -42,7 +52,7 @@ class BackgroundGizmoProbe(inx.InxComponent):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--check", choices=("background", "deformation", "multiple", "reload", "game-alpha", "gizmo"), required=True)
+    parser.add_argument("--check", choices=("background", "deformation", "multiple", "reload", "game-alpha", "gizmo", "properties"), required=True)
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="infernux-outline-gpu-") as root:
         project = Path(root)
@@ -58,7 +68,7 @@ def main():
             "f 3//2 2//2 1//2\nf 4//2 3//2 1//2\n", encoding="ascii",
         )
         vertex = assets / "Shift.vert"
-        vertex.write_text(VERTEX, encoding="ascii")
+        vertex.write_text(VERTEX_PROPERTIES if args.check == "properties" else VERTEX, encoding="ascii")
         frontend = Engine()
         engine = frontend.get_native_engine()
         console = ConsolePanel()
@@ -88,6 +98,9 @@ def main():
             material = InxMaterial.create_default_unlit()
             material.set_color("baseColor", 0.0, 0.0, 1.0, 1.0)
             material.vert_shader_name = "Outline Shift Probe"
+            if args.check == "properties":
+                material.set_float("xShift", 1.4)
+                material.set_float("yShift", .6)
             renderer.set_material(0, material)
             selected_ids = [probe.id]
             if args.check == "multiple":
@@ -104,7 +117,6 @@ def main():
                 frontend.resize_game_render_target(160, 120)
                 engine.set_game_camera_enabled(True)
             frontend.set_render_pipeline(NoSkyPipeline())
-            initialization_uid = max((entry["latest_uid"] for entry in console._get_visible_log_snapshot(1000)), default=0)
             frame, changed = 0, 0
             stage, ticket, baseline = "baseline", None, None
 
@@ -124,6 +136,8 @@ def main():
                             if not blue.any():
                                 print([e for e in console._get_visible_log_snapshot(1000) if e['level'] == 'ERROR'], flush=True)
                             assert blue.sum() > 100, ("Scene geometry missing", int(blue.sum()))
+                            if args.check == "properties":
+                                assert abs(np.where(blue)[1].mean() - 80) > 15, "Authored vertex material properties were not applied"
                             engine.set_selection_outlines(selected_ids)
                             if args.check == "gizmo":
                                 scene.create_game_object("Background Gizmo").add_py_component(BackgroundGizmoProbe())
@@ -194,8 +208,7 @@ def main():
                 raise failures[0]
             assert completed
             errors = [entry for entry in console._get_visible_log_snapshot(1000)
-                      if entry["level"] in ("ERROR", "FATAL") or
-                      (entry["level"] in ("WARN", "WARNING") and entry["latest_uid"] > initialization_uid)]
+                      if entry["level"] in ("ERROR", "FATAL", "WARN", "WARNING")]
             assert not errors, errors
         finally:
             engine.cleanup()
