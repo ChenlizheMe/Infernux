@@ -24,7 +24,7 @@ A Prefab stores an authored GameObject hierarchy as an asset. `Instantiate` turn
 5. Confirm that the Prefab appears in Project, then delete the source `SpawnedCube` from the scene. The asset remains available for runtime creation.
 6. Create an Empty GameObject in Hierarchy, rename it `SpawnRoot`, and set its position to `(0, 0, 0)`.
 
-<div class="learn-note"><strong>Asset reference and scene object have different jobs.</strong><p><code>PrefabRef</code> stores a Prefab GUID and path hint. It does not identify a live scene object, and its current <code>resolve()</code> result is always <code>None</code>. Call <code>Instantiate</code> or <code>PrefabRef.instantiate()</code> to create a live GameObject.</p></div>
+<div class="learn-note"><strong>Asset reference and scene object have different jobs.</strong><p><code>PrefabRef</code> stores a Prefab GUID. Its displayed path is resolved from that GUID and is not retained as identity or used as a fallback. It does not identify a live scene object, and its current <code>resolve()</code> result is always <code>None</code>. Call <code>Instantiate</code> or <code>PrefabRef.instantiate()</code> to create a live GameObject.</p></div>
 
 ## Build a runtime spawner {#build-runtime-spawner}
 
@@ -95,7 +95,7 @@ For GameObject and Prefab sources, the scalar overload returns the new root `Gam
 
 ## Choose parent and Transform space {#parent-space-semantics}
 
-The current scalar overloads provide three useful placement patterns:
+The current scalar overloads provide four useful placement patterns:
 
 ```python
 import infernux as inx
@@ -113,7 +113,7 @@ world_instance = inx.Instantiate(prefab, spawn_root, True)
 placed_instance = inx.Instantiate(
     prefab,
     inx.Vector3(5.0, 0.0, 2.0),
-    inx.quatf(),
+    inx.quatf(0.0, 0.0, 0.0, 1.0),
     spawn_root,
 )
 ```
@@ -151,7 +151,7 @@ instance.transform.set_parent(
 The top-level `Destroy` function currently accepts a live `GameObject` only:
 
 ```python
-Destroy(instance)
+inx.Destroy(instance)
 ```
 
 Destruction enters the scene's pending-destroy flow. Treat the object and all descendants as unavailable after requesting destruction, clear references you own, and let lifecycle cleanup run. Active Python components receive their disable and destroy cleanup as the pending operation is processed.
@@ -212,7 +212,7 @@ Prefab 会把编写好的 GameObject 层级保存成资产。`Instantiate` 可�
 5. 确认 Prefab 已出现在 Project 中，然后从场景删除源 `SpawnedCube`。该资产仍可用于运行时创建。
 6. 在 Hierarchy 中创建空 GameObject，命名为 `SpawnRoot`，位置设为 `(0, 0, 0)`。
 
-<div class="learn-note"><strong>资产引用与场景对象职责不同。</strong><p><code>PrefabRef</code> 保存 Prefab GUID 与路径提示，不指向活动场景对象；当前 <code>resolve()</code> 固定返回 <code>None</code>。请调用 <code>Instantiate</code> 或 <code>PrefabRef.instantiate()</code> 创建活动 GameObject。</p></div>
+<div class="learn-note"><strong>资产引用与场景对象职责不同。</strong><p><code>PrefabRef</code> 保存 Prefab GUID。显示路径由 GUID 解析，不作为身份保存，也不用于回退。它不指向活动场景对象；当前 <code>resolve()</code> 固定返回 <code>None</code>。请调用 <code>Instantiate</code> 或 <code>PrefabRef.instantiate()</code> 创建活动 GameObject。</p></div>
 
 ## 制作运行时生成器 {#build-runtime-spawner_1}
 
@@ -283,7 +283,7 @@ class PrefabSpawner(inx.InxComponent):
 
 ## 选择父级与 Transform 空间 {#parent-space-semantics_1}
 
-当前标量重载提供三种常用放置方式：
+当前标量重载提供四种常用放置方式：
 
 ```python
 import infernux as inx
@@ -301,7 +301,7 @@ world_instance = inx.Instantiate(prefab, spawn_root, True)
 placed_instance = inx.Instantiate(
     prefab,
     inx.Vector3(5.0, 0.0, 2.0),
-    inx.quatf(),
+    inx.quatf(0.0, 0.0, 0.0, 1.0),
     spawn_root,
 )
 ```
@@ -339,7 +339,7 @@ instance.transform.set_parent(
 顶层 `Destroy` 函数当前只接受活动 `GameObject`：
 
 ```python
-Destroy(instance)
+inx.Destroy(instance)
 ```
 
 销毁请求会进入场景的待处理销毁流程。发出请求后，应把该对象及其所有后代视为不可再用，清空自己保存的引用，并让生命周期清理继续执行。活动 Python 组件会在处理待销毁操作时收到停用与销毁清理。

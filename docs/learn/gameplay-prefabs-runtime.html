@@ -52,7 +52,7 @@
 <li>Confirm that the Prefab appears in Project, then delete the source <code>SpawnedCube</code> from the scene. The asset remains available for runtime creation.</li>
 <li>Create an Empty GameObject in Hierarchy, rename it <code>SpawnRoot</code>, and set its position to <code>(0, 0, 0)</code>.</li>
 </ol>
-<div class="learn-note"><strong>Asset reference and scene object have different jobs.</strong><p><code>PrefabRef</code> stores a Prefab GUID and path hint. It does not identify a live scene object, and its current <code>resolve()</code> result is always <code>None</code>. Call <code>Instantiate</code> or <code>PrefabRef.instantiate()</code> to create a live GameObject.</p></div>
+<div class="learn-note"><strong>Asset reference and scene object have different jobs.</strong><p><code>PrefabRef</code> stores a Prefab GUID. Its displayed path is resolved from that GUID and is not retained as identity or used as a fallback. It does not identify a live scene object, and its current <code>resolve()</code> result is always <code>None</code>. Call <code>Instantiate</code> or <code>PrefabRef.instantiate()</code> to create a live GameObject.</p></div>
 
 <h2 id="build-runtime-spawner">Build a runtime spawner</h2>
 <ol>
@@ -117,7 +117,7 @@
 <p>For GameObject and Prefab sources, the scalar overload returns the new root <code>GameObject</code>, or <code>None</code> when no instance can be created. Check that result before accessing <code>name</code>, <code>transform</code>, or components.</p>
 <p><code>Instantiate</code> also restores Python components on the copied hierarchy. Each instance receives its own component objects and runtime state; the source hierarchy stays unchanged.</p>
 <h2 id="parent-space-semantics">Choose parent and Transform space</h2>
-<p>The current scalar overloads provide three useful placement patterns:</p>
+<p>The current scalar overloads provide four useful placement patterns:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 <span class="c1"># No parent argument: create at the scene root and preserve source world TRS.</span>
@@ -133,7 +133,7 @@
 <span class="n">placed_instance</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Instantiate</span><span class="p">(</span>
     <span class="n">prefab</span><span class="p">,</span>
     <span class="n">inx</span><span class="o">.</span><span class="n">Vector3</span><span class="p">(</span><span class="mf">5.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span>
-    <span class="n">inx</span><span class="o">.</span><span class="n">quatf</span><span class="p">(),</span>
+    <span class="n">inx</span><span class="o">.</span><span class="n">quatf</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span>
     <span class="n">spawn_root</span><span class="p">,</span>
 <span class="p">)</span>
 </code></pre></div>
@@ -186,7 +186,7 @@
 <p><code>world_position_stays=True</code> keeps the current world transform while calculating new local values. <code>False</code> keeps the current local values and lets the new parent determine the resulting world transform.</p>
 <h2 id="destroy-semantics">End an instance lifetime with Destroy</h2>
 <p>The top-level <code>Destroy</code> function currently accepts a live <code>GameObject</code> only:</p>
-<div class="highlight"><pre><span></span><code><span class="n">Destroy</span><span class="p">(</span><span class="n">instance</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><span class="n">inx</span><span class="o">.</span><span class="n">Destroy</span><span class="p">(</span><span class="n">instance</span><span class="p">)</span>
 </code></pre></div>
 
 <p>Destruction enters the scene's pending-destroy flow. Treat the object and all descendants as unavailable after requesting destruction, clear references you own, and let lifecycle cleanup run. Active Python components receive their disable and destroy cleanup as the pending operation is processed.</p>
@@ -229,7 +229,7 @@
 <li>确认 Prefab 已出现在 Project 中，然后从场景删除源 <code>SpawnedCube</code>。该资产仍可用于运行时创建。</li>
 <li>在 Hierarchy 中创建空 GameObject，命名为 <code>SpawnRoot</code>，位置设为 <code>(0, 0, 0)</code>。</li>
 </ol>
-<div class="learn-note"><strong>资产引用与场景对象职责不同。</strong><p><code>PrefabRef</code> 保存 Prefab GUID 与路径提示，不指向活动场景对象；当前 <code>resolve()</code> 固定返回 <code>None</code>。请调用 <code>Instantiate</code> 或 <code>PrefabRef.instantiate()</code> 创建活动 GameObject。</p></div>
+<div class="learn-note"><strong>资产引用与场景对象职责不同。</strong><p><code>PrefabRef</code> 保存 Prefab GUID。显示路径由 GUID 解析，不作为身份保存，也不用于回退。它不指向活动场景对象；当前 <code>resolve()</code> 固定返回 <code>None</code>。请调用 <code>Instantiate</code> 或 <code>PrefabRef.instantiate()</code> 创建活动 GameObject。</p></div>
 
 <h2 id="build-runtime-spawner_1">制作运行时生成器</h2>
 <ol>
@@ -294,7 +294,7 @@
 <p>来源为 GameObject 或 Prefab 时，标量重载会返回新根节点 <code>GameObject</code>；无法创建时返回 <code>None</code>。访问 <code>name</code>、<code>transform</code> 或组件前应先检查结果。</p>
 <p><code>Instantiate</code> 还会恢复复制层级中的 Python 组件。每个实例都有独立的组件对象与运行时状态，源层级保持原值。</p>
 <h2 id="parent-space-semantics_1">选择父级与 Transform 空间</h2>
-<p>当前标量重载提供三种常用放置方式：</p>
+<p>当前标量重载提供四种常用放置方式：</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 <span class="c1"># 省略 parent：创建在场景根级，并保留源对象的世界 TRS。</span>
@@ -310,7 +310,7 @@
 <span class="n">placed_instance</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">Instantiate</span><span class="p">(</span>
     <span class="n">prefab</span><span class="p">,</span>
     <span class="n">inx</span><span class="o">.</span><span class="n">Vector3</span><span class="p">(</span><span class="mf">5.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span>
-    <span class="n">inx</span><span class="o">.</span><span class="n">quatf</span><span class="p">(),</span>
+    <span class="n">inx</span><span class="o">.</span><span class="n">quatf</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span>
     <span class="n">spawn_root</span><span class="p">,</span>
 <span class="p">)</span>
 </code></pre></div>
@@ -363,7 +363,7 @@
 <p><code>world_position_stays=True</code> 会保持当前世界变换，并计算新的局部值。设为 <code>False</code> 会保持当前局部值，再由新父级决定最终世界变换。</p>
 <h2 id="destroy-semantics_1">用 Destroy 结束实例生命周期</h2>
 <p>顶层 <code>Destroy</code> 函数当前只接受活动 <code>GameObject</code>：</p>
-<div class="highlight"><pre><span></span><code><span class="n">Destroy</span><span class="p">(</span><span class="n">instance</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><span class="n">inx</span><span class="o">.</span><span class="n">Destroy</span><span class="p">(</span><span class="n">instance</span><span class="p">)</span>
 </code></pre></div>
 
 <p>销毁请求会进入场景的待处理销毁流程。发出请求后，应把该对象及其所有后代视为不可再用，清空自己保存的引用，并让生命周期清理继续执行。活动 Python 组件会在处理待销毁操作时收到停用与销毁清理。</p>
