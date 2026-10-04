@@ -133,7 +133,7 @@ Each yielded value selects the phase that will check the coroutine next.
 | a `Coroutine` handle | Resume after that handle is finished, including when it was stopped. | `update` |
 | any unsupported value | Current runtime treats it like a one-update-frame wait. | `update` |
 
-`WaitForSeconds` accumulates the frame delta handed to the coroutine scheduler. The scheduler currently forwards the same raw, unscaled delta that `update()` receives, so `Time.time_scale` does not slow this wait today; the instruction's docstring still describes scaled time, which the current call path does not deliver. `WaitForSecondsRealtime` uses wall-clock time, though it can only resume when an update check occurs. Construct realtime waits immediately before yielding them because their target time is set in the constructor.
+`WaitForSeconds` accumulates the frame delta handed to the coroutine scheduler. The scheduler forwards the same raw, unscaled delta that `update()` receives, so `Time.time_scale` does not slow this wait. `WaitForSecondsRealtime` uses wall-clock time, though it can only resume when an update check occurs. Construct realtime waits immediately before yielding them because their target time is set in the constructor.
 
 `WaitForEndOfFrame` means the coroutine scheduler's late-update phase. It does not promise that rendering, presentation, or a screenshot has completed.
 
@@ -188,7 +188,7 @@ These rules make cancellation explicit at the component boundary and prevent a d
 ## Verify the result {#verify}
 
 1. Enter Play mode and watch Console. Message 1 should appear immediately during `start()`; messages 2–10 should remain in numeric order.
-2. Confirm that messages 2 and 3 are separated by update frames, then observe the scaled-time and real-time delays.
+2. Confirm that messages 2 and 3 are separated by update frames, then observe the unscaled frame-time and real-time delays.
 3. Message 6 should follow a fixed-update pass. Message 7 should appear after two late-update passes.
 4. The gate and busy helpers should allow messages 8 and 9 to appear without input.
 5. `child started immediately` should appear before its delay, followed by `child completed`, then parent message 10 on a later update check.
@@ -348,7 +348,7 @@ class CoroutineTour(inx.InxComponent):
 | `Coroutine` 句柄 | 句柄结束后恢复，被停止的句柄也算结束。 | `update` |
 | 任意不支持的值 | 当前运行时把它当作等待一个更新帧。 | `update` |
 
-`WaitForSeconds` 累加协程调度器收到的帧间隔。调度器目前把 `update()` 收到的同一份原始未缩放 delta 转给协程，因此 `Time.time_scale` 今天不会减慢这个等待；该指令的 docstring 仍描述为缩放时间，当前调用路径并没有提供缩放值。`WaitForSecondsRealtime` 使用墙钟时间，但仍需等到更新检查才能恢复。实时等待的目标时间在构造函数中确定，因此应在 `yield` 前即时创建。
+`WaitForSeconds` 累加协程调度器收到的帧间隔。调度器把 `update()` 收到的同一份原始未缩放 delta 转给协程，因此 `Time.time_scale` 不会减慢这个等待。`WaitForSecondsRealtime` 使用墙钟时间，但仍需等到更新检查才能恢复。实时等待的目标时间在构造函数中确定，因此应在 `yield` 前即时创建。
 
 `WaitForEndOfFrame` 对应当前协程调度器的 `late_update` 阶段，不承诺渲染、画面呈现或截图已经完成。
 
@@ -403,7 +403,7 @@ def temporary_state(self):
 ## 验证结果 {#zh-verify}
 
 1. 进入 Play 模式并观察 Console。消息 1 应在 `start()` 内立即出现，消息 2 到 10 应保持数字顺序。
-2. 确认消息 2 与消息 3 之间隔着更新帧，再观察缩放时间和真实时间延时。
+2. 确认消息 2 与消息 3 之间隔着更新帧，再观察未缩放帧时间与真实时间延时。
 3. 消息 6 应出现在一次固定更新之后。消息 7 应在两次后期更新之后出现。
 4. gate 与 busy 辅助流程应在没有输入的情况下让消息 8 和 9 出现。
 5. `child started immediately` 应先出现，延时后出现 `child completed`，父流程消息 10 再于后续更新检查中出现。

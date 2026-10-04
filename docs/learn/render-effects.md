@@ -182,7 +182,7 @@ Failure recovery has three concrete boundaries:
 
 1. Feature registration is replaceable only by the same source identity. A second source registering `game.post.edge_fade` raises `already registered`; the first registration remains active.
 2. Effect/group import is compile-then-publish. A malformed document, missing dependency, group cycle, unknown override, or feature failure leaves the previous artifact and loaded asset active. If creation wrote the new source file before its first import failed, that source file remains in `Assets`; fix it and reimport it or remove it explicitly.
-3. During Stage compilation, each effect starts with snapshots of the graph pass/texture/topology lists and local bus. If its `setup_passes()` raises, only additions from that effect are removed and its bus snapshot is restored. **Effect Compile Errors** records `<stage_id>/<slot_id>: <error>`; other slots can still compile. If a broader pipeline rebuild raises, the Editor keeps the last valid graph. A packaged Player refuses the Editor's default-pipeline fallback and leaves the failure visible for packaged-product repair.
+3. During Stage compilation, each effect starts with snapshots of the graph pass/texture/topology lists and local bus. If its `setup_passes()` raises, only additions from that effect are removed and its bus snapshot is restored. **Effect Compile Errors** records `<stage_id>/<slot_id>: <error>`; other slots can still compile. If a broader pipeline rebuild raises, RenderStack keeps its last valid graph when one exists. With no accepted graph, both Editor and Player fail explicitly instead of substituting a default pipeline.
 
 Most parameter edits only change a parameter block. Put a field in the decorator's `topology_parameters` only when it can change pass count, resource shape, or binding layout. Built-in Bloom, for example, marks `max_iterations`; changing it rebuilds the graph, while changing intensity updates runtime data.
 
@@ -419,7 +419,7 @@ Route Policy 冲突走另一条校验路径。例如，`ADDITIVE_EXTRACT` 无法
 
 1. Feature 注册只允许相同 Source 身份更新。另一份 Source 注册 `game.post.edge_fade` 时会抛出 `already registered`，首次注册项继续生效。
 2. Effect/Group 导入采用“编译完成后发布”。文档格式错误、依赖缺失、Group 循环、未知 Override 或 Feature 失败时，上一份 Artifact 与已加载资产继续生效。如果创建流程已经写入新 Source，首次导入随后失败，这个 Source 文件会留在 `Assets` 中；修复后重新导入，或显式移除该文件。
-3. 编译 Stage 时，每个 Effect 都会先保存图的 Pass、Texture、Topology 列表和局部 Bus 快照。`setup_passes()` 抛出异常后，只移除该 Effect 添加的内容，并恢复其 Bus 快照。**Effect Compile Errors** 记录 `<stage_id>/<slot_id>: <error>`，其它 Slot 仍可继续编译。更大范围的 Pipeline 重建抛出异常时，Editor 保留上一份有效图。打包 Player 不采用 Editor 的默认管线回退，打包产物问题会保持可见，等待修复对应产物。
+3. 编译 Stage 时，每个 Effect 都会先保存图的 Pass、Texture、Topology 列表和局部 Bus 快照。`setup_passes()` 抛出异常后，只移除该 Effect 添加的内容，并恢复其 Bus 快照。**Effect Compile Errors** 记录 `<stage_id>/<slot_id>: <error>`，其它 Slot 仍可继续编译。更大范围的 Pipeline 重建抛出异常时，RenderStack 会保留已有的上一份有效图。没有已接受的图时，Editor 和 Player 都明确报告失败，不会替换成默认管线。
 
 大多数参数修改只需更新参数块。会改变 Pass 数量、资源形状或绑定布局的字段才应放进装饰器的 `topology_parameters`。例如内置 Bloom 把 `max_iterations` 列为拓扑参数；改迭代次数会重建图，改强度只更新运行时数据。
 

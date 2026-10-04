@@ -43,7 +43,7 @@ Choose one method for each pipeline class. The built-in pipelines remain useful 
 | `@geometry_buffer` plus `self.geometry_stage()` | Supported; RenderStack also adds mounted Effect requirements | Supported only when requirements are set directly on `graph` |
 | Mounted RenderStack Effects and stage-local resource buses | Compiled at declared stages | No RenderStack instance is present, so stages are declarations only |
 | Missing standard post-process and Screen UI tail | RenderStack appends the safety net | Pipeline must call the needed section helpers itself |
-| Failed rebuild | Keeps a previous valid graph or uses the documented first-build Editor fallback | No fallback cache; the build exception leaves `_standalone_desc` unset and the next call retries |
+| Failed rebuild | Keeps a previous valid graph; without one, construction fails explicitly | No fallback cache; the build exception leaves `_standalone_desc` unset and the next call retries |
 
 The three `self.*` helpers are not promised for a standalone override in the current implementation. A standalone author can use the direct `graph.*` result methods. Setting `self._defining_graph` manually relies on private state and is excluded from the supported contract. The complete example below intentionally targets RenderStack.
 
@@ -518,7 +518,7 @@ Before shipping a low-level pipeline, check these points:
 | `@geometry_buffer` 与 `self.geometry_stage()` | 支持；RenderStack 还会加入已挂载 Effect 的需求 | 需要直接在 `graph` 上设置需求后使用 |
 | 已挂载的 RenderStack Effect 与 Stage 局部 Resource Bus | 在声明位置编译 | 没有 RenderStack 实例，Stage 只保留声明信息 |
 | 缺失的标准后处理与 Screen UI 帧尾 | RenderStack 会追加安全网 | 管线必须自行调用所需 Section Helper |
-| 重建失败 | 保留上一份有效 Graph，或使用已说明的 Editor 首次构建回退 | 没有回退缓存；异常后 `_standalone_desc` 为空，下次调用重试 |
+| 重建失败 | 保留上一份有效 Graph；没有有效 Graph 时明确报告构建失败 | 没有回退缓存；异常后 `_standalone_desc` 为空，下次调用重试 |
 
 当前实现没有承诺三项 `self.*` Helper 可用于 standalone Override。Standalone 作者可以改用直接的 `graph.*` Result 方法。手动设置 `self._defining_graph` 会依赖私有状态，不属于受支持契约。下面的完整样例明确以 RenderStack 为 Host。
 

@@ -102,7 +102,7 @@
 </tr>
 <tr>
 <td>Failed rebuild</td>
-<td>Keeps a previous valid graph or uses the documented first-build Editor fallback</td>
+<td>Keeps a previous valid graph; without one, construction fails explicitly</td>
 <td>No fallback cache; the build exception leaves <code>_standalone_desc</code> unset and the next call retries</td>
 </tr>
 </tbody>
@@ -514,7 +514,7 @@
 </tr>
 <tr>
 <td>重建失败</td>
-<td>保留上一份有效 Graph，或使用已说明的 Editor 首次构建回退</td>
+<td>保留上一份有效 Graph；没有有效 Graph 时明确报告构建失败</td>
 <td>没有回退缓存；异常后 <code>_standalone_desc</code> 为空，下次调用重试</td>
 </tr>
 </tbody>

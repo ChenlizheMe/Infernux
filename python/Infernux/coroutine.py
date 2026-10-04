@@ -21,7 +21,7 @@ Yield instructions
 
 ==========================  ====================================================
 ``yield None``              Wait one **update** frame (same as bare ``yield``).
-``yield WaitForSeconds(n)`` Wait *n* seconds of **scaled** game time.
+``yield WaitForSeconds(n)`` Wait *n* seconds of accumulated **unscaled** frame time.
 ``yield WaitForSecondsRealtime(n)``  Wait *n* seconds of wall-clock time.
 ``yield WaitForEndOfFrame(n)``       Resume after *n* frame-end phases (default 1).
 ``yield WaitForFrames(n)``           Resume after *n* ``update`` frames.
@@ -44,7 +44,11 @@ from typing import Any, Callable, Generator, Optional
 # ======================================================================
 
 class WaitForSeconds:
-    """Suspend the coroutine for *seconds* of **scaled** game time."""
+    """Suspend for *seconds* of accumulated unscaled frame time.
+
+    The component scheduler supplies the same raw delta as ``update()``;
+    ``Time.time_scale`` does not alter this wait.
+    """
     __slots__ = ("duration", "_elapsed")
 
     def __init__(self, seconds: float):
@@ -52,7 +56,7 @@ class WaitForSeconds:
         self._elapsed: float = 0.0
 
     def _tick(self, scaled_dt: float) -> bool:
-        """Accumulate *scaled_dt*; return ``True`` when done."""
+        """Accumulate the scheduler's frame delta; return ``True`` when done."""
         self._elapsed += scaled_dt
         return self._elapsed >= self.duration
 

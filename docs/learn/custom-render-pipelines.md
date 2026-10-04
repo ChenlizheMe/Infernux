@@ -104,10 +104,10 @@ Use a small scene with an active Camera, one RenderStack, one visible opaque ren
 
 1. Select **Simple Forward**. Both renderers should remain visible, and the RenderStack topology should list **After Opaque** and **Final Post Processing**.
 2. Temporarily remove the transparent block, save the pipeline, and let the active pipeline reload. The transparent test renderer should disappear while the opaque renderer remains. Restore the block and save again.
-3. Change `name` only as a separate migration test. The old selection will fall back because RenderStack serializes the display name; choose the new entry and save the scene.
+3. Change `name` only as a separate migration test. RenderStack serializes the display name, so the old selection becomes unavailable and remains saved until you choose the new entry. Choose the new entry and save the scene.
 4. Make one reversible syntax error and save. The script transaction rejects the new module. Check the Console, repair the file, and save again.
 
-The recovery result depends on when failure occurs. A rejected script import does not publish the edited module. If a published topology rebuild then fails and this RenderStack already has a valid graph, the Console reports `Pipeline graph rebuild rejected` and the last valid graph keeps rendering until another invalidation. On the first Editor build, failure attempts `DefaultForwardPipeline`; a packaged Player reports the missing or failed custom pipeline and does not substitute Default Forward. Fixing and saving the active source invalidates the failed state and requests another build.
+The recovery result depends on when failure occurs. A rejected script import does not publish the edited module. If a published topology rebuild then fails and this RenderStack already has a valid graph, the Console reports `Pipeline graph rebuild rejected` and the last valid graph keeps rendering until another invalidation. With no accepted graph, construction fails explicitly in both Editor and Player; neither substitutes Default Forward. An unavailable pipeline name is also rejected without changing the saved selection. Fixing and saving the active source invalidates the failed state and requests another build.
 
 ## Mix Forward, Forward+, and Deferred {#mixed-pipeline}
 
@@ -336,10 +336,10 @@ class SimpleForwardPipeline(inx.renderstack.RenderPipeline):
 
 1. 选择 **Simple Forward**。两个 Renderer 都应保持可见，RenderStack 拓扑中应出现 **After Opaque** 与 **Final Post Processing**。
 2. 暂时删除透明 Domain 代码并保存，等待活动管线重载。透明测试对象应消失，不透明对象仍可见。恢复代码后再次保存。
-3. 只在单独的迁移测试中修改 `name`。RenderStack 保存的是显示名称，旧选择会进入回退流程；选择新条目并保存场景。
+3. 只在单独的迁移测试中修改 `name`。RenderStack 保存的是显示名称，旧选择会变成不可用，但仍保留在场景中，直到你选择新条目。选择新条目并保存场景。
 4. 制造一个容易撤销的语法错误并保存。脚本事务会拒绝新模块。查看 Console，修复文件，再次保存。
 
-恢复结果取决于失败时机。脚本导入被拒绝时，编辑后的模块不会发布。已发布的拓扑重建失败且当前 RenderStack 已有有效 Graph 时，Console 会报告 `Pipeline graph rebuild rejected`，上一份有效 Graph 会继续渲染，直到下一次失效触发。Editor 首次构建失败时会尝试 `DefaultForwardPipeline`；打包 Player 会报告自定义管线缺失或失败，并保持错误可见，不会替换成 Default Forward。修复并保存活动源码会清除失败状态并请求再次构建。
+恢复结果取决于失败时机。脚本导入被拒绝时，编辑后的模块不会发布。已发布的拓扑重建失败且当前 RenderStack 已有有效 Graph 时，Console 会报告 `Pipeline graph rebuild rejected`，上一份有效 Graph 会继续渲染，直到下一次失效触发。没有已接受的 Graph 时，Editor 和 Player 都会明确报告构建失败，不会替换成 Default Forward。不可用的管线名称同样会被拒绝，已保存的选择不会被改写。修复并保存活动源码会清除失败状态并请求再次构建。
 
 ## 混合 Forward、Forward+ 与 Deferred {#mixed-pipeline_1}
 
