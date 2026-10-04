@@ -110,7 +110,7 @@ def create_deferred_gbuffer(graph: "RenderGraph") -> None:
     graph.create_texture(GBUFFER_NORMAL_TEXTURE, format=Format.RGBA16_SFLOAT)
     graph.create_texture(GBUFFER_MATERIAL_TEXTURE, format=Format.RGBA8_UNORM)
     graph.create_texture(GBUFFER_EMISSION_TEXTURE, format=Format.RGBA16_SFLOAT)
-    graph.create_texture(GBUFFER_OBJECT_TEXTURE, format=Format.RG32_UINT)
+    graph.create_texture(GBUFFER_OBJECT_TEXTURE, format=Format.RGBA32_UINT)
 
 
 def add_shadow_caster_pass(

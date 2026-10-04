@@ -28,7 +28,7 @@ class DefaultDeferredPipeline(RenderPipeline):
         Slot 1 — World Normals      (RGBA16_SFLOAT)
         Slot 2 — Material Params    (RGBA8_UNORM)
         Slot 3 — Emission           (RGBA16_SFLOAT)
-        Slot 4 — Object Metadata    (RG32_UINT)
+        Slot 4 — Object Metadata    (RGBA32_UINT: layer, model, receive shadows, reserved)
         Depth  — Scene depth        (D32_SFLOAT)
 
     Injection points:

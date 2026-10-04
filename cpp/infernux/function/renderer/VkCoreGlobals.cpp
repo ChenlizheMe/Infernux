@@ -592,7 +592,7 @@ void InxVkCoreModular::PrepareInstanceAuxiliary(uint64_t frameSerial, size_t tot
 
 bool InxVkCoreModular::WriteInstanceAuxiliary(uint32_t frameIndex, uint32_t instanceIndex,
                                               const RenderDrawIdentity &identity, const glm::mat4 &currentModel,
-                                              uint64_t objectId, uint32_t layerMask)
+                                              uint64_t objectId, uint32_t layerMask, bool receivesShadows)
 {
     if (frameIndex >= m_instanceAuxBuffers.size())
         return false;
@@ -605,8 +605,10 @@ bool InxVkCoreModular::WriteInstanceAuxiliary(uint32_t frameIndex, uint32_t inst
     if (!frame.mapped)
         return false;
 
-    static_cast<GPUInstanceAuxData *>(frame.mapped)[instanceIndex] =
-        m_instanceHistory.Resolve(identity, currentModel, objectId, layerMask);
+    auto auxiliary = m_instanceHistory.Resolve(identity, currentModel, objectId, layerMask);
+    if (!receivesShadows)
+        auxiliary.flags |= kGPUInstanceAuxFlagNoReceiveShadows;
+    static_cast<GPUInstanceAuxData *>(frame.mapped)[instanceIndex] = auxiliary;
     return true;
 }
 

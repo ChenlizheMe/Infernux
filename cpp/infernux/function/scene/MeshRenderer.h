@@ -363,19 +363,13 @@ class MeshRenderer : public Component
     {
         return m_castShadows;
     }
-    void SetCastShadows(bool cast)
-    {
-        m_castShadows = cast;
-    }
+    void SetCastShadows(bool cast);
 
     [[nodiscard]] bool ReceivesShadows() const
     {
         return m_receiveShadows;
     }
-    void SetReceivesShadows(bool receive)
-    {
-        m_receiveShadows = receive;
-    }
+    void SetReceivesShadows(bool receive);
 
     // ========================================================================
     // Bounds (for culling)

@@ -167,6 +167,21 @@ int main()
     };
     const DrawCall *beforeParameter = findLeftDraw(leftMaterialAssigned);
     assert(beforeParameter && !beforeParameter->parameterBlock);
+    // Shadow switches are live draw payload. They must refresh cached camera
+    // lists even when no transform, mesh or material has changed.
+    assert(beforeParameter->castsShadows && beforeParameter->receivesShadows);
+    leftRenderer->SetCastShadows(false);
+    leftRenderer->SetReceivesShadows(false);
+    bridge.PrepareFrame(false);
+    const auto noShadows = bridge.CullAndBuildForCamera(leftCamera, false);
+    const DrawCall *shadowDisabled = findLeftDraw(noShadows);
+    assert(shadowDisabled && !shadowDisabled->castsShadows && !shadowDisabled->receivesShadows);
+    leftRenderer->SetCastShadows(true);
+    leftRenderer->SetReceivesShadows(true);
+    bridge.PrepareFrame(false);
+    const auto restoredShadows = bridge.CullAndBuildForCamera(leftCamera, false);
+    const DrawCall *shadowRestored = findLeftDraw(restoredShadows);
+    assert(shadowRestored && shadowRestored->castsShadows && shadowRestored->receivesShadows);
     bool rejectedNonFiniteOverride = false;
     try {
         leftRenderer->SetParameter(0, "baseColor", glm::vec4(0.1f, std::numeric_limits<float>::infinity(), 0.2f, 1.0f),

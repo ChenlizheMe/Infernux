@@ -143,6 +143,8 @@ These fields affect different problems:
 
 Do not use Queue as a disguised effect parameter. Queue is intentionally structural: a custom pipeline can route `1..100` through one path and `101..200` through another. Material authors choose the queue; pipeline authors decide what that queue means for a project.
 
+Shadow controls combine the shader and renderer settings. A mesh casts shadows only when its shader enables `CastShadows` and its `MeshRenderer.casts_shadows` is enabled. It receives shadows only when both `ReceiveShadows` and `MeshRenderer.receives_shadows` are enabled. Renderer switches update live and can differ between objects sharing one Material. These rules apply to Forward, Forward+, and Deferred; disabling reception keeps the light's illumination and removes only its shadow attenuation.
+
 `Surface Transparent` supplies transparent defaults for fields left unspecified: queue `3000`, alpha blending, depth writes off, and the transparent pass tag. Explicit Queue, DepthWrite, PassTag, and non-off Blend modes override those defaults. `Off` is also the parser's initial blend value, so this Surface setting normalizes `Blend Off` to `Alpha`. `Blend Alpha` expects straight RGB and uses source alpha for color blending. `Blend Premultiplied` expects `shading()` to return RGB already multiplied by alpha. `Blend Additive` adds source RGB. Blending happens after shading and does not discard a fragment.
 
 Alpha clipping is an earlier, binary decision. `AlphaClip 0.5` stores the threshold in the engine-managed `_AlphaClipThreshold`; `AlphaClip On` uses the same `0.5` default. After `surface()` returns, generated adapters discard when `s.alpha` is below that threshold. The check is shared by Forward, GBuffer, and compatible depth, shadow, motion, normal, base-color, and picking variants. A cutout material normally stays in the opaque queue with depth writes enabled and blending off. A translucent material normally uses the transparent queue, depth writes off, and one of the blend modes.
@@ -368,6 +370,8 @@ ShaderInfo {
 | `CastShadows` / `ReceiveShadows` | 是否参与兼容的阴影路径 |
 
 不要把 Queue 当成伪装的效果参数。Queue 是有意设计的结构信息：自定义管线可以让 `1..100` 走一条路径、`101..200` 走另一条。材质作者选择 Queue，管线作者决定这些 Queue 在项目里的含义。
+
+阴影开关同时取决于 Shader 与 Renderer。只有 Shader 启用 `CastShadows` 且 `MeshRenderer.casts_shadows` 启用时，网格才投射阴影；只有 `ReceiveShadows` 与 `MeshRenderer.receives_shadows` 都启用时，它才接收阴影。Renderer 开关实时生效，共用同一个 Material 的物体可以有不同设置。这些规则适用于 Forward、Forward+ 和 Deferred；关闭接收阴影只移除阴影衰减，仍然保留灯光照明。
 
 `Surface Transparent` 会为尚未显式填写的字段提供透明表面默认值：Queue `3000`、Alpha 混合、关闭深度写入，并使用 transparent Pass Tag。显式 Queue、DepthWrite、PassTag 及非 Off 的 Blend 模式可以覆盖对应默认值。`Off` 同时是解析器的初始 Blend 值，因此该 Surface 设置会把 `Blend Off` 归一为 `Alpha`。`Blend Alpha` 接收未预乘的 RGB，并用源 Alpha 混合颜色。`Blend Premultiplied` 要求 `shading()` 返回已经乘过 Alpha 的 RGB，`Blend Additive` 累加源 RGB。混合发生在着色之后，不会丢弃片元。
 

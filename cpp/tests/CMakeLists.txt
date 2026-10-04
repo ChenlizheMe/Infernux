@@ -1437,6 +1437,28 @@ if(INFERNUX_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
         )
     endforeach()
+    foreach(_shadow_path forward forward_plus deferred)
+        set(_shadow_test "infernux.material_shadow_controls_${_shadow_path}_gpu")
+        add_test(NAME ${_shadow_test}
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/python/Infernux/test/material_shadow_controls_gpu_test.py
+                --path ${_shadow_path})
+        set_tests_properties(${_shadow_test} PROPERTIES
+            ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+            LABELS "requires_vulkan_device"
+            TIMEOUT 60
+            RUN_SERIAL TRUE
+            FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD")
+    endforeach()
+    add_test(NAME infernux.texture_import_semantics_gpu
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/python/Infernux/test/texture_import_semantics_gpu_test.py)
+    set_tests_properties(infernux.texture_import_semantics_gpu PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+        LABELS "requires_vulkan_device"
+        TIMEOUT 45
+        RUN_SERIAL TRUE
+        FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD")
     foreach(_buffer_check copy direct)
         foreach(_buffer_completion pending completed)
             set(_buffer_test "infernux.rendergraph_buffer_${_buffer_check}_${_buffer_completion}_gpu")

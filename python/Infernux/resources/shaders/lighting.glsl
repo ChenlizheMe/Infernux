@@ -227,6 +227,9 @@ float sampleShadowView(uint viewIndex, vec3 worldPos, vec3 normal, vec3 toLight,
 
 float sampleDirectionalViews(uint firstView, uint viewCount, vec4 shadowParams,
                              vec3 worldPos, vec3 normal, vec3 toLight, float viewDepth) {
+#ifdef INX_GEOMETRY_SHADOW_CONTROL
+    if (!_inx_ReceivesShadows) return 1.0;
+#endif
     uint availableViews = lighting.shadowViewHeader.x;
     if (viewCount == 0u || firstView >= availableViews) return 1.0;
     viewCount = min(viewCount, availableViews - firstView);
@@ -262,6 +265,9 @@ uint pointShadowFace(vec3 directionFromLight) {
 
 float sampleLocalShadow(uint firstView, uint viewCount, uint lightType, vec4 shadowParams,
                         vec3 lightPosition, vec3 worldPos, vec3 normal, vec3 toLight) {
+#ifdef INX_GEOMETRY_SHADOW_CONTROL
+    if (!_inx_ReceivesShadows) return 1.0;
+#endif
     uint availableViews = lighting.shadowViewHeader.x;
     if (viewCount == 0u || firstView >= availableViews) return 1.0;
     viewCount = min(viewCount, availableViews - firstView);

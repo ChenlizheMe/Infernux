@@ -872,6 +872,22 @@ void MeshRenderer::SetMaterial(uint32_t slot, std::shared_ptr<InxMaterial> mater
     NotifyRenderableStateChanged(this);
 }
 
+void MeshRenderer::SetCastShadows(bool cast)
+{
+    if (m_castShadows == cast)
+        return;
+    m_castShadows = cast;
+    SceneManager::Instance().NotifyMeshRendererContentChanged(this);
+}
+
+void MeshRenderer::SetReceivesShadows(bool receive)
+{
+    if (m_receiveShadows == receive)
+        return;
+    m_receiveShadows = receive;
+    SceneManager::Instance().NotifyMeshRendererContentChanged(this);
+}
+
 void MeshRenderer::SetMaterial(uint32_t slot, const std::string &guid)
 {
     if (slot >= m_materials.size())

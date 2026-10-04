@@ -170,6 +170,8 @@ struct Synchronization2Commands final
         return VK_FORMAT_R32_SFLOAT;
     case PixelFormat::RG32UInt:
         return VK_FORMAT_R32G32_UINT;
+    case PixelFormat::RGBA32UInt:
+        return VK_FORMAT_R32G32B32A32_UINT;
     case PixelFormat::RGBA32SFloat:
         return VK_FORMAT_R32G32B32A32_SFLOAT;
     case PixelFormat::RGB10A2UNorm:
@@ -232,6 +234,8 @@ struct Synchronization2Commands final
         return PixelFormat::R32SFloat;
     case VK_FORMAT_R32G32_UINT:
         return PixelFormat::RG32UInt;
+    case VK_FORMAT_R32G32B32A32_UINT:
+        return PixelFormat::RGBA32UInt;
     case VK_FORMAT_R32G32B32A32_SFLOAT:
         return PixelFormat::RGBA32SFloat;
     case VK_FORMAT_A2R10G10B10_UNORM_PACK32:

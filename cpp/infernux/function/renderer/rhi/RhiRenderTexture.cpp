@@ -34,6 +34,7 @@ uint32_t TexelBytes(PixelFormat format)
     case PixelFormat::RG32UInt:
         return 8;
     case PixelFormat::RGBA32SFloat:
+    case PixelFormat::RGBA32UInt:
         return 16;
     default:
         throw std::invalid_argument("RenderTexture requires an uncompressed attachment format");

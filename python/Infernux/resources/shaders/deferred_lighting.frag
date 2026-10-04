@@ -29,7 +29,7 @@ ShaderInfo {
 //   binding 1 — gNormal     (RGBA16_SFLOAT: encoded world normal.xyz)
 //   binding 2 — gMaterial   (RGBA8_UNORM: metallic, occlusion, specularHighlights, shadingParam0)
 //   binding 3 — gEmission   (RGBA16_SFLOAT: emission.rgb, shadingParam1)
-//   binding 4 — gObject     (RG32_UINT: layer mask, shading model)
+//   binding 4 — gObject     (RGBA32_UINT: layer mask, shading model, receive shadows, reserved)
 //   binding 5 — sceneDepth  (D32_SFLOAT)
 
 // Implemented by the compiler-generated registry appended to this shader.
@@ -53,7 +53,7 @@ void main() {
 
     // Scene depth is shared across routes. Only this route's GBuffer record
     // authorizes deferred shading; model ID zero is cleared/uncovered space.
-    uvec2 objectData = texture(_GObject, inUV).rg;
+    uvec4 objectData = texture(_GObject, inUV);
     if (objectData.y == 0u) {
         outColor = vec4(0.0);
         return;
@@ -64,6 +64,7 @@ void main() {
     vec4 materialData = texture(_GMaterial, inUV);
     vec4 emissionData = texture(_GEmission, inUV);
     _inx_ObjectLayerMask = objectData.x;
+    _inx_ReceivesShadows = objectData.z != 0u;
 
     vec3 worldPos = reconstructWorldPosition(inUV, depth);
     vec3 normalWS = normalData.xyz * 2.0 - 1.0;

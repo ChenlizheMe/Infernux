@@ -1150,6 +1150,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
 
     // #version must be first line
     result << (versionLine.empty() ? "#version 450" : versionLine) << "\n";
+    if (desc.isFragmentShader)
+        result << "#define INX_MATERIAL_RECEIVES_SHADOWS " << (desc.surfaceOptions.receiveShadows ? "1" : "0") << "\n";
 
     // ================================================================
     // Determine shading model capabilities
@@ -1241,14 +1243,17 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         result << "\n// Canonical per-view lighting resources for deferred evaluation\n";
         result << LoadTemplate("lighting_ubo.glsl") << "\n";
         result << LoadTemplate("forward_plus_lighting.glsl") << "\n";
-        result << "uint _inx_ObjectLayerMask = 0xffffffffu;\n";
+        result << "uint _inx_ObjectLayerMask = 0xffffffffu;\n"
+                  "bool _inx_ReceivesShadows = true;\n#define INX_GEOMETRY_SHADOW_CONTROL 1\n";
     }
     if (!userHasLayoutDecls && fullscreenDomain && !deferredLightingDomain && desc.isFragmentShader &&
         needsLightingUBO) {
         result << "\n// Canonical camera-local lighting resources for fullscreen evaluation\n";
         result << LoadTemplate("lighting_ubo.glsl") << "\n";
         result << LoadTemplate("forward_plus_lighting.glsl") << "\n";
-        result << "uint _inx_ObjectLayerMask = 0xffffffffu;\n";
+        result << "uint _inx_ObjectLayerMask = 0xffffffffu;\n"
+                  "const bool _inx_ReceivesShadows = INX_MATERIAL_RECEIVES_SHADOWS != 0;\n"
+                  "#define INX_GEOMETRY_SHADOW_CONTROL 1\n";
     }
     if (!userHasLayoutDecls && !fullscreenDomain) {
         if (desc.isVertexShader && target == ShaderCompileTarget::Shadow) {
@@ -1329,6 +1334,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
                     result << "\n" << LoadTemplate("object_layer_fragment_interface.glsl") << "\n";
                 } else if (needsLightingUBO && !particleSpriteDomain) {
                     result << "\nconst uint _inx_ObjectLayerMask = 0xffffffffu;\n";
+                    result << "const bool _inx_ReceivesShadows = INX_MATERIAL_RECEIVES_SHADOWS != 0;\n"
+                              "#define INX_GEOMETRY_SHADOW_CONTROL 1\n";
                 }
                 if (linkedInterface && !desc.inputs.empty())
                     result << GlslStageInterfaceEmitter::EmitFragmentDeclarations(*linkedInterface);
@@ -1781,7 +1788,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
         } else if ((target == ShaderCompileTarget::Forward || target == ShaderCompileTarget::ForwardPlus ||
                     target == ShaderCompileTarget::GBuffer) &&
                    !particleSpriteDomain) {
-            passVertexOutput = "    _inx_ObjectLayerMask = instanceAuxData[gl_InstanceIndex].layerMask;";
+            passVertexOutput = "    InstanceAuxData aux = instanceAuxData[gl_InstanceIndex];\n"
+                               "    _inx_ObjectRenderData = uvec2(aux.layerMask, (aux.flags & 2u) == 0u ? 1u : 0u);";
         }
         ReplacePlaceholder(mainTpl, "${PASS_VERTEX_OUTPUT}", passVertexOutput);
         result << "\n" << mainTpl << "\n";

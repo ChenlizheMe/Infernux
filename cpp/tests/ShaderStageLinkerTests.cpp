@@ -367,15 +367,15 @@ void surface(out SurfaceData s)
     assert(gbufferVariant->fragmentSpirv == gbufferProgram.fragmentSpirv);
     assert(gbufferArtifact.key.revision != runtimeArtifact.key.revision);
     assert(gbufferProgram.generatedFragmentSource.find("layout(location = 0) out vec4 outGBuf0;") != std::string::npos);
-    assert(gbufferProgram.generatedFragmentSource.find("layout(location = 4) out uvec2 outGBuf4;") !=
+    assert(gbufferProgram.generatedFragmentSource.find("layout(location = 4) out uvec4 outGBuf4;") !=
            std::string::npos);
     uint32_t pbrModelId = 2166136261u;
     for (const unsigned char character : std::string_view("PBR")) {
         pbrModelId ^= character;
         pbrModelId *= 16777619u;
     }
-    assert(gbufferProgram.generatedFragmentSource.find("gbuf4 = uvec2(_inx_ObjectLayerMask, " +
-                                                       std::to_string(pbrModelId) + "u);") != std::string::npos);
+    assert(gbufferProgram.generatedFragmentSource.find("gbuf4 = uvec4(_inx_ObjectLayerMask, " +
+                                                       std::to_string(pbrModelId) + "u, uint(_inx_ReceivesShadows), 0u);") != std::string::npos);
     assert(gbufferProgram.generatedFragmentSource.find("vec3 litColor =") == std::string::npos);
     assert(gbufferProgram.generatedFragmentSource.find("fragmentInput.waveUV = _inx_v_waveUV;") != std::string::npos);
 
@@ -1031,7 +1031,7 @@ void surface(out SurfaceData s) {
     assert(builtinForwardPlus->generatedFragmentSource.find("set = 1, binding = 3") != std::string::npos);
     assert(builtinForwardPlus->generatedFragmentSource.find("inxForwardPlusTileHeader()") != std::string::npos);
     assert(builtinForwardPlus->generatedVertexSource.find("set = 2, binding = 4") != std::string::npos);
-    assert(builtinForwardPlus->generatedVertexSource.find("_inx_ObjectLayerMask =") != std::string::npos);
+    assert(builtinForwardPlus->generatedVertexSource.find("_inx_ObjectRenderData =") != std::string::npos);
     assert(builtinForwardPlus->generatedFragmentSource.find("light.metadata.y & _inx_ObjectLayerMask") !=
            std::string::npos);
 
@@ -1117,9 +1117,9 @@ void surface(out SurfaceData s) {
             variant.target != infernux::ShaderCompileTarget::ForwardPlus &&
             variant.target != infernux::ShaderCompileTarget::GBuffer)
             continue;
-        assert(variant.generatedVertexSource.find("layout(location = 15) flat out uint _inx_ObjectLayerMask;") !=
+        assert(variant.generatedVertexSource.find("layout(location = 15) flat out uvec2 _inx_ObjectRenderData;") !=
                std::string::npos);
-        assert(variant.generatedFragmentSource.find("layout(location = 15) flat in uint _inx_ObjectLayerMask;") !=
+        assert(variant.generatedFragmentSource.find("layout(location = 15) flat in uvec2 _inx_ObjectRenderData;") !=
                std::string::npos);
     }
 

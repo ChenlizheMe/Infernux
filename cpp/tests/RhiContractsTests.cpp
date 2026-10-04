@@ -310,6 +310,7 @@ int main()
     assert(AreColorSpaceViewFormatsCompatible(PixelFormat::RGBA8Srgb, PixelFormat::RGBA8UNorm));
     assert(!AreColorSpaceViewFormatsCompatible(PixelFormat::RGBA8Srgb, PixelFormat::BGRA8UNorm));
     assert(IsIntegerFormat(PixelFormat::RG32UInt));
+    assert(IsIntegerFormat(PixelFormat::RGBA32UInt));
     assert(!IsIntegerFormat(PixelFormat::R32SFloat));
 
     TextureViewDesc viewDesc;

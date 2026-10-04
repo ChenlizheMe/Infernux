@@ -1189,7 +1189,7 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
                 const uint64_t pickingId = draw.pickingObjectId != 0 ? draw.pickingObjectId : draw.objectId;
                 instanceAuxiliaryWritten &=
                     WriteInstanceAuxiliary(frameIndex, writeBase + static_cast<uint32_t>(i), draw.identity,
-                                           draw.worldMatrix, pickingId, draw.layerMask);
+                                           draw.worldMatrix, pickingId, draw.layerMask, draw.receivesShadows);
             }
         }
 

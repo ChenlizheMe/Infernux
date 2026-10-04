@@ -176,7 +176,7 @@ def test_default_deferred_pipeline_uses_forward_plus_for_transparent():
     assert fallback._material_pass == "forward_plus"
     assert fallback._material_filter == "deferred_unsupported"
     assert fallback._write_depth == "depth"
-    assert graph.get_texture("gbuffer_object").format == Format.RG32_UINT
+    assert graph.get_texture("gbuffer_object").format == Format.RGBA32_UINT
     assert lighting._shader_name == "Deferred Lighting"
     assert list(lighting._input_bindings) == [
         "gAlbedo",

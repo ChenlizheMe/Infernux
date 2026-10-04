@@ -411,6 +411,8 @@ void SceneRenderExtractor::UpdateCachedRenderableTransforms(RenderWorldFrame &fr
                 DrawCall &dc = frame.m_drawCalls.drawCalls[drawCallIndex];
                 dc.material = mr->GetEffectiveMaterial(dc.materialSlot);
                 dc.parameterBlock = mr->GetParameterBlock(dc.materialSlot);
+                dc.castsShadows = mr->CastsShadows();
+                dc.receivesShadows = mr->ReceivesShadows();
                 // A rebuilt procedural mesh frequently reuses the freed heap
                 // block of its previous build, so EnsureObjectBuffers' pointer
                 // + size fast path cannot detect the content change on its
@@ -575,6 +577,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             dc.identity = structural.identity.MakeDrawIdentity();
             dc.frustumVisible = visible;
             dc.castsShadows = renderer->CastsShadows();
+            dc.receivesShadows = renderer->ReceivesShadows();
             dc.isStatic = structural.isStatic;
             dc.worldBounds = frame.worldBounds;
             dc.meshVertices = &objVertices;
@@ -609,6 +612,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
             dc.identity = structural.identity.MakeDrawIdentity(static_cast<uint32_t>(submeshFilter));
             dc.frustumVisible = visible;
             dc.castsShadows = renderer->CastsShadows();
+            dc.receivesShadows = renderer->ReceivesShadows();
             dc.isStatic = structural.isStatic;
             dc.worldBounds = frame.worldBounds;
             dc.meshVertices = &objVertices;
@@ -659,6 +663,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
                 dc.identity = structural.identity.MakeDrawIdentity(si);
                 dc.frustumVisible = visible;
                 dc.castsShadows = renderer->CastsShadows();
+                dc.receivesShadows = renderer->ReceivesShadows();
                 dc.isStatic = structural.isStatic;
                 dc.worldBounds = frame.worldBounds;
                 dc.meshVertices = &objVertices;
@@ -701,6 +706,7 @@ void SceneRenderExtractor::EmitDrawCallsForRenderable(DrawCallResult &result, co
         dc.identity = structural.identity.MakeDrawIdentity();
         dc.frustumVisible = visible;
         dc.castsShadows = renderer->CastsShadows();
+        dc.receivesShadows = renderer->ReceivesShadows();
         dc.isStatic = structural.isStatic;
         dc.worldBounds = frame.worldBounds;
         dc.meshVertices = &objVertices;
