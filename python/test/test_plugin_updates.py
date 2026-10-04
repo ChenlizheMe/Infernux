@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,41 @@ def next_package(source, version="2.0.0"):
     package = source.parent / f"next-{version}.inxpkg"
     InxPackage.export_source(str(source), str(package))
     return str(package)
+
+
+@pytest.mark.parametrize("modified", [False, True])
+def test_source_update_is_explicit_and_preserves_guid_and_local_edits(installed, modified):
+    manager, source, root = installed
+    before = manager.registry.installed_record("vendor/plugin")
+    package = next_package(source)
+    if modified:
+        (root / "runtime/note.txt").write_text("local change", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="explicit package update"):
+        manager.install_source(package, install_dependencies=False)
+    if modified:
+        with pytest.raises(PackageUpdateConflict, match="local edits"):
+            manager.install_source(package, update=True, install_dependencies=False)
+        assert manager.registry.installed_record("vendor/plugin") == before
+        assert (root / "runtime/note.txt").read_text() == "local change"
+    else:
+        manager.install_source(package, update=True, install_dependencies=False)
+        after = manager.registry.installed_record("vendor/plugin")
+        assert after["version"] == "2.0.0"
+        assert after["control"]["guid"] == before["control"]["guid"]
+        assert (root / "runtime/note.txt").read_text() == "second"
+
+
+def test_source_update_acquires_on_worker_and_publishes_on_owner_thread(installed):
+    manager, source, root = installed
+    before = manager.registry.installed_record("vendor/plugin")
+    package = next_package(source)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        acquired = executor.submit(manager.download_source, package).result(timeout=30)
+    assert manager.registry.installed_record("vendor/plugin") == before
+    assert (root / "runtime/note.txt").read_text() == "first"
+    manager.install_package(acquired["path"], source=acquired["source"], update=True, install_dependencies=False)
+    assert manager.registry.installed_record("vendor/plugin")["version"] == "2.0.0"
+    assert (root / "runtime/note.txt").read_text() == "second"
 
 
 def test_update_preserves_identity_disabled_state_and_user_files(installed):

@@ -1552,6 +1552,7 @@
   "plugins.add_source_title": "从来源添加 InxPackage",
   "plugins.add_source_help": "输入本地 .inxpkg、源码目录或 GitHub 仓库地址。",
   "plugins.install_source": "安装来源",
+  "plugins.update_source": "更新来源",
   "plugins.refresh": "刷新",
   "plugins.pip_syntax": "pip install 语法",
   "plugins.run_pip": "运行 pip",

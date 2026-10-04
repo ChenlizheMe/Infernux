@@ -14,8 +14,8 @@ from Infernux.engine.ui.plugin_install_progress import PluginInstallProgressServ
 from Infernux.engine.ui.plugin_panel import PluginPanel
 
 
-@pytest.mark.parametrize("kind", ["source", "pip"])
-def test_plugin_panel_completion_uses_the_installing_manager(monkeypatch, kind):
+@pytest.mark.parametrize("kind,update", [("source", False), ("source", True), ("pip", False)])
+def test_plugin_panel_completion_uses_the_installing_manager(monkeypatch, kind, update):
     calls = []
     pending = []
     modals = ModalService()
@@ -31,16 +31,18 @@ def test_plugin_panel_completion_uses_the_installing_manager(monkeypatch, kind):
         request=lambda _kind, _syntax, callback: (callback(), True)[-1],
     ))
     manager = SimpleNamespace(
-        install_source=lambda syntax, progress: SimpleNamespace(reference="vendor/live"),
+        install_source=lambda syntax, progress, **kwargs: SimpleNamespace(reference="vendor/live"),
+        download_source=lambda syntax, progress: {"path": "cached.inxpkg", "source": {"type": "local"}},
+        install_package=lambda path, **kwargs: SimpleNamespace(reference="vendor/live"),
         install_pip=lambda syntax, progress: {"ok": True},
         finalize_background_install=lambda reference: (calls.append(reference), SimpleNamespace(reference=reference))[-1],
     )
     panel = PluginPanel()
-    panel._request_install(manager, kind, "fixture")
+    panel._request_install(manager, kind, "fixture", update=update)
     assert len(pending) == 1
     operation = pending[0]
     operation["complete"](True, operation["work"](lambda *_args: None), "")
-    assert calls == (["vendor/live"] if kind == "source" else [])
+    assert calls == (["vendor/live"] if kind == "source" and not update else [])
     assert "NameError" not in panel._message
     if kind == "source":
         assert panel._selected_reference == "vendor/live"

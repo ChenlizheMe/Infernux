@@ -1552,6 +1552,7 @@
   "plugins.add_source_title": "Add InxPackage from source",
   "plugins.add_source_help": "Enter a local .inxpkg, source directory, or GitHub repository URL.",
   "plugins.install_source": "Install Source",
+  "plugins.update_source": "Update Source",
   "plugins.refresh": "Refresh",
   "plugins.pip_syntax": "pip install syntax",
   "plugins.run_pip": "Run pip",

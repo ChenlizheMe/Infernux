@@ -1053,12 +1053,27 @@ class PluginManager:
                 "cached": False,
             }
 
+    def download_source(
+        self, source: Mapping[str, object] | str, *, progress: _InstallProgress | None = None,
+    ) -> dict[str, object]:
+        """Acquire a source into the shared cache without publishing project state."""
+        _report_progress(progress, "resolve_source", 0.04)
+        descriptor = self._source_descriptor(source)
+        descriptor.update(dict(source) if isinstance(source, Mapping) else {})
+        with self._package_cache().workspace("source") as workspace:
+            package_path, acquired_source = self._materialize_source(descriptor, workspace, progress=progress)
+            preview = InxPackage.inspect(package_path)
+            reference = validate_reference(str(preview.metadata["reference"]))
+            path, _relative = self._cache_package(package_path, reference, str(preview.metadata["version"]))
+            return {"reference": reference, "path": path, "source": acquired_source}
+
     def install_source(
         self,
         source: Mapping[str, object] | str,
         *,
         install_dependencies: bool = True,
         progress: _InstallProgress | None = None,
+        update: bool = False,
     ) -> PluginState:
         _report_progress(progress, "resolve_source", 0.04)
         descriptor = self._source_descriptor(source)
@@ -1074,6 +1089,7 @@ class PluginManager:
                 install_dependencies=install_dependencies,
                 source=acquired_source,
                 progress=progress,
+                update=update,
             )
 
     def install_pip(

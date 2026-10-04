@@ -199,6 +199,13 @@ class PluginPanel(EditorPanel):
         ):
             self._request_install(manager, "source", self._source)
             ctx.close_current_popup()
+        ctx.same_line()
+        if ctx.button(
+            t("plugins.update_source") + "##plugin_update_source",
+            width=_metric(ctx, 150.0),
+        ):
+            self._request_install(manager, "source", self._source, update=True)
+            ctx.close_current_popup()
         ctx.separator()
         ctx.label(t("plugins.python_dependencies"))
         ctx.text_wrapped(t("plugins.pip_not_plugin"))
@@ -881,7 +888,7 @@ class PluginPanel(EditorPanel):
         ):
             self._message = t("plugins.reload_busy")
 
-    def _request_install(self, manager: PluginManager, kind: str, value: str) -> None:
+    def _request_install(self, manager: PluginManager, kind: str, value: str, *, update: bool = False) -> None:
         syntax = str(value or "").strip()
         if not syntax:
             self._message = t("plugins.install_confirm.empty")
@@ -890,18 +897,23 @@ class PluginPanel(EditorPanel):
             PluginInstallConfirmationCoordinator,
         )
 
+        if update:
+            if kind != "source":
+                raise ValueError("Only an InxPackage source can be updated")
+            work = lambda report: manager.download_source(syntax, progress=report)
+        elif kind == "source":
+            work = lambda report: manager.install_source(syntax, progress=report)
+        else:
+            work = lambda report: manager.install_pip(syntax, progress=report)
+
         requested = PluginInstallConfirmationCoordinator.instance().request(
             kind,
             syntax,
             lambda: self._begin_install(
                 manager,
                 label=syntax,
-                work=(
-                    (lambda report: manager.install_source(syntax, progress=report))
-                    if kind == "source"
-                    else (lambda report: manager.install_pip(syntax, progress=report))
-                ),
-                action=kind,
+                work=work,
+                action="update" if update else kind,
             ),
         )
         if not requested:
@@ -914,10 +926,22 @@ class PluginPanel(EditorPanel):
             if not ok:
                 self._message = message or t("plugins.install_progress.failed")
                 return
+            if action == "update":
+                # Completion runs after presentation on the Editor owner
+                # thread. Only acquisition belongs to the background worker;
+                # replacing live scripts and preloads must publish here.
+                try:
+                    result = manager.install_package(
+                        str(result["path"]), source=result["source"], update=True,
+                    )
+                except Exception as exc:
+                    self._message = f"{type(exc).__name__}: {exc}"
+                    return
             reference = str(getattr(result, "reference", ""))
             if reference:
                 try:
-                    result = manager.finalize_background_install(reference)
+                    if action != "update":
+                        result = manager.finalize_background_install(reference)
                 except Exception as exc:
                     self._message = f"{type(exc).__name__}: {exc}"
                     return

@@ -198,7 +198,8 @@ This produces the native InxPack container, not a renamed ZIP. Only `package/`
 is packed; the outer README, CMake/Gradle files and `dist/` are excluded.
 
 1. Open a separate test project in the Editor and open **Plugins**.
-2. Choose **Add plugin**, select the `.inxpkg`, review its contents and import it.
+2. Choose **Add plugin**, enter the local `.inxpkg` path and click **Install Source**.
+   Confirm the source in the installation dialog.
 3. Confirm **Hello Plugin** shows its introduction page in the selected language.
 4. Add `HelloResource` to an active GameObject, save the scene and enter Play.
 5. The Console must show `Hello from my plugin!` without an import or path error.
@@ -224,6 +225,11 @@ and publish another matching release. Users explicitly choose a compatible
 release on **Versions**. **Refresh catalog** updates discovery only, not installed
 versions. Test updating an existing project as well as a fresh installation;
 local edits must not be silently overwritten.
+
+For a local `.inxpkg` update, enter the new path under **Add plugin** and choose
+**Update Source**. It updates the already installed reference and retains its
+GUIDs and selection. **Install Source** does not replace an existing package;
+an update also rejects conflicting local edits instead of overwriting them.
 
 For larger examples, browse the [MCP](https://github.com/ChenlizheMe/infernux_mcp),
 [Windows](https://github.com/ChenlizheMe/infernux_windows),
@@ -391,7 +397,7 @@ python package.py verify dist/hello_plugin.inxpkg
 CMake/Gradle 配置和 `dist/` 都不会混进去。
 
 1. 在编辑器中打开另一个测试项目，打开**插件**窗口。
-2. 点击**添加插件**，选择 `.inxpkg`，检查包内内容后导入。
+2. 点击**添加插件**，输入本地 `.inxpkg` 路径，再点击**安装来源**，在安装对话框中确认来源。
 3. 确认 **Hello Plugin** 的介绍页能按当前语言显示。
 4. 给一个激活的 GameObject 添加 `HelloResource`，保存场景，进入 Play。
 5. Console 应出现 `Hello from my plugin!`，且没有导入或路径错误。
@@ -410,6 +416,10 @@ CMake/Gradle 配置和 `dist/` 都不会混进去。
 更新时保留 reference 和已有 GUID，增加版本号，再发布对应版本。用户在**版本**页显式选择
 兼容 Release；**刷新官方列表**只更新发现目录，不自动升级安装内容。除了全新安装，也要验证
 旧项目升级，本地修改不能被无声覆盖。
+
+更新本地 `.inxpkg` 时，在**添加插件**中输入新包的路径，再选择**更新来源**。它更新已安装的
+reference，保留 GUID 和原来的内容选择。**安装来源**不会替换已有包；更新遇到本地修改冲突
+也会直接拒绝，不会覆盖修改。
 
 更完整的示例可以参考 [MCP](https://github.com/ChenlizheMe/infernux_mcp)、
 [Windows](https://github.com/ChenlizheMe/infernux_windows)、
