@@ -330,8 +330,9 @@ def test_builder_resolves_relative_output_against_project_after_cwd_changes(monk
     elsewhere = tmp_path / "Elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
-    builder = GameBuilder(str(project), r"Builds\Windows")
-    assert builder.output_dir == str(project / "Builds" / "Windows")
+    builder = GameBuilder(str(project), r"Builds\Windows", player_runtime_root="Packages/infernux/platform-windows/player")
+    assert builder.output_dir == str((project / "Builds" / "Windows").resolve())
+    assert builder.player_runtime_root == str((project / "Packages/infernux/platform-windows/player").resolve())
 
 
 def test_player_document_cook_preserves_ordinary_string_fields(tmp_path):

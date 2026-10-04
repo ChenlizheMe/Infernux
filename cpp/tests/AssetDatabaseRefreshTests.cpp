@@ -699,7 +699,15 @@ void TestMoveRequiresRegisteredGuidIdentity()
     infernux::InxResourceMeta metadata;
     metadata.Init("identity\n", 9, infernux::FromFsPath(source), infernux::ResourceType::DefaultText);
     const auto sourceMetadata = infernux::InxResourceMeta::GetMetaFilePath(infernux::FromFsPath(source));
-    Require(metadata.SaveToFile(sourceMetadata), "failed to write relocation metadata fixture");
+    Require(metadata.SaveToFile("Assets/Source.txt.meta", infernux::FromFsPath(root)),
+            "failed to write relocation metadata fixture");
+    infernux::InxResourceMeta storedMetadata;
+    Require(storedMetadata.LoadFromFile(sourceMetadata), "failed to read portable relocation metadata fixture");
+    Require(storedMetadata.GetStringData("file_path") == "Assets/Source.txt",
+            "metadata save persisted a machine-local absolute path");
+    Require(!storedMetadata.HasKey("content_hash") && !storedMetadata.HasKey("file_size"),
+            "metadata save persisted local import statistics");
+    Require(storedMetadata.GetGuid() == metadata.GetGuid(), "portable metadata save changed the asset GUID");
     std::filesystem::rename(source, destination);
 
     infernux::AssetDatabase database;

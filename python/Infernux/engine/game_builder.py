@@ -410,10 +410,10 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self.lto = lto
         self.include_jit_runtime = bool(include_jit_runtime)
         host_platform = "windows" if sys.platform == "win32" else "linux"
-        self.player_runtime_root = resolved_path(player_runtime_root or os.path.join(
+        self.player_runtime_root = resolve_project_path(player_runtime_root or os.path.join(
             self.project_path, "Packages", "infernux", f"platform-{host_platform}",
             "editor", f"infernux_{host_platform}", "player",
-        ))
+        ), self.project_path)
         self._full_build_validated = False
         self._runtime_type_records: list[dict[str, object]] = []
         self._build_output_transaction: dict[str, str] | None = None

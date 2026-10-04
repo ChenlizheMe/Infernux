@@ -557,10 +557,14 @@ void InxResourceMeta::DeserializeDocument(const nlohmann::json &document)
     m_metadata = std::move(staged.m_metadata);
 }
 
-bool InxResourceMeta::SaveToFile(const std::string &metaFilePath) const
+bool InxResourceMeta::SaveToFile(const std::string &metaFilePath, const std::string &projectRoot) const
 {
     try {
-        DocumentStore::Instance().WriteAndWait(metaFilePath, SerializeDocument().dump(4) + "\n");
+        const auto document = SerializeDocumentPortable(projectRoot);
+        const auto target = ToFsPath(metaFilePath).is_absolute()
+                                ? metaFilePath
+                                : FromFsPath(ToFsPath(projectRoot) / ToFsPath(metaFilePath));
+        DocumentStore::Instance().WriteAndWait(ResolveFilesystemPath(target), document.dump(4) + "\n");
 
         return true;
     } catch (const std::exception &e) {

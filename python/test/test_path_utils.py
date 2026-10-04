@@ -121,8 +121,8 @@ def test_project_io_paths_are_independent_of_working_directory(monkeypatch, tmp_
     project.mkdir()
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
-    assert resolve_project_path(r"Builds\Windows", project) == str(project / "Builds" / "Windows")
-    assert resolve_project_path("../SharedBuild", project) == str(tmp_path / "SharedBuild")
+    assert resolve_project_path(r"Builds\Windows", project) == str((project / "Builds" / "Windows").resolve())
+    assert resolve_project_path("../SharedBuild", project) == str((tmp_path / "SharedBuild").resolve())
     assert relative_path(tmp_path / "SharedBuild", project, allow_outside=True) == "../SharedBuild"
 
 

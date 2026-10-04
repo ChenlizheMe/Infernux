@@ -26,7 +26,7 @@ def test_shared_build_output_stays_relative_when_the_project_moves(monkeypatch, 
     assert settings["output_dir"] == "Builds/Windows"
     monkeypatch.chdir(elsewhere)
     request = BuildRequest(str(cloned), "windows-x64", settings["output_dir"])
-    assert request.output_dir == str(cloned / "Builds" / "Windows")
+    assert request.output_dir == str((cloned / "Builds" / "Windows").resolve())
     external = normalize_build_settings(
         {"output_dir": str(tmp_path / "SharedBuild")}, project_path=str(original),
     )

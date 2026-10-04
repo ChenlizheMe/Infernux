@@ -421,7 +421,7 @@ int main()
     infernux::InxResourceMeta meta;
     meta.AddMetadata("load_type", std::string("streaming"));
     const auto metaPath = infernux::InxResourceMeta::GetMetaFilePath(infernux::FromFsPath(path));
-    assert(meta.SaveToFile(metaPath));
+    assert(meta.SaveToFile(metaPath, infernux::FromFsPath(path.parent_path())));
     infernux::AudioClip streamed;
     assert(streamed.LoadFromFile(infernux::FromFsPath(path)));
     assert(streamed.IsStreaming() && streamed.GetSampleCount() == 44100 * 3);
