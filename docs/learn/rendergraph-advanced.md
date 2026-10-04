@@ -167,8 +167,9 @@ class ObjectIndexPipeline(inx.renderstack.RenderPipeline):
         with context.graph.add_pass(
             f"{context.source}_object_index"
         ) as render_pass:
-            render_pass.read(context.sample("depth"))
+            render_pass.write_depth(context.sample("depth"))
             render_pass.write_color(target)
+            render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
             render_pass.draw_renderers(
                 queue_range=context.queue_range,
                 sort_mode=context.sort_mode,
@@ -180,6 +181,8 @@ class ObjectIndexPipeline(inx.renderstack.RenderPipeline):
 A Provider receives a `GeometryBufferProviderContext`. It may read `context.graph`, `context.source`, `context.phase`, `context.queue_range`, `context.msaa_samples`, `context.sort_mode`, `context.clear`, and already available semantic textures through `context.sample()`. It must return a non-null graph `TextureHandle`; `geometry_stage()` publishes that handle under the decorator's semantic. Dependencies name other semantics that must already exist or have a Provider in the same phase.
 
 A derived class can replace a built-in provider by declaring the same semantic and phase. Two providers for the same key in one class are ambiguous and rejected. Missing dependencies and dependency cycles also fail topology construction with the source and dependency chain in the error. Provider methods run during each topology build when their semantic is requested; the API defines no cross-graph Provider instance cache. Keep build-local handles in the context and keep persistent CPU policy on the pipeline instance.
+
+The Picking pass requires an `RG32_UINT` color output and a writable depth attachment. This Provider clears the ID target to zero and rebuilds the supplied opaque depth with the same renderer queue. Merely declaring `read(depth)` is rejected. A consumer must read IDs as integers: use `Texture2DUInt` at one sample, or `Texture2DMSUInt` with `texelFetch()` for a multisampled result. The ordinary `Fullscreen Blit` samples floating-point color and is not an integer-ID consumer.
 
 Pass the effective count returned by `graph.set_msaa_samples()` into `geometry_stage(msaa_samples=...)`; this value becomes `context.msaa_samples` in each Provider. An integer multisampled result such as `object_index` remains multisampled unless its Provider declares a suitable resolve, so its consumer must use a matching multisample shader input.
 
@@ -660,8 +663,9 @@ class ObjectIndexPipeline(inx.renderstack.RenderPipeline):
         with context.graph.add_pass(
             f"{context.source}_object_index"
         ) as render_pass:
-            render_pass.read(context.sample("depth"))
+            render_pass.write_depth(context.sample("depth"))
             render_pass.write_color(target)
+            render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
             render_pass.draw_renderers(
                 queue_range=context.queue_range,
                 sort_mode=context.sort_mode,
@@ -673,6 +677,8 @@ class ObjectIndexPipeline(inx.renderstack.RenderPipeline):
 Provider 接收 `GeometryBufferProviderContext`。它可以读取 `context.graph`、`context.source`、`context.phase`、`context.queue_range`、`context.msaa_samples`、`context.sort_mode`、`context.clear`，并通过 `context.sample()` 取得已有 Semantic Texture。Provider 必须返回非空的 Graph `TextureHandle`；`geometry_stage()` 会以 Decorator 中的 Semantic 发布该 Handle。Dependency 表示同一 Phase 中必须已存在或可由 Provider 生成的其它 Semantic。
 
 派生类声明相同的 Semantic 与 Phase，即可替换内置 Provider。同一个类里为同一注册键声明两个 Provider 会产生歧义并被拒绝。依赖缺失或形成环时，拓扑构建也会失败，错误中会带 Source 与依赖链。每次拓扑构建只会在 Semantic 被请求时运行相关 Provider；API 没有定义跨 Graph 的 Provider 实例缓存。构建局部 Handle 应留在 Context 中，持久 CPU 策略可以保存在 Pipeline 实例上。
+
+Picking Pass 必须声明 `RG32_UINT` 颜色输出和可写的深度附件。这个 Provider 将 ID 目标清零，并用同一 Renderer Queue 重建传入的不透明深度；只声明 `read(depth)` 会被拒绝。消费者必须按整数读取 ID：单采样使用 `Texture2DUInt`，多采样使用 `Texture2DMSUInt` 和 `texelFetch()`。普通 `Fullscreen Blit` 读取浮点颜色，不能用来消费整数 ID。
 
 把 `graph.set_msaa_samples()` 返回的有效采样数传给 `geometry_stage(msaa_samples=...)`，Provider 才能通过 `context.msaa_samples` 取得正确值。`object_index` 这类整数多采样结果在 Provider 没有声明适用的 Resolve 时仍是多采样纹理，消费它的 Shader Input 也必须匹配。
 
