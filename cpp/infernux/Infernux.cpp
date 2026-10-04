@@ -29,6 +29,7 @@
 #include <function/renderer/SceneRenderGraph.h>
 #include <function/renderer/ScriptableRenderContext.h>
 #include <function/renderer/gui/InxGUIContext.h>
+#include <function/renderer/gui/EditorGuiLayoutReset.h>
 #include <function/renderer/gui/InxResourcePreviewer.h>
 #include <function/renderer/gui/InxScreenUIRenderer.h>
 #include <function/renderer/vk/VkResourceManager.h>
@@ -4497,7 +4498,7 @@ void Infernux::SetLogLevel(LogLevel engineLevel)
 void Infernux::ResetImGuiLayout()
 {
     // Clear ImGui's in-memory ini state (windows, docking, tables)
-    ImGui::ClearIniSettings();
+    ResetEditorGuiLayout();
     // Delete the persisted ini file so the reset survives a restart
     if (!m_imguiIniPath.empty() && std::filesystem::exists(m_imguiIniPath)) {
         std::filesystem::remove(m_imguiIniPath);

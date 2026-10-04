@@ -1,6 +1,8 @@
 #include <function/renderer/gui/EditorWindowBounds.h>
+#include <function/renderer/gui/EditorGuiLayoutReset.h>
 
 #include <cassert>
+#include <iostream>
 
 static void RenderWindow(const char *name)
 {
@@ -98,5 +100,29 @@ int main()
     assert(owned->Pos.x == 30 && owned->Pos.y == 40);
     assert(owned->Size.x == 1200 && owned->Size.y == 1000);
     ImGui::Render();
+    // Reset re-applies authored defaults to an existing plugin window, once.
+    auto renderPlugin = [](float userWidth = 0.0f) {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowSize(ImVec2(420, 240), ImGuiCond_FirstUseEver);
+        if (userWidth > 0)
+            ImGui::SetNextWindowSize(ImVec2(userWidth, 240), ImGuiCond_Always);
+        ImGui::Begin("Plugin###layout-reset-plugin", nullptr, ImGuiWindowFlags_NoDocking);
+        const ImVec2 size = ImGui::GetWindowSize();
+        ImGui::TextUnformatted("Plugin content");
+        ImGui::End();
+        ImGui::Render();
+        return size;
+    };
+    assert(renderPlugin().x == 420);
+    assert(renderPlugin(180).x == 180);
+    assert(renderPlugin().x == 180);
+    infernux::ResetEditorGuiLayout();
+    if (renderPlugin().x != 420) {
+        std::cerr << "Layout reset did not restore the plugin's authored width\n";
+        ImGui::DestroyContext();
+        return 1;
+    }
+    assert(renderPlugin(500).x == 500);
+    assert(renderPlugin().x == 500);
     ImGui::DestroyContext();
 }
