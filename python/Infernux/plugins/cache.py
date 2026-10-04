@@ -17,11 +17,42 @@ from urllib.parse import quote
 from Infernux.engine.path_utils import resolved_path, same_path
 from Infernux.engine.user_data import DATA_ROOT_ENV, get_infernux_data_root
 
-from .package import PACKAGE_EXTENSION
+from Infernux.engine.player_package_native import read_entry
+
+from .package import PACKAGE_EXTENSION, PACKAGE_MANIFEST, InxPackage, portable_meta_bytes
 
 
 _STAGING_NAME = re.compile(r"^[a-z0-9-]+-(\d+)-[a-z0-9_]+$")
 PACKAGE_CACHE_ROOT_ENV = "INFERNUX_PACKAGE_CACHE_ROOT"
+
+
+def _same_authored_package_contents(first: str, second: str) -> bool:
+    """Compare version identity without container layout or derived sidecars.
+
+    Legacy packages retain content_hash and other importer observations. Those
+    fields are removed at installation by the same sidecar normalization used
+    here. Authored GUIDs, source bytes and effective importer settings remain
+    immutable, including Mesh readability and texture sampling settings.
+    """
+    left, right = InxPackage.inspect(first), InxPackage.inspect(second)
+    if left.metadata != right.metadata:
+        return False
+    left_paths = {entry["path"] for entry in left.entries}
+    right_paths = {entry["path"] for entry in right.entries}
+    if left_paths != right_paths:
+        return False
+    sidecars = {
+        record["meta_archive_path"]: record["logical_path"]
+        for record in left.file_records
+    }
+    for path in sorted(left_paths - {PACKAGE_MANIFEST}):
+        left_bytes, right_bytes = read_entry(first, path), read_entry(second, path)
+        if path in sidecars:
+            left_bytes = portable_meta_bytes(left_bytes, sidecars[path])
+            right_bytes = portable_meta_bytes(right_bytes, sidecars[path])
+        if left_bytes != right_bytes:
+            return False
+    return True
 
 
 def package_cache_root() -> str:
@@ -167,10 +198,16 @@ class SharedPackageCache:
                 os.link(temporary, destination)
             except FileExistsError:
                 if not filecmp.cmp(temporary, destination, shallow=False):
-                    raise ValueError(
+                    message = (
                         f"Plugin version is immutable: {reference}@{version}; "
                         "increment the package version before changing its content"
-                    ) from None
+                    )
+                    try:
+                        equivalent = _same_authored_package_contents(temporary, destination)
+                    except (OSError, ValueError, RuntimeError, KeyError) as exc:
+                        raise ValueError(message) from exc
+                    if not equivalent:
+                        raise ValueError(message) from None
         finally:
             try:
                 os.remove(temporary)
