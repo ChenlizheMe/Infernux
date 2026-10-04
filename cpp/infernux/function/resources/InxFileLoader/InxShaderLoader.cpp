@@ -2114,8 +2114,8 @@ InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, co
 
     compilation.generatedVertexSource =
         PreprocessShaderSource(vertexSource, vertexPath, target, &compilation.interfaceArtifact, &compilation.errors);
-    compilation.generatedFragmentSource =
-        PreprocessShaderSource(fragmentSource, fragmentPath, target, &compilation.interfaceArtifact, &compilation.errors);
+    compilation.generatedFragmentSource = PreprocessShaderSource(fragmentSource, fragmentPath, target,
+                                                                 &compilation.interfaceArtifact, &compilation.errors);
     if (!compilation.errors.empty())
         return compilation;
     const ShaderDescriptor fragmentDescriptor = ParseShaderSource(fragmentSource, fragmentPath);
@@ -2553,9 +2553,8 @@ std::string InxShaderLoader::ResolveImports(const std::string &source, const std
                 continue;
             withoutVersion << line << '\n';
         }
-        const std::string resolved =
-            ResolveImports(withoutVersion.str(), importedDescriptor.imports, shaderIdMap, includeStack, errors,
-                           depth + 1);
+        const std::string resolved = ResolveImports(withoutVersion.str(), importedDescriptor.imports, shaderIdMap,
+                                                    includeStack, errors, depth + 1);
         result << "// --- begin import: " << importId << " ---\n" << resolved;
         if (!resolved.empty() && resolved.back() != '\n')
             result << '\n';

@@ -1124,8 +1124,7 @@ void RegisterGUIBindings(py::module_ &m)
              "Log a message originating from Python Debug.log()")
         .def("clear", &ConsolePanel::Clear, "Clear all log entries")
         .def("remove_entries_from_source", &ConsolePanel::RemoveEntriesFromSource, py::arg("source_file"),
-             py::arg("message_prefix") = "",
-             "Remove Console entries owned by one source file")
+             py::arg("message_prefix") = "", "Remove Console entries owned by one source file")
         .def("get_info_count", &ConsolePanel::GetInfoCount, "Get count of info messages")
         .def("get_warning_count", &ConsolePanel::GetWarningCount, "Get count of warning messages")
         .def("get_error_count", &ConsolePanel::GetErrorCount, "Get count of error messages")

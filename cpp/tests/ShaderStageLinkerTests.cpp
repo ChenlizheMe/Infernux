@@ -148,8 +148,8 @@ void surface(out SurfaceData s) {
     std::string missingImportFragment = arrayFragment;
     missingImportFragment.insert(missingImportFragment.find("    Properties"),
                                  "    Imports [\"Tests/MissingUnusedLibrary\"]\n");
-    const auto missingImport = compiler.CompileLinkedForward(
-        arrayVertex, "ArrayVertex.vert", missingImportFragment, "ArrayFragment.frag");
+    const auto missingImport =
+        compiler.CompileLinkedForward(arrayVertex, "ArrayVertex.vert", missingImportFragment, "ArrayFragment.frag");
     assert(!missingImport.IsValid());
     assert(missingImport.vertexSpirv.empty() && missingImport.fragmentSpirv.empty());
     assert(std::any_of(missingImport.errors.begin(), missingImport.errors.end(), [](const auto &error) {
