@@ -60,6 +60,63 @@ def test_preloaded_json_is_not_misclassified_as_a_project_dependency(candidate_p
         broker.rollback()
 
 
+@pytest.mark.parametrize("module_name", ["time", "sys", "datetime", "statistics", "xml.etree.ElementTree"])
+def test_standard_library_imports_do_not_depend_on_editor_preload(candidate_project, module_name):
+    broker = _broker(candidate_project, "stdlib_authoring", (
+        f"import {module_name} as dependency\n"
+        "def dependency_name():\n"
+        "    return dependency.__name__\n"
+    ))
+    try:
+        candidate = broker.load("stdlib_authoring")
+        assert candidate.dependency_name() == module_name
+        assert candidate.dependency is sys.modules[module_name]
+        assert "stdlib_authoring" not in sys.modules
+        assert module_name not in broker.modules
+    finally:
+        broker.rollback()
+
+
+def test_first_use_standard_library_submodule_loads_without_preload(candidate_project, monkeypatch):
+    import xml.dom
+
+    monkeypatch.delitem(sys.modules, "xml.dom.minidom", raising=False)
+    monkeypatch.delattr(xml.dom, "minidom", raising=False)
+    broker = _broker(candidate_project, "stdlib_first_use", (
+        "from xml.dom import minidom\n"
+        "def document_name():\n"
+        "    return minidom.parseString('<engine/>').documentElement.tagName\n"
+    ))
+    try:
+        candidate = broker.load("stdlib_first_use")
+        assert candidate.document_name() == "engine"
+        assert candidate.minidom is sys.modules["xml.dom.minidom"]
+        assert "stdlib_first_use" not in sys.modules
+        assert "xml.dom.minidom" not in broker.modules
+    finally:
+        broker.rollback()
+
+
+def test_registered_project_module_precedes_standard_library_root(candidate_project):
+    import statistics
+
+    path = candidate_project / 'statistics.py'
+    path.write_text('VALUE = 41\n', encoding='utf-8')
+    broker = _broker(candidate_project, 'project_statistics', (
+        'import statistics\n'
+        'VALUE = statistics.VALUE\n'
+    ))
+    broker.register('statistics', str(path))
+    try:
+        candidate = broker.load('project_statistics')
+        assert candidate.VALUE == 41
+        assert candidate.statistics is broker.module_for('statistics')
+        assert sys.modules['statistics'] is statistics
+        assert 'project_statistics' not in sys.modules
+    finally:
+        broker.rollback()
+
+
 def test_serializable_candidate_is_private_until_module_commit(candidate_project):
     from Infernux.components.serializable_object import get_serializable_class
 

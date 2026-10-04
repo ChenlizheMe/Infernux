@@ -19,7 +19,6 @@ import hashlib
 import heapq
 import io
 import os
-import sys
 import threading
 import tokenize
 from dataclasses import dataclass, replace
@@ -32,6 +31,7 @@ from Infernux.engine.path_utils import (
     path_key,
     resolved_path,
 )
+from Infernux.engine.module_classification import is_stdlib_module
 from Infernux.engine.project_context import (
     get_project_script_roots,
     get_script_module_name,
@@ -250,12 +250,6 @@ def _decode_source(payload: bytes) -> str:
 
     encoding, _ = tokenize.detect_encoding(io.BytesIO(payload).readline)
     return payload.decode(encoding)
-
-
-def _stdlib_root(name: str) -> bool:
-    root = name.split(".", 1)[0]
-    known = getattr(sys, "stdlib_module_names", frozenset())
-    return root in known or root in {"__future__", "builtins"}
 
 
 class _ImportCollector(ast.NodeVisitor):
@@ -1010,7 +1004,7 @@ class ScriptDependencyGraph:
         origin = ""
         if external_name:
             root = external_name.split(".", 1)[0]
-            origin = "engine" if root == "Infernux" else ("stdlib" if _stdlib_root(external_name) else "third_party")
+            origin = "engine" if root == "Infernux" else ("stdlib" if is_stdlib_module(external_name) else "third_party")
         return DependencyEdge(
             source.id,
             imported_name,

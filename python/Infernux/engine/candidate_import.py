@@ -4,7 +4,8 @@ Candidate scripts are ordinary Python modules, but they must not be executed
 through the process-wide import table.  This module provides a small,
 transaction-scoped importer instead.  Project modules are loaded into a
 private table and may import one another, including cycles.  Imports outside
-that table are admitted only from an explicit, already trusted module set.
+that table share interpreter-owned standard-library modules and explicitly
+trusted engine or installed dependency modules.
 
 This is an isolation boundary for reload correctness, not a security sandbox:
 the static candidate policy remains responsible for rejecting side effects.
@@ -23,6 +24,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from .path_utils import is_path_within, resolved_path
+from .module_classification import is_stdlib_module
 from .project_context import (
     get_project_script_roots,
     get_script_module_name,
@@ -37,21 +39,6 @@ _TRUSTED_MODULE_PREFIXES = frozenset(
     {
         "Infernux",
         "infernux",
-        "__future__",
-        "dataclasses",
-        "typing",
-        "math",
-        "json",
-        "enum",
-        "os",
-        "pathlib",
-        "collections",
-        "collections.abc",
-        "copy",
-        "functools",
-        "itertools",
-        "operator",
-        "random",
         "numpy",
     }
 )
@@ -63,7 +50,7 @@ _LAZY_TRUSTED_MODULES = frozenset({"Infernux.jit", "Infernux.compute", "infernux
 
 
 def _is_trusted_module(name: str) -> bool:
-    return any(
+    return is_stdlib_module(name) or any(
         name == prefix or name.startswith(prefix + ".")
         for prefix in _TRUSTED_MODULE_PREFIXES
     )
@@ -291,7 +278,7 @@ class CandidateImportTransaction:
                 f"candidate import rejected: '{name}' is not a project module or trusted preloaded module"
             )
         module = sys.modules.get(name)
-        if module is None and name in _LAZY_TRUSTED_MODULES:
+        if module is None and (is_stdlib_module(name) or name in _LAZY_TRUSTED_MODULES):
             module = importlib.import_module(name)
         if module is None:
             raise CandidateImportError(
@@ -442,6 +429,11 @@ class CandidateImportTransaction:
             # project namespace before commit.
             self._attach_child(child, lkg)
             return
+        if is_stdlib_module(child):
+            # Python's from-list import also loads a missing package child.
+            # Standard-library modules belong to the interpreter, never the
+            # candidate publication table.
+            self._load_trusted(child)
 
     def _builtins_for(self, module: types.ModuleType) -> dict[str, object]:
         values = dict(vars(builtins))

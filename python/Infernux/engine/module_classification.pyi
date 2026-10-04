@@ -1,0 +1,3 @@
+"""Interpreter-owned module classification."""
+
+def is_stdlib_module(name: str) -> bool: ...
