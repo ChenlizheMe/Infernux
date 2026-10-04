@@ -21,6 +21,7 @@ def test_git_clone_preserves_authored_assets_without_private_runtime(tmp_path, m
     root = Path(__file__).resolve().parents[2]
     monkeypatch.syspath_prepend(str(root / "packaging"))
     project_model = importlib.import_module("model.project_model")
+    monkeypatch.setattr(project_model, "is_frozen", lambda: False)
     model = project_model.ProjectModel(None)
     monkeypatch.setattr(model, "_create_project_runtime", lambda *_args, **_kw: None)
     monkeypatch.setattr(model, "_install_infernux_in_runtime", lambda *_args, **_kw: None)
@@ -57,14 +58,17 @@ def test_git_clone_preserves_authored_assets_without_private_runtime(tmp_path, m
     model._create_vscode_workspace(str(clone))
     settings = json.loads((clone / ".vscode" / "settings.json").read_text(encoding="utf-8"))
     assert all(str(source) not in path for path in settings["python.analysis.extraPaths"])
-    assert settings["python.defaultInterpreterPath"].startswith("${workspaceFolder}/")
+    assert settings["python.defaultInterpreterPath"] == sys.executable.replace("\\", "/")
+    assert settings["python.analysis.extraPaths"] == [
+        project_model.sysconfig.get_path("purelib").replace("\\", "/")
+    ]
 
     assets = {path: path.read_bytes() for directory in (clone / "Assets", clone / "Packages")
               for path in directory.rglob("*") if path.is_file()}
     probe = '''
 import json, pathlib, sys
-from Infernux.engine.engine import Engine
-from Infernux.lib import LogLevel, RuntimeMode
+from infernux.engine.engine import Engine
+from infernux.lib import LogLevel, RuntimeMode
 engine = Engine(LogLevel.Warn, RuntimeMode.Headless)
 try:
     engine.init_headless(sys.argv[1])
@@ -85,7 +89,7 @@ finally:
 
 
 def test_installed_package_preloads_on_a_new_device_without_the_authors_cache(tmp_path, monkeypatch):
-    from Infernux.plugins import InxPackage
+    from infernux.plugins import InxPackage
 
     root = Path(__file__).resolve().parents[2]
     monkeypatch.syspath_prepend(str(root / "packaging"))
@@ -102,7 +106,7 @@ def test_installed_package_preloads_on_a_new_device_without_the_authors_cache(tm
     )
     (runtime / "lifecycle.py").write_text(
         "from pathlib import Path\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class LongshipsPreload(InxPreload):\n"
         "    def preload(self, context):\n"
         "        Path(context.project_root, 'Library', 'longships-ready.txt').write_text('ready')\n",
@@ -112,9 +116,9 @@ def test_installed_package_preloads_on_a_new_device_without_the_authors_cache(tm
     InxPackage.export_source(str(package_source), str(archive))
     probe = '''
 import pathlib, sys
-from Infernux.engine.engine import Engine
-from Infernux.lib import LogLevel, RuntimeMode
-from Infernux.plugins import PluginManager
+from infernux.engine.engine import Engine
+from infernux.lib import LogLevel, RuntimeMode
+from infernux.plugins import PluginManager
 project, mode = sys.argv[1:3]
 engine = Engine(LogLevel.Warn, RuntimeMode.Headless)
 manager = None

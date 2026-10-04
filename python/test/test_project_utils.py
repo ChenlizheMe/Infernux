@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.ui import project_utils
-from Infernux.engine.ui.project_file_ops import copy_path_as_new_asset
-from Infernux.particle import ParticleGraphAsset
+from infernux.engine.ui import project_utils
+from infernux.engine.ui.project_file_ops import copy_path_as_new_asset
+from infernux.particle import ParticleGraphAsset
 
 
 def test_project_panel_hides_particle_runtime_artifacts():
@@ -110,14 +110,16 @@ def test_vscode_open_repairs_stale_runtime_before_launch_and_keeps_preferences(t
     launches = []
 
     def launch(arguments, **_kwargs):
+        from infernux.engine.path_utils import resolved_path
         settings = json.loads((vscode / "settings.json").read_text())
-        assert settings["python.defaultInterpreterPath"] == sys.executable.replace("\\", "/")
+        assert settings["python.defaultInterpreterPath"] == resolved_path(sys.executable).replace("\\", "/")
         assert settings["editor.fontSize"] == 18
         assert settings["python.analysis.extraPaths"][1:] == ["Libraries"]
         import importlib.util
         assert settings["python.analysis.extraPaths"][0] == str(
-            Path(importlib.util.find_spec("infernux").origin).resolve().parent
+            Path(importlib.util.find_spec("infernux").origin).resolve().parent.parent
         ).replace("\\", "/")
+        assert settings["python.analysis.extraPaths"][0].rstrip("/").split("/")[-1] != "infernux"
         pyright = json.loads((tmp_path / "pyrightconfig.json").read_text())
         assert "venv" not in pyright and "venvPath" not in pyright
         assert pyright["exclude"] == ["Assets/Generated"]
@@ -129,13 +131,28 @@ def test_vscode_open_repairs_stale_runtime_before_launch_and_keeps_preferences(t
 
 
 def test_vscode_sync_does_not_rewrite_unchanged_settings(tmp_path):
-    from Infernux.engine.ide_workspace import synchronize_vscode_workspace
+    from infernux.engine.ide_workspace import synchronize_vscode_workspace
 
     synchronize_vscode_workspace(str(tmp_path))
     paths = [tmp_path / ".vscode/settings.json", tmp_path / "pyrightconfig.json"]
     timestamps = [path.stat().st_mtime_ns for path in paths]
     synchronize_vscode_workspace(str(tmp_path))
     assert [path.stat().st_mtime_ns for path in paths] == timestamps
+
+
+def test_vscode_sync_replaces_package_directory_with_its_import_root(tmp_path):
+    import importlib.util
+    from infernux.engine.ide_workspace import synchronize_vscode_workspace
+
+    package_root = Path(importlib.util.find_spec("infernux").origin).resolve().parent
+    vscode = tmp_path / ".vscode"
+    vscode.mkdir()
+    (vscode / "settings.json").write_text(json.dumps({
+        "python.analysis.extraPaths": [str(package_root)],
+    }))
+    synchronize_vscode_workspace(str(tmp_path))
+    settings = json.loads((vscode / "settings.json").read_text())
+    assert settings["python.analysis.extraPaths"] == [package_root.parent.as_posix()]
 
 
 def test_pycharm_project_files_require_project_runtime(tmp_path):

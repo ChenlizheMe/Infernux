@@ -7,23 +7,33 @@ import json
 from pathlib import Path
 import sys
 
+from .path_utils import (
+    is_path_within,
+    portable_path,
+    relative_path,
+    resolve_project_path,
+    resolved_path,
+    same_path,
+)
+
 
 def synchronize_vscode_workspace(project_root: str) -> None:
     """Update engine-owned runtime settings while retaining user preferences."""
-    root = Path(project_root).resolve()
+    root = Path(resolved_path(project_root))
     spec = importlib.util.find_spec("infernux")
-    if spec is None or spec.origin is None:
-        raise RuntimeError("The running editor environment has no infernux module.")
-    module_root = Path(spec.origin).resolve().parent
+    if spec is None or spec.origin is None or spec.submodule_search_locations is None:
+        raise RuntimeError("The running editor environment has no infernux package.")
+    package_root = Path(resolved_path(spec.origin)).parent
+    module_root = package_root.parent
     try:
-        module_path = module_root.relative_to(root).as_posix()
+        module_path = relative_path(module_root, root, allow_root=True)
     except ValueError:
-        module_path = module_root.as_posix()
-    interpreter = Path(sys.executable).resolve()
+        module_path = portable_path(module_root)
+    interpreter = resolved_path(sys.executable)
     try:
-        interpreter_path = "${workspaceFolder}/" + interpreter.relative_to(root).as_posix()
+        interpreter_path = "${workspaceFolder}/" + relative_path(interpreter, root)
     except ValueError:
-        interpreter_path = interpreter.as_posix()
+        interpreter_path = portable_path(interpreter)
 
     def read_document(path: Path) -> dict:
         if not path.exists():
@@ -36,14 +46,16 @@ def synchronize_vscode_workspace(project_root: str) -> None:
     def search_paths(previous: list[str]) -> list[str]:
         paths = [module_path]
         for value in previous:
-            resolved = (root / value).resolve()
-            try:
-                relative = resolved.relative_to(root)
-            except ValueError:
-                relative = None
-            if relative and relative.parts[0] in (".venv", ".runtime"):
-                continue
-            if resolved != module_root and value not in paths:
+            resolved = resolve_project_path(value, root)
+            if is_path_within(resolved, root):
+                relative = relative_path(resolved, root, allow_root=True)
+                if relative.split("/", 1)[0] in (".venv", ".runtime"):
+                    continue
+            if (
+                not same_path(resolved, module_root)
+                and not same_path(resolved, package_root)
+                and value not in paths
+            ):
                 paths.append(value)
         return paths
 
