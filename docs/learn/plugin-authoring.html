@@ -121,19 +121,58 @@ the same content without hard-coding the reference. See the
 plugin scripts into the same GUID map and type registry, including serialized
 fields and lifecycle methods. Do not create a second registry or run an import
 side channel for Player.</p>
-<p>A preload is also the owner of long-lived work. Register a cleanup immediately
-after starting a server, thread, file watch or callback:</p>
-<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">HelloPreload</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxPreload</span><span class="p">):</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">preload</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">PreloadContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">service</span> <span class="o">=</span> <span class="n">start_service</span><span class="p">()</span>
-        <span class="n">context</span><span class="o">.</span><span class="n">add_cleanup</span><span class="p">(</span><span class="n">service</span><span class="o">.</span><span class="n">stop</span><span class="p">)</span>
+<p>A preload is also the owner of long-lived work. This optional example is complete:
+put it in <code>editor/service_preload.py</code>. It starts a local HTTP service; open the
+address printed in the Console to read its message. Register cleanup immediately
+after acquiring each resource:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">http.server</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseHTTPRequestHandler</span><span class="p">,</span> <span class="n">HTTPServer</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">threading</span><span class="w"> </span><span class="kn">import</span> <span class="n">Event</span><span class="p">,</span> <span class="n">Thread</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">unload</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">HelloHandler</span><span class="p">(</span><span class="n">BaseHTTPRequestHandler</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">do_GET</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">body</span> <span class="o">=</span> <span class="sa">b</span><span class="s2">"Hello from my plugin!"</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">send_response</span><span class="p">(</span><span class="mi">200</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">send_header</span><span class="p">(</span><span class="s2">"Content-Length"</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">body</span><span class="p">)))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">end_headers</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">wfile</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">body</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">log_message</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="nb">format</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">pass</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">HelloPreload</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxPreload</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">preload</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">PreloadContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">server</span> <span class="o">=</span> <span class="n">HTTPServer</span><span class="p">((</span><span class="s2">"127.0.0.1"</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span> <span class="n">HelloHandler</span><span class="p">)</span>
+        <span class="n">context</span><span class="o">.</span><span class="n">add_cleanup</span><span class="p">(</span><span class="n">server</span><span class="o">.</span><span class="n">server_close</span><span class="p">)</span>
+        <span class="n">server</span><span class="o">.</span><span class="n">timeout</span> <span class="o">=</span> <span class="mf">0.1</span>
+        <span class="n">stopping</span> <span class="o">=</span> <span class="n">Event</span><span class="p">()</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">serve</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">while</span> <span class="ow">not</span> <span class="n">stopping</span><span class="o">.</span><span class="n">is_set</span><span class="p">():</span>
+                <span class="n">server</span><span class="o">.</span><span class="n">handle_request</span><span class="p">()</span>
+
+        <span class="n">worker</span> <span class="o">=</span> <span class="n">Thread</span><span class="p">(</span><span class="n">target</span><span class="o">=</span><span class="n">serve</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">"hello-plugin-http"</span><span class="p">,</span> <span class="n">daemon</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">stop</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">stopping</span><span class="o">.</span><span class="n">set</span><span class="p">()</span>
+            <span class="n">worker</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">worker</span><span class="o">.</span><span class="n">is_alive</span><span class="p">():</span>
+                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">"Hello Plugin HTTP worker did not stop"</span><span class="p">)</span>
+
+        <span class="n">worker</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="n">context</span><span class="o">.</span><span class="n">add_cleanup</span><span class="p">(</span><span class="n">stop</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Hello service: http://127.0.0.1:</span><span class="si">{</span><span class="n">server</span><span class="o">.</span><span class="n">server_port</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 </code></pre></div>
 
+<p>The worker checks for shutdown every 0.1 seconds. The registered cleanups first
+stop and join it, then close the server socket. Keep request handlers short;
+blocking work requires its own bounded cancellation. Save valid changes to reload
+the service, or disable the plugin to stop it.</p>
 <p>Cleanups run in reverse order after <code>unload()</code> and after a partial preload
-failure. Invalid saved Python keeps the last working lifecycle alive. Put Flask
+failure. A syntax error in saved Python keeps the last working lifecycle alive. Put Flask
 authoring tools in <code>editor/</code>, bind them to loopback on an operating-system
 allocated port, disable the development reloader, and register a bounded server
 shutdown and thread join. <code>requirements.txt</code> may include large packages such as
@@ -401,16 +440,53 @@ JSON 中也不需要 <code>requirements</code> 或 <code>dependencies</code> 字
 读取同一份资源，就不需要硬编码 reference。生命周期细节见<a href="../wiki/site/zh/plugin-package-content.html">插件 API 指南</a>。</p>
 <p>Player 构建会自动发现 runtime 组件，把项目与插件脚本统一冻结到同一份 GUID 映射和类型注册表，
 其中包含序列化字段和生命周期方法。不要再建立第二份 Player 注册表，也不要通过额外导入旁路注册。</p>
-<p>preload 同时也是长期任务的所有者。启动服务、线程、文件监听或回调后，应立刻登记清理函数：</p>
-<div class="highlight"><pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">HelloPreload</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxPreload</span><span class="p">):</span>
-    <span class="k">def</span><span class="w"> </span><span class="nf">preload</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">PreloadContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">service</span> <span class="o">=</span> <span class="n">start_service</span><span class="p">()</span>
-        <span class="n">context</span><span class="o">.</span><span class="n">add_cleanup</span><span class="p">(</span><span class="n">service</span><span class="o">.</span><span class="n">stop</span><span class="p">)</span>
+<p>preload 同时也是长期任务的所有者。下面是可直接运行的可选示例，将它放在
+<code>editor/service_preload.py</code>。它会启动本地 HTTP 服务，打开 Console 输出的地址即可读取消息。
+取得每个资源后都立即登记清理函数：</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">http.server</span><span class="w"> </span><span class="kn">import</span> <span class="n">BaseHTTPRequestHandler</span><span class="p">,</span> <span class="n">HTTPServer</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">threading</span><span class="w"> </span><span class="kn">import</span> <span class="n">Event</span><span class="p">,</span> <span class="n">Thread</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">unload</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">HelloHandler</span><span class="p">(</span><span class="n">BaseHTTPRequestHandler</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">do_GET</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">body</span> <span class="o">=</span> <span class="sa">b</span><span class="s2">"Hello from my plugin!"</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">send_response</span><span class="p">(</span><span class="mi">200</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">send_header</span><span class="p">(</span><span class="s2">"Content-Length"</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">body</span><span class="p">)))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">end_headers</span><span class="p">()</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">wfile</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">body</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">log_message</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="nb">format</span><span class="p">,</span> <span class="o">*</span><span class="n">args</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">pass</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">HelloPreload</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxPreload</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">preload</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">PreloadContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">server</span> <span class="o">=</span> <span class="n">HTTPServer</span><span class="p">((</span><span class="s2">"127.0.0.1"</span><span class="p">,</span> <span class="mi">0</span><span class="p">),</span> <span class="n">HelloHandler</span><span class="p">)</span>
+        <span class="n">context</span><span class="o">.</span><span class="n">add_cleanup</span><span class="p">(</span><span class="n">server</span><span class="o">.</span><span class="n">server_close</span><span class="p">)</span>
+        <span class="n">server</span><span class="o">.</span><span class="n">timeout</span> <span class="o">=</span> <span class="mf">0.1</span>
+        <span class="n">stopping</span> <span class="o">=</span> <span class="n">Event</span><span class="p">()</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">serve</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">while</span> <span class="ow">not</span> <span class="n">stopping</span><span class="o">.</span><span class="n">is_set</span><span class="p">():</span>
+                <span class="n">server</span><span class="o">.</span><span class="n">handle_request</span><span class="p">()</span>
+
+        <span class="n">worker</span> <span class="o">=</span> <span class="n">Thread</span><span class="p">(</span><span class="n">target</span><span class="o">=</span><span class="n">serve</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">"hello-plugin-http"</span><span class="p">,</span> <span class="n">daemon</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+        <span class="k">def</span><span class="w"> </span><span class="nf">stop</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">stopping</span><span class="o">.</span><span class="n">set</span><span class="p">()</span>
+            <span class="n">worker</span><span class="o">.</span><span class="n">join</span><span class="p">(</span><span class="n">timeout</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">worker</span><span class="o">.</span><span class="n">is_alive</span><span class="p">():</span>
+                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">"Hello Plugin HTTP worker did not stop"</span><span class="p">)</span>
+
+        <span class="n">worker</span><span class="o">.</span><span class="n">start</span><span class="p">()</span>
+        <span class="n">context</span><span class="o">.</span><span class="n">add_cleanup</span><span class="p">(</span><span class="n">stop</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Hello service: http://127.0.0.1:</span><span class="si">{</span><span class="n">server</span><span class="o">.</span><span class="n">server_port</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 </code></pre></div>
 
+<p>工作线程每 0.1 秒检查一次退出请求。登记的清理函数先停止并等待线程，再关闭服务套接字。
+请求处理应保持简短；阻塞任务需要自己的有界取消机制。保存合法修改会重载服务，禁用插件会停止服务。</p>
 <p>清理函数会在 <code>unload()</code> 后按逆序运行，preload 执行到一半失败时也会运行。保存的 Python
 候选存在语法错误时，最后一次正常运行的生命周期会继续保留。Flask 创作工具应放在 <code>editor/</code>，
 绑定回环地址和操作系统分配的端口，关闭开发重载器，并登记有时间边界的服务关闭与线程等待。

@@ -107,21 +107,61 @@ plugin scripts into the same GUID map and type registry, including serialized
 fields and lifecycle methods. Do not create a second registry or run an import
 side channel for Player.
 
-A preload is also the owner of long-lived work. Register a cleanup immediately
-after starting a server, thread, file watch or callback:
+A preload is also the owner of long-lived work. This optional example is complete:
+put it in `editor/service_preload.py`. It starts a local HTTP service; open the
+address printed in the Console to read its message. Register cleanup immediately
+after acquiring each resource:
 
 ```python
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Event, Thread
+
+import infernux as inx
+
+
+class HelloHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        body = b"Hello from my plugin!"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args) -> None:
+        pass
+
+
 class HelloPreload(inx.InxPreload):
     def preload(self, context: inx.PreloadContext) -> None:
-        service = start_service()
-        context.add_cleanup(service.stop)
+        server = HTTPServer(("127.0.0.1", 0), HelloHandler)
+        context.add_cleanup(server.server_close)
+        server.timeout = 0.1
+        stopping = Event()
 
-    def unload(self) -> None:
-        pass
+        def serve() -> None:
+            while not stopping.is_set():
+                server.handle_request()
+
+        worker = Thread(target=serve, name="hello-plugin-http", daemon=True)
+
+        def stop() -> None:
+            stopping.set()
+            worker.join(timeout=1.0)
+            if worker.is_alive():
+                raise RuntimeError("Hello Plugin HTTP worker did not stop")
+
+        worker.start()
+        context.add_cleanup(stop)
+        inx.Debug.log(f"Hello service: http://127.0.0.1:{server.server_port}")
 ```
 
+The worker checks for shutdown every 0.1 seconds. The registered cleanups first
+stop and join it, then close the server socket. Keep request handlers short;
+blocking work requires its own bounded cancellation. Save valid changes to reload
+the service, or disable the plugin to stop it.
+
 Cleanups run in reverse order after `unload()` and after a partial preload
-failure. Invalid saved Python keeps the last working lifecycle alive. Put Flask
+failure. A syntax error in saved Python keeps the last working lifecycle alive. Put Flask
 authoring tools in `editor/`, bind them to loopback on an operating-system
 allocated port, disable the development reloader, and register a bounded server
 shutdown and thread join. `requirements.txt` may include large packages such as
@@ -411,17 +451,55 @@ class HelloResource(inx.InxComponent):
 Player 构建会自动发现 runtime 组件，把项目与插件脚本统一冻结到同一份 GUID 映射和类型注册表，
 其中包含序列化字段和生命周期方法。不要再建立第二份 Player 注册表，也不要通过额外导入旁路注册。
 
-preload 同时也是长期任务的所有者。启动服务、线程、文件监听或回调后，应立刻登记清理函数：
+preload 同时也是长期任务的所有者。下面是可直接运行的可选示例，将它放在
+`editor/service_preload.py`。它会启动本地 HTTP 服务，打开 Console 输出的地址即可读取消息。
+取得每个资源后都立即登记清理函数：
 
 ```python
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Event, Thread
+
+import infernux as inx
+
+
+class HelloHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        body = b"Hello from my plugin!"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args) -> None:
+        pass
+
+
 class HelloPreload(inx.InxPreload):
     def preload(self, context: inx.PreloadContext) -> None:
-        service = start_service()
-        context.add_cleanup(service.stop)
+        server = HTTPServer(("127.0.0.1", 0), HelloHandler)
+        context.add_cleanup(server.server_close)
+        server.timeout = 0.1
+        stopping = Event()
 
-    def unload(self) -> None:
-        pass
+        def serve() -> None:
+            while not stopping.is_set():
+                server.handle_request()
+
+        worker = Thread(target=serve, name="hello-plugin-http", daemon=True)
+
+        def stop() -> None:
+            stopping.set()
+            worker.join(timeout=1.0)
+            if worker.is_alive():
+                raise RuntimeError("Hello Plugin HTTP worker did not stop")
+
+        worker.start()
+        context.add_cleanup(stop)
+        inx.Debug.log(f"Hello service: http://127.0.0.1:{server.server_port}")
 ```
+
+工作线程每 0.1 秒检查一次退出请求。登记的清理函数先停止并等待线程，再关闭服务套接字。
+请求处理应保持简短；阻塞任务需要自己的有界取消机制。保存合法修改会重载服务，禁用插件会停止服务。
 
 清理函数会在 `unload()` 后按逆序运行，preload 执行到一半失败时也会运行。保存的 Python
 候选存在语法错误时，最后一次正常运行的生命周期会继续保留。Flask 创作工具应放在 `editor/`，
