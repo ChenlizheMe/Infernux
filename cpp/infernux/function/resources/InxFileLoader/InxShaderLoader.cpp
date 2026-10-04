@@ -1796,7 +1796,8 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
 
 std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, const std::string &filePath,
                                                     ShaderCompileTarget target,
-                                                    const ShaderProgramInterfaceArtifact *linkedInterface)
+                                                    const ShaderProgramInterfaceArtifact *linkedInterface,
+                                                    std::vector<std::string> *errors)
 {
     // Stage 1: Parse source into structured descriptor
     ShaderDescriptor desc = ParseShaderSource(source, filePath);
@@ -1807,6 +1808,7 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
     const ShaderDescriptor *shadingModelPtr = nullptr;
     ShaderDescriptor shadingModelDesc;
     std::string deferredShadingRegistry;
+    std::vector<std::string> importErrors;
 
     if (!filePath.empty()) {
         std::filesystem::path shaderPath = ToFsPath(filePath);
@@ -1880,7 +1882,20 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
             }
         }
 
-        resolvedSource = ResolveImports(resolvedSource, effectiveImports, shaderIdMap, includeStack, 0);
+        resolvedSource = ResolveImports(resolvedSource, effectiveImports, shaderIdMap, includeStack, importErrors);
+    }
+
+    if (!importErrors.empty()) {
+        if (errors) {
+            errors->insert(errors->end(), importErrors.begin(), importErrors.end());
+            return {};
+        }
+        // Standalone source generation/cooking must reject missing imports
+        // too, even when no downstream expression uses the missing library.
+        std::ostringstream rejectedSource;
+        for (const auto &error : importErrors)
+            rejectedSource << "#error " << error << '\n';
+        return rejectedSource.str();
     }
 
     // Stage 3: Generate GLSL from descriptor + resolved source + shading model
@@ -2098,9 +2113,11 @@ InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, co
     compilation.interfaceArtifact = interfaceArtifact;
 
     compilation.generatedVertexSource =
-        PreprocessShaderSource(vertexSource, vertexPath, target, &compilation.interfaceArtifact);
+        PreprocessShaderSource(vertexSource, vertexPath, target, &compilation.interfaceArtifact, &compilation.errors);
     compilation.generatedFragmentSource =
-        PreprocessShaderSource(fragmentSource, fragmentPath, target, &compilation.interfaceArtifact);
+        PreprocessShaderSource(fragmentSource, fragmentPath, target, &compilation.interfaceArtifact, &compilation.errors);
+    if (!compilation.errors.empty())
+        return compilation;
     const ShaderDescriptor fragmentDescriptor = ParseShaderSource(fragmentSource, fragmentPath);
     const bool particleBindlessTarget = interfaceArtifact.domain != ShaderProgramDomain::ParticleSprite ||
                                         target == ShaderCompileTarget::Forward ||
@@ -2482,8 +2499,11 @@ std::unordered_map<std::string, std::string> InxShaderLoader::BuildShaderIdMap(c
 
 std::string InxShaderLoader::ResolveImports(const std::string &source, const std::vector<std::string> &imports,
                                             const std::unordered_map<std::string, std::string> &shaderIdMap,
-                                            std::set<std::string> &includeStack, int depth)
+                                            std::set<std::string> &includeStack, std::vector<std::string> &errors,
+                                            int depth)
 {
+    if (imports.empty())
+        return source;
     // Guard against excessive recursion (e.g., A imports B imports C imports D ...)
     constexpr int MAX_IMPORT_DEPTH = 16;
     if (depth >= MAX_IMPORT_DEPTH) {
@@ -2493,17 +2513,16 @@ std::string InxShaderLoader::ResolveImports(const std::string &source, const std
                 chain += " -> ";
             chain += id;
         }
-        INXLOG_ERROR("Shader import depth exceeded maximum of ", MAX_IMPORT_DEPTH,
-                     ". Import chain: ", chain.empty() ? "(unknown)" : chain);
-        return source;
+        errors.push_back("Shader import depth exceeded maximum of " + std::to_string(MAX_IMPORT_DEPTH) +
+                         ". Import chain: " + (chain.empty() ? "(unknown)" : chain));
+        return {};
     }
 
     std::ostringstream result;
     for (const auto &importId : imports) {
         const auto mapped = shaderIdMap.find(importId);
         if (mapped == shaderIdMap.end()) {
-            INXLOG_ERROR("Shader import '", importId, "' was not found in shader search paths");
-            result << "// ERROR: shader import not found: " << importId << "\n";
+            errors.push_back("shader import not found: " + importId);
             continue;
         }
         if (!includeStack.insert(importId).second)
@@ -2511,8 +2530,7 @@ std::string InxShaderLoader::ResolveImports(const std::string &source, const std
 
         std::ifstream importFile = OpenInputFile(mapped->second);
         if (!importFile.is_open()) {
-            INXLOG_ERROR("Failed to open shader import: ", mapped->second);
-            result << "// ERROR: failed to open shader import: " << importId << "\n";
+            errors.push_back("Failed to open shader import '" + importId + "': " + mapped->second);
             continue;
         }
         std::ostringstream importedStream;
@@ -2520,8 +2538,8 @@ std::string InxShaderLoader::ResolveImports(const std::string &source, const std
         const std::string importedSource = importedStream.str();
         const ShaderDescriptor importedDescriptor = ParseShaderSource(importedSource, mapped->second);
         if (!importedDescriptor.errors.empty()) {
-            INXLOG_ERROR("Invalid imported ShaderInfo asset: ", mapped->second);
-            result << "// ERROR: invalid ShaderInfo import: " << importId << "\n";
+            for (const auto &error : importedDescriptor.errors)
+                errors.push_back("Invalid ShaderInfo import '" + importId + "' (" + mapped->second + "): " + error);
             includeStack.erase(importId);
             continue;
         }
@@ -2536,7 +2554,8 @@ std::string InxShaderLoader::ResolveImports(const std::string &source, const std
             withoutVersion << line << '\n';
         }
         const std::string resolved =
-            ResolveImports(withoutVersion.str(), importedDescriptor.imports, shaderIdMap, includeStack, depth + 1);
+            ResolveImports(withoutVersion.str(), importedDescriptor.imports, shaderIdMap, includeStack, errors,
+                           depth + 1);
         result << "// --- begin import: " << importId << " ---\n" << resolved;
         if (!resolved.empty() && resolved.back() != '\n')
             result << '\n';

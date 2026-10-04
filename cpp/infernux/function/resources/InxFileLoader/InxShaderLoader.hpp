@@ -208,7 +208,8 @@ class InxShaderLoader
     /// Full preprocessing pipeline: parse → resolve imports → generate GLSL.
     std::string PreprocessShaderSource(const std::string &source, const std::string &filePath = "",
                                        ShaderCompileTarget target = ShaderCompileTarget::Forward,
-                                       const ShaderProgramInterfaceArtifact *linkedInterface = nullptr);
+                                       const ShaderProgramInterfaceArtifact *linkedInterface = nullptr,
+                                       std::vector<std::string> *errors = nullptr);
 
     /// Generate final GLSL text from a descriptor, import-resolved source, and optional shading model.
     std::string GenerateGLSL(const ShaderDescriptor &desc, const std::string &resolvedSource,
@@ -231,7 +232,7 @@ class InxShaderLoader
     /// Resolve structured Imports by inlining referenced shader libraries.
     std::string ResolveImports(const std::string &source, const std::vector<std::string> &imports,
                                const std::unordered_map<std::string, std::string> &shaderIdMap,
-                               std::set<std::string> &includeStack, int depth = 0);
+                               std::set<std::string> &includeStack, std::vector<std::string> &errors, int depth = 0);
 
     /// Load and parse a .shadingmodel file by its shader_id.
     ShaderDescriptor LoadShadingModel(const std::string &modelName,

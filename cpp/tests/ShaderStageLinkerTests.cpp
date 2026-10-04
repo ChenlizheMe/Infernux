@@ -143,6 +143,22 @@ void surface(out SurfaceData s) {
            palette.bufferOffset == 48);
 
     infernux::InxShaderLoader::AddShaderSearchPath(INFERNUX_TEST_SHADER_ROOT);
+    // Imports are mandatory declarations, even when this particular surface
+    // does not call a function from the missing library.
+    std::string missingImportFragment = arrayFragment;
+    missingImportFragment.insert(missingImportFragment.find("    Properties"),
+                                 "    Imports [\"Tests/MissingUnusedLibrary\"]\n");
+    const auto missingImport = compiler.CompileLinkedForward(
+        arrayVertex, "ArrayVertex.vert", missingImportFragment, "ArrayFragment.frag");
+    assert(!missingImport.IsValid());
+    assert(missingImport.vertexSpirv.empty() && missingImport.fragmentSpirv.empty());
+    assert(std::any_of(missingImport.errors.begin(), missingImport.errors.end(), [](const auto &error) {
+        return error.find("shader import not found") != std::string::npos &&
+               error.find("Tests/MissingUnusedLibrary") != std::string::npos;
+    }));
+    const auto missingImportGlsl = compiler.PrepareAuthoredStageGlsl(missingImportFragment, "ArrayFragment.frag");
+    assert(missingImportGlsl.find("#error") != std::string::npos);
+    assert(missingImportGlsl.find("Tests/MissingUnusedLibrary") != std::string::npos);
     const auto compiledArrays =
         compiler.CompileLinkedForward(arrayVertex, "ArrayVertex.vert", arrayFragment, "ArrayFragment.frag");
     if (!compiledArrays.IsValid()) {
