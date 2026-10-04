@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import sys
@@ -12,7 +13,9 @@ from pathlib import Path
 from Infernux import Engine, RigidbodyInterpolation, Time, run_headless
 from Infernux import resources as engine_resources
 from Infernux.lib import AssetRegistry, Physics, RuntimeMode, SceneManager, Vector3
+from Infernux.engine.build_settings import BUILD_SETTINGS_DEFAULTS
 from Infernux.physics.settings import DEFAULT_PHYSICS_SETTINGS, save as save_physics_settings
+from Infernux.version import ENGINE_VERSION
 
 assert not any(
     name == "Infernux.engine.ui" or name.startswith("Infernux.engine.ui.")
@@ -54,6 +57,18 @@ def main() -> None:
         project = Path(root)
         (project / "Assets").mkdir()
         (project / "ProjectSettings").mkdir()
+        # Public entry points require the same authored inputs as a new project.
+        (project / ".infernux-version").write_text(ENGINE_VERSION + "\n", encoding="utf-8")
+        settings = project / "ProjectSettings"
+        (settings / "PythonRuntime.json").write_text(
+            json.dumps({"pythonVersion": f"{sys.version_info.major}.{sys.version_info.minor}"}) + "\n",
+            encoding="utf-8",
+        )
+        (settings / "requirements.txt").write_text("# No project dependencies\n", encoding="utf-8")
+        (settings / "BuildSettings.json").write_text(
+            json.dumps(BUILD_SETTINGS_DEFAULTS, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         save_physics_settings(
             str(project),
             {
