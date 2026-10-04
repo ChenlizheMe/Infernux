@@ -65,22 +65,32 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
         target = context.graph.create_texture(
             f"{context.source}_preview_color",
             format=inx.rendergraph.Format.RGBA16_SFLOAT,
+            samples=context.msaa_samples,
         )
+        preview = target
+        if context.msaa_samples > 1:
+            preview = context.graph.create_texture(
+                f"{context.source}_preview_resolved",
+                format=inx.rendergraph.Format.RGBA16_SFLOAT,
+                samples=1,
+            )
         with context.graph.add_pass(
             f"{context.source}_preview_color"
         ) as render_pass:
             render_pass.read(context.sample("depth"))
             render_pass.write_color(target)
+            if context.msaa_samples > 1:
+                render_pass.write_resolve(preview)
             render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0))
             render_pass.draw_renderers(
                 queue_range=context.queue_range,
                 sort_mode=context.sort_mode,
                 material_pass="base_color",
             )
-        return target
+        return preview
 
     def define_topology(self, graph):
-        graph.set_msaa_samples(1)
+        samples = graph.set_msaa_samples(1)
         depth = graph.create_texture(
             "depth", format=inx.rendergraph.Format.D32_SFLOAT
         )
@@ -100,6 +110,7 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
             "opaque",
             buffers={"depth": depth},
             queue_range=(0, 2500),
+            msaa_samples=samples,
         )
         preview = self.sample_buffer(opaque, requested)
 
@@ -122,6 +133,8 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
         with graph.add_present_pass("Present") as present_pass:
             present_pass.present(color)
 ```
+
+The Provider matches its raster target to `context.msaa_samples` so the color and depth attachments agree. It publishes a single-sample resolve for fullscreen sampling when the Camera target uses MSAA; a fixed RenderTexture can override the pipeline's requested sample count.
 
 `present(color)` is a typed terminal action and also calls `set_output(color)`. A graph may use `set_output()` without a Present pass, but this example makes the camera-target/export boundary visible. `graph.build()` also chooses the first camera target when no explicit output exists; production pipelines should express the intended output directly.
 
@@ -149,6 +162,7 @@ class ObjectIndexPipeline(inx.renderstack.RenderPipeline):
         target = context.graph.create_texture(
             f"{context.source}_object_index",
             format=inx.rendergraph.Format.RG32_UINT,
+            samples=context.msaa_samples,
         )
         with context.graph.add_pass(
             f"{context.source}_object_index"
@@ -167,15 +181,19 @@ A Provider receives a `GeometryBufferProviderContext`. It may read `context.grap
 
 A derived class can replace a built-in provider by declaring the same semantic and phase. Two providers for the same key in one class are ambiguous and rejected. Missing dependencies and dependency cycles also fail topology construction with the source and dependency chain in the error. Provider methods run during each topology build when their semantic is requested; the API defines no cross-graph Provider instance cache. Keep build-local handles in the context and keep persistent CPU policy on the pipeline instance.
 
+Pass the effective count returned by `graph.set_msaa_samples()` into `geometry_stage(msaa_samples=...)`; this value becomes `context.msaa_samples` in each Provider. An integer multisampled result such as `object_index` remains multisampled unless its Provider declares a suitable resolve, so its consumer must use a matching multisample shader input.
+
 During `define_topology()`, call `self.require_buffer("object_index")` before the relevant `geometry_stage()`. The stage starts from its supplied buffers, runs only the providers needed by current requirements, and returns a `PassResult`. Effects mounted in RenderStack contribute their declared geometry requirements before the pipeline topology is built, so unused built-in providers such as normal or motion remain unmaterialized.
 
 ```python
+samples = graph.set_msaa_samples(1)
 requested = self.require_buffer("object_index")
 result = self.geometry_stage(
     graph,
     "opaque",
     buffers={"color": color, "depth": depth},
     queue_range=(0, 2500),
+    msaa_samples=samples,
 )
 object_index = self.sample_buffer(result, requested)
 ```
@@ -251,7 +269,7 @@ Expose an ordinary serialized field and assign that asset in the Inspector:
 import infernux as inx
 
 class Monitor(inx.InxComponent):
-    output: inx.RenderTexture
+    output: inx.RenderTexture = inx.serialized_field(default=None)
 
     def start(self):
         self.game_object.get_component(inx.Camera).target_texture = self.output
@@ -540,22 +558,32 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
         target = context.graph.create_texture(
             f"{context.source}_preview_color",
             format=inx.rendergraph.Format.RGBA16_SFLOAT,
+            samples=context.msaa_samples,
         )
+        preview = target
+        if context.msaa_samples > 1:
+            preview = context.graph.create_texture(
+                f"{context.source}_preview_resolved",
+                format=inx.rendergraph.Format.RGBA16_SFLOAT,
+                samples=1,
+            )
         with context.graph.add_pass(
             f"{context.source}_preview_color"
         ) as render_pass:
             render_pass.read(context.sample("depth"))
             render_pass.write_color(target)
+            if context.msaa_samples > 1:
+                render_pass.write_resolve(preview)
             render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0))
             render_pass.draw_renderers(
                 queue_range=context.queue_range,
                 sort_mode=context.sort_mode,
                 material_pass="base_color",
             )
-        return target
+        return preview
 
     def define_topology(self, graph):
-        graph.set_msaa_samples(1)
+        samples = graph.set_msaa_samples(1)
         depth = graph.create_texture(
             "depth", format=inx.rendergraph.Format.D32_SFLOAT
         )
@@ -575,6 +603,7 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
             "opaque",
             buffers={"depth": depth},
             queue_range=(0, 2500),
+            msaa_samples=samples,
         )
         preview = self.sample_buffer(opaque, requested)
 
@@ -597,6 +626,8 @@ class BaseColorPresentPipeline(inx.renderstack.RenderPipeline):
         with graph.add_present_pass("Present") as present_pass:
             present_pass.present(color)
 ```
+
+Provider 使用 `context.msaa_samples` 创建光栅目标，保证颜色与深度附件的采样数一致。Camera Target 启用 MSAA 时，Provider 显式 Resolve 并发布单采样纹理供全屏 Pass 采样；固定 RenderTexture 可以覆盖管线请求的采样数。
 
 `present(color)` 是带类型的终止 Action，同时会调用 `set_output(color)`。Graph 也可以只使用 `set_output()`，省略 Present Pass；本例显式展示 Camera Target 与导出边界。没有显式输出时，`graph.build()` 会选取第一张 Camera Target，生产管线仍应明确表达目标输出。
 
@@ -624,6 +655,7 @@ class ObjectIndexPipeline(inx.renderstack.RenderPipeline):
         target = context.graph.create_texture(
             f"{context.source}_object_index",
             format=inx.rendergraph.Format.RG32_UINT,
+            samples=context.msaa_samples,
         )
         with context.graph.add_pass(
             f"{context.source}_object_index"
@@ -642,15 +674,19 @@ Provider 接收 `GeometryBufferProviderContext`。它可以读取 `context.graph
 
 派生类声明相同的 Semantic 与 Phase，即可替换内置 Provider。同一个类里为同一注册键声明两个 Provider 会产生歧义并被拒绝。依赖缺失或形成环时，拓扑构建也会失败，错误中会带 Source 与依赖链。每次拓扑构建只会在 Semantic 被请求时运行相关 Provider；API 没有定义跨 Graph 的 Provider 实例缓存。构建局部 Handle 应留在 Context 中，持久 CPU 策略可以保存在 Pipeline 实例上。
 
+把 `graph.set_msaa_samples()` 返回的有效采样数传给 `geometry_stage(msaa_samples=...)`，Provider 才能通过 `context.msaa_samples` 取得正确值。`object_index` 这类整数多采样结果在 Provider 没有声明适用的 Resolve 时仍是多采样纹理，消费它的 Shader Input 也必须匹配。
+
 在 `define_topology()` 中，应先调用 `self.require_buffer("object_index")`，再进入对应的 `geometry_stage()`。Stage 从传入的 Buffer 集合开始，只运行当前需求涉及的 Provider，最后返回 `PassResult`。RenderStack 中已挂载 Effect 声明的 Geometry 需求会在管线构建前加入 Graph，因此未使用的内置 Normal、Motion 等 Provider 不会生成资源。
 
 ```python
+samples = graph.set_msaa_samples(1)
 requested = self.require_buffer("object_index")
 result = self.geometry_stage(
     graph,
     "opaque",
     buffers={"color": color, "depth": depth},
     queue_range=(0, 2500),
+    msaa_samples=samples,
 )
 object_index = self.sample_buffer(result, requested)
 ```
@@ -726,7 +762,7 @@ image.texture = half_size
 import infernux as inx
 
 class Monitor(inx.InxComponent):
-    output: inx.RenderTexture
+    output: inx.RenderTexture = inx.serialized_field(default=None)
 
     def start(self):
         self.game_object.get_component(inx.Camera).target_texture = self.output

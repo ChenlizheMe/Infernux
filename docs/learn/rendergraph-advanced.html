@@ -122,22 +122,32 @@
         <span class="n">target</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_color"</span><span class="p">,</span>
             <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+            <span class="n">samples</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span><span class="p">,</span>
         <span class="p">)</span>
+        <span class="n">preview</span> <span class="o">=</span> <span class="n">target</span>
+        <span class="k">if</span> <span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">preview</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_resolved"</span><span class="p">,</span>
+                <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+                <span class="n">samples</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+            <span class="p">)</span>
         <span class="k">with</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_color"</span>
         <span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">))</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">target</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+                <span class="n">render_pass</span><span class="o">.</span><span class="n">write_resolve</span><span class="p">(</span><span class="n">preview</span><span class="p">)</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span>
                 <span class="n">queue_range</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">queue_range</span><span class="p">,</span>
                 <span class="n">sort_mode</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">sort_mode</span><span class="p">,</span>
                 <span class="n">material_pass</span><span class="o">=</span><span class="s2">"base_color"</span><span class="p">,</span>
             <span class="p">)</span>
-        <span class="k">return</span> <span class="n">target</span>
+        <span class="k">return</span> <span class="n">preview</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">define_topology</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">):</span>
-        <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+        <span class="n">samples</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
         <span class="n">depth</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
             <span class="s2">"depth"</span><span class="p">,</span> <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">D32_SFLOAT</span>
         <span class="p">)</span>
@@ -157,6 +167,7 @@
             <span class="s2">"opaque"</span><span class="p">,</span>
             <span class="n">buffers</span><span class="o">=</span><span class="p">{</span><span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
             <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+            <span class="n">msaa_samples</span><span class="o">=</span><span class="n">samples</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="n">preview</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sample_buffer</span><span class="p">(</span><span class="n">opaque</span><span class="p">,</span> <span class="n">requested</span><span class="p">)</span>
 
@@ -180,6 +191,7 @@
             <span class="n">present_pass</span><span class="o">.</span><span class="n">present</span><span class="p">(</span><span class="n">color</span><span class="p">)</span>
 </code></pre></div>
 
+<p>The Provider matches its raster target to <code>context.msaa_samples</code> so the color and depth attachments agree. It publishes a single-sample resolve for fullscreen sampling when the Camera target uses MSAA; a fixed RenderTexture can override the pipeline's requested sample count.</p>
 <p><code>present(color)</code> is a typed terminal action and also calls <code>set_output(color)</code>. A graph may use <code>set_output()</code> without a Present pass, but this example makes the camera-target/export boundary visible. <code>graph.build()</code> also chooses the first camera target when no explicit output exists; production pipelines should express the intended output directly.</p>
 <p>To verify the example, check that the camera shows unlit base color, the RenderStack topology contains the standard tail and <strong>Present</strong>, and the Console has no graph validation error. Temporarily add <code>print(graph.get_debug_string())</code> as the final line of <code>define_topology()</code> to record the authored resources, actions, accesses, and output, then remove the print after diagnosis.</p>
 <p>Logical names are graph-wide resource identities. Reusable fragments can use <code>graph.name_scope()</code> to keep generated names unique. Pass order is recorded as authored, while declared accesses give the native compiler dependency and transition information. The native compiler can cull work that has no path to an output or explicit side effect, so authored order alone does not prove execution.</p>
@@ -198,6 +210,7 @@
         <span class="n">target</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_object_index"</span><span class="p">,</span>
             <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RG32_UINT</span><span class="p">,</span>
+            <span class="n">samples</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="k">with</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_object_index"</span>
@@ -214,13 +227,16 @@
 
 <p>A Provider receives a <code>GeometryBufferProviderContext</code>. It may read <code>context.graph</code>, <code>context.source</code>, <code>context.phase</code>, <code>context.queue_range</code>, <code>context.msaa_samples</code>, <code>context.sort_mode</code>, <code>context.clear</code>, and already available semantic textures through <code>context.sample()</code>. It must return a non-null graph <code>TextureHandle</code>; <code>geometry_stage()</code> publishes that handle under the decorator's semantic. Dependencies name other semantics that must already exist or have a Provider in the same phase.</p>
 <p>A derived class can replace a built-in provider by declaring the same semantic and phase. Two providers for the same key in one class are ambiguous and rejected. Missing dependencies and dependency cycles also fail topology construction with the source and dependency chain in the error. Provider methods run during each topology build when their semantic is requested; the API defines no cross-graph Provider instance cache. Keep build-local handles in the context and keep persistent CPU policy on the pipeline instance.</p>
+<p>Pass the effective count returned by <code>graph.set_msaa_samples()</code> into <code>geometry_stage(msaa_samples=...)</code>; this value becomes <code>context.msaa_samples</code> in each Provider. An integer multisampled result such as <code>object_index</code> remains multisampled unless its Provider declares a suitable resolve, so its consumer must use a matching multisample shader input.</p>
 <p>During <code>define_topology()</code>, call <code>self.require_buffer("object_index")</code> before the relevant <code>geometry_stage()</code>. The stage starts from its supplied buffers, runs only the providers needed by current requirements, and returns a <code>PassResult</code>. Effects mounted in RenderStack contribute their declared geometry requirements before the pipeline topology is built, so unused built-in providers such as normal or motion remain unmaterialized.</p>
-<div class="highlight"><pre><span></span><code><span class="n">requested</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">require_buffer</span><span class="p">(</span><span class="s2">"object_index"</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><span class="n">samples</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">requested</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">require_buffer</span><span class="p">(</span><span class="s2">"object_index"</span><span class="p">)</span>
 <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">geometry_stage</span><span class="p">(</span>
     <span class="n">graph</span><span class="p">,</span>
     <span class="s2">"opaque"</span><span class="p">,</span>
     <span class="n">buffers</span><span class="o">=</span><span class="p">{</span><span class="s2">"color"</span><span class="p">:</span> <span class="n">color</span><span class="p">,</span> <span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
     <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+    <span class="n">msaa_samples</span><span class="o">=</span><span class="n">samples</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="n">object_index</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sample_buffer</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">requested</span><span class="p">)</span>
 </code></pre></div>
@@ -278,7 +294,7 @@
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Monitor</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
-    <span class="n">output</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">RenderTexture</span>
+    <span class="n">output</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">RenderTexture</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">Camera</span><span class="p">)</span><span class="o">.</span><span class="n">target_texture</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">output</span>
@@ -534,22 +550,32 @@
         <span class="n">target</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_color"</span><span class="p">,</span>
             <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+            <span class="n">samples</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span><span class="p">,</span>
         <span class="p">)</span>
+        <span class="n">preview</span> <span class="o">=</span> <span class="n">target</span>
+        <span class="k">if</span> <span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="n">preview</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_resolved"</span><span class="p">,</span>
+                <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RGBA16_SFLOAT</span><span class="p">,</span>
+                <span class="n">samples</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+            <span class="p">)</span>
         <span class="k">with</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_preview_color"</span>
         <span class="p">)</span> <span class="k">as</span> <span class="n">render_pass</span><span class="p">:</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">read</span><span class="p">(</span><span class="n">context</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="s2">"depth"</span><span class="p">))</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">write_color</span><span class="p">(</span><span class="n">target</span><span class="p">)</span>
+            <span class="k">if</span> <span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+                <span class="n">render_pass</span><span class="o">.</span><span class="n">write_resolve</span><span class="p">(</span><span class="n">preview</span><span class="p">)</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">set_clear</span><span class="p">(</span><span class="n">color</span><span class="o">=</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">))</span>
             <span class="n">render_pass</span><span class="o">.</span><span class="n">draw_renderers</span><span class="p">(</span>
                 <span class="n">queue_range</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">queue_range</span><span class="p">,</span>
                 <span class="n">sort_mode</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">sort_mode</span><span class="p">,</span>
                 <span class="n">material_pass</span><span class="o">=</span><span class="s2">"base_color"</span><span class="p">,</span>
             <span class="p">)</span>
-        <span class="k">return</span> <span class="n">target</span>
+        <span class="k">return</span> <span class="n">preview</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">define_topology</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">graph</span><span class="p">):</span>
-        <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+        <span class="n">samples</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
         <span class="n">depth</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
             <span class="s2">"depth"</span><span class="p">,</span> <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">D32_SFLOAT</span>
         <span class="p">)</span>
@@ -569,6 +595,7 @@
             <span class="s2">"opaque"</span><span class="p">,</span>
             <span class="n">buffers</span><span class="o">=</span><span class="p">{</span><span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
             <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+            <span class="n">msaa_samples</span><span class="o">=</span><span class="n">samples</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="n">preview</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sample_buffer</span><span class="p">(</span><span class="n">opaque</span><span class="p">,</span> <span class="n">requested</span><span class="p">)</span>
 
@@ -592,6 +619,7 @@
             <span class="n">present_pass</span><span class="o">.</span><span class="n">present</span><span class="p">(</span><span class="n">color</span><span class="p">)</span>
 </code></pre></div>
 
+<p>Provider 使用 <code>context.msaa_samples</code> 创建光栅目标，保证颜色与深度附件的采样数一致。Camera Target 启用 MSAA 时，Provider 显式 Resolve 并发布单采样纹理供全屏 Pass 采样；固定 RenderTexture 可以覆盖管线请求的采样数。</p>
 <p><code>present(color)</code> 是带类型的终止 Action，同时会调用 <code>set_output(color)</code>。Graph 也可以只使用 <code>set_output()</code>，省略 Present Pass；本例显式展示 Camera Target 与导出边界。没有显式输出时，<code>graph.build()</code> 会选取第一张 Camera Target，生产管线仍应明确表达目标输出。</p>
 <p>验证时应看到 Camera 输出未受光照的 Base Color，RenderStack 拓扑包含标准帧尾与 <strong>Present</strong>，Console 中没有 Graph 校验错误。诊断期间可以在 <code>define_topology()</code> 最后一行暂时加入 <code>print(graph.get_debug_string())</code>，记录资源、Action、Access 与输出；检查完成后删除该输出。</p>
 <p>逻辑名称是 Graph 范围内的资源身份。可复用片段可以使用 <code>graph.name_scope()</code>，避免生成的名称冲突。Pass 顺序按书写顺序记录；声明的 Access 为 Native Compiler 提供依赖与转换信息。Native Compiler 可以剔除无法到达输出且未声明 Side Effect 的工作，因此编写顺序本身不能证明执行。</p>
@@ -610,6 +638,7 @@
         <span class="n">target</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">create_texture</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_object_index"</span><span class="p">,</span>
             <span class="nb">format</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">rendergraph</span><span class="o">.</span><span class="n">Format</span><span class="o">.</span><span class="n">RG32_UINT</span><span class="p">,</span>
+            <span class="n">samples</span><span class="o">=</span><span class="n">context</span><span class="o">.</span><span class="n">msaa_samples</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="k">with</span> <span class="n">context</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">add_pass</span><span class="p">(</span>
             <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">context</span><span class="o">.</span><span class="n">source</span><span class="si">}</span><span class="s2">_object_index"</span>
@@ -626,13 +655,16 @@
 
 <p>Provider 接收 <code>GeometryBufferProviderContext</code>。它可以读取 <code>context.graph</code>、<code>context.source</code>、<code>context.phase</code>、<code>context.queue_range</code>、<code>context.msaa_samples</code>、<code>context.sort_mode</code>、<code>context.clear</code>，并通过 <code>context.sample()</code> 取得已有 Semantic Texture。Provider 必须返回非空的 Graph <code>TextureHandle</code>；<code>geometry_stage()</code> 会以 Decorator 中的 Semantic 发布该 Handle。Dependency 表示同一 Phase 中必须已存在或可由 Provider 生成的其它 Semantic。</p>
 <p>派生类声明相同的 Semantic 与 Phase，即可替换内置 Provider。同一个类里为同一注册键声明两个 Provider 会产生歧义并被拒绝。依赖缺失或形成环时，拓扑构建也会失败，错误中会带 Source 与依赖链。每次拓扑构建只会在 Semantic 被请求时运行相关 Provider；API 没有定义跨 Graph 的 Provider 实例缓存。构建局部 Handle 应留在 Context 中，持久 CPU 策略可以保存在 Pipeline 实例上。</p>
+<p>把 <code>graph.set_msaa_samples()</code> 返回的有效采样数传给 <code>geometry_stage(msaa_samples=...)</code>，Provider 才能通过 <code>context.msaa_samples</code> 取得正确值。<code>object_index</code> 这类整数多采样结果在 Provider 没有声明适用的 Resolve 时仍是多采样纹理，消费它的 Shader Input 也必须匹配。</p>
 <p>在 <code>define_topology()</code> 中，应先调用 <code>self.require_buffer("object_index")</code>，再进入对应的 <code>geometry_stage()</code>。Stage 从传入的 Buffer 集合开始，只运行当前需求涉及的 Provider，最后返回 <code>PassResult</code>。RenderStack 中已挂载 Effect 声明的 Geometry 需求会在管线构建前加入 Graph，因此未使用的内置 Normal、Motion 等 Provider 不会生成资源。</p>
-<div class="highlight"><pre><span></span><code><span class="n">requested</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">require_buffer</span><span class="p">(</span><span class="s2">"object_index"</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><span class="n">samples</span> <span class="o">=</span> <span class="n">graph</span><span class="o">.</span><span class="n">set_msaa_samples</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">requested</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">require_buffer</span><span class="p">(</span><span class="s2">"object_index"</span><span class="p">)</span>
 <span class="n">result</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">geometry_stage</span><span class="p">(</span>
     <span class="n">graph</span><span class="p">,</span>
     <span class="s2">"opaque"</span><span class="p">,</span>
     <span class="n">buffers</span><span class="o">=</span><span class="p">{</span><span class="s2">"color"</span><span class="p">:</span> <span class="n">color</span><span class="p">,</span> <span class="s2">"depth"</span><span class="p">:</span> <span class="n">depth</span><span class="p">},</span>
     <span class="n">queue_range</span><span class="o">=</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">2500</span><span class="p">),</span>
+    <span class="n">msaa_samples</span><span class="o">=</span><span class="n">samples</span><span class="p">,</span>
 <span class="p">)</span>
 <span class="n">object_index</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sample_buffer</span><span class="p">(</span><span class="n">result</span><span class="p">,</span> <span class="n">requested</span><span class="p">)</span>
 </code></pre></div>
@@ -690,7 +722,7 @@
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
 <span class="k">class</span><span class="w"> </span><span class="nc">Monitor</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxComponent</span><span class="p">):</span>
-    <span class="n">output</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">RenderTexture</span>
+    <span class="n">output</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">RenderTexture</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">start</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">game_object</span><span class="o">.</span><span class="n">get_component</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">Camera</span><span class="p">)</span><span class="o">.</span><span class="n">target_texture</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">output</span>

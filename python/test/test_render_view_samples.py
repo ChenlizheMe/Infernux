@@ -204,3 +204,32 @@ def test_bilingual_msaa_example_builds_for_each_output_contract(samples):
     assert description.msaa_samples == effective
     route = next(p for p in description.passes if p.name == "Route")
     assert bool(route.resolve_color) == (effective > 1)
+
+
+@pytest.mark.parametrize("samples", [0, 1, 2, 4, 8])
+def test_bilingual_base_color_provider_matches_camera_depth_samples(samples):
+    guide = Path(__file__).parents[2] / "docs/learn/rendergraph-advanced.md"
+    blocks = re.findall(r"```python\n(.*?)\n```", guide.read_text(encoding="utf-8"), re.DOTALL)
+    examples = [block for block in blocks if "class BaseColorPresentPipeline(" in block]
+    assert len(examples) == 2
+    assert examples[0] == examples[1]
+    namespace = {}
+    exec(compile(examples[0], str(guide), "exec"), namespace)
+    pipeline = namespace["BaseColorPresentPipeline"]()
+    stack = RenderStack()
+    stack._pipeline = pipeline
+    pipeline._render_stack = stack
+    description = stack.build_graph(output_samples=samples)
+    textures = {texture.name: texture for texture in description.textures}
+    provider = next(p for p in description.passes if p.name == "opaque_preview_color")
+    effective = samples or 1
+    assert description.msaa_samples == effective
+    color = textures[dict(provider.write_colors)[0]]
+    assert (color.samples or effective) == effective
+    for name in provider.read_textures:
+        depth = textures[name]
+        if depth.is_depth:
+            assert (depth.samples or effective) == effective
+    assert bool(provider.resolve_color) == (effective > 1)
+    if provider.resolve_color:
+        assert textures[provider.resolve_color].samples == 1
