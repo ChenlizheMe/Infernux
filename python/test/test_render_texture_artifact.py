@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from Infernux.lib import _Infernux as native
+from infernux.lib import _Infernux as native
 
 
 def document():
@@ -73,8 +73,8 @@ def test_binary_truncation_corruption_and_trailing_payload_are_rejected():
 
 
 def test_project_creation_is_camera_ready_and_never_overwrites(tmp_path):
-    from Infernux.engine.ui.project_file_ops import create_render_texture
-    from Infernux.host.asset_operations import _CREATE_KINDS
+    from infernux.engine.ui.project_file_ops import create_render_texture
+    from infernux.host.asset_operations import _CREATE_KINDS
 
     assert _CREATE_KINDS["render_texture"] == ".rendertexture"
     assert create_render_texture(str(tmp_path), "Monitor") == (True, "")

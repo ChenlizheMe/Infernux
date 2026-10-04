@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from Infernux.core.asset_types import read_mesh_import_settings
+from infernux.core.asset_types import read_mesh_import_settings
 from test_model_async_import import model, poll
 
 

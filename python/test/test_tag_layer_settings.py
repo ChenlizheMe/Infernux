@@ -5,10 +5,10 @@ from __future__ import annotations
 import copy
 import json
 
-from Infernux.engine.engine import Engine
-from Infernux.engine.ui.tag_layer_settings import PhysicsLayerMatrixPanel, TagLayerSettingsPanel
-from Infernux.lib import TagLayerManager
-from Infernux.physics import settings as physics_settings
+from infernux.engine.engine import Engine
+from infernux.engine.ui.tag_layer_settings import PhysicsLayerMatrixPanel, TagLayerSettingsPanel
+from infernux.lib import TagLayerManager
+from infernux.physics import settings as physics_settings
 
 
 class _LayerManager:

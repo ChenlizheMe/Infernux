@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.components import ParticleSystem
-from Infernux.engine.scene_manager import SceneFileManager
-from Infernux.engine.ui.scene_view_panel import SceneViewPanel
+from infernux.components import ParticleSystem
+from infernux.engine.scene_manager import SceneFileManager
+from infernux.engine.ui.scene_view_panel import SceneViewPanel
 
 
 def _panel() -> SceneViewPanel:
@@ -145,7 +145,7 @@ def test_scene_particle_preview_pre_render_ticks_hidden_scene_tab(monkeypatch):
     panel._tick_particle_preview = calls.append
     clock = iter((10.0, 10.025))
     scene_view_module = importlib.import_module(
-        "Infernux.engine.ui.scene_view_panel"
+        "infernux.engine.ui.scene_view_panel"
     )
     monkeypatch.setattr(scene_view_module.time, "monotonic", lambda: next(clock))
 
@@ -403,7 +403,7 @@ def test_particle_preview_republishes_stale_python_runtime(monkeypatch):
 
 
 def test_particle_preview_rebinds_after_play_mode_restores_scene(monkeypatch):
-    from Infernux.engine.play_mode import PlayModeState
+    from infernux.engine.play_mode import PlayModeState
 
     panel = _panel()
     old_component = SimpleNamespace(editor_preview_end=lambda: None)
@@ -432,7 +432,7 @@ def test_particle_preview_rebinds_after_play_mode_restores_scene(monkeypatch):
     assert panel._particle_preview_restore_pending is True
     assert calls == []
 
-    deferred_module = importlib.import_module("Infernux.engine.deferred_task")
+    deferred_module = importlib.import_module("infernux.engine.deferred_task")
     monkeypatch.setattr(
         deferred_module.DeferredTaskRunner,
         "instance",
@@ -460,7 +460,7 @@ def test_invalid_particle_preview_wrapper_never_removes_native_batch():
 
 def test_preview_authoring_ownership_is_released_without_native_bridge(monkeypatch):
     preview_module = importlib.import_module(
-        "Infernux.engine.ui.asset_resource_preview"
+        "infernux.engine.ui.asset_resource_preview"
     )
     preview_module._AUTHORING_PREVIEW_KEYS.add("mat|stale-session")
     monkeypatch.setattr(preview_module, "_resolve_native_engine", lambda _panel: None)
@@ -471,7 +471,7 @@ def test_preview_authoring_ownership_is_released_without_native_bridge(monkeypat
 
 
 def test_particle_preview_component_controls_are_hard_disabled_in_play(monkeypatch):
-    from Infernux.engine.play_mode import PlayModeManager
+    from infernux.engine.play_mode import PlayModeManager
 
     monkeypatch.setattr(
         PlayModeManager,
@@ -510,7 +510,7 @@ def test_particle_validate_ignores_identical_inspector_values():
 
 
 def test_particle_validate_defers_definition_rebuild_to_update():
-    from Infernux.core.asset_ref import ParticleGraphRef
+    from infernux.core.asset_ref import ParticleGraphRef
 
     component = ParticleSystem()
     component.graph = ParticleGraphRef("graph-guid", "Assets/Test.particlegraph")
@@ -540,7 +540,7 @@ def test_particle_validate_defers_definition_rebuild_to_update():
 
 
 def test_particle_preview_entering_play_forgets_handles_without_runtime_command():
-    from Infernux.engine.play_mode import PlayModeState
+    from infernux.engine.play_mode import PlayModeState
 
     panel = _panel()
     calls = []
@@ -566,7 +566,7 @@ def test_particle_preview_entering_play_forgets_handles_without_runtime_command(
 def test_play_mode_deserialize_initializes_particle_runtime_from_play_on_awake(
     monkeypatch, play_on_awake
 ):
-    from Infernux.engine.play_mode import PlayModeManager
+    from infernux.engine.play_mode import PlayModeManager
 
     monkeypatch.setattr(
         PlayModeManager,
@@ -582,7 +582,7 @@ def test_play_mode_deserialize_initializes_particle_runtime_from_play_on_awake(
 
 
 def test_particle_replacement_retires_edit_preview_native_batch(monkeypatch):
-    from Infernux.components.component import InxComponent
+    from infernux.components.component import InxComponent
 
     component = ParticleSystem()
     component._gpu_controllers = [object()]

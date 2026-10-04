@@ -16,6 +16,17 @@ function json(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
 
+function canonicalSymbols(snapshot) {
+  // Published snapshots retain their original bytes. The package migration
+  // changes an implementation import spelling, not the existing public API.
+  return snapshot.symbols.map((symbol) => ({
+    ...symbol,
+    symbol_key: symbol.symbol_key.replace(/^Infernux\./, "infernux."),
+    module: symbol.module.replace(/^Infernux\./, "infernux."),
+    signatures: symbol.signatures.map((signature) => signature.replace(/\bInfernux\./g, "infernux.")),
+  })).sort((a, b) => a.symbol_key.localeCompare(b.symbol_key, "en"));
+}
+
 function comparableSymbols(index) {
   return index.symbols
     .filter((symbol) => symbol.language === "en")
@@ -90,8 +101,8 @@ function buildDiff(previous, current) {
     };
   }
 
-  const before = new Map(previous.symbols.map((symbol) => [symbol.symbol_key, symbol]));
-  const after = new Map(current.symbols.map((symbol) => [symbol.symbol_key, symbol]));
+  const before = new Map(canonicalSymbols(previous).map((symbol) => [symbol.symbol_key, symbol]));
+  const after = new Map(canonicalSymbols(current).map((symbol) => [symbol.symbol_key, symbol]));
   const added = [...after.keys()].filter((key) => !before.has(key)).sort();
   const removed = [...before.keys()].filter((key) => !after.has(key)).sort();
   const changed = [];
@@ -140,7 +151,13 @@ if (recordCurrent) {
   }
 }
 
-if (currentText.replace(/\r\n/g, "\n") !== expectedText) {
+const samePublishedApi = currentText && (() => {
+  const recorded = JSON.parse(currentText);
+  return recorded.release === expected.release
+    && recorded.schema_version === expected.schema_version
+    && json(canonicalSymbols(recorded)) === json(canonicalSymbols(expected));
+})();
+if (currentText.replace(/\r\n/g, "\n") !== expectedText && !samePublishedApi) {
   if (!currentText) {
     throw new Error(`API snapshot ${release} is missing. Record it only when ${release} is a new, intentional release baseline: node docs/tools/build-api-diff.mjs --record-current`);
   }

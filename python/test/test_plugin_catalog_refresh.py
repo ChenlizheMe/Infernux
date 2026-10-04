@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.plugins import PluginManager, PluginRegistry
-from Infernux.plugins import official
+from infernux.plugins import PluginManager, PluginRegistry
+from infernux.plugins import official
 
 
 @pytest.fixture

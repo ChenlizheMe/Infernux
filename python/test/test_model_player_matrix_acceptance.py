@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.player_package_native import write_pack
-from Infernux.engine.runtime_artifact_catalog import runtime_artifact_id
+from infernux.engine.player_package_native import write_pack
+from infernux.engine.runtime_artifact_catalog import runtime_artifact_id
 from scripts.acceptance.model_player_matrix import _data_root, audit_model_player_matrix
 
 
@@ -169,7 +169,7 @@ def test_model_player_matrix_does_not_read_mutable_project_asset_index(tmp_path)
 def test_model_player_matrix_rejects_raw_source_in_content_package(tmp_path):
     project, data = _fixture(tmp_path)
     content = data / "Content.inxpkg"
-    from Infernux.engine.player_package_native import extract_pack, read_manifest
+    from infernux.engine.player_package_native import extract_pack, read_manifest
 
     extracted = tmp_path / "unpacked"
     extract_pack(content, extracted)

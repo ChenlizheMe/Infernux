@@ -43,7 +43,7 @@ class DownloadCancelled(Exception):
 GITHUB_OWNER = "ChenlizheMe"
 GITHUB_REPO = "Infernux"
 _API_BASE = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
-_PYPI_API = "https://pypi.org/pypi/Infernux/json"
+_PYPI_API = "https://pypi.org/pypi/infernux/json"
 _VERSIONS_DIR = Path(get_hub_shared_data_dir()) / "Engines"
 _CACHE_TTL = 300  # seconds before re-fetching release list
 

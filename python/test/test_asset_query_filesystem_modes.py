@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.application import Application
-from Infernux.core.assets import AssetFile, AssetManager
-from Infernux.core.material import Material
-from Infernux.core.sandbox_files import SandboxPath
+from infernux.application import Application
+from infernux.core.assets import AssetFile, AssetManager
+from infernux.core.material import Material
+from infernux.core.sandbox_files import SandboxPath
 
 
 class _Database:
@@ -73,7 +73,7 @@ def test_editor_managed_load_rejects_absolute_paths_even_below_assets(
 def test_managed_load_and_file_resolution_reject_the_same_invalid_paths(
     monkeypatch, tmp_path, player, path,
 ):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     _editor(monkeypatch, tmp_path)
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: player))
@@ -179,7 +179,7 @@ def test_editor_managed_file_read_rejects_asset_symlink_escape(monkeypatch, tmp_
 def test_editor_project_context_resolves_assets_through_guid_identity(
     monkeypatch, tmp_path
 ):
-    import Infernux.engine.project_context as project_context
+    import infernux.engine.project_context as project_context
 
     material = tmp_path / "Assets" / "Materials" / "Gold.mat"
     material.parent.mkdir(parents=True)
@@ -198,7 +198,7 @@ def test_editor_project_context_resolves_assets_through_guid_identity(
 def test_managed_find_returns_guid_identity_and_player_uses_frozen_path_query(
     monkeypatch, tmp_path
 ):
-    import Infernux.engine.project_context as project_context
+    import infernux.engine.project_context as project_context
 
     material = tmp_path / "Assets" / "Materials" / "Gold.mat"
     material.parent.mkdir(parents=True)
@@ -335,7 +335,7 @@ def test_raw_filesystem_handle_reads_writes_lists_and_deletes_inside_editor_asse
 def test_player_load_resolves_path_to_guid_without_asset_database(
     monkeypatch, tmp_path
 ):
-    import Infernux.engine.project_context as project_context
+    import infernux.engine.project_context as project_context
 
     cooked = tmp_path / "Library" / "Artifacts" / "Document" / "material.mat"
     cooked.parent.mkdir(parents=True)
@@ -377,7 +377,7 @@ def test_player_load_resolves_path_to_guid_without_asset_database(
 
 
 def test_player_managed_file_reads_cooked_guid_payload(monkeypatch, tmp_path):
-    import Infernux.engine.project_context as project_context
+    import infernux.engine.project_context as project_context
 
     cooked = tmp_path / "Data" / "Documents" / "config.json"
     cooked.parent.mkdir(parents=True)
@@ -493,7 +493,7 @@ def test_raw_filesystem_handle_rejects_root_replaced_at_same_path(
 def test_player_managed_resolution_never_falls_back_to_project_disk(
     monkeypatch, tmp_path
 ):
-    import Infernux.engine.project_context as project_context
+    import infernux.engine.project_context as project_context
 
     source = tmp_path / "Assets" / "Data" / "source.txt"
     source.parent.mkdir(parents=True)
@@ -558,7 +558,7 @@ def test_raw_filesystem_handle_rejects_leaf_replaced_by_symlink(
 def test_raw_filesystem_handle_rechecks_redirect_before_every_io(
     monkeypatch, tmp_path, operation
 ):
-    import Infernux.core.sandbox_files as sandbox_files
+    import infernux.core.sandbox_files as sandbox_files
 
     assets = tmp_path / "Assets"
     assets.mkdir()
@@ -607,7 +607,7 @@ def test_raw_filesystem_handle_rechecks_redirect_before_every_io(
 
 
 def test_raw_filesystem_query_ignores_a_redirected_subtree(monkeypatch, tmp_path):
-    import Infernux.core.sandbox_files as sandbox_files
+    import infernux.core.sandbox_files as sandbox_files
 
     assets = tmp_path / "Assets"
     mods = assets / "Mods"
@@ -696,7 +696,7 @@ def test_raw_filesystem_create_stays_on_open_parent_when_path_is_redirected(
 def test_windows_raw_filesystem_delete_rejects_leaf_redirected_during_open(
     monkeypatch, tmp_path
 ):
-    import Infernux.core.sandbox_files as sandbox_files
+    import infernux.core.sandbox_files as sandbox_files
 
     assets = tmp_path / "Assets"
     assets.mkdir()
@@ -734,7 +734,7 @@ def test_windows_raw_filesystem_delete_rejects_leaf_redirected_during_open(
 def test_windows_raw_filesystem_create_stays_on_open_parent_when_parent_moves(
     monkeypatch, tmp_path
 ):
-    import Infernux.core.sandbox_files as sandbox_files
+    import infernux.core.sandbox_files as sandbox_files
 
     assets = tmp_path / "Assets"
     mods = assets / "Mods"

@@ -1,7 +1,7 @@
 # Texture
 
 <div class="class-info">
-类位于 <b>Infernux.core</b>
+类位于 <b>infernux.core</b>
 </div>
 
 ## 描述

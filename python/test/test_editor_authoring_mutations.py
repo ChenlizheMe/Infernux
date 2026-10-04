@@ -4,12 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     AuthoringMutationService,
     DocumentKind,
     DocumentRegistry,
 )
-from Infernux.engine.undo import UndoCommand, UndoManager
+from infernux.engine.undo import UndoCommand, UndoManager
 
 
 class _AuthoringController:
@@ -198,7 +198,7 @@ def test_applied_authoring_command_rolls_back_when_journal_is_unavailable():
 
 
 def test_authoring_panels_cannot_restore_private_history_or_save_authorities():
-    ui_root = Path(__file__).resolve().parents[1] / "Infernux" / "engine" / "ui"
+    ui_root = Path(__file__).resolve().parents[1] / "infernux" / "engine" / "ui"
     panel_names = (
         "node_graph_editor_panel.py",
         "particle_graph_editor_panel.py",

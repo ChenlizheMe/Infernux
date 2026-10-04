@@ -248,7 +248,7 @@ def _windows_metadata_options(
     original_filename: str,
 ) -> list[str]:
     file_version = _windows_file_version(_project_version(source_root))
-    icon = source_root / "python" / "Infernux" / "resources" / "icons" / "icon.ico"
+    icon = source_root / "python" / "infernux" / "resources" / "icons" / "icon.ico"
     if not icon.is_file():
         raise RuntimeError(f"Windows application icon is missing: {icon}")
     return [

@@ -11,10 +11,10 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from Infernux import release_engine
-from Infernux.engine.path_utils import resolved_path, same_path
-from Infernux.host.commands import MainThreadCommandQueue
-from Infernux.host.editor import EditorAutomationHost
+from infernux import release_engine
+from infernux.engine.path_utils import resolved_path, same_path
+from infernux.host.commands import MainThreadCommandQueue
+from infernux.host.editor import EditorAutomationHost
 
 
 _FATAL_PATTERNS = (
@@ -266,7 +266,7 @@ def _run_smoke(
             label="initial scene",
         )
 
-        from Infernux.engine.scene_manager import SceneFileManager
+        from infernux.engine.scene_manager import SceneFileManager
 
         manager = run("scene-manager", SceneFileManager.instance)
         if manager is None:
@@ -307,7 +307,7 @@ def _run_smoke(
                 # authorization to answer Discard for this disposable,
                 # pathless bootstrap document. Never bypass the transaction or
                 # mark a document clean behind the editor's back.
-                from Infernux.engine.ui.dirty_panel_confirmation import (
+                from infernux.engine.ui.dirty_panel_confirmation import (
                     DirtyPanelConfirmationCoordinator,
                 )
 
@@ -345,7 +345,7 @@ def _run_smoke(
         _emit("editor-ready", project=project, scene=scene_path, saved=True)
 
         if native_open_dialog or native_save_dialog:
-            from Infernux.lib import _Infernux as native
+            from infernux.lib import _Infernux as native
 
             if native_open_dialog:
                 result = run_dialog(
@@ -393,14 +393,14 @@ def _run_smoke(
 
         game_input_capture: dict[str, object] | None = None
         if verify_game_input_capture:
-            from Infernux.engine.interaction import (
+            from infernux.engine.interaction import (
                 EditorCommand,
                 KeyChord,
                 ShortcutBinding,
                 ShortcutScope,
             )
-            from Infernux.engine.ui import ClosablePanel, EditorServices
-            from Infernux.input import Input
+            from infernux.engine.ui import ClosablePanel, EditorServices
+            from infernux.input import Input
 
             command_id = "acceptance.game_input_capture_probe"
             binding_id = "acceptance.game_input_capture_probe.left"
@@ -437,7 +437,7 @@ def _run_smoke(
             route_revision = int(run("register-game-input-probe", register_capture_probe))
 
             def game_input_focus_state() -> dict[str, object]:
-                from Infernux.engine.interaction import FocusService
+                from infernux.engine.interaction import FocusService
 
                 focus = FocusService.instance().snapshot
                 return {
@@ -543,7 +543,7 @@ def _run_smoke(
             raise RuntimeError(f"Play Mode clock did not advance: {played!r}")
 
         if capture_sources:
-            from Infernux.application import Application
+            from infernux.application import Application
 
             persistent_root = run("persistent-data-path", Application.persistent_data_path)
             scene_name = os.path.splitext(os.path.basename(scene_path))[0]

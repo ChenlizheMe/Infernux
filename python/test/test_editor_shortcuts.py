@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     EditorCommand,
     EditorCommandRegistry,
     FocusService,

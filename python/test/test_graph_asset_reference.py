@@ -1,4 +1,4 @@
-from Infernux.graph.types import AssetReference
+from infernux.graph.types import AssetReference
 
 
 def test_asset_reference_uses_only_guid_for_identity_and_truthiness():

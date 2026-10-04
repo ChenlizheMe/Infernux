@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.core.assets import AssetManager
-from Infernux.core.asset_types import read_mesh_import_settings
-from Infernux.lib import AssetDependencyGraph, AssetRegistry
+from infernux.core.assets import AssetManager
+from infernux.core.asset_types import read_mesh_import_settings
+from infernux.lib import AssetDependencyGraph, AssetRegistry
 
 
 @pytest.mark.parametrize("key, value", [
@@ -19,7 +19,7 @@ from Infernux.lib import AssetDependencyGraph, AssetRegistry
     ("min_bone_weight", float("nan")),
 ])
 def test_skin_settings_reject_invalid_author_values(key, value):
-    from Infernux.core.asset_types import MeshImportSettings
+    from infernux.core.asset_types import MeshImportSettings
     data = MeshImportSettings().to_dict()
     data[key] = value
     with pytest.raises(ValueError, match=key):
@@ -27,8 +27,8 @@ def test_skin_settings_reject_invalid_author_values(key, value):
 
 
 def test_skin_settings_require_complete_current_contract_and_inspector_projection():
-    from Infernux.core.asset_types import MeshImportSettings
-    from Infernux.engine.ui import asset_details_renderer as renderer
+    from infernux.core.asset_types import MeshImportSettings
+    from infernux.engine.ui import asset_details_renderer as renderer
     data = MeshImportSettings().to_dict()
     del data["min_bone_weight"], data["max_bones_per_vertex"]
     with pytest.raises(ValueError, match="complete current field set"):
@@ -41,7 +41,7 @@ def test_skin_settings_require_complete_current_contract_and_inspector_projectio
 
 
 def test_rig_definition_settings_are_guid_backed_and_validate_exposed_nodes():
-    from Infernux.core.asset_types import MeshImportSettings
+    from infernux.core.asset_types import MeshImportSettings
     data = MeshImportSettings().to_dict()
     data.update({
         "rig_root_node": "Root",
@@ -66,7 +66,7 @@ def test_rig_definition_settings_are_guid_backed_and_validate_exposed_nodes():
 
 
 def test_humanoid_settings_use_sparse_strict_pythonic_overrides():
-    from Infernux.core.asset_types import MeshImportSettings
+    from infernux.core.asset_types import MeshImportSettings
     data = MeshImportSettings().to_dict()
     data["rig_type"] = "humanoid"
     data["humanoid_bone_overrides"] = {"hips": "mixamorig:Hips", "head": "mixamorig:Head"}
@@ -82,10 +82,10 @@ def test_humanoid_settings_use_sparse_strict_pythonic_overrides():
 
 
 def test_model_data_refresh_preserves_tab_but_selection_change_resets_it(tmp_path, monkeypatch):
-    from Infernux.core.asset_types import MeshImportSettings
-    from Infernux.engine.ui import asset_details_renderer as renderer
-    from Infernux.engine.ui import project_file_ops
-    from Infernux.engine.interaction import AssetMutation, AssetMutationKind
+    from infernux.core.asset_types import MeshImportSettings
+    from infernux.engine.ui import asset_details_renderer as renderer
+    from infernux.engine.ui import project_file_ops
+    from infernux.engine.interaction import AssetMutation, AssetMutationKind
     state = renderer._State()
     monkeypatch.setattr(renderer, "_state", state)
     monkeypatch.setattr(renderer, "read_meta_file", lambda _: {})
@@ -315,8 +315,8 @@ def test_rig_animation_apply_replaces_companion_without_losing_source_inventory(
 
 
 def test_model_pages_do_not_publish_or_discard_shared_drafts(monkeypatch):
-    from Infernux.core.asset_types import MeshImportSettings
-    from Infernux.engine.ui import asset_details_renderer as renderer
+    from infernux.core.asset_types import MeshImportSettings
+    from infernux.engine.ui import asset_details_renderer as renderer
     renderer._ensure_categories()
     state = renderer._State()
     state.file_path = "model.fbx"
@@ -351,8 +351,8 @@ def test_model_pages_do_not_publish_or_discard_shared_drafts(monkeypatch):
 
 
 def test_material_none_hides_source_operations_without_discarding_remaps(monkeypatch):
-    from Infernux.core.asset_types import MeshImportSettings
-    from Infernux.engine.ui import asset_details_renderer as renderer
+    from infernux.core.asset_types import MeshImportSettings
+    from infernux.engine.ui import asset_details_renderer as renderer
     renderer._ensure_categories()
     state = renderer._State()
     state.file_path = "model.fbx"

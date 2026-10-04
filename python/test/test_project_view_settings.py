@@ -4,7 +4,7 @@ import importlib
 
 import pytest
 
-from Infernux.engine.project_view_settings import (
+from infernux.engine.project_view_settings import (
     load_project_view_settings,
     project_view_settings_path,
     write_project_view_settings_section,
@@ -31,7 +31,7 @@ def test_local_project_view_settings_preserve_other_sections(tmp_path):
     ("ui_editor_panel", "UIEditorPanel", "_load_view_settings"),
 ])
 def test_opening_editor_views_does_not_create_shared_settings(tmp_path, monkeypatch, panel_module, class_name, loader):
-    module = importlib.import_module("Infernux.engine.ui." + panel_module)
+    module = importlib.import_module("infernux.engine.ui." + panel_module)
     monkeypatch.setattr(module, "get_project_root", lambda: str(tmp_path))
     panel = getattr(module, class_name)()
     getattr(panel, loader)()

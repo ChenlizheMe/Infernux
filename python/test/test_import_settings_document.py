@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from Infernux.core.asset_types import SpriteFrame, TextureImportSettings, TextureType
-from Infernux.engine.interaction import AuthoringMutationService, DocumentRegistry
-from Infernux.engine.interaction import EditorInteractionCore
-from Infernux.engine.interaction.modals import ModalService
-from Infernux.engine.undo import UndoManager
-from Infernux.engine.ui import asset_details_renderer as details
-from Infernux.engine.ui.asset_import_progress import AssetImportProgressService
+from infernux.core.asset_types import SpriteFrame, TextureImportSettings, TextureType
+from infernux.engine.interaction import AuthoringMutationService, DocumentRegistry
+from infernux.engine.interaction import EditorInteractionCore
+from infernux.engine.interaction.modals import ModalService
+from infernux.engine.undo import UndoManager
+from infernux.engine.ui import asset_details_renderer as details
+from infernux.engine.ui.asset_import_progress import AssetImportProgressService
 
 
 class _ExecutionLayer:
@@ -34,11 +34,11 @@ def test_import_settings_are_document_backed_and_undoable(monkeypatch):
     EditorInteractionCore._instance = core
     AssetImportProgressService._instance = None
     monkeypatch.setattr(
-        "Infernux.core.assets.AssetManager.flush_pending_gpu_texture_reloads",
+        "infernux.core.assets.AssetManager.flush_pending_gpu_texture_reloads",
         lambda **_kwargs: 0,
     )
     monkeypatch.setattr(
-        "Infernux.engine.ui.asset_resource_preview.ensure_imported_texture_preview",
+        "infernux.engine.ui.asset_resource_preview.ensure_imported_texture_preview",
         lambda _path: True,
     )
     try:
@@ -186,7 +186,7 @@ def test_import_settings_edit_does_not_reserve_revision_without_journal():
 
 
 def test_sprite_reslice_undo_restores_subresource_identity_and_selection():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         ContextRestoreStatus,
         EditorContextSnapshot,
         SelectionService,

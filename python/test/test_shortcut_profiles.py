@@ -5,13 +5,13 @@ import copy
 
 import pytest
 
-from Infernux.engine.interaction.shortcut_profiles import (
+from infernux.engine.interaction.shortcut_profiles import (
     DEFAULT_PROFILE_ID,
     SHORTCUT_PROFILES_SCHEMA,
     ShortcutProfileDiffKind,
     ShortcutProfileModel,
 )
-from Infernux.engine.interaction.shortcuts import (
+from infernux.engine.interaction.shortcuts import (
     KeyChord,
     ShortcutBinding,
     ShortcutPhase,

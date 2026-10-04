@@ -3,8 +3,8 @@ import pytest
 
 
 def test_ui_dependencies_require_current_native_host(monkeypatch):
-    from Infernux.lib import _Infernux as native
-    from Infernux.ui.ui_transform_dependencies import create_ui_transform_dependencies
+    from infernux.lib import _Infernux as native
+    from infernux.ui.ui_transform_dependencies import create_ui_transform_dependencies
 
     monkeypatch.setattr(native, "_UITransformDependencies", None)
     with pytest.raises(RuntimeError, match="current Infernux host"):
@@ -13,10 +13,10 @@ def test_ui_dependencies_require_current_native_host(monkeypatch):
 
 @pytest.mark.parametrize("world", [False, True])
 def test_static_ui_dependencies_do_not_enumerate_python_geometry(scene, monkeypatch, world):
-    from Infernux.lib import Vector3
-    from Infernux.ui import UICanvas, UIText
-    from Infernux.ui.inx_ui_screen_component import InxUIScreenComponent
-    import Infernux.ui.ui_render_dispatch as module
+    from infernux.lib import Vector3
+    from infernux.ui import UICanvas, UIText
+    from infernux.ui.inx_ui_screen_component import InxUIScreenComponent
+    import infernux.ui.ui_render_dispatch as module
 
     parent = scene.create_game_object("Root")
     canvas = None
@@ -55,8 +55,8 @@ def test_static_ui_dependencies_do_not_enumerate_python_geometry(scene, monkeypa
 
 
 def test_native_ui_pose_contract_and_expired_handles(scene):
-    from Infernux.lib import Vector3
-    from Infernux.lib._Infernux import _UITransformDependencies
+    from infernux.lib import Vector3
+    from infernux.lib._Infernux import _UITransformDependencies
 
     parent = scene.create_game_object("Parent")
     obj = scene.create_game_object("UI")
@@ -87,10 +87,10 @@ def test_native_ui_pose_contract_and_expired_handles(scene):
 
 
 def test_ui_binding_changes_and_material_edits_invalidate_native_snapshot(scene):
-    from Infernux.core.material import Material
-    from Infernux.lib import InxMaterial
-    from Infernux.ui import UIText
-    from Infernux.ui.ui_render_dispatch import runtime_ui_revision
+    from infernux.core.material import Material
+    from infernux.lib import InxMaterial
+    from infernux.ui import UIText
+    from infernux.ui.ui_render_dispatch import runtime_ui_revision
 
     text = UIText()
     scene.create_game_object("Text").add_py_component(text)
@@ -114,10 +114,10 @@ def test_ui_binding_changes_and_material_edits_invalidate_native_snapshot(scene)
 
 @pytest.mark.parametrize("world", [False, True])
 def test_shared_ui_materials_are_polled_once_per_publication(scene, monkeypatch, world):
-    from Infernux.core.material import Material
-    from Infernux.lib import InxMaterial
-    from Infernux.ui import UIButton, UICanvas
-    import Infernux.ui.ui_render_dispatch as module
+    from infernux.core.material import Material
+    from infernux.lib import InxMaterial
+    from infernux.ui import UIButton, UICanvas
+    import infernux.ui.ui_render_dispatch as module
 
     root = scene.create_game_object("Shared UI materials")
     canvas = None if world else root.add_py_component(UICanvas())
@@ -166,12 +166,12 @@ def test_shared_ui_materials_are_polled_once_per_publication(scene, monkeypatch,
 
 
 def test_unresolved_ui_material_aliases_do_not_change_snapshot_when_resolved(scene, monkeypatch):
-    from Infernux.core.asset_ref import MaterialRef
-    from Infernux.core.assets import AssetManager
-    from Infernux.core.material import Material
-    from Infernux.lib import InxMaterial
-    from Infernux.ui import UIText
-    import Infernux.ui.ui_render_dispatch as module
+    from infernux.core.asset_ref import MaterialRef
+    from infernux.core.assets import AssetManager
+    from infernux.core.material import Material
+    from infernux.lib import InxMaterial
+    from infernux.ui import UIText
+    import infernux.ui.ui_render_dispatch as module
 
     material = Material(InxMaterial("Published UI material", "Unlit"))
     loaded = []

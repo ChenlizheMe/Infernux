@@ -15,11 +15,11 @@ from unittest.mock import patch
 
 import pytest
 
-from Infernux.engine import player_package_native
-from Infernux.engine.player_package_native import read_entry
-from Infernux.plugins import InxPackage, PluginManager
-from Infernux.plugins.content import parse_markdown_blocks
-from Infernux.plugins.official import install_default_libraries
+from infernux.engine import player_package_native
+from infernux.engine.player_package_native import read_entry
+from infernux.plugins import InxPackage, PluginManager
+from infernux.plugins.content import parse_markdown_blocks
+from infernux.plugins.official import install_default_libraries
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +40,7 @@ def _native_available() -> bool:
 
 @pytest.mark.skipif(not _native_available(), reason="native InxPack backend unavailable")
 def test_export_uses_writer_manifest_without_reading_its_own_package(tmp_path):
-    import Infernux.plugins.package as package_module
+    import infernux.plugins.package as package_module
 
     source = tmp_path / "author"
     source.mkdir()
@@ -113,8 +113,8 @@ def test_repository_package_scripts_are_standalone_deterministic_and_native_comp
     )
     scripts = [(root / "package.py").read_bytes() for root in plugin_roots]
     for script in scripts:
-        assert b"from Infernux" not in script
-        assert b"import Infernux" not in script
+        assert b"from infernux" not in script
+        assert b"import infernux" not in script
 
     outputs = (tmp_path / "first.inxpkg", tmp_path / "second.inxpkg")
     for destination in outputs:
@@ -198,7 +198,7 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
     tmp_path, monkeypatch
 ):
     repository = Path(__file__).parents[2]
-    resources = repository / "python" / "Infernux" / "resources"
+    resources = repository / "python" / "infernux" / "resources"
     artifact = resources / "infernux.mcp.inxpkg"
     preset = "windows-msvc-release" if sys.platform == "win32" else "linux-clang-release"
     assert artifact.is_file(), (
@@ -357,7 +357,7 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
             time.sleep(0.05)
     assert health and health["transport"] == "streamable-http"
 
-    from Infernux.host import MainThreadCommandQueue
+    from infernux.host import MainThreadCommandQueue
     from infernux_mcp.client import _json_value, create_loopback_client
     from infernux_mcp.supervisor import SupervisorSession
 

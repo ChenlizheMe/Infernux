@@ -4,9 +4,9 @@ from copy import deepcopy
 
 import pytest
 
-from Infernux.components import InxComponent, serialized_field
-from Infernux.components.fields import get_field_schema
-from Infernux.lib import _Infernux as native
+from infernux.components import InxComponent, serialized_field
+from infernux.components.fields import get_field_schema
+from infernux.lib import _Infernux as native
 
 
 @pytest.fixture
@@ -98,14 +98,14 @@ def test_descriptor_collections_must_be_arrays(declaration, key):
 
 
 def test_engine_python_fields_survive_native_snapshot_roundtrip(declaration):
-    from Infernux.components.registry import ensure_engine_component_catalog_loaded, get_all_types
-    from Infernux.components.fields import get_serialized_fields
-    from Infernux.field_schema import FieldSchema
+    from infernux.components.registry import ensure_engine_component_catalog_loaded, get_all_types
+    from infernux.components.fields import get_serialized_fields
+    from infernux.field_schema import FieldSchema
 
     ensure_engine_component_catalog_loaded()
     component_types = {
         cls for cls in get_all_types().values()
-        if cls.__module__.startswith("Infernux.") and getattr(cls, "_uses_component_data_store", True)
+        if cls.__module__.startswith("infernux.") and getattr(cls, "_uses_component_data_store", True)
     }
     assert any(cls.__name__ == "UIText" for cls in component_types)
     documents = []
@@ -133,9 +133,9 @@ def test_engine_python_fields_survive_native_snapshot_roundtrip(declaration):
 
 
 def test_native_transform_declaration_matches_existing_scene_data(scene):
-    from Infernux.components.fields import FieldType
-    from Infernux.components.value_codec import VALUE_CODECS
-    from Infernux.field_schema import get_native_field_schema
+    from infernux.components.fields import FieldType
+    from infernux.components.value_codec import VALUE_CODECS
+    from infernux.field_schema import get_native_field_schema
 
     obj = scene.create_game_object("DeclaredTransform")
     transform = obj.get_transform()
@@ -160,9 +160,9 @@ def test_native_transform_declaration_matches_existing_scene_data(scene):
 
 @pytest.mark.parametrize("field", ["local_position", "local_euler_angles", "local_scale"])
 def test_native_transform_editor_command_uses_declared_schema_and_undo(scene, monkeypatch, field):
-    from Infernux.engine.interaction.components import ComponentCommandService
-    from Infernux.engine.interaction import serialized_properties
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction.components import ComponentCommandService
+    from infernux.engine.interaction import serialized_properties
+    from infernux.engine.undo import UndoManager
 
     transform = scene.create_game_object("SchemaCommand").get_transform()
     before = [getattr(transform, field)[i] for i in range(3)]
@@ -199,9 +199,9 @@ def test_native_transform_editor_command_uses_declared_schema_and_undo(scene, mo
 
 
 def test_camera_declarations_match_native_defaults_and_wrapper_metadata(scene):
-    from Infernux.components.builtin.camera import Camera
-    from Infernux.components.builtin_component import CppProperty
-    from Infernux.components.value_codec import VALUE_CODECS
+    from infernux.components.builtin.camera import Camera
+    from infernux.components.builtin_component import CppProperty
+    from infernux.components.value_codec import VALUE_CODECS
 
     obj = scene.create_game_object("DeclaredCamera")
     camera = obj.add_component("Camera")
@@ -244,8 +244,8 @@ def test_camera_declarations_match_native_defaults_and_wrapper_metadata(scene):
 
 
 def test_light_declaration_owns_serialized_shape_and_wrapper_metadata(scene):
-    from Infernux.components.builtin.light import Light
-    from Infernux.components.builtin_component import CppProperty
+    from infernux.components.builtin.light import Light
+    from infernux.components.builtin_component import CppProperty
 
     obj = scene.create_game_object("DeclaredLight")
     light = obj.add_component("Light")
@@ -285,10 +285,10 @@ def test_light_declaration_owns_serialized_shape_and_wrapper_metadata(scene):
 
 
 def test_audio_source_declaration_owns_public_fields_and_coupled_track_count(scene):
-    from Infernux.components.builtin.audio_source import AudioSource
-    from Infernux.components.builtin_component import CppProperty
-    from Infernux.engine.interaction.components import ComponentCommandService
-    from Infernux.engine.undo import UndoManager
+    from infernux.components.builtin.audio_source import AudioSource
+    from infernux.components.builtin_component import CppProperty
+    from infernux.engine.interaction.components import ComponentCommandService
+    from infernux.engine.undo import UndoManager
 
     owner = scene.create_game_object("DeclaredAudioSource")
     native_source = owner.add_component("AudioSource")
@@ -342,11 +342,11 @@ def test_collider_declarations_own_serialized_fields_and_wrapper_schema(
 ):
     import importlib
 
-    from Infernux.components.builtin_component import CppProperty
-    from Infernux.components.value_codec import VALUE_CODECS
+    from infernux.components.builtin_component import CppProperty
+    from infernux.components.value_codec import VALUE_CODECS
 
     wrapper_type = getattr(
-        importlib.import_module(f"Infernux.components.builtin.{wrapper_module}"),
+        importlib.import_module(f"infernux.components.builtin.{wrapper_module}"),
         wrapper_name,
     )
     owner = scene.create_game_object(f"Declared{type_name}")
@@ -378,11 +378,11 @@ def test_collider_declarations_own_serialized_fields_and_wrapper_schema(
 
 
 def test_box_collider_editor_command_uses_native_schema_material_boundary_and_undo(scene):
-    from Infernux.components.builtin.box_collider import BoxCollider
-    from Infernux.core.asset_ref import PhysicMaterialRef
-    from Infernux.engine.interaction.components import ComponentCommandService
-    from Infernux.engine.undo import UndoManager
-    from Infernux.lib import Vector3
+    from infernux.components.builtin.box_collider import BoxCollider
+    from infernux.core.asset_ref import PhysicMaterialRef
+    from infernux.engine.interaction.components import ComponentCommandService
+    from infernux.engine.undo import UndoManager
+    from infernux.lib import Vector3
 
     owner = scene.create_game_object("ColliderSchemaEdit")
     native_collider = owner.add_component("BoxCollider")
@@ -408,12 +408,12 @@ def test_box_collider_editor_command_uses_native_schema_material_boundary_and_un
 
 
 def test_rigidbody_declaration_owns_serialized_defaults_and_wrapper_schema(scene):
-    from Infernux.components.builtin.rigidbody import (
+    from infernux.components.builtin.rigidbody import (
         CollisionDetectionMode,
         Rigidbody,
         RigidbodyInterpolation,
     )
-    from Infernux.components.builtin_component import CppProperty
+    from infernux.components.builtin_component import CppProperty
 
     obj = scene.create_game_object("DeclaredRigidbody")
     rigidbody = obj.add_component("Rigidbody")
@@ -452,10 +452,10 @@ def test_rigidbody_declaration_owns_serialized_defaults_and_wrapper_schema(scene
     ("interpolation", native.RigidbodyInterpolation.Interpolate),
 ])
 def test_rigidbody_editor_command_uses_declared_schema_and_undo(scene, monkeypatch, field, candidate):
-    from Infernux.components.builtin.rigidbody import Rigidbody
-    from Infernux.engine.interaction.components import ComponentCommandService
-    from Infernux.engine.interaction import serialized_properties
-    from Infernux.engine.undo import UndoManager
+    from infernux.components.builtin.rigidbody import Rigidbody
+    from infernux.engine.interaction.components import ComponentCommandService
+    from infernux.engine.interaction import serialized_properties
+    from infernux.engine.undo import UndoManager
 
     obj = scene.create_game_object("RigidbodySchemaEdit")
     rigidbody = obj.add_component("Rigidbody")
@@ -497,11 +497,11 @@ def test_native_joint_component_reference_uses_document_id_and_undo(
 ):
     import importlib
 
-    from Infernux.engine.interaction.components import ComponentCommandService
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction.components import ComponentCommandService
+    from infernux.engine.undo import UndoManager
 
     wrapper_type = getattr(
-        importlib.import_module(f"Infernux.components.builtin.{wrapper_module}"),
+        importlib.import_module(f"infernux.components.builtin.{wrapper_module}"),
         wrapper_name,
     )
     support = scene.create_game_object(f"{type_name}Support")
@@ -540,11 +540,11 @@ def test_native_joint_component_reference_uses_document_id_and_undo(
     ("background_color", [0.2, 0.3, 0.4, 1.0]), ("dithering", True),
 ])
 def test_camera_wrapper_edits_use_native_schema_and_common_codec(scene, monkeypatch, field, candidate):
-    from Infernux.components.builtin.camera import Camera
-    from Infernux.components.value_codec import VALUE_CODECS
-    from Infernux.engine.interaction.components import ComponentCommandService
-    from Infernux.engine.interaction import serialized_properties
-    from Infernux.engine.undo import UndoManager
+    from infernux.components.builtin.camera import Camera
+    from infernux.components.value_codec import VALUE_CODECS
+    from infernux.engine.interaction.components import ComponentCommandService
+    from infernux.engine.interaction import serialized_properties
+    from infernux.engine.undo import UndoManager
 
     obj = scene.create_game_object("CameraSchemaEdit")
     camera = obj.add_component("Camera")

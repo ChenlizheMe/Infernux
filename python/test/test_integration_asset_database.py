@@ -10,11 +10,11 @@ import threading
 import numpy as np
 import pytest
 
-from Infernux.lib import AssetDependencyGraph, AssetMutationErrorCode, AssetRegistry, InxMaterial, ResourceType
-from Infernux.core.assets import AssetManager
-from Infernux.core.asset_types import read_mesh_import_settings
-from Infernux.engine.path_utils import same_path
-from Infernux.particle import (
+from infernux.lib import AssetDependencyGraph, AssetMutationErrorCode, AssetRegistry, InxMaterial, ResourceType
+from infernux.core.assets import AssetManager
+from infernux.core.asset_types import read_mesh_import_settings
+from infernux.engine.path_utils import same_path
+from infernux.particle import (
     AssetReference,
     ParticleArtifactRegistry,
     ParticleGraphAsset,
@@ -76,7 +76,7 @@ def test_mesh_position_publication_preserves_identity_and_source(engine, tmp_pat
 
 
 def test_shared_mesh_position_publication_keeps_collision_until_recook(engine, scene, tmp_path: Path):
-    from Infernux.lib import MeshCollider as NativeMeshCollider, Physics, Vector3
+    from infernux.lib import MeshCollider as NativeMeshCollider, Physics, Vector3
 
     database = engine.get_asset_database()
     registry = AssetRegistry.instance()
@@ -166,9 +166,9 @@ def test_authored_mesh_import_restores_edited_geometry_with_independent_identity
 
 
 def test_authored_mesh_cooked_artifact_validates_and_loads_without_source(engine, tmp_path: Path):
-    from Infernux.engine.runtime_artifact_catalog import validate_artifact, artifact_source_hash
-    from Infernux.engine.player_package_native import write_pack, read_entry
-    from Infernux.engine.game_builder import GameBuilder
+    from infernux.engine.runtime_artifact_catalog import validate_artifact, artifact_source_hash
+    from infernux.engine.player_package_native import write_pack, read_entry
+    from infernux.engine.game_builder import GameBuilder
 
     database = engine.get_asset_database()
     registry = AssetRegistry.instance()
@@ -225,8 +225,8 @@ def test_authored_mesh_cooked_artifact_validates_and_loads_without_source(engine
 
 
 def test_mesh_copy_command_undo_redo_restores_identity(engine, tmp_path: Path):
-    from Infernux.engine.interaction import EditorActionJournal, ProjectAssetCommandService, SelectionService
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import EditorActionJournal, ProjectAssetCommandService, SelectionService
+    from infernux.engine.undo import UndoManager
 
     database = engine.get_asset_database()
     registry = AssetRegistry.instance()
@@ -275,9 +275,9 @@ def test_mesh_copy_command_undo_redo_restores_identity(engine, tmp_path: Path):
 
 
 def test_mesh_assignment_command_restores_complete_source(engine, scene, tmp_path: Path, monkeypatch):
-    from Infernux.lib import PrimitiveType
-    from Infernux.engine.interaction import ComponentCommandService, EditorActionJournal
-    from Infernux.engine.undo import UndoManager
+    from infernux.lib import PrimitiveType
+    from infernux.engine.interaction import ComponentCommandService, EditorActionJournal
+    from infernux.engine.undo import UndoManager
 
     database = engine.get_asset_database()
     source = tmp_path / "assigned.obj"
@@ -570,7 +570,7 @@ def test_particle_script_import_uses_script_resource_and_particle_aot(engine, tm
     asset_db = engine.get_asset_database()
     source = tmp_path / "Sparks.particle.py"
     source.write_text(
-        """from Infernux.particle import (
+        """from infernux.particle import (
     AssetReference, EmitterSettings, ParticleEmitter, ParticleScript
 )
 
@@ -956,13 +956,13 @@ def test_asset_database_batch_rejects_destination_guid_collision(engine, tmp_pat
 def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
     engine, tmp_path: Path
 ):
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         AssetMutationService,
         DocumentRegistry,
         SelectionService,
         SelectionTarget,
     )
-    from Infernux.engine.ui import project_file_ops
+    from infernux.engine.ui import project_file_ops
 
     asset_db = engine.get_asset_database()
     source_dir = tmp_path / "Source"
@@ -1019,7 +1019,7 @@ def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
 def test_project_shader_move_preserves_material_guid_reference_without_rewrite(
     engine, tmp_path: Path
 ):
-    from Infernux.engine.ui import project_file_ops
+    from infernux.engine.ui import project_file_ops
 
     database = engine.get_asset_database()
     graph = AssetDependencyGraph.instance()
@@ -1598,7 +1598,7 @@ def test_refresh_rejects_invalid_metadata_without_rewriting_it(engine):
 
 
 def test_builtin_read_only_resources_do_not_create_metadata(engine):
-    from Infernux.resources import resources_path
+    from infernux.resources import resources_path
 
     resource_root = Path(resources_path)
     assert engine.get_asset_database().contains_path(str(resource_root / "shaders" / "standard.vert"))

@@ -16,8 +16,8 @@ _SOURCE_PYTHON = _REPOSITORY_ROOT / "python"
 if _SOURCE_PYTHON.is_dir() and str(_SOURCE_PYTHON) not in sys.path:
     sys.path.insert(0, str(_SOURCE_PYTHON))
 
-from Infernux.plugins import InxPackage
-from Infernux.plugins.content import discover_plugin_pages, merge_plugin_pages
+from infernux.plugins import InxPackage
+from infernux.plugins.content import discover_plugin_pages, merge_plugin_pages
 
 
 _DISTRIBUTION_BASE_URL = "https://downloads.infernux-engine.com"

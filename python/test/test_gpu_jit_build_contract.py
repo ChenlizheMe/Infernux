@@ -2,11 +2,11 @@ from pathlib import Path
 
 
 def test_source_checkout_gpu_vendor_follows_the_loaded_native_directory(tmp_path, monkeypatch):
-    from Infernux import lib as engine_lib
-    from Infernux._compiler import taichi as compiler_loader
+    from infernux import lib as engine_lib
+    from infernux._compiler import taichi as compiler_loader
 
     native_dir = tmp_path / "Release"
-    vendor = tmp_path / "gpu-jit-wheel/Infernux/_compiler/taichi/_vendor/taichi"
+    vendor = tmp_path / "gpu-jit-wheel/infernux/_compiler/taichi/_vendor/taichi"
     native_dir.mkdir()
     vendor.mkdir(parents=True)
     monkeypatch.delenv("INFERNUX_GPU_JIT_VENDOR_DIR", raising=False)

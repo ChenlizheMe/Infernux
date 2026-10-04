@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     CloseCoordinator,
     DocumentActionResult,
     DocumentActionStatus,
@@ -17,15 +17,15 @@ from Infernux.engine.interaction import (
     DocumentRegistry,
     ModalService,
 )
-from Infernux.engine.ui.dirty_panel_confirmation import (
+from infernux.engine.ui.dirty_panel_confirmation import (
     DirtyPanelConfirmationCoordinator,
 )
-from Infernux.engine.ui.closable_panel import ClosablePanel
+from infernux.engine.ui.closable_panel import ClosablePanel
 
 
 @pytest.fixture(autouse=True)
 def _isolate_dirty_confirmation_singleton():
-    from Infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.interaction import EditorInteractionCore
 
     coordinator_type = _current_confirmation_type()
     previous = coordinator_type._instance
@@ -41,7 +41,7 @@ def _isolate_dirty_confirmation_singleton():
 
 def _current_confirmation_type():
     module = importlib.import_module(
-        "Infernux.engine.ui.dirty_panel_confirmation"
+        "infernux.engine.ui.dirty_panel_confirmation"
     )
     return module.DirtyPanelConfirmationCoordinator
 
@@ -233,7 +233,7 @@ def test_document_replacement_resolves_multiple_dirty_scenes_in_one_transaction(
 
 
 def test_exit_prompts_once_for_a_document_with_two_views():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         DocumentCapability,
         DocumentKind,
         DocumentRegistry,
@@ -461,8 +461,8 @@ def test_exit_confirmation_renders_from_global_modal_portal():
 
 
 def test_exit_confirmation_reveals_the_view_that_owns_the_dirty_revision():
-    from Infernux.engine.interaction import FocusService
-    from Infernux.engine.ui.window_manager import WindowManager
+    from infernux.engine.interaction import FocusService
+    from infernux.engine.ui.window_manager import WindowManager
 
     registry = DocumentRegistry.instance()
     document = registry.create(
@@ -550,7 +550,7 @@ def test_titlebar_close_restores_source_tab_before_modal_focus():
     coordinator = _dirty_confirmation()
     coordinator_type = _current_confirmation_type()
     previous = coordinator_type._instance
-    from Infernux.engine.interaction import FocusService
+    from infernux.engine.interaction import FocusService
 
     previous_focus = FocusService._instance
     focus = FocusService()
@@ -652,9 +652,9 @@ def test_imgui_renders_modals_in_the_overlay_layer():
     assert "drawData != nullptr && drawData->Valid" in publication
 
 
-import Infernux.lib as native
-from Infernux.engine.ui import project_file_ops
-from Infernux.engine.ui.project_delete_confirmation import ProjectDeleteConfirmationCoordinator
+import infernux.lib as native
+from infernux.engine.ui import project_file_ops
+from infernux.engine.ui.project_delete_confirmation import ProjectDeleteConfirmationCoordinator
 
 
 def _project_delete_confirmation() -> ProjectDeleteConfirmationCoordinator:
@@ -766,7 +766,7 @@ def test_project_delete_modal_confirms_deduplicated_existing_paths(tmp_path):
 
 def test_project_delete_confirmation_waits_for_global_history(monkeypatch, tmp_path):
     from types import SimpleNamespace
-    from Infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.interaction import EditorInteractionCore
 
     asset = tmp_path / "Busy.prefab"
     asset.write_text("prefab", encoding="utf-8")
@@ -815,7 +815,7 @@ def test_prefab_delete_preserves_missing_linkage_for_undo():
 
 
 def test_project_delete_uses_editor_modal_not_platform_message_box():
-    source = Path("python/Infernux/engine/bootstrap_project.py").read_text(encoding="utf-8")
+    source = Path("python/infernux/engine/bootstrap_project.py").read_text(encoding="utf-8")
     assert "ProjectDeleteConfirmationCoordinator" in source
     assert "MessageBoxW" not in source
     assert "ctypes.windll" not in source
@@ -834,7 +834,7 @@ def test_project_script_delete_uses_meta_guid_when_database_path_lookup_misses(m
         def get_guid_from_path(_path):
             return ""
 
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     delete_calls = []
 

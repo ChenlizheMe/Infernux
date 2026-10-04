@@ -4,8 +4,8 @@ import json
 import numpy as np
 import pytest
 
-from Infernux.components.builtin.mesh_renderer import MeshRenderer
-from Infernux import vector3
+from infernux.components.builtin.mesh_renderer import MeshRenderer
+from infernux import vector3
 
 
 def test_renderer_parameters_layer_over_shared_material_without_mutation(scene):
@@ -155,7 +155,7 @@ def test_inline_mesh_exposes_canonical_interleaved_vertex_storage(scene):
 
 
 def test_vertex_buffer_requires_gpu_inx_buffer(scene):
-    from Infernux.compute import buffer
+    from infernux.compute import buffer
 
     renderer = scene.create_game_object("resident mesh contract").add_component("MeshRenderer")
     renderer.set_inline_mesh_data(
@@ -219,7 +219,7 @@ def test_web_cpu_mesh_publication_is_coalesced_to_native_frame(scene, monkeypatc
     stream = renderer.create_vertex_buffer()
     renderer.set_vertex_buffer(stream, (0, 0, 0), (1, 1, 0))
 
-    from Infernux.compute import (
+    from infernux.compute import (
         _begin_cpu_mesh_frame,
         _cpu_dirty_mesh_buffers,
         _end_cpu_mesh_frame,
@@ -311,7 +311,7 @@ def test_generated_normals_preserve_split_vertices_and_degenerate_faces(scene):
 
 
 def test_inline_geometry_generation_and_world_bounds_are_authoritative(scene):
-    from Infernux.lib import Vector3
+    from infernux.lib import Vector3
 
     go = scene.create_game_object("versioned bounds")
     renderer = go.add_component("MeshRenderer")
@@ -341,7 +341,7 @@ def test_inline_geometry_generation_and_world_bounds_are_authoritative(scene):
 
 @pytest.mark.parametrize("raw_native", [False, True])
 def test_visual_mesh_update_requires_explicit_collision_recook(scene, raw_native):
-    from Infernux.lib import MeshCollider as NativeMeshCollider, Physics, Vector3
+    from infernux.lib import MeshCollider as NativeMeshCollider, Physics, Vector3
 
     NativeMeshCollider.clear_cooking_cache()
     go = scene.create_game_object("deforming surface")
@@ -374,7 +374,7 @@ def test_visual_mesh_update_requires_explicit_collision_recook(scene, raw_native
 
 
 def test_unbound_collision_recook_is_not_silently_ignored():
-    from Infernux.components.builtin.mesh_collider import MeshCollider
+    from infernux.components.builtin.mesh_collider import MeshCollider
 
     with pytest.raises(ReferenceError):
         MeshCollider().recook()
@@ -382,7 +382,7 @@ def test_unbound_collision_recook_is_not_silently_ignored():
 
 @pytest.mark.parametrize("supersede", [False, True])
 def test_recook_uses_requested_geometry_while_visual_mesh_keeps_changing(scene, supersede):
-    from Infernux.lib import GameObject, MeshCollider as NativeMeshCollider, Physics, Vector3
+    from infernux.lib import GameObject, MeshCollider as NativeMeshCollider, Physics, Vector3
 
     NativeMeshCollider.clear_cooking_cache()
     go = scene.create_game_object("cooking snapshot")
@@ -436,7 +436,7 @@ def test_recook_uses_requested_geometry_while_visual_mesh_keeps_changing(scene, 
 @pytest.mark.parametrize("compound", [False, True])
 @pytest.mark.parametrize("worker_failure", [False, True])
 def test_failed_recook_preserves_complete_collision_and_can_be_replaced(scene, compound, worker_failure):
-    from Infernux.lib import Physics, Vector3
+    from infernux.lib import Physics, Vector3
 
     go = scene.create_game_object("atomic collision replacement")
     renderer = go.add_component("MeshRenderer")
@@ -475,7 +475,7 @@ def test_failed_recook_preserves_complete_collision_and_can_be_replaced(scene, c
 
 
 def test_destroyed_cooking_owner_cannot_publish_to_replacement(scene):
-    from Infernux.lib import MeshCollider as NativeMeshCollider, Physics, Vector3
+    from infernux.lib import MeshCollider as NativeMeshCollider, Physics, Vector3
 
     NativeMeshCollider.clear_cooking_cache()
     positions = np.array([[-1, 0, -1], [-1, 0, 1], [1, 0, -1], [1, 0, 1]], dtype=np.float32)

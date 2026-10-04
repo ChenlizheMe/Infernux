@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.plugins import PluginManager
-from Infernux.host.commands import MainThreadCommandQueue
+from infernux.plugins import PluginManager
+from infernux.host.commands import MainThreadCommandQueue
 
 
 @pytest.fixture

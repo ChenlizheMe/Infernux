@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine import filesystem
+from infernux.engine import filesystem
 
 
 def setup_publication(monkeypatch, *, platform="win32", errors=()):

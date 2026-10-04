@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from Infernux.engine._bootstrap_panels import BootstrapPanelsMixin
-from Infernux.engine.interaction import (
+from infernux.engine._bootstrap_panels import BootstrapPanelsMixin
+from infernux.engine.interaction import (
     EditorCommand,
     EditorCommandRegistry,
     FocusService,

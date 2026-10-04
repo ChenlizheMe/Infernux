@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-from Infernux.input import Input
-from Infernux.lib import (
+from infernux.input import Input
+from infernux.lib import (
     InputManager,
     InxGUIRenderable,
     get_gui_semantic_snapshot,

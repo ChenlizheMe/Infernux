@@ -1,4 +1,4 @@
-"""Tests for Infernux.coroutine — yield instructions, Coroutine, CoroutineScheduler."""
+"""Tests for infernux.coroutine — yield instructions, Coroutine, CoroutineScheduler."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import time as stdlib_time
 
 import pytest
 
-from Infernux.coroutine import (
+from infernux.coroutine import (
     Coroutine,
     CoroutineScheduler,
     WaitForEndOfFrame,
@@ -18,7 +18,7 @@ from Infernux.coroutine import (
     WaitWhile,
     notify_runtime_epoch_published,
 )
-from Infernux.engine.runtime_dispatch import RuntimeRevisionEpoch
+from infernux.engine.runtime_dispatch import RuntimeRevisionEpoch
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -433,7 +433,7 @@ class TestCoroutineScheduler:
         assert sched.count == 0
 
     def test_old_coroutine_keeps_old_body_and_new_start_uses_new_epoch(self, monkeypatch):
-        import Infernux.engine.runtime_dispatch as runtime_dispatch
+        import infernux.engine.runtime_dispatch as runtime_dispatch
 
         old_epoch = RuntimeRevisionEpoch(101, {})
         new_epoch = RuntimeRevisionEpoch(102, {})
@@ -470,7 +470,7 @@ class TestCoroutineScheduler:
         assert scheduler.stale_epoch_coroutine_count == 0
 
     def test_epoch_diagnostic_and_stop_cleanup(self, monkeypatch):
-        import Infernux.engine.runtime_dispatch as runtime_dispatch
+        import infernux.engine.runtime_dispatch as runtime_dispatch
 
         old_epoch = RuntimeRevisionEpoch(201, {})
         new_epoch = RuntimeRevisionEpoch(202, {})
@@ -495,7 +495,7 @@ class TestCoroutineScheduler:
         assert scheduler.diagnostics()["active_count"] == 0
 
     def test_rolled_back_epoch_does_not_leave_future_epoch_state(self, monkeypatch):
-        import Infernux.engine.runtime_dispatch as runtime_dispatch
+        import infernux.engine.runtime_dispatch as runtime_dispatch
 
         old_epoch = RuntimeRevisionEpoch(301, {})
         candidate_epoch = RuntimeRevisionEpoch(302, {})
@@ -524,7 +524,7 @@ class TestCoroutineScheduler:
         self,
         monkeypatch,
     ):
-        import Infernux.engine.runtime_dispatch as runtime_dispatch
+        import infernux.engine.runtime_dispatch as runtime_dispatch
 
         stable_epoch = RuntimeRevisionEpoch(401, {})
         candidate_epoch = RuntimeRevisionEpoch(402, {})

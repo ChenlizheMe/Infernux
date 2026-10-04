@@ -4,9 +4,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from Infernux.core.material import Material
-from Infernux.lib import InxMaterial, CommandBuffer
-from Infernux.rendergraph import RendererSelection, DrawParameterBlock, RenderGraph, Format
+from infernux.core.material import Material
+from infernux.lib import InxMaterial, CommandBuffer
+from infernux.rendergraph import RendererSelection, DrawParameterBlock, RenderGraph, Format
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
 import pytest
 
-from Infernux.application import Application, _renderer_state_from_native
+from infernux.application import Application, _renderer_state_from_native
 
 
 class _Native:
@@ -133,7 +133,7 @@ def test_player_quit_requests_exit_and_keeps_exit_code():
 
 def test_data_path_uses_active_project_root(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        "Infernux.engine.project_context.get_project_root",
+        "infernux.engine.project_context.get_project_root",
         lambda: str(tmp_path),
     )
 
@@ -141,7 +141,7 @@ def test_data_path_uses_active_project_root(monkeypatch, tmp_path):
 
 
 def test_asset_path_resolves_editor_asset_and_rejects_outside_file(tmp_path):
-    from Infernux.engine.project_context import set_project_root
+    from infernux.engine.project_context import set_project_root
 
     asset = tmp_path / "Assets" / "Data" / "cache.npy"
     asset.parent.mkdir(parents=True)
@@ -163,7 +163,7 @@ def test_asset_path_resolves_editor_asset_and_rejects_outside_file(tmp_path):
 
 
 def test_package_path_resolves_verbatim_payload_and_rejects_escape(tmp_path):
-    from Infernux.engine.project_context import set_project_root
+    from infernux.engine.project_context import set_project_root
 
     payload = tmp_path / "Packages" / "vendor" / "server" / "runtime" / "config.json"
     payload.parent.mkdir(parents=True)
@@ -188,12 +188,12 @@ def test_package_path_resolves_verbatim_payload_and_rejects_escape(tmp_path):
 def test_package_paths_use_frozen_catalog_for_files_and_preserved_directories(tmp_path):
     from pathlib import Path
 
-    from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
-    from Infernux.engine.project_context import (
+    from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+    from infernux.engine.project_context import (
         set_project_root,
         set_runtime_package_resolver,
     )
-    from Infernux.lifecycle import PreloadContext
+    from infernux.lifecycle import PreloadContext
 
     payloads = {
         "Packages/vendor/server/runtime/data/message.txt": "hello",
@@ -268,7 +268,7 @@ def test_package_paths_use_frozen_catalog_for_files_and_preserved_directories(tm
 
 
 def test_temporary_project_context_restores_player_asset_resolver(tmp_path):
-    from Infernux.engine.project_context import (
+    from infernux.engine.project_context import (
         get_project_root,
         resolve_asset_path,
         set_project_root,
@@ -324,7 +324,7 @@ def test_persistent_data_path_uses_project_root_in_editor(monkeypatch, tmp_path)
     engine = _Engine()
     Application._bind_engine(engine, "editor")
     monkeypatch.setattr(
-        "Infernux.engine.project_context.get_project_root",
+        "infernux.engine.project_context.get_project_root",
         lambda: str(tmp_path),
     )
     monkeypatch.setenv("_INFERNUX_PLAYER_DATA_ROOT", str(tmp_path / "PlayerData"))

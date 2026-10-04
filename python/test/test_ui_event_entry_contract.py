@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.ui import ui_event_entry
-from Infernux.ui.ui_event_system import _canvas_raycast
+from infernux.ui import ui_event_entry
+from infernux.ui.ui_event_system import _canvas_raycast
 
 
 def test_event_parameter_reflection_failure_is_not_an_empty_signature(monkeypatch):

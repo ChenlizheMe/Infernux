@@ -1,6 +1,6 @@
 import pytest
 
-from Infernux.core.document_store import (
+from infernux.core.document_store import (
     DocumentStore,
     capture_document_file_state,
     submit_document_text,

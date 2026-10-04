@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from Infernux.core.material import Material
-from Infernux.lib import InxMaterial, DrawParameterBlock
+from infernux.core.material import Material
+from infernux.lib import InxMaterial, DrawParameterBlock
 
 
 @pytest.fixture

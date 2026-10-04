@@ -40,7 +40,7 @@ def test_default_render_assets_seed_identity_without_derived_fingerprints(tmp_pa
 def test_installed_hub_uses_the_selected_wheels_template(tmp_path, monkeypatch):
     wheel = tmp_path / "selected.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
-        archive.writestr("Infernux/resources/project_templates/default_scene.json", b'{"name":"selected"}')
+        archive.writestr("infernux/resources/project_templates/default_scene.json", b'{"name":"selected"}')
     monkeypatch.setattr(project_model, "is_frozen", lambda: True)
     model = ProjectModel(None, SimpleNamespace(get_wheel_path=lambda version: str(wheel)), object())
     assert model._read_bundled_support_file("default_scene.json", "0.4.1") == b'{"name":"selected"}'

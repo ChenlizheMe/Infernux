@@ -54,7 +54,7 @@ add_custom_target(package_python
         -P "${CMAKE_SOURCE_DIR}/cmake/ensure_python_packaging_tools.cmake"
 
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_STAGE_DIR}/build"
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_STAGE_DIR}/python/Infernux.egg-info"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_STAGE_DIR}/python/infernux.egg-info"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${INFERNUX_PYTHON_WHEEL_DIR}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${INFERNUX_PYTHON_WHEEL_DIR}"
     COMMAND ${CMAKE_COMMAND} -E chdir "${INFERNUX_PYTHON_STAGE_DIR}"

@@ -5,8 +5,8 @@ import gc
 import signal
 from types import SimpleNamespace
 
-from Infernux.engine.engine import Engine
-from Infernux.plugins import PluginManager
+from infernux.engine.engine import Engine
+from infernux.plugins import PluginManager
 
 
 class _PluginManagerProbe:
@@ -123,10 +123,10 @@ def test_sigint_finishes_current_frame_before_cleanup():
 
 @pytest.mark.parametrize("phase", ["startup", "loop", "normal"])
 def test_editor_entry_point_cleans_up_before_releasing_project_lock(monkeypatch, phase, tmp_path):
-    import Infernux.engine as entry
-    from Infernux.engine import bootstrap as bootstrap_module
-    from Infernux.engine import library_sync
-    from Infernux.version import ENGINE_VERSION
+    import infernux.engine as entry
+    from infernux.engine import bootstrap as bootstrap_module
+    from infernux.engine import library_sync
+    from infernux.version import ENGINE_VERSION
 
     (tmp_path / ".infernux-version").write_text(ENGINE_VERSION + "\n", encoding="utf-8")
 

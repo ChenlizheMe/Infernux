@@ -10,17 +10,17 @@ import uuid
 
 import pytest
 
-import Infernux.core.timeline_fsm_runtime as timeline_runtime_module
-from Infernux.core.anim_state_machine import (
+import infernux.core.timeline_fsm_runtime as timeline_runtime_module
+from infernux.core.anim_state_machine import (
     AnimCondition,
     AnimParameter,
     AnimState,
     AnimStateMachine,
     AnimTransition,
 )
-from Infernux.core.animation_timeline import AnimationTimeline, TimelineKeyframe
-from Infernux.core.timeline_fsm_runtime import TimelineFSMRuntime
-from Infernux.graph import TypeRef, ValueType
+from infernux.core.animation_timeline import AnimationTimeline, TimelineKeyframe
+from infernux.core.timeline_fsm_runtime import TimelineFSMRuntime
+from infernux.graph import TypeRef, ValueType
 
 
 _TIMELINE_PATHS = {}
@@ -107,7 +107,7 @@ def test_runtime_set_fsm_none_resets():
 
 def test_runtime_initializes_parameter_defaults(tmp_path):
     fsm = _fsm([_state(tmp_path, "A")])
-    from Infernux.core.anim_state_machine import AnimParameter
+    from infernux.core.anim_state_machine import AnimParameter
     fsm.parameters = [
         AnimParameter(name="spd", value_type=TypeRef(ValueType.F32), default=2.0),
         AnimParameter(name="flag", value_type=TypeRef(ValueType.BOOL), default=True),

@@ -4,13 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.core.asset_types import read_mesh_import_settings
-from Infernux.core.assets import AssetManager
-from Infernux.engine.interaction import AuthoringMutationService, DocumentRegistry
-from Infernux.engine.undo import UndoManager
-from Infernux.engine.ui import asset_details_renderer as details
-from Infernux.engine.ui.asset_execution_layer import AssetAccessMode, AssetExecutionLayer
-from Infernux.lib import AssetRegistry
+from infernux.core.asset_types import read_mesh_import_settings
+from infernux.core.assets import AssetManager
+from infernux.engine.interaction import AuthoringMutationService, DocumentRegistry
+from infernux.engine.undo import UndoManager
+from infernux.engine.ui import asset_details_renderer as details
+from infernux.engine.ui.asset_execution_layer import AssetAccessMode, AssetExecutionLayer
+from infernux.lib import AssetRegistry
 
 
 @pytest.fixture

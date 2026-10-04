@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.engine.python_abi import (
+from infernux.engine.python_abi import (
     BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
     player_native_library_filenames,
 )

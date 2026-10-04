@@ -10,11 +10,11 @@ import time
 import pytest
 import numpy as np
 
-from Infernux.core.assets import AssetManager
-from Infernux.core.animation_clip3d import AnimationClip3D, embedded_take_descriptors
-from Infernux.core.asset_types import read_mesh_import_settings, read_meta_file
-from Infernux.engine.model_import.toolchain import export_script
-from Infernux.lib import AssetRegistry, Vector3
+from infernux.core.assets import AssetManager
+from infernux.core.animation_clip3d import AnimationClip3D, embedded_take_descriptors
+from infernux.core.asset_types import read_mesh_import_settings, read_meta_file
+from infernux.engine.model_import.toolchain import export_script
+from infernux.lib import AssetRegistry, Vector3
 
 
 def _descendants(root):

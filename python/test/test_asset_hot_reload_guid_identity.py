@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from Infernux.components.builtin.sprite_renderer import SpriteRenderer
-from Infernux.components.spirit_animator import SpiritAnimator
-from Infernux.core.anim_state_machine import AnimState, AnimStateMachine
-from Infernux.core.asset_ref import AnimStateMachineRef
-from Infernux.engine.interaction import AssetMutation, AssetMutationKind
+from infernux.components.builtin.sprite_renderer import SpriteRenderer
+from infernux.components.spirit_animator import SpiritAnimator
+from infernux.core.anim_state_machine import AnimState, AnimStateMachine
+from infernux.core.asset_ref import AnimStateMachineRef
+from infernux.engine.interaction import AssetMutation, AssetMutationKind
 
 
 def _sprite_renderer(guid: str) -> SpriteRenderer:
@@ -98,7 +98,7 @@ def test_same_guid_move_then_modify_still_reloads_sprite(monkeypatch, tmp_path):
 def test_spirit_clip_reload_resolves_current_path_only_after_guid_match(
     monkeypatch, tmp_path
 ):
-    from Infernux.components import spirit_animator as animator_module
+    from infernux.components import spirit_animator as animator_module
 
     clip_guid = "6" * 32
     current_path = tmp_path / "moved" / "walk.animclip2d"
@@ -138,7 +138,7 @@ def test_spirit_clip_reload_resolves_current_path_only_after_guid_match(
 def test_spirit_ignores_empty_and_wrong_guid_before_database_resolution(
     monkeypatch, tmp_path
 ):
-    from Infernux.components import spirit_animator as animator_module
+    from infernux.components import spirit_animator as animator_module
 
     clip_guid = "7" * 32
 
@@ -170,7 +170,7 @@ def test_spirit_ignores_empty_and_wrong_guid_before_database_resolution(
 def test_spirit_controller_match_invalidates_reference_cache_and_uses_guid_path(
     monkeypatch, tmp_path
 ):
-    from Infernux.components import spirit_animator as animator_module
+    from infernux.components import spirit_animator as animator_module
 
     controller_guid = "9" * 32
     current_path = tmp_path / "moved" / "controller.animfsm"

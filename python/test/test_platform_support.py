@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.plugins.platform_support import (
+from infernux.plugins.platform_support import (
     ANDROID_SUPPORT_REQUIRED_MESSAGE,
     android_support_available,
     plugin_install_block_reason,
     require_plugin_support,
 )
-from Infernux.plugins import InxPackage, PluginManager
+from infernux.plugins import InxPackage, PluginManager
 
 
 def _host_id() -> str:
@@ -79,8 +79,8 @@ def test_android_plugin_is_blocked_before_hub_support_is_installed(tmp_path: Pat
 
 
 def test_editor_uses_hub_shared_storage_separately_from_preferences(tmp_path, monkeypatch):
-    from Infernux.plugins.cache import package_cache_root
-    from Infernux.plugins.platform_support import android_support_root
+    from infernux.plugins.cache import package_cache_root
+    from infernux.plugins.platform_support import android_support_root
 
     shared = tmp_path / "Hub/InfernuxHubData/Shared"
     monkeypatch.setenv("INFERNUX_SHARED_DATA_ROOT", str(shared))
@@ -143,7 +143,7 @@ def test_plugin_manager_cannot_bypass_the_hub_android_gate(
 def test_plugin_panel_marks_android_import_unavailable_before_click(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from Infernux.engine.ui.plugin_panel import PluginPanel
+    from infernux.engine.ui.plugin_panel import PluginPanel
 
     class _Registry:
         @staticmethod

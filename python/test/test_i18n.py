@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from Infernux.engine import i18n
+from infernux.engine import i18n
 
 
 def test_locale_loader_rejects_malformed_json(tmp_path, monkeypatch):
@@ -79,7 +79,7 @@ def test_set_locale_rejects_unknown_locale(monkeypatch):
 
 @pytest.mark.parametrize("locale", ["en", "zh"])
 def test_light_native_schema_labels_are_translated(locale):
-    from Infernux.field_schema import get_native_field_schemas
+    from infernux.field_schema import get_native_field_schemas
 
     table = i18n._load_locale_table(locale)
     keys = set()

@@ -1,9 +1,0 @@
-from __future__ import annotations
-
-from Infernux.engine.ui.editor_panel import FloatingEditorPanel
-
-
-class EnvironmentSettingsPanel(FloatingEditorPanel):
-    def __init__(self) -> None: ...
-    def request_close(self) -> bool: ...
-    def on_render_content(self, ctx: object) -> None: ...

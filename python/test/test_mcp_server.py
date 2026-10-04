@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.host import OperationRegistry
+from infernux.host import OperationRegistry
 from infernux_mcp import server
 from infernux_mcp import capabilities
 from infernux_mcp import scene_operations
@@ -178,14 +178,14 @@ def test_default_mcp_surface_is_schema_gateway_not_flat_tools(tmp_path):
 
 
 def test_loaded_scene_query_reports_every_resident_scene_and_active_owner(scene):
-    from Infernux.lib import SceneManager
+    from infernux.lib import SceneManager
 
     manager = SceneManager.instance()
     additive = manager.create_scene("McpLoadedAdditive")
     additive.create_game_object("AdditiveMarker")
     try:
         manager.set_active_scene(additive)
-        from Infernux.host import scene_operations as engine_scene_operations
+        from infernux.host import scene_operations as engine_scene_operations
 
         snapshot = engine_scene_operations._loaded_scene_snapshot()
         by_world = {item["world_id"]: item for item in snapshot["scenes"]}
@@ -329,10 +329,10 @@ def test_schema_search_and_execution_use_formal_operation_ids(tmp_path):
 
 
 def test_schema_gateway_can_create_and_transform_real_scene_object(tmp_path, scene):
-    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.undo import UndoManager
-    from Infernux.host import MainThreadCommandQueue
+    from infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.undo import UndoManager
+    from infernux.host import MainThreadCommandQueue
 
     (tmp_path / "Assets").mkdir()
     (tmp_path / "ProjectSettings").mkdir()
@@ -393,10 +393,10 @@ def test_schema_gateway_can_create_and_transform_real_scene_object(tmp_path, sce
 def test_schema_gateway_native_and_python_fields_share_constraints_and_undo(
     scene, tmp_path
 ):
-    from Infernux.components import InxComponent, serialized_field
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.undo import UndoManager
-    from Infernux.host import MainThreadCommandQueue
+    from infernux.components import InxComponent, serialized_field
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.undo import UndoManager
+    from infernux.host import MainThreadCommandQueue
 
     class McpPythonFieldProbe(InxComponent):
         speed: float = serialized_field(default=3.0, range=(0.0, 20.0))
@@ -486,12 +486,12 @@ def test_schema_gateway_native_and_python_fields_share_constraints_and_undo(
 
 
 def test_schema_gateway_can_edit_real_material_document(engine):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui import project_file_ops
-    from Infernux.engine.undo import UndoManager
-    from Infernux.host import MainThreadCommandQueue
-    from Infernux.plugins import PluginManager
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui import project_file_ops
+    from infernux.engine.undo import UndoManager
+    from infernux.host import MainThreadCommandQueue
+    from infernux.plugins import PluginManager
 
     database = engine.get_asset_database()
     project_root = Path(database.project_root)
@@ -571,12 +571,12 @@ def test_schema_gateway_can_edit_real_material_document(engine):
 
 
 def test_schema_gateway_can_edit_real_data_asset_document(engine):
-    from Infernux.components import serialized_field
-    from Infernux.core import AssetManager, DataAsset
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.undo import UndoManager
-    from Infernux.host import MainThreadCommandQueue
-    from Infernux.plugins import PluginManager
+    from infernux.components import serialized_field
+    from infernux.core import AssetManager, DataAsset
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.undo import UndoManager
+    from infernux.host import MainThreadCommandQueue
+    from infernux.plugins import PluginManager
 
     class McpDataAsset(DataAsset):
         __serialized_type_id__ = "tests.mcp.data_asset"
@@ -674,13 +674,13 @@ def test_schema_gateway_can_edit_real_data_asset_document(engine):
 
 
 def test_schema_gateway_can_validate_and_edit_real_particle_graph(engine):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui import project_file_ops
-    from Infernux.engine.undo import UndoManager
-    from Infernux.host import MainThreadCommandQueue
-    from Infernux.particle.asset import ParticleGraphAsset
-    from Infernux.plugins import PluginManager
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui import project_file_ops
+    from infernux.engine.undo import UndoManager
+    from infernux.host import MainThreadCommandQueue
+    from infernux.particle.asset import ParticleGraphAsset
+    from infernux.plugins import PluginManager
 
     database = engine.get_asset_database()
     project_root = Path(database.project_root)
@@ -739,11 +739,11 @@ def test_schema_gateway_can_validate_and_edit_real_particle_graph(engine):
 
 
 def test_schema_gateway_reads_and_replaces_guid_text_asset_with_undo(engine):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.undo import UndoManager
-    from Infernux.host import MainThreadCommandQueue
-    from Infernux.plugins import PluginManager
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.undo import UndoManager
+    from infernux.host import MainThreadCommandQueue
+    from infernux.plugins import PluginManager
 
     database = engine.get_asset_database()
     project_root = Path(database.project_root)
@@ -798,12 +798,12 @@ def test_schema_gateway_reads_and_replaces_guid_text_asset_with_undo(engine):
 
 
 def test_schema_gateway_can_create_move_and_delete_guid_asset(engine):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui import project_file_ops
-    from Infernux.engine.undo import UndoManager
-    from Infernux.host import MainThreadCommandQueue
-    from Infernux.plugins import PluginManager
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui import project_file_ops
+    from infernux.engine.undo import UndoManager
+    from infernux.host import MainThreadCommandQueue
+    from infernux.plugins import PluginManager
 
     database = engine.get_asset_database()
     project_root = Path(database.project_root)

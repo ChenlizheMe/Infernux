@@ -1,7 +1,7 @@
 # vector4
 
 <div class="class-info">
-class in <b>Infernux.math</b>
+class in <b>infernux.math</b>
 </div>
 
 ## Description

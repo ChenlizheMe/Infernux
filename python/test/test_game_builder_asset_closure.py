@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from Infernux.engine.game_builder import GameBuilder
-from Infernux.engine.runtime_artifact_catalog import load_asset_index
-from Infernux.engine.runtime_artifact_catalog import unix_ns_to_filetime_ticks
+from infernux.engine.game_builder import GameBuilder
+from infernux.engine.runtime_artifact_catalog import load_asset_index
+from infernux.engine.runtime_artifact_catalog import unix_ns_to_filetime_ticks
 
 
 def _content_hash(payload: bytes) -> str:

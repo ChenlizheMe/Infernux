@@ -3,26 +3,26 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.components.fields import FieldType, get_raw_field_value, get_serialized_fields
-from Infernux.core.asset_ref import RenderEffectRef
-from Infernux.core.assets import AssetManager
-from Infernux.renderstack.effect_slot import EffectSlot
-from Infernux.renderstack.render_effect import RenderEffect
-from Infernux.renderstack.render_effect_asset import (
+from infernux.components.fields import FieldType, get_raw_field_value, get_serialized_fields
+from infernux.core.asset_ref import RenderEffectRef
+from infernux.core.assets import AssetManager
+from infernux.renderstack.effect_slot import EffectSlot
+from infernux.renderstack.render_effect import RenderEffect
+from infernux.renderstack.render_effect_asset import (
     EffectAssetReference,
     RenderEffectAsset,
     RenderEffectGroupAsset,
     RenderEffectGroupEntry,
     dump_render_effect_document,
 )
-from Infernux.renderstack.render_effect_compiler import (
+from infernux.renderstack.render_effect_compiler import (
     RenderEffectArtifactRegistry,
     RenderEffectCompileError,
     expand_render_effect_reference,
     publish_live_effect_group_document,
 )
-from Infernux.renderstack.render_stack import RenderStack
-from Infernux.renderstack.render_pipeline import RenderPipeline
+from infernux.renderstack.render_stack import RenderStack
+from infernux.renderstack.render_pipeline import RenderPipeline
 
 
 @pytest.fixture
@@ -78,7 +78,7 @@ class _BufferedSingleCameraPipeline(RenderPipeline):
     name = "Buffered Single Camera Contract"
 
     def define_topology(self, graph):
-        from Infernux.rendergraph.graph import Format
+        from infernux.rendergraph.graph import Format
 
         color = graph.create_texture("color", camera_target=True)
         depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
@@ -225,16 +225,16 @@ def test_render_effect_inspector_edit_updates_shared_instance_and_queues_snapsho
     tmp_path,
     monkeypatch,
 ):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.ui.render_effect_inspector import (
+    from infernux.core.assets import AssetManager
+    from infernux.engine.ui.render_effect_inspector import (
         apply_render_effect_parameter_edit,
     )
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         DocumentKind,
         DocumentRegistry,
         ensure_editable_resource_document,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     path = tmp_path / "Bloom.effect"
     effect = RenderEffect(
@@ -295,7 +295,7 @@ def test_render_effect_inspector_edit_updates_shared_instance_and_queues_snapsho
 
 
 def test_render_effect_inspector_rejects_edits_without_a_document():
-    from Infernux.engine.ui.render_effect_inspector import (
+    from infernux.engine.ui.render_effect_inspector import (
         apply_render_effect_parameter_edit,
     )
 
@@ -310,8 +310,8 @@ def test_render_effect_inspector_rejects_edits_without_a_document():
 
 
 def test_render_effect_inspector_skips_edit_path_for_unchanged_fields(monkeypatch):
-    from Infernux.engine.ui import render_effect_inspector as inspector
-    from Infernux.renderstack import render_effect_compiler
+    from infernux.engine.ui import render_effect_inspector as inspector
+    from infernux.renderstack import render_effect_compiler
 
     effect = RenderEffect(
         RenderEffectAsset(
@@ -366,8 +366,8 @@ def test_render_effect_inspector_skips_edit_path_for_unchanged_fields(monkeypatc
 
 
 def test_render_effect_debounced_save_uses_document_store_worker(tmp_path):
-    from Infernux.core.assets import AssetManager
-    from Infernux.core.document_store import DocumentStore
+    from infernux.core.assets import AssetManager
+    from infernux.core.document_store import DocumentStore
 
     path = tmp_path / "Bloom.effect"
     effect = RenderEffect(
@@ -397,7 +397,7 @@ def test_render_effect_debounced_save_uses_document_store_worker(tmp_path):
 
 
 def test_render_effect_failed_write_remains_scheduled_for_retry(tmp_path, monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     path = tmp_path / "Retry.effect"
     effect = RenderEffect(
@@ -430,8 +430,8 @@ def test_render_effect_failed_write_remains_scheduled_for_retry(tmp_path, monkey
 
 
 def test_material_snapshot_save_returns_document_store_ticket(tmp_path):
-    from Infernux.core.assets import AssetManager
-    from Infernux.core.document_store import DocumentStore
+    from infernux.core.assets import AssetManager
+    from infernux.core.document_store import DocumentStore
 
     path = tmp_path / "Surface.mat"
 
@@ -557,7 +557,7 @@ def test_render_effect_aot_artifact_distinguishes_dynamic_and_structural_edits(
     tmp_path,
     monkeypatch,
 ):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     RenderEffectArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -591,7 +591,7 @@ def test_render_effect_failed_compile_preserves_last_known_good_artifact(
     tmp_path,
     monkeypatch,
 ):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     RenderEffectArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -614,7 +614,7 @@ def test_render_effect_failed_compile_preserves_last_known_good_artifact(
 
 
 def test_render_effect_load_reuses_matching_persisted_artifact(tmp_path, monkeypatch):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     RenderEffectArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -647,7 +647,7 @@ def test_render_effect_rebuilds_artifact_missing_current_route_policy(
     tmp_path,
     monkeypatch,
 ):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     RenderEffectArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -689,8 +689,8 @@ def test_render_effect_rebuilds_artifact_missing_current_route_policy(
 
 
 def test_asset_publish_updates_loaded_render_effect_in_place(tmp_path, monkeypatch):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine import project_context
+    from infernux.core.assets import AssetManager
+    from infernux.engine import project_context
 
     RenderEffectArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -847,7 +847,7 @@ def test_path_hint_cannot_resolve_runtime_effect_reference(tmp_path):
 def test_shader_dependency_does_not_fall_back_to_path_hint(
     tmp_path, monkeypatch, effect_catalog
 ):
-    from Infernux.renderstack.render_effect_compiler import (
+    from infernux.renderstack.render_effect_compiler import (
         _prepare_runtime_dependencies,
     )
 
@@ -917,8 +917,8 @@ def test_render_stack_keeps_only_current_pipeline_parameters_on_deserialize():
 
 
 def test_empty_render_stack_matches_no_stack_default_graph():
-    from Infernux.rendergraph.graph import RenderGraph
-    from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+    from infernux.rendergraph.graph import RenderGraph
+    from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
 
     fallback_graph = RenderGraph("Fallback")
     DefaultForwardPipeline().define_topology(fallback_graph)
@@ -984,10 +984,10 @@ def test_render_stack_can_explicitly_remap_preserved_orphan_slots():
 
 
 def test_effect_stage_inspector_routes_list_edits_to_render_stack_service():
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui.inspector_declarative import InspectorList
-    from Infernux.engine.ui.inspector_renderstack import build_renderstack_inspector_model
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui.inspector_declarative import InspectorList
+    from infernux.engine.ui.inspector_renderstack import build_renderstack_inspector_model
+    from infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager._instance
     previous_core = EditorInteractionCore.instance()
@@ -1029,7 +1029,7 @@ def test_effect_stage_inspector_routes_list_edits_to_render_stack_service():
 
 
 def test_render_effect_picker_accepts_effect_groups():
-    from Infernux.core.asset_ref import get_asset_type_config
+    from infernux.core.asset_ref import get_asset_type_config
 
     config = get_asset_type_config("RenderEffect")
     assert config["extensions"] == ("*.effect", "*.effectgroup")
@@ -1275,7 +1275,7 @@ def test_effect_group_expands_in_order_with_non_destructive_overrides(tmp_path, 
 
 
 def test_effect_group_inline_parameter_edit_updates_group_and_live_projection(tmp_path, effect_catalog):
-    from Infernux.engine.ui.render_effect_inspector import (
+    from infernux.engine.ui.render_effect_inspector import (
         apply_render_effect_parameter_edit,
     )
 
@@ -1567,7 +1567,7 @@ def test_effect_group_expansion_is_published_in_memory_until_asset_reimport(
 def test_effect_group_compiles_without_reentering_its_own_asset_load(
     tmp_path, monkeypatch, effect_catalog
 ):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     RenderEffectArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "_project_root", str(tmp_path))
@@ -1608,7 +1608,7 @@ def test_effect_group_compiles_without_reentering_its_own_asset_load(
 
 
 def test_effect_group_override_view_tracks_unoverridden_live_parameters():
-    from Infernux.renderstack.render_effect_compiler import _apply_group_overrides
+    from infernux.renderstack.render_effect_compiler import _apply_group_overrides
 
     source = RenderEffect(
         RenderEffectAsset(
@@ -1661,8 +1661,8 @@ def test_effect_group_cycle_is_rejected(tmp_path, effect_catalog):
 
 
 def test_failed_effect_compile_rolls_back_partial_graph_mutation():
-    from Infernux.renderstack.fullscreen_effect import FullScreenEffect
-    from Infernux.renderstack.render_effect_compiler import register_render_effect_feature
+    from infernux.renderstack.fullscreen_effect import FullScreenEffect
+    from infernux.renderstack.render_effect_compiler import register_render_effect_feature
 
     class BrokenEffect(FullScreenEffect):
         name = "Broken Test Effect"

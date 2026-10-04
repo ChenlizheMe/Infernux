@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from Infernux import engine as engine_module
+from infernux import engine as engine_module
 
 
 def test_engine_ready_file_is_a_required_handshake_when_configured(

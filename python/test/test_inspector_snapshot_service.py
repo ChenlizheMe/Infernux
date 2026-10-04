@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from Infernux.engine.runtime_change_journal import (
+from infernux.engine.runtime_change_journal import (
     RuntimeChangeDomain,
     RuntimeChangeJournal,
     RuntimeChangeSet,
 )
-from Infernux.engine.ui.inspector_snapshot import (
+from infernux.engine.ui.inspector_snapshot import (
     InspectorSnapshotService,
     InspectorTarget,
     invalidate_rebuilt_scene,
@@ -61,7 +61,7 @@ def test_component_target_uses_passive_owner_during_unbind_windows() -> None:
 
 
 def test_retired_component_renderer_never_reads_lifecycle_properties() -> None:
-    from Infernux.engine.ui import inspector_components as components_ui
+    from infernux.engine.ui import inspector_components as components_ui
 
     class _Retired:
         def __init__(self) -> None:
@@ -310,8 +310,8 @@ def test_scene_rebuild_invalidates_schema_and_values() -> None:
 
 
 def test_scene_rebuild_drops_inspector_value_cache_and_structure() -> None:
-    from Infernux.engine.ui import inspector_components as components_ui
-    from Infernux.engine.ui.inspector_support import get_component_structure_version
+    from infernux.engine.ui import inspector_components as components_ui
+    from infernux.engine.ui.inspector_support import get_component_structure_version
 
     components_ui._COMPONENT_VALUE_CACHE[("builtin", "probe", 61)] = {
         "values": {"intensity": 3.0},
@@ -327,8 +327,8 @@ def test_scene_rebuild_drops_inspector_value_cache_and_structure() -> None:
 def test_builtin_batch_replay_feeds_live_cached_values() -> None:
     from types import SimpleNamespace
 
-    from Infernux.components.fields import FieldType
-    from Infernux.engine.ui import inspector_components as components_ui
+    from infernux.components.fields import FieldType
+    from infernux.engine.ui import inspector_components as components_ui
 
     captured: dict[str, list] = {}
 
@@ -375,7 +375,7 @@ def test_selection_advances_only_target_layer() -> None:
 
 
 def test_value_cache_follows_replaced_wrapper_after_play_rebuild(monkeypatch) -> None:
-    from Infernux.engine.ui import inspector_components as components_ui
+    from infernux.engine.ui import inspector_components as components_ui
 
     service = _service()
     first = _Component(11, 505)
@@ -422,7 +422,7 @@ def test_value_cache_follows_replaced_wrapper_after_play_rebuild(monkeypatch) ->
 def test_value_cache_refreshes_when_wrapper_rebinding_bumps_native_generation(
     monkeypatch,
 ) -> None:
-    from Infernux.engine.ui import inspector_components as components_ui
+    from infernux.engine.ui import inspector_components as components_ui
 
     service = _service()
     component = _Component(12, 606)
@@ -451,7 +451,7 @@ def test_value_cache_refreshes_when_wrapper_rebinding_bumps_native_generation(
 
 
 def test_component_value_cache_skips_unchanged_getters(monkeypatch) -> None:
-    from Infernux.engine.ui import inspector_components as components_ui
+    from infernux.engine.ui import inspector_components as components_ui
 
     service = _service()
     component = _Component(11, 505)
@@ -505,7 +505,7 @@ def test_component_value_cache_skips_unchanged_getters(monkeypatch) -> None:
 
 
 def test_failed_changed_field_getter_preserves_sibling_cache(monkeypatch) -> None:
-    from Infernux.engine.ui import inspector_components as components_ui
+    from infernux.engine.ui import inspector_components as components_ui
 
     service = _service()
     component = _Component(17, 515)
@@ -560,7 +560,7 @@ def test_failed_changed_field_getter_preserves_sibling_cache(monkeypatch) -> Non
 
 
 def test_render_plan_invalidation_keeps_precise_field_values() -> None:
-    from Infernux.engine.ui import inspector_components as components_ui
+    from infernux.engine.ui import inspector_components as components_ui
 
     entry = {
         "values": {"speed": 2.0, "color": "red"},
@@ -577,11 +577,11 @@ def test_render_plan_invalidation_keeps_precise_field_values() -> None:
 
 
 def test_property_undo_redo_keeps_sibling_component_revision_stable() -> None:
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         PropertyTransactionStatus,
         make_attribute_property_transaction,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     service = _service()
     # Detached probes keep SetPropertyCommand on its direct weak target; live
@@ -633,10 +633,10 @@ def test_native_inspector_uses_layered_snapshot_without_value_ttl() -> None:
 def test_play_compatibility_poll_is_scoped_to_visible_component_bodies() -> None:
     root = Path(__file__).resolve().parents[2]
     bootstrap = (
-        root / "python/Infernux/engine/bootstrap_inspector/_wire.py"
+        root / "python/infernux/engine/bootstrap_inspector/_wire.py"
     ).read_text(encoding="utf-8")
     components = (
-        root / "python/Infernux/engine/ui/inspector_components.py"
+        root / "python/infernux/engine/ui/inspector_components.py"
     ).read_text(encoding="utf-8")
     native = (
         root / "cpp/infernux/function/editor/InspectorPanel.cpp"

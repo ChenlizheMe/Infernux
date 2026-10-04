@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.anim_state_machine import AnimParameter, AnimStateMachine
-from Infernux.engine.interaction import (
+from infernux.core.anim_state_machine import AnimParameter, AnimStateMachine
+from infernux.engine.interaction import (
     EditorCommand,
     EditorCommandRegistry,
     FocusService,
@@ -14,22 +14,22 @@ from Infernux.engine.interaction import (
     GraphElementRef,
     SelectionService,
 )
-from Infernux.engine.ui import animfsm_editor_panel as animfsm_module
-from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
-from Infernux.engine.ui.animfsm_graph_authoring import (
+from infernux.engine.ui import animfsm_editor_panel as animfsm_module
+from infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
+from infernux.engine.ui.animfsm_graph_authoring import (
     FSM_ENTRY_NODE_DEF,
     FSM_ENTRY_NODE_TYPE_ID,
     FSM_STATE_NODE_DEF,
     FSM_STATE_NODE_TYPE_ID,
 )
-from Infernux.engine.ui.node_graph_view import NodeCreationEntry, NodeGraphView
-from Infernux.engine.ui.graph_document_authoring import _canvas_definition
-from Infernux.graph.registry import COMMON_NODE_REGISTRY
-import Infernux.particle.nodes  # noqa: F401 - registers particle node definitions
+from infernux.engine.ui.node_graph_view import NodeCreationEntry, NodeGraphView
+from infernux.engine.ui.graph_document_authoring import _canvas_definition
+from infernux.graph.registry import COMMON_NODE_REGISTRY
+import infernux.particle.nodes  # noqa: F401 - registers particle node definitions
 
 
 def test_animfsm_node_schema_has_one_strict_definition_authority():
-    from Infernux.core.node_graph import node_catalog
+    from infernux.core.node_graph import node_catalog
 
     panel = AnimFSMEditorPanel()
 
@@ -42,10 +42,10 @@ def test_animfsm_node_schema_has_one_strict_definition_authority():
 
 
 def test_node_graph_projects_parameter_transactions_to_exact_mutations():
-    from Infernux.engine.interaction import GraphMutationKind
-    from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
-    from Infernux.graph.parameter_transactions import GraphParameterTransaction
-    from Infernux.graph.parameters import (
+    from infernux.engine.interaction import GraphMutationKind
+    from infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
+    from infernux.graph.parameter_transactions import GraphParameterTransaction
+    from infernux.graph.parameters import (
         GraphParameterCollection,
         GraphParameterDefinition,
     )
@@ -81,8 +81,8 @@ def test_node_graph_projects_parameter_transactions_to_exact_mutations():
 
 @pytest.fixture(autouse=True)
 def _isolate_animfsm_panel_dirty_tracking():
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager.instance()
     UndoManager()
@@ -463,9 +463,9 @@ def test_animfsm_parameter_add_exposes_stable_semantic_id():
 
 
 def test_fsm_and_particle_parameters_share_the_base_detail_drawer():
-    from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-    from Infernux.graph.types import TypeRef, ValueType
+    from infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.graph.types import TypeRef, ValueType
 
     fsm_panel = AnimFSMEditorPanel()
     fsm_parameter = AnimParameter(
@@ -914,8 +914,8 @@ def test_particle_sprite_canvas_preserves_enum_and_conditional_field_metadata():
 
 
 def test_animfsm_dirty_mode_switch_uses_global_document_replacement(monkeypatch):
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.ui.dirty_panel_confirmation import (
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.ui.dirty_panel_confirmation import (
         DirtyPanelConfirmationCoordinator,
     )
 
@@ -962,7 +962,7 @@ def test_animfsm_dirty_mode_switch_uses_global_document_replacement(monkeypatch)
 
 
 def test_animfsm_clean_mode_switch_starts_blank_and_clears_stale_selection():
-    from Infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.interaction import DocumentRegistry
 
     panel = AnimFSMEditorPanel()
     panel._fsm.add_state("SavedState")
@@ -981,7 +981,7 @@ def test_animfsm_clean_mode_switch_starts_blank_and_clears_stale_selection():
 
 
 def test_animfsm_mode_switch_is_a_formal_panel_command():
-    from Infernux.engine.ui.animfsm_editor_panel import _ANIMFSM_PANEL_INTERACTION
+    from infernux.engine.ui.animfsm_editor_panel import _ANIMFSM_PANEL_INTERACTION
 
     command_ids = {spec.command_id for spec in _ANIMFSM_PANEL_INTERACTION.commands}
     assert "animfsm.switch_mode" in command_ids
@@ -992,7 +992,7 @@ def test_animfsm_selection_only_click_does_not_mark_resource_dirty():
     panel._fsm.add_state("State 0")
     panel._sync_graph_from_fsm()
     uid = panel._name_to_uid["State 0"]
-    from Infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.interaction import DocumentRegistry
 
     DocumentRegistry.instance().mark_saved(panel.document_id)
 
@@ -1005,7 +1005,7 @@ def test_animfsm_selection_only_click_does_not_mark_resource_dirty():
 
 
 def test_animfsm_entry_move_uses_shared_node_graph_undo_and_persists():
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     panel = AnimFSMEditorPanel()
     manager = UndoManager.instance()
@@ -1117,7 +1117,7 @@ def test_animfsm_selected_link_renders_transition_detail_semantics():
 
 
 def test_graph_detail_host_orders_contributors_and_consumes_first_match():
-    from Infernux.engine.ui.graph_details import (
+    from infernux.engine.ui.graph_details import (
         GraphDetailContributor,
         GraphDetailHost,
     )
@@ -1140,7 +1140,7 @@ def test_graph_detail_host_orders_contributors_and_consumes_first_match():
 
 
 def test_graph_detail_host_rejects_duplicate_contributor_ids():
-    from Infernux.engine.ui.graph_details import (
+    from infernux.engine.ui.graph_details import (
         GraphDetailContributor,
         GraphDetailHost,
     )
@@ -1151,7 +1151,7 @@ def test_graph_detail_host_rejects_duplicate_contributor_ids():
 
 
 def test_graph_domains_use_common_detail_host_instead_of_overriding_panel_dispatch():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     assert "_render_node_graph_detail_panel" not in AnimFSMEditorPanel.__dict__
     assert "_render_node_graph_detail_panel" not in ParticleGraphEditorPanel.__dict__
@@ -1228,7 +1228,7 @@ def test_node_graph_inline_float32_round_trip_does_not_emit_a_change():
 
 
 def test_node_graph_drop_on_occupied_input_requests_atomic_replacement():
-    from Infernux.core.node_graph import (
+    from infernux.core.node_graph import (
         NodeGraph,
         NodeTypeDef,
         PinDef,
@@ -1270,8 +1270,8 @@ def test_node_graph_drop_on_occupied_input_requests_atomic_replacement():
 
 
 def test_node_graph_reconnect_released_on_empty_requests_disconnect():
-    from Infernux.core.node_graph import NodeGraph
-    from Infernux.core.node_graph import NodeTypeDef, PinDef, PinKind
+    from infernux.core.node_graph import NodeGraph
+    from infernux.core.node_graph import NodeTypeDef, PinDef, PinKind
 
     graph = NodeGraph()
     graph.register_type(
@@ -1324,7 +1324,7 @@ def test_node_graph_add_command_exposes_unchecked_domain_semantic():
 
 
 def test_animfsm_uses_shared_node_creation_palette_for_domain_variants():
-    from Infernux.core.node_graph import PinKind
+    from infernux.core.node_graph import PinKind
 
     panel = AnimFSMEditorPanel()
 
@@ -1538,8 +1538,8 @@ def test_node_graph_exports_link_hit_point_as_semantic_rect():
 
 
 def test_animfsm_3d_clip_picker_includes_embedded_model_takes(monkeypatch):
-    from Infernux.core import asset_types
-    from Infernux.engine.interaction import asset_reference_catalog
+    from infernux.core import asset_types
+    from infernux.engine.interaction import asset_reference_catalog
 
     model_path = "Assets/Models/Racer.fbx"
     monkeypatch.setattr(
@@ -1579,7 +1579,7 @@ def test_animfsm_3d_clip_picker_includes_embedded_model_takes(monkeypatch):
 
 
 def test_animfsm_new_document_and_dirty_draft_round_trip_through_registry_session():
-    from Infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.interaction import DocumentRegistry
 
     panel = AnimFSMEditorPanel()
     assert panel._document_is_dirty() is False
@@ -1605,7 +1605,7 @@ def test_animfsm_new_document_and_dirty_draft_round_trip_through_registry_sessio
 
 
 def test_animfsm_entering_play_does_not_implicitly_save_dirty_draft(monkeypatch):
-    from Infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.interaction import DocumentRegistry
 
     panel = AnimFSMEditorPanel()
     save_calls = []

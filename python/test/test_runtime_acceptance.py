@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.acceptance import RuntimeAcceptance, RuntimeAcceptanceManifest
-from Infernux.application import Application
+from infernux.acceptance import RuntimeAcceptance, RuntimeAcceptanceManifest
+from infernux.application import Application
 
 
 def _write_manifest(path: Path, tests=None, *, cycles: int = 1) -> None:
@@ -108,8 +108,8 @@ def test_session_aggregates_same_schema_and_atomically_advances(monkeypatch, tmp
 
     monkeypatch.setattr(Application, "data_path", staticmethod(lambda: str(tmp_path)))
     monkeypatch.setattr(Application, "persistent_data_path", staticmethod(lambda: str(tmp_path)))
-    monkeypatch.setattr("Infernux.engine.scene_manager.SceneFileManager", _SceneFileManager)
-    monkeypatch.setattr("Infernux.scene.SceneManager", _SceneManager)
+    monkeypatch.setattr("infernux.engine.scene_manager.SceneFileManager", _SceneFileManager)
+    monkeypatch.setattr("infernux.scene.SceneManager", _SceneManager)
 
     initial = RuntimeAcceptance.begin(str(manifest_path))
     assert initial["summary"] == {
@@ -170,10 +170,10 @@ def test_session_runs_every_test_for_each_manifest_cycle(monkeypatch, tmp_path):
 
     monkeypatch.setattr(Application, "data_path", staticmethod(lambda: str(tmp_path)))
     monkeypatch.setattr(Application, "persistent_data_path", staticmethod(lambda: str(tmp_path)))
-    monkeypatch.setattr("Infernux.engine.scene_manager.SceneFileManager", _SceneFileManager)
-    monkeypatch.setattr("Infernux.scene.SceneManager.load_scene", staticmethod(_load_scene))
+    monkeypatch.setattr("infernux.engine.scene_manager.SceneFileManager", _SceneFileManager)
+    monkeypatch.setattr("infernux.scene.SceneManager.load_scene", staticmethod(_load_scene))
     monkeypatch.setattr(
-        "Infernux.scene.SceneManager.is_scene_load_pending", staticmethod(lambda: False)
+        "infernux.scene.SceneManager.is_scene_load_pending", staticmethod(lambda: False)
     )
 
     initial = RuntimeAcceptance.begin(str(manifest_path))
@@ -219,7 +219,7 @@ def test_session_failure_is_fail_fast_and_keeps_full_test_set(monkeypatch, tmp_p
 
     monkeypatch.setattr(Application, "data_path", staticmethod(lambda: str(tmp_path)))
     monkeypatch.setattr(Application, "persistent_data_path", staticmethod(lambda: str(tmp_path)))
-    monkeypatch.setattr("Infernux.engine.scene_manager.SceneFileManager", _SceneFileManager)
+    monkeypatch.setattr("infernux.engine.scene_manager.SceneFileManager", _SceneFileManager)
 
     RuntimeAcceptance.begin(str(manifest_path))
     RuntimeAcceptance.tick(0.1)
@@ -250,7 +250,7 @@ def test_finished_session_is_consumed_by_engine_exactly_once(monkeypatch, tmp_pa
 
     monkeypatch.setattr(Application, "data_path", staticmethod(lambda: str(tmp_path)))
     monkeypatch.setattr(Application, "persistent_data_path", staticmethod(lambda: str(tmp_path)))
-    monkeypatch.setattr("Infernux.engine.scene_manager.SceneFileManager", _SceneFileManager)
+    monkeypatch.setattr("infernux.engine.scene_manager.SceneFileManager", _SceneFileManager)
 
     RuntimeAcceptance.begin(str(manifest_path))
     RuntimeAcceptance.tick(0.1)
@@ -274,8 +274,8 @@ def test_result_publication_retries_short_lived_reader_lock(monkeypatch, tmp_pat
 
     monkeypatch.setattr(Application, "data_path", staticmethod(lambda: str(tmp_path)))
     monkeypatch.setattr(Application, "persistent_data_path", staticmethod(lambda: str(tmp_path)))
-    monkeypatch.setattr("Infernux.acceptance.os.replace", _replace_with_reader_lock)
-    monkeypatch.setattr("Infernux.acceptance.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr("infernux.acceptance.os.replace", _replace_with_reader_lock)
+    monkeypatch.setattr("infernux.acceptance.time.sleep", lambda _seconds: None)
 
     status = RuntimeAcceptance.begin(str(manifest_path))
 

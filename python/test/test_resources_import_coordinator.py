@@ -11,19 +11,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.assets import AssetManager
-from Infernux.engine.engine import Engine
-from Infernux.engine.import_coordinator import AssetFsEventKind
-from Infernux.engine.interaction import ActionOrigin, action_origin_scope
-from Infernux.engine.resources_manager import (
+from infernux.core.assets import AssetManager
+from infernux.engine.engine import Engine
+from infernux.engine.import_coordinator import AssetFsEventKind
+from infernux.engine.interaction import ActionOrigin, action_origin_scope
+from infernux.engine.resources_manager import (
     ResourceChangeHandler,
     ResourcesManager,
     _AssetImportNotReady,
     _is_plugin_editor_translation_catalog,
 )
-from Infernux.engine.path_utils import path_key
-from Infernux.debug import Debug
-from Infernux.lib import AssetMutationResult, RuntimeMode
+from infernux.engine.path_utils import path_key
+from infernux.debug import Debug
+from infernux.lib import AssetMutationResult, RuntimeMode
 
 
 def test_plugin_editor_translation_catalog_path_is_exact(tmp_path):
@@ -289,7 +289,7 @@ def test_deleted_script_event_preserves_queued_guid_for_missing_component_replac
         def mark_components_missing_for_script(guid, deleted_path):
             marked.append((guid, deleted_path))
 
-    from Infernux.engine.play_mode import PlayModeManager
+    from infernux.engine.play_mode import PlayModeManager
     monkeypatch.setattr(PlayModeManager, "instance", classmethod(lambda _cls: _PlayMode()))
 
     handler._coordinator.submit(
@@ -509,8 +509,8 @@ def test_modified_asset_failure_surfaces_runtime_compile_detail(monkeypatch, tmp
 @pytest.mark.parametrize("extension", [".vert", ".frag", ".effect", ".effectgroup", ".particlegraph", ".particle.py"])
 @pytest.mark.parametrize("echo_kind", ["watcher", "local_write"])
 def test_rejected_compiled_asset_waits_for_next_save_without_retrying(monkeypatch, tmp_path, extension, echo_kind):
-    from Infernux.lib import AssetMutationErrorCode
-    from Infernux.engine.interaction import DocumentRegistry
+    from infernux.lib import AssetMutationErrorCode
+    from infernux.engine.interaction import DocumentRegistry
 
     database = _AssetDatabaseProbe()
     handler = ResourceChangeHandler(_EngineProbe(database))
@@ -566,7 +566,7 @@ def test_rejected_compiled_asset_waits_for_next_save_without_retrying(monkeypatc
 
 @pytest.mark.parametrize("extension", [".effect", ".effectgroup", ".particlegraph", ".particle.py"])
 def test_new_compiled_asset_rejection_is_terminal(monkeypatch, tmp_path, extension):
-    from Infernux.lib import AssetMutationErrorCode
+    from infernux.lib import AssetMutationErrorCode
 
     database = _AssetDatabaseProbe()
     handler = ResourceChangeHandler(_EngineProbe(database))
@@ -595,7 +595,7 @@ def test_new_compiled_asset_rejection_is_terminal(monkeypatch, tmp_path, extensi
 
 @pytest.mark.parametrize("extension", [".vert", ".frag"])
 def test_new_shader_runtime_rejection_is_terminal(monkeypatch, tmp_path, extension):
-    from Infernux.lib import AssetMutationErrorCode
+    from infernux.lib import AssetMutationErrorCode
 
     database = _AssetDatabaseProbe()
     handler = ResourceChangeHandler(_EngineProbe(database))
@@ -730,7 +730,7 @@ def test_external_atomic_script_publication_registers_destination_content(
         database.guid_by_path[str(target)] = "stable-guid"
     checked = []
     handler._dependency_graph = SimpleNamespace(project_root=str(tmp_path))
-    monkeypatch.setattr("Infernux.engine.resources_manager.is_project_component_script", lambda *_args: True)
+    monkeypatch.setattr("infernux.engine.resources_manager.is_project_component_script", lambda *_args: True)
     monkeypatch.setattr(handler, "_check_script", lambda path, **_kwargs: checked.append(path))
 
     handler.on_created(_event(staging))
@@ -750,15 +750,15 @@ def test_external_atomic_script_publication_registers_destination_content(
 def test_already_imported_staging_file_cannot_replace_target_script_identity(
     engine, tmp_path, staging_name, destination_exists,
 ):
-    from Infernux.components.registry import get_component_registrations, unregister_component_script
-    from Infernux.components.script_loader import retire_script_module
-    from Infernux.lib import ResourceType
+    from infernux.components.registry import get_component_registrations, unregister_component_script
+    from infernux.components.script_loader import retire_script_module
+    from infernux.lib import ResourceType
 
     scripts = tmp_path / "Assets" / "Scripts"
     scripts.mkdir(parents=True)
     target = scripts / "TankBattle.py"
     staging = scripts / staging_name
-    source = "from Infernux import InxComponent\nclass AtomicPublicationTank(InxComponent):\n    marker = 1\n"
+    source = "from infernux import InxComponent\nclass AtomicPublicationTank(InxComponent):\n    marker = 1\n"
     database = engine.get_asset_database()
     handler = ResourceChangeHandler(_EngineProbe(database), project_path=str(tmp_path))
     try:
@@ -828,7 +828,7 @@ def test_dirty_asset_document_allows_external_reimport_before_publication(
     monkeypatch,
     tmp_path,
 ):
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         DocumentCapability,
         DocumentKey,
         DocumentKind,
@@ -892,7 +892,7 @@ def test_dirty_scene_still_blocks_external_reimport_for_user_arbitration(
     monkeypatch,
     tmp_path,
 ):
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         DocumentCapability,
         DocumentKey,
         DocumentKind,
@@ -940,7 +940,7 @@ def test_dirty_scene_still_blocks_external_reimport_for_user_arbitration(
 def test_failed_external_import_retries_without_acknowledging_unpublished_bytes(
     monkeypatch, tmp_path, kind,
 ):
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         DocumentKey,
         DocumentKind,
         DocumentRegistry,
@@ -1147,11 +1147,11 @@ def test_initial_script_scan_publishes_artifact_for_main_thread(monkeypatch, tmp
     manager = ResourcesManager(str(tmp_path), _EngineProbe(_AssetDatabaseProbe()))
     commits = []
     monkeypatch.setattr(
-        "Infernux.components.script_loader.set_script_error",
+        "infernux.components.script_loader.set_script_error",
         lambda path, message: commits.append(("set", path, message, threading.get_ident())),
     )
     monkeypatch.setattr(
-        "Infernux.components.script_loader._clear_script_error",
+        "infernux.components.script_loader._clear_script_error",
         lambda path: commits.append(("clear", path, threading.get_ident())),
     )
 
@@ -1177,11 +1177,11 @@ def test_prepare_startup_finishes_refresh_before_the_watcher_loop(monkeypatch, t
     manager = ResourcesManager(str(tmp_path), _EngineProbe(_AssetDatabaseProbe()))
     published = []
     monkeypatch.setattr(
-        "Infernux.components.script_loader.set_script_error",
+        "infernux.components.script_loader.set_script_error",
         lambda path, message: published.append(("set", path, message)),
     )
     monkeypatch.setattr(
-        "Infernux.components.script_loader._clear_script_error",
+        "infernux.components.script_loader._clear_script_error",
         lambda path: published.append(("clear", path)),
     )
     started = []
@@ -1297,7 +1297,7 @@ def test_new_manifestless_package_component_publishes_without_editor_restart(
 
     script = tmp_path / "Packages" / "abc" / "runtime" / "component.py"
     script.parent.mkdir(parents=True)
-    script.write_text("from Infernux import InxComponent\nclass Live(InxComponent):\n    pass\n")
+    script.write_text("from infernux import InxComponent\nclass Live(InxComponent):\n    pass\n")
 
     handler.on_created(_event(script))
     assert manager.process_pending_reloads(force=True) > 0
@@ -1567,11 +1567,11 @@ def test_script_revision_is_published_only_by_resources_safe_point(monkeypatch, 
 
     registry_calls = []
     monkeypatch.setattr(
-        "Infernux.components.registry.register_component_script",
+        "infernux.components.registry.register_component_script",
         lambda value, **_kwargs: registry_calls.append(value),
     )
     monkeypatch.setattr(
-        "Infernux.components.script_loader._clear_script_error",
+        "infernux.components.script_loader._clear_script_error",
         lambda _path: None,
     )
     handler._dispatch_event = lambda _event: handler._check_script(str(path))
@@ -1596,11 +1596,11 @@ def test_frontend_worker_does_not_publish_or_update_graph(monkeypatch, tmp_path)
     path.write_text("value = 1\n", encoding="utf-8")
     registered = []
     monkeypatch.setattr(
-        "Infernux.components.registry.register_component_script",
+        "infernux.components.registry.register_component_script",
         lambda value, **_kwargs: registered.append(value),
     )
     monkeypatch.setattr(
-        "Infernux.components.script_loader._clear_script_error",
+        "infernux.components.script_loader._clear_script_error",
         lambda _path: None,
     )
 
@@ -1856,7 +1856,7 @@ def test_resource_script_validation_failure_does_not_publish_candidate(
         lambda _source: (_ for _ in ()).throw(SyntaxError("invalid syntax")),
     )
     monkeypatch.setattr(
-        "Infernux.components.script_loader.set_script_error",
+        "infernux.components.script_loader.set_script_error",
         lambda _path, _message: None,
     )
     handler._dispatch_event = lambda _event: handler._check_script(str(path))
@@ -1881,19 +1881,19 @@ def test_script_failure_keeps_already_published_registry_entry(monkeypatch, tmp_
     registered = []
     unregistered = []
     monkeypatch.setattr(
-        "Infernux.components.registry.register_component_script",
+        "infernux.components.registry.register_component_script",
         lambda value, **_kwargs: registered.append(value),
     )
     monkeypatch.setattr(
-        "Infernux.components.registry.unregister_component_script",
+        "infernux.components.registry.unregister_component_script",
         lambda value: unregistered.append(value),
     )
     monkeypatch.setattr(
-        "Infernux.components.script_loader._clear_script_error",
+        "infernux.components.script_loader._clear_script_error",
         lambda _path: None,
     )
     monkeypatch.setattr(
-        "Infernux.components.script_loader.set_script_error",
+        "infernux.components.script_loader.set_script_error",
         lambda _path, _message: None,
     )
 
@@ -1955,7 +1955,7 @@ def test_publish_exception_does_not_advance_lkg(monkeypatch, tmp_path):
 def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(
     monkeypatch, tmp_path
 ):
-    from Infernux.engine.play_mode import PlayModeManager, ScriptReloadOutcome
+    from infernux.engine.play_mode import PlayModeManager, ScriptReloadOutcome
 
     database = _AssetDatabaseProbe()
     engine = _EngineProbe(database)
@@ -1965,11 +1965,11 @@ def test_reload_rejection_keeps_lkg_and_live_body_at_resources_safe_point(
     path = tmp_path / "controller.py"
     path.write_text("value = 'A'\n", encoding="utf-8")
     monkeypatch.setattr(
-        "Infernux.components.registry.register_component_script",
+        "infernux.components.registry.register_component_script",
         lambda _path, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "Infernux.components.script_loader._clear_script_error",
+        "infernux.components.script_loader._clear_script_error",
         lambda _path: None,
     )
 
@@ -2196,7 +2196,7 @@ def test_second_member_publish_failure_rolls_back_batch_and_lkg(monkeypatch, tmp
 
 
 def test_edit_dependency_closure_uses_shared_stable_owner_batch(monkeypatch, tmp_path):
-    from Infernux.engine.play_mode import PlayModeManager
+    from infernux.engine.play_mode import PlayModeManager
 
     first = tmp_path / "first_edit.py"
     second = tmp_path / "second_edit.py"
@@ -2257,12 +2257,16 @@ def test_edit_dependency_closure_uses_shared_stable_owner_batch(monkeypatch, tmp
     assert handler._script_change_collector.last_known_good(str(second)) is not None
 
 
+@pytest.mark.parametrize("raises", [False, True])
 def test_edit_dependency_batch_failure_rolls_back_once_and_keeps_lkg_empty(
     monkeypatch,
     tmp_path,
+    raises,
 ):
-    from Infernux.engine.play_mode import PlayModeManager
+    from infernux.engine.play_mode import PlayModeManager
 
+    errors = []
+    monkeypatch.setattr(Debug, "log_error", lambda message, *_args, **_kw: errors.append(message))
     first = tmp_path / "first_edit_failure.py"
     second = tmp_path / "second_edit_failure.py"
     first.write_text("value = 1\n", encoding="utf-8")
@@ -2288,6 +2292,8 @@ def test_edit_dependency_batch_failure_rolls_back_once_and_keeps_lkg_empty(
             return self.batch
 
         def commit_script_reload_batch(self, _batch):
+            if raises:
+                raise RuntimeError("second Edit member rejected")
             return SimpleNamespace(success=False, error="second Edit member rejected")
 
         def rollback_script_reload_batch(self, batch):
@@ -2309,6 +2315,13 @@ def test_edit_dependency_batch_failure_rolls_back_once_and_keeps_lkg_empty(
     assert owner.rollback_count == 1
     assert handler._script_change_collector.last_known_good(str(first)) is None
     assert handler._script_change_collector.last_known_good(str(second)) is None
+
+    assert len(errors) == int(raises), errors
+    if raises:
+        assert "second Edit member rejected" in errors[0]
+    assert handler._script_transactions == {}
+    assert handler._script_change_collector.current_result(str(first)) is None
+    assert handler._script_change_collector.current_result(str(second)) is None
 
 
 def test_superseded_old_transaction_discards_only_surviving_members(
@@ -2395,7 +2408,7 @@ def test_lkg_commit_failure_rolls_back_live_and_committed_dependency_graph(
     monkeypatch,
     tmp_path,
 ):
-    from Infernux.engine.play_mode import PlayModeManager
+    from infernux.engine.play_mode import PlayModeManager
 
     assets = tmp_path / "Assets"
     assets.mkdir()
@@ -2469,7 +2482,7 @@ def test_durable_lkg_retries_finalize_without_republishing_or_rollback(
     monkeypatch,
     tmp_path,
 ):
-    from Infernux.engine.play_mode import PlayModeManager
+    from infernux.engine.play_mode import PlayModeManager
 
     script = tmp_path / "durable_finalize_retry.py"
     script.write_text("value = 1\n", encoding="utf-8")

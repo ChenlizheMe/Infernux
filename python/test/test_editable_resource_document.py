@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 import json
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     DocumentCapability,
     DocumentKey,
     DocumentKind,
@@ -9,7 +9,7 @@ from Infernux.engine.interaction import (
     EditableResourceDocumentController,
     ensure_editable_resource_document,
 )
-from Infernux.engine.undo import EditableDocumentDraftCommand, UndoManager
+from infernux.engine.undo import EditableDocumentDraftCommand, UndoManager
 
 
 class _Resource:
@@ -161,7 +161,7 @@ def test_dirty_editable_resource_keeps_authoritative_instance_across_views():
 
 
 def test_view_scoped_execution_uses_controller_owned_asset_path(monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     resource = _Resource(6.0)
     controller = EditableResourceDocumentController(
@@ -493,10 +493,10 @@ def test_discard_supersedes_an_already_submitted_background_write():
 
 
 def test_material_document_save_completes_from_native_document_store(tmp_path):
-    from Infernux.core.assets import AssetManager
-    from Infernux.core.document_store import DocumentStore
-    from Infernux.engine.path_utils import path_key
-    from Infernux.engine.ui.asset_execution_layer import (
+    from infernux.core.assets import AssetManager
+    from infernux.core.document_store import DocumentStore
+    from infernux.engine.path_utils import path_key
+    from infernux.engine.ui.asset_execution_layer import (
         AssetAccessMode,
         AssetExecutionLayer,
     )
@@ -560,10 +560,10 @@ def test_material_document_save_completes_from_native_document_store(tmp_path):
 
 
 def test_document_controller_claims_write_submitted_by_runtime_owner(tmp_path):
-    from Infernux.core.assets import AssetManager
-    from Infernux.core.document_store import DocumentStore
-    from Infernux.engine.path_utils import path_key
-    from Infernux.engine.ui.asset_execution_layer import (
+    from infernux.core.assets import AssetManager
+    from infernux.core.document_store import DocumentStore
+    from infernux.engine.path_utils import path_key
+    from infernux.engine.ui.asset_execution_layer import (
         AssetAccessMode,
         AssetExecutionLayer,
     )
@@ -676,7 +676,7 @@ def test_editable_resource_controller_applies_user_document_transaction():
 
 
 def test_editable_resource_controller_preserves_automation_origin():
-    from Infernux.engine.interaction import ActionOrigin
+    from infernux.engine.interaction import ActionOrigin
 
     previous_registry = DocumentRegistry._instance
     previous_manager = UndoManager._instance
@@ -756,8 +756,8 @@ def test_editable_resource_discard_restores_last_durable_document():
 
 
 def test_animation_clip_documents_replace_state_without_losing_asset_identity():
-    from Infernux.core.animation_clip import AnimationClip, AnimationFrame
-    from Infernux.core.animation_clip3d import AnimationClip3D
+    from infernux.core.animation_clip import AnimationClip, AnimationFrame
+    from infernux.core.animation_clip3d import AnimationClip3D
 
     clip_2d = AnimationClip(
         name="Run",
@@ -791,13 +791,13 @@ def test_animation_clip_documents_replace_state_without_losing_asset_identity():
 
 
 def test_animation_clip_asset_inspector_binds_the_shared_document_controller():
-    from Infernux.core.animation_clip import AnimationClip, AnimationFrame
-    from Infernux.engine.ui.asset_details_renderer import (
+    from infernux.core.animation_clip import AnimationClip, AnimationFrame
+    from infernux.engine.ui.asset_details_renderer import (
         AssetCategoryDef,
         _State,
         _bind_editable_resource_document,
     )
-    from Infernux.engine.ui.asset_execution_layer import AssetAccessMode
+    from infernux.engine.ui.asset_execution_layer import AssetAccessMode
 
     previous_registry = DocumentRegistry._instance
     registry = DocumentRegistry()
@@ -837,13 +837,13 @@ def test_animation_clip_asset_inspector_binds_the_shared_document_controller():
 
 
 def test_material_asset_and_inline_inspectors_share_one_native_document():
-    from Infernux.engine.ui.asset_details_renderer import (
+    from infernux.engine.ui.asset_details_renderer import (
         AssetCategoryDef,
         _State,
         _bind_editable_resource_document,
     )
-    from Infernux.engine.ui.asset_execution_layer import AssetAccessMode
-    from Infernux.engine.ui.inspector_material import _build_inline_state
+    from infernux.engine.ui.asset_execution_layer import AssetAccessMode
+    from infernux.engine.ui.inspector_material import _build_inline_state
 
     class _NativeMaterial:
         guid = "material-guid"

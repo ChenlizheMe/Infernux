@@ -5,7 +5,7 @@ import pytest
 
 
 def test_object_field_dispatches_locate_open_and_keyboard_open_once():
-    from Infernux.engine.interaction.object_fields import (
+    from infernux.engine.interaction.object_fields import (
         ObjectFieldGesture,
         ObjectReferenceFieldModel,
     )
@@ -29,7 +29,7 @@ def test_object_field_dispatches_locate_open_and_keyboard_open_once():
 
 
 def test_object_field_requires_identity_and_derives_stable_semantics():
-    from Infernux.engine.interaction.object_fields import ObjectReferenceFieldModel
+    from infernux.engine.interaction.object_fields import ObjectReferenceFieldModel
 
     with pytest.raises(ValueError, match="field id"):
         ObjectReferenceFieldModel("", "None", "Material")
@@ -39,7 +39,7 @@ def test_object_field_requires_identity_and_derives_stable_semantics():
 
 
 def test_object_field_without_opener_locates_for_open_gesture():
-    from Infernux.engine.interaction.object_fields import (
+    from infernux.engine.interaction.object_fields import (
         ObjectFieldGesture,
         ObjectReferenceFieldModel,
     )
@@ -58,7 +58,7 @@ def test_object_field_without_opener_locates_for_open_gesture():
 
 
 def test_asset_field_double_click_always_reveals_in_file_manager():
-    from Infernux.engine.interaction.object_fields import (
+    from infernux.engine.interaction.object_fields import (
         AssetReferenceFieldModel,
         ObjectFieldGesture,
     )
@@ -81,7 +81,7 @@ def test_asset_field_double_click_always_reveals_in_file_manager():
 
 
 def test_object_picker_model_isolates_query_and_focus_per_field():
-    from Infernux.engine.interaction.object_fields import ObjectPickerModel
+    from infernux.engine.interaction.object_fields import ObjectPickerModel
 
     picker = ObjectPickerModel()
     picker.set_query("mesh", "sphere")
@@ -98,7 +98,7 @@ def test_object_picker_model_isolates_query_and_focus_per_field():
 
 
 def test_object_picker_queries_share_search_revision_and_completion_tokens():
-    from Infernux.engine.interaction.object_fields import ObjectPickerModel
+    from infernux.engine.interaction.object_fields import ObjectPickerModel
 
     picker = ObjectPickerModel()
     picker.set_query("mesh", "sphere")
@@ -113,7 +113,7 @@ def test_object_picker_queries_share_search_revision_and_completion_tokens():
 
 
 def test_object_field_picker_mutations_dispatch_after_intent_resolution():
-    from Infernux.engine.interaction.object_fields import ObjectReferenceFieldModel
+    from infernux.engine.interaction.object_fields import ObjectReferenceFieldModel
 
     actions = []
     model = ObjectReferenceFieldModel(
@@ -135,7 +135,7 @@ def test_object_field_picker_mutations_dispatch_after_intent_resolution():
 
 
 def test_asset_type_registry_is_the_compatibility_authority():
-    from Infernux.core.asset_reference_types import asset_type_registry
+    from infernux.core.asset_reference_types import asset_type_registry
 
     texture = asset_type_registry.require("Texture2D")
     mesh = asset_type_registry.require("Model")
@@ -150,7 +150,7 @@ def test_asset_type_registry_is_the_compatibility_authority():
 
 
 def test_asset_reference_field_rejects_wrong_shader_stage_before_callback():
-    from Infernux.engine.interaction.object_fields import AssetReferenceFieldModel
+    from infernux.engine.interaction.object_fields import AssetReferenceFieldModel
 
     assigned = []
     rejected = []
@@ -171,7 +171,7 @@ def test_asset_reference_field_rejects_wrong_shader_stage_before_callback():
 
 
 def test_asset_reference_field_rejects_private_catalog_replacement():
-    from Infernux.engine.interaction.object_fields import AssetReferenceFieldModel
+    from infernux.engine.interaction.object_fields import AssetReferenceFieldModel
 
     with pytest.raises(ValueError, match="shared AssetReferenceCatalog"):
         AssetReferenceFieldModel(
@@ -183,7 +183,7 @@ def test_asset_reference_field_rejects_private_catalog_replacement():
 
 
 def test_asset_reference_field_rejects_split_assignment_callbacks():
-    from Infernux.engine.interaction.object_fields import AssetReferenceFieldModel
+    from infernux.engine.interaction.object_fields import AssetReferenceFieldModel
 
     with pytest.raises(ValueError, match="one on_assign callback"):
         AssetReferenceFieldModel(
@@ -203,8 +203,8 @@ def test_asset_reference_field_rejects_split_assignment_callbacks():
 
 
 def test_asset_reference_clipboard_round_trip_uses_assignment_compatibility(monkeypatch):
-    from Infernux.engine.interaction.object_fields import AssetReferenceFieldModel
-    from Infernux.core.assets import AssetManager
+    from infernux.engine.interaction.object_fields import AssetReferenceFieldModel
+    from infernux.core.assets import AssetManager
 
     monkeypatch.setattr(
         AssetManager,
@@ -259,8 +259,8 @@ def test_asset_reference_clipboard_round_trip_uses_assignment_compatibility(monk
 
 
 def test_asset_reference_picker_drop_and_paste_ignore_same_value(monkeypatch):
-    from Infernux.engine.interaction.object_fields import AssetReferenceFieldModel
-    from Infernux.core.assets import AssetManager
+    from infernux.engine.interaction.object_fields import AssetReferenceFieldModel
+    from infernux.core.assets import AssetManager
 
     class Database:
         @staticmethod
@@ -294,9 +294,9 @@ def test_asset_reference_picker_drop_and_paste_ignore_same_value(monkeypatch):
 
 
 def test_asset_reference_field_accepts_snapshot_transaction_protocol():
-    from Infernux.engine.interaction import SnapshotPropertyTransaction
-    from Infernux.engine.interaction.object_fields import AssetReferenceFieldModel
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import SnapshotPropertyTransaction
+    from infernux.engine.interaction.object_fields import AssetReferenceFieldModel
+    from infernux.engine.undo import UndoManager
 
     previous = UndoManager._instance
     manager = UndoManager()
@@ -330,8 +330,8 @@ def test_asset_reference_field_accepts_snapshot_transaction_protocol():
 
 
 def test_asset_reference_guid_is_resolved_before_type_validation(monkeypatch):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction.object_fields import AssetReferenceFieldModel
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction.object_fields import AssetReferenceFieldModel
 
     class Database:
         paths = {
@@ -370,7 +370,7 @@ def test_asset_reference_guid_is_resolved_before_type_validation(monkeypatch):
 
 
 def test_asset_reference_rejects_scene_objects_without_explicit_alternate_provider():
-    from Infernux.engine.interaction.object_fields import AssetReferenceFieldModel
+    from infernux.engine.interaction.object_fields import AssetReferenceFieldModel
 
     scene_object = object()
     assigned = []
@@ -398,7 +398,7 @@ def test_asset_reference_rejects_scene_objects_without_explicit_alternate_provid
 
 
 def test_animation_clip3d_accepts_only_its_registered_virtual_take_paths():
-    from Infernux.core.asset_reference_types import (
+    from infernux.core.asset_reference_types import (
         asset_type_registry,
         resolve_asset_reference_path,
     )
@@ -416,20 +416,20 @@ def test_animation_clip3d_accepts_only_its_registered_virtual_take_paths():
 
 
 def test_asset_reference_context_menu_defers_copy_until_popup_scope_closes():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         ClipboardDomain,
         ClipboardService,
         EditorCommandRegistry,
         FocusService,
         SelectionService,
     )
-    from Infernux.engine.interaction.object_fields import (
+    from infernux.engine.interaction.object_fields import (
         ASSET_REFERENCE_COPY_COMMAND,
         AssetReferenceFieldModel,
         register_asset_reference_commands,
     )
-    from Infernux.engine.i18n import t
-    from Infernux.engine.ui.igui import IGUI
+    from infernux.engine.i18n import t
+    from infernux.engine.ui.igui import IGUI
 
     events = []
 
@@ -501,7 +501,7 @@ def test_asset_reference_context_menu_defers_copy_until_popup_scope_closes():
 def test_asset_reference_context_menu_contains_no_private_business_handlers():
     source = (
         Path(__file__).parents[1]
-        / "Infernux"
+        / "infernux"
         / "engine"
         / "ui"
         / "igui.py"
@@ -516,7 +516,7 @@ def test_asset_reference_context_menu_contains_no_private_business_handlers():
 
 
 def test_empty_asset_field_single_click_is_inert_but_enter_opens_picker():
-    from Infernux.engine.interaction.object_fields import (
+    from infernux.engine.interaction.object_fields import (
         AssetReferenceFieldModel,
         ObjectFieldGesture,
     )
@@ -539,7 +539,7 @@ def test_empty_asset_field_single_click_is_inert_but_enter_opens_picker():
 
 
 def test_asset_field_clear_only_mutates_a_nonempty_reference():
-    from Infernux.engine.interaction.object_fields import (
+    from infernux.engine.interaction.object_fields import (
         AssetReferenceFieldModel,
         ObjectFieldGesture,
     )
@@ -567,9 +567,9 @@ def test_asset_field_clear_only_mutates_a_nonempty_reference():
 
 
 def test_asset_reference_catalog_reuses_one_database_generation(monkeypatch, tmp_path):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction.object_fields import AssetReferenceCatalog
-    from Infernux.engine import project_context
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction.object_fields import AssetReferenceCatalog
+    from infernux.engine import project_context
 
     project = tmp_path / "Project"
     monkeypatch.setattr(project_context, "_project_root", str(project))
@@ -612,10 +612,10 @@ def test_asset_reference_catalog_reuses_one_database_generation(monkeypatch, tmp
 def test_asset_reference_catalog_uses_assets_except_for_visible_shaders(
     monkeypatch, tmp_path
 ):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine import project_context
-    from Infernux.engine.interaction.object_fields import AssetReferenceCatalog
-    from Infernux.engine.ui import inspector_shader_utils
+    from infernux.core.assets import AssetManager
+    from infernux.engine import project_context
+    from infernux.engine.interaction.object_fields import AssetReferenceCatalog
+    from infernux.engine.ui import inspector_shader_utils
 
     project = tmp_path / "Project"
 
@@ -669,7 +669,7 @@ def test_asset_reference_catalog_uses_assets_except_for_visible_shaders(
 
 
 def test_asset_reference_virtual_candidates_extend_the_shared_catalog(monkeypatch):
-    from Infernux.engine.interaction.object_fields import (
+    from infernux.engine.interaction.object_fields import (
         AssetReferenceFieldModel,
         asset_reference_catalog,
     )
@@ -720,7 +720,7 @@ def test_native_object_field_reports_keyboard_clear_gesture():
 
 
 def test_object_picker_popup_is_owned_only_by_igui():
-    ui_root = Path(__file__).parents[1] / "Infernux" / "engine" / "ui"
+    ui_root = Path(__file__).parents[1] / "infernux" / "engine" / "ui"
     offenders = []
     for path in ui_root.rglob("*.py"):
         if path.name == "igui.py":
@@ -732,7 +732,7 @@ def test_object_picker_popup_is_owned_only_by_igui():
 
 
 def test_asset_domains_do_not_fall_back_to_generic_object_field_api():
-    ui_root = Path(__file__).parents[1] / "Infernux" / "engine" / "ui"
+    ui_root = Path(__file__).parents[1] / "infernux" / "engine" / "ui"
     generic_reference_modules = {
         "_inspector_list_field.py",
         "_inspector_references.py",
@@ -750,7 +750,7 @@ def test_asset_domains_do_not_fall_back_to_generic_object_field_api():
 
 
 def test_asset_domains_do_not_define_private_asset_catalogs():
-    package_root = Path(__file__).parents[1] / "Infernux"
+    package_root = Path(__file__).parents[1] / "infernux"
     roots = (package_root / "components", package_root / "engine" / "ui")
     offenders = []
     forbidden = ("_picker_assets", "_picker_texture_assets", "AssetManager.find_assets(")
@@ -763,7 +763,7 @@ def test_asset_domains_do_not_define_private_asset_catalogs():
 
 
 def test_asset_reference_calls_use_one_assignment_entry_point():
-    package_root = Path(__file__).parents[1] / "Infernux"
+    package_root = Path(__file__).parents[1] / "infernux"
     asset_calls = {
         "AssetReferenceFieldModel",
         "asset_reference_field",

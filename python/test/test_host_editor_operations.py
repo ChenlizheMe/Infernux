@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.host import Operation, OperationRegistry, install_editor_operations
+from infernux.host import Operation, OperationRegistry, install_editor_operations
 
 
 def test_editor_authoring_operations_exist_without_mcp_plugin(tmp_path):
@@ -55,9 +55,9 @@ def test_transport_projection_cannot_replace_engine_owner(tmp_path):
 
 
 def test_model_inspection_rejects_non_model_before_loading(monkeypatch):
-    from Infernux.host import asset_operations as operations
-    from Infernux.core.mesh import Mesh
-    from Infernux.host.operations import OperationError
+    from infernux.host import asset_operations as operations
+    from infernux.core.mesh import Mesh
+    from infernux.host.operations import OperationError
 
     monkeypatch.setattr(operations, "on_editor", lambda _name, callback: callback())
     monkeypatch.setattr(operations, "asset_path", lambda _: "Assets/Readme.txt")
@@ -67,7 +67,7 @@ def test_model_inspection_rejects_non_model_before_loading(monkeypatch):
 
 
 def test_material_extraction_uses_project_command_and_declared_schema(tmp_path, monkeypatch):
-    from Infernux.host import asset_operations as operations
+    from infernux.host import asset_operations as operations
 
     calls = []
     monkeypatch.setattr(operations, "on_editor", lambda _name, callback: callback())
@@ -89,7 +89,7 @@ def test_material_extraction_uses_project_command_and_declared_schema(tmp_path, 
 
 
 def test_scene_open_reports_scheduling_and_schema_matches(monkeypatch):
-    from Infernux.host import scene_operations as operations
+    from infernux.host import scene_operations as operations
 
     monkeypatch.setattr(operations, "on_editor", lambda _name, callback: callback())
     monkeypatch.setattr(operations, "asset_path", lambda *_args, **_kwargs: "Assets/TankBattle.scene")
@@ -105,7 +105,7 @@ def test_scene_open_reports_scheduling_and_schema_matches(monkeypatch):
 
 
 def test_model_instantiation_routes_guid_to_shared_scene_mutation(monkeypatch):
-    from Infernux.host import scene_operations as operations
+    from infernux.host import scene_operations as operations
 
     calls = []
     parent = SimpleNamespace(id=41)
@@ -138,8 +138,8 @@ def test_model_instantiation_routes_guid_to_shared_scene_mutation(monkeypatch):
 
 
 def test_asset_listing_uses_filesystem_identity_for_root_membership(tmp_path, monkeypatch):
-    from Infernux.host import asset_operations as operations
-    from Infernux.engine.path_utils import resolved_path
+    from infernux.host import asset_operations as operations
+    from infernux.engine.path_utils import resolved_path
 
     project = tmp_path / "Project"
     paths = [project / root / "item.txt" for root in ("Assets", "Packages", "AssetsOther")]
@@ -159,8 +159,8 @@ def test_asset_listing_uses_filesystem_identity_for_root_membership(tmp_path, mo
 
 
 def test_asset_creation_rejects_directory_escape_before_calling_authoring(tmp_path, monkeypatch):
-    from Infernux.host import asset_operations as operations
-    from Infernux.host import OperationError
+    from infernux.host import asset_operations as operations
+    from infernux.host import OperationError
 
     project = tmp_path / "Project"
     (project / "Assets").mkdir(parents=True)

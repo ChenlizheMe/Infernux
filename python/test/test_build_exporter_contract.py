@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.build import (
+from infernux.engine.build import (
     BuildArtifact,
     BuildDiagnostic,
     BuildExporterRegistry,
@@ -25,7 +25,7 @@ from Infernux.engine.build import (
     PlatformCapabilities,
     PlatformExporter,
 )
-from Infernux.engine.build_cancellation import BuildCancelled
+from infernux.engine.build_cancellation import BuildCancelled
 
 def _target(identifier: str = "fixture-x64") -> BuildTarget:
     return BuildTarget(

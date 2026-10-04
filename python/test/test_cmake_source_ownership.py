@@ -66,7 +66,7 @@ def test_runtime_pack_cmake_does_not_write_bytecode_into_its_source(tmp_path):
     if cmake is None:
         pytest.skip("CMake executable is required for build-entry ownership test")
     source = tmp_path / "source"
-    package = source / "python/Infernux"
+    package = source / "python/infernux"
     engine = package / "engine"
     engine.mkdir(parents=True)
     (package / "__init__.py").write_text("", encoding="utf-8")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.engine.ui import _dialogs
+from infernux.engine.ui import _dialogs
 
 
 def test_sdl_file_filters_translate_tk_wildcards():
@@ -87,7 +87,7 @@ def test_sdl_native_dialog_preserves_cancel_but_raises_platform_error(monkeypatc
         def _show_native_file_dialog(*_args):
             return {"accepted": False, "cancelled": True, "path": "", "error": ""}
 
-    monkeypatch.setattr("Infernux.lib._Infernux", _Native)
+    monkeypatch.setattr("infernux.lib._Infernux", _Native)
     assert _dialogs._run_sdl_file_dialog("open_file", title="Open") is None
 
     def fail(*_args):
@@ -109,7 +109,7 @@ def test_sdl_native_dialog_rejects_ambiguous_result(monkeypatch):
         def _show_native_file_dialog(*_args):
             return {"accepted": False, "cancelled": False, "path": "", "error": ""}
 
-    monkeypatch.setattr("Infernux.lib._Infernux", _Native)
+    monkeypatch.setattr("infernux.lib._Infernux", _Native)
     with pytest.raises(RuntimeError, match="invalid result"):
         _dialogs._run_sdl_file_dialog("save_file", title="Save")
 

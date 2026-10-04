@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     CommandStatus,
     CommandSource,
     ContextMenuBuilder,
@@ -294,7 +294,7 @@ def _flatten_menu_entries(entries):
 
 
 def test_hierarchy_menu_freezes_target_and_create_parent_payloads():
-    from Infernux.engine.ui.core_context_menus import hierarchy_context_menu
+    from infernux.engine.ui.core_context_menus import hierarchy_context_menu
 
     entries = hierarchy_context_menu(
         lambda key: key,
@@ -313,7 +313,7 @@ def test_hierarchy_menu_freezes_target_and_create_parent_payloads():
 
 
 def test_hierarchy_root_menu_exposes_scene_and_ui_creation_together():
-    from Infernux.engine.ui.core_context_menus import hierarchy_context_menu
+    from infernux.engine.ui.core_context_menus import hierarchy_context_menu
 
     leaves = _flatten_menu_entries(hierarchy_context_menu(lambda key: key))
     kinds = {
@@ -328,7 +328,7 @@ def test_hierarchy_root_menu_exposes_scene_and_ui_creation_together():
 
 
 def test_project_menu_freezes_logical_and_reveal_paths_separately():
-    from Infernux.engine.ui.core_context_menus import project_context_menu
+    from infernux.engine.ui.core_context_menus import project_context_menu
 
     entries = project_context_menu(
         lambda key: key,
@@ -348,7 +348,7 @@ def test_project_menu_freezes_logical_and_reveal_paths_separately():
 
 
 def test_project_menu_always_offers_inxpackage_import():
-    from Infernux.engine.ui.core_context_menus import project_context_menu
+    from infernux.engine.ui.core_context_menus import project_context_menu
 
     for target_path in ("", "Assets/Materials"):
         leaves = _flatten_menu_entries(
@@ -366,7 +366,7 @@ def test_project_menu_always_offers_inxpackage_import():
 
 
 def test_project_menu_offers_render_texture_through_asset_create_command():
-    from Infernux.engine.ui.core_context_menus import project_context_menu
+    from infernux.engine.ui.core_context_menus import project_context_menu
 
     entries = _flatten_menu_entries(project_context_menu(
         lambda key: key, current_path="C:/Game/Assets"))

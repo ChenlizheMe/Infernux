@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
-from Infernux.engine.runtime_mouse_events import MouseEventDispatcher
+from infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+from infernux.engine.runtime_mouse_events import MouseEventDispatcher
 
 
 def test_mouse_dispatcher_matches_enter_over_down_drag_up_button_exit(monkeypatch):
@@ -19,9 +19,9 @@ def test_mouse_dispatcher_matches_enter_over_down_drag_up_button_exit(monkeypatc
     states = iter([(False, False, False), (True, True, False),
                    (True, False, False), (False, False, True),
                    (False, False, False)])
-    monkeypatch.setattr("Infernux.engine.runtime_mouse_events.Physics.raycast_screen",
+    monkeypatch.setattr("infernux.engine.runtime_mouse_events.Physics.raycast_screen",
                         lambda *args, **kwargs: next(hits))
-    monkeypatch.setattr("Infernux.engine.runtime_mouse_events.Input.get_game_mouse_frame_state",
+    monkeypatch.setattr("infernux.engine.runtime_mouse_events.Input.get_game_mouse_frame_state",
                         lambda _button: (0, 0, 0, 0, *next(states)))
     try:
         dispatcher = MouseEventDispatcher()
@@ -38,7 +38,7 @@ def test_dispatcher_accepts_a_precomputed_hit_without_raycast(monkeypatch):
     dispatcher = MouseEventDispatcher()
     hit = SimpleNamespace(game_object=SimpleNamespace(id=17, get_py_components=lambda: ()))
     calls = []
-    monkeypatch.setattr("Infernux.engine.runtime_mouse_events.Physics.raycast_screen",
+    monkeypatch.setattr("infernux.engine.runtime_mouse_events.Physics.raycast_screen",
                         lambda *args, **kwargs: calls.append(True))
     dispatcher.process(object(), (1, 2), (100, 100), hit=hit)
     assert calls == []
@@ -46,7 +46,7 @@ def test_dispatcher_accepts_a_precomputed_hit_without_raycast(monkeypatch):
 
 def test_direct_mouse_query_respects_camera_mask_and_ignore_raycast(monkeypatch):
     calls = []
-    monkeypatch.setattr("Infernux.engine.runtime_mouse_events.Physics.raycast_screen",
+    monkeypatch.setattr("infernux.engine.runtime_mouse_events.Physics.raycast_screen",
                         lambda *args, **kwargs: calls.append(kwargs))
     MouseEventDispatcher().process(SimpleNamespace(culling_mask=5), (1, 2), (100, 100),
                                    button_state=(False, False, False))
@@ -57,7 +57,7 @@ def test_stationary_hover_and_drag_capture_use_one_query_per_frame(monkeypatch):
     calls = []
     hit = SimpleNamespace(game_object=SimpleNamespace(id=23, get_py_components=lambda: ()))
     monkeypatch.setattr(
-        "Infernux.engine.runtime_mouse_events.Physics.raycast_screen",
+        "infernux.engine.runtime_mouse_events.Physics.raycast_screen",
         lambda *args, **kwargs: calls.append((args, kwargs)) or hit,
     )
     dispatcher = MouseEventDispatcher()

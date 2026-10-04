@@ -13,30 +13,30 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.components.component_identity import bind_asset_script_guid
-from Infernux.components.missing_script import MissingScript
-from Infernux.components.registry import (
+from infernux.components.component_identity import bind_asset_script_guid
+from infernux.components.missing_script import MissingScript
+from infernux.components.registry import (
     get_type_by_identity,
     publish_component_script_types,
     restore_component_registry_state,
     snapshot_component_registry_state,
 )
-from Infernux.components.script_loader import (
+from infernux.components.script_loader import (
     _clear_script_error,
     load_all_components_from_file,
     retire_script_module,
 )
-from Infernux.engine.play_mode import PlayModeManager, PlayModeState, ScriptReloadBatchInput
-from Infernux.engine.project_context import (
+from infernux.engine.play_mode import PlayModeManager, PlayModeState, ScriptReloadBatchInput
+from infernux.engine.project_context import (
     get_project_root,
     get_script_module_name,
     set_project_root,
 )
-from Infernux.engine.runtime_dispatch import current_runtime_epoch
-from Infernux.engine.runtime_event_queue import clear as clear_runtime_events
-from Infernux.engine.runtime_event_queue import drain as drain_runtime_events
-from Infernux.engine.runtime_script_revision import ScriptRevisionJournal
-from Infernux.ui.ui_event_system import UIEventProcessor
+from infernux.engine.runtime_dispatch import current_runtime_epoch
+from infernux.engine.runtime_event_queue import clear as clear_runtime_events
+from infernux.engine.runtime_event_queue import drain as drain_runtime_events
+from infernux.engine.runtime_script_revision import ScriptRevisionJournal
+from infernux.ui.ui_event_system import UIEventProcessor
 
 
 class _Object:
@@ -178,7 +178,7 @@ def test_cross_file_play_pause_step_reload_keeps_identity_and_switches_epoch(
     """)
     a_old = _write(a_path, """
         import shared_helper
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class StressA(InxComponent):
             _uses_component_data_store = False
             def awake(self):
@@ -201,7 +201,7 @@ def test_cross_file_play_pause_step_reload_keeps_identity_and_switches_epoch(
     """)
     b_old = _write(b_path, """
         import shared_helper
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class StressB(InxComponent):
             _uses_component_data_store = False
             def awake(self):
@@ -239,7 +239,7 @@ def test_cross_file_play_pause_step_reload_keeps_identity_and_switches_epoch(
 
     a_new = _write(a_path, """
         import shared_helper
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class StressA(InxComponent):
             _uses_component_data_store = False
             def awake(self): self.awake_count = getattr(self, 'awake_count', 0) + 1
@@ -257,7 +257,7 @@ def test_cross_file_play_pause_step_reload_keeps_identity_and_switches_epoch(
     """)
     b_new = _write(b_path, """
         import shared_helper
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class StressB(InxComponent):
             _uses_component_data_store = False
             def awake(self): self.awake_count = getattr(self, 'awake_count', 0) + 1
@@ -343,7 +343,7 @@ def test_supersede_save_candidates_and_failed_batch_rollback_are_deterministic(
 
     guid = "rollback-stress-guid"
     old_source = _write(path, """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class RollbackStress(InxComponent):
             _uses_component_data_store = False
             def helper(self): return 'old'
@@ -356,13 +356,13 @@ def test_supersede_save_candidates_and_failed_batch_rollback_are_deterministic(
     old_module = sys.modules[get_script_module_name(str(path))]
     old_identity = component.component_id
     candidate = _write(path, """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class RollbackStress(InxComponent):
             _uses_component_data_store = False
             def helper(self): return 'candidate'
     """)
     batch = manager.prepare_script_reload_batch((ScriptReloadBatchInput(str(path), guid, candidate),))
-    import Infernux.components.script_loader as script_loader
+    import infernux.components.script_loader as script_loader
     apply_real = script_loader._apply_component_body_patch_plans
 
     def apply_then_fail(plans):
@@ -386,7 +386,7 @@ def test_rename_then_delete_uses_transaction_owner_and_keeps_stable_identity(
     new_path = stress_project / "renamed_before_delete.py"
     guid = "rename-delete-guid"
     old_source = _write(old_path, """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class RenameDeleteProbe(InxComponent):
             _uses_component_data_store = False
             def helper(self): return 'old-path'
@@ -400,7 +400,7 @@ def test_rename_then_delete_uses_transaction_owner_and_keeps_stable_identity(
     )
     old_module_name = get_script_module_name(str(old_path))
     new_source = _write(new_path, """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class RenameDeleteProbe(InxComponent):
             _uses_component_data_store = False
             def helper(self): return 'new-path'

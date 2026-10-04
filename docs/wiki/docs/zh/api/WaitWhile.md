@@ -1,7 +1,7 @@
 # WaitWhile
 
 <div class="class-info">
-类位于 <b>Infernux.coroutine</b>
+类位于 <b>infernux.coroutine</b>
 </div>
 
 ## 描述

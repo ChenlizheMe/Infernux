@@ -486,7 +486,7 @@ void TestRuntimeAssetCatalogResolvesBuiltInArchiveResources()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-runtime-builtin-catalog";
     std::filesystem::remove_all(root);
-    const auto resources = root / "runtime" / "Infernux" / "resources";
+    const auto resources = root / "runtime" / "infernux" / "resources";
     const auto shader = resources / "shaders" / "standard.vert";
     const auto catalog = root / "content" / "Library" / "RuntimeAssetRecords.json";
     WriteText(shader, "#version 450\nvoid main() {}\n");
@@ -499,7 +499,7 @@ void TestRuntimeAssetCatalogResolvesBuiltInArchiveResources()
       "runtime_artifacts": [
         {
           "package": "Runtime.inxrt",
-          "runtime_path": "Infernux/resources/shaders/standard.vert"
+          "runtime_path": "infernux/resources/shaders/standard.vert"
         }
       ],
       "metadata": {

@@ -30,7 +30,7 @@ void RegisterRenderGraphBindings(py::module_ &m)
     // NOTE: ScenePassType and ScenePassConfig are intentionally not exposed to
     // Python. They are internal C++ implementation details of SceneRenderGraph.
     // Python uses GraphPassDesc / RenderGraphDescription (via the RenderGraph
-    // builder in Infernux.rendergraph) as its exclusive pass-definition API.
+    // builder in infernux.rendergraph) as its exclusive pass-definition API.
 
     // ========================================================================
     // RenderGraph topology binding types

@@ -8,8 +8,8 @@ import threading
 
 import pytest
 
-from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
-from Infernux.particle import (
+from infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
+from infernux.particle import (
     EmitterSettings,
     EmitterShape,
     GpuParticleGlslLowerer,
@@ -40,14 +40,14 @@ from Infernux.particle import (
     compile_gpu_particle_spirv,
     default_event_graph,
 )
-from Infernux.graph import AssetReference, CoordinateSpace, TypeRef, ValueType
-from Infernux.particle.nodes import (
+from infernux.graph import AssetReference, CoordinateSpace, TypeRef, ValueType
+from infernux.particle.nodes import (
     PARTICLE_EVENT_ACTIVE_TYPE_ID,
     PARTICLE_EVENT_TRIGGER_TYPE_ID,
     particle_event_payload_port_id,
     particle_graph_node_definitions,
 )
-from Infernux.particle.asset import (
+from infernux.particle.asset import (
     particle_attribute_cache_id,
     particle_attribute_capture_id,
     particle_cache_attributes,
@@ -199,7 +199,7 @@ def test_burst_node_queues_a_spawn_request_for_the_target_emitter():
         "target_emitter_index": 1,
     }
 
-    from Infernux.particle import GpuParticleGlslLowerer
+    from infernux.particle import GpuParticleGlslLowerer
 
     gpu = GpuParticleGlslLowerer().lower(kernel)
     assert "inx_enqueue_burst(1u," in gpu.emitters[0].update
@@ -1031,7 +1031,7 @@ def test_particle_waits_emit_stable_suspension_resume_descriptors():
     assert frame_wait.lane_stable_id == stage.flow.lanes[frame_wait.lane_index].stable_id
     assert second_wait.lane_stable_id == stage.flow.lanes[second_wait.lane_index].stable_id
 
-    from Infernux.particle.artifact import _program_to_dict
+    from infernux.particle.artifact import _program_to_dict
 
     serialized = _program_to_dict(
         ParticleGraphCompiler().compile(
@@ -1500,7 +1500,7 @@ def test_disabled_collision_keeps_authored_roots_dormant():
 
 def test_particle_script_collision_methods_compile_as_lifecycle_stages():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class CollisionGraph(ParticleScript):
     class Sparks(ParticleEmitter):
@@ -1556,7 +1556,7 @@ class CollisionGraph(ParticleScript):
 
 def test_particle_script_collision_methods_require_collision_setting():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class CollisionGraph(ParticleScript):
     class Sparks(ParticleEmitter):
@@ -1648,8 +1648,8 @@ def test_graph_parameters_have_stable_slots_and_default_only_hot_updates():
 
 
 def test_color_parameter_hdr_is_runtime_metadata_not_behavior():
-    from Infernux.graph.parameters import GRAPH_PARAMETER_HDR_ATTRIBUTE
-    from Infernux.particle.artifact import _program_to_dict
+    from infernux.graph.parameters import GRAPH_PARAMETER_HDR_ATTRIBUTE
+    from infernux.particle.artifact import _program_to_dict
 
     parameter = ParticleParameter(
         "tint",
@@ -2405,7 +2405,7 @@ def test_attribute_cache_is_written_in_init_and_read_live_from_update():
 
 def test_particle_script_attribute_cache_uses_graph_nodes_and_shared_hir():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class CachedMotion(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -2449,7 +2449,7 @@ class CachedMotion(ParticleScript):
 
 def test_particle_script_cache_infers_expression_type_and_reads_zero_before_writer():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class DeferredCache(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -2497,7 +2497,7 @@ class DeferredCache(ParticleScript):
 
 def test_particle_script_rejects_multiple_owners_for_one_attribute_cache():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class DuplicateCache(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -2602,7 +2602,7 @@ def test_particle_data_interfaces_round_trip_with_stable_identity_and_space():
 
 @pytest.mark.parametrize("kind", ["mesh_resource"])
 def test_mesh_resource_bindings_are_not_public_data_interfaces(kind):
-    from Infernux.particle.data_interface import (
+    from infernux.particle.data_interface import (
         ParticleDataInterfaceError,
         particle_data_interface_from_dict,
     )
@@ -2627,7 +2627,7 @@ def test_mesh_resource_bindings_are_not_public_data_interfaces(kind):
 
 
 def test_runtime_mesh_resource_parser_accepts_only_current_internal_schema():
-    from Infernux.particle.data_interface import (
+    from infernux.particle.data_interface import (
         MeshResourceBinding,
         ParticleDataInterfaceError,
         particle_runtime_resource_from_dict,
@@ -3610,7 +3610,7 @@ def test_particle_graph_rejects_pre_sdf_emitter_shape_schema():
 
 def test_particle_script_mesh_shape_matches_graph_asset_contract():
     source = '''\
-from Infernux.particle import AssetReference, EmitterShape, ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import AssetReference, EmitterShape, ParticleScript, ParticleEmitter, EmitterSettings
 
 class MeshShapeGraph(ParticleScript):
     class SurfaceEmitter(ParticleEmitter):
@@ -3645,7 +3645,7 @@ class MeshShapeGraph(ParticleScript):
 
 def test_particle_script_rejects_sdf_shape_authoring():
     source = '''\
-from Infernux.particle import AssetReference, EmitterShape, ParticleScript, ParticleEmitter, EmitterSettings, SdfVolume
+from infernux.particle import AssetReference, EmitterShape, ParticleScript, ParticleEmitter, EmitterSettings, SdfVolume
 
 class SdfShapeGraph(ParticleScript):
     class VolumeEmitter(ParticleEmitter):
@@ -3679,7 +3679,7 @@ class SdfShapeGraph(ParticleScript):
 
 
 PARTICLE_SCRIPT_SOURCE = '''\
-from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField
+from infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField
 
 class SmokeGraph(ParticleScript):
     stable_id = "smoke-graph"
@@ -3770,7 +3770,7 @@ def test_particle_script_compiles_without_execution_to_same_hir_contract():
 
 def test_particle_script_wait_and_until_share_the_graph_continuation_contract():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class TimedMotion(ParticleScript):
     stable_id = "timed-motion"
@@ -3835,7 +3835,7 @@ class TimedMotion(ParticleScript):
 
 def test_particle_script_source_locations_reach_hir_and_kernel_without_changing_hashes():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class Located(ParticleScript):
     stable_id = "located"
@@ -3918,7 +3918,7 @@ def test_particle_graph_expression_error_names_source_file_and_node():
 
 def test_particle_script_exposes_delta_time_as_a_pure_common_graph_value():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class Gravity(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -3955,7 +3955,7 @@ class Gravity(ParticleScript):
 
 def test_particle_script_if_else_expands_continuations_into_mutually_exclusive_lanes():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class ConditionalMotion(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -4015,7 +4015,7 @@ class ConditionalMotion(ParticleScript):
 
 def test_particle_script_rejects_imperative_loops_in_stage_control_flow():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class InvalidLoop(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -4044,7 +4044,7 @@ class InvalidLoop(ParticleScript):
 
 def test_particle_script_allows_wait_and_until_in_rendering_timeline():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class InvalidRenderingWait(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -4074,7 +4074,7 @@ class InvalidRenderingWait(ParticleScript):
 
 def test_particle_script_parameters_share_graph_hir_and_gpu_abi():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings, Parameter
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings, Parameter
 
 class ParameterGraph(ParticleScript):
     stable_id = "parameter-graph"
@@ -4132,7 +4132,7 @@ class ParameterGraph(ParticleScript):
 
 def test_particle_script_rejects_unknown_parameter_reads():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class InvalidParameterGraph(ParticleScript):
     class Smoke(ParticleEmitter):
@@ -4154,7 +4154,7 @@ class InvalidParameterGraph(ParticleScript):
 
 def test_particle_script_texture2d_sample_shares_graph_hir_and_gpu_resource_abi():
     source = '''\
-from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, Parameter
+from infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, Parameter
 
 class TextureParameterGraph(ParticleScript):
     stable_id = "texture-parameter-graph"
@@ -4204,7 +4204,7 @@ class TextureParameterGraph(ParticleScript):
 
 
 PARTICLE_SCRIPT_EVENT_SOURCE = '''\
-from Infernux.particle import (
+from infernux.particle import (
     ParticleScript, ParticleEmitter, EmitterSettings,
     EventField, EventType, event,
 )
@@ -4281,7 +4281,7 @@ def test_particle_script_typed_events_lower_through_the_graph_event_abi():
 
 def test_particle_script_event_flow_can_write_and_read_its_attribute_cache():
     source = '''\
-from Infernux.particle import (
+from infernux.particle import (
     ParticleScript, ParticleEmitter, EmitterSettings, EventType, event,
 )
 
@@ -4429,7 +4429,7 @@ def test_particle_script_static_mesh_output_matches_graph_contract():
 
 def test_particle_script_mesh_parameter_connects_to_output_mesh_port():
     source = '''\
-from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, Parameter
+from infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, Parameter
 
 class MeshParameterOutput(ParticleScript):
     parameters = (
@@ -4477,7 +4477,7 @@ class MeshParameterOutput(ParticleScript):
 
 def test_ribbon_output_has_stable_topology_attributes_and_script_parity():
     source = '''
-from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings
 
 class TrailGraph(ParticleScript):
     class Trail(ParticleEmitter):
@@ -4525,7 +4525,7 @@ class TrailGraph(ParticleScript):
 
 def test_plane_collision_graph_and_script_share_terminal_update_contract():
     source = '''
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class CollisionGraph(ParticleScript):
     class Sparks(ParticleEmitter):
@@ -4597,7 +4597,7 @@ def test_plane_collision_rejects_invalid_static_parameters(properties, message):
 
 def test_sphere_collision_graph_and_script_share_terminal_update_contract():
     source = '''
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class CollisionGraph(ParticleScript):
     class Sparks(ParticleEmitter):
@@ -4638,7 +4638,7 @@ class CollisionGraph(ParticleScript):
 
 def test_scene_collision_graph_and_script_share_gpu_scene_contract():
     source = '''
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class CollisionGraph(ParticleScript):
     class Sparks(ParticleEmitter):
@@ -4717,7 +4717,7 @@ class CollisionGraph(ParticleScript):
 
 def test_particle_script_scene_collision_events_read_current_hit_and_normal():
     source = '''
-from Infernux.particle import (
+from infernux.particle import (
     ParticleScript, ParticleEmitter, EmitterSettings,
     EventField, EventType, event,
 )
@@ -4798,7 +4798,7 @@ class CollisionEvents(ParticleScript):
 
 def test_particle_script_rejects_removed_scene_collision_operation():
     source = '''
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class RemovedCollisionNode(ParticleScript):
     class Sparks(ParticleEmitter):
@@ -4822,7 +4822,7 @@ class RemovedCollisionNode(ParticleScript):
 
 def test_particle_script_rejects_sdf_collision_authoring():
     source = '''
-from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, SdfVolume
+from infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, SdfVolume
 
 class CollisionGraph(ParticleScript):
     class Sparks(ParticleEmitter):
@@ -4948,7 +4948,7 @@ def test_particle_script_vector_field_expression_matches_graph_kernel_contract()
 
 def test_particle_script_rejects_sdf_sampling_authoring():
     source = '''\
-from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, SdfVolume
+from infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, SdfVolume
 
 class SdfSampleGraph(ParticleScript):
     stable_id = "sdf-sample-graph"
@@ -4979,7 +4979,7 @@ class SdfSampleGraph(ParticleScript):
 
 def test_particle_script_target_position_is_a_stateless_motion_operation():
     source = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class TargetMotion(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -5031,8 +5031,8 @@ class TargetMotion(ParticleScript):
 
 def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations():
     source = PARTICLE_SCRIPT_SOURCE.replace(
-        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField",
-        "from Infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, AnimationCurve, Keyframe, Gradient, GradientKey",
+        "from infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField",
+        "from infernux.particle import AssetReference, ParticleScript, ParticleEmitter, EmitterSettings, VectorField, AnimationCurve, Keyframe, Gradient, GradientKey",
     ).replace(
         "particles .add_velocity((0.0, -0.2, 0.0))",
         """particles.set_size(ctx.sample_curve(
@@ -5056,7 +5056,7 @@ def test_particle_script_curve_and_gradient_compile_to_shared_kernel_operations(
 
 def test_particle_script_curve_and_gradient_parameters_share_dynamic_kernel_path():
     source = '''\
-from Infernux.particle import (
+from infernux.particle import (
     AnimationCurve, Gradient, Parameter, ParticleScript, ParticleEmitter, EmitterSettings,
 )
 
@@ -5252,7 +5252,7 @@ def test_particle_script_rejects_executable_or_incomplete_python(source, message
 
 
 def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, monkeypatch):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -5309,7 +5309,7 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
         "motion_vertex",
         "motion_fragment",
     }
-    from Infernux.particle import decode_gpu_particle_spirv
+    from infernux.particle import decode_gpu_particle_spirv
 
     decoded = decode_gpu_particle_spirv(graph_artifact.gpu_spirv, 0)
     assert decoded["stable_id"] == "smoke"
@@ -5344,7 +5344,7 @@ def test_particle_graph_and_script_save_to_equivalent_aot_artifacts(tmp_path, mo
 
 
 def test_particle_runtime_index_loads_aot_without_authoring_source(tmp_path, monkeypatch):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -5384,7 +5384,7 @@ def test_particle_runtime_index_loads_aot_without_authoring_source(tmp_path, mon
 def test_particle_force_recompile_replaces_registered_artifact(
     tmp_path, monkeypatch
 ):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
     source_path = tmp_path / "Assets" / "ForceRecovery.particlegraph"
@@ -5408,7 +5408,7 @@ def test_particle_force_recompile_replaces_registered_artifact(
 
 
 def test_particle_graph_save_compiles_the_in_memory_snapshot_once(tmp_path, monkeypatch):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -5471,7 +5471,7 @@ def test_particle_graph_save_compiles_the_in_memory_snapshot_once(tmp_path, monk
 def test_particle_runtime_reference_never_uses_path_or_stable_id_fallback(
     tmp_path, monkeypatch
 ):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -5513,7 +5513,7 @@ def test_particle_runtime_reference_never_uses_path_or_stable_id_fallback(
 
 
 def test_particle_artifacts_are_indexed_by_asset_guid(tmp_path, monkeypatch):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -5540,7 +5540,7 @@ def test_particle_artifacts_are_indexed_by_asset_guid(tmp_path, monkeypatch):
 
 
 def test_particle_artifact_uses_meta_guid_when_compile_omits_guid(tmp_path, monkeypatch):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -5565,8 +5565,8 @@ def test_particle_artifact_uses_meta_guid_when_compile_omits_guid(tmp_path, monk
 
 
 def test_particle_graph_artifact_hash_ignores_json_formatting(tmp_path, monkeypatch):
-    from Infernux.engine import project_context
-    from Infernux.particle import artifact as artifact_module
+    from infernux.engine import project_context
+    from infernux.particle import artifact as artifact_module
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -5596,7 +5596,7 @@ def test_particle_graph_artifact_hash_ignores_json_formatting(tmp_path, monkeypa
 def test_particle_graph_rebuilds_deterministically_after_library_cleanup(
     tmp_path, monkeypatch
 ):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -5626,7 +5626,7 @@ def test_particle_graph_rebuilds_deterministically_after_library_cleanup(
 
 
 def test_ensure_project_compiled_rebuilds_missing_library_artifacts(tmp_path, monkeypatch):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -5661,7 +5661,7 @@ def test_ensure_project_compiled_rebuilds_missing_library_artifacts(tmp_path, mo
 
 
 def test_ensure_project_compiled_raises_when_source_is_invalid(tmp_path, monkeypatch):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -5678,7 +5678,7 @@ def test_ensure_project_compiled_raises_when_source_is_invalid(tmp_path, monkeyp
 
 
 def test_source_needs_compile_when_library_artifact_is_stale(tmp_path, monkeypatch):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -5701,7 +5701,7 @@ def test_source_needs_compile_when_library_artifact_is_stale(tmp_path, monkeypat
 def test_source_needs_compile_when_generated_gpu_contract_is_stale(
     tmp_path, monkeypatch
 ):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -5729,7 +5729,7 @@ def test_source_needs_compile_when_generated_gpu_contract_is_stale(
 def test_particle_graph_latest_request_wins_out_of_order_compilation(
     tmp_path, monkeypatch
 ):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
     path = str(tmp_path / "Assets" / "LatestWins.particlegraph")
@@ -5772,7 +5772,7 @@ def test_particle_graph_latest_request_wins_out_of_order_compilation(
 def test_failed_newer_particle_compile_invalidates_older_in_flight_result(
     tmp_path, monkeypatch
 ):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
     path = str(tmp_path / "Assets" / "FailedLatest.particlegraph")
@@ -5818,8 +5818,8 @@ def test_failed_newer_particle_compile_invalidates_older_in_flight_result(
 
 
 def test_particle_aot_failure_preserves_last_known_good_and_cache_hit(tmp_path, monkeypatch):
-    from Infernux.engine import project_context
-    from Infernux.particle import artifact as artifact_module
+    from infernux.engine import project_context
+    from infernux.particle import artifact as artifact_module
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
@@ -5905,7 +5905,7 @@ def test_particle_aot_rebuilds_persisted_artifact_with_stale_hir_contract(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "Infernux.engine.project_context.get_project_root", lambda: str(project)
+        "infernux.engine.project_context.get_project_root", lambda: str(project)
     )
 
     ParticleArtifactRegistry.clear()
@@ -5945,7 +5945,7 @@ def test_particle_aot_rebuilds_persisted_artifact_with_stale_gpu_layout(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "Infernux.engine.project_context.get_project_root", lambda: str(project)
+        "infernux.engine.project_context.get_project_root", lambda: str(project)
     )
 
     ParticleArtifactRegistry.clear()

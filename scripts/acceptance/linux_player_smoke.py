@@ -32,7 +32,7 @@ _PYTHON_ROOT = _REPOSITORY_ROOT / "python"
 if str(_PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(_PYTHON_ROOT))
 
-from Infernux.engine.platform_player_bootstrap import (  # noqa: E402
+from infernux.engine.platform_player_bootstrap import (  # noqa: E402
     read_player_build_manifest,
 )
 
@@ -391,7 +391,7 @@ def _state_log(game: str) -> Path:
         Path.home()
         / ".local"
         / "state"
-        / "Infernux"
+        / "infernux"
         / "Players"
         / game
         / "Logs"

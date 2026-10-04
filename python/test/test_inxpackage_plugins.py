@@ -12,21 +12,21 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from Infernux.version import ENGINE_VERSION
+from infernux.version import ENGINE_VERSION
 
-import Infernux.plugins.manager as plugin_manager_module
-import Infernux.plugins.preload as preload_module
-import Infernux.plugins.github_releases as github_releases_module
-import Infernux.plugins.cache as plugin_cache_module
-from Infernux.engine import player_package_native
-from Infernux.engine.path_utils import path_key
-from Infernux.application import Application
-from Infernux.engine.project_context import (
+import infernux.plugins.manager as plugin_manager_module
+import infernux.plugins.preload as preload_module
+import infernux.plugins.github_releases as github_releases_module
+import infernux.plugins.cache as plugin_cache_module
+from infernux.engine import player_package_native
+from infernux.engine.path_utils import path_key
+from infernux.application import Application
+from infernux.engine.project_context import (
     set_project_root,
     set_runtime_asset_query,
     set_runtime_asset_resolver,
 )
-from Infernux.plugins import (
+from infernux.plugins import (
     InxPackage,
     SharedPackageCache,
     PackageConflictError,
@@ -38,22 +38,22 @@ from Infernux.plugins import (
     player_file_exported,
     split_markdown_images,
 )
-from Infernux.plugins.official import (
+from infernux.plugins.official import (
     OfficialCatalogError,
     bootstrap_new_project,
     install_bundled_packages,
     sync_official_registry,
 )
-from Infernux.plugins.content import normalize_page_descriptor
-from Infernux.plugins.project_index import project_guid_paths
-from Infernux.plugins.github_releases import (
+from infernux.plugins.content import normalize_page_descriptor
+from infernux.plugins.project_index import project_guid_paths
+from infernux.plugins.github_releases import (
     RELEASE_MANIFEST_NAME,
     download_github_source,
     release_manifest_name,
     resolve_github_release,
 )
-from Infernux.plugins.cli import main as package_cli_main
-from Infernux.ui import UIButton
+from infernux.plugins.cli import main as package_cli_main
+from infernux.ui import UIButton
 
 
 class _FakeInxPack:
@@ -102,7 +102,7 @@ class _FakeInxPack:
 
 @pytest.fixture(autouse=True)
 def _fake_inxpack(tmp_path, monkeypatch):
-    from Infernux.plugins.cache import SharedPackageCache
+    from infernux.plugins.cache import SharedPackageCache
     original_store = SharedPackageCache.store
 
     def store(cache, source, **kwargs):
@@ -120,7 +120,7 @@ def _fake_inxpack(tmp_path, monkeypatch):
     )
     engine_resources = tmp_path / "engine-resources"
     engine_resources.mkdir()
-    monkeypatch.setattr("Infernux.resources._package_dir", str(engine_resources))
+    monkeypatch.setattr("infernux.resources._package_dir", str(engine_resources))
     _FakeInxPack.archives.clear()
     player_package_native.set_test_backend(_FakeInxPack)
     yield
@@ -391,7 +391,7 @@ def test_plugin_install_publishes_runtime_scripts_without_waiting_for_watcher(
             published.append(("retire", tuple(Path(path) for path in paths)))
 
     monkeypatch.setattr(
-        "Infernux.engine.resources_manager.ResourcesManager.instance",
+        "infernux.engine.resources_manager.ResourcesManager.instance",
         classmethod(lambda _cls: _Resources()),
     )
 
@@ -467,7 +467,7 @@ def test_package_enable_uses_live_scripts_and_retire_keeps_previous_paths(
             retired.extend(Path(path) for path in paths)
 
     monkeypatch.setattr(
-        "Infernux.engine.resources_manager.ResourcesManager.instance",
+        "infernux.engine.resources_manager.ResourcesManager.instance",
         classmethod(lambda _cls: Resources()),
     )
     manager = PluginManager(str(project))
@@ -970,11 +970,11 @@ def test_startup_restores_requirements_before_single_preload_catchup(
     project = _project(tmp_path / "project")
     events: list[str] = []
     monkeypatch.setattr(
-        "Infernux.plugins.official.sync_official_registry",
+        "infernux.plugins.official.sync_official_registry",
         lambda _project, *, resources_root=None: events.append("sync"),
     )
     monkeypatch.setattr(
-        "Infernux.plugins.official.install_bundled_packages",
+        "infernux.plugins.official.install_bundled_packages",
         lambda _project, *, manager=None: events.append("bundled") or (),
     )
     monkeypatch.setattr(
@@ -1115,7 +1115,7 @@ def test_startup_never_force_overwrites_an_edited_builtin_package(tmp_path):
 
 
 def test_package_update_preserves_mesh_read_write_and_strips_legacy_statistics(tmp_path):
-    from Infernux.plugins.package import portable_meta_bytes
+    from infernux.plugins.package import portable_meta_bytes
 
     source = _source(tmp_path / "source", "vendor/mesh-settings")
     mesh = source / "Ship.obj"
@@ -1240,7 +1240,7 @@ def test_startup_installs_resources_root_inxpackages_without_official_catalog(
     _export(source, resources / "infernux.platform-fixture.inxpkg")
     project = _project(tmp_path / "project")
     monkeypatch.setattr(
-        "Infernux.resources.get_package_resources_path", lambda: str(resources)
+        "infernux.resources.get_package_resources_path", lambda: str(resources)
     )
 
     manager = PluginManager.startup(str(project), runtime=False)
@@ -1296,9 +1296,9 @@ def test_new_project_installs_builtins_before_resolving_default_registry(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "Infernux.resources.get_package_resources_path", lambda: str(resources)
+        "infernux.resources.get_package_resources_path", lambda: str(resources)
     )
-    monkeypatch.setattr("Infernux.engine.library_sync.sync_resources", lambda _root: None)
+    monkeypatch.setattr("infernux.engine.library_sync.sync_resources", lambda _root: None)
     monkeypatch.setattr(
         PluginManager,
         "_run_process",
@@ -1759,7 +1759,7 @@ def test_github_source_prefers_highest_compatible_protocol_release(
 
     monkeypatch.setattr(urllib.request, "urlopen", open_request)
     monkeypatch.setattr(
-        "Infernux.plugins.github_releases.InxPackage.inspect",
+        "infernux.plugins.github_releases.InxPackage.inspect",
         lambda _path: SimpleNamespace(
             metadata={
                 "reference": "vendor/released",
@@ -1931,7 +1931,7 @@ def test_github_source_selects_reference_scoped_manifest_from_shared_release(
 
     monkeypatch.setattr(urllib.request, "urlopen", open_request)
     monkeypatch.setattr(
-        "Infernux.plugins.github_releases.InxPackage.inspect",
+        "infernux.plugins.github_releases.InxPackage.inspect",
         lambda _path: SimpleNamespace(metadata={
             "reference": "infernux/platform-web",
             "version": "0.1.0",
@@ -2274,7 +2274,7 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
 
         monkeypatch.setattr(manager, "_run_process", run_process)
         monkeypatch.setattr(
-            "Infernux.plugins.github_releases.resolve_github_release",
+            "infernux.plugins.github_releases.resolve_github_release",
             lambda *_args, **_kwargs: None,
         )
 
@@ -2284,7 +2284,7 @@ def test_direct_local_github_git_and_http_sources_converge_on_same_inventory(
             return SimpleNamespace(root=str(checkout), commit="a" * 40)
 
         monkeypatch.setattr(
-            "Infernux.plugins.github_releases.download_github_source",
+            "infernux.plugins.github_releases.download_github_source",
             download_source,
         )
 
@@ -2377,7 +2377,7 @@ def test_official_object_download_uses_primary_channel_without_github(
 
     monkeypatch.setattr(plugin_manager_module, "_download_url_package", retrieve)
     monkeypatch.setattr(
-        "Infernux.plugins.github_releases.resolve_github_release",
+        "infernux.plugins.github_releases.resolve_github_release",
         lambda *_args, **_kwargs: pytest.fail("GitHub fallback must remain idle"),
     )
 
@@ -2427,7 +2427,7 @@ def test_official_object_download_falls_back_to_exact_github_release_on_network_
         )
 
     monkeypatch.setattr(
-        "Infernux.plugins.github_releases.resolve_github_release", resolve
+        "infernux.plugins.github_releases.resolve_github_release", resolve
     )
 
     path, source = manager._materialize_source(
@@ -2489,7 +2489,7 @@ def test_uninstall_file_failure_rolls_back_payload_meta_and_registry(tmp_path, m
             raise PermissionError("simulated locked metadata")
         return original_remove(path)
 
-    monkeypatch.setattr("Infernux.plugins.manager.os.remove", fail_once)
+    monkeypatch.setattr("infernux.plugins.manager.os.remove", fail_once)
     with pytest.raises(PermissionError, match="locked metadata"):
         manager.uninstall("vendor/uninstall-rollback")
 
@@ -2782,7 +2782,7 @@ def test_failed_preload_unload_aborts_uninstall_and_requires_restart(tmp_path):
     runtime = source / "runtime"
     runtime.mkdir()
     (runtime / "service.py").write_text(
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class StubbornService(InxPreload):\n"
         "    def preload(self, context): pass\n"
         "    def unload(self): raise RuntimeError('service still running')\n",
@@ -2815,7 +2815,7 @@ def test_uninstall_removes_only_owned_script_caches_transactionally(
     tmp_path, monkeypatch, keep_author, fail_uninstall
 ):
     import py_compile
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     source = _source(tmp_path / "source", "vendor/cached")
     (source / "editor").mkdir()
@@ -2878,7 +2878,7 @@ def test_package_preload_supports_relative_imports(tmp_path):
     )
     (package_module / "lifecycle.py").write_text(
         "from pathlib import Path\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "from .service import VALUE\n"
         "class RelativePreload(InxPreload):\n"
         "    def preload(self, context):\n"
@@ -2901,7 +2901,7 @@ def test_package_preload_supports_relative_imports(tmp_path):
 def test_editor_translation_catalog_loads_before_plugin_preload_and_unloads_with_package(
     tmp_path, monkeypatch
 ):
-    from Infernux.engine import i18n
+    from infernux.engine import i18n
 
     monkeypatch.setattr(i18n, "_current_locale", "en")
     monkeypatch.setattr(i18n, "_translation_owners", {})
@@ -2924,8 +2924,8 @@ def test_editor_translation_catalog_loads_before_plugin_preload_and_unloads_with
     )
     (editor / "lifecycle.py").write_text(
         "from pathlib import Path\n"
-        "from Infernux.engine.i18n import t\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.engine.i18n import t\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class LocalizedPreload(InxPreload):\n"
         "    def preload(self, context):\n"
         "        Path(context.project_root, 'translation-ready.txt').write_text(\n"
@@ -2948,7 +2948,7 @@ def test_editor_translation_catalog_loads_before_plugin_preload_and_unloads_with
 
 
 def test_editor_translation_catalog_hot_reload_is_atomic(tmp_path, monkeypatch):
-    from Infernux.engine import i18n
+    from infernux.engine import i18n
 
     monkeypatch.setattr(i18n, "_current_locale", "en")
     monkeypatch.setattr(i18n, "_translation_owners", {})
@@ -2974,7 +2974,7 @@ def test_editor_translation_catalog_hot_reload_is_atomic(tmp_path, monkeypatch):
 
     write_catalog("First")
     (editor / "lifecycle.py").write_text(
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class LiveTranslationsPreload(InxPreload):\n"
         "    def preload(self, context):\n"
         "        pass\n",
@@ -3031,7 +3031,7 @@ def test_import_reuses_authored_role_root_without_moving_user_files(tmp_path, ro
     (module / "service.py").write_text("VALUE = 'current'\n", encoding="utf-8")
     (module / "lifecycle.py").write_text(
         "from pathlib import Path\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class AuthoredRolePreload(InxPreload):\n"
         "    def preload(self, context):\n"
         "        from authored_role_probe.service import VALUE\n"
@@ -3087,7 +3087,7 @@ def test_import_rejects_ambiguous_authored_role_before_writing(tmp_path, extract
 
 @pytest.mark.parametrize("outside_package", [False, True])
 def test_project_package_destination_rejects_redirected_role(tmp_path, outside_package):
-    from Infernux.plugins.package import package_destination
+    from infernux.plugins.package import package_destination
 
     project = _project(tmp_path / "project")
     root = project / "Packages/vendor/redirected"
@@ -3116,7 +3116,7 @@ def test_package_preload_absolute_imports_use_authored_role_spelling(tmp_path, r
     lifecycle = module / "lifecycle.py"
     lifecycle.write_text(
         "from pathlib import Path\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class CasePreload(InxPreload):\n"
         "    def preload(self, context):\n"
         "        from infernux_case_probe.service import VALUE\n"
@@ -3146,7 +3146,7 @@ def test_manifestless_local_package_preload_supports_relative_imports(tmp_path):
     )
     (package_module / "lifecycle.py").write_text(
         "from pathlib import Path\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "from .service import VALUE\n"
         "class LocalPreload(InxPreload):\n"
         "    def preload(self, context):\n"
@@ -3175,7 +3175,7 @@ def test_manifestless_local_package_preload_supports_relative_imports(tmp_path):
 
 @pytest.mark.parametrize("fail_preload", [False, True])
 def test_preload_library_ownership_follows_success_and_failure(tmp_path, fail_preload):
-    from Infernux.engine.project_context import is_project_component_script
+    from infernux.engine.project_context import is_project_component_script
 
     project = _project(tmp_path / "project")
     package = _source(project / "Packages/vendor/compiler", "vendor/compiler")
@@ -3186,7 +3186,7 @@ def test_preload_library_ownership_follows_success_and_failure(tmp_path, fail_pr
     author = package / "runtime/AuthorComponent.py"
     author.write_text("", encoding="utf-8")
     (library / "lifecycle.py").write_text(
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class LibraryPreload(InxPreload):\n"
         "    def preload(self, context):\n"
         "        context.own_python_library('runtime/provider')\n"
@@ -3219,7 +3219,7 @@ def test_package_preloads_with_matching_module_paths_are_isolated(tmp_path):
         )
         (package_module / "lifecycle.py").write_text(
             "from pathlib import Path\n"
-            "from Infernux.lifecycle import InxPreload\n"
+            "from infernux.lifecycle import InxPreload\n"
             "from .service import VALUE\n"
             "class SharedNamePreload(InxPreload):\n"
             "    def preload(self, context):\n"
@@ -3247,7 +3247,7 @@ def test_stubborn_plugin_does_not_block_unrelated_plugin_lifecycle(
     stubborn = _source(tmp_path / "stubborn", "vendor/stubborn-slice")
     (stubborn / "runtime").mkdir()
     (stubborn / "runtime" / "service.py").write_text(
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class Stubborn(InxPreload):\n"
         "    def preload(self, context): pass\n"
         "    def unload(self): raise RuntimeError('restart only me')\n",
@@ -3257,7 +3257,7 @@ def test_stubborn_plugin_does_not_block_unrelated_plugin_lifecycle(
     (safe / "runtime").mkdir()
     (safe / "runtime" / "service.py").write_text(
         "from pathlib import Path\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class Safe(InxPreload):\n"
         "    def preload(self, context): self.root=context.project_root\n"
         "    def unload(self): Path(self.root, 'safe-unloaded.txt').write_text('yes')\n",
@@ -3312,7 +3312,7 @@ def test_native_guid_index_avoids_meta_walk_and_drives_preload_catalog(
     project = _project(tmp_path / "project")
     script = project / "Assets" / "indexed.py"
     script.write_text(
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class Indexed(InxPreload):\n"
         "    def preload(self, context): pass\n",
         encoding="utf-8",
@@ -3337,7 +3337,7 @@ def test_native_guid_index_avoids_meta_walk_and_drives_preload_catalog(
             return Database()
 
     monkeypatch.setattr(
-        "Infernux.plugins.project_index._scan_guid_paths",
+        "infernux.plugins.project_index._scan_guid_paths",
         lambda _root: pytest.fail("native GUID catalog fell back to os.walk"),
     )
     paths, native = project_guid_paths(str(project), engine=Engine())
@@ -3364,7 +3364,7 @@ def test_plugin_refresh_does_not_hide_the_project_database_error(tmp_path):
 
 
 def test_detached_plugin_refresh_does_not_touch_another_project(tmp_path, monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     project = _project(tmp_path / "project")
     refreshed = []
@@ -3373,7 +3373,7 @@ def test_detached_plugin_refresh_does_not_touch_another_project(tmp_path, monkey
     )
     monkeypatch.setattr(AssetManager, "_asset_database", database)
     monkeypatch.setattr(
-        "Infernux.lib.AssetRegistry",
+        "infernux.lib.AssetRegistry",
         SimpleNamespace(instance=lambda: SimpleNamespace(get_asset_database=lambda: database)),
     )
     PluginManager(str(project))._refresh_editor_assets()
@@ -3391,7 +3391,7 @@ def test_native_guid_index_failure_does_not_probe_another_database(
             raise RuntimeError("native catalog unavailable")
 
     monkeypatch.setattr(
-        "Infernux.plugins.project_index._scan_guid_paths",
+        "infernux.plugins.project_index._scan_guid_paths",
         lambda _root: pytest.fail("native GUID failure fell back to os.walk"),
     )
     with pytest.raises(RuntimeError, match="native catalog unavailable"):
@@ -3409,7 +3409,7 @@ def test_static_preload_discovery_imports_only_lifecycle_candidates(tmp_path):
     lifecycle.write_text(
         "from abc import abstractmethod\n"
         "from pathlib import Path\n"
-        "from Infernux.lifecycle import InxPreload as Lifecycle\n"
+        "from infernux.lifecycle import InxPreload as Lifecycle\n"
         "class Foundation(Lifecycle):\n"
         "    @abstractmethod\n"
         "    def configure(self): ...\n"
@@ -3495,7 +3495,7 @@ def test_preload_partial_failure_runs_owned_cleanups_in_reverse_order(tmp_path):
     lifecycle = project / "Assets" / "partial_service.py"
     lifecycle.write_text(
         "from pathlib import Path\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class PartialService(InxPreload):\n"
         "    def preload(self, context):\n"
         "        output = Path(context.project_root, 'cleanup-order.txt')\n"
@@ -3520,7 +3520,7 @@ def test_non_identifier_preload_module_uses_its_asset_guid(tmp_path):
     project = _project(tmp_path / "project")
     lifecycle = project / "Assets" / "startup script.py"
     lifecycle.write_text(
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class Startup(InxPreload):\n"
         "    def preload(self, context): pass\n",
         encoding="utf-8",
@@ -3541,7 +3541,7 @@ def test_preload_rejects_invalid_script_identity_metadata(tmp_path):
     project = _project(tmp_path / "project")
     lifecycle = project / "Assets" / "startup.py"
     lifecycle.write_text(
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class Startup(InxPreload):\n"
         "    def preload(self, context): pass\n",
         encoding="utf-8",
@@ -3561,7 +3561,7 @@ def test_reload_all_reuses_unchanged_ast_catalog_and_parses_only_changes(
     project = _project(tmp_path / "project")
     lifecycle = project / "Assets" / "startup.py"
     lifecycle.write_text(
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class Startup(InxPreload):\n"
         "    def preload(self, context): pass\n",
         encoding="utf-8",
@@ -3592,7 +3592,7 @@ def test_ordinary_script_change_does_not_reload_preloads_or_rescan_catalog(
     lifecycle = project / "Assets" / "startup.py"
     lifecycle.write_text(
         "from pathlib import Path\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class Startup(InxPreload):\n"
         "    def preload(self, context): Path(context.project_root, 'loaded.txt').write_text('yes')\n"
         "    def unload(self): Path(__file__).with_name('unloaded.txt').write_text('yes')\n",
@@ -3622,7 +3622,7 @@ def test_ordinary_script_change_does_not_reload_preloads_or_rescan_catalog(
 def test_install_script_events_are_owned_but_later_author_edits_refresh(
     tmp_path, partial, role, background
 ):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
     from concurrent.futures import ThreadPoolExecutor
 
     source = _source(tmp_path / "source", "vendor/echo")
@@ -3670,7 +3670,7 @@ def test_preload_change_reloads_only_its_dependency_slice(tmp_path, monkeypatch)
     def write_preload(path: Path, label: str, revision: int) -> None:
         path.write_text(
             "from pathlib import Path\n"
-            "from Infernux.lifecycle import InxPreload\n"
+            "from infernux.lifecycle import InxPreload\n"
             f"class {label}(InxPreload):\n"
             f"    revision = {revision}\n"
             "    def preload(self, context): pass\n"
@@ -3710,7 +3710,7 @@ def test_preload_cross_module_inheritance_move_disable_and_restart_diagnostic(tm
     runtime.mkdir()
     (runtime / "foundation.py").write_text(
         "from abc import abstractmethod\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class Foundation(InxPreload):\n"
         "    @abstractmethod\n"
         "    def configure(self): ...\n"
@@ -3760,7 +3760,7 @@ def test_package_reload_preflights_every_source_before_unloading_live_state(tmp_
     (runtime / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
     (runtime / "startup.py").write_text(
         "from pathlib import Path\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class Startup(InxPreload):\n"
         "    def preload(self, context):\n"
         "        self.root = Path(context.project_root)\n"
@@ -3808,7 +3808,7 @@ def test_new_package_preload_obeys_disable_and_enable_without_taking_ownership(
     new_script = project / "Packages/vendor/mutable/runtime/added.py"
     new_script.write_text(
         "from pathlib import Path\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class Added(InxPreload):\n"
         "    def preload(self, context):\n"
         "        Path(context.project_root, 'added-ran.txt').write_text('yes')\n",
@@ -3860,7 +3860,7 @@ def test_player_preload_refresh_respects_current_role_and_package_boundary(
     script = project / "Packages" / reference / role / "added.py"
     script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text(
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.lifecycle import InxPreload\n"
         "class Added(InxPreload):\n"
         "    def preload(self, context): pass\n",
         encoding="utf-8",
@@ -3883,7 +3883,7 @@ def test_package_dependency_preload_and_reverse_unload_order(tmp_path):
         runtime.mkdir()
         (runtime / "startup.py").write_text(
             "from pathlib import Path\n"
-            "from Infernux.lifecycle import InxPreload\n"
+            "from infernux.lifecycle import InxPreload\n"
             f"LABEL = {label!r}\n"
             "class Startup(InxPreload):\n"
             "    def preload(self, context):\n"
@@ -3935,8 +3935,8 @@ def test_source_manifest_rejects_unimplemented_dependency_fields(tmp_path, field
 
 
 def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
-    from Infernux.engine.interaction import PanelInteractionRegistry
-    from Infernux.engine.ui.panel_registry import PanelRegistry
+    from infernux.engine.interaction import PanelInteractionRegistry
+    from infernux.engine.ui.panel_registry import PanelRegistry
 
     class WindowManagerStub:
         def __init__(self, panel_interactions):
@@ -3962,9 +3962,9 @@ def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
     runtime = source / "runtime"
     runtime.mkdir()
     (runtime / "startup.py").write_text(
-        "from Infernux.engine.interaction import PanelInteractionDescriptor\n"
-        "from Infernux.engine.ui.panel_registry import editor_panel\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.engine.interaction import PanelInteractionDescriptor\n"
+        "from infernux.engine.ui.panel_registry import editor_panel\n"
+        "from infernux.lifecycle import InxPreload\n"
         "@editor_panel('Live Tool', type_id='vendor.live_tool', "
         "interaction=PanelInteractionDescriptor())\n"
         "class LiveTool: pass\n"
@@ -4013,8 +4013,8 @@ def test_runtime_plugin_panel_is_registered_and_removed_with_package(tmp_path):
 
 @pytest.mark.parametrize("teardown", ["uninstall", "disable", "shutdown"])
 def test_plugin_commands_and_shortcuts_follow_preload_lifetime(tmp_path, monkeypatch, teardown):
-    from Infernux.engine.interaction.commands import EditorCommandRegistry
-    from Infernux.engine.interaction.shortcuts import ShortcutRouter
+    from infernux.engine.interaction.commands import EditorCommandRegistry
+    from infernux.engine.interaction.shortcuts import ShortcutRouter
 
     monkeypatch.setattr(EditorCommandRegistry, "_instance", None)
     monkeypatch.setattr(ShortcutRouter, "_instance", None)
@@ -4024,9 +4024,9 @@ def test_plugin_commands_and_shortcuts_follow_preload_lifetime(tmp_path, monkeyp
     editor = source / "editor"
     editor.mkdir()
     (editor / "startup.py").write_text(
-        "from Infernux.lifecycle import InxPreload\n"
-        "from Infernux.engine.interaction.commands import EditorCommand, EditorCommandRegistry\n"
-        "from Infernux.engine.interaction.shortcuts import KeyChord, ShortcutBinding, ShortcutRouter\n"
+        "from infernux.lifecycle import InxPreload\n"
+        "from infernux.engine.interaction.commands import EditorCommand, EditorCommandRegistry\n"
+        "from infernux.engine.interaction.shortcuts import KeyChord, ShortcutBinding, ShortcutRouter\n"
         "EditorCommandRegistry.instance().register(EditorCommand('vendor.create', lambda ctx: 'created', display_name='创建关卡'))\n"
         "class Startup(InxPreload):\n"
         "    def preload(self, context):\n"
@@ -4064,7 +4064,7 @@ def test_plugin_commands_and_shortcuts_follow_preload_lifetime(tmp_path, monkeyp
 def test_plugin_handles_cancel_capture_and_retire_with_preload_lifetime(
     tmp_path, monkeypatch, teardown
 ):
-    from Infernux.engine.interaction.handles import EditorHandleRegistry
+    from infernux.engine.interaction.handles import EditorHandleRegistry
 
     monkeypatch.setattr(EditorHandleRegistry, "_instance", None)
     handles = EditorHandleRegistry.instance()
@@ -4073,8 +4073,8 @@ def test_plugin_handles_cancel_capture_and_retire_with_preload_lifetime(
     editor.mkdir()
     (editor / "startup.py").write_text(
         "from pathlib import Path\n"
-        "from Infernux.editor import register_handle_provider\n"
-        "from Infernux.lifecycle import InxPreload\n"
+        "from infernux.editor import register_handle_provider\n"
+        "from infernux.lifecycle import InxPreload\n"
         "ROOT = ''\n"
         "def record(value):\n"
         "    with Path(ROOT, 'handles.log').open('a', encoding='utf-8') as stream: stream.write(str(value) + '\\n')\n"

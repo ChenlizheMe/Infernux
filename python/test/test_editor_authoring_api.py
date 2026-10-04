@@ -5,14 +5,14 @@ from types import SimpleNamespace
 import pytest
 
 from infernux import editor
-from Infernux.engine.interaction import EditorInteractionCore, SelectionDomain
-from Infernux.engine.undo import UndoManager
-from Infernux.engine.play_mode import PlayModeManager
-from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
-from Infernux.lib import Vector3
-from Infernux.components import InxComponent, FieldType, serialized_field, list_field
-from Infernux.components.builtin import BoxCollider
-from Infernux.core import AssetManager, DataAsset
+from infernux.engine.interaction import EditorInteractionCore, SelectionDomain
+from infernux.engine.undo import UndoManager
+from infernux.engine.play_mode import PlayModeManager
+from infernux.engine.hierarchy_creation_service import HierarchyCreationService
+from infernux.lib import Vector3
+from infernux.components import InxComponent, FieldType, serialized_field, list_field
+from infernux.components.builtin import BoxCollider
+from infernux.core import AssetManager, DataAsset
 
 
 class AuthoringLevelData(DataAsset):
@@ -34,9 +34,9 @@ def test_editor_attribute_is_available_in_a_fresh_process():
     completed = subprocess.run([
         sys.executable, "-c",
         "import sys; import infernux as inx; "
-        "assert 'Infernux.editor' not in sys.modules; "
+        "assert 'infernux.editor' not in sys.modules; "
         "assert callable(inx.editor.create_game_object); "
-        "assert inx.editor is sys.modules['Infernux.editor']",
+        "assert inx.editor is sys.modules['infernux.editor']",
     ], capture_output=True, text=True, timeout=30)
     assert completed.returncode == 0, completed.stderr
 
@@ -73,7 +73,7 @@ def test_public_create_group_undo_redo_preserves_configuration(authoring, scene)
 
 
 def test_public_defer_uses_single_editor_task_and_preserves_authoring_history(authoring, scene, monkeypatch):
-    from Infernux.engine.deferred_task import DeferredTaskRunner
+    from infernux.engine.deferred_task import DeferredTaskRunner
 
     monkeypatch.setattr(DeferredTaskRunner, "_instance", None)
     runner = DeferredTaskRunner.instance()
@@ -135,7 +135,7 @@ def test_authoring_rejects_play_mode(authoring, monkeypatch):
 
 
 def test_public_prefab_delegates_to_session_owner(authoring, monkeypatch, tmp_path):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
     obj = SimpleNamespace(id=11)
     parent = SimpleNamespace(id=7)
@@ -150,7 +150,7 @@ def test_public_prefab_delegates_to_session_owner(authoring, monkeypatch, tmp_pa
 
 
 def test_public_save_preserves_pending_status(authoring, monkeypatch):
-    from Infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.scene_manager import SceneFileManager
     monkeypatch.setattr(SceneFileManager, "_instance", SimpleNamespace(document_id="scene-document"))
     pending = editor.DocumentActionResult(editor.DocumentActionStatus.PENDING)
     calls = []
@@ -161,7 +161,7 @@ def test_public_save_preserves_pending_status(authoring, monkeypatch):
 
 @pytest.fixture
 def asset_authoring(authoring, engine, monkeypatch):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
     database = engine.get_asset_database()
     monkeypatch.setattr(AssetManager, "_asset_database", database)
     monkeypatch.setattr(project_context, "get_project_root", lambda: database.project_root)
@@ -197,7 +197,7 @@ def test_public_data_asset_and_folder_share_grouped_undo(asset_authoring):
 
 def test_public_data_asset_uses_published_type_after_script_refresh(asset_authoring):
     from pathlib import Path
-    from Infernux.components.serializable_object import (
+    from infernux.components.serializable_object import (
         _candidate_serializable_scope, _publish_serializable_types,
         _restore_serializable_types,
     )
@@ -241,7 +241,7 @@ def test_public_data_asset_never_overwrites_or_mutates_input(asset_authoring):
 
 def test_public_data_asset_edit_uses_shared_document_and_one_undo(asset_authoring):
     from pathlib import Path
-    from Infernux.engine.interaction import DocumentKind, ensure_editable_resource_document
+    from infernux.engine.interaction import DocumentKind, ensure_editable_resource_document
 
     path = editor.create_data_asset(AuthoringLevelData(), "Assets/EditData.inxdata")
     asset = DataAsset.load(path)
@@ -282,7 +282,7 @@ def test_public_data_asset_edit_rejects_entire_invalid_batch(asset_authoring):
 
 
 def test_public_data_asset_edit_preserves_newer_document_for_stale_handle(asset_authoring):
-    from Infernux.engine.interaction import DocumentKind, ensure_editable_resource_document
+    from infernux.engine.interaction import DocumentKind, ensure_editable_resource_document
 
     path = editor.create_data_asset(AuthoringLevelData(), "Assets/StaleEditData.inxdata")
     stale = DataAsset.load(path)
@@ -337,8 +337,8 @@ def test_public_invalid_data_asset_does_not_enter_history(asset_authoring, value
 
 
 def test_public_build_scene_list_shares_settings_and_undo(authoring, monkeypatch, tmp_path):
-    from Infernux.engine import project_context
-    from Infernux.engine.interaction.project_settings import ensure_project_settings_document
+    from infernux.engine import project_context
+    from infernux.engine.interaction.project_settings import ensure_project_settings_document
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
     assets = tmp_path / "Assets"
     assets.mkdir()
@@ -386,7 +386,7 @@ def test_public_build_scene_list_shares_settings_and_undo(authoring, monkeypatch
     (["Assets/Wrong.txt"], ValueError),
 ])
 def test_public_invalid_build_scenes_leave_settings_unchanged(authoring, monkeypatch, tmp_path, paths, error):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
     monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
     authoring.project_assets.configure(str(tmp_path))
     before = editor.get_build_scenes()
@@ -564,7 +564,7 @@ def test_rect_gizmo_override_revert_apply_and_undo_share_one_authoring_history(
     property_prefab,
 ):
     """A Scene Rect gesture is a normal Prefab property edit, not a side channel."""
-    from Infernux.engine.ui.scene_view_panel import SceneViewPanel, TOOL_RECT
+    from infernux.engine.ui.scene_view_panel import SceneViewPanel, TOOL_RECT
 
     _path, root = property_prefab
     panel = SceneViewPanel(engine=None)
@@ -636,7 +636,7 @@ def test_revert_added_component_does_not_touch_same_type_source_component(proper
 
 @pytest.mark.parametrize("already_matches", [False, True])
 def test_property_revert_advances_only_selected_source_baseline(property_prefab, already_matches):
-    from Infernux.engine.prefab_manager import _read_prefab_document, save_prefab_document
+    from infernux.engine.prefab_manager import _read_prefab_document, save_prefab_document
     path, root = property_prefab
     component = root.get_components(PropertyRevertProbe)[0]
     component.amount = 7 if already_matches else 20

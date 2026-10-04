@@ -16,7 +16,7 @@ def test_editor_panels_do_not_reintroduce_private_command_key_polling():
     """
     from pathlib import Path
 
-    ui_root = Path("python/Infernux/engine/ui")
+    ui_root = Path("python/infernux/engine/ui")
     allowed = {
         "_scene_view_camera.py",
         "_scene_view_gizmo.py",
@@ -48,8 +48,8 @@ def test_editor_panels_do_not_reintroduce_private_command_key_polling():
         f"interaction core; private polling found in: {offenders}"
     )
 
-from Infernux.engine._bootstrap_wiring import BootstrapWiringMixin
-from Infernux.engine.interaction import (
+from infernux.engine._bootstrap_wiring import BootstrapWiringMixin
+from infernux.engine.interaction import (
     ActionOrigin,
     CommandResult,
     CommandSource,
@@ -66,19 +66,19 @@ from Infernux.engine.interaction import (
     ShortcutEvent,
     ShortcutRouteStatus,
 )
-from Infernux.engine.ui.animtimeline_editor_panel import (
+from infernux.engine.ui.animtimeline_editor_panel import (
     _TIMELINE_PANEL_INTERACTION,
 )
-from Infernux.engine.ui.animclip2d_editor_panel import (
+from infernux.engine.ui.animclip2d_editor_panel import (
     _ANIMCLIP2D_PANEL_INTERACTION,
 )
-from Infernux.engine.ui.animfsm_editor_panel import (
+from infernux.engine.ui.animfsm_editor_panel import (
     _ANIMFSM_PANEL_INTERACTION,
 )
-from Infernux.engine.ui.node_graph_editor_panel import (
+from infernux.engine.ui.node_graph_editor_panel import (
     NODE_GRAPH_PANEL_INTERACTION,
 )
-from Infernux.engine.ui.core_panel_interactions import (
+from infernux.engine.ui.core_panel_interactions import (
     console_panel_interaction,
     hierarchy_panel_interaction,
     inspector_panel_interaction,
@@ -254,8 +254,8 @@ def test_command_context_captures_authoritative_focus_selection_and_input_contex
 
 
 def test_editor_panel_owned_command_publishes_view_and_document_before_routing():
-    from Infernux.engine.ui.editor_panel import EditorPanel
-    from Infernux.engine.ui.editor_services import EditorServices
+    from infernux.engine.ui.editor_panel import EditorPanel
+    from infernux.engine.ui.editor_services import EditorServices
 
     previous_services = EditorServices._instance
     core = EditorInteractionCore()
@@ -324,8 +324,8 @@ def test_command_handler_cannot_return_result_for_another_command():
 
 
 def test_command_registry_wraps_context_changes_in_one_user_action():
-    from Infernux.engine.interaction import EditorContextSnapshot
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import EditorContextSnapshot
+    from infernux.engine.undo import UndoManager
 
     registry, focus, selection = _registry()
     manager = UndoManager()
@@ -524,7 +524,7 @@ def test_window_toggle_cannot_close_permanent_toolbar_chrome():
 
 
 def test_project_document_open_uses_user_window_navigation_after_resource_open():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         DocumentOpenResult,
         DocumentOpenStatus,
     )
@@ -592,7 +592,7 @@ def test_project_document_open_uses_user_window_navigation_after_resource_open()
 
 
 def test_failed_project_document_open_does_not_publish_window_navigation():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         DocumentOpenResult,
         DocumentOpenStatus,
     )
@@ -644,7 +644,7 @@ def test_failed_project_document_open_does_not_publish_window_navigation():
 
 
 def test_scene_grid_toolbar_action_uses_one_global_undoable_command():
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     class BootstrapHarness(BootstrapWiringMixin):
         pass
@@ -765,7 +765,7 @@ def test_console_source_navigation_is_one_global_command(monkeypatch):
 
     opened_sources = []
     monkeypatch.setattr(
-        "Infernux.engine.ui.project_utils.open_in_vscode",
+        "infernux.engine.ui.project_utils.open_in_vscode",
         lambda path, project_root="", line=0: (
             opened_sources.append((path, project_root, line)) or True
         ),
@@ -1170,7 +1170,7 @@ def test_ui_editor_uses_global_scene_commands_and_selection_clear():
 
 
 def test_project_edit_shortcuts_use_the_same_commands_as_hierarchy(tmp_path, monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     class BootstrapHarness(BootstrapWiringMixin):
         pass
@@ -2062,7 +2062,7 @@ def test_console_copy_shortcut_routes_through_the_focused_panel_adapter():
 
 
 def test_console_view_changes_use_non_dirty_global_history():
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     class BootstrapHarness(BootstrapWiringMixin):
         pass
@@ -2154,7 +2154,7 @@ def test_console_view_changes_use_non_dirty_global_history():
 
 
 def test_scene_tool_shortcuts_share_commands_and_respect_camera_capture():
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     class BootstrapHarness(BootstrapWiringMixin):
         pass
@@ -2292,8 +2292,8 @@ def test_ui_editor_nudge_shortcuts_share_panel_commands_and_respect_capture():
 
 
 def test_native_shortcut_event_blocks_editor_commands_while_game_view_owns_input():
-    from Infernux.engine._bootstrap_wiring import _native_shortcut_event
-    from Infernux.input import Input
+    from infernux.engine._bootstrap_wiring import _native_shortcut_event
+    from infernux.input import Input
 
     previous = Input.is_game_focused()
     try:

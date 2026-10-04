@@ -2,10 +2,10 @@
 
 import pytest
 
-from Infernux.lib import Vector3
-from Infernux.ui import UICanvas, UIButton, UIFrame, RenderMode
-from Infernux.ui.inx_ui_screen_component import clear_rect_cache
-from Infernux.ui.ui_render_dispatch import runtime_ui_revision
+from infernux.lib import Vector3
+from infernux.ui import UICanvas, UIButton, UIFrame, RenderMode
+from infernux.ui.inx_ui_screen_component import clear_rect_cache
+from infernux.ui.ui_render_dispatch import runtime_ui_revision
 
 
 def _canvas(scene, parent=None):

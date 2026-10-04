@@ -1326,7 +1326,7 @@ if(INFERNUX_BUILD_TESTS)
     )
     target_link_libraries(infernux_shader_info_schema_tests PRIVATE infernux_runtime_test_support)
     target_compile_definitions(infernux_shader_info_schema_tests PRIVATE
-        INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/Infernux/resources/shaders"
+        INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/infernux/resources/shaders"
     )
     if(MSVC)
         target_compile_options(infernux_shader_info_schema_tests PRIVATE /utf-8 /UNDEBUG)
@@ -1346,7 +1346,7 @@ if(INFERNUX_BUILD_TESTS)
     )
     target_link_libraries(infernux_shader_stage_linker_tests PRIVATE infernux_runtime_test_support)
     target_compile_definitions(infernux_shader_stage_linker_tests PRIVATE
-        INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/Infernux/resources/shaders"
+        INFERNUX_TEST_SHADER_ROOT="${CMAKE_SOURCE_DIR}/python/infernux/resources/shaders"
     )
     if(MSVC)
         target_compile_options(infernux_shader_stage_linker_tests PRIVATE /utf-8 /UNDEBUG)
@@ -1357,12 +1357,12 @@ if(INFERNUX_BUILD_TESTS)
 
     add_test(
         NAME infernux.headless
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/headless_smoke_test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/headless_smoke_test.py
     )
 
     add_test(
         NAME infernux.bootstrap_import
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/bootstrap_import_test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/bootstrap_import_test.py
     )
     set_tests_properties(infernux.bootstrap_import PROPERTIES
         ENVIRONMENT "INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_InfernuxBootstrap>"
@@ -1395,7 +1395,7 @@ if(INFERNUX_BUILD_TESTS)
 
     add_test(
         NAME infernux.gpu_upload
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/gpu_upload_smoke_test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/gpu_upload_smoke_test.py
     )
     set_tests_properties(infernux.gpu_upload PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
@@ -1407,7 +1407,7 @@ if(INFERNUX_BUILD_TESTS)
 
     add_test(
         NAME infernux.mesh_index_format_gpu
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/mesh_index_format_gpu_test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/mesh_index_format_gpu_test.py
     )
     set_tests_properties(infernux.mesh_index_format_gpu PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
@@ -1420,13 +1420,13 @@ if(INFERNUX_BUILD_TESTS)
     add_test(
         NAME infernux.material_first_shadow_gpu
         COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_SOURCE_DIR}/python/Infernux/test/material_first_shadow_gpu_test.py
+            ${CMAKE_SOURCE_DIR}/python/infernux/test/material_first_shadow_gpu_test.py
     )
     foreach(_outline_check background deformation multiple reload game-alpha gizmo properties)
         set(_outline_test "infernux.selection_outline_${_outline_check}_gpu")
         add_test(NAME ${_outline_test}
             COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_SOURCE_DIR}/python/Infernux/test/selection_outline_gpu_test.py
+                ${CMAKE_SOURCE_DIR}/python/infernux/test/selection_outline_gpu_test.py
                 --check ${_outline_check}
         )
         set_tests_properties(${_outline_test} PROPERTIES
@@ -1442,7 +1442,7 @@ if(INFERNUX_BUILD_TESTS)
             set(_transparency_test "infernux.material_transparency_${_transparency_path}_${_transparency_samples}_gpu")
             add_test(NAME ${_transparency_test}
                 COMMAND ${Python3_EXECUTABLE}
-                    ${CMAKE_SOURCE_DIR}/python/Infernux/test/material_transparency_gpu_test.py
+                    ${CMAKE_SOURCE_DIR}/python/infernux/test/material_transparency_gpu_test.py
                     --path ${_transparency_path} --samples ${_transparency_samples})
             set_tests_properties(${_transparency_test} PROPERTIES
                 ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
@@ -1456,7 +1456,7 @@ if(INFERNUX_BUILD_TESTS)
         set(_depth_test "infernux.fullscreen_depth_${_depth_samples}_gpu")
         add_test(NAME ${_depth_test}
             COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_SOURCE_DIR}/python/Infernux/test/fullscreen_depth_gpu_test.py
+                ${CMAKE_SOURCE_DIR}/python/infernux/test/fullscreen_depth_gpu_test.py
                 --samples ${_depth_samples})
         set_tests_properties(${_depth_test} PROPERTIES
             ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
@@ -1469,7 +1469,7 @@ if(INFERNUX_BUILD_TESTS)
         set(_shadow_test "infernux.material_shadow_controls_${_shadow_path}_gpu")
         add_test(NAME ${_shadow_test}
             COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_SOURCE_DIR}/python/Infernux/test/material_shadow_controls_gpu_test.py
+                ${CMAKE_SOURCE_DIR}/python/infernux/test/material_shadow_controls_gpu_test.py
                 --path ${_shadow_path})
         set_tests_properties(${_shadow_test} PROPERTIES
             ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
@@ -1480,7 +1480,7 @@ if(INFERNUX_BUILD_TESTS)
     endforeach()
     add_test(NAME infernux.texture_import_semantics_gpu
         COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_SOURCE_DIR}/python/Infernux/test/texture_import_semantics_gpu_test.py)
+            ${CMAKE_SOURCE_DIR}/python/infernux/test/texture_import_semantics_gpu_test.py)
     set_tests_properties(infernux.texture_import_semantics_gpu PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
         LABELS "requires_vulkan_device"
@@ -1492,7 +1492,7 @@ if(INFERNUX_BUILD_TESTS)
             set(_buffer_test "infernux.rendergraph_buffer_${_buffer_check}_${_buffer_completion}_gpu")
             add_test(NAME ${_buffer_test}
                 COMMAND ${Python3_EXECUTABLE}
-                    ${CMAKE_SOURCE_DIR}/python/Infernux/test/rendergraph_buffer_gpu_test.py
+                    ${CMAKE_SOURCE_DIR}/python/infernux/test/rendergraph_buffer_gpu_test.py
                     --check ${_buffer_check} --completion ${_buffer_completion}
             )
             set_tests_properties(${_buffer_test} PROPERTIES
@@ -1507,14 +1507,14 @@ if(INFERNUX_BUILD_TESTS)
     add_test(
         NAME infernux.mixed_deferred_coverage_gpu
         COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_SOURCE_DIR}/python/Infernux/test/mixed_deferred_coverage_gpu_test.py
+            ${CMAKE_SOURCE_DIR}/python/infernux/test/mixed_deferred_coverage_gpu_test.py
     )
     foreach(_bloom_path forward forward_plus deferred)
         foreach(_bloom_scope layer route)
             set(_bloom_test "infernux.bloom_chain_${_bloom_path}_${_bloom_scope}_gpu")
             add_test(NAME ${_bloom_test}
                 COMMAND ${Python3_EXECUTABLE}
-                    ${CMAKE_SOURCE_DIR}/python/Infernux/test/bloom_route_occlusion_gpu_test.py
+                    ${CMAKE_SOURCE_DIR}/python/infernux/test/bloom_route_occlusion_gpu_test.py
                     --path ${_bloom_path} --scope ${_bloom_scope}
             )
             set_tests_properties(${_bloom_test} PROPERTIES
@@ -1549,7 +1549,7 @@ if(INFERNUX_BUILD_TESTS)
         add_test(
             NAME infernux.material_queue_${_queue_case}_gpu
             COMMAND ${Python3_EXECUTABLE}
-                ${CMAKE_SOURCE_DIR}/python/Infernux/test/material_queue_gpu_test.py ${_queue_arguments}
+                ${CMAKE_SOURCE_DIR}/python/infernux/test/material_queue_gpu_test.py ${_queue_arguments}
         )
         set_tests_properties(infernux.material_queue_${_queue_case}_gpu PROPERTIES
             ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
@@ -1576,7 +1576,7 @@ if(INFERNUX_BUILD_TESTS)
             NAME infernux.compute_compiler_only
             COMMAND ${Python3_EXECUTABLE}
                 ${INFERNUX_GPU_JIT_SOURCE_DIR}/tests/infernux/compiler_only_kernel.py
-                ${INFERNUX_GPU_JIT_INSTALL_ROOT}/Infernux/_compiler/taichi/_vendor/taichi
+                ${INFERNUX_GPU_JIT_INSTALL_ROOT}/infernux/_compiler/taichi/_vendor/taichi
         )
         set_tests_properties(infernux.compute_compiler_only PROPERTIES
             LABELS "compiler"
@@ -1586,23 +1586,23 @@ if(INFERNUX_BUILD_TESTS)
 
     add_test(
         NAME infernux.compute_buffer_gpu
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/compute_buffer_gpu_test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/compute_buffer_gpu_test.py
     )
     add_test(
         NAME infernux.compute_kernel_gpu
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/compute_kernel_gpu_test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/compute_kernel_gpu_test.py
     )
     add_test(
         NAME infernux.compute_mesh_gpu
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/compute_mesh_gpu_test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/compute_mesh_gpu_test.py
     )
     add_test(
         NAME infernux.compute_gizmo_gpu
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/compute_gizmo_gpu_test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/compute_gizmo_gpu_test.py
     )
     add_test(
         NAME infernux.compute_physics_exchange_gpu
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/compute_physics_exchange_gpu_test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/compute_physics_exchange_gpu_test.py
     )
     set_tests_properties(
         infernux.compute_buffer_gpu
@@ -1612,7 +1612,7 @@ if(INFERNUX_BUILD_TESTS)
         infernux.compute_physics_exchange_gpu
         PROPERTIES
         FAIL_REGULAR_EXPRESSION "Validation Error:"
-        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;INFERNUX_GPU_JIT_VENDOR_DIR=${INFERNUX_GPU_JIT_INSTALL_ROOT}/Infernux/_compiler/taichi/_vendor/taichi"
+        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;INFERNUX_GPU_JIT_VENDOR_DIR=${INFERNUX_GPU_JIT_INSTALL_ROOT}/infernux/_compiler/taichi/_vendor/taichi"
         LABELS "requires_vulkan_device"
         TIMEOUT 60
         RUN_SERIAL TRUE
@@ -1621,23 +1621,23 @@ if(INFERNUX_BUILD_TESTS)
 
     add_test(
         NAME infernux.mesh_publication_gpu
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/mesh_publication_gpu_test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/mesh_publication_gpu_test.py
     )
     add_test(
         NAME infernux.mesh_publication_gpu_continuous
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/mesh_publication_gpu_test.py --continuous
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/mesh_publication_gpu_test.py --continuous
     )
     add_test(
         NAME infernux.runtime_mesh_retirement_gpu
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/runtime_mesh_retirement_gpu_test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/runtime_mesh_retirement_gpu_test.py
     )
     add_test(
         NAME infernux.runtime_mesh_retirement_multi_camera_gpu
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/runtime_mesh_retirement_gpu_test.py --multiple-cameras
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/runtime_mesh_retirement_gpu_test.py --multiple-cameras
     )
     add_test(
         NAME infernux.runtime_mesh_resource_gpu
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/runtime_mesh_resource_gpu_test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/runtime_mesh_resource_gpu_test.py
     )
     set_tests_properties(infernux.mesh_publication_gpu infernux.mesh_publication_gpu_continuous
         infernux.runtime_mesh_retirement_gpu infernux.runtime_mesh_retirement_multi_camera_gpu
@@ -1651,7 +1651,7 @@ if(INFERNUX_BUILD_TESTS)
 
     add_test(
         NAME infernux.scene_residency_soak
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/scene_residency_soak_test.py
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/scene_residency_soak_test.py
     )
     set_tests_properties(infernux.scene_residency_soak PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
@@ -1668,11 +1668,11 @@ if(INFERNUX_BUILD_TESTS)
         COMMAND ${CMAKE_COMMAND} -E env
                 "PYTHONPATH=${CMAKE_SOURCE_DIR}/python"
                 "INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
-                ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/physics_profile_gate.py
+                ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/physics_profile_gate.py
         COMMAND ${CMAKE_COMMAND} -E env
                 "PYTHONPATH=${CMAKE_SOURCE_DIR}/python"
                 "INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
-                ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/Infernux/test/asset_scan_profile_gate.py
+                ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/python/infernux/test/asset_scan_profile_gate.py
         DEPENDS _Infernux
         USES_TERMINAL
         VERBATIM

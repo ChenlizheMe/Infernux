@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.build import (
+from infernux.engine.build import (
     BuildArtifact,
     BuildPlan,
     BuildResult,
@@ -17,8 +17,8 @@ from Infernux.engine.build import (
     PlatformExporter,
     exporter_registry,
 )
-from Infernux.host import EditorAutomationHost, OperationError
-from Infernux.plugins.registry import PluginRegistry
+from infernux.host import EditorAutomationHost, OperationError
+from infernux.plugins.registry import PluginRegistry
 
 
 class _FixtureExporter(PlatformExporter):
@@ -83,7 +83,7 @@ def test_host_build_routes_registered_target_and_returns_structured_result(
 ):
     registration = exporter_registry.register("test:host-build", _FixtureExporter())
     monkeypatch.setattr(
-        "Infernux.engine.player_build_preflight.publish_player_asset_catalog_for_host",
+        "infernux.engine.player_build_preflight.publish_player_asset_catalog_for_host",
         lambda _root: {"entries": [{"guid": "a" * 32}]},
     )
     project = _project(tmp_path)
@@ -167,7 +167,7 @@ def test_host_build_target_catalog_is_json_serializable():
 
 def test_host_build_target_catalog_exposes_required_platform_plugin(monkeypatch):
     monkeypatch.setattr(
-        "Infernux.engine.build.platform_support_catalog",
+        "infernux.engine.build.platform_support_catalog",
         lambda: (
             SimpleNamespace(
                 target_id="web-wasm32",

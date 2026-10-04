@@ -7,12 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.assets import AssetManager
-from Infernux.engine.bootstrap_inspector._materials import _rebuild_material_entries
-from Infernux.engine.ui.asset_details_renderer import _load_material
-from Infernux.engine.ui.inspector_material import _get_inline_material_extra
-from Infernux.engine.ui.project_file_ops import _new_material_document
-from Infernux.lib import AssetRegistry
+from infernux.core.assets import AssetManager
+from infernux.engine.bootstrap_inspector._materials import _rebuild_material_entries
+from infernux.engine.ui.asset_details_renderer import _load_material
+from infernux.engine.ui.inspector_material import _get_inline_material_extra
+from infernux.engine.ui.project_file_ops import _new_material_document
+from infernux.lib import AssetRegistry
 
 
 def _rgba(material):

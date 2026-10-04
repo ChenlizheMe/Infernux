@@ -212,14 +212,14 @@ def test_wheel_build_requires_cmake_staging_and_a_native_extension() -> None:
     manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
 
     assert 'os.environ.get("INFERNUX_STAGED_WHEEL_BUILD") != "1"' in setup_script
-    assert 'native_source = Path.cwd() / "python" / "Infernux" / "lib"' in setup_script
+    assert 'native_source = Path.cwd() / "python" / "infernux" / "lib"' in setup_script
     assert 'native_source.glob("_Infernux*.pyd")' in setup_script
     assert 'native_source.glob("_Infernux*.so")' in setup_script
     assert '"INFERNUX_STAGED_WHEEL_BUILD=1"' in packaging
-    assert '"${CMAKE_SOURCE_DIR}/python/infernux.pyi"' in installer
-    assert 'public_stub = Path.cwd() / "python" / "infernux.pyi"' in setup_script
-    assert 'shutil.copy2(public_stub, Path(self.build_lib) / "infernux.pyi")' in setup_script
-    assert "include python/infernux.pyi" in manifest
+    assert 'DIRECTORY "${CMAKE_SOURCE_DIR}/python/infernux/"' in installer
+    assert "recursive-include python/infernux *" in manifest
+    assert "generate_public_namespace_stubs" not in setup_script
+    assert "python/infernux.pyi" not in installer
 
 
 def test_official_packages_are_rebuilt_before_wheel_staging_without_source_globs() -> None:
@@ -234,11 +234,11 @@ def test_official_packages_are_rebuilt_before_wheel_staging_without_source_globs
     assert "file(GLOB_RECURSE INFERNUX_OFFICIAL_PLUGIN_SOURCES" not in plugins
     assert '"${CMAKE_BINARY_DIR}/official-plugins"' in plugins
     assert (
-        '"${CMAKE_SOURCE_DIR}/python/Infernux/resources/official_packages"'
+        '"${CMAKE_SOURCE_DIR}/python/infernux/resources/official_packages"'
         not in plugins
     )
     assert "copy_if_different" in plugins
-    assert "python/Infernux/resources/infernux.mcp.inxpkg" in plugins
+    assert "python/infernux/resources/infernux.mcp.inxpkg" in plugins
     stage = packaging.split("add_custom_target(stage_python_package", 1)[1].split(
         "add_custom_target(package_python", 1
     )[0]

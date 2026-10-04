@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 
 import infernux as inx
-from Infernux.core.assets import AssetManager
-from Infernux.core.asset_types import read_mesh_import_settings
-from Infernux.lib import Physics, Vector3
+from infernux.core.assets import AssetManager
+from infernux.core.asset_types import read_mesh_import_settings
+from infernux.lib import Physics, Vector3
 
 
 @pytest.fixture
@@ -126,8 +126,8 @@ def test_non_trs_source_is_rejected_without_partial_scene(scene, hierarchy_asset
 
 
 def test_model_creation_is_one_undoable_hierarchy(scene, hierarchy_asset):
-    from Infernux.engine.undo import UndoManager
-    from Infernux.engine.interaction import ClipboardService, SelectionService, SceneObjectCommandService
+    from infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ClipboardService, SelectionService, SceneObjectCommandService
     _, _, guid = hierarchy_asset
     previous = UndoManager._instance
     manager = UndoManager()
@@ -169,7 +169,7 @@ def test_replacing_hierarchy_mesh_clears_local_view(scene, hierarchy_asset):
 
 
 def test_geometry_reimport_keeps_instance_edits_and_updates_local_stream(scene, hierarchy_asset, engine, monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
     monkeypatch.setattr(AssetManager, '_asset_database', database)
@@ -199,8 +199,8 @@ def test_external_model_source_reconciles_instances_without_overwriting_transfor
     scene, hierarchy_asset, engine, monkeypatch
 ):
     """Every live instance follows source add/remove while author transforms win."""
-    from Infernux.core.assets import AssetManager
-    from Infernux.debug import Debug
+    from infernux.core.assets import AssetManager
+    from infernux.debug import Debug
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -247,8 +247,8 @@ def test_external_model_source_reconciles_instances_without_overwriting_transfor
 
 def test_removed_source_node_retains_author_owned_components(scene, hierarchy_asset, engine, monkeypatch):
     """Removing imported geometry must not delete an authored component host."""
-    from Infernux.core.assets import AssetManager
-    from Infernux.debug import Debug
+    from infernux.core.assets import AssetManager
+    from infernux.debug import Debug
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -283,7 +283,7 @@ def test_removed_source_node_retains_author_owned_components(scene, hierarchy_as
 
 def test_external_source_node_motion_updates_new_instances_only(scene, hierarchy_asset, engine, monkeypatch):
     """DCC node motion is source metadata; existing scene placement remains authored."""
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -310,7 +310,7 @@ def test_external_source_node_motion_updates_new_instances_only(scene, hierarchy
 def test_cold_scene_commit_atomically_reconciles_added_source_nodes(
     scene, hierarchy_asset, engine, monkeypatch
 ):
-    from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
+    from infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -363,8 +363,8 @@ def test_scale_factor_resizes_compound_model_about_instance_root(
     scene, hierarchy_asset, engine, monkeypatch
 ):
     """Import scale changes geometry and node offsets as one compound model."""
-    from Infernux.core.assets import AssetManager
-    from Infernux.core.asset_types import read_mesh_import_settings
+    from infernux.core.assets import AssetManager
+    from infernux.core.asset_types import read_mesh_import_settings
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -389,7 +389,7 @@ def test_scale_factor_resizes_compound_model_about_instance_root(
 
 
 def test_source_reorder_keeps_node_binding_and_source_rename_reconciles_instance(scene, hierarchy_asset, engine, monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
     monkeypatch.setattr(AssetManager, '_asset_database', database)
@@ -419,7 +419,7 @@ def test_source_reorder_keeps_node_binding_and_source_rename_reconciles_instance
 
 def test_source_parent_rename_keeps_authored_instance_pose(scene, hierarchy_asset, engine, monkeypatch):
     """A DCC pivot rename updates the binding, not the author's placement."""
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -458,7 +458,7 @@ def test_source_cross_parent_move_rehomes_imported_edge_but_keeps_authored_pose(
     scene, hierarchy_asset, engine, monkeypatch
 ):
     """A DCC parent change updates imported structure, not scene-authored TRS."""
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -489,7 +489,7 @@ def test_source_cross_parent_move_rehomes_imported_edge_but_keeps_authored_pose(
 
 
 def test_source_rename_does_not_reset_unrelated_authored_parent(scene, hierarchy_asset, engine, monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)

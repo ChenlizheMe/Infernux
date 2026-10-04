@@ -1,4 +1,4 @@
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     AssetMutation,
     AssetMutationKind,
     FocusService,
@@ -207,9 +207,9 @@ def test_asset_refresh_reconciles_sprite_selection_without_inspector_visibility(
 ):
     from types import SimpleNamespace
 
-    from Infernux.engine import _bootstrap_selection as selection_bootstrap
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.core import asset_types
+    from infernux.engine import _bootstrap_selection as selection_bootstrap
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.core import asset_types
 
     previous = SelectionService._instance
     service = SelectionService()
@@ -254,8 +254,8 @@ def test_asset_refresh_reconciles_sprite_selection_without_inspector_visibility(
 
 
 def test_timeline_editor_projects_stable_keyframe_selection():
-    from Infernux.core.animation_timeline import TimelineKeyframe
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.core.animation_timeline import TimelineKeyframe
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 
     previous = SelectionService._instance
     service = SelectionService()
@@ -285,7 +285,7 @@ def test_timeline_editor_projects_stable_keyframe_selection():
 
 
 def test_timeline_editor_drops_stale_keyframe_selection():
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 
     previous = SelectionService._instance
     service = SelectionService()
@@ -343,13 +343,13 @@ def test_focus_change_distinguishes_user_history_from_replay():
 def test_bootstrap_records_focus_in_global_action_journal(monkeypatch):
     from types import SimpleNamespace
 
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import (
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import (
         ContextRestoreStatus,
         EditorActionJournal,
         EditorContextSnapshot,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     focus = FocusService()
     selection = SelectionService()
@@ -421,13 +421,13 @@ def test_bootstrap_records_focus_in_global_action_journal(monkeypatch):
 def test_focus_history_keeps_keyboard_focus_and_replaced_dock_tab_separate():
     from types import SimpleNamespace
 
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import (
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import (
         EditorActionJournal,
         EditorContextSnapshot,
         WindowLocator,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     focus = FocusService()
     focus.activate_panel("console", view_id="console", record_history=False)
@@ -477,8 +477,8 @@ def test_focus_history_keeps_keyboard_focus_and_replaced_dock_tab_separate():
 def test_context_restore_publishes_focus_intent_before_native_window_poll():
     from types import SimpleNamespace
 
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import (
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import (
         ContextRestoreStatus,
         EditorContextSnapshot,
         WindowLocator,
@@ -526,8 +526,8 @@ def test_context_restore_publishes_focus_intent_before_native_window_poll():
 def test_visible_panel_context_restore_preserves_current_focus():
     from types import SimpleNamespace
 
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import (
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import (
         ContextRestoreStatus,
         EditorContextSnapshot,
         WindowLocator,
@@ -580,9 +580,9 @@ def test_visible_panel_context_restore_preserves_current_focus():
 def test_already_visible_focus_change_is_not_recorded_in_global_journal():
     from types import SimpleNamespace
 
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import EditorActionJournal, EditorContextSnapshot
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import EditorActionJournal, EditorContextSnapshot
+    from infernux.engine.undo import UndoManager
 
     focus = FocusService()
     selection = SelectionService()
@@ -630,9 +630,9 @@ def test_already_visible_focus_change_is_not_recorded_in_global_journal():
 def test_revealed_dock_tab_focus_change_remains_in_global_journal():
     from types import SimpleNamespace
 
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import EditorActionJournal, EditorContextSnapshot
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import EditorActionJournal, EditorContextSnapshot
+    from infernux.engine.undo import UndoManager
 
     focus = FocusService()
     selection = SelectionService()
@@ -672,8 +672,8 @@ def test_revealed_dock_tab_focus_change_remains_in_global_journal():
 def test_project_selection_intent_does_not_forge_panel_focus(monkeypatch):
     from types import SimpleNamespace
 
-    from Infernux.engine import _bootstrap_selection as selection_bootstrap
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine import _bootstrap_selection as selection_bootstrap
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
 
     monkeypatch.setattr(
         selection_bootstrap,
@@ -707,11 +707,11 @@ def test_native_panel_adapters_leave_focus_to_the_native_publisher():
     from pathlib import Path
 
     paths = (
-        "python/Infernux/engine/bootstrap_hierarchy/_wire.py",
-        "python/Infernux/engine/bootstrap_project.py",
-        "python/Infernux/engine/bootstrap_inspector/_wire.py",
-        "python/Infernux/engine/_bootstrap_selection.py",
-        "python/Infernux/engine/ui/_scene_view_picking.py",
+        "python/infernux/engine/bootstrap_hierarchy/_wire.py",
+        "python/infernux/engine/bootstrap_project.py",
+        "python/infernux/engine/bootstrap_inspector/_wire.py",
+        "python/infernux/engine/_bootstrap_selection.py",
+        "python/infernux/engine/ui/_scene_view_picking.py",
     )
     for path in paths:
         source = Path(path).read_text(encoding="utf-8")
@@ -731,7 +731,7 @@ def test_hierarchy_pointer_commands_use_the_originating_view_context():
     from pathlib import Path
 
     source = Path(
-        "python/Infernux/engine/bootstrap_hierarchy/_wire.py"
+        "python/infernux/engine/bootstrap_hierarchy/_wire.py"
     ).read_text(encoding="utf-8")
     start = source.index("    def _execute_hierarchy_command")
     end = source.index("    def _render_context_menu", start)
@@ -746,8 +746,8 @@ def test_hierarchy_pointer_commands_use_the_originating_view_context():
 def test_project_subresource_click_keeps_typed_row_identity(monkeypatch):
     from types import SimpleNamespace
 
-    from Infernux.engine import _bootstrap_selection as selection_bootstrap
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine import _bootstrap_selection as selection_bootstrap
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
 
     monkeypatch.setattr(
         selection_bootstrap,
@@ -792,9 +792,9 @@ def test_native_panel_focus_loss_keeps_last_editor_command_context():
 def test_project_click_records_focus_then_selection_as_distinct_user_actions():
     from types import SimpleNamespace
 
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import EditorContextSnapshot
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import EditorContextSnapshot
+    from infernux.engine.undo import UndoManager
 
     focus = FocusService()
     selection = SelectionService()
@@ -866,8 +866,8 @@ def test_input_context_stack_honors_priority_and_modal_barrier():
 def test_bootstrap_selection_projection_is_the_single_cross_panel_writer(monkeypatch):
     from types import SimpleNamespace
 
-    from Infernux.engine import _bootstrap_selection as selection_bootstrap
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine import _bootstrap_selection as selection_bootstrap
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
 
     monkeypatch.setattr(
         selection_bootstrap,
@@ -934,9 +934,9 @@ def test_bootstrap_selection_projection_is_the_single_cross_panel_writer(monkeyp
 def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch, sub_kind, token):
     from types import SimpleNamespace
 
-    import Infernux.lib as native
-    from Infernux.engine import _bootstrap_selection as selection_bootstrap
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    import infernux.lib as native
+    from infernux.engine import _bootstrap_selection as selection_bootstrap
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
 
     objects = {value: SimpleNamespace(id=value) for value in (41, 42)}
 
@@ -1024,7 +1024,7 @@ def test_bootstrap_projects_subresources_and_all_component_owners(monkeypatch, s
 def test_inspector_component_header_publishes_stable_global_targets():
     from types import SimpleNamespace
 
-    from Infernux.engine.bootstrap_inspector._wire import (
+    from infernux.engine.bootstrap_inspector._wire import (
         _publish_component_selection,
     )
 
@@ -1056,7 +1056,7 @@ def test_inspector_component_header_publishes_stable_global_targets():
 
 
 def test_console_selection_callback_uses_typed_global_authority():
-    from Infernux.engine._bootstrap_panels import BootstrapPanelsMixin
+    from infernux.engine._bootstrap_panels import BootstrapPanelsMixin
 
     service = SelectionService()
     changes = []
@@ -1084,7 +1084,7 @@ def test_console_selection_callback_uses_typed_global_authority():
 def test_bootstrap_projects_diagnostic_selection_into_console():
     from types import SimpleNamespace
 
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
 
     projected = []
     bootstrap = BootstrapSelectionMixin()
@@ -1125,7 +1125,7 @@ def test_bootstrap_projects_diagnostic_selection_into_console():
 
 
 def test_typed_selection_undo_replays_without_legacy_domain_loss():
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
 
     service = SelectionService()
     focus_requests = []
@@ -1171,9 +1171,9 @@ def test_typed_selection_undo_replays_without_legacy_domain_loss():
 
 
 def test_scene_pick_reveals_through_navigation_without_activating_hierarchy():
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.undo import UndoManager
 
     previous_core = EditorInteractionCore._instance
     previous_manager = UndoManager._instance
@@ -1208,8 +1208,8 @@ def test_scene_pick_reveals_through_navigation_without_activating_hierarchy():
 def test_ui_editor_projects_directly_from_typed_selection(monkeypatch):
     from types import SimpleNamespace
 
-    import Infernux.lib as native
-    from Infernux.engine._bootstrap_wiring import BootstrapWiringMixin
+    import infernux.lib as native
+    from infernux.engine._bootstrap_wiring import BootstrapWiringMixin
 
     selected_object = SimpleNamespace(id=42)
 
@@ -1259,9 +1259,9 @@ def test_ui_editor_component_is_a_revision_cached_global_selection_projection(
 ):
     from types import SimpleNamespace
 
-    import Infernux.lib as native
-    import Infernux.ui.inx_ui_screen_component as screen_component_module
-    from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
+    import infernux.lib as native
+    import infernux.ui.inx_ui_screen_component as screen_component_module
+    from infernux.engine.ui.ui_editor_panel import UIEditorPanel
 
     class _ScreenComponent:
         pass

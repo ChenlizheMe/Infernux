@@ -10,7 +10,7 @@ import pytest
 
 
 def _runtime_contract(tmp_path):
-    from Infernux.engine.player_service_graph import (
+    from infernux.engine.player_service_graph import (
         PlayerRuntimeAssetCatalog,
         RuntimeFeatureSet,
         RuntimeFlavor,
@@ -39,7 +39,7 @@ def _runtime_contract(tmp_path):
 
 
 def _stub_engine_status(monkeypatch):
-    module = types.ModuleType("Infernux.engine.ui.engine_status")
+    module = types.ModuleType("infernux.engine.ui.engine_status")
 
     class EngineStatus:
         @classmethod
@@ -51,19 +51,19 @@ def _stub_engine_status(monkeypatch):
             pass
 
     module.EngineStatus = EngineStatus
-    monkeypatch.setitem(sys.modules, "Infernux.engine.ui.engine_status", module)
+    monkeypatch.setitem(sys.modules, "infernux.engine.ui.engine_status", module)
 
 
 @pytest.mark.parametrize("host", ["desktop", "web"])
 def test_plugin_preload_resolves_cooked_assets_before_scene_startup(
     monkeypatch, tmp_path, host
 ):
-    from Infernux.application import Application
-    from Infernux.engine.player_bootstrap import PlayerBootstrap
-    from Infernux.engine.player_runtime import PlayerRuntimeSession
-    from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
-    from Infernux.engine.project_context import set_project_root
-    from Infernux.plugins import PluginManager
+    from infernux.application import Application
+    from infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine.player_runtime import PlayerRuntimeSession
+    from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+    from infernux.engine.project_context import set_project_root
+    from infernux.plugins import PluginManager
 
     cooked = tmp_path / "Library/Artifacts/Blob/preload-guid.txt"
     cooked.parent.mkdir(parents=True)
@@ -142,7 +142,7 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(
                 "_player_runtime_catalog": catalog,
             }
             monkeypatch.setattr(
-                "Infernux.engine.player_runtime.PlayerRuntimeSession",
+                "infernux.engine.player_runtime.PlayerRuntimeSession",
                 lambda **_kwargs: session,
             )
             exec(
@@ -153,7 +153,7 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(
         with pytest.raises(PreloadObserved):
             run()
     finally:
-        from Infernux.core.assets import AssetManager
+        from infernux.core.assets import AssetManager
 
         AssetManager.release_engine()
         Application._unbind_engine(session)
@@ -161,7 +161,7 @@ def test_plugin_preload_resolves_cooked_assets_before_scene_startup(
 
 
 def test_player_activates_initial_scene_without_editor_deferred_tasks(monkeypatch):
-    from Infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine.player_bootstrap import PlayerBootstrap
 
     _stub_engine_status(monkeypatch)
     activated = []
@@ -173,8 +173,8 @@ def test_player_activates_initial_scene_without_editor_deferred_tasks(monkeypatc
 
 
 def test_player_bootstrap_forces_player_mode_before_engine_creation(monkeypatch):
-    from Infernux.engine import engine as engine_module
-    from Infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine import engine as engine_module
+    from infernux.engine.player_bootstrap import PlayerBootstrap
 
     # Register an environment restoration even when the variable was absent.
     # ``_force_player_mode`` writes through ``os.environ`` directly.
@@ -191,7 +191,7 @@ def test_player_bootstrap_forces_player_mode_before_engine_creation(monkeypatch)
 def test_player_starts_fresh_scene_without_second_document_transaction(
     monkeypatch, tmp_path
 ):
-    from Infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine.player_bootstrap import PlayerBootstrap
 
     calls = []
 
@@ -221,7 +221,7 @@ def test_player_starts_fresh_scene_without_second_document_transaction(
 
 
 def test_player_runtime_session_does_not_construct_editor_managers(tmp_path):
-    from Infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine.player_bootstrap import PlayerBootstrap
 
     class RuntimeSession:
         def configure_runtime_contract(self, _manifest, _catalog):
@@ -242,7 +242,7 @@ def test_player_runtime_session_does_not_construct_editor_managers(tmp_path):
 
 
 def test_player_bootstrap_uses_boot_validated_archive_size(monkeypatch):
-    from Infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine.player_bootstrap import PlayerBootstrap
 
     monkeypatch.setenv("_INFERNUX_PLAYER_CONTENT_ARCHIVE_BYTES", "4096")
 
@@ -253,7 +253,7 @@ def test_player_bootstrap_uses_boot_validated_archive_size(monkeypatch):
 
 
 def test_player_run_prewarms_before_revealing_a_no_splash_scene():
-    from Infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine.player_bootstrap import PlayerBootstrap
 
     calls = []
 
@@ -310,7 +310,7 @@ def test_player_run_prewarms_before_revealing_a_no_splash_scene():
 
 
 def test_player_first_frame_prewarm_builds_target_before_composition():
-    from Infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine.player_bootstrap import PlayerBootstrap
 
     deltas = []
 
@@ -327,7 +327,7 @@ def test_player_first_frame_prewarm_builds_target_before_composition():
 
 
 def test_player_bootstrap_does_not_discover_project_requirements(monkeypatch):
-    from Infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine.player_bootstrap import PlayerBootstrap
 
     calls = []
     bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
@@ -344,8 +344,8 @@ def test_player_bootstrap_accepts_platform_native_package_without_runtime_archiv
 ):
     import json
 
-    from Infernux.engine.player_bootstrap import PlayerBootstrap
-    from Infernux.engine.player_service_graph import (
+    from infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine.player_service_graph import (
         PLAYER_MANIFEST_SCHEMA,
         RuntimeFeatureSet,
         RuntimeFlavor,
@@ -382,7 +382,7 @@ def test_player_bootstrap_accepts_platform_native_package_without_runtime_archiv
 
 
 def test_player_release_policy_rejects_debug_control_environment(monkeypatch, tmp_path):
-    from Infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine.player_bootstrap import PlayerBootstrap
 
     bootstrap = PlayerBootstrap.__new__(PlayerBootstrap)
     bootstrap.project_path = str(tmp_path)
@@ -398,7 +398,7 @@ def test_player_release_policy_rejects_debug_control_environment(monkeypatch, tm
 def test_player_supervisor_scene_override_resolves_cooked_catalog_artifact(
     monkeypatch, tmp_path
 ):
-    from Infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine.player_bootstrap import PlayerBootstrap
 
     cooked = tmp_path / "Library" / "Artifacts" / "voxel.inxscene"
     cooked.parent.mkdir(parents=True)
@@ -443,7 +443,7 @@ def test_player_supervisor_scene_override_resolves_cooked_catalog_artifact(
 def test_player_supervisor_scene_override_requires_catalog_entry(
     monkeypatch, tmp_path
 ):
-    from Infernux.engine.player_bootstrap import PlayerBootstrap
+    from infernux.engine.player_bootstrap import PlayerBootstrap
 
     class Manifest:
         @staticmethod
@@ -469,7 +469,7 @@ def test_run_player_reveals_window_without_startup_sleep():
     from pathlib import Path
 
     source = Path(__file__).resolve().parents[1].joinpath(
-        "Infernux", "engine", "__init__.py"
+        "infernux", "engine", "__init__.py"
     ).read_text(encoding="utf-8")
     start = source.index("def run_player")
     body = source[start : source.index("\n__all__ =", start)]
@@ -487,7 +487,7 @@ def test_run_player_reveals_window_without_startup_sleep():
 def test_player_build_manifest_is_required_and_strict(tmp_path):
     import json
 
-    from Infernux.engine import _load_player_build_manifest
+    from infernux.engine import _load_player_build_manifest
 
     with pytest.raises(FileNotFoundError, match="has no BuildManifest.json"):
         _load_player_build_manifest(str(tmp_path))
@@ -518,7 +518,7 @@ def test_player_build_manifest_is_required_and_strict(tmp_path):
 def test_player_build_manifest_accepts_the_build_owned_contract(tmp_path):
     import json
 
-    from Infernux.engine import _load_player_build_manifest
+    from infernux.engine import _load_player_build_manifest
 
     manifest = {
         "game_name": "StrictPlayer",
@@ -551,7 +551,7 @@ def test_player_build_manifest_rejects_invalid_scene_contract(
 ):
     import json
 
-    from Infernux.engine import _load_player_build_manifest
+    from infernux.engine import _load_player_build_manifest
 
     manifest = {
         "game_name": "StrictPlayer",
@@ -574,7 +574,7 @@ def test_player_build_manifest_rejects_invalid_scene_contract(
 def test_player_build_manifest_rejects_absolute_or_parent_icon_paths(tmp_path):
     import json
 
-    from Infernux.engine import _load_player_build_manifest
+    from infernux.engine import _load_player_build_manifest
 
     base = {
         "game_name": "StrictPlayer",
@@ -597,7 +597,7 @@ def test_player_init_engine_publishes_window_chrome_before_native_renderer():
     from pathlib import Path
 
     source = Path(__file__).resolve().parents[1].joinpath(
-        "Infernux", "engine", "player_bootstrap.py"
+        "infernux", "engine", "player_bootstrap.py"
     ).read_text(encoding="utf-8")
     start = source.index("def _init_engine")
     body = source[start : source.index("\n    def ", start + 1)]
@@ -610,7 +610,7 @@ def test_scene_transaction_invokes_on_tick_while_waiting():
     from pathlib import Path
 
     source = Path(__file__).resolve().parents[1].joinpath(
-        "Infernux", "engine", "runtime_scene_transaction.py"
+        "infernux", "engine", "runtime_scene_transaction.py"
     ).read_text(encoding="utf-8")
     start = source.index("def run_to_completion")
     body = source[start : start + 500]

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from Infernux.engine.interaction import ModalService
+from infernux.engine.interaction import ModalService
 
 
 class _Presenter:
@@ -150,8 +150,8 @@ def test_lost_popup_can_still_be_cancelled_during_core_cleanup():
 
 
 def test_dirty_confirmation_uses_the_core_close_and_modal_services():
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui.dirty_panel_confirmation import (
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui.dirty_panel_confirmation import (
         DirtyPanelConfirmationCoordinator,
     )
 
@@ -171,7 +171,7 @@ def test_dirty_confirmation_uses_the_core_close_and_modal_services():
 def test_editor_panels_do_not_render_document_modals_inside_panel_windows():
     import inspect
 
-    from Infernux.engine.ui.editor_panel import EditorPanel
+    from infernux.engine.ui.editor_panel import EditorPanel
 
     source = inspect.getsource(EditorPanel.on_render)
     assert "DirtyPanelConfirmationCoordinator" not in source
@@ -179,7 +179,7 @@ def test_editor_panels_do_not_render_document_modals_inside_panel_windows():
 
 
 def test_modal_portal_initializes_the_native_renderable_base():
-    from Infernux.engine.ui.modal_portal import ModalPortal
+    from infernux.engine.ui.modal_portal import ModalPortal
 
     portal = ModalPortal(ModalService())
     assert portal is not None

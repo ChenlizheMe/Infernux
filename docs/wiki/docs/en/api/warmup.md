@@ -1,7 +1,7 @@
 # warmup
 
 <div class="class-info">
-function in <b>Infernux.jit</b>
+function in <b>infernux.jit</b>
 </div>
 
 ```python

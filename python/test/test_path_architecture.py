@@ -10,7 +10,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 def test_python_filesystem_identity_is_owned_by_path_utils():
     forbidden = re.compile(r"os\.path\.(?:normcase|realpath|commonpath|commonprefix)\s*\(")
     violations: list[str] = []
-    source_root = REPOSITORY_ROOT / "python" / "Infernux"
+    source_root = REPOSITORY_ROOT / "python" / "infernux"
     owner = source_root / "engine" / "path_utils.py"
     for path in source_root.rglob("*.py"):
         if path == owner or "__pycache__" in path.parts:
@@ -26,7 +26,7 @@ def test_python_filesystem_normalization_is_owned_by_path_utils():
         r"os\.path\.(?:abspath|normpath|relpath|samefile)\s*\(|"
         r"Path\([^\r\n]*\)\.resolve\s*\("
     )
-    source_root = REPOSITORY_ROOT / "python" / "Infernux"
+    source_root = REPOSITORY_ROOT / "python" / "infernux"
     owner = source_root / "engine" / "path_utils.py"
     # These modules run before engine.path_utils can be imported safely and
     # only locate their own installed package directories.

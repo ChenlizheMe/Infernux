@@ -12,9 +12,9 @@ from numba import prange
 from numba.core.registry import cpu_target
 from numba.core import serialize
 
-from Infernux import jit
-from Infernux._jit_backend import compile_cpu
-from Infernux._jit_kernels import _compiled_cache
+from infernux import jit
+from infernux._jit_backend import compile_cpu
+from infernux._jit_kernels import _compiled_cache
 
 
 def _engine(dispatcher):
@@ -147,8 +147,8 @@ def test_restored_dispatcher_preserves_numba_constructor_contract():
 
 
 def test_disk_loaded_code_is_owned_and_retires(tmp_path, disposed_engines):
-    from Infernux._jit_kernels import _compile_njit
-    from Infernux.engine.project_context import using_project_root
+    from infernux._jit_kernels import _compile_njit
+    from infernux.engine.project_context import using_project_root
 
     def function(value):
         return value * 4.5
@@ -243,7 +243,7 @@ def test_nested_code_preserves_its_referenced_globals():
 
 
 def test_new_specialization_limit_preserves_existing_code_and_rejects_before_writes(monkeypatch):
-    from Infernux import _jit_backend
+    from infernux import _jit_backend
 
     monkeypatch.setattr(_jit_backend, "_MAX_CPU_SPECIALIZATIONS", 2)
 
@@ -269,7 +269,7 @@ def test_new_specialization_limit_preserves_existing_code_and_rejects_before_wri
 
 
 def test_array_length_does_not_consume_specializations(monkeypatch):
-    from Infernux import _jit_backend
+    from infernux import _jit_backend
 
     monkeypatch.setattr(_jit_backend, "_MAX_CPU_SPECIALIZATIONS", 1)
     function = compile_cpu(lambda values: len(values))
@@ -281,7 +281,7 @@ def test_array_length_does_not_consume_specializations(monkeypatch):
 
 
 def test_dtype_rank_and_layout_are_bounded_native_specializations(monkeypatch):
-    from Infernux import _jit_backend
+    from infernux import _jit_backend
 
     monkeypatch.setattr(_jit_backend, "_MAX_CPU_SPECIALIZATIONS", 4)
 
@@ -311,7 +311,7 @@ def test_dtype_rank_and_layout_are_bounded_native_specializations(monkeypatch):
 
 
 def test_structured_field_schema_selects_native_specialization_before_writes(monkeypatch):
-    from Infernux import _jit_backend
+    from infernux import _jit_backend
 
     monkeypatch.setattr(_jit_backend, "_MAX_CPU_SPECIALIZATIONS", 2)
 
@@ -340,7 +340,7 @@ def test_structured_field_schema_selects_native_specialization_before_writes(mon
 def test_concurrent_new_types_share_specialization_capacity(monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Barrier
-    from Infernux import _jit_backend
+    from infernux import _jit_backend
 
     monkeypatch.setattr(_jit_backend, "_MAX_CPU_SPECIALIZATIONS", 1)
     function = compile_cpu(lambda values: len(values))
@@ -366,7 +366,7 @@ def test_concurrent_new_types_share_specialization_capacity(monkeypatch):
 def test_unpublished_native_code_is_closed_without_invalidating_old_specializations(
     monkeypatch, failure,
 ):
-    from Infernux._jit_backend import _OwnedDispatcher
+    from infernux._jit_backend import _OwnedDispatcher
 
     @compile_cpu
     def increment(values):
@@ -421,9 +421,9 @@ def test_cache_write_failure_after_publication_keeps_callable_code(monkeypatch):
 
 
 def test_cached_specialization_rejection_closes_only_unpublished_engine(tmp_path, monkeypatch):
-    from Infernux._jit_backend import _OwnedDispatcher
-    from Infernux._jit_kernels import _compile_njit
-    from Infernux.engine.project_context import using_project_root
+    from infernux._jit_backend import _OwnedDispatcher
+    from infernux._jit_kernels import _compile_njit
+    from infernux.engine.project_context import using_project_root
 
     def increment(values):
         values[0] += 1

@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.components import InxComponent
-from Infernux.lib import RigidbodyConstraints, SceneManager, Vector3
+from infernux.components import InxComponent
+from infernux.lib import RigidbodyConstraints, SceneManager, Vector3
 
 
 @pytest.mark.parametrize("legacy_force", [True, False], ids=["old-3N", "documented-force"])

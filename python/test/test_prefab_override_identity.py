@@ -4,8 +4,8 @@ import copy
 
 import pytest
 
-from Infernux.components.value_document import make_component_ref, make_game_object_ref
-from Infernux.engine.prefab_overrides import _diff_components, _same_value, _three_way_merge_prefab
+from infernux.components.value_document import make_component_ref, make_game_object_ref
+from infernux.engine.prefab_overrides import _diff_components, _same_value, _three_way_merge_prefab
 
 
 def test_authored_list_fields_are_not_mistaken_for_prefab_child_identity():

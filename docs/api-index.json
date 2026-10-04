@@ -328,10 +328,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components:add_component_menu",
-      "symbol_key": "Infernux.components.add_component_menu",
+      "id": "en:infernux.components:add_component_menu",
+      "symbol_key": "infernux.components.add_component_menu",
       "language": "en",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "add_component_menu",
       "kind": "function",
       "signatures": [
@@ -348,10 +348,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components:disallow_multiple",
-      "symbol_key": "Infernux.components.disallow_multiple",
+      "id": "en:infernux.components:disallow_multiple",
+      "symbol_key": "infernux.components.disallow_multiple",
       "language": "en",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "disallow_multiple",
       "kind": "function",
       "signatures": [],
@@ -366,10 +366,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components:execute_in_edit_mode",
-      "symbol_key": "Infernux.components.execute_in_edit_mode",
+      "id": "en:infernux.components:execute_in_edit_mode",
+      "symbol_key": "infernux.components.execute_in_edit_mode",
       "language": "en",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "execute_in_edit_mode",
       "kind": "function",
       "signatures": [],
@@ -384,10 +384,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components:InxComponent",
-      "symbol_key": "Infernux.components.InxComponent",
+      "id": "en:infernux.components:InxComponent",
+      "symbol_key": "infernux.components.InxComponent",
       "language": "en",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "InxComponent",
       "kind": "class",
       "signatures": [
@@ -445,10 +445,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components:require_component",
-      "symbol_key": "Infernux.components.require_component",
+      "id": "en:infernux.components:require_component",
+      "symbol_key": "infernux.components.require_component",
       "language": "en",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "require_component",
       "kind": "function",
       "signatures": [],
@@ -463,10 +463,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components:serialized_field",
-      "symbol_key": "Infernux.components.serialized_field",
+      "id": "en:infernux.components:serialized_field",
+      "symbol_key": "infernux.components.serialized_field",
       "language": "en",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "serialized_field",
       "kind": "function",
       "signatures": [
@@ -493,10 +493,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components:Space",
-      "symbol_key": "Infernux.components.Space",
+      "id": "en:infernux.components:Space",
+      "symbol_key": "infernux.components.Space",
       "language": "en",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "Space",
       "kind": "class",
       "signatures": [
@@ -513,10 +513,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components.builtin:AudioListener",
-      "symbol_key": "Infernux.components.builtin.AudioListener",
+      "id": "en:infernux.components.builtin:AudioListener",
+      "symbol_key": "infernux.components.builtin.AudioListener",
       "language": "en",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "AudioListener",
       "kind": "class",
       "signatures": [
@@ -535,10 +535,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components.builtin:AudioSource",
-      "symbol_key": "Infernux.components.builtin.AudioSource",
+      "id": "en:infernux.components.builtin:AudioSource",
+      "symbol_key": "infernux.components.builtin.AudioSource",
       "language": "en",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "AudioSource",
       "kind": "class",
       "signatures": [
@@ -578,10 +578,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components.builtin:BoxCollider",
-      "symbol_key": "Infernux.components.builtin.BoxCollider",
+      "id": "en:infernux.components.builtin:BoxCollider",
+      "symbol_key": "infernux.components.builtin.BoxCollider",
       "language": "en",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "BoxCollider",
       "kind": "class",
       "signatures": [
@@ -599,10 +599,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components.builtin:Camera",
-      "symbol_key": "Infernux.components.builtin.Camera",
+      "id": "en:infernux.components.builtin:Camera",
+      "symbol_key": "infernux.components.builtin.Camera",
       "language": "en",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "Camera",
       "kind": "class",
       "signatures": [
@@ -638,10 +638,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components.builtin:CapsuleCollider",
-      "symbol_key": "Infernux.components.builtin.CapsuleCollider",
+      "id": "en:infernux.components.builtin:CapsuleCollider",
+      "symbol_key": "infernux.components.builtin.CapsuleCollider",
       "language": "en",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "CapsuleCollider",
       "kind": "class",
       "signatures": [
@@ -660,10 +660,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components.builtin:Collider",
-      "symbol_key": "Infernux.components.builtin.Collider",
+      "id": "en:infernux.components.builtin:Collider",
+      "symbol_key": "infernux.components.builtin.Collider",
       "language": "en",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "Collider",
       "kind": "class",
       "signatures": [
@@ -684,10 +684,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components.builtin:CollisionDetectionMode",
-      "symbol_key": "Infernux.components.builtin.CollisionDetectionMode",
+      "id": "en:infernux.components.builtin:CollisionDetectionMode",
+      "symbol_key": "infernux.components.builtin.CollisionDetectionMode",
       "language": "en",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "CollisionDetectionMode",
       "kind": "enum",
       "signatures": [],
@@ -702,10 +702,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components.builtin:Light",
-      "symbol_key": "Infernux.components.builtin.Light",
+      "id": "en:infernux.components.builtin:Light",
+      "symbol_key": "infernux.components.builtin.Light",
       "language": "en",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "Light",
       "kind": "class",
       "signatures": [
@@ -727,10 +727,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components.builtin:MeshCollider",
-      "symbol_key": "Infernux.components.builtin.MeshCollider",
+      "id": "en:infernux.components.builtin:MeshCollider",
+      "symbol_key": "infernux.components.builtin.MeshCollider",
       "language": "en",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "MeshCollider",
       "kind": "class",
       "signatures": [
@@ -749,10 +749,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components.builtin:MeshRenderer",
-      "symbol_key": "Infernux.components.builtin.MeshRenderer",
+      "id": "en:infernux.components.builtin:MeshRenderer",
+      "symbol_key": "infernux.components.builtin.MeshRenderer",
       "language": "en",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "MeshRenderer",
       "kind": "class",
       "signatures": [
@@ -802,10 +802,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components.builtin:Rigidbody",
-      "symbol_key": "Infernux.components.builtin.Rigidbody",
+      "id": "en:infernux.components.builtin:Rigidbody",
+      "symbol_key": "infernux.components.builtin.Rigidbody",
       "language": "en",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "Rigidbody",
       "kind": "class",
       "signatures": [
@@ -842,10 +842,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components.builtin:RigidbodyConstraints",
-      "symbol_key": "Infernux.components.builtin.RigidbodyConstraints",
+      "id": "en:infernux.components.builtin:RigidbodyConstraints",
+      "symbol_key": "infernux.components.builtin.RigidbodyConstraints",
       "language": "en",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "RigidbodyConstraints",
       "kind": "class",
       "signatures": [],
@@ -860,10 +860,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.components.builtin:SphereCollider",
-      "symbol_key": "Infernux.components.builtin.SphereCollider",
+      "id": "en:infernux.components.builtin:SphereCollider",
+      "symbol_key": "infernux.components.builtin.SphereCollider",
       "language": "en",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "SphereCollider",
       "kind": "class",
       "signatures": [
@@ -881,10 +881,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.core:AudioClip",
-      "symbol_key": "Infernux.core.AudioClip",
+      "id": "en:infernux.core:AudioClip",
+      "symbol_key": "infernux.core.AudioClip",
       "language": "en",
-      "module": "Infernux.core",
+      "module": "infernux.core",
       "symbol": "AudioClip",
       "kind": "class",
       "signatures": [
@@ -910,10 +910,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.core:Material",
-      "symbol_key": "Infernux.core.Material",
+      "id": "en:infernux.core:Material",
+      "symbol_key": "infernux.core.Material",
       "language": "en",
-      "module": "Infernux.core",
+      "module": "infernux.core",
       "symbol": "Material",
       "kind": "class",
       "signatures": [
@@ -974,10 +974,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.core:Shader",
-      "symbol_key": "Infernux.core.Shader",
+      "id": "en:infernux.core:Shader",
+      "symbol_key": "infernux.core.Shader",
       "language": "en",
-      "module": "Infernux.core",
+      "module": "infernux.core",
       "symbol": "Shader",
       "kind": "class",
       "signatures": [
@@ -995,10 +995,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.core:Texture",
-      "symbol_key": "Infernux.core.Texture",
+      "id": "en:infernux.core:Texture",
+      "symbol_key": "infernux.core.Texture",
       "language": "en",
-      "module": "Infernux.core",
+      "module": "infernux.core",
       "symbol": "Texture",
       "kind": "class",
       "signatures": [
@@ -1028,10 +1028,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.coroutine:Coroutine",
-      "symbol_key": "Infernux.coroutine.Coroutine",
+      "id": "en:infernux.coroutine:Coroutine",
+      "symbol_key": "infernux.coroutine.Coroutine",
       "language": "en",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "Coroutine",
       "kind": "class",
       "signatures": [
@@ -1051,10 +1051,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.coroutine:WaitForEndOfFrame",
-      "symbol_key": "Infernux.coroutine.WaitForEndOfFrame",
+      "id": "en:infernux.coroutine:WaitForEndOfFrame",
+      "symbol_key": "infernux.coroutine.WaitForEndOfFrame",
       "language": "en",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "WaitForEndOfFrame",
       "kind": "class",
       "signatures": [
@@ -1072,10 +1072,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.coroutine:WaitForFixedUpdate",
-      "symbol_key": "Infernux.coroutine.WaitForFixedUpdate",
+      "id": "en:infernux.coroutine:WaitForFixedUpdate",
+      "symbol_key": "infernux.coroutine.WaitForFixedUpdate",
       "language": "en",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "WaitForFixedUpdate",
       "kind": "class",
       "signatures": [],
@@ -1090,10 +1090,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.coroutine:WaitForSeconds",
-      "symbol_key": "Infernux.coroutine.WaitForSeconds",
+      "id": "en:infernux.coroutine:WaitForSeconds",
+      "symbol_key": "infernux.coroutine.WaitForSeconds",
       "language": "en",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "WaitForSeconds",
       "kind": "class",
       "signatures": [
@@ -1111,10 +1111,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.coroutine:WaitForSecondsRealtime",
-      "symbol_key": "Infernux.coroutine.WaitForSecondsRealtime",
+      "id": "en:infernux.coroutine:WaitForSecondsRealtime",
+      "symbol_key": "infernux.coroutine.WaitForSecondsRealtime",
       "language": "en",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "WaitForSecondsRealtime",
       "kind": "class",
       "signatures": [
@@ -1132,10 +1132,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.coroutine:WaitUntil",
-      "symbol_key": "Infernux.coroutine.WaitUntil",
+      "id": "en:infernux.coroutine:WaitUntil",
+      "symbol_key": "infernux.coroutine.WaitUntil",
       "language": "en",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "WaitUntil",
       "kind": "class",
       "signatures": [
@@ -1153,10 +1153,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.coroutine:WaitWhile",
-      "symbol_key": "Infernux.coroutine.WaitWhile",
+      "id": "en:infernux.coroutine:WaitWhile",
+      "symbol_key": "infernux.coroutine.WaitWhile",
       "language": "en",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "WaitWhile",
       "kind": "class",
       "signatures": [
@@ -1174,10 +1174,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.debug:Debug",
-      "symbol_key": "Infernux.debug.Debug",
+      "id": "en:infernux.debug:Debug",
+      "symbol_key": "infernux.debug.Debug",
       "language": "en",
-      "module": "Infernux.debug",
+      "module": "infernux.debug",
       "symbol": "Debug",
       "kind": "class",
       "signatures": [
@@ -1201,10 +1201,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.gizmos:Gizmos",
-      "symbol_key": "Infernux.gizmos.Gizmos",
+      "id": "en:infernux.gizmos:Gizmos",
+      "symbol_key": "infernux.gizmos.Gizmos",
       "language": "en",
-      "module": "Infernux.gizmos",
+      "module": "infernux.gizmos",
       "symbol": "Gizmos",
       "kind": "class",
       "signatures": [
@@ -1231,10 +1231,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.input:Input",
-      "symbol_key": "Infernux.input.Input",
+      "id": "en:infernux.input:Input",
+      "symbol_key": "infernux.input.Input",
       "language": "en",
-      "module": "Infernux.input",
+      "module": "infernux.input",
       "symbol": "Input",
       "kind": "class",
       "signatures": [
@@ -1284,10 +1284,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.input:KeyCode",
-      "symbol_key": "Infernux.input.KeyCode",
+      "id": "en:infernux.input:KeyCode",
+      "symbol_key": "infernux.input.KeyCode",
       "language": "en",
-      "module": "Infernux.input",
+      "module": "infernux.input",
       "symbol": "KeyCode",
       "kind": "class",
       "signatures": [
@@ -1364,10 +1364,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.math:quaternion",
-      "symbol_key": "Infernux.math.quaternion",
+      "id": "en:infernux.math:quaternion",
+      "symbol_key": "infernux.math.quaternion",
       "language": "en",
-      "module": "Infernux.math",
+      "module": "infernux.math",
       "symbol": "quaternion",
       "kind": "class",
       "signatures": [
@@ -1393,10 +1393,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.math:vector2",
-      "symbol_key": "Infernux.math.vector2",
+      "id": "en:infernux.math:vector2",
+      "symbol_key": "infernux.math.vector2",
       "language": "en",
-      "module": "Infernux.math",
+      "module": "infernux.math",
       "symbol": "vector2",
       "kind": "class",
       "signatures": [
@@ -1431,10 +1431,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.math:vector3",
-      "symbol_key": "Infernux.math.vector3",
+      "id": "en:infernux.math:vector3",
+      "symbol_key": "infernux.math.vector3",
       "language": "en",
-      "module": "Infernux.math",
+      "module": "infernux.math",
       "symbol": "vector3",
       "kind": "class",
       "signatures": [
@@ -1474,10 +1474,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.math:vector4",
-      "symbol_key": "Infernux.math.vector4",
+      "id": "en:infernux.math:vector4",
+      "symbol_key": "infernux.math.vector4",
       "language": "en",
-      "module": "Infernux.math",
+      "module": "infernux.math",
       "symbol": "vector4",
       "kind": "class",
       "signatures": [
@@ -1507,10 +1507,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.mathf:Mathf",
-      "symbol_key": "Infernux.mathf.Mathf",
+      "id": "en:infernux.mathf:Mathf",
+      "symbol_key": "infernux.mathf.Mathf",
       "language": "en",
-      "module": "Infernux.mathf",
+      "module": "infernux.mathf",
       "symbol": "Mathf",
       "kind": "class",
       "signatures": [
@@ -1566,10 +1566,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.physics:Physics",
-      "symbol_key": "Infernux.physics.Physics",
+      "id": "en:infernux.physics:Physics",
+      "symbol_key": "infernux.physics.Physics",
       "language": "en",
-      "module": "Infernux.physics",
+      "module": "infernux.physics",
       "symbol": "Physics",
       "kind": "class",
       "signatures": [
@@ -1615,10 +1615,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.rendergraph:Format",
-      "symbol_key": "Infernux.rendergraph.Format",
+      "id": "en:infernux.rendergraph:Format",
+      "symbol_key": "infernux.rendergraph.Format",
       "language": "en",
-      "module": "Infernux.rendergraph",
+      "module": "infernux.rendergraph",
       "symbol": "Format",
       "kind": "enum",
       "signatures": [
@@ -1635,10 +1635,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.rendergraph:RenderGraph",
-      "symbol_key": "Infernux.rendergraph.RenderGraph",
+      "id": "en:infernux.rendergraph:RenderGraph",
+      "symbol_key": "infernux.rendergraph.RenderGraph",
       "language": "en",
-      "module": "Infernux.rendergraph",
+      "module": "infernux.rendergraph",
       "symbol": "RenderGraph",
       "kind": "class",
       "signatures": [
@@ -1701,10 +1701,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.rendergraph:RenderPassBuilder",
-      "symbol_key": "Infernux.rendergraph.RenderPassBuilder",
+      "id": "en:infernux.rendergraph:RenderPassBuilder",
+      "symbol_key": "infernux.rendergraph.RenderPassBuilder",
       "language": "en",
-      "module": "Infernux.rendergraph",
+      "module": "infernux.rendergraph",
       "symbol": "RenderPassBuilder",
       "kind": "class",
       "signatures": [
@@ -1744,10 +1744,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.rendergraph:TextureHandle",
-      "symbol_key": "Infernux.rendergraph.TextureHandle",
+      "id": "en:infernux.rendergraph:TextureHandle",
+      "symbol_key": "infernux.rendergraph.TextureHandle",
       "language": "en",
-      "module": "Infernux.rendergraph",
+      "module": "infernux.rendergraph",
       "symbol": "TextureHandle",
       "kind": "class",
       "signatures": [
@@ -1772,10 +1772,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.renderstack:BloomEffect",
-      "symbol_key": "Infernux.renderstack.BloomEffect",
+      "id": "en:infernux.renderstack:BloomEffect",
+      "symbol_key": "infernux.renderstack.BloomEffect",
       "language": "en",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "BloomEffect",
       "kind": "class",
       "signatures": [
@@ -1797,10 +1797,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.renderstack:ChromaticAberrationEffect",
-      "symbol_key": "Infernux.renderstack.ChromaticAberrationEffect",
+      "id": "en:infernux.renderstack:ChromaticAberrationEffect",
+      "symbol_key": "infernux.renderstack.ChromaticAberrationEffect",
       "language": "en",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "ChromaticAberrationEffect",
       "kind": "class",
       "signatures": [
@@ -1821,10 +1821,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.renderstack:ColorAdjustmentsEffect",
-      "symbol_key": "Infernux.renderstack.ColorAdjustmentsEffect",
+      "id": "en:infernux.renderstack:ColorAdjustmentsEffect",
+      "symbol_key": "infernux.renderstack.ColorAdjustmentsEffect",
       "language": "en",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "ColorAdjustmentsEffect",
       "kind": "class",
       "signatures": [
@@ -1845,10 +1845,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.renderstack:FilmGrainEffect",
-      "symbol_key": "Infernux.renderstack.FilmGrainEffect",
+      "id": "en:infernux.renderstack:FilmGrainEffect",
+      "symbol_key": "infernux.renderstack.FilmGrainEffect",
       "language": "en",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "FilmGrainEffect",
       "kind": "class",
       "signatures": [
@@ -1869,10 +1869,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.renderstack:FullScreenEffect",
-      "symbol_key": "Infernux.renderstack.FullScreenEffect",
+      "id": "en:infernux.renderstack:FullScreenEffect",
+      "symbol_key": "infernux.renderstack.FullScreenEffect",
       "language": "en",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "FullScreenEffect",
       "kind": "class",
       "signatures": [
@@ -1901,10 +1901,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.renderstack:RenderPass",
-      "symbol_key": "Infernux.renderstack.RenderPass",
+      "id": "en:infernux.renderstack:RenderPass",
+      "symbol_key": "infernux.renderstack.RenderPass",
       "language": "en",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "RenderPass",
       "kind": "class",
       "signatures": [
@@ -1928,10 +1928,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.renderstack:RenderPipeline",
-      "symbol_key": "Infernux.renderstack.RenderPipeline",
+      "id": "en:infernux.renderstack:RenderPipeline",
+      "symbol_key": "infernux.renderstack.RenderPipeline",
       "language": "en",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "RenderPipeline",
       "kind": "class",
       "signatures": [
@@ -1960,10 +1960,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.renderstack:RenderStack",
-      "symbol_key": "Infernux.renderstack.RenderStack",
+      "id": "en:infernux.renderstack:RenderStack",
+      "symbol_key": "infernux.renderstack.RenderStack",
       "language": "en",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "RenderStack",
       "kind": "class",
       "signatures": [
@@ -2002,10 +2002,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.renderstack:SharpenEffect",
-      "symbol_key": "Infernux.renderstack.SharpenEffect",
+      "id": "en:infernux.renderstack:SharpenEffect",
+      "symbol_key": "infernux.renderstack.SharpenEffect",
       "language": "en",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "SharpenEffect",
       "kind": "class",
       "signatures": [
@@ -2026,10 +2026,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.renderstack:ToneMappingEffect",
-      "symbol_key": "Infernux.renderstack.ToneMappingEffect",
+      "id": "en:infernux.renderstack:ToneMappingEffect",
+      "symbol_key": "infernux.renderstack.ToneMappingEffect",
       "language": "en",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "ToneMappingEffect",
       "kind": "class",
       "signatures": [
@@ -2052,10 +2052,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.renderstack:VignetteEffect",
-      "symbol_key": "Infernux.renderstack.VignetteEffect",
+      "id": "en:infernux.renderstack:VignetteEffect",
+      "symbol_key": "infernux.renderstack.VignetteEffect",
       "language": "en",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "VignetteEffect",
       "kind": "class",
       "signatures": [
@@ -2077,10 +2077,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.renderstack:WhiteBalanceEffect",
-      "symbol_key": "Infernux.renderstack.WhiteBalanceEffect",
+      "id": "en:infernux.renderstack:WhiteBalanceEffect",
+      "symbol_key": "infernux.renderstack.WhiteBalanceEffect",
       "language": "en",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "WhiteBalanceEffect",
       "kind": "class",
       "signatures": [
@@ -2101,10 +2101,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.scene:SceneManager",
-      "symbol_key": "Infernux.scene.SceneManager",
+      "id": "en:infernux.scene:SceneManager",
+      "symbol_key": "infernux.scene.SceneManager",
       "language": "en",
-      "module": "Infernux.scene",
+      "module": "infernux.scene",
       "symbol": "SceneManager",
       "kind": "class",
       "signatures": [
@@ -2143,10 +2143,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.timing:Time",
-      "symbol_key": "Infernux.timing.Time",
+      "id": "en:infernux.timing:Time",
+      "symbol_key": "infernux.timing.Time",
       "language": "en",
-      "module": "Infernux.timing",
+      "module": "infernux.timing",
       "symbol": "Time",
       "kind": "class",
       "signatures": [
@@ -2164,10 +2164,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.ui:InxUIComponent",
-      "symbol_key": "Infernux.ui.InxUIComponent",
+      "id": "en:infernux.ui:InxUIComponent",
+      "symbol_key": "infernux.ui.InxUIComponent",
       "language": "en",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "InxUIComponent",
       "kind": "class",
       "signatures": [],
@@ -2182,10 +2182,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.ui:PointerEventData",
-      "symbol_key": "Infernux.ui.PointerEventData",
+      "id": "en:infernux.ui:PointerEventData",
+      "symbol_key": "infernux.ui.PointerEventData",
       "language": "en",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "PointerEventData",
       "kind": "class",
       "signatures": [
@@ -2209,10 +2209,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.ui:UIButton",
-      "symbol_key": "Infernux.ui.UIButton",
+      "id": "en:infernux.ui:UIButton",
+      "symbol_key": "infernux.ui.UIButton",
       "language": "en",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "UIButton",
       "kind": "class",
       "signatures": [
@@ -2241,10 +2241,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.ui:UICanvas",
-      "symbol_key": "Infernux.ui.UICanvas",
+      "id": "en:infernux.ui:UICanvas",
+      "symbol_key": "infernux.ui.UICanvas",
       "language": "en",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "UICanvas",
       "kind": "class",
       "signatures": [
@@ -2274,10 +2274,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.ui:UIImage",
-      "symbol_key": "Infernux.ui.UIImage",
+      "id": "en:infernux.ui:UIImage",
+      "symbol_key": "infernux.ui.UIImage",
       "language": "en",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "UIImage",
       "kind": "class",
       "signatures": [
@@ -2295,10 +2295,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.ui:UISelectable",
-      "symbol_key": "Infernux.ui.UISelectable",
+      "id": "en:infernux.ui:UISelectable",
+      "symbol_key": "infernux.ui.UISelectable",
       "language": "en",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "UISelectable",
       "kind": "class",
       "signatures": [
@@ -2324,10 +2324,10 @@
       "related_documents": []
     },
     {
-      "id": "en:Infernux.ui:UIText",
-      "symbol_key": "Infernux.ui.UIText",
+      "id": "en:infernux.ui:UIText",
+      "symbol_key": "infernux.ui.UIText",
       "language": "en",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "UIText",
       "kind": "class",
       "signatures": [
@@ -2682,10 +2682,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components:add_component_menu",
-      "symbol_key": "Infernux.components.add_component_menu",
+      "id": "zh:infernux.components:add_component_menu",
+      "symbol_key": "infernux.components.add_component_menu",
       "language": "zh-CN",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "add_component_menu",
       "kind": "function",
       "signatures": [
@@ -2702,10 +2702,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components:disallow_multiple",
-      "symbol_key": "Infernux.components.disallow_multiple",
+      "id": "zh:infernux.components:disallow_multiple",
+      "symbol_key": "infernux.components.disallow_multiple",
       "language": "zh-CN",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "disallow_multiple",
       "kind": "function",
       "signatures": [],
@@ -2720,10 +2720,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components:execute_in_edit_mode",
-      "symbol_key": "Infernux.components.execute_in_edit_mode",
+      "id": "zh:infernux.components:execute_in_edit_mode",
+      "symbol_key": "infernux.components.execute_in_edit_mode",
       "language": "zh-CN",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "execute_in_edit_mode",
       "kind": "function",
       "signatures": [],
@@ -2738,10 +2738,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components:InxComponent",
-      "symbol_key": "Infernux.components.InxComponent",
+      "id": "zh:infernux.components:InxComponent",
+      "symbol_key": "infernux.components.InxComponent",
       "language": "zh-CN",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "InxComponent",
       "kind": "class",
       "signatures": [
@@ -2799,10 +2799,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components:require_component",
-      "symbol_key": "Infernux.components.require_component",
+      "id": "zh:infernux.components:require_component",
+      "symbol_key": "infernux.components.require_component",
       "language": "zh-CN",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "require_component",
       "kind": "function",
       "signatures": [],
@@ -2817,10 +2817,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components:serialized_field",
-      "symbol_key": "Infernux.components.serialized_field",
+      "id": "zh:infernux.components:serialized_field",
+      "symbol_key": "infernux.components.serialized_field",
       "language": "zh-CN",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "serialized_field",
       "kind": "function",
       "signatures": [
@@ -2847,10 +2847,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components:Space",
-      "symbol_key": "Infernux.components.Space",
+      "id": "zh:infernux.components:Space",
+      "symbol_key": "infernux.components.Space",
       "language": "zh-CN",
-      "module": "Infernux.components",
+      "module": "infernux.components",
       "symbol": "Space",
       "kind": "class",
       "signatures": [
@@ -2867,10 +2867,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components.builtin:AudioListener",
-      "symbol_key": "Infernux.components.builtin.AudioListener",
+      "id": "zh:infernux.components.builtin:AudioListener",
+      "symbol_key": "infernux.components.builtin.AudioListener",
       "language": "zh-CN",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "AudioListener",
       "kind": "class",
       "signatures": [
@@ -2889,10 +2889,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components.builtin:AudioSource",
-      "symbol_key": "Infernux.components.builtin.AudioSource",
+      "id": "zh:infernux.components.builtin:AudioSource",
+      "symbol_key": "infernux.components.builtin.AudioSource",
       "language": "zh-CN",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "AudioSource",
       "kind": "class",
       "signatures": [
@@ -2932,10 +2932,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components.builtin:BoxCollider",
-      "symbol_key": "Infernux.components.builtin.BoxCollider",
+      "id": "zh:infernux.components.builtin:BoxCollider",
+      "symbol_key": "infernux.components.builtin.BoxCollider",
       "language": "zh-CN",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "BoxCollider",
       "kind": "class",
       "signatures": [
@@ -2953,10 +2953,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components.builtin:Camera",
-      "symbol_key": "Infernux.components.builtin.Camera",
+      "id": "zh:infernux.components.builtin:Camera",
+      "symbol_key": "infernux.components.builtin.Camera",
       "language": "zh-CN",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "Camera",
       "kind": "class",
       "signatures": [
@@ -2992,10 +2992,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components.builtin:CapsuleCollider",
-      "symbol_key": "Infernux.components.builtin.CapsuleCollider",
+      "id": "zh:infernux.components.builtin:CapsuleCollider",
+      "symbol_key": "infernux.components.builtin.CapsuleCollider",
       "language": "zh-CN",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "CapsuleCollider",
       "kind": "class",
       "signatures": [
@@ -3014,10 +3014,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components.builtin:Collider",
-      "symbol_key": "Infernux.components.builtin.Collider",
+      "id": "zh:infernux.components.builtin:Collider",
+      "symbol_key": "infernux.components.builtin.Collider",
       "language": "zh-CN",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "Collider",
       "kind": "class",
       "signatures": [
@@ -3038,10 +3038,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components.builtin:CollisionDetectionMode",
-      "symbol_key": "Infernux.components.builtin.CollisionDetectionMode",
+      "id": "zh:infernux.components.builtin:CollisionDetectionMode",
+      "symbol_key": "infernux.components.builtin.CollisionDetectionMode",
       "language": "zh-CN",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "CollisionDetectionMode",
       "kind": "enum",
       "signatures": [],
@@ -3056,10 +3056,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components.builtin:Light",
-      "symbol_key": "Infernux.components.builtin.Light",
+      "id": "zh:infernux.components.builtin:Light",
+      "symbol_key": "infernux.components.builtin.Light",
       "language": "zh-CN",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "Light",
       "kind": "class",
       "signatures": [
@@ -3081,10 +3081,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components.builtin:MeshCollider",
-      "symbol_key": "Infernux.components.builtin.MeshCollider",
+      "id": "zh:infernux.components.builtin:MeshCollider",
+      "symbol_key": "infernux.components.builtin.MeshCollider",
       "language": "zh-CN",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "MeshCollider",
       "kind": "class",
       "signatures": [
@@ -3103,10 +3103,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components.builtin:MeshRenderer",
-      "symbol_key": "Infernux.components.builtin.MeshRenderer",
+      "id": "zh:infernux.components.builtin:MeshRenderer",
+      "symbol_key": "infernux.components.builtin.MeshRenderer",
       "language": "zh-CN",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "MeshRenderer",
       "kind": "class",
       "signatures": [
@@ -3156,10 +3156,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components.builtin:Rigidbody",
-      "symbol_key": "Infernux.components.builtin.Rigidbody",
+      "id": "zh:infernux.components.builtin:Rigidbody",
+      "symbol_key": "infernux.components.builtin.Rigidbody",
       "language": "zh-CN",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "Rigidbody",
       "kind": "class",
       "signatures": [
@@ -3196,10 +3196,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components.builtin:RigidbodyConstraints",
-      "symbol_key": "Infernux.components.builtin.RigidbodyConstraints",
+      "id": "zh:infernux.components.builtin:RigidbodyConstraints",
+      "symbol_key": "infernux.components.builtin.RigidbodyConstraints",
       "language": "zh-CN",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "RigidbodyConstraints",
       "kind": "class",
       "signatures": [],
@@ -3214,10 +3214,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.components.builtin:SphereCollider",
-      "symbol_key": "Infernux.components.builtin.SphereCollider",
+      "id": "zh:infernux.components.builtin:SphereCollider",
+      "symbol_key": "infernux.components.builtin.SphereCollider",
       "language": "zh-CN",
-      "module": "Infernux.components.builtin",
+      "module": "infernux.components.builtin",
       "symbol": "SphereCollider",
       "kind": "class",
       "signatures": [
@@ -3235,10 +3235,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.core:AudioClip",
-      "symbol_key": "Infernux.core.AudioClip",
+      "id": "zh:infernux.core:AudioClip",
+      "symbol_key": "infernux.core.AudioClip",
       "language": "zh-CN",
-      "module": "Infernux.core",
+      "module": "infernux.core",
       "symbol": "AudioClip",
       "kind": "class",
       "signatures": [
@@ -3264,10 +3264,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.core:Material",
-      "symbol_key": "Infernux.core.Material",
+      "id": "zh:infernux.core:Material",
+      "symbol_key": "infernux.core.Material",
       "language": "zh-CN",
-      "module": "Infernux.core",
+      "module": "infernux.core",
       "symbol": "Material",
       "kind": "class",
       "signatures": [
@@ -3328,10 +3328,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.core:Shader",
-      "symbol_key": "Infernux.core.Shader",
+      "id": "zh:infernux.core:Shader",
+      "symbol_key": "infernux.core.Shader",
       "language": "zh-CN",
-      "module": "Infernux.core",
+      "module": "infernux.core",
       "symbol": "Shader",
       "kind": "class",
       "signatures": [
@@ -3349,10 +3349,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.core:Texture",
-      "symbol_key": "Infernux.core.Texture",
+      "id": "zh:infernux.core:Texture",
+      "symbol_key": "infernux.core.Texture",
       "language": "zh-CN",
-      "module": "Infernux.core",
+      "module": "infernux.core",
       "symbol": "Texture",
       "kind": "class",
       "signatures": [
@@ -3382,10 +3382,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.coroutine:Coroutine",
-      "symbol_key": "Infernux.coroutine.Coroutine",
+      "id": "zh:infernux.coroutine:Coroutine",
+      "symbol_key": "infernux.coroutine.Coroutine",
       "language": "zh-CN",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "Coroutine",
       "kind": "class",
       "signatures": [
@@ -3405,10 +3405,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.coroutine:WaitForEndOfFrame",
-      "symbol_key": "Infernux.coroutine.WaitForEndOfFrame",
+      "id": "zh:infernux.coroutine:WaitForEndOfFrame",
+      "symbol_key": "infernux.coroutine.WaitForEndOfFrame",
       "language": "zh-CN",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "WaitForEndOfFrame",
       "kind": "class",
       "signatures": [
@@ -3426,10 +3426,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.coroutine:WaitForFixedUpdate",
-      "symbol_key": "Infernux.coroutine.WaitForFixedUpdate",
+      "id": "zh:infernux.coroutine:WaitForFixedUpdate",
+      "symbol_key": "infernux.coroutine.WaitForFixedUpdate",
       "language": "zh-CN",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "WaitForFixedUpdate",
       "kind": "class",
       "signatures": [],
@@ -3444,10 +3444,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.coroutine:WaitForSeconds",
-      "symbol_key": "Infernux.coroutine.WaitForSeconds",
+      "id": "zh:infernux.coroutine:WaitForSeconds",
+      "symbol_key": "infernux.coroutine.WaitForSeconds",
       "language": "zh-CN",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "WaitForSeconds",
       "kind": "class",
       "signatures": [
@@ -3465,10 +3465,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.coroutine:WaitForSecondsRealtime",
-      "symbol_key": "Infernux.coroutine.WaitForSecondsRealtime",
+      "id": "zh:infernux.coroutine:WaitForSecondsRealtime",
+      "symbol_key": "infernux.coroutine.WaitForSecondsRealtime",
       "language": "zh-CN",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "WaitForSecondsRealtime",
       "kind": "class",
       "signatures": [
@@ -3486,10 +3486,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.coroutine:WaitUntil",
-      "symbol_key": "Infernux.coroutine.WaitUntil",
+      "id": "zh:infernux.coroutine:WaitUntil",
+      "symbol_key": "infernux.coroutine.WaitUntil",
       "language": "zh-CN",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "WaitUntil",
       "kind": "class",
       "signatures": [
@@ -3507,10 +3507,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.coroutine:WaitWhile",
-      "symbol_key": "Infernux.coroutine.WaitWhile",
+      "id": "zh:infernux.coroutine:WaitWhile",
+      "symbol_key": "infernux.coroutine.WaitWhile",
       "language": "zh-CN",
-      "module": "Infernux.coroutine",
+      "module": "infernux.coroutine",
       "symbol": "WaitWhile",
       "kind": "class",
       "signatures": [
@@ -3528,10 +3528,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.debug:Debug",
-      "symbol_key": "Infernux.debug.Debug",
+      "id": "zh:infernux.debug:Debug",
+      "symbol_key": "infernux.debug.Debug",
       "language": "zh-CN",
-      "module": "Infernux.debug",
+      "module": "infernux.debug",
       "symbol": "Debug",
       "kind": "class",
       "signatures": [
@@ -3555,10 +3555,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.gizmos:Gizmos",
-      "symbol_key": "Infernux.gizmos.Gizmos",
+      "id": "zh:infernux.gizmos:Gizmos",
+      "symbol_key": "infernux.gizmos.Gizmos",
       "language": "zh-CN",
-      "module": "Infernux.gizmos",
+      "module": "infernux.gizmos",
       "symbol": "Gizmos",
       "kind": "class",
       "signatures": [
@@ -3585,10 +3585,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.input:Input",
-      "symbol_key": "Infernux.input.Input",
+      "id": "zh:infernux.input:Input",
+      "symbol_key": "infernux.input.Input",
       "language": "zh-CN",
-      "module": "Infernux.input",
+      "module": "infernux.input",
       "symbol": "Input",
       "kind": "class",
       "signatures": [
@@ -3638,10 +3638,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.input:KeyCode",
-      "symbol_key": "Infernux.input.KeyCode",
+      "id": "zh:infernux.input:KeyCode",
+      "symbol_key": "infernux.input.KeyCode",
       "language": "zh-CN",
-      "module": "Infernux.input",
+      "module": "infernux.input",
       "symbol": "KeyCode",
       "kind": "class",
       "signatures": [
@@ -3718,10 +3718,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.math:quaternion",
-      "symbol_key": "Infernux.math.quaternion",
+      "id": "zh:infernux.math:quaternion",
+      "symbol_key": "infernux.math.quaternion",
       "language": "zh-CN",
-      "module": "Infernux.math",
+      "module": "infernux.math",
       "symbol": "quaternion",
       "kind": "class",
       "signatures": [
@@ -3747,10 +3747,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.math:vector2",
-      "symbol_key": "Infernux.math.vector2",
+      "id": "zh:infernux.math:vector2",
+      "symbol_key": "infernux.math.vector2",
       "language": "zh-CN",
-      "module": "Infernux.math",
+      "module": "infernux.math",
       "symbol": "vector2",
       "kind": "class",
       "signatures": [
@@ -3785,10 +3785,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.math:vector3",
-      "symbol_key": "Infernux.math.vector3",
+      "id": "zh:infernux.math:vector3",
+      "symbol_key": "infernux.math.vector3",
       "language": "zh-CN",
-      "module": "Infernux.math",
+      "module": "infernux.math",
       "symbol": "vector3",
       "kind": "class",
       "signatures": [
@@ -3828,10 +3828,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.math:vector4",
-      "symbol_key": "Infernux.math.vector4",
+      "id": "zh:infernux.math:vector4",
+      "symbol_key": "infernux.math.vector4",
       "language": "zh-CN",
-      "module": "Infernux.math",
+      "module": "infernux.math",
       "symbol": "vector4",
       "kind": "class",
       "signatures": [
@@ -3861,10 +3861,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.mathf:Mathf",
-      "symbol_key": "Infernux.mathf.Mathf",
+      "id": "zh:infernux.mathf:Mathf",
+      "symbol_key": "infernux.mathf.Mathf",
       "language": "zh-CN",
-      "module": "Infernux.mathf",
+      "module": "infernux.mathf",
       "symbol": "Mathf",
       "kind": "class",
       "signatures": [
@@ -3920,10 +3920,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.physics:Physics",
-      "symbol_key": "Infernux.physics.Physics",
+      "id": "zh:infernux.physics:Physics",
+      "symbol_key": "infernux.physics.Physics",
       "language": "zh-CN",
-      "module": "Infernux.physics",
+      "module": "infernux.physics",
       "symbol": "Physics",
       "kind": "class",
       "signatures": [
@@ -3969,10 +3969,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.rendergraph:Format",
-      "symbol_key": "Infernux.rendergraph.Format",
+      "id": "zh:infernux.rendergraph:Format",
+      "symbol_key": "infernux.rendergraph.Format",
       "language": "zh-CN",
-      "module": "Infernux.rendergraph",
+      "module": "infernux.rendergraph",
       "symbol": "Format",
       "kind": "enum",
       "signatures": [
@@ -3989,10 +3989,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.rendergraph:RenderGraph",
-      "symbol_key": "Infernux.rendergraph.RenderGraph",
+      "id": "zh:infernux.rendergraph:RenderGraph",
+      "symbol_key": "infernux.rendergraph.RenderGraph",
       "language": "zh-CN",
-      "module": "Infernux.rendergraph",
+      "module": "infernux.rendergraph",
       "symbol": "RenderGraph",
       "kind": "class",
       "signatures": [
@@ -4055,10 +4055,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.rendergraph:RenderPassBuilder",
-      "symbol_key": "Infernux.rendergraph.RenderPassBuilder",
+      "id": "zh:infernux.rendergraph:RenderPassBuilder",
+      "symbol_key": "infernux.rendergraph.RenderPassBuilder",
       "language": "zh-CN",
-      "module": "Infernux.rendergraph",
+      "module": "infernux.rendergraph",
       "symbol": "RenderPassBuilder",
       "kind": "class",
       "signatures": [
@@ -4098,10 +4098,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.rendergraph:TextureHandle",
-      "symbol_key": "Infernux.rendergraph.TextureHandle",
+      "id": "zh:infernux.rendergraph:TextureHandle",
+      "symbol_key": "infernux.rendergraph.TextureHandle",
       "language": "zh-CN",
-      "module": "Infernux.rendergraph",
+      "module": "infernux.rendergraph",
       "symbol": "TextureHandle",
       "kind": "class",
       "signatures": [
@@ -4126,10 +4126,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.renderstack:BloomEffect",
-      "symbol_key": "Infernux.renderstack.BloomEffect",
+      "id": "zh:infernux.renderstack:BloomEffect",
+      "symbol_key": "infernux.renderstack.BloomEffect",
       "language": "zh-CN",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "BloomEffect",
       "kind": "class",
       "signatures": [
@@ -4151,10 +4151,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.renderstack:ChromaticAberrationEffect",
-      "symbol_key": "Infernux.renderstack.ChromaticAberrationEffect",
+      "id": "zh:infernux.renderstack:ChromaticAberrationEffect",
+      "symbol_key": "infernux.renderstack.ChromaticAberrationEffect",
       "language": "zh-CN",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "ChromaticAberrationEffect",
       "kind": "class",
       "signatures": [
@@ -4175,10 +4175,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.renderstack:ColorAdjustmentsEffect",
-      "symbol_key": "Infernux.renderstack.ColorAdjustmentsEffect",
+      "id": "zh:infernux.renderstack:ColorAdjustmentsEffect",
+      "symbol_key": "infernux.renderstack.ColorAdjustmentsEffect",
       "language": "zh-CN",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "ColorAdjustmentsEffect",
       "kind": "class",
       "signatures": [
@@ -4199,10 +4199,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.renderstack:FilmGrainEffect",
-      "symbol_key": "Infernux.renderstack.FilmGrainEffect",
+      "id": "zh:infernux.renderstack:FilmGrainEffect",
+      "symbol_key": "infernux.renderstack.FilmGrainEffect",
       "language": "zh-CN",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "FilmGrainEffect",
       "kind": "class",
       "signatures": [
@@ -4223,10 +4223,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.renderstack:FullScreenEffect",
-      "symbol_key": "Infernux.renderstack.FullScreenEffect",
+      "id": "zh:infernux.renderstack:FullScreenEffect",
+      "symbol_key": "infernux.renderstack.FullScreenEffect",
       "language": "zh-CN",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "FullScreenEffect",
       "kind": "class",
       "signatures": [
@@ -4255,10 +4255,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.renderstack:RenderPass",
-      "symbol_key": "Infernux.renderstack.RenderPass",
+      "id": "zh:infernux.renderstack:RenderPass",
+      "symbol_key": "infernux.renderstack.RenderPass",
       "language": "zh-CN",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "RenderPass",
       "kind": "class",
       "signatures": [
@@ -4282,10 +4282,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.renderstack:RenderPipeline",
-      "symbol_key": "Infernux.renderstack.RenderPipeline",
+      "id": "zh:infernux.renderstack:RenderPipeline",
+      "symbol_key": "infernux.renderstack.RenderPipeline",
       "language": "zh-CN",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "RenderPipeline",
       "kind": "class",
       "signatures": [
@@ -4314,10 +4314,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.renderstack:RenderStack",
-      "symbol_key": "Infernux.renderstack.RenderStack",
+      "id": "zh:infernux.renderstack:RenderStack",
+      "symbol_key": "infernux.renderstack.RenderStack",
       "language": "zh-CN",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "RenderStack",
       "kind": "class",
       "signatures": [
@@ -4356,10 +4356,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.renderstack:SharpenEffect",
-      "symbol_key": "Infernux.renderstack.SharpenEffect",
+      "id": "zh:infernux.renderstack:SharpenEffect",
+      "symbol_key": "infernux.renderstack.SharpenEffect",
       "language": "zh-CN",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "SharpenEffect",
       "kind": "class",
       "signatures": [
@@ -4380,10 +4380,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.renderstack:ToneMappingEffect",
-      "symbol_key": "Infernux.renderstack.ToneMappingEffect",
+      "id": "zh:infernux.renderstack:ToneMappingEffect",
+      "symbol_key": "infernux.renderstack.ToneMappingEffect",
       "language": "zh-CN",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "ToneMappingEffect",
       "kind": "class",
       "signatures": [
@@ -4406,10 +4406,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.renderstack:VignetteEffect",
-      "symbol_key": "Infernux.renderstack.VignetteEffect",
+      "id": "zh:infernux.renderstack:VignetteEffect",
+      "symbol_key": "infernux.renderstack.VignetteEffect",
       "language": "zh-CN",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "VignetteEffect",
       "kind": "class",
       "signatures": [
@@ -4431,10 +4431,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.renderstack:WhiteBalanceEffect",
-      "symbol_key": "Infernux.renderstack.WhiteBalanceEffect",
+      "id": "zh:infernux.renderstack:WhiteBalanceEffect",
+      "symbol_key": "infernux.renderstack.WhiteBalanceEffect",
       "language": "zh-CN",
-      "module": "Infernux.renderstack",
+      "module": "infernux.renderstack",
       "symbol": "WhiteBalanceEffect",
       "kind": "class",
       "signatures": [
@@ -4455,10 +4455,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.scene:SceneManager",
-      "symbol_key": "Infernux.scene.SceneManager",
+      "id": "zh:infernux.scene:SceneManager",
+      "symbol_key": "infernux.scene.SceneManager",
       "language": "zh-CN",
-      "module": "Infernux.scene",
+      "module": "infernux.scene",
       "symbol": "SceneManager",
       "kind": "class",
       "signatures": [
@@ -4497,10 +4497,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.timing:Time",
-      "symbol_key": "Infernux.timing.Time",
+      "id": "zh:infernux.timing:Time",
+      "symbol_key": "infernux.timing.Time",
       "language": "zh-CN",
-      "module": "Infernux.timing",
+      "module": "infernux.timing",
       "symbol": "Time",
       "kind": "class",
       "signatures": [
@@ -4518,10 +4518,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.ui:InxUIComponent",
-      "symbol_key": "Infernux.ui.InxUIComponent",
+      "id": "zh:infernux.ui:InxUIComponent",
+      "symbol_key": "infernux.ui.InxUIComponent",
       "language": "zh-CN",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "InxUIComponent",
       "kind": "class",
       "signatures": [],
@@ -4536,10 +4536,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.ui:PointerEventData",
-      "symbol_key": "Infernux.ui.PointerEventData",
+      "id": "zh:infernux.ui:PointerEventData",
+      "symbol_key": "infernux.ui.PointerEventData",
       "language": "zh-CN",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "PointerEventData",
       "kind": "class",
       "signatures": [
@@ -4563,10 +4563,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.ui:UIButton",
-      "symbol_key": "Infernux.ui.UIButton",
+      "id": "zh:infernux.ui:UIButton",
+      "symbol_key": "infernux.ui.UIButton",
       "language": "zh-CN",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "UIButton",
       "kind": "class",
       "signatures": [
@@ -4595,10 +4595,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.ui:UICanvas",
-      "symbol_key": "Infernux.ui.UICanvas",
+      "id": "zh:infernux.ui:UICanvas",
+      "symbol_key": "infernux.ui.UICanvas",
       "language": "zh-CN",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "UICanvas",
       "kind": "class",
       "signatures": [
@@ -4628,10 +4628,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.ui:UIImage",
-      "symbol_key": "Infernux.ui.UIImage",
+      "id": "zh:infernux.ui:UIImage",
+      "symbol_key": "infernux.ui.UIImage",
       "language": "zh-CN",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "UIImage",
       "kind": "class",
       "signatures": [
@@ -4649,10 +4649,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.ui:UISelectable",
-      "symbol_key": "Infernux.ui.UISelectable",
+      "id": "zh:infernux.ui:UISelectable",
+      "symbol_key": "infernux.ui.UISelectable",
       "language": "zh-CN",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "UISelectable",
       "kind": "class",
       "signatures": [
@@ -4678,10 +4678,10 @@
       "related_documents": []
     },
     {
-      "id": "zh:Infernux.ui:UIText",
-      "symbol_key": "Infernux.ui.UIText",
+      "id": "zh:infernux.ui:UIText",
+      "symbol_key": "infernux.ui.UIText",
       "language": "zh-CN",
-      "module": "Infernux.ui",
+      "module": "infernux.ui",
       "symbol": "UIText",
       "kind": "class",
       "signatures": [

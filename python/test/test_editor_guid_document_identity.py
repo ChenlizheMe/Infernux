@@ -25,7 +25,7 @@ class _RestoreController:
 
 
 def test_asset_move_preserves_guid_selection_and_dormant_document_identity(tmp_path):
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         AssetMutationService,
         DocumentKey,
         DocumentKind,
@@ -69,8 +69,8 @@ def test_asset_move_preserves_guid_selection_and_dormant_document_identity(tmp_p
 
 
 def test_new_guid_at_deleted_path_does_not_inherit_dormant_state(tmp_path, monkeypatch):
-    from Infernux.engine.interaction import DocumentKey, DocumentKind, DocumentRegistry
-    from Infernux.engine.interaction import documents as document_module
+    from infernux.engine.interaction import DocumentKey, DocumentKind, DocumentRegistry
+    from infernux.engine.interaction import documents as document_module
 
     path = str(tmp_path / "Reused.scene")
     database = _Database()
@@ -101,7 +101,7 @@ def test_new_guid_at_deleted_path_does_not_inherit_dormant_state(tmp_path, monke
 
 
 def test_delete_preflight_matches_registered_documents_by_guid_not_path(tmp_path):
-    from Infernux.engine.interaction import DocumentKey, DocumentKind, DocumentRegistry
+    from infernux.engine.interaction import DocumentKey, DocumentKind, DocumentRegistry
 
     old_path = str(tmp_path / "Reused.scene")
     moved_path = str(tmp_path / "Moved.scene")
@@ -122,8 +122,8 @@ def test_delete_preflight_matches_registered_documents_by_guid_not_path(tmp_path
 def test_scene_session_persists_guid_and_ignores_legacy_path_record(
     tmp_path, monkeypatch
 ):
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.scene_manager import SceneFileManager
 
     path = str(tmp_path / "Main.scene")
     database = _Database()
@@ -154,7 +154,7 @@ def test_scene_session_persists_guid_and_ignores_legacy_path_record(
 
 
 def test_path_keyed_registered_asset_session_record_is_silently_skipped():
-    from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+    from infernux.engine.interaction import DocumentKind, DocumentRegistry
 
     source = DocumentRegistry()
     document = source.create(
@@ -176,8 +176,8 @@ def test_path_keyed_registered_asset_session_record_is_silently_skipped():
 
 
 def test_authoring_save_as_rekeys_to_published_guid(tmp_path, monkeypatch):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import (
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import (
         AuthoringAssetSnapshot,
         AuthoringDocumentController,
         DocumentActionStatus,
@@ -185,7 +185,7 @@ def test_authoring_save_as_rekeys_to_published_guid(tmp_path, monkeypatch):
         DocumentKind,
         DocumentRegistry,
     )
-    from Infernux.engine.interaction import authoring_documents as authoring_module
+    from infernux.engine.interaction import authoring_documents as authoring_module
 
     target = str(tmp_path / "Saved.particlegraph")
     database = _Database()

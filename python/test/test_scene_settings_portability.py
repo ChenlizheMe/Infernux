@@ -2,9 +2,9 @@ from pathlib import Path
 import json
 from types import SimpleNamespace
 
-from Infernux.engine import scene_manager as scene_manager_module
-from Infernux.engine.scene_manager import SceneFileManager
-from Infernux.engine import _scene_save as scene_save_module
+from infernux.engine import scene_manager as scene_manager_module
+from infernux.engine.scene_manager import SceneFileManager
+from infernux.engine import _scene_save as scene_save_module
 
 
 class _AssetDatabase:
@@ -111,7 +111,7 @@ def test_checkout_without_local_navigation_opens_first_authored_build_scene(tmp_
     settings.write_text('{"scene_guids": ["scene-guid"]}\n', encoding="utf-8")
     monkeypatch.setattr(scene_manager_module, "_effective_project_root", lambda: str(tmp_path))
     monkeypatch.setattr(scene_manager_module, "_load_editor_settings", lambda: {})
-    monkeypatch.setattr("Infernux.engine.build_settings.load_build_settings_for_build", lambda _: {"scene_guids": ["scene-guid"]})
+    monkeypatch.setattr("infernux.engine.build_settings.load_build_settings_for_build", lambda _: {"scene_guids": ["scene-guid"]})
     opened = []
     monkeypatch.setattr(manager, "_do_open_scene", lambda path, record_navigation: opened.append(path) or True)
     monkeypatch.setattr(manager, "_remember_last_scene", lambda _: None)

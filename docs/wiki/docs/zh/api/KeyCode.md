@@ -1,7 +1,7 @@
 # KeyCode
 
 <div class="class-info">
-类位于 <b>Infernux.input</b>
+类位于 <b>infernux.input</b>
 </div>
 
 ## 描述

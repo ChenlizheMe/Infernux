@@ -434,7 +434,7 @@ const generatedAliasPages = {
   en: `# Format
 
 <div class="class-info">
-enum in <b>Infernux.rendergraph</b>
+enum in <b>infernux.rendergraph</b>
 </div>
 
 ## Description
@@ -493,7 +493,7 @@ Texture format for render targets. This public alias maps to the native \`PixelF
   zh: `# Format
 
 <div class="class-info">
-枚举位于 <b>Infernux.rendergraph</b>
+枚举位于 <b>infernux.rendergraph</b>
 </div>
 
 ## 描述

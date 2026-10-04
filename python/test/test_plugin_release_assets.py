@@ -10,8 +10,8 @@ import sys
 
 import pytest
 
-from Infernux.engine.build import exporter_registry
-from Infernux.plugins import InxPackage, PluginManager
+from infernux.engine.build import exporter_registry
+from infernux.plugins import InxPackage, PluginManager
 
 
 def _module():
@@ -364,11 +364,11 @@ def test_platform_package_registers_and_removes_its_build_targets(
         # Declare that prerequisite explicitly instead of bypassing the
         # production transaction guard.
         monkeypatch.setattr(
-            "Infernux.plugins.platform_support.android_support_available",
+            "infernux.plugins.platform_support.android_support_available",
             lambda _environ=None: True,
         )
         monkeypatch.setattr(
-            "Infernux.plugins.platform_support.android_support_environment",
+            "infernux.plugins.platform_support.android_support_environment",
             lambda _environ=None: {},
         )
 

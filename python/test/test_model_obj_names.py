@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.lib import AssetRegistry
-from Infernux.lib._Infernux import make_model_mesh_reference
+from infernux.lib import AssetRegistry
+from infernux.lib._Infernux import make_model_mesh_reference
 
 
 @pytest.mark.parametrize('filename', ['Bridge.obj', '模型 试验.OBJ'])

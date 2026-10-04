@@ -4,14 +4,14 @@ import builtins
 import sys
 import types
 
-from Infernux.engine.project_context import get_project_root, set_project_root
-from Infernux.engine.path_utils import same_path
-from Infernux.scene import SceneManager
+from infernux.engine.project_context import get_project_root, set_project_root
+from infernux.engine.path_utils import same_path
+from infernux.scene import SceneManager
 
 
 def test_runtime_scene_load_prepares_persistent_group_before_commit(monkeypatch):
-    import Infernux.lib as native_lib
-    import Infernux.scene as scene_api
+    import infernux.lib as native_lib
+    import infernux.scene as scene_api
 
     calls: list[str] = []
     monkeypatch.setattr(SceneManager, "_runtime_scene_service", None)
@@ -38,16 +38,16 @@ def test_runtime_scene_load_prepares_persistent_group_before_commit(monkeypatch)
 
     monkeypatch.setattr(native_lib, "AssetRegistry", AssetRegistry)
 
-    scene_manager_module = types.ModuleType("Infernux.engine.scene_manager")
+    scene_manager_module = types.ModuleType("infernux.engine.scene_manager")
     scene_manager_module.SceneFileManager = types.SimpleNamespace(
         instance=staticmethod(lambda: None)
     )
     monkeypatch.setitem(
-        sys.modules, "Infernux.engine.scene_manager", scene_manager_module
+        sys.modules, "infernux.engine.scene_manager", scene_manager_module
     )
 
     transaction_module = types.ModuleType(
-        "Infernux.engine.scene_document_transaction"
+        "infernux.engine.scene_document_transaction"
     )
 
     class Transaction:
@@ -65,7 +65,7 @@ def test_runtime_scene_load_prepares_persistent_group_before_commit(monkeypatch)
     transaction_module.SceneDocumentTransaction = Transaction
     monkeypatch.setitem(
         sys.modules,
-        "Infernux.engine.scene_document_transaction",
+        "infernux.engine.scene_document_transaction",
         transaction_module,
     )
 
@@ -74,7 +74,7 @@ def test_runtime_scene_load_prepares_persistent_group_before_commit(monkeypatch)
 
 
 def test_dont_destroy_on_load_delegates_identity_unchanged(monkeypatch):
-    import Infernux.scene as scene_api
+    import infernux.scene as scene_api
 
     target = object()
     received: list[object] = []
@@ -103,13 +103,13 @@ def test_build_list_loading_has_no_editor_panel_dependency(tmp_path, monkeypatch
     original_import = builtins.__import__
 
     def guarded_import(name, *args, **kwargs):
-        if name == "Infernux.engine.ui.build_settings_panel":
+        if name == "infernux.engine.ui.build_settings_panel":
             raise AssertionError("runtime scene loading imported an editor panel")
         return original_import(name, *args, **kwargs)
 
     try:
         set_project_root(str(project))
-        from Infernux.core.assets import AssetManager
+        from infernux.core.assets import AssetManager
         monkeypatch.setattr(
             AssetManager,
             "_asset_database",
@@ -183,7 +183,7 @@ def test_path_reference_does_not_fall_back_to_an_unrelated_basename(tmp_path):
 
 
 def test_scene_reload_requires_explicit_discard_and_uses_deferred_path(tmp_path, monkeypatch):
-    from Infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.scene_manager import SceneFileManager
 
     scene_path = tmp_path / "Assets" / "Scenes" / "Start.scene"
     scene_path.parent.mkdir(parents=True)

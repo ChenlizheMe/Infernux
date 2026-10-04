@@ -4,10 +4,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from Infernux.core.asset_types import MeshImportSettings, read_mesh_import_settings
-from Infernux.core.assets import AssetManager
-from Infernux.lib import Physics, Vector3
-from Infernux.lib._Infernux import make_model_mesh_reference
+from infernux.core.asset_types import MeshImportSettings, read_mesh_import_settings
+from infernux.core.assets import AssetManager
+from infernux.lib import Physics, Vector3
+from infernux.lib._Infernux import make_model_mesh_reference
 from test_model_hierarchy_instances import hierarchy_asset, descendants, world_matrix
 
 
@@ -21,7 +21,7 @@ def enable_colliders(engine, monkeypatch, database, source, enabled=True):
 
 
 def test_collider_option_defaults_validation_and_model_page():
-    from Infernux.engine.ui import asset_details_renderer as renderer
+    from infernux.engine.ui import asset_details_renderer as renderer
     settings = MeshImportSettings()
     assert not settings.generate_colliders
     current = settings.to_dict()
@@ -110,8 +110,8 @@ def test_model_collider_rebinds_after_renderer_deserializes_last(
 
 @pytest.mark.parametrize('child_only', [False, True])
 def test_generated_colliders_participate_in_single_undo(scene, hierarchy_asset, engine, monkeypatch, child_only):
-    from Infernux.engine.undo import UndoManager
-    from Infernux.engine.interaction import ClipboardService, SelectionService, SceneObjectCommandService
+    from infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ClipboardService, SelectionService, SceneObjectCommandService
     database, source, guid = hierarchy_asset
     enable_colliders(engine, monkeypatch, database, source)
     reference = make_model_mesh_reference(guid, ['Assembly', 'Empty pivot', 'Upper']) if child_only else guid

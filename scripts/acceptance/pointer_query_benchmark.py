@@ -23,26 +23,26 @@ ROOT = Path(__file__).resolve().parents[2]
 if (ROOT / "python").is_dir():
     sys.path.insert(0, str(ROOT / "python"))
 
-from Infernux import run_headless
-from Infernux.components import InxComponent
-from Infernux.debug import DebugConsole, LogType
-from Infernux.engine.path_utils import resolved_path, same_path
-from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
-from Infernux.engine.runtime_mouse_events import MouseEventDispatcher
-from Infernux.engine.runtime_screen_ui import (
+from infernux import run_headless
+from infernux.components import InxComponent
+from infernux.debug import DebugConsole, LogType
+from infernux.engine.path_utils import resolved_path, same_path
+from infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+from infernux.engine.runtime_mouse_events import MouseEventDispatcher
+from infernux.engine.runtime_screen_ui import (
     collect_runtime_ui_input_surfaces,
     map_runtime_ui_pointer,
     map_runtime_ui_pointers,
 )
-from Infernux.engine.scene_manager import SceneFileManager
-from Infernux.lib import Physics as NativePhysics
-from Infernux.lib import SceneManager as NativeSceneManager
-from Infernux.lib import Vector3
-from Infernux.physics import Physics
-from Infernux.scene import SceneManager
-from Infernux.ui import UIButton, UICanvas
-from Infernux.ui.ui_event_data import PointerType
-from Infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame
+from infernux.engine.scene_manager import SceneFileManager
+from infernux.lib import Physics as NativePhysics
+from infernux.lib import SceneManager as NativeSceneManager
+from infernux.lib import Vector3
+from infernux.physics import Physics
+from infernux.scene import SceneManager
+from infernux.ui import UIButton, UICanvas
+from infernux.ui.ui_event_data import PointerType
+from infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame
 
 
 class _MouseProbe(InxComponent):

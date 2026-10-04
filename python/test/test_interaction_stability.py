@@ -6,7 +6,7 @@ import threading
 import pytest
 from types import SimpleNamespace
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     DirectoryNavigationHistory,
     EditorActionJournal,
     EditorCommand,
@@ -21,8 +21,8 @@ from Infernux.engine.interaction import (
     FocusSnapshot,
     SelectionSnapshot,
 )
-from Infernux.engine.undo import UndoCommand, UndoManager
-from Infernux.input import ImeInputState
+from infernux.engine.undo import UndoCommand, UndoManager
+from infernux.input import ImeInputState
 
 
 @pytest.fixture(autouse=True)
@@ -85,7 +85,7 @@ def test_external_path_change_invalidates_stale_directory_history():
 
 
 def test_project_panel_commands_drive_back_and_forward_history(tmp_path):
-    from Infernux.engine.ui.core_panel_interactions import project_panel_interaction
+    from infernux.engine.ui.core_panel_interactions import project_panel_interaction
 
     manager = UndoManager(EditorActionJournal())
     history = DirectoryNavigationHistory()

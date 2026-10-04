@@ -1,4 +1,4 @@
-"""Tests for Infernux.components.builtin_component — CppProperty, BuiltinComponent (real C++ backend)."""
+"""Tests for infernux.components.builtin_component — CppProperty, BuiltinComponent (real C++ backend)."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ from enum import IntEnum
 
 import pytest
 
-from Infernux.components.builtin_component import BuiltinComponent, CppProperty
-from Infernux.components.fields import FieldType, get_serialized_fields
-import Infernux.lib as lib
+from infernux.components.builtin_component import BuiltinComponent, CppProperty
+from infernux.components.fields import FieldType, get_serialized_fields
+import infernux.lib as lib
 
 
 # ── Test helpers ──
@@ -78,7 +78,7 @@ class TestCppPropertyBinding:
         )
 
     def test_web_runtime_uses_direct_native_property_bridge(self, monkeypatch):
-        import Infernux.field_schema as field_schema
+        import infernux.field_schema as field_schema
 
         get_converter = object()
         set_converter = object()
@@ -112,8 +112,8 @@ class TestCppPropertyBinding:
         assert descriptor.schema is None
 
     def test_android_runtime_uses_direct_native_property_bridge(self, monkeypatch):
-        import Infernux.field_schema as field_schema
-        import Infernux.components.builtin_component as builtin_component
+        import infernux.field_schema as field_schema
+        import infernux.components.builtin_component as builtin_component
 
         monkeypatch.delenv("INFERNUX_WEB_RUNTIME", raising=False)
         monkeypatch.setattr(builtin_component.sys, "platform", "android")
@@ -156,7 +156,7 @@ class TestCppPropertyReadWrite:
             demo.locked = 10
 
     def test_lazy_enum_type_resolved_from_lib(self):
-        """Test lazy enum resolution using the real Infernux.lib."""
+        """Test lazy enum resolution using the real infernux.lib."""
         lib.DemoEnum = DemoEnum
         try:
             demo = LazyEnumBuiltin()
@@ -195,7 +195,7 @@ class TestBuiltinComponent:
         assert BuiltinComponent._builtin_registry["DemoBuiltin"] is DemoBuiltin
 
     def test_isinstance_inf_component(self):
-        from Infernux.components.component import InxComponent
+        from infernux.components.component import InxComponent
         demo = DemoBuiltin()
         assert isinstance(demo, InxComponent)
 
@@ -206,7 +206,7 @@ class TestBuiltinComponent:
         assert "locked" in fields
 
     def test_raw_field_value_reads_live_cpp_not_metadata_default(self):
-        from Infernux.components.fields import get_raw_field_value
+        from infernux.components.fields import get_raw_field_value
 
         cpp = DemoCpp()
         cpp.intensity = 4.5
@@ -307,7 +307,7 @@ class TestBuiltinComponent:
         assert "bound=True" in r
 
     def test_native_wrapper_does_not_enter_script_instance_registry(self):
-        from Infernux.components.component import InxComponent
+        from infernux.components.component import InxComponent
 
         previous = {
             game_object_id: list(components)
@@ -332,14 +332,14 @@ class TestBuiltinComponent:
     def test_clear_cache_does_not_import_inspector_in_player(self, monkeypatch):
         import builtins
 
-        from Infernux.application import Application
+        from infernux.application import Application
 
         BuiltinComponent._wrapper_cache.clear()
         monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: False))
         original_import = builtins.__import__
 
         def guarded_import(name, *args, **kwargs):
-            if name == "Infernux.engine.ui.inspector_components":
+            if name == "infernux.engine.ui.inspector_components":
                 raise AssertionError("Player cache cleanup imported editor Inspector state")
             return original_import(name, *args, **kwargs)
 
@@ -388,8 +388,8 @@ class TestBuiltinComponent:
         import gc
         import weakref
 
-        from Infernux.components.builtin.sprite_renderer import SpriteRenderer
-        from Infernux.engine.interaction import (
+        from infernux.components.builtin.sprite_renderer import SpriteRenderer
+        from infernux.engine.interaction import (
             AssetMutationService,
             DocumentRegistry,
             SelectionService,
@@ -425,8 +425,8 @@ class TestBuiltinComponent:
     def test_sprite_renderer_missing_frame_id_does_not_fall_back_by_index(self):
         from types import SimpleNamespace
 
-        from Infernux.components.builtin.sprite_renderer import SpriteRenderer
-        from Infernux.core.asset_types import SpriteFrame
+        from infernux.components.builtin.sprite_renderer import SpriteRenderer
+        from infernux.core.asset_types import SpriteFrame
 
         class _Material:
             def __init__(self):
@@ -464,8 +464,8 @@ class TestBuiltinComponent:
         self,
         monkeypatch,
     ):
-        from Infernux.components.builtin import sprite_renderer as sprite_module
-        from Infernux.core.assets import AssetManager
+        from infernux.components.builtin import sprite_renderer as sprite_module
+        from infernux.core.assets import AssetManager
 
         monkeypatch.setattr(AssetManager, "_asset_database", None)
 
@@ -478,8 +478,8 @@ class TestBuiltinComponent:
     ):
         from types import SimpleNamespace
 
-        from Infernux.components.builtin import sprite_renderer as sprite_module
-        from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+        from infernux.components.builtin import sprite_renderer as sprite_module
+        from infernux.components.builtin.sprite_renderer import SpriteRenderer
 
         frame_id = "1" * 32
         metadata_document = {
@@ -514,7 +514,7 @@ class TestBuiltinComponent:
             ),
         )
         monkeypatch.setattr(sprite_module, "_get_asset_database", lambda: database)
-        from Infernux.core import asset_types
+        from infernux.core import asset_types
         monkeypatch.setattr(asset_types, "_published_asset_database", lambda: database)
 
         class _Material:
@@ -548,7 +548,7 @@ class TestBuiltinComponent:
         assert material.values["displayScale"] == (1.0, 0.5, 0.0, 0.0)
 
     def test_native_sprite_renderer_scene_document_uses_stable_frame_id(self):
-        from Infernux.lib import SpriteRenderer as NativeSpriteRenderer
+        from infernux.lib import SpriteRenderer as NativeSpriteRenderer
 
         renderer = NativeSpriteRenderer()
         renderer.sprite_guid = "texture-guid"
@@ -563,7 +563,7 @@ class TestBuiltinComponent:
         assert restored.frame_id == renderer.frame_id
 
     def test_native_sprite_renderer_rejects_invalid_frame_identity(self):
-        from Infernux.lib import SpriteRenderer as NativeSpriteRenderer
+        from infernux.lib import SpriteRenderer as NativeSpriteRenderer
 
         renderer = NativeSpriteRenderer()
         with pytest.raises(ValueError, match="32-character lowercase UUID"):
@@ -579,9 +579,9 @@ class TestBuiltinComponent:
     ):
         from types import SimpleNamespace
 
-        from Infernux.components.builtin import sprite_renderer as sprite_module
-        from Infernux.components.builtin.sprite_renderer import SpriteRenderer
-        from Infernux.core import asset_types
+        from infernux.components.builtin import sprite_renderer as sprite_module
+        from infernux.components.builtin.sprite_renderer import SpriteRenderer
+        from infernux.core import asset_types
 
         first = asset_types.SpriteFrame(
             stable_id="1" * 32,
@@ -658,7 +658,7 @@ class TestInxComponentSceneMutation:
         signal is only for BuiltinComponent inspector wrappers after a Play
         rebuild, not for live InxComponents such as CoinCollisionReporter.
         """
-        from Infernux.components.component import InxComponent
+        from infernux.components.component import InxComponent
 
         class CoinStartProbe(InxComponent):
             _uses_component_data_store = False

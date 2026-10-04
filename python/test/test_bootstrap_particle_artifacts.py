@@ -3,9 +3,9 @@ import json
 
 import pytest
 
-from Infernux.engine.bootstrap import EditorBootstrap
-from Infernux.particle.artifact import ParticleArtifactError, ParticleArtifactRegistry
-from Infernux.particle.asset import ParticleGraphAsset
+from infernux.engine.bootstrap import EditorBootstrap
+from infernux.particle.artifact import ParticleArtifactError, ParticleArtifactRegistry
+from infernux.particle.asset import ParticleGraphAsset
 
 
 def _write_graph(path: Path, *, guid: str, name: str) -> None:

@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.scene_manager import SceneFileManager, _LoadedSceneDocument
-from Infernux.engine.undo import AdditiveSceneResidencyCommand
+from infernux.engine.scene_manager import SceneFileManager, _LoadedSceneDocument
+from infernux.engine.undo import AdditiveSceneResidencyCommand
 
 
 class _SceneAssetDatabase:
@@ -23,7 +23,7 @@ class _SceneAssetDatabase:
 
 
 def test_single_replace_retires_discarded_session_document_views(tmp_path):
-    from Infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.interaction import DocumentRegistry
 
     class Database:
         def __init__(self):
@@ -222,8 +222,8 @@ def test_additive_residency_history_replays_guid_not_path():
 def test_additive_undo_rebinds_active_document_without_placeholder(
     scene, tmp_path, monkeypatch, native_active_moved_early
 ):
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.lib import SceneManager
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.lib import SceneManager
 
     native = SceneManager.instance()
     primary_path = tmp_path / "Primary.scene"
@@ -285,9 +285,9 @@ def test_additive_undo_rebinds_active_document_without_placeholder(
 
 
 def test_play_stop_restores_additive_scene_and_editor_document(scene, tmp_path):
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.play_mode import PlayModeManager
-    from Infernux.lib import SceneManager
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.play_mode import PlayModeManager
+    from infernux.lib import SceneManager
 
     native = SceneManager.instance()
     primary = tmp_path / "Primary.scene"

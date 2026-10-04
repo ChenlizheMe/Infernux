@@ -1,4 +1,4 @@
-from Infernux.lib import AudioEngine, SceneManager
+from infernux.lib import AudioEngine, SceneManager
 
 
 def test_world_audio_listener_keeps_owner_and_promotes_deterministically(scene):

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 
 def test_preferences_commands_are_non_dirty_and_undoable(monkeypatch):
-    from Infernux.engine import i18n, ide_preference
-    from Infernux.engine.interaction import CommandSource, EditorInteractionCore
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine import i18n, ide_preference
+    from infernux.engine.interaction import CommandSource, EditorInteractionCore
+    from infernux.engine.undo import UndoManager
 
     state = {"locale": "zh", "ide": "vscode"}
     monkeypatch.setattr(i18n, "get_locale", lambda: state["locale"])
@@ -58,7 +58,7 @@ def test_preferences_commands_are_non_dirty_and_undoable(monkeypatch):
 
 
 def test_preferences_commands_reject_unknown_values():
-    from Infernux.engine.interaction import CommandSource, EditorInteractionCore
+    from infernux.engine.interaction import CommandSource, EditorInteractionCore
 
     core = EditorInteractionCore()
     try:
@@ -75,13 +75,13 @@ def test_preferences_commands_reject_unknown_values():
 def test_shortcut_profile_commands_publish_router_and_share_global_history():
     import copy
 
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         CommandSource,
         EditorInteractionCore,
         KeyChord,
         ShortcutBinding,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     persisted = {"value": None}
 
@@ -157,7 +157,7 @@ def test_shortcut_profile_commands_publish_router_and_share_global_history():
 
 
 def test_shortcut_profile_command_rejects_conflict_without_partial_publication():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         CommandSource,
         CommandStatus,
         EditorInteractionCore,

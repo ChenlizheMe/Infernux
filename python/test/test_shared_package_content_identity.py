@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.player_package_native import read_entry, write_pack
-from Infernux.plugins.cache import SharedPackageCache
-from Infernux.plugins.package import InxPackage, PACKAGE_MANIFEST
+from infernux.engine.player_package_native import read_entry, write_pack
+from infernux.plugins.cache import SharedPackageCache
+from infernux.plugins.package import InxPackage, PACKAGE_MANIFEST
 
 
 @pytest.mark.parametrize("change", ["derived", "source", "guid", "mesh_readability"])

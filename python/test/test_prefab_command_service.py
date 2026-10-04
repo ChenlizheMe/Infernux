@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     ActionOrigin,
     DocumentKind,
     DocumentOpenResult,
@@ -13,7 +13,7 @@ from Infernux.engine.interaction import (
     PrefabCommandService,
     SelectionDomain,
 )
-from Infernux.engine.path_utils import resolved_path, same_path
+from infernux.engine.path_utils import resolved_path, same_path
 
 
 class _NavigationProbe:
@@ -172,7 +172,7 @@ def test_create_from_object_delegates_to_project_asset_service(
     tmp_path,
     monkeypatch,
 ):
-    from Infernux.engine.ui import project_file_ops
+    from infernux.engine.ui import project_file_ops
 
     service, _selection, _navigation, _documents, project_assets = prefab_service
     assets = tmp_path / "Assets"
@@ -225,9 +225,9 @@ def test_apply_revert_and_unpack_each_execute_one_undo_command(
     tmp_path,
     monkeypatch,
 ):
-    import Infernux.engine.prefab_overrides as prefab_overrides
-    import Infernux.engine.undo as undo_module
-    from Infernux.engine.undo import UndoManager
+    import infernux.engine.prefab_overrides as prefab_overrides
+    import infernux.engine.undo as undo_module
+    from infernux.engine.undo import UndoManager
 
     service, selection, _navigation, _documents, project_assets = prefab_service
     prefab_path = tmp_path / "Source.prefab"
@@ -282,9 +282,9 @@ def test_open_enters_prefab_mode_and_opens_prefab_document(
     tmp_path,
     monkeypatch,
 ):
-    import Infernux.engine.undo as undo_module
-    from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.undo import UndoManager
+    import infernux.engine.undo as undo_module
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.undo import UndoManager
 
     service, _selection, _navigation, documents, assets = prefab_service
     prefab_path = tmp_path / "Opened.prefab"
@@ -325,7 +325,7 @@ def test_open_recognizes_active_prefab_by_guid_after_asset_move(
     tmp_path,
     monkeypatch,
 ):
-    from Infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.scene_manager import SceneFileManager
 
     service, _selection, _navigation, documents, assets = prefab_service
     moved_path = tmp_path / "Moved.prefab"
@@ -347,7 +347,7 @@ def test_open_recognizes_active_prefab_by_guid_after_asset_move(
 
 
 def test_prefab_commands_have_no_panel_or_event_bus_authority():
-    source_root = Path(__file__).resolve().parents[1] / "Infernux" / "engine"
+    source_root = Path(__file__).resolve().parents[1] / "infernux" / "engine"
     forbidden = (
         "prefab_actions_getter",
         "apply_overrides_to_prefab_with_undo",

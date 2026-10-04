@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.platform_player_bootstrap import (
+from infernux.engine.platform_player_bootstrap import (
     _parallel_module_cache,
     prepare_platform_player,
 )
-from Infernux.engine.player_package_native import read_manifest, write_pack
+from infernux.engine.player_package_native import read_manifest, write_pack
 
 
 _PLAYER_ENVIRONMENT = (
@@ -51,7 +51,7 @@ def _platform_package(tmp_path: Path) -> Path:
         (
             ("ProjectSettings/BuildSettings.json", source),
             ("_script_guid_map.json", guid_map),
-            ("Infernux/resources/shaders/standard.vert", builtin_shader),
+            ("infernux/resources/shaders/standard.vert", builtin_shader),
         ),
         archive,
     )
@@ -130,7 +130,7 @@ def test_platform_player_prepares_validated_content_cache(monkeypatch, tmp_path,
     assert (project_root / "ProjectSettings/BuildSettings.json").is_file()
     assert (project_root / "_script_guid_map.json").is_file()
     assert (
-        project_root / "Infernux/resources/shaders/standard.vert"
+        project_root / "infernux/resources/shaders/standard.vert"
     ).read_text(encoding="utf-8") == "void main() {}\n"
     assert json.loads((project_root / "BuildManifest.json").read_text(encoding="utf-8"))[
         "game_name"

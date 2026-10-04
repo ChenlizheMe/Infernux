@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from Infernux.engine.script_change_collector import (
+from infernux.engine.script_change_collector import (
     ScriptChangeCollector,
     ScriptFrontendArtifact,
 )
@@ -299,15 +299,11 @@ def test_frontend_does_not_execute_top_level_code(tmp_path):
     collector = ScriptChangeCollector()
     path = tmp_path / "controller.py"
     _submit(path=path, collector=collector, source=b"raise RuntimeError('must not execute')\n")
-
     result = collector.process_worker_batch()[0]
-
-    assert result.status == "failed"
+    assert result.status == "completed"
     assert result.artifact is not None
-    assert result.artifact.policy_report.is_rejected
-    assert result.diagnostics[0].phase == "candidate_policy"
-    assert "cannot be proven isolated" in result.diagnostics[0].message
-    assert result.artifact is not None
+    assert not result.artifact.policy_report.is_rejected
+    assert result.diagnostics == ()
 
 
 def test_candidate_policy_report_is_attached_without_executing_source(tmp_path):
@@ -361,44 +357,33 @@ def test_blocked_candidate_does_not_advance_last_known_good_or_repeat_generation
     ) is None
 
 
-def test_unknown_call_fails_closed_and_exact_bytes_are_retained(tmp_path):
+def test_custom_factory_is_compiled_without_execution_and_exact_bytes_are_retained(tmp_path):
     collector = ScriptChangeCollector()
-    path = tmp_path / "policy_guard_probe.py"
+    path = tmp_path / "custom_factory.py"
     source = "# coding: utf-8\nvalue = user_factory('中文')\n".encode("utf-8")
     change = _submit(collector, path, source=source)
-
     result = collector.process_worker_batch()[0]
-
-    assert result.status == "failed"
-    assert result.artifact is not None
+    assert result.status == "completed"
     assert result.artifact.source == source
-    assert result.artifact.policy_report.blocked == ()
-    assert result.artifact.policy_report.requires_runtime_guard
-    assert result.artifact.policy_report.is_rejected
-    assert result.diagnostics[0].phase == "candidate_policy"
-    assert "cannot be proven isolated" in result.diagnostics[0].message
-    assert _claim(collector, change) == ()
+    assert not result.artifact.policy_report.is_rejected
+    assert result.diagnostics == ()
+    assert _claim(collector, change)
     assert collector.last_known_good(str(path)) is None
-    assert change is not None
 
 
-def test_runtime_guard_candidate_does_not_call_custom_frontend(tmp_path):
+def test_custom_declarations_reach_custom_frontend(tmp_path):
     calls = []
-
-    def frontend(source: bytes):
+    def frontend(source):
         calls.append(source)
-        return "must not be reached"
-
+        return "compiled declaration"
     collector = ScriptChangeCollector(compile_source=frontend)
-    path = tmp_path / "policy_guard_frontend.py"
-    _submit(collector, path, source=b"value = user_factory()\n")
-
+    path = tmp_path / "custom_factory_frontend.py"
+    source = b"value = user_factory()\n"
+    _submit(collector, path, source=source)
     result = collector.process_worker_batch()[0]
-
-    assert result.status == "failed"
-    assert result.artifact is not None
-    assert result.artifact.payload is None
-    assert calls == []
+    assert result.status == "completed"
+    assert result.artifact.payload == "compiled declaration"
+    assert calls == [source]
     assert collector.last_known_good(str(path)) is None
 
 

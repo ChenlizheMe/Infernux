@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.lib import AudioClip, AudioEngine
+from infernux.lib import AudioClip, AudioEngine
 
 
 def wait_for(predicate):

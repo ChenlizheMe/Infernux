@@ -6,7 +6,7 @@ import textwrap
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     BoundPanelCommand,
     CommandSource,
     EditorInteractionCore,
@@ -21,7 +21,7 @@ from Infernux.engine.interaction import (
     ShortcutPhase,
     ShortcutScope,
 )
-from Infernux.engine.ui.panel_registry import PanelRegistry, _PanelRegistration
+from infernux.engine.ui.panel_registry import PanelRegistry, _PanelRegistration
 
 
 def _descriptor(calls: list[str]) -> PanelInteractionDescriptor:
@@ -322,7 +322,7 @@ def test_panel_registry_can_require_a_complete_surface_manifest():
 
 
 def test_bootstrap_surface_manifest_covers_all_permanent_editor_chrome():
-    from Infernux.engine._bootstrap_panels import (
+    from infernux.engine._bootstrap_panels import (
         BUILTIN_EDITOR_WINDOW_TYPE_IDS,
         NATIVE_BUILTIN_WINDOW_TYPES,
         PERMANENT_EDITOR_WINDOW_TYPE_IDS,
@@ -352,7 +352,7 @@ def test_bootstrap_surface_manifest_covers_all_permanent_editor_chrome():
 def test_native_builtin_manifest_registers_hierarchy_and_toolbar_as_window_types(
     monkeypatch,
 ):
-    import Infernux.engine._bootstrap_panels as bootstrap_panels
+    import infernux.engine._bootstrap_panels as bootstrap_panels
 
     registrations = []
     manager = type(
@@ -390,7 +390,7 @@ def test_native_builtin_manifest_registers_hierarchy_and_toolbar_as_window_types
 
 
 def test_builtin_windows_cannot_bypass_window_manager_registration():
-    from Infernux.engine._bootstrap_panels import (
+    from infernux.engine._bootstrap_panels import (
         BUILTIN_EDITOR_WINDOW_TYPE_IDS,
         BootstrapPanelsMixin,
     )
@@ -416,7 +416,7 @@ def test_builtin_windows_cannot_bypass_window_manager_registration():
 
 
 def test_toolbar_manifest_rejects_native_title_bar_close_intent():
-    from Infernux.engine._bootstrap_panels import (
+    from infernux.engine._bootstrap_panels import (
         enforce_native_builtin_window_policy,
     )
 
@@ -429,7 +429,7 @@ def test_toolbar_manifest_rejects_native_title_bar_close_intent():
 
 
 def test_toolbar_descriptor_routes_view_commands_to_scene_view():
-    from Infernux.engine.ui.core_panel_interactions import (
+    from infernux.engine.ui.core_panel_interactions import (
         toolbar_panel_interaction,
     )
 
@@ -440,9 +440,9 @@ def test_toolbar_descriptor_routes_view_commands_to_scene_view():
 
 
 def test_all_builtin_decorated_panels_are_in_the_interaction_matrix():
-    # Import every built-in panel explicitly. Infernux.engine.ui exposes these
+    # Import every built-in panel explicitly. infernux.engine.ui exposes these
     # lazily, so importing only PanelRegistry would produce an empty inventory.
-    from Infernux.engine.ui import (  # noqa: F401
+    from infernux.engine.ui import (  # noqa: F401
         AnimClip2DEditorPanel,
         AnimFSMEditorPanel,
         AnimTimelineEditorPanel,
@@ -459,7 +459,7 @@ def test_all_builtin_decorated_panels_are_in_the_interaction_matrix():
         TagLayerSettingsPanel,
         UIEditorPanel,
     )
-    from Infernux.engine._bootstrap_panels import BUILTIN_EDITOR_WINDOW_TYPE_IDS
+    from infernux.engine._bootstrap_panels import BUILTIN_EDITOR_WINDOW_TYPE_IDS
 
     registrations = PanelRegistry.get_registrations()
     by_type = {registration.type_id: registration for registration in registrations}
@@ -657,7 +657,7 @@ def test_panel_registry_rejects_duplicate_type_ids_before_mutation():
 
 
 def test_legacy_editor_window_decorator_uses_strict_panel_manifest():
-    from Infernux.engine.ui.editor_window import EditorWindow, editor_window
+    from infernux.engine.ui.editor_window import EditorWindow, editor_window
 
     original = PanelRegistry.get_registrations()
     PanelRegistry.clear()

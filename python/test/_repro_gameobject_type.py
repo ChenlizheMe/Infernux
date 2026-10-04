@@ -1,4 +1,4 @@
-from Infernux import *
+from infernux import *
 
 
 class SpawnCube(InxComponent):

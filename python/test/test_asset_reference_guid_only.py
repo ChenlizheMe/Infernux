@@ -2,7 +2,7 @@ import pytest
 
 
 def test_sprite_renderer_structured_path_hint_does_not_recover_guid():
-    from Infernux.components.builtin.sprite_renderer import SpriteRenderer
+    from infernux.components.builtin.sprite_renderer import SpriteRenderer
 
     class Probe:
         def _resolve_texture_guid(self, path):
@@ -18,7 +18,7 @@ def test_sprite_renderer_structured_path_hint_does_not_recover_guid():
 
 
 def test_asset_ref_from_dict_ignores_path_only_document():
-    from Infernux.core.asset_ref import TextureRef
+    from infernux.core.asset_ref import TextureRef
 
     reference = TextureRef.from_dict({"path_hint": "Assets/Textures/legacy.png"})
 
@@ -28,8 +28,8 @@ def test_asset_ref_from_dict_ignores_path_only_document():
 
 
 def test_asset_ref_persistence_drops_display_path():
-    from Infernux.core.asset_ref import TextureRef
-    from Infernux.components.value_codec import VALUE_CODECS
+    from infernux.core.asset_ref import TextureRef
+    from infernux.components.value_codec import VALUE_CODECS
 
     reference = TextureRef(
         guid="texture-guid", path_hint="Assets/Textures/renamed-later.png"
@@ -45,8 +45,8 @@ def test_asset_ref_persistence_drops_display_path():
 
 def test_material_slot_structured_reference_never_recovers_guid_from_path(monkeypatch):
     from types import SimpleNamespace
-    import Infernux.lib as lib
-    from Infernux.engine.ui import _inspector_extra_renderers as inspector
+    import infernux.lib as lib
+    from infernux.engine.ui import _inspector_extra_renderers as inspector
 
     class Database:
         def get_guid_from_path(self, _path):
@@ -78,8 +78,8 @@ def test_material_slot_structured_reference_never_recovers_guid_from_path(monkey
 
 def test_material_slot_structured_reference_uses_guid(monkeypatch):
     from types import SimpleNamespace
-    import Infernux.lib as lib
-    from Infernux.engine.ui import _inspector_extra_renderers as inspector
+    import infernux.lib as lib
+    from infernux.engine.ui import _inspector_extra_renderers as inspector
 
     monkeypatch.setattr(
         lib,

@@ -1,7 +1,7 @@
 import pytest
 
-from Infernux.core.assets import AssetManager
-from Infernux.ui import ui_texture_cache as texture_cache_module
+from infernux.core.assets import AssetManager
+from infernux.ui import ui_texture_cache as texture_cache_module
 
 
 class _NativeTexturePreview:
@@ -28,7 +28,7 @@ class _Engine:
 
 
 def test_cached_ui_texture_refreshes_replaced_native_descriptor(monkeypatch, tmp_path):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     texture = tmp_path / "Assets" / "UI" / "button.png"
     texture.parent.mkdir(parents=True)
@@ -85,7 +85,7 @@ def test_ui_texture_requires_registered_asset_guid(monkeypatch):
 
 
 def test_texture_ref_uses_native_guid_binding_without_path_round_trip(monkeypatch):
-    from Infernux.core.asset_ref import TextureRef
+    from infernux.core.asset_ref import TextureRef
     monkeypatch.setattr(AssetManager, "require_asset_database", lambda: pytest.fail("GUID binding must not need AssetDatabase"))
     monkeypatch.setattr(
         texture_cache_module,
@@ -107,8 +107,8 @@ def test_texture_ref_uses_native_guid_binding_without_path_round_trip(monkeypatc
 
 
 def test_player_texture_ref_uses_native_cooked_guid_without_editor_database(monkeypatch):
-    from Infernux.application import Application
-    from Infernux.core.asset_ref import TextureRef
+    from infernux.application import Application
+    from infernux.core.asset_ref import TextureRef
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
     monkeypatch.setattr(AssetManager, "require_asset_database", lambda: pytest.fail("Player must not need AssetDatabase"))
     monkeypatch.setattr(texture_cache_module, "query_or_schedule_texture", lambda *_args, **_kwargs: pytest.fail("Cooked artifacts are not source images"))

@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.plugins import github_releases as releases
-from Infernux.plugins import PluginManager
+from infernux.plugins import github_releases as releases
+from infernux.plugins import PluginManager
 
 
 @pytest.mark.parametrize("kind", ["metadata", "package", "source"])

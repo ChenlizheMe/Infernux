@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from Infernux.components.registry import (
+from infernux.components.registry import (
     get_component_constraints,
     get_component_registrations,
     get_python_attachment_blockers,
@@ -11,12 +11,12 @@ from Infernux.components.registry import (
     register_component_script,
     unregister_component_script,
 )
-from Infernux.engine.bootstrap_inspector._helpers import (
+from infernux.engine.bootstrap_inspector._helpers import (
     _get_add_component_entries,
     _get_component_script_error,
     _get_py_components_safe,
 )
-from Infernux.engine.bootstrap_hierarchy._helpers import (
+from infernux.engine.bootstrap_hierarchy._helpers import (
     _get_children,
     _get_py_components,
 )
@@ -132,7 +132,7 @@ def test_add_component_menu_reads_registry_without_filesystem_scan(tmp_path, mon
     script.write_text("class RegistryOnly(InxComponent):\n    pass\n", encoding="utf-8")
     register_component_script(str(script))
     monkeypatch.setattr(
-        "Infernux.engine.project_context.get_project_root",
+        "infernux.engine.project_context.get_project_root",
         lambda: str(tmp_path),
     )
     monkeypatch.setattr(os, "walk", lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -202,8 +202,8 @@ def test_hierarchy_queries_do_not_replace_native_failures_with_empty_lists():
 
 
 def test_missing_script_placeholder_does_not_replace_live_registered_type():
-    from Infernux.components import InxComponent
-    from Infernux.components.missing_script import create_missing_script_component
+    from infernux.components import InxComponent
+    from infernux.components.missing_script import create_missing_script_component
 
     class LiveComponent(InxComponent):
         value: int = 1
@@ -253,8 +253,8 @@ def test_engine_component_catalog_is_explicit_and_complete():
 
 
 def test_component_decorators_refresh_the_authoritative_constraint_record():
-    from Infernux.components import InxComponent
-    from Infernux.components.decorators import disallow_multiple, require_component
+    from infernux.components import InxComponent
+    from infernux.components.decorators import disallow_multiple, require_component
 
     class RegistryDependency(InxComponent):
         pass
@@ -272,8 +272,8 @@ def test_component_decorators_refresh_the_authoritative_constraint_record():
 def test_disallow_multiple_uses_stable_type_identity_across_reload():
     from types import SimpleNamespace
 
-    from Infernux.components import InxComponent
-    from Infernux.components.decorators import disallow_multiple
+    from infernux.components import InxComponent
+    from infernux.components.decorators import disallow_multiple
 
     namespace = {"__module__": __name__, "__qualname__": "RegistryReloadedSingle"}
     old_type = disallow_multiple(type("RegistryReloadedSingle", (InxComponent,), dict(namespace)))

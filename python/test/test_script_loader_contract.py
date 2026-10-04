@@ -7,18 +7,18 @@ import types
 
 import pytest
 
-from Infernux.components.script_loader import (
+from infernux.components.script_loader import (
     load_and_create_component,
     load_all_components_from_file,
     load_component_class_from_file,
 )
-import Infernux.components.script_loader as script_loader
-from Infernux.components import InxComponent
-from Infernux.components.fields import get_serialized_fields
-from Infernux.components.component_identity import bind_asset_script_guid
-from Infernux.components.registry import get_type, get_type_by_identity
-from Infernux.engine.component_restore import create_component_instance
-from Infernux.engine.project_context import get_project_root, set_project_root
+import infernux.components.script_loader as script_loader
+from infernux.components import InxComponent
+from infernux.components.fields import get_serialized_fields
+from infernux.components.component_identity import bind_asset_script_guid
+from infernux.components.registry import get_type, get_type_by_identity
+from infernux.engine.component_restore import create_component_instance
+from infernux.engine.project_context import get_project_root, set_project_root
 
 
 def test_module_retirement_preserves_schema_for_surviving_data_asset():
@@ -26,7 +26,7 @@ def test_module_retirement_preserves_schema_for_surviving_data_asset():
     module = types.ModuleType(module_name)
     module.__file__ = __file__
     exec(
-        "from Infernux import DataAsset, serialized_field\n"
+        "from infernux import DataAsset, serialized_field\n"
         "class RetiredConfig(DataAsset):\n"
         "    __serialized_type_id__ = 'test.retired_data_asset_schema_probe'\n"
         "    speed = serialized_field(7.5)\n",
@@ -47,7 +47,7 @@ def test_module_retirement_preserves_schema_for_surviving_data_asset():
 def test_script_loader_falls_back_to_sole_class_after_rename(tmp_path):
     script = tmp_path / "strict_component.py"
     script.write_text(
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class CurrentComponent(InxComponent):\n"
         "    speed: float = 1.0\n",
         encoding="utf-8",
@@ -59,7 +59,7 @@ def test_script_loader_falls_back_to_sole_class_after_rename(tmp_path):
     assert remapped.__name__ == "CurrentComponent"
 
     script.write_text(
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class CurrentComponent(InxComponent):\n"
         "    speed: float = 1.0\n"
         "class OtherComponent(InxComponent):\n"
@@ -77,7 +77,7 @@ def test_script_loader_can_execute_the_captured_source_snapshot(tmp_path):
     script = tmp_path / "captured_component.py"
     script.write_text("def broken(:\n", encoding="utf-8")
     captured = (
-        b"from Infernux.components import InxComponent\n"
+        b"from infernux.components import InxComponent\n"
         b"class CapturedComponent(InxComponent):\n"
         b"    pass\n"
     )
@@ -94,7 +94,7 @@ def test_script_loader_can_execute_the_captured_source_snapshot(tmp_path):
 def test_script_loader_uses_frontend_code_without_compiling_again(tmp_path, monkeypatch):
     script = tmp_path / "frontend_code_component.py"
     source = (
-        b"from Infernux.components import InxComponent\n"
+        b"from infernux.components import InxComponent\n"
         b"class FrontendCodeComponent(InxComponent):\n"
         b"    pass\n"
     )
@@ -121,7 +121,7 @@ def test_script_loader_custom_frontend_without_code_falls_back_to_source_compile
 ):
     script = tmp_path / "source_fallback_component.py"
     source = (
-        b"from Infernux.components import InxComponent\n"
+        b"from infernux.components import InxComponent\n"
         b"class SourceFallbackComponent(InxComponent):\n"
         b"    pass\n"
     )
@@ -198,7 +198,7 @@ def test_asset_load_binds_every_component_type_in_one_script(tmp_path):
     assets.mkdir(parents=True)
     script = assets / "SharedComponents.py"
     script.write_text(
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class Target(InxComponent):\n"
         "    pass\n"
         "class Caller(InxComponent):\n"
@@ -242,7 +242,7 @@ def test_asset_load_binds_every_component_type_in_one_script(tmp_path):
 
 
 def test_game_object_class_handle_uses_published_asset_revision(tmp_path, scene):
-    from Infernux.components.registry import (
+    from infernux.components.registry import (
         publish_component_script_types, resolve_published_type,
         snapshot_component_registry_state, restore_component_registry_state,
     )
@@ -251,7 +251,7 @@ def test_game_object_class_handle_uses_published_asset_revision(tmp_path, scene)
     assets.mkdir(parents=True)
     script = assets / "AuthoringHandle.py"
     script.write_text(
-        "from Infernux import InxComponent, serialized_field\n"
+        "from infernux import InxComponent, serialized_field\n"
         "class HandleProbe(InxComponent):\n"
         "    value = serialized_field(7)\n", encoding="utf-8",
     )
@@ -296,7 +296,7 @@ def test_script_loader_executes_exact_pyc_with_canonical_project_module(tmp_path
     source = package / "Controller.py"
     bytecode = package / "Controller.pyc"
     source.write_text(
-        "from Infernux import InxComponent\n"
+        "from infernux import InxComponent\n"
         "class Controller(InxComponent):\n"
         "    def update(self, delta_time):\n"
         "        self.last_delta = delta_time\n",
@@ -346,7 +346,7 @@ def test_component_restore_keeps_manifest_guid_for_packaged_pyc(tmp_path):
     source = package / "Controller.py"
     bytecode = package / "Controller.pyc"
     source.write_text(
-        "from Infernux import InxComponent\n"
+        "from infernux import InxComponent\n"
         "class Controller(InxComponent):\n"
         "    def update(self, delta_time):\n"
         "        self.last_delta = delta_time\n",

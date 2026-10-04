@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.assets import AssetManager
-from Infernux.lib import AssetMutationErrorCode, AssetMutationResult
+from infernux.core.assets import AssetManager
+from infernux.lib import AssetMutationErrorCode, AssetMutationResult
 
 
 def _result(operation, path, *, succeeded=True, guid="guid", previous_path=""):
@@ -132,7 +132,7 @@ def test_reimport_rebuilds_database_before_registry_reload(monkeypatch):
 
 
 def test_model_apply_sends_snapshot_without_writing_sidecar(monkeypatch):
-    from Infernux.core.asset_types import MeshImportSettings
+    from infernux.core.asset_types import MeshImportSettings
 
     calls = []
     monkeypatch.setattr(AssetManager, "_ensure_execution_strategies", classmethod(lambda cls: None))
@@ -230,7 +230,7 @@ def test_programmatic_script_move_explicitly_hot_reloads_after_guid_move(monkeyp
         def reload_moved_script(old_path, new_path):
             order.append(("script-reload", old_path, new_path))
 
-    from Infernux.engine.resources_manager import ResourcesManager
+    from infernux.engine.resources_manager import ResourcesManager
 
     monkeypatch.setattr(
         ResourcesManager,
@@ -256,7 +256,7 @@ def test_shader_reimport_mutates_database_once_before_runtime_compile(monkeypatc
     _isolate_side_effects(monkeypatch, order)
     native = _NativeEngine(order)
     monkeypatch.setattr(AssetManager, "_native_engine", classmethod(lambda _cls: native))
-    shader_utils = importlib.import_module("Infernux.engine.ui.inspector_shader_utils")
+    shader_utils = importlib.import_module("infernux.engine.ui.inspector_shader_utils")
     monkeypatch.setattr(
         shader_utils,
         "bump_shader_property_generation",
@@ -279,7 +279,7 @@ def test_shader_import_invalidates_authoring_cache_without_runtime(monkeypatch):
     database = _Database(order)
     _isolate_side_effects(monkeypatch, order)
     monkeypatch.setattr(AssetManager, "_prime_material_preview", classmethod(lambda _cls, _path: None))
-    shader_utils = importlib.import_module("Infernux.engine.ui.inspector_shader_utils")
+    shader_utils = importlib.import_module("infernux.engine.ui.inspector_shader_utils")
     monkeypatch.setattr(
         shader_utils,
         "bump_shader_property_generation",
@@ -293,7 +293,7 @@ def test_shader_import_invalidates_authoring_cache_without_runtime(monkeypatch):
 
 
 def test_shader_runtime_failure_reports_committed_database_state(monkeypatch):
-    from Infernux.debug import Debug, DebugConsole, LogType
+    from infernux.debug import Debug, DebugConsole, LogType
 
     monkeypatch.setattr(DebugConsole, "_instance", None)
     console = DebugConsole.instance()
@@ -331,9 +331,9 @@ def test_shader_runtime_failure_reports_committed_database_state(monkeypatch):
 
 @pytest.mark.parametrize("extension", [".effect", ".effectgroup", ".particlegraph", ".particle.py"])
 def test_compiled_asset_failure_has_source_diagnostic_until_corrected(monkeypatch, extension):
-    from Infernux.debug import Debug, DebugConsole, LogType
-    from Infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry
-    from Infernux.particle.artifact import ParticleArtifactRegistry
+    from infernux.debug import Debug, DebugConsole, LogType
+    from infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry
+    from infernux.particle.artifact import ParticleArtifactRegistry
 
     monkeypatch.setattr(DebugConsole, "_instance", None)
     console = DebugConsole.instance()
@@ -378,12 +378,12 @@ def test_compiled_asset_failure_has_source_diagnostic_until_corrected(monkeypatc
 
 @pytest.mark.parametrize("extension", [".effect", ".effectgroup", ".particlegraph"])
 def test_successful_managed_load_retires_compile_diagnostic(monkeypatch, extension):
-    from Infernux.application import Application
-    from Infernux.debug import Debug, DebugConsole
-    from Infernux.renderstack.render_effect_asset import RenderEffectAsset, RenderEffectGroupAsset
-    from Infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry
-    from Infernux.particle.artifact import ParticleArtifactRegistry
-    from Infernux.particle.asset import ParticleGraphAsset
+    from infernux.application import Application
+    from infernux.debug import Debug, DebugConsole
+    from infernux.renderstack.render_effect_asset import RenderEffectAsset, RenderEffectGroupAsset
+    from infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry
+    from infernux.particle.artifact import ParticleArtifactRegistry
+    from infernux.particle.asset import ParticleGraphAsset
 
     monkeypatch.setattr(DebugConsole, "_instance", None)
     path = "Corrected" + extension
@@ -426,7 +426,7 @@ def test_internal_python_reimport_only_submits_collector_after_catalog_mutation(
         def submit_script_change(path, **kwargs):
             order.append(("collector", path, kwargs))
 
-    from Infernux.engine.resources_manager import ResourcesManager
+    from infernux.engine.resources_manager import ResourcesManager
 
     monkeypatch.setattr(
         ResourcesManager,

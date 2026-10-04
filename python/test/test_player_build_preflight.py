@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux import lib
-from Infernux.engine import player_build_preflight as preflight
-from Infernux.host.commands import MainThreadCommandQueue
+from infernux import lib
+from infernux.engine import player_build_preflight as preflight
+from infernux.host.commands import MainThreadCommandQueue
 
 
 @pytest.mark.parametrize("background", [False, True])

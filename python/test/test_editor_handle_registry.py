@@ -2,15 +2,15 @@
 
 import pytest
 
-from Infernux.editor import (
+from infernux.editor import (
     EditorHandleKind,
     EditorHandleProvider,
     EditorHandleRegistry,
     register_handle_provider,
 )
-from Infernux.engine.ui.panel_registry import PanelRegistry
-from Infernux.gizmos import Gizmos
-from Infernux.plugins.preload import _remove_editor_contribution_owner
+from infernux.engine.ui.panel_registry import PanelRegistry
+from infernux.gizmos import Gizmos
+from infernux.plugins.preload import _remove_editor_contribution_owner
 
 
 @pytest.fixture
@@ -88,8 +88,8 @@ def test_capture_cancel_restores_value_before_resource_retirement(registry):
 
 
 def test_owner_retirement_also_releases_core_transient_capture(registry, monkeypatch):
-    from Infernux.engine.interaction.contexts import FocusService
-    from Infernux.engine.interaction.transient_interactions import TransientInteractionService
+    from infernux.engine.interaction.contexts import FocusService
+    from infernux.engine.interaction.transient_interactions import TransientInteractionService
 
     monkeypatch.setattr(FocusService, "_instance", None)
     monkeypatch.setattr(TransientInteractionService, "_instance", None)

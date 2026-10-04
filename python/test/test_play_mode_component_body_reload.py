@@ -8,26 +8,26 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.components.component_identity import bind_asset_script_guid
-from Infernux.components.registry import (
+from infernux.components.component_identity import bind_asset_script_guid
+from infernux.components.registry import (
     get_type,
     get_type_by_identity,
     publish_component_script_types,
     restore_component_script_registry,
     snapshot_component_script_registry,
 )
-from Infernux.components.script_loader import (
+from infernux.components.script_loader import (
     _clear_script_error,
     get_script_error_by_path,
     get_script_error_revision,
     load_all_components_from_file,
     set_script_error,
 )
-from Infernux.components.fields import get_serialized_fields
-import Infernux.components.script_loader as script_loader
-from Infernux.engine.play_mode import PlayModeManager, PlayModeState
-from Infernux.engine.play_mode import ScriptReloadBatchInput
-from Infernux.engine.project_context import (
+from infernux.components.fields import get_serialized_fields
+import infernux.components.script_loader as script_loader
+from infernux.engine.play_mode import PlayModeManager, PlayModeState
+from infernux.engine.play_mode import ScriptReloadBatchInput
+from infernux.engine.project_context import (
     get_project_root,
     get_script_module_name,
     set_project_root,
@@ -224,7 +224,7 @@ def test_play_body_reload_preserves_identity_state_and_uses_new_body(
     path, (component_type,) = component_script(
         "BodyReloadProbe.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
 
         class BodyReloadProbe(InxComponent):
             _uses_component_data_store = False
@@ -271,7 +271,7 @@ def test_play_body_reload_preserves_identity_state_and_uses_new_body(
     manager = _play_manager(monkeypatch, path, guid, (component,))
 
     _overwrite_preserving_pyc_fingerprint(path, """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
 
         class BodyReloadProbe(InxComponent):
             _uses_component_data_store = False
@@ -332,7 +332,7 @@ def test_schema_reload_preserves_live_cds_values_and_uses_new_field_default(
     path, (component_type,) = component_script(
         "SchemaValuePreservationProbe.py",
         """
-        from Infernux.components import InxComponent, serialized_field
+        from infernux.components import InxComponent, serialized_field
 
         class SchemaValuePreservationProbe(InxComponent):
             engine_force: float = serialized_field(
@@ -365,7 +365,7 @@ def test_schema_reload_preserves_live_cds_values_and_uses_new_field_default(
 
     candidate = textwrap.dedent(
         """
-        from Infernux.components import InxComponent, serialized_field
+        from infernux.components import InxComponent, serialized_field
 
         class SchemaValuePreservationProbe(InxComponent):
             engine_force: float = serialized_field(
@@ -412,15 +412,15 @@ def test_schema_reload_preserves_live_cds_values_and_uses_new_field_default(
 def test_inherited_field_schema_reload_keeps_declarations_and_native_values(
     component_script, monkeypatch, rollback, existing_layout,
 ):
-    from Infernux.batch import batch_read
-    from Infernux import lib
-    from Infernux.components._cds_bridge import get_class_info, publish_class
-    from Infernux.components._component_registration import candidate_component_registration_scope
+    from infernux.batch import batch_read
+    from infernux import lib
+    from infernux.components._cds_bridge import get_class_info, publish_class
+    from infernux.components._component_registration import candidate_component_registration_scope
 
     base_path, (base_type,) = component_script(
         "InheritedStorageBase.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class InheritedStorageBase(InxComponent):
             speed: float = 2.0
         """,
@@ -497,13 +497,13 @@ def test_inherited_field_schema_reload_keeps_declarations_and_native_values(
 def test_stable_field_id_rename_reloads_native_slots_and_can_rollback(
     component_script, monkeypatch, rollback,
 ):
-    from Infernux import lib
-    from Infernux.batch import batch_read
-    from Infernux.components.fields import get_field_schema
-    from Infernux.engine.runtime_dispatch import current_runtime_epoch, ensure_runtime_dispatch_types
+    from infernux import lib
+    from infernux.batch import batch_read
+    from infernux.components.fields import get_field_schema
+    from infernux.engine.runtime_dispatch import current_runtime_epoch, ensure_runtime_dispatch_types
 
     source = (
-        "from Infernux.components import InxComponent, serialized_field\n"
+        "from infernux.components import InxComponent, serialized_field\n"
         "class IdentityReload(InxComponent):\n"
         "    speed = serialized_field(2.0, field_id='movement')\n"
     )
@@ -560,13 +560,13 @@ def test_stable_field_id_rename_reloads_native_slots_and_can_rollback(
 def test_range_reload_publishes_normalized_native_values_atomically(
     component_script, monkeypatch, rollback,
 ):
-    from Infernux import lib
-    from Infernux.batch import batch_read
-    from Infernux.components.fields import get_field_schema
-    from Infernux.engine.runtime_dispatch import current_runtime_epoch, ensure_runtime_dispatch_types
+    from infernux import lib
+    from infernux.batch import batch_read
+    from infernux.components.fields import get_field_schema
+    from infernux.engine.runtime_dispatch import current_runtime_epoch, ensure_runtime_dispatch_types
 
     source = (
-        "from Infernux.components import InxComponent, serialized_field\n"
+        "from infernux.components import InxComponent, serialized_field\n"
         "class RangeReload(InxComponent):\n"
         "    value: float = serialized_field(default=2.0, range=(0.0, 10.0))\n"
     )
@@ -624,10 +624,10 @@ def test_range_reload_publishes_normalized_native_values_atomically(
 def test_repeated_schema_edits_can_return_to_an_earlier_numeric_layout(
     component_script, monkeypatch,
 ):
-    from Infernux.batch import batch_read
+    from infernux.batch import batch_read
 
     source = (
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class RepeatedLayout(InxComponent):\n"
         "    value: float = 2.0\n"
     )
@@ -672,7 +672,7 @@ def test_schema_reload_preserves_live_python_descriptor_values_without_cds(
     path, (component_type,) = component_script(
         "SchemaPythonValuePreservationProbe.py",
         """
-        from Infernux.components import InxComponent, serialized_field
+        from infernux.components import InxComponent, serialized_field
 
         class SchemaPythonValuePreservationProbe(InxComponent):
             _uses_component_data_store = False
@@ -692,7 +692,7 @@ def test_schema_reload_preserves_live_python_descriptor_values_without_cds(
 
     candidate = textwrap.dedent(
         """
-        from Infernux.components import InxComponent, serialized_field
+        from infernux.components import InxComponent, serialized_field
 
         class SchemaPythonValuePreservationProbe(InxComponent):
             _uses_component_data_store = False
@@ -729,7 +729,7 @@ def test_schema_reload_refreshes_serialized_metadata_after_add_and_remove(
     path, (component_type,) = component_script(
         "SchemaMetadataRefreshProbe.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
 
         class SchemaMetadataRefreshProbe(InxComponent):
             retained: int = 1
@@ -745,7 +745,7 @@ def test_schema_reload_refreshes_serialized_metadata_after_add_and_remove(
 
     added_source = textwrap.dedent(
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
 
         class SchemaMetadataRefreshProbe(InxComponent):
             retained: int = 1
@@ -764,7 +764,7 @@ def test_schema_reload_refreshes_serialized_metadata_after_add_and_remove(
 
     removed_source = textwrap.dedent(
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
 
         class SchemaMetadataRefreshProbe(InxComponent):
             retained: int = 1
@@ -786,7 +786,7 @@ def test_play_body_reload_supports_multiple_types(component_script, monkeypatch)
     path, classes = component_script(
         "MultipleBodyReload.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
 
         class MultiReloadAlpha(InxComponent):
             _uses_component_data_store = False
@@ -808,7 +808,7 @@ def test_play_body_reload_supports_multiple_types(component_script, monkeypatch)
     manager = _play_manager(monkeypatch, path, guid, (alpha, beta))
 
     _overwrite_preserving_pyc_fingerprint(path, """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
 
         class MultiReloadAlpha(InxComponent):
             _uses_component_data_store = False
@@ -835,7 +835,7 @@ def test_batch_body_reload_commits_two_scripts_without_recreating_lifecycle_stat
     first_path, (first_type,) = component_script(
         "BatchFirst.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
 
         class BatchFirst(InxComponent):
             _uses_component_data_store = False
@@ -850,7 +850,7 @@ def test_batch_body_reload_commits_two_scripts_without_recreating_lifecycle_stat
     second_path, (second_type,) = component_script(
         "BatchSecond.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
 
         class BatchSecond(InxComponent):
             _uses_component_data_store = False
@@ -884,7 +884,7 @@ def test_batch_body_reload_commits_two_scripts_without_recreating_lifecycle_stat
     )
 
     first_source = textwrap.dedent("""
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class BatchFirst(InxComponent):
             _uses_component_data_store = False
             def awake(self):
@@ -894,7 +894,7 @@ def test_batch_body_reload_commits_two_scripts_without_recreating_lifecycle_stat
             def helper(self): return "first-new"
     """).encode("utf-8")
     second_source = textwrap.dedent("""
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class BatchSecond(InxComponent):
             _uses_component_data_store = False
             def awake(self):
@@ -938,7 +938,7 @@ def test_batch_staging_failure_restores_everything_before_live_mutation(
     first_path, (first_type,) = component_script(
         "BatchStageFirst.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class BatchStageFirst(InxComponent):
             _uses_component_data_store = False
             def helper(self): return "first-old"
@@ -948,7 +948,7 @@ def test_batch_staging_failure_restores_everything_before_live_mutation(
     second_path, (second_type,) = component_script(
         "BatchStageSecond.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class BatchStageSecond(InxComponent):
             _uses_component_data_store = False
             def helper(self): return "second-old"
@@ -969,7 +969,7 @@ def test_batch_staging_failure_restores_everything_before_live_mutation(
         (first, second),
     )
     first_source = (
-        b"from Infernux.components import InxComponent\n"
+        b"from infernux.components import InxComponent\n"
         b"class BatchStageFirst(InxComponent):\n"
         b"    _uses_component_data_store = False\n"
         b"    def helper(self): return 'first-new'\n"
@@ -998,7 +998,7 @@ def test_batch_commit_failure_rolls_back_all_class_bodies_dispatch_and_modules(
     first_path, (first_type,) = component_script(
         "BatchCommitFirst.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class BatchCommitFirst(InxComponent):
             _uses_component_data_store = False
             def helper(self): return "first-old"
@@ -1008,7 +1008,7 @@ def test_batch_commit_failure_rolls_back_all_class_bodies_dispatch_and_modules(
     second_path, (second_type,) = component_script(
         "BatchCommitSecond.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class BatchCommitSecond(InxComponent):
             _uses_component_data_store = False
             def helper(self): return "second-old"
@@ -1031,13 +1031,13 @@ def test_batch_commit_failure_rolls_back_all_class_bodies_dispatch_and_modules(
         (first, second),
     )
     first_source = textwrap.dedent("""
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class BatchCommitFirst(InxComponent):
             _uses_component_data_store = False
             def helper(self): return "first-new"
     """).encode("utf-8")
     second_source = textwrap.dedent("""
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class BatchCommitSecond(InxComponent):
             _uses_component_data_store = False
             def helper(self): return "second-new"
@@ -1071,7 +1071,7 @@ def test_explicit_batch_rollback_restores_successfully_published_bodies(
     first_path, (first_type,) = component_script(
         "BatchExplicitFirst.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class BatchExplicitFirst(InxComponent):
             _uses_component_data_store = False
             def helper(self): return "first-old"
@@ -1081,7 +1081,7 @@ def test_explicit_batch_rollback_restores_successfully_published_bodies(
     second_path, (second_type,) = component_script(
         "BatchExplicitSecond.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class BatchExplicitSecond(InxComponent):
             _uses_component_data_store = False
             def helper(self): return "second-old"
@@ -1097,8 +1097,8 @@ def test_explicit_batch_rollback_restores_successfully_published_bodies(
         {str(first_path): first_guid, str(second_path): second_guid},
         (first, second),
     )
-    first_source = b"from Infernux.components import InxComponent\nclass BatchExplicitFirst(InxComponent):\n    _uses_component_data_store = False\n    def helper(self): return 'first-new'\n"
-    second_source = b"from Infernux.components import InxComponent\nclass BatchExplicitSecond(InxComponent):\n    _uses_component_data_store = False\n    def helper(self): return 'second-new'\n"
+    first_source = b"from infernux.components import InxComponent\nclass BatchExplicitFirst(InxComponent):\n    _uses_component_data_store = False\n    def helper(self): return 'first-new'\n"
+    second_source = b"from infernux.components import InxComponent\nclass BatchExplicitSecond(InxComponent):\n    _uses_component_data_store = False\n    def helper(self): return 'second-new'\n"
     batch = manager.prepare_script_reload_batch((
         ScriptReloadBatchInput(str(first_path), first_guid, first_source),
         ScriptReloadBatchInput(str(second_path), second_guid, second_source),
@@ -1123,7 +1123,7 @@ def test_batch_rollback_does_not_remove_unrelated_module_imported_after_staging(
     path, (component_type,) = component_script(
         "BatchModuleScope.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class BatchModuleScope(InxComponent):
             _uses_component_data_store = False
             def helper(self): return "old"
@@ -1133,7 +1133,7 @@ def test_batch_rollback_does_not_remove_unrelated_module_imported_after_staging(
     component = component_type()
     component._script_guid = guid
     manager = _play_manager(monkeypatch, path, guid, (component,))
-    candidate = b"from Infernux.components import InxComponent\nclass BatchModuleScope(InxComponent):\n    _uses_component_data_store = False\n    def helper(self): return 'new'\n"
+    candidate = b"from infernux.components import InxComponent\nclass BatchModuleScope(InxComponent):\n    _uses_component_data_store = False\n    def helper(self): return 'new'\n"
     batch = manager.prepare_script_reload_batch((
         ScriptReloadBatchInput(str(path), guid, candidate),
     ))
@@ -1169,7 +1169,7 @@ def test_batch_reloads_helper_before_live_component_atomically(
         "BatchLiveTarget.py",
         """
         import helper
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class BatchLiveTarget(InxComponent):
             _uses_component_data_store = False
             def helper_value(self): return helper.VALUE
@@ -1187,7 +1187,7 @@ def test_batch_reloads_helper_before_live_component_atomically(
     helper_source = b"VALUE = 'new'\n"
     live_source = (
         b"import helper\n"
-        b"from Infernux.components import InxComponent\n"
+        b"from infernux.components import InxComponent\n"
         b"class BatchLiveTarget(InxComponent):\n"
         b"    _uses_component_data_store = False\n"
         b"    def helper_value(self): return helper.VALUE\n"
@@ -1224,7 +1224,7 @@ def test_helper_candidate_top_level_failure_rolls_back_the_whole_batch(
         "BatchHelperFailureLive.py",
         """
         import failure_helper
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class BatchHelperFailureLive(InxComponent):
             _uses_component_data_store = False
             def helper_value(self): return failure_helper.VALUE
@@ -1253,7 +1253,7 @@ def test_helper_candidate_top_level_failure_rolls_back_the_whole_batch(
                 str(live_path),
                 live_guid,
                 b"import failure_helper\n"
-                b"from Infernux.components import InxComponent\n"
+                b"from infernux.components import InxComponent\n"
                 b"class BatchHelperFailureLive(InxComponent):\n"
                 b"    _uses_component_data_store = False\n"
                 b"    def helper_value(self): return failure_helper.VALUE\n",
@@ -1274,7 +1274,7 @@ def test_scc_batch_reuses_recursively_loaded_candidate_modules(
     first_path, (first_type,) = component_script(
         "scc_a.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class SccA(InxComponent):
             _uses_component_data_store = False
             def behavior(self): return "A-old"
@@ -1284,7 +1284,7 @@ def test_scc_batch_reuses_recursively_loaded_candidate_modules(
     second_path, (second_type,) = component_script(
         "scc_b.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class SccB(InxComponent):
             _uses_component_data_store = False
             def behavior(self): return "B-old"
@@ -1303,7 +1303,7 @@ def test_scc_batch_reuses_recursively_loaded_candidate_modules(
     first_source = textwrap.dedent("""
         VALUE = "A-new"
         import scc_b
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class SccA(InxComponent):
             _uses_component_data_store = False
             def behavior(self): return VALUE + "/" + scc_b.VALUE
@@ -1312,7 +1312,7 @@ def test_scc_batch_reuses_recursively_loaded_candidate_modules(
     second_source = textwrap.dedent("""
         VALUE = "B-new"
         import scc_a
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class SccB(InxComponent):
             _uses_component_data_store = False
             def behavior(self): return VALUE + "/" + scc_a.VALUE
@@ -1348,7 +1348,7 @@ def test_scc_second_member_validation_failure_restores_both_old_modules(
     first_path, (first_type,) = component_script(
         "scc_failure_a.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class SccFailureA(InxComponent):
             _uses_component_data_store = False
             def behavior(self): return "A-old"
@@ -1358,7 +1358,7 @@ def test_scc_second_member_validation_failure_restores_both_old_modules(
     second_path, (second_type,) = component_script(
         "scc_failure_b.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class SccFailureB(InxComponent):
             _uses_component_data_store = False
             value: float = 1.0
@@ -1382,7 +1382,7 @@ def test_scc_second_member_validation_failure_restores_both_old_modules(
     first_source = textwrap.dedent("""
         VALUE = "A-new"
         import scc_failure_b
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class SccFailureA(InxComponent):
             _uses_component_data_store = False
             def behavior(self): return VALUE + "/" + scc_failure_b.VALUE
@@ -1390,7 +1390,7 @@ def test_scc_second_member_validation_failure_restores_both_old_modules(
     second_source = textwrap.dedent("""
         VALUE = "B-new"
         import scc_failure_a
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class SccFailureB(InxComponent):
             _uses_component_data_store = False
             value: int = 1
@@ -1419,7 +1419,7 @@ def test_staging_and_commit_leave_diagnostics_for_outer_collector_cleanup(
     path, (component_type,) = component_script(
         "DiagnosticSuccess.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class DiagnosticSuccess(InxComponent):
             _uses_component_data_store = False
             def helper(self): return "old"
@@ -1433,7 +1433,7 @@ def test_staging_and_commit_leave_diagnostics_for_outer_collector_cleanup(
     set_script_error(str(path), old_diagnostic)
     old_revision = get_script_error_revision()
     candidate = (
-        b"from Infernux.components import InxComponent\n"
+        b"from infernux.components import InxComponent\n"
         b"class DiagnosticSuccess(InxComponent):\n"
         b"    _uses_component_data_store = False\n"
         b"    def helper(self): return 'new'\n"
@@ -1467,7 +1467,7 @@ def test_schema_failure_restores_diagnostic_contents_and_revision(
     path, (component_type,) = component_script(
         "DiagnosticFailure.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class DiagnosticFailure(InxComponent):
             _uses_component_data_store = False
             value: float = 1.0
@@ -1482,7 +1482,7 @@ def test_schema_failure_restores_diagnostic_contents_and_revision(
     set_script_error(str(path), old_diagnostic)
     old_revision = get_script_error_revision()
     incompatible = (
-        b"from Infernux.components import InxComponent\n"
+        b"from infernux.components import InxComponent\n"
         b"class DiagnosticFailure(InxComponent):\n"
         b"    _uses_component_data_store = False\n"
         b"    value: int = 1\n"
@@ -1509,7 +1509,7 @@ def test_reload_result_uses_frontend_code_in_edit_and_play_without_recompile(
     path, (component_type,) = component_script(
         f"FrontendCode{state.name.title()}Probe.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class FrontendCodeProbe(InxComponent):
             _uses_component_data_store = False
             def helper(self): return "old"
@@ -1523,7 +1523,7 @@ def test_reload_result_uses_frontend_code_in_edit_and_play_without_recompile(
 
     candidate = textwrap.dedent(
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class FrontendCodeProbe(InxComponent):
             _uses_component_data_store = False
             def helper(self): return "new"
@@ -1553,12 +1553,13 @@ def test_reload_result_uses_frontend_code_in_edit_and_play_without_recompile(
 def test_multi_type_rename_reloads_all_types_atomically(
     component_script,
     monkeypatch,
+    scene,
 ):
     guid = "play-body-atomic-guid"
     path, classes = component_script(
         "AtomicBodyReload.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
 
         class AtomicReloadAlpha(InxComponent):
             _uses_component_data_store = False
@@ -1575,16 +1576,15 @@ def test_multi_type_rename_reloads_all_types_atomically(
     by_name = {component_type.__name__: component_type for component_type in classes}
     alpha = by_name["AtomicReloadAlpha"]()
     beta = by_name["AtomicReloadBeta"]()
-    alpha_native = _NativeDispatchProbe()
-    beta_native = _NativeDispatchProbe()
-    alpha._cpp_component = alpha_native
-    beta._cpp_component = beta_native
+    owner = scene.create_game_object("MultiTypeRenameOwner")
+    owner.add_py_component(alpha)
+    owner.add_py_component(beta)
     for component in (alpha, beta):
         component._script_guid = guid
     manager = _play_manager(monkeypatch, path, guid, (alpha, beta))
 
     path.write_text(textwrap.dedent("""
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
 
         class AtomicReloadAlpha(InxComponent):
             _uses_component_data_store = False
@@ -1602,6 +1602,9 @@ def test_multi_type_rename_reloads_all_types_atomically(
     assert outcome.reloaded_count == 2
     assert alpha.helper() == "alpha-new"
     assert beta.helper() == "beta-new"
+    assert beta.type_name == "AtomicReloadBetaRenamed"
+    assert beta._cpp_component.type_name == "AtomicReloadBetaRenamed"
+    assert "AtomicReloadBetaRenamed" in str(scene.serialize_document())
 
 
 def test_play_batch_without_live_instances_publishes_candidate_registry_and_rolls_back(
@@ -1612,7 +1615,7 @@ def test_play_batch_without_live_instances_publishes_candidate_registry_and_roll
     path, (old_type,) = component_script(
         "NoLiveRegistryProbe.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class NoLiveRegistryProbe(InxComponent):
             _uses_component_data_store = False
             def marker(self): return "old"
@@ -1622,7 +1625,7 @@ def test_play_batch_without_live_instances_publishes_candidate_registry_and_roll
     assert get_type("NoLiveRegistryProbe") is old_type
     manager = _play_batch_manager(monkeypatch, {str(path): guid}, ())
     candidate_source = (
-        b"from Infernux.components import InxComponent\n"
+        b"from infernux.components import InxComponent\n"
         b"class NoLiveRegistryProbe(InxComponent):\n"
         b"    _uses_component_data_store = False\n"
         b"    def marker(self): return 'candidate'\n"
@@ -1653,7 +1656,7 @@ def test_edit_reload_keeps_stable_instances_and_retries_after_body_publish_failu
     path, (old_type,) = component_script(
         "EditAtomicReplacementProbe.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class EditAtomicReplacementProbe(InxComponent):
             _uses_component_data_store = False
             value: int = 7
@@ -1674,7 +1677,7 @@ def test_edit_reload_keeps_stable_instances_and_retries_after_body_publish_failu
         (first_object, second_object),
     )
     candidate_source = (
-        b"from Infernux.components import InxComponent\n"
+        b"from infernux.components import InxComponent\n"
         b"class EditAtomicReplacementProbe(InxComponent):\n"
         b"    _uses_component_data_store = False\n"
         b"    value: int = 7\n"
@@ -1744,7 +1747,7 @@ def test_edit_reload_publishes_component_free_helper_and_dependent_atomically(
     probe_path, (probe_type,) = component_script(
         "runtime_r13_probe.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         from runtime_r13_helper import VALUE
 
         class RuntimeR13Probe(InxComponent):
@@ -1779,7 +1782,7 @@ def test_edit_reload_publishes_component_free_helper_and_dependent_atomically(
 
     helper_source = b"VALUE = 2\n"
     probe_source = (
-        b"from Infernux.components import InxComponent\n"
+        b"from infernux.components import InxComponent\n"
         b"from runtime_r13_helper import VALUE\n"
         b"class RuntimeR13Probe(InxComponent):\n"
         b"    _uses_component_data_store = False\n"
@@ -1832,7 +1835,7 @@ def test_edit_reload_publishes_component_free_helper_and_dependent_atomically(
     (
         "class BrokenReload(\n",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class ReloadFailureProbe(InxComponent):
             _uses_component_data_store = False
             value: int = 1
@@ -1850,7 +1853,7 @@ def test_syntax_and_import_failure_keep_lkg_and_registry(
     path, (component_type,) = component_script(
         "ReloadFailureProbe.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class ReloadFailureProbe(InxComponent):
             _uses_component_data_store = False
             value: int = 1
@@ -1876,7 +1879,7 @@ def test_syntax_and_import_failure_keep_lkg_and_registry(
     "candidate_source, expected_success",
     (
         ("""
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class ReplacementBase(InxComponent):
             _uses_component_data_store = False
         class RejectionProbe(ReplacementBase):
@@ -1885,7 +1888,7 @@ def test_syntax_and_import_failure_keep_lkg_and_registry(
             def helper(self): return "new"
         """, False),
         ("""
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class RenamedRejectionProbe(InxComponent):
             _uses_component_data_store = False
             value: int = 1
@@ -1903,7 +1906,7 @@ def test_schema_base_change_is_rejected_but_type_rename_reloads(
     path, (component_type,) = component_script(
         "RejectionProbe.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class RejectionProbe(InxComponent):
             _uses_component_data_store = False
             value: int = 1
@@ -1924,17 +1927,109 @@ def test_schema_base_change_is_rejected_but_type_rename_reloads(
     assert component.helper() == ("new" if expected_success else "old")
 
 
+@pytest.mark.parametrize("rollback", [False, True])
+def test_play_class_rename_restores_snapshot_from_published_type_without_reading_source(
+    component_script, monkeypatch, scene, rollback,
+):
+    from infernux.engine.component_restore import create_component_instance
+    from infernux.components.component_identity import component_type_guid
+    from infernux.engine.game_builder import GameBuilder
+
+    guid = f"play-rename-stop-{rollback}-guid"
+    path, (component_type,) = component_script(
+        "SnapshotRenameProbe.py",
+        """
+        import infernux as inx
+        class SnapshotRenameProbe(inx.InxComponent):
+            speed: float = inx.serialized_field(default=2.0)
+            def helper(self): return "old"
+        """,
+        guid,
+    )
+    component = component_type()
+    component._script_guid = guid
+    owner = scene.create_game_object("RenameSnapshotOwner")
+    owner.add_py_component(component)
+    component.speed = 7.5
+    old_guid = component_type._get_type_guid()
+    old_slot = component._cds_slot
+    old_class_id = component._cds_class_id
+    manager = _play_manager(monkeypatch, path, guid, (component,))
+    batch = manager.prepare_script_reload_batch((ScriptReloadBatchInput(
+        file_path=str(path), script_guid=guid,
+        source=textwrap.dedent("""
+            import infernux as inx
+            class RenamedSnapshotProbe(inx.InxComponent):
+                speed: float = inx.serialized_field(default=2.0)
+                def helper(self): return "new"
+        """),
+    ),))
+    restored = None
+    try:
+        assert manager.commit_script_reload_batch(batch).success
+        assert type(component) is component_type
+        assert component_type.__name__ == "RenamedSnapshotProbe"
+        assert component_type.__qualname__ == "RenamedSnapshotProbe"
+        canonical_guid = component_type_guid(guid, "RenamedSnapshotProbe")
+        assert component_type._get_type_guid() == canonical_guid
+        assert (component._cds_slot, component._cds_class_id) != (old_slot, old_class_id)
+        assert component.speed == 7.5
+        assert component.helper() == "new"
+        assert component.type_name == "RenamedSnapshotProbe"
+        assert component._cpp_component.type_name == "RenamedSnapshotProbe"
+        assert "RenamedSnapshotProbe" in str(scene.serialize_document())
+        assert canonical_guid in str(scene.serialize_document())
+        assert sys.modules[component_type.__module__].RenamedSnapshotProbe is component_type
+        records = GameBuilder._runtime_component_type_records(
+            batch.transaction.requests[0].source,
+            script_guid=guid, runtime_path="Assets/SnapshotRenameProbe.pyc",
+        )
+        GameBuilder._cook_runtime_component_semantics(records)
+        assert records[0]["type_guid"] == canonical_guid
+        if rollback:
+            manager.rollback_script_reload_batch(batch)
+            assert component_type.__name__ == "SnapshotRenameProbe"
+            assert component_type.__qualname__ == "SnapshotRenameProbe"
+            assert component.helper() == "old"
+            assert component_type._get_type_guid() == old_guid
+            assert component.speed == 7.5
+            assert component.type_name == "SnapshotRenameProbe"
+            assert component._cpp_component.type_name == "SnapshotRenameProbe"
+            assert "RenamedSnapshotProbe" not in str(scene.serialize_document())
+        else:
+            manager.finalize_script_reload_batch(batch)
+
+        # Stop must restore authored fields against the published revision,
+        # even when a subsequent, unpublished save is invalid.
+        path.write_text("raise AssertionError('unpublished source executed')\n", encoding="utf-8")
+        database = SimpleNamespace(get_path_from_guid=lambda value: str(path))
+        restored, _ = create_component_instance(
+            guid, old_guid, "SnapshotRenameProbe", database, prefer_loaded_type=True,
+        )
+        assert type(restored) is component_type
+        assert type(restored).__name__ == (
+            "SnapshotRenameProbe" if rollback else "RenamedSnapshotProbe"
+        )
+        assert restored.helper() == ("old" if rollback else "new")
+    finally:
+        if not batch.transaction.finalized and not batch.transaction.rolled_back:
+            manager.rollback_script_reload_batch(batch)
+        if restored is not None:
+            restored._call_on_destroy()
+        owner.remove_py_component(component)
+
+
 def test_script_delete_batch_is_transactional_in_edit_and_play(
     component_script,
     monkeypatch,
 ):
-    from Infernux.engine.play_mode import PlayModeManager, PlayModeState
+    from infernux.engine.play_mode import PlayModeManager, PlayModeState
 
     guid = "delete-batch-guid"
     path, (component_type,) = component_script(
         "DeleteBatchProbe.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         class DeleteBatchProbe(InxComponent):
             _uses_component_data_store = False
             value: int = 7
@@ -1988,7 +2083,7 @@ def test_script_delete_batch_is_transactional_in_edit_and_play(
     monkeypatch.setattr(manager, "_get_scene_manager", lambda: _SceneManager(scene))
     batch = manager.prepare_script_delete_batch(guid, str(path))
     assert manager.commit_script_delete_batch(batch) == 1
-    from Infernux.components.missing_script import MissingScript
+    from infernux.components.missing_script import MissingScript
     assert isinstance(first_obj.get_py_components()[0], MissingScript)
 
     # The same owner API is used in Play/Pause, and a failure after one
@@ -2013,7 +2108,7 @@ def test_batch_rebinds_cross_module_candidate_types_to_stable_live_identity(
     peer_path, (peer_type,) = component_script(
         "stable_cross_module_peer.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
 
         class StableCrossModulePeer(InxComponent):
             _uses_component_data_store = False
@@ -2025,7 +2120,7 @@ def test_batch_rebinds_cross_module_candidate_types_to_stable_live_identity(
     owner_path, (owner_type,) = component_script(
         "stable_cross_module_owner.py",
         """
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         from stable_cross_module_peer import StableCrossModulePeer
 
         def _captured_peer_method():
@@ -2054,7 +2149,7 @@ def test_batch_rebinds_cross_module_candidate_types_to_stable_live_identity(
         (owner, peer),
     )
     owner_source = textwrap.dedent("""
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
         from stable_cross_module_peer import StableCrossModulePeer
 
         def _captured_peer_method():
@@ -2072,7 +2167,7 @@ def test_batch_rebinds_cross_module_candidate_types_to_stable_live_identity(
             def marker(self): return "owner-new"
     """).encode("utf-8")
     peer_source = textwrap.dedent("""
-        from Infernux.components import InxComponent
+        from infernux.components import InxComponent
 
         class StableCrossModulePeer(InxComponent):
             _uses_component_data_store = False

@@ -5,8 +5,8 @@ import os
 
 import pytest
 
-from Infernux.engine.preferences_store import PreferencesStore, _prefs_path
-from Infernux.engine.user_data import (
+from infernux.engine.preferences_store import PreferencesStore, _prefs_path
+from infernux.engine.user_data import (
     get_infernux_data_root,
     get_project_editor_layout_root,
 )
@@ -80,7 +80,7 @@ def test_save_failure_reaches_the_caller(tmp_path, monkeypatch):
         raise OSError("disk rejected write")
 
     monkeypatch.setattr(
-        "Infernux.core.document_store.write_document_text",
+        "infernux.core.document_store.write_document_text",
         fail_write,
     )
 

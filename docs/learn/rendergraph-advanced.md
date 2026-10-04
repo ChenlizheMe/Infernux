@@ -201,7 +201,7 @@ result = self.geometry_stage(
 object_index = self.sample_buffer(result, requested)
 ```
 
-`require_buffer()` is valid only while RenderStack or the base DSL implementation has set the defining graph. The returned `BufferHandle` is a semantic request from `Infernux.renderstack`; it is separate from the transient GPU `BufferHandle` returned by `graph.create_buffer()`. Standalone overrides use `graph.require_geometry_buffers({"object_index"})`, then pass the same graph into `geometry_stage()`.
+`require_buffer()` is valid only while RenderStack or the base DSL implementation has set the defining graph. The returned `BufferHandle` is a semantic request from `infernux.renderstack`; it is separate from the transient GPU `BufferHandle` returned by `graph.create_buffer()`. Standalone overrides use `graph.require_geometry_buffers({"object_index"})`, then pass the same graph into `geometry_stage()`.
 
 ## PassResult, handles, and native actions {#pass-results}
 
@@ -697,7 +697,7 @@ result = self.geometry_stage(
 object_index = self.sample_buffer(result, requested)
 ```
 
-`require_buffer()` 只在 RenderStack 或基础 DSL 实现已设置 Defining Graph 时有效。它返回的是 `Infernux.renderstack` 中的语义请求 `BufferHandle`；`graph.create_buffer()` 返回的是瞬态 GPU Buffer Handle，两者类型职责不同。Standalone Override 应先调用 `graph.require_geometry_buffers({"object_index"})`，再把同一 Graph 传给 `geometry_stage()`。
+`require_buffer()` 只在 RenderStack 或基础 DSL 实现已设置 Defining Graph 时有效。它返回的是 `infernux.renderstack` 中的语义请求 `BufferHandle`；`graph.create_buffer()` 返回的是瞬态 GPU Buffer Handle，两者类型职责不同。Standalone Override 应先调用 `graph.require_geometry_buffers({"object_index"})`，再把同一 Graph 传给 `geometry_stage()`。
 
 ## PassResult、Handle 生命周期与 Native Action {#pass-results_1}
 

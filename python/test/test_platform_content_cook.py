@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.build import BuildProfile, BuildRequest
-from Infernux.engine.build.host_player_export import execute_host_player_build
-from Infernux.engine.platform_content_cook import (
+from infernux.engine.build import BuildProfile, BuildRequest
+from infernux.engine.build.host_player_export import execute_host_player_build
+from infernux.engine.platform_content_cook import (
     build_settings_for_request,
     cook_platform_content,
     read_cooked_player_icon,
 )
-from Infernux.engine.player_package_native import read_manifest, write_pack
+from infernux.engine.player_package_native import read_manifest, write_pack
 
 
 def _presentation_options(**overrides):
@@ -117,9 +117,9 @@ def test_platform_cook_consumes_editor_catalog_snapshot_without_rescanning(
         def cooked_python_source_paths(self):
             return ()
 
-    monkeypatch.setattr("Infernux.engine.platform_content_cook.GameBuilder", _Builder)
+    monkeypatch.setattr("infernux.engine.platform_content_cook.GameBuilder", _Builder)
     monkeypatch.setattr(
-        "Infernux.engine.platform_content_cook.publish_player_asset_catalog_for_host",
+        "infernux.engine.platform_content_cook.publish_player_asset_catalog_for_host",
         lambda _root: (_ for _ in ()).throw(AssertionError("unexpected rescan")),
     )
     request = BuildRequest(
@@ -181,10 +181,10 @@ def test_platform_cook_releases_headless_catalog_host_before_builder(
             return ()
 
     monkeypatch.setattr(
-        "Infernux.engine.platform_content_cook.publish_player_asset_catalog_for_host",
+        "infernux.engine.platform_content_cook.publish_player_asset_catalog_for_host",
         publish,
     )
-    monkeypatch.setattr("Infernux.engine.platform_content_cook.GameBuilder", _Builder)
+    monkeypatch.setattr("infernux.engine.platform_content_cook.GameBuilder", _Builder)
 
     result = cook_platform_content(
         BuildRequest(
@@ -322,7 +322,7 @@ def test_host_player_uses_the_shared_authoritative_build_settings(
             output.mkdir(parents=True)
             return str(output)
 
-    monkeypatch.setattr("Infernux.engine.game_builder.GameBuilder", _Builder)
+    monkeypatch.setattr("infernux.engine.game_builder.GameBuilder", _Builder)
     request = BuildRequest(
         str(project),
         "windows-x64",
@@ -343,13 +343,13 @@ def test_host_player_uses_the_shared_authoritative_build_settings(
 def test_host_player_does_not_recreate_missing_normalized_settings(
     monkeypatch, tmp_path
 ):
-    from Infernux.engine.interaction.project_settings import normalize_build_settings
+    from infernux.engine.interaction.project_settings import normalize_build_settings
 
     settings = normalize_build_settings({})
     settings.update(_presentation_options())
     settings.pop("display_mode")
     monkeypatch.setattr(
-        "Infernux.engine.platform_content_cook.build_settings_for_request",
+        "infernux.engine.platform_content_cook.build_settings_for_request",
         lambda _request: settings,
     )
     request = BuildRequest(
@@ -366,17 +366,17 @@ def test_host_player_does_not_recreate_missing_normalized_settings(
 def test_platform_cook_does_not_recreate_missing_normalized_settings(
     monkeypatch, tmp_path
 ):
-    from Infernux.engine.interaction.project_settings import normalize_build_settings
+    from infernux.engine.interaction.project_settings import normalize_build_settings
 
     settings = normalize_build_settings({})
     settings.update(_presentation_options())
     settings.pop("window_width")
     monkeypatch.setattr(
-        "Infernux.engine.platform_content_cook.build_settings_for_request",
+        "infernux.engine.platform_content_cook.build_settings_for_request",
         lambda _request: settings,
     )
     monkeypatch.setattr(
-        "Infernux.engine.platform_content_cook.GameBuilder",
+        "infernux.engine.platform_content_cook.GameBuilder",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("GameBuilder must not receive an incomplete contract")
         ),

@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from Infernux.engine.bootstrap_project import _inxpackage_export_paths
-from Infernux.engine.interaction import SelectionSnapshot, SelectionTarget
+from infernux.engine.bootstrap_project import _inxpackage_export_paths
+from infernux.engine.interaction import SelectionSnapshot, SelectionTarget
 
 
 def _context(paths, payload=None):

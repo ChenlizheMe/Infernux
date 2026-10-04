@@ -6,9 +6,9 @@ import wave
 
 import pytest
 
-from Infernux.lib import InxMaterial
-from Infernux.engine.interaction import EditorActionJournal
-from Infernux.engine.undo import (
+from infernux.lib import InxMaterial
+from infernux.engine.interaction import EditorActionJournal
+from infernux.engine.undo import (
     ProjectAssetCreateCommand,
     ProjectPrefabCreateCommand,
     ProjectAssetCopyCommand,
@@ -19,8 +19,8 @@ from Infernux.engine.undo import (
     ProjectAssetRenameCommand,
     UndoManager,
 )
-from Infernux.engine.ui.project_file_ops import plan_asset_paste
-from Infernux.engine.ui.asset_execution_layer import (
+from infernux.engine.ui.project_file_ops import plan_asset_paste
+from infernux.engine.ui.asset_execution_layer import (
     AssetAccessMode,
     AssetExecutionLayer,
 )
@@ -52,7 +52,7 @@ def _filesystem_copy(source: str, destination: str, _database):
 
 
 def test_asset_manager_delete_does_not_evict_before_database_commit(monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     events: list[str] = []
 
@@ -544,7 +544,7 @@ def test_project_asset_move_uses_command_operation_identity(tmp_path, monkeypatc
         os.replace(old, new)
         return new
 
-    from Infernux.engine.ui import project_file_ops
+    from infernux.engine.ui import project_file_ops
 
     monkeypatch.setattr(project_file_ops, "move_path", _move)
     database = object()

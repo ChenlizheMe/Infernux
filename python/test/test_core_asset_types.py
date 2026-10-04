@@ -1,4 +1,4 @@
-"""Tests for Infernux.core.asset_types — enums, dataclasses, meta file helpers."""
+"""Tests for infernux.core.asset_types — enums, dataclasses, meta file helpers."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from Infernux.core.asset_types import (
+from infernux.core.asset_types import (
     AudioCompressionFormat,
     AudioImportSettings,
     FilterMode,
@@ -37,7 +37,7 @@ from Infernux.core.asset_types import (
 
 
 def test_import_settings_preserve_a_concurrent_sidecar_update(tmp_path, monkeypatch):
-    from Infernux.core import asset_types
+    from infernux.core import asset_types
 
     asset = tmp_path / "texture.png"
     sidecar = tmp_path / "texture.png.meta"
@@ -67,7 +67,7 @@ def test_import_settings_preserve_a_concurrent_sidecar_update(tmp_path, monkeypa
 
 
 def test_queued_sidecar_edits_preserve_all_fields(tmp_path):
-    from Infernux.core import asset_types
+    from infernux.core import asset_types
 
     asset = tmp_path / "texture.png"
     sidecar = tmp_path / "texture.png.meta"
@@ -275,7 +275,7 @@ class TestTextureImportSettings:
 
     def test_runtime_metadata_replaces_omitted_meta_sidecar(self, tmp_path, monkeypatch):
         from types import SimpleNamespace
-        from Infernux.core import asset_types
+        from infernux.core import asset_types
 
         document = {
             "metadata": {
@@ -370,8 +370,8 @@ class TestMeshImportSettings:
             MeshImportSettings.from_dict(document)
 
     def test_defaults_and_inspector_project_native_schema(self):
-        from Infernux.core.asset_types import mesh_import_settings_schema
-        from Infernux.engine.ui import asset_details_renderer as inspector
+        from infernux.core.asset_types import mesh_import_settings_schema
+        from infernux.engine.ui import asset_details_renderer as inspector
 
         schema = mesh_import_settings_schema()
         defaults = MeshImportSettings().to_dict()
@@ -692,7 +692,7 @@ class TestReadMetaGuid:
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f)
 
-        from Infernux.core.asset_types import read_meta_guid
+        from infernux.core.asset_types import read_meta_guid
         assert read_meta_guid(str(asset)) == "abc123def456"
 
     def test_rejects_legacy_root_guid(self, tmp_path):
@@ -702,7 +702,7 @@ class TestReadMetaGuid:
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump({"guid": "legacy-root-guid"}, f)
 
-        from Infernux.core.asset_types import read_meta_guid
+        from infernux.core.asset_types import read_meta_guid
         assert read_meta_guid(str(asset)) == ""
 
 
@@ -710,7 +710,7 @@ class TestAssetIoPool:
     def test_missing_thread_executor_does_not_block_asset_model_imports(
         self, monkeypatch
     ):
-        from Infernux.core import asset_types
+        from infernux.core import asset_types
 
         original_import = builtins.__import__
 
@@ -734,7 +734,7 @@ class TestAssetIoPool:
 
 class TestNativeResourceMetaSchema:
     def test_document_is_strict_and_transactional(self):
-        from Infernux.lib import ResourceMeta
+        from infernux.lib import ResourceMeta
 
         valid = {
             "metadata": {

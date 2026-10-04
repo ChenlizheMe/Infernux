@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from Infernux.engine.ui import inspector_material, inspector_renderstack
+from infernux.engine.ui import inspector_material, inspector_renderstack
 
 
 class _VirtualContext:

@@ -3,13 +3,13 @@ import copy
 
 import pytest
 
-from Infernux.components import InxComponent, FieldType, serialized_field
-from Infernux.components.ref_wrappers import ComponentRef
-from Infernux.engine.prefab_manager import (
+from infernux.components import InxComponent, FieldType, serialized_field
+from infernux.components.ref_wrappers import ComponentRef
+from infernux.engine.prefab_manager import (
     PrefabDocumentError, _read_prefab_document, _validate_prefab_document,
     instantiate_prefab as _instantiate_prefab, save_prefab, serialize_prefab_document,
 )
-from Infernux.engine.prefab_overrides import (
+from infernux.engine.prefab_overrides import (
     apply_overrides_to_prefab, build_prefab_apply_command, revert_overrides,
     compute_overrides, resolve_prefab_instance_root,
     resolve_scene_prefab_documents,
@@ -166,7 +166,7 @@ def test_cook_resolves_inner_source_even_when_outer_source_is_unchanged(scene, t
 
 
 def test_template_cache_tracks_inner_dependency_changes(scene, tmp_path):
-    from Infernux.engine.prefab_manager import save_prefab_document
+    from infernux.engine.prefab_manager import save_prefab_document
 
     outer, inner_path, outer_path = _make_nested(scene, tmp_path)
     assert save_prefab(outer, outer_path)
@@ -181,8 +181,8 @@ def test_template_cache_tracks_inner_dependency_changes(scene, tmp_path):
 
 def test_scene_refresh_resolves_nested_source_introduced_by_outer_update(scene, tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from Infernux.engine.prefab_manager import save_prefab_document
-    from Infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.prefab_manager import save_prefab_document
+    from infernux.engine.scene_manager import SceneFileManager
 
     outer, inner_path, outer_path = _make_nested(scene, tmp_path)
     for child in list(outer.get_children()):
@@ -215,8 +215,8 @@ def test_scene_refresh_resolves_nested_source_introduced_by_outer_update(scene, 
 
 def test_prefab_refresh_without_scene_covers_all_resident_worlds(monkeypatch):
     from types import SimpleNamespace
-    from Infernux.engine import prefab_overrides
-    from Infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine import prefab_overrides
+    from infernux.engine.scene_manager import SceneFileManager
 
     manager = SceneFileManager()
     manager._asset_database = object()
@@ -231,7 +231,7 @@ def test_prefab_refresh_without_scene_covers_all_resident_worlds(monkeypatch):
 
 
 def test_copy_nested_root_is_new_outer_instance_but_keeps_inner_identity(scene, tmp_path):
-    from Infernux.engine.component_restore import clone_game_object_transactionally
+    from infernux.engine.component_restore import clone_game_object_transactionally
 
     outer, _, path = _make_nested(scene, tmp_path)
     assert save_prefab(outer, path)
@@ -257,7 +257,7 @@ def test_recursive_source_apply_is_rejected_before_saving(scene, tmp_path):
 
 
 def test_outer_unpack_keeps_nested_links_and_undo_restores_outer_anchors(scene, tmp_path):
-    from Infernux.engine.undo import PrefabUnpackCommand
+    from infernux.engine.undo import PrefabUnpackCommand
 
     outer, _, path = _make_nested(scene, tmp_path)
     assert save_prefab(outer, path)
@@ -301,7 +301,7 @@ def test_moving_nested_instance_between_outer_instances_retires_only_outer_ancho
 
 @pytest.mark.parametrize("command_type", ["reparent", "move", "layout"])
 def test_nested_reparent_history_restores_source_namespace(scene, tmp_path, command_type):
-    from Infernux.engine.undo import ReparentCommand, MoveGameObjectCommand, SceneHierarchyLayoutCommand
+    from infernux.engine.undo import ReparentCommand, MoveGameObjectCommand, SceneHierarchyLayoutCommand
     outer, _, path = _make_nested(scene, tmp_path)
     assert save_prefab(outer, path)
     first = instantiate_prefab(file_path=path, guid="outer-guid", scene=scene)
@@ -340,7 +340,7 @@ def test_nested_move_within_same_outer_keeps_anchor(scene, tmp_path):
 
 
 def test_regular_prefab_child_crossing_scope_becomes_private_and_undo_restores_links(scene, tmp_path):
-    from Infernux.engine.undo import ReparentCommand
+    from infernux.engine.undo import ReparentCommand
     _, inner_path, _ = _make_nested(scene, tmp_path)
     first = instantiate_prefab(file_path=inner_path, guid="inner-guid", scene=scene)
     second = instantiate_prefab(file_path=inner_path, guid="inner-guid", scene=scene)
@@ -355,11 +355,11 @@ def test_regular_prefab_child_crossing_scope_becomes_private_and_undo_restores_l
 
 
 def test_prefab_mode_repeated_save_preserves_nested_namespace(scene, tmp_path, monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
     from types import SimpleNamespace
-    from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.interaction import EditorInteractionCore, SelectionDomain
-    from Infernux.lib import SceneManager
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.interaction import EditorInteractionCore, SelectionDomain
+    from infernux.lib import SceneManager
 
     outer, inner_path, path = _make_nested(scene, tmp_path)
     assert save_prefab(outer, path)

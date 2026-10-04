@@ -5,9 +5,9 @@ from dataclasses import replace
 
 import pytest
 
-from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
-from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
-from Infernux.particle import (
+from infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
+from infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
+from infernux.particle import (
     EmitterSettings,
     EmitterShape,
     KernelCompileError,
@@ -30,12 +30,12 @@ from Infernux.particle import (
     particle_random_f32,
     particle_random_u32,
 )
-from Infernux.particle.kernel_ir import (
+from infernux.particle.kernel_ir import (
     KernelSourceRef,
     _PURE_KERNEL_VALUE_OPCODES,
     _KernelBuilder,
 )
-from Infernux.particle.kernel_semantics import KERNEL_OPCODE_SPECS
+from infernux.particle.kernel_semantics import KERNEL_OPCODE_SPECS
 
 
 def _lower(asset: ParticleGraphAsset):

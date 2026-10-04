@@ -5,16 +5,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from Infernux import lib
-from Infernux.batch import batch_read, batch_write, create_batch_handle, create_scene_batch_handle
-from Infernux.components import InxComponent, serialized_field
-from Infernux.components._cds_bridge import get_class_id
+from infernux import lib
+from infernux.batch import batch_read, batch_write, create_batch_handle, create_scene_batch_handle
+from infernux.components import InxComponent, serialized_field
+from infernux.components._cds_bridge import get_class_id
 
 
 @pytest.mark.parametrize("native_storage", [False, True])
 def test_batch_write_preserves_field_ranges_and_publishes_changes(native_storage):
-    from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
-    from Infernux.engine.runtime_change_journal import (
+    from infernux.components._component_lifecycle import RuntimeExecutionScheduler
+    from infernux.engine.runtime_change_journal import (
         RuntimeChangeDomain, RuntimeChangeJournal, RuntimeFieldKey,
     )
 
@@ -77,8 +77,8 @@ def test_batch_rejects_mixed_classes_before_accessing_colliding_slots():
 
 @pytest.mark.parametrize("failure", ["stale", "layout", "shape", "dtype"])
 def test_rejected_cds_batch_writes_neither_values_nor_notifications(failure):
-    from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
-    from Infernux.engine.runtime_change_journal import RuntimeChangeJournal
+    from infernux.components._component_lifecycle import RuntimeExecutionScheduler
+    from infernux.engine.runtime_change_journal import RuntimeChangeJournal
 
     class Value(InxComponent):
         number: float = 1.0
@@ -180,7 +180,7 @@ def test_empty_untyped_batch_has_an_explicit_error():
 
 
 def test_inherited_numeric_fields_share_the_declared_native_layout():
-    from Infernux.components._cds_bridge import get_class_info
+    from infernux.components._cds_bridge import get_class_info
 
     class Base(InxComponent):
         speed: float = 2.0
@@ -216,7 +216,7 @@ def test_inherited_numeric_fields_share_the_declared_native_layout():
 
 
 def test_repeated_layout_registration_binds_new_descriptors():
-    from Infernux.components._cds_bridge import get_class_info
+    from infernux.components._cds_bridge import get_class_info
 
     class Repeated(InxComponent):
         value: float = 2.0
@@ -241,8 +241,8 @@ def test_repeated_layout_registration_binds_new_descriptors():
 
 
 def test_inherited_candidate_publication_and_rollback_preserve_live_parent():
-    from Infernux.components._cds_bridge import prepare_schema_publication
-    from Infernux.components._component_registration import candidate_component_registration_scope
+    from infernux.components._cds_bridge import prepare_schema_publication
+    from infernux.components._component_registration import candidate_component_registration_scope
 
     class Base(InxComponent):
         speed: float = 2.0
@@ -286,7 +286,7 @@ def test_inherited_candidate_publication_and_rollback_preserve_live_parent():
 
 
 def test_deep_inheritance_and_numeric_override_use_concrete_layouts():
-    from Infernux.components._cds_bridge import get_class_info
+    from infernux.components._cds_bridge import get_class_info
 
     class Base(InxComponent):
         value: float = 2.5

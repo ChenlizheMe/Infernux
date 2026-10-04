@@ -51,7 +51,7 @@ def _clean(root, *args):
 @pytest.mark.parametrize("preview", [True, False], ids=["preview", "delete"])
 def test_cleanup_handles_root_and_nested_submodule_outputs(repository, preview):
     release = _write(repository, "dist/releases/current/installer.exe")
-    binary = _write(repository, "python/Infernux/lib/generated.dll")
+    binary = _write(repository, "python/infernux/lib/generated.dll")
     local_tool = _write(repository, "update_distributions.py")
     tracked_binary = _write(repository, "fixture.dll", "authored fixture")
     local_notes = _write(repository, "dev/collaboration/notes.md", "private research")

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.ui.scene_view_panel import SceneViewPanel
+from infernux.engine.ui.scene_view_panel import SceneViewPanel
 
 
 def test_frame_bounds_reject_malformed_native_bounds():

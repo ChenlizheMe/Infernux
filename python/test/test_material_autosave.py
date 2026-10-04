@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-import Infernux.lib as native_lib
-from Infernux.core.material import Material
+import infernux.lib as native_lib
+from infernux.core.material import Material
 
 
 def test_new_material_template_uses_native_color_semantics():
-    from Infernux.engine.ui.project_file_ops import _new_material_document
+    from infernux.engine.ui.project_file_ops import _new_material_document
 
     native = native_lib.InxMaterial('Authored', 'Unlit')
     native.set_color('baseColor', (1., .55, .12, 1.))
@@ -23,7 +23,7 @@ def test_builtin_unlit_material_does_not_persist_shader_paths():
     import json
     from pathlib import Path
 
-    from Infernux.resources import resources_path
+    from infernux.resources import resources_path
 
     document = json.loads(
         (Path(resources_path) / "materials" / "default_unlit.mat").read_text(
@@ -69,7 +69,7 @@ class _AssetRegistry:
 
 def test_render_texture_binding_does_not_schedule_asset_save(monkeypatch):
     from types import SimpleNamespace
-    from Infernux.core.render_texture import RenderTexture
+    from infernux.core.render_texture import RenderTexture
 
     native = _NativeMaterial()
     bindings = {}

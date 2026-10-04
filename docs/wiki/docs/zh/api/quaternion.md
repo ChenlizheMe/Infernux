@@ -1,7 +1,7 @@
 # quaternion
 
 <div class="class-info">
-类位于 <b>Infernux.math</b>
+类位于 <b>infernux.math</b>
 </div>
 
 ## 描述

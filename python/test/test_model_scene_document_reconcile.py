@@ -4,12 +4,12 @@ import json
 
 import pytest
 
-from Infernux.engine.model_instance_sync import (
+from infernux.engine.model_instance_sync import (
     _matrix_trs,
     reconcile_scene_document_model_instances,
     reconcile_scene_document_model_source_graphs,
 )
-from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
+from infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
 
 
 class _Meta:
@@ -304,7 +304,7 @@ def test_source_graph_reparent_and_pivot_rename_are_atomic_and_preserve_authored
     root = _root(pivot)
     document = {"objects": [root]}
     monkeypatch.setattr(
-        "Infernux.engine.model_instance_sync._load_model_source_nodes",
+        "infernux.engine.model_instance_sync._load_model_source_nodes",
         lambda guid: (
             _source("NewPivot", -1, -1),
             _source("Mesh", 0, 0),
@@ -332,7 +332,7 @@ def test_source_graph_creates_new_nodes_before_commit_with_stable_identity(monke
     root = _root()
     document = {"objects": [root]}
     monkeypatch.setattr(
-        "Infernux.engine.model_instance_sync._load_model_source_nodes",
+        "infernux.engine.model_instance_sync._load_model_source_nodes",
         lambda guid: (
             _source("Pivot", -1, -1, tx=2.0),
             _source("Added", 0, 4, tx=3.0),
@@ -362,7 +362,7 @@ def test_source_graph_new_geometry_honors_generate_colliders(monkeypatch):
     root = _root()
     document = {"objects": [root]}
     monkeypatch.setattr(
-        "Infernux.engine.model_instance_sync._load_model_source_nodes",
+        "infernux.engine.model_instance_sync._load_model_source_nodes",
         lambda guid: (_source("Mesh", -1, 0),),
     )
 
@@ -389,7 +389,7 @@ def test_same_path_recreated_geometry_is_new_object_not_path_rebound(monkeypatch
         _Database([{"path": ["Mesh"], "subresource_id": "new-id"}]),
     )
     monkeypatch.setattr(
-        "Infernux.engine.model_instance_sync._load_model_source_nodes",
+        "infernux.engine.model_instance_sync._load_model_source_nodes",
         lambda guid: (_source("Mesh", -1, 0),),
     )
 
@@ -415,7 +415,7 @@ def test_authored_scene_reparent_is_preserved_while_source_binding_updates(monke
     root = _root(authored_parent)
     document = {"objects": [root]}
     monkeypatch.setattr(
-        "Infernux.engine.model_instance_sync._load_model_source_nodes",
+        "infernux.engine.model_instance_sync._load_model_source_nodes",
         lambda guid: (
             _source("New", -1, -1),
             _source("Mesh", 0, 0),
@@ -439,7 +439,7 @@ def test_source_reparent_between_existing_pivots_does_not_rename_the_old_pivot(m
     root = _root(left, right)
     document = {"objects": [root]}
     monkeypatch.setattr(
-        "Infernux.engine.model_instance_sync._load_model_source_nodes",
+        "infernux.engine.model_instance_sync._load_model_source_nodes",
         lambda guid: (
             _source("Left", -1, -1),
             _source("Right", -1, -1),
@@ -474,7 +474,7 @@ def test_deleted_generated_pivot_hoists_authored_child(monkeypatch):
     root = _root(old_pivot)
     document = {"objects": [root]}
     monkeypatch.setattr(
-        "Infernux.engine.model_instance_sync._load_model_source_nodes",
+        "infernux.engine.model_instance_sync._load_model_source_nodes",
         lambda guid: (_source("CurrentPivot", -1, -1),),
     )
 

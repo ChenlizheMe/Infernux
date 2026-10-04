@@ -5,11 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.ui import asset_details_renderer as renderer
+from infernux.engine.ui import asset_details_renderer as renderer
 
 
 def test_material_load_does_not_replace_native_document_failure(monkeypatch):
-    from Infernux.core.material import Material
+    from infernux.core.material import Material
 
     class NativeMaterial:
         @staticmethod
@@ -27,7 +27,7 @@ def test_material_load_does_not_replace_native_document_failure(monkeypatch):
 
 
 def test_material_shader_sync_does_not_hide_native_publication_failure(monkeypatch):
-    from Infernux.core.material import Material
+    from infernux.core.material import Material
 
     class NativeMaterial:
         @staticmethod
@@ -97,7 +97,7 @@ def test_prefab_inspector_invalidates_when_its_base_changes(monkeypatch, tmp_pat
 
 
 def test_particle_graph_loader_exposes_schema_failure(tmp_path):
-    from Infernux.particle.asset import ParticleGraphSchemaError
+    from infernux.particle.asset import ParticleGraphSchemaError
 
     graph = tmp_path / "Broken.particlegraph"
     graph.write_text("{}", encoding="utf-8")

@@ -13,6 +13,17 @@ if(NOT _wheel_count EQUAL 1)
 endif()
 list(GET _wheels 0 _wheel)
 
+# Archive entry names are case-sensitive even on a Windows verifier host.
+# Reject obsolete entrances that can hide stale modules or type declarations.
+execute_process(COMMAND "${CMAKE_COMMAND}" -E tar tf "${_wheel}"
+    OUTPUT_VARIABLE _wheel_entries RESULT_VARIABLE _entries_result)
+if(NOT _entries_result EQUAL 0)
+    message(FATAL_ERROR "Cannot read the wheel entry table")
+endif()
+if(_wheel_entries MATCHES "(^|\n)(Infernux/|infernux-stubs/|infernux\\.pyi?(\n|$))")
+    message(FATAL_ERROR "Wheel contains a retired uppercase package, flat API, or stub mirror")
+endif()
+
 set(_package_root "${INFERNUX_SOURCE_DIR}/python")
 set(_verify_root "${INFERNUX_WHEEL_DIR}/verify-native-payload")
 file(REMOVE_RECURSE "${_verify_root}")
@@ -20,10 +31,9 @@ file(MAKE_DIRECTORY "${_verify_root}")
 file(ARCHIVE_EXTRACT INPUT "${_wheel}" DESTINATION "${_verify_root}")
 
 foreach(_public_file IN ITEMS
-    "infernux.py"
-    "infernux.pyi"
-    "infernux-stubs/__init__.pyi"
-    "infernux-stubs/py.typed"
+    "infernux/__init__.py"
+    "infernux/__init__.pyi"
+    "infernux/py.typed"
 )
     if(NOT EXISTS "${_verify_root}/${_public_file}")
         message(FATAL_ERROR "Wheel is missing public Python API file: ${_public_file}")
@@ -74,10 +84,10 @@ foreach(_runtime_archive IN LISTS _native_runtime_archives)
 endforeach()
 
 file(GLOB_RECURSE _native_files LIST_DIRECTORIES false
-    "${_package_root}/Infernux/*.dll"
-    "${_package_root}/Infernux/*.dylib"
-    "${_package_root}/Infernux/*.pyd"
-    "${_package_root}/Infernux/*.so"
+    "${_package_root}/infernux/*.dll"
+    "${_package_root}/infernux/*.dylib"
+    "${_package_root}/infernux/*.pyd"
+    "${_package_root}/infernux/*.so"
 )
 
 if(NOT _native_files)
@@ -85,9 +95,9 @@ if(NOT _native_files)
 endif()
 
 file(GLOB _bootstrap_source_files
-    "${_package_root}/Infernux/lib/_InfernuxBootstrap*.pyd"
-    "${_package_root}/Infernux/lib/_InfernuxBootstrap*.so"
-    "${_package_root}/Infernux/lib/_InfernuxBootstrap*.dylib"
+    "${_package_root}/infernux/lib/_InfernuxBootstrap*.pyd"
+    "${_package_root}/infernux/lib/_InfernuxBootstrap*.so"
+    "${_package_root}/infernux/lib/_InfernuxBootstrap*.dylib"
 )
 if(NOT _bootstrap_source_files)
     message(FATAL_ERROR "Missing _InfernuxBootstrap native module in the package source tree")
@@ -116,9 +126,9 @@ endforeach()
 # Vulkan frontend is a native payload in this wheel.  Missing either side is a
 # broken distribution, not an optional runtime download.
 file(GLOB _gpu_jit_modules
-    "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/_lib/core/_infernux_gpu_compiler*.pyd"
-    "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/_lib/core/_infernux_gpu_compiler*.so"
-    "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/_lib/core/_infernux_gpu_compiler*.dylib"
+    "${_verify_root}/infernux/_compiler/taichi/_vendor/taichi/_lib/core/_infernux_gpu_compiler*.pyd"
+    "${_verify_root}/infernux/_compiler/taichi/_vendor/taichi/_lib/core/_infernux_gpu_compiler*.so"
+    "${_verify_root}/infernux/_compiler/taichi/_vendor/taichi/_lib/core/_infernux_gpu_compiler*.dylib"
 )
 list(LENGTH _gpu_jit_modules _gpu_jit_module_count)
 if(NOT _gpu_jit_module_count EQUAL 1)
@@ -126,8 +136,8 @@ if(NOT _gpu_jit_module_count EQUAL 1)
         "Wheel must contain exactly one platform GPU JIT compiler module, found ${_gpu_jit_module_count}"
     )
 endif()
-if(NOT EXISTS "${_verify_root}/Infernux/_compiler/taichi/__init__.py" OR
-   NOT EXISTS "${_verify_root}/Infernux/_compiler/taichi/frontend.py")
+if(NOT EXISTS "${_verify_root}/infernux/_compiler/taichi/__init__.py" OR
+   NOT EXISTS "${_verify_root}/infernux/_compiler/taichi/frontend.py")
     message(FATAL_ERROR "Wheel is missing the Infernux-owned GPU compiler loader")
 endif()
 # The reused lowering sources are namespaced below Infernux and are not an
@@ -139,19 +149,19 @@ endif()
 set(_retired_private_compiler_directories
     ad algorithms aot examples graph linalg math profiler sparse tools ui _ti_module)
 foreach(_retired_dir IN LISTS _retired_private_compiler_directories)
-    if(EXISTS "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/${_retired_dir}")
+    if(EXISTS "${_verify_root}/infernux/_compiler/taichi/_vendor/taichi/${_retired_dir}")
         message(FATAL_ERROR
             "Wheel restored retired private compiler directory: ${_retired_dir}")
     endif()
 endforeach()
 foreach(_retired_file experimental.py lang/misc.py types/quant.py _funcs.py _kernels.py)
-    if(EXISTS "${_verify_root}/Infernux/_compiler/taichi/_vendor/taichi/${_retired_file}")
+    if(EXISTS "${_verify_root}/infernux/_compiler/taichi/_vendor/taichi/${_retired_file}")
         message(FATAL_ERROR
             "Wheel restored retired private compiler file: ${_retired_file}")
     endif()
 endforeach()
 foreach(_license_name LICENSE NOTICE)
-    if(NOT EXISTS "${_verify_root}/Infernux/_compiler/licenses/taichi/${_license_name}")
+    if(NOT EXISTS "${_verify_root}/infernux/_compiler/licenses/taichi/${_license_name}")
         message(FATAL_ERROR "Wheel is missing the Taichi ${_license_name} attribution")
     endif()
 endforeach()
@@ -199,7 +209,7 @@ endif()
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
     find_program(_infernux_readelf NAMES readelf llvm-readelf REQUIRED)
     file(GLOB _linux_binding_modules
-        "${_verify_root}/Infernux/lib/_Infernux*.so"
+        "${_verify_root}/infernux/lib/_Infernux*.so"
     )
     foreach(_linux_binding_module IN LISTS _linux_binding_modules)
         execute_process(

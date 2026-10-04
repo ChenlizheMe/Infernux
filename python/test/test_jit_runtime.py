@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from Infernux.jit_runtime import (
+from infernux.jit_runtime import (
     BoundedLRU,
     calls_equivalent,
     clone_call_arguments,

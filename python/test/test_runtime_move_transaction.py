@@ -1,8 +1,8 @@
 import pytest
 
-from Infernux.core.assets import AssetManager
-from Infernux.engine.play_mode import PlayModeManager, ScriptReloadOutcome
-from Infernux.engine.resources_manager import (
+from infernux.core.assets import AssetManager
+from infernux.engine.play_mode import PlayModeManager, ScriptReloadOutcome
+from infernux.engine.resources_manager import (
     ResourceChangeHandler,
     ResourcesManager,
     _AssetImportNotReady,
@@ -91,7 +91,7 @@ def test_valid_script_move_stages_old_removal_and_notifies_once(monkeypatch, tmp
     )
     unregister_calls = []
     monkeypatch.setattr(
-        "Infernux.components.registry.unregister_component_script",
+        "infernux.components.registry.unregister_component_script",
         lambda path: unregister_calls.append(path),
     )
     _patch_move(monkeypatch)
@@ -117,7 +117,7 @@ def test_invalid_destination_does_not_touch_registry_or_graph(monkeypatch, tmp_p
     calls = _patch_move(monkeypatch)
     unregister_calls = []
     monkeypatch.setattr(
-        "Infernux.components.registry.unregister_component_script",
+        "infernux.components.registry.unregister_component_script",
         lambda path: unregister_calls.append(path),
     )
 
@@ -187,7 +187,7 @@ def test_graph_move_transaction_rolls_back_as_one_state(tmp_path):
     new_path = assets / "Moved.py"
     old_path.write_text("value = 1\n", encoding="utf-8")
 
-    from Infernux.engine.script_dependency_graph import ScriptDependencyGraph
+    from infernux.engine.script_dependency_graph import ScriptDependencyGraph
 
     graph = ScriptDependencyGraph(str(tmp_path))
     graph.index_assets()

@@ -1,14 +1,14 @@
-"""Tests for Infernux.input — Input class, KeyCode constants, focus gating (real C++ backend)."""
+"""Tests for infernux.input — Input class, KeyCode constants, focus gating (real C++ backend)."""
 
 from __future__ import annotations
 
 import pytest
 from types import SimpleNamespace
 
-import Infernux.input as input_module
-from Infernux.input import AccelerationEvent, Input, KeyCode, Touch, TouchPhase
-from Infernux.lib import InputManager
-from Infernux.runtime_services import install_runtime_service, remove_runtime_service
+import infernux.input as input_module
+from infernux.input import AccelerationEvent, Input, KeyCode, Touch, TouchPhase
+from infernux.lib import InputManager
+from infernux.runtime_services import install_runtime_service, remove_runtime_service
 
 
 # ═══════════════════════════════════════════════════════════════════════════

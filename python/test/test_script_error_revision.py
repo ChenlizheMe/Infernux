@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from Infernux.components.script_loader import (
+from infernux.components.script_loader import (
     _clear_script_error,
     get_script_error_by_path,
     get_script_error_revision,

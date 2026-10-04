@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from Infernux.engine.ui import inspector_shader_utils
-from Infernux.engine.ui import inspector_material
+from infernux.engine.ui import inspector_shader_utils
+from infernux.engine.ui import inspector_material
 
 
 def _write_meta(path, metadata):
@@ -147,7 +147,7 @@ def test_material_shader_object_field_forwards_stable_semantic_id(monkeypatch):
         calls.append((args, kwargs))
         return False
 
-    from Infernux.engine.ui import inspector_components
+    from infernux.engine.ui import inspector_components
 
     monkeypatch.setattr(
         inspector_components,

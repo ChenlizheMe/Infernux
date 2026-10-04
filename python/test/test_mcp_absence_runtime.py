@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine import player_package_native
+from infernux.engine import player_package_native
 
 
 def _native_available() -> bool:
@@ -30,7 +30,7 @@ def _prepare_project(project: Path) -> None:
     (project / "ProjectSettings").mkdir()
     shutil.copyfile(
         Path(__file__).parents[2]
-        / "python/Infernux/resources/project_templates/requirements.txt",
+        / "python/infernux/resources/project_templates/requirements.txt",
         project / "ProjectSettings/requirements.txt",
     )
     (project / "ProjectSettings/BuildSettings.json").write_text(
@@ -39,15 +39,15 @@ def _prepare_project(project: Path) -> None:
 
 
 def _run_editor_without_mcp(project: Path, port: int) -> None:
-    from Infernux.engine.bootstrap import EditorBootstrap
-    from Infernux.engine.interaction import (
+    from infernux.engine.bootstrap import EditorBootstrap
+    from infernux.engine.interaction import (
         DocumentActionStatus,
         DocumentRegistry,
         EditorInteractionCore,
     )
-    from Infernux.engine.undo import UndoManager
-    from Infernux.lib import SceneManager
-    from Infernux.plugins import PluginManager
+    from infernux.engine.undo import UndoManager
+    from infernux.lib import SceneManager
+    from infernux.plugins import PluginManager
 
     _prepare_project(project)
     os.environ["LOCALAPPDATA"] = str(project / ".local-state")
@@ -90,7 +90,7 @@ def _run_editor_without_mcp(project: Path, port: int) -> None:
 
         play = bootstrap.engine.get_play_mode_manager()
         assert play.enter_play_mode() is True
-        from Infernux.engine.deferred_task import DeferredTaskRunner
+        from infernux.engine.deferred_task import DeferredTaskRunner
 
         DeferredTaskRunner.instance().tick()
         assert play.is_playing is True
@@ -98,8 +98,8 @@ def _run_editor_without_mcp(project: Path, port: int) -> None:
         DeferredTaskRunner.instance().tick()
         assert play.is_edit_mode is True
 
-        from Infernux.engine.game_builder import GameBuilder
-        from Infernux.engine.player_build_preflight import publish_player_asset_catalog
+        from infernux.engine.game_builder import GameBuilder
+        from infernux.engine.player_build_preflight import publish_player_asset_catalog
 
         # MCP is optional, but desktop export is supplied by its platform plugin.
         # The host Player build preset produces this complete archive before pytest.
@@ -196,7 +196,7 @@ def test_full_editor_bootstrap_remains_functional_without_mcp():
     try:
         resources = short_root / "resources"
         shutil.copytree(
-            repository / "python" / "Infernux" / "resources",
+            repository / "python" / "infernux" / "resources",
             resources,
             ignore=shutil.ignore_patterns("*.inxpkg"),
         )

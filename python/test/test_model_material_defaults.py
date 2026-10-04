@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from Infernux.core.assets import AssetManager
+from infernux.core.assets import AssetManager
 
 
 @pytest.fixture
@@ -47,8 +47,8 @@ def color(renderer, slot=0):
 @pytest.mark.parametrize("override", [False, True])
 def test_material_creation_mode_controls_artifacts_and_keeps_overrides(imported_model, apply_mode, override):
     import time
-    from Infernux.core.asset_types import read_mesh_import_settings
-    from Infernux.lib import AssetRegistry, AssetDependencyGraph
+    from infernux.core.asset_types import read_mesh_import_settings
+    from infernux.lib import AssetRegistry, AssetDependencyGraph
 
     renderer, _, source, database, _ = imported_model
     registry = AssetRegistry.instance()
@@ -100,8 +100,8 @@ def test_material_creation_mode_controls_artifacts_and_keeps_overrides(imported_
 
 
 def test_disabled_material_import_defers_remap_resolution(imported_model):
-    from Infernux.core.asset_types import read_mesh_import_settings
-    from Infernux.lib import AssetRegistry, AssetDependencyGraph
+    from infernux.core.asset_types import read_mesh_import_settings
+    from infernux.lib import AssetRegistry, AssetDependencyGraph
 
     renderer, _, source, database, _ = imported_model
     mesh = AssetRegistry.instance().load_mesh(str(source))
@@ -123,8 +123,8 @@ def test_disabled_material_import_defers_remap_resolution(imported_model):
 def test_material_none_removes_external_texture_dependency(imported_model, apply_mode):
     import time
     from PIL import Image
-    from Infernux.core.asset_types import read_mesh_import_settings
-    from Infernux.lib import AssetRegistry, AssetDependencyGraph
+    from infernux.core.asset_types import read_mesh_import_settings
+    from infernux.lib import AssetRegistry, AssetDependencyGraph
 
     renderer, document, source, database, _ = imported_model
     texture = source.with_name("model_color.png")
@@ -160,7 +160,7 @@ def test_material_none_removes_external_texture_dependency(imported_model, apply
 def test_model_and_texture_first_scan_share_unpublished_guid_catalog(imported_model):
     import time
     from PIL import Image
-    from Infernux.lib import AssetRegistry, AssetDependencyGraph
+    from infernux.lib import AssetRegistry, AssetDependencyGraph
 
     _, document, source, database, _ = imported_model
     fresh = source.parent / "Fresh Textured Model.gltf"
@@ -186,7 +186,7 @@ def test_model_and_texture_first_scan_share_unpublished_guid_catalog(imported_mo
 
 
 def test_unregistered_model_texture_rejects_publication_but_none_does_not_use_it(imported_model):
-    from Infernux.core.asset_types import read_mesh_import_settings
+    from infernux.core.asset_types import read_mesh_import_settings
     renderer, document, source, database, _ = imported_model
     before = Path(str(source) + ".meta").read_bytes()
     document["images"] = [{"uri": "MissingTexture.png"}]
@@ -205,7 +205,7 @@ def test_unregistered_model_texture_rejects_publication_but_none_does_not_use_it
 
 @pytest.mark.parametrize("value", [True, 1, "legacy", "", None])
 def test_invalid_material_import_mode_rejected_before_publication(imported_model, value):
-    from Infernux.core.asset_types import read_mesh_import_settings, MeshImportSettings
+    from infernux.core.asset_types import read_mesh_import_settings, MeshImportSettings
     _, _, source, database, _ = imported_model
     before = source.with_suffix(source.suffix + ".meta").read_bytes()
     data = read_mesh_import_settings(str(source)).to_dict()
@@ -218,7 +218,7 @@ def test_invalid_material_import_mode_rejected_before_publication(imported_model
 
 
 def test_material_copy_matches_renderer_without_sharing_edits(imported_model):
-    from Infernux.lib import AssetRegistry
+    from infernux.lib import AssetRegistry
 
     renderer, _, source, _, _ = imported_model
     mesh = AssetRegistry.instance().load_mesh(str(source))
@@ -234,9 +234,9 @@ def test_material_copy_matches_renderer_without_sharing_edits(imported_model):
 @pytest.mark.parametrize("alpha_mode", ["OPAQUE", "MASK", "BLEND"])
 @pytest.mark.parametrize("double_sided", [False, True])
 def test_source_surface_survives_import_copy_and_binary_reload(imported_model, alpha_mode, double_sided):
-    from Infernux.core.asset_types import read_mesh_import_settings
-    from Infernux.core.material import Material
-    from Infernux.lib import AssetRegistry, InxMaterial
+    from infernux.core.asset_types import read_mesh_import_settings
+    from infernux.core.material import Material
+    from infernux.lib import AssetRegistry, InxMaterial
 
     renderer, document, source, database, _ = imported_model
     authored = document["materials"][0]
@@ -299,9 +299,9 @@ def test_source_surface_survives_import_copy_and_binary_reload(imported_model, a
 
 
 def test_material_extraction_undo_redo_and_independent_asset(imported_model):
-    from Infernux.lib import AssetRegistry
-    from Infernux.engine.interaction import EditorActionJournal, ProjectAssetCommandService, SelectionService
-    from Infernux.engine.undo import UndoManager
+    from infernux.lib import AssetRegistry
+    from infernux.engine.interaction import EditorActionJournal, ProjectAssetCommandService, SelectionService
+    from infernux.engine.undo import UndoManager
 
     renderer, _, source, database, _ = imported_model
     registry = AssetRegistry.instance()
@@ -358,9 +358,9 @@ def test_material_extraction_undo_redo_and_independent_asset(imported_model):
 
 def test_material_save_dialog_captures_source_before_reimport(imported_model, monkeypatch):
     from types import SimpleNamespace
-    from Infernux.lib import AssetRegistry
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui import asset_details_renderer as inspector, asset_save_dialog
+    from infernux.lib import AssetRegistry
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui import asset_details_renderer as inspector, asset_save_dialog
 
     _, document, source, database, _ = imported_model
     mesh = AssetRegistry.instance().load_mesh(str(source))
@@ -485,8 +485,8 @@ def test_unchanged_model_materials_keep_runtime_instances(imported_model):
 
 
 def test_model_material_remap_follows_source_not_slot_and_preserves_overrides(imported_model):
-    from Infernux.core.asset_types import read_mesh_import_settings
-    from Infernux.lib import AssetRegistry, AssetDependencyGraph
+    from infernux.core.asset_types import read_mesh_import_settings
+    from infernux.lib import AssetRegistry, AssetDependencyGraph
 
     renderer, document, source, database, scene = imported_model
     mesh = AssetRegistry.instance().load_mesh(str(source))
@@ -529,8 +529,8 @@ def test_model_material_remap_follows_source_not_slot_and_preserves_overrides(im
 
 @pytest.mark.parametrize("failure", ["missing_source", "ambiguous_source", "missing_guid", "wrong_type", "self_dependency"])
 def test_invalid_model_remap_does_not_publish_settings_or_geometry(imported_model, failure):
-    from Infernux.core.asset_types import read_mesh_import_settings
-    from Infernux.lib import AssetRegistry
+    from infernux.core.asset_types import read_mesh_import_settings
+    from infernux.lib import AssetRegistry
 
     renderer, document, source, database, _ = imported_model
     mesh = AssetRegistry.instance().load_mesh(str(source))
@@ -571,7 +571,7 @@ def test_invalid_model_remap_does_not_publish_settings_or_geometry(imported_mode
 
 
 def test_material_remap_settings_copy_and_complete_contract():
-    from Infernux.core.asset_types import MeshImportSettings
+    from infernux.core.asset_types import MeshImportSettings
 
     settings = MeshImportSettings()
     clone = settings.copy()

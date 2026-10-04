@@ -1,4 +1,4 @@
-from Infernux.engine.ui.engine_status import EngineStatus
+from infernux.engine.ui.engine_status import EngineStatus
 
 
 def setup_function():
@@ -20,7 +20,7 @@ def test_completion_and_failure_flashes_do_not_remain_progress_bars():
 
 def test_expired_flash_clears_all_state(monkeypatch):
     EngineStatus.flash("Done", 1.0, duration=1.0)
-    monkeypatch.setattr("Infernux.engine.ui.engine_status.time.monotonic", lambda: float("inf"))
+    monkeypatch.setattr("infernux.engine.ui.engine_status.time.monotonic", lambda: float("inf"))
     assert EngineStatus.get() == ("", -1.0, "idle")
 
 

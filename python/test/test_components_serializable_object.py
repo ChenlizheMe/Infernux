@@ -1,17 +1,17 @@
-"""Tests for Infernux.components.serializable_object — SerializableObject base class."""
+"""Tests for infernux.components.serializable_object — SerializableObject base class."""
 
-from Infernux.components.serializable_object import (
+from infernux.components.serializable_object import (
     SerializableObject,
     _SERIALIZABLE_REGISTRY,
     get_serializable_class,
     get_serializable_type_id,
 )
-from Infernux.components.fields import serialized_field, FieldType
-from Infernux.components.value_document import make_serializable_object
+from infernux.components.fields import serialized_field, FieldType
+from infernux.components.value_document import make_serializable_object
 import pytest
 from typing import Annotated
-from Infernux.components import InxComponent
-from Infernux.components.fields import (
+from infernux.components import InxComponent
+from infernux.components.fields import (
     Range, Tooltip, HideInInspector, NonSerialized, FormerlySerializedAs,
     get_serialized_fields,
 )
@@ -68,8 +68,8 @@ def test_failed_data_declaration_does_not_replace_registered_type():
 
 def test_inherited_reference_serializes_raw_identity_not_resolved_object():
     import copy
-    from Infernux.components.ref_wrappers import GameObjectRef
-    from Infernux.components.fields import get_raw_field_value
+    from infernux.components.ref_wrappers import GameObjectRef
+    from infernux.components.fields import get_raw_field_value
 
     class Base(SerializableObject):
         target: GameObjectRef

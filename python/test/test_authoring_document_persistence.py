@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     AuthoringAssetSnapshot,
     AuthoringDocumentController,
     DocumentActionStatus,
@@ -84,7 +84,7 @@ def _bound_document(
 
 
 def test_async_authoring_save_keeps_newer_edit_dirty(monkeypatch, tmp_path):
-    import Infernux.engine.interaction.authoring_documents as module
+    import infernux.engine.interaction.authoring_documents as module
 
     io_ticket = _IOTicket()
     monkeypatch.setattr(module, "submit_document_text", lambda *_args, **_kwargs: io_ticket)
@@ -115,7 +115,7 @@ def test_async_authoring_save_reports_native_io_error_and_preserves_dirty(
     monkeypatch,
     tmp_path,
 ):
-    import Infernux.engine.interaction.authoring_documents as module
+    import infernux.engine.interaction.authoring_documents as module
 
     io_ticket = _IOTicket()
     monkeypatch.setattr(module, "submit_document_text", lambda *_args, **_kwargs: io_ticket)
@@ -145,7 +145,7 @@ def test_save_as_changes_document_identity_only_after_durable_completion(
     monkeypatch,
     tmp_path,
 ):
-    import Infernux.engine.interaction.authoring_documents as module
+    import infernux.engine.interaction.authoring_documents as module
 
     io_ticket = _IOTicket()
     monkeypatch.setattr(module, "submit_document_text", lambda *_args, **_kwargs: io_ticket)
@@ -160,7 +160,7 @@ def test_save_as_changes_document_identity_only_after_durable_completion(
         def get_guid_from_path(path):
             return "copy-guid" if str(path) == target else ""
 
-    monkeypatch.setattr("Infernux.core.assets.AssetManager._asset_database", _Database())
+    monkeypatch.setattr("infernux.core.assets.AssetManager._asset_database", _Database())
 
     result = registry.request_save_to_resource(document.document_id, target)
     assert result.status is DocumentActionStatus.PENDING

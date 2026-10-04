@@ -4,13 +4,13 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import Infernux.core.timeline_fsm_runtime as timeline_runtime_module
-from Infernux.components.particle_system import ParticleSystem
-from Infernux.components.skeletal_animator import SkeletalAnimator
-from Infernux.components.spirit_animator import SpiritAnimator
-from Infernux.core.animation_timeline import AnimationTimeline, TimelineKeyframe
-from Infernux.core.anim_state_machine import AnimState, AnimStateMachine
-from Infernux.core.timeline_fsm_runtime import TimelineFSMRuntime
+import infernux.core.timeline_fsm_runtime as timeline_runtime_module
+from infernux.components.particle_system import ParticleSystem
+from infernux.components.skeletal_animator import SkeletalAnimator
+from infernux.components.spirit_animator import SpiritAnimator
+from infernux.core.animation_timeline import AnimationTimeline, TimelineKeyframe
+from infernux.core.anim_state_machine import AnimState, AnimStateMachine
+from infernux.core.timeline_fsm_runtime import TimelineFSMRuntime
 
 
 _TIMELINE_PATHS = {}

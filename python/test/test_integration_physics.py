@@ -6,13 +6,13 @@ import math
 
 import pytest
 
-from Infernux.components import InxComponent
-from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
-from Infernux.physics import Physics as PublicPhysics
-from Infernux.timing import Time
-from Infernux.lib import BoxCollider as NativeBoxCollider
-from Infernux.lib import MeshCollider as NativeMeshCollider
-from Infernux.lib import (
+from infernux.components import InxComponent
+from infernux.engine.scene_document_transaction import SceneDocumentTransaction
+from infernux.physics import Physics as PublicPhysics
+from infernux.timing import Time
+from infernux.lib import BoxCollider as NativeBoxCollider
+from infernux.lib import MeshCollider as NativeMeshCollider
+from infernux.lib import (
     ForceMode,
     CollisionDetectionMode,
     EngineConfig,
@@ -392,7 +392,7 @@ class TestSliderJoint:
 class TestPenetrationQuery:
     @pytest.mark.parametrize("shape_name", ["BoxCollider", "SphereCollider", "CapsuleCollider", "CylinderCollider"])
     def test_prediction_returns_separating_direction_without_moving_world(self, scene, shape_name):
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         a = scene.create_game_object("predicted shape")
         a.transform.position = Vector3(20, 4, 0)
@@ -428,7 +428,7 @@ class TestPenetrationQuery:
                                                 collider_b, (3, 0, 0), identity) is None
 
     def test_center_signed_scale_rotation_and_disabled_compound_member(self, scene):
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         obj = scene.create_game_object("query compound member")
         obj.transform.local_scale = Vector3(-2, 1, 1)
@@ -452,7 +452,7 @@ class TestPenetrationQuery:
     @pytest.mark.parametrize("shape_name", ["CapsuleCollider", "CylinderCollider"])
     @pytest.mark.parametrize("axis", [0, 1, 2])
     def test_shape_axis_is_composed_with_predicted_rotation(self, scene, shape_name, axis):
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         collider = scene.create_game_object("axis query").add_component(shape_name)
         collider.radius = 0.5
@@ -468,7 +468,7 @@ class TestPenetrationQuery:
         assert actual == pytest.approx(tuple(-x for x in rotated_axis), abs=2e-3)
 
     def test_invalid_pose_and_unsupported_mesh_are_not_no_hit(self, scene):
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         sphere = scene.create_game_object("sphere").add_component("SphereCollider")
         mesh = scene.create_game_object("uncooked mesh").add_component("MeshCollider")
@@ -589,7 +589,7 @@ class TestColliderRaycast:
     def test_kinematic_non_convex_mesh_query_follows_published_transform(self, scene):
         import numpy as np
 
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         obj = scene.create_game_object("kinematic triangle mesh")
         renderer = obj.add_component("MeshRenderer")
@@ -666,7 +666,7 @@ class TestColliderRaycast:
 class TestRigidbodyStateBatch:
     def test_contact_stream_publishes_resolved_geometry_for_custom_solvers(self, scene):
         import numpy as np
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         _make_ground(scene)
         _, ball = _make_ball(scene, pos=Vector3(0, 2, 0), radius=0.5)
@@ -694,7 +694,7 @@ class TestRigidbodyStateBatch:
     def test_contact_impulse_stream_publishes_actual_solver_impulses(self, scene):
         """Expose the solved Jolt lambda without making custom solvers guess it."""
         import numpy as np
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         _make_ground(scene)
         _, ball = _make_ball(scene, pos=Vector3(0, 2, 0), radius=0.5)
@@ -723,9 +723,9 @@ class TestRigidbodyStateBatch:
         assert np.all(np.isfinite(impulses["impulse"]))
         assert np.any(np.linalg.norm(impulses["impulse"], axis=1) > 0.0)
     def test_box_descriptors_are_flattened_and_reuse_capacity(self, scene):
-        import Infernux as inx
+        import infernux as inx
         import numpy as np
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         box_object = scene.create_game_object("box descriptor")
         box_object.transform.position = Vector3(3, 4, 5)
@@ -763,7 +763,7 @@ class TestRigidbodyStateBatch:
         np.testing.assert_allclose(out["half_extents"].numpy()[0], [1, 3, 6])
 
     def test_broadphase_bounds_query_returns_only_nearby_rigidbodies(self, scene):
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         nearby = [_make_ball(scene, pos=Vector3(index * 1.5, 2, 0))[1] for index in range(3)]
         for index in range(128):
@@ -781,15 +781,15 @@ class TestRigidbodyStateBatch:
         assert PublicPhysics.query_rigidbodies_in_bounds((900, 0, -2), (999, 4, 2)) == []
 
     def test_broadphase_bounds_query_rejects_inverted_bounds(self, scene):
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         with pytest.raises(ValueError, match="minimum must not exceed maximum"):
             PublicPhysics.query_rigidbodies_in_bounds((1, 0, 0), (0, 1, 1))
 
     def test_reuses_engine_cpu_buffers_for_snapshot_and_feedback(self, scene):
-        import Infernux as inx
+        import infernux as inx
         import numpy as np
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         bodies = [_make_ball(scene, pos=Vector3(index * 2, 4, 0), mass=2)[1]
                   for index in range(3)]
@@ -820,9 +820,9 @@ class TestRigidbodyStateBatch:
         np.testing.assert_allclose(state["linear_velocity"].numpy()[:3], np.full((3, 3), 0.125), atol=1e-6)
 
     def test_web_mapped_feedback_uses_only_the_live_body_prefix(self, scene, monkeypatch):
-        import Infernux as inx
+        import infernux as inx
         import numpy as np
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
         bodies = [_make_ball(scene, pos=Vector3(index * 2, 4, 0), mass=2)[1]
@@ -851,7 +851,7 @@ class TestRigidbodyStateBatch:
 
     def test_aggregated_impulse_batch_and_boundary_validation(self, scene):
         import numpy as np
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         bodies = [_make_ball(scene, pos=Vector3(i * 3, 4, 0), mass=2 + i * 2)[1]
                   for i in range(2)]
@@ -884,7 +884,7 @@ class TestRigidbodyStateBatch:
         int(RigidbodyConstraints.FreezePositionX) | int(RigidbodyConstraints.FreezeRotationY)])
     def test_snapshot_predicts_actual_off_center_impulse(self, scene, constraints):
         import numpy as np
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         obj = scene.create_game_object("rotated body snapshot")
         obj.transform.position = Vector3(3, 4, 5)
@@ -928,7 +928,7 @@ class TestRigidbodyStateBatch:
 
     def test_kinematic_and_empty_batches(self, scene):
         import numpy as np
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         _, rb = _make_ball(scene)
         rb.is_kinematic = True
@@ -947,7 +947,7 @@ class TestRigidbodyStateBatch:
 
     def test_unpublished_body_has_no_synthetic_physics_state(self, scene):
         import numpy as np
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         rb = scene.create_game_object("no collider").add_component("Rigidbody")
         with pytest.raises(RuntimeError, match="active physics body"):
@@ -963,7 +963,7 @@ class TestRigidbodyStateBatch:
 
     def test_zero_feedback_preserves_sleep_and_kinematics_ignore_impulses(self, scene):
         import numpy as np
-        from Infernux.physics import Physics as PublicPhysics
+        from infernux.physics import Physics as PublicPhysics
 
         _, dynamic = _make_ball(scene, pos=Vector3(0, 4, 0))
         _, kinematic = _make_ball(scene, pos=Vector3(4, 4, 0))

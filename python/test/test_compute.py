@@ -6,16 +6,16 @@ import ast
 import numpy as np
 import pytest
 
-import Infernux as inx
-from Infernux import jit
-from Infernux import _jit_kernels as kernels
+import infernux as inx
+from infernux import jit
+from infernux import _jit_kernels as kernels
 
 
 def test_web_cpu_cook_vectorizes_scalar_range_and_atomic_reductions(monkeypatch):
-    from Infernux.engine.build.compute_cpu import build_cpu_compute_source
+    from infernux.engine.build.compute_cpu import build_cpu_compute_source
 
     source = """
-import Infernux as inx
+import infernux as inx
 
 @inx.compute.kernel
 def solve(domain, positions, limits, shifts, bins, totals, contacts, count):
@@ -58,10 +58,10 @@ def solve(domain, positions, limits, shifts, bins, totals, contacts, count):
 
 
 def test_web_cpu_atomic_add_preserves_lane_and_scalar_reductions(monkeypatch):
-    from Infernux.engine.build.compute_cpu import build_cpu_compute_source
+    from infernux.engine.build.compute_cpu import build_cpu_compute_source
 
     source = """
-import Infernux as inx
+import infernux as inx
 
 @inx.compute.kernel
 def accumulate(domain, bins, values, vectors, count):
@@ -95,10 +95,10 @@ def accumulate(domain, bins, values, vectors, count):
 
 
 def test_web_cpu_atomic_add_never_indexes_inactive_lanes(monkeypatch):
-    from Infernux.engine.build.compute_cpu import build_cpu_compute_source
+    from infernux.engine.build.compute_cpu import build_cpu_compute_source
 
     source = """
-import Infernux as inx
+import infernux as inx
 
 @inx.compute.kernel
 def accumulate(domain, bins, totals):
@@ -121,7 +121,7 @@ def accumulate(domain, bins, totals):
 
 
 def test_gpu_index_declaration_accepts_public_and_imported_spellings():
-    from Infernux._compiler.taichi.frontend import _index_declaration
+    from infernux._compiler.taichi.frontend import _index_declaration
 
     for source in (
         "i = inx.compute.index(domain)",
@@ -133,7 +133,7 @@ def test_gpu_index_declaration_accepts_public_and_imported_spellings():
 
 
 def _execute_pair_lowered(source: str, *args):
-    from Infernux._compiler.taichi.frontend import _lower_serial_loops
+    from infernux._compiler.taichi.frontend import _lower_serial_loops
 
     module = ast.parse(source)
     definition = module.body[0]
@@ -205,7 +205,7 @@ def probe(limit):
 
 
 def test_gpu_dynamic_range_step_must_be_compile_time_nonzero():
-    from Infernux._compiler.taichi.frontend import _lower_serial_loops
+    from infernux._compiler.taichi.frontend import _lower_serial_loops
 
     for source, message in (
         ("def probe(stop, step):\n    for i in range(0, stop, step):\n        pass\n",
@@ -646,7 +646,7 @@ def test_owned_buffer_copies_contiguous_initial_storage(monkeypatch, device, web
 
 
 def test_buffer_is_runtime_storage_not_a_serialized_asset_value():
-    from Infernux.components.value_codec import ValueCodecRegistry
+    from infernux.components.value_codec import ValueCodecRegistry
 
     values = inx.buffer(shape=4, dtype=np.float32, device="cpu")
     with pytest.raises(TypeError, match="unsupported serialized value type"):
@@ -704,7 +704,7 @@ def test_cpu_buffer_async_readback_is_an_immediate_exact_snapshot():
 
 def test_readback_cancel_abandons_without_polling_or_fetching():
     import weakref
-    from Infernux.compute import Readback
+    from infernux.compute import Readback
 
     class Pending:
         @property
@@ -728,7 +728,7 @@ def test_readback_cancel_abandons_without_polling_or_fetching():
 
 
 def test_engine_resource_release_cancels_unconsumed_native_readbacks():
-    from Infernux.compute import Readback
+    from infernux.compute import Readback
 
     class Pending:
         @property
@@ -786,7 +786,7 @@ def test_buffer_element_ranges_fill_and_reusable_output():
 
 def test_buffer_gpu_uses_engine_owned_storage_and_never_indexes(monkeypatch):
     from types import SimpleNamespace
-    from Infernux.application import Application
+    from infernux.application import Application
 
     class NativeBuffer:
         def __init__(self, byte_size):
@@ -869,11 +869,11 @@ def test_gpu_kernel_declaration_is_inert_until_explicit_launch():
 
 
 def test_source_less_player_metadata_preserves_kernel_and_helper_source(monkeypatch):
-    from Infernux._compiler.source_metadata import embed_compute_sources
-    from Infernux._compiler.taichi import frontend
+    from infernux._compiler.source_metadata import embed_compute_sources
+    from infernux._compiler.taichi import frontend
 
     source = """\
-from Infernux import compute as gpu
+from infernux import compute as gpu
 
 @gpu.function
 def twice(value):
@@ -902,8 +902,8 @@ def scale(values):
 
 
 def test_source_less_metadata_preserves_engine_owned_bare_kernel(monkeypatch):
-    from Infernux._compiler.source_metadata import embed_compute_sources
-    from Infernux._compiler.taichi import frontend
+    from infernux._compiler.source_metadata import embed_compute_sources
+    from infernux._compiler.taichi import frontend
 
     source = """\
 def kernel(fn):
@@ -925,7 +925,7 @@ def internal(values):
 
 
 def test_class_kernel_diagnostics_identify_receiver_and_rewrite():
-    from Infernux._compiler.taichi import frontend
+    from infernux._compiler.taichi import frontend
 
     class InvalidKernel:
         @inx.compute.kernel
@@ -945,7 +945,7 @@ def test_class_kernel_diagnostics_identify_receiver_and_rewrite():
 
 
 def test_class_kernel_instance_receiver_lowers_engine_owned_scalar(monkeypatch):
-    from Infernux._compiler.taichi import frontend
+    from infernux._compiler.taichi import frontend
 
     class Host:
         identity = 1901
@@ -997,7 +997,7 @@ def test_class_kernel_instance_receiver_lowers_engine_owned_scalar(monkeypatch):
 
 
 def test_class_kernel_diagnostics_reject_unbound_receiver_field():
-    from Infernux._compiler.taichi import frontend
+    from infernux._compiler.taichi import frontend
 
     class InvalidFieldKernel:
         @inx.compute.kernel
@@ -1015,7 +1015,7 @@ def test_class_kernel_diagnostics_reject_unbound_receiver_field():
 
 
 def test_kernel_closure_diagnostic_identifies_captured_value():
-    from Infernux._compiler.taichi import frontend
+    from infernux._compiler.taichi import frontend
 
     factor = 2
 
@@ -1075,7 +1075,7 @@ def test_gpu_kernel_prepare_is_explicit_and_never_dispatches():
 
 
 def test_gpu_compiler_artifact_cache_is_engine_owned_binary(tmp_path, monkeypatch):
-    from Infernux._compiler.taichi import frontend
+    from infernux._compiler.taichi import frontend
 
     artifact = frontend.CompilerArtifact(
         spirv_tasks=(b"\x03\x02\x23\x07", b"task-two"),
@@ -1115,8 +1115,8 @@ def test_gpu_compiler_artifact_cache_is_engine_owned_binary(tmp_path, monkeypatc
 def test_gpu_compiler_artifact_cache_uses_project_library_and_player_data(
     tmp_path, monkeypatch
 ):
-    from Infernux.application import Application
-    from Infernux._compiler.taichi import frontend
+    from infernux.application import Application
+    from infernux._compiler.taichi import frontend
 
     project_root = tmp_path / "project"
     player_root = tmp_path / "player-data"
@@ -1141,9 +1141,9 @@ def test_gpu_compute_function_is_an_explicit_kernel_only_declaration():
 
 
 def test_gpu_compute_errors_distinguish_capability_compile_and_execution(monkeypatch):
-    from Infernux.application import Application
-    from Infernux._compiler.taichi import CompilerInstallationError
-    from Infernux._compiler.taichi import frontend
+    from infernux.application import Application
+    from infernux._compiler.taichi import CompilerInstallationError
+    from infernux._compiler.taichi import frontend
 
     monkeypatch.setattr(Application, "_current_engine", staticmethod(lambda: None))
     with pytest.raises(inx.compute.ComputeCapabilityError, match="running graphical"):
@@ -1200,7 +1200,7 @@ def test_gpu_compute_errors_distinguish_capability_compile_and_execution(monkeyp
 
 def test_engine_resource_release_closes_module_level_gpu_objects(monkeypatch):
     from types import SimpleNamespace
-    from Infernux.application import Application
+    from infernux.application import Application
 
     class NativeBuffer:
         resource_index = 17
@@ -1236,7 +1236,7 @@ def test_engine_resource_release_closes_module_level_gpu_objects(monkeypatch):
 
 
 def test_gpu_kernel_specializations_are_bounded_and_retire_lru(monkeypatch):
-    from Infernux._compiler.taichi import frontend
+    from infernux._compiler.taichi import frontend
 
     class Host:
         identity = 31
@@ -1394,8 +1394,8 @@ def test_explicit_readback_joins_pending_compute_submission():
 
 def test_compiled_gpu_launch_preparation_is_reused_for_stable_parameters(monkeypatch):
     from types import SimpleNamespace
-    from Infernux.application import Application
-    from Infernux.compute import _KernelExecutable
+    from infernux.application import Application
+    from infernux.compute import _KernelExecutable
 
     class NativeBuffer:
         resource_index = 19
@@ -1469,16 +1469,16 @@ def test_compute_has_no_in_process_installer_or_second_device_array_api():
     assert not hasattr(jit, "ensure_jit_runtime")
     assert not hasattr(jit, "_install_numba")
     assert not hasattr(jit, "create_array")
-    from Infernux.core import parallel_backend
+    from infernux.core import parallel_backend
     assert not hasattr(parallel_backend, "ResidentArray")
 
 
 @pytest.mark.parametrize("imports,decorator", [
     ("import infernux as inx", "inx.jit.compile"),
-    ("import Infernux", "Infernux.jit.compile"),
-    ("from Infernux import jit as cpu", "cpu.compile"),
-    ("import Infernux.jit as cpu", "cpu.compile"),
-    ("from Infernux.jit import compile as optimize", "optimize"),
+    ("import infernux", "infernux.jit.compile"),
+    ("from infernux import jit as cpu", "cpu.compile"),
+    ("import infernux.jit as cpu", "cpu.compile"),
+    ("from infernux.jit import compile as optimize", "optimize"),
 ])
 def test_cpu_jit_declarations_are_recognized_without_importing_authored_code(imports, decorator):
     source = f"{imports}\n@{decorator}\ndef fill(values):\n    return values\n"
@@ -1497,7 +1497,7 @@ def test_cpu_jit_declarations_are_recognized_without_importing_authored_code(imp
             "        values[index] = index\n"
         ),
         (
-            "from Infernux import jit as cpu\n"
+            "from infernux import jit as cpu\n"
             "class Solver:\n"
             "    @cpu.compile(\n"
             "        cache=True,\n"
@@ -1507,7 +1507,7 @@ def test_cpu_jit_declarations_are_recognized_without_importing_authored_code(imp
             "        return [value + 1 for value in values]\n"
         ),
         (
-            "from Infernux.jit import compile as optimize, warmup as prepare\n"
+            "from infernux.jit import compile as optimize, warmup as prepare\n"
             "@optimize\n"
             "def fill(values):\n"
             "    marker = prepare(fill, values)\n"
@@ -1573,7 +1573,7 @@ def test_no_jit_build_follows_assigned_cpu_jit_aliases():
 
 def test_no_jit_build_follows_public_jit_star_imports():
     source = (
-        "from Infernux.jit import *\n"
+        "from infernux.jit import *\n"
         "@compile(parallel_policy='required')\n"
         "def fill(values):\n"
         "    prepared = warmup(fill, values)\n"
@@ -1593,7 +1593,7 @@ def test_no_jit_build_follows_public_jit_star_imports():
     "source",
     [
         (
-            "from Infernux import jit as cpu\n"
+            "from infernux import jit as cpu\n"
             "events = []\n"
             "class Ordinary:\n"
             "    def compile(self, function):\n"
@@ -1608,7 +1608,7 @@ def test_no_jit_build_follows_public_jit_star_imports():
             "    return cpu.warmup(fill, values)\n"
         ),
         (
-            "from Infernux.jit import compile as optimize, warmup as prepare\n"
+            "from infernux.jit import compile as optimize, warmup as prepare\n"
             "events = []\n"
             "def ordinary_decorator(function):\n"
             "    events.append('decorate')\n"
@@ -1637,7 +1637,7 @@ def test_no_jit_build_preserves_imported_names_rebound_to_ordinary_code(source):
 
 def test_no_jit_build_applies_import_rebinding_in_source_order():
     source = (
-        "from Infernux import jit as cpu\n"
+        "from infernux import jit as cpu\n"
         "@cpu.compile(parallel_policy='required')\n"
         "def cooked(values):\n"
         "    return cpu.warmup(cooked, values)\n"
@@ -1671,7 +1671,7 @@ def test_no_jit_build_applies_import_rebinding_in_source_order():
 
 def test_no_jit_build_rejects_control_flow_ambiguous_jit_binding():
     source = (
-        "from Infernux import jit as cpu\n"
+        "from infernux import jit as cpu\n"
         "if use_ordinary:\n"
         "    cpu = ordinary_cpu\n"
         "@cpu.compile\n"
@@ -1685,7 +1685,7 @@ def test_no_jit_build_rejects_control_flow_ambiguous_jit_binding():
 
 def test_no_jit_build_rejects_conditional_jit_alias_assignment():
     source = (
-        "from Infernux import jit as cpu\n"
+        "from infernux import jit as cpu\n"
         "optimize = cpu.compile if enable_jit else ordinary_decorator\n"
         "@optimize\n"
         "def fill(values):\n"
@@ -1698,7 +1698,7 @@ def test_no_jit_build_rejects_conditional_jit_alias_assignment():
 
 def test_no_jit_build_rejects_unknown_star_import_over_public_jit_alias():
     source = (
-        "from Infernux.jit import compile as optimize\n"
+        "from infernux.jit import compile as optimize\n"
         "from authored_helpers import *\n"
         "@optimize\n"
         "def fill(values):\n"
@@ -1717,13 +1717,13 @@ def test_no_jit_build_rejects_unknown_star_import_over_public_jit_alias():
             "    def compile(self, function):\n"
             "        return function\n"
             "jit = Ordinary()\n"
-            "from Infernux import *\n"
+            "from infernux import *\n"
             "@jit.compile\n"
             "def fill(values):\n"
             "    return values\n"
         ),
         (
-            "from .Infernux.jit import compile as optimize\n"
+            "from .infernux.jit import compile as optimize\n"
             "@optimize\n"
             "def fill(values):\n"
             "    return values\n"
@@ -1746,7 +1746,7 @@ def test_no_jit_build_does_not_rewrite_gpu_execution_model():
 
 def test_gpu_kernel_is_not_rewritten_as_cpu_parallel_work():
     source = (
-        "from Infernux import compute\n"
+        "from infernux import compute\n"
         "@compute.kernel\n"
         "def fill(values):\n"
         "    i = compute.index(values)\n"

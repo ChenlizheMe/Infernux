@@ -1,7 +1,7 @@
 import pytest
 
-from Infernux.renderstack.effect_stage import EffectScope
-from Infernux.renderstack.pipeline_dsl import (
+from infernux.renderstack.effect_stage import EffectScope
+from infernux.renderstack.pipeline_dsl import (
     Path,
     PipelineBuilder,
     Queue,

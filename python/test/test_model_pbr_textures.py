@@ -5,9 +5,9 @@ import time
 import pytest
 from PIL import Image
 
-from Infernux.core.asset_types import read_mesh_import_settings, read_texture_import_settings
-from Infernux.core.assets import AssetManager
-from Infernux.lib import AssetDependencyGraph, AssetRegistry
+from infernux.core.asset_types import read_mesh_import_settings, read_texture_import_settings
+from infernux.core.assets import AssetManager
+from infernux.lib import AssetDependencyGraph, AssetRegistry
 from test_model_material_defaults import imported_model
 
 

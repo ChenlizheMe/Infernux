@@ -218,7 +218,7 @@ def test_prepare_project_registry_imports_runtime_package_scripts_only(
     editor_script = editor / "editor_component.py"
     script_template = (
         "from pathlib import Path\n"
-        "import Infernux as inx\n"
+        "import infernux as inx\n"
         "Path({marker!r}).write_text('imported', encoding='utf-8')\n"
         "class {class_name}(inx.InxComponent):\n"
         "    pass\n"
@@ -240,9 +240,9 @@ def test_prepare_project_registry_imports_runtime_package_scripts_only(
         )
 
     startup_calls = []
-    from Infernux.components import registry as component_registry
-    from Infernux.engine import library_sync, project_context
-    from Infernux.plugins import PluginManager
+    from infernux.components import registry as component_registry
+    from infernux.engine import library_sync, project_context
+    from infernux.plugins import PluginManager
 
     monkeypatch.setattr(library_sync, "sync_resources", lambda _root: None)
     monkeypatch.setattr(project_context, "_project_root", None)
@@ -275,7 +275,7 @@ def test_installed_registry_publishes_project_data_asset_types_before_cook(
     script.write_text(
         textwrap.dedent(
             """
-            import Infernux as inx
+            import infernux as inx
 
             class BuildConfig(inx.DataAsset):
                 __serialized_type_id__ = "tests.cli.build_config"
@@ -292,10 +292,10 @@ def test_installed_registry_publishes_project_data_asset_types_before_cook(
         encoding="utf-8",
     )
 
-    from Infernux.components import registry as component_registry
-    from Infernux.components.serializable_object import get_serializable_class
-    from Infernux.engine import library_sync, project_context
-    from Infernux.plugins import PluginManager
+    from infernux.components import registry as component_registry
+    from infernux.components.serializable_object import get_serializable_class
+    from infernux.engine import library_sync, project_context
+    from infernux.plugins import PluginManager
 
     monkeypatch.setattr(library_sync, "sync_resources", lambda _root: None)
     monkeypatch.setattr(project_context, "_project_root", None)

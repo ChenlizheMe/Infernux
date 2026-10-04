@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 
 import pytest
-from Infernux.lib import (
+from infernux.lib import (
     StatusBarPanel,
     ToolbarPanel,
     MenuBarPanel,
@@ -43,7 +43,7 @@ class TestStatusBarPanel:
         source = Path("cpp/infernux/function/editor/StatusBarPanel.cpp").read_text(encoding="utf-8")
         header = Path("cpp/infernux/function/editor/StatusBarPanel.h").read_text(encoding="utf-8")
         binding = Path("cpp/infernux/tools/pybinding/BindingGUI.cpp").read_text(encoding="utf-8")
-        bootstrap = Path("python/Infernux/engine/_bootstrap_panels.py").read_text(encoding="utf-8")
+        bootstrap = Path("python/infernux/engine/_bootstrap_panels.py").read_text(encoding="utf-8")
 
         assert 'executeCommand("console.open_entry", "pointer"' in source
         assert "m_console->SelectEntry(m_latestUid)" not in source
@@ -272,7 +272,7 @@ class TestToolbarPanel:
         source = Path("cpp/infernux/function/editor/ToolbarPanel.cpp").read_text(encoding="utf-8")
         header = Path("cpp/infernux/function/editor/ToolbarPanel.h").read_text(encoding="utf-8")
         binding = Path("cpp/infernux/tools/pybinding/BindingGUI.cpp").read_text(encoding="utf-8")
-        bootstrap = Path("python/Infernux/engine/bootstrap.py").read_text(encoding="utf-8")
+        bootstrap = Path("python/infernux/engine/bootstrap.py").read_text(encoding="utf-8")
 
         assert 'executeCommand("scene.toggle_grid", "toolbar", "")' in source
         assert 'executeCommand("scene.toggle_gizmos", "toolbar", "")' in source
@@ -537,7 +537,7 @@ class TestHierarchyPanel:
         assert hp is not None
 
     def test_is_editor_panel(self):
-        from Infernux.lib import EditorPanel
+        from infernux.lib import EditorPanel
         hp = HierarchyPanel()
         assert isinstance(hp, EditorPanel)
 
@@ -675,7 +675,7 @@ class TestHierarchyPanel:
         assert 42 in selected
 
     def test_hierarchy_drag_feedback_uses_theme_red_and_neutral_hover(self):
-        from Infernux.engine.ui.theme import Theme
+        from infernux.engine.ui.theme import Theme
 
         source = Path("cpp/infernux/function/editor/HierarchyPanel.cpp").read_text(encoding="utf-8")
         project_source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
@@ -694,7 +694,7 @@ class TestHierarchyPanel:
 
     def test_hierarchy_reorder_indicator_is_one_crisp_subtree_boundary(self):
         source = Path("cpp/infernux/function/editor/HierarchyPanel.cpp").read_text(encoding="utf-8")
-        theme_source = Path("python/Infernux/engine/ui/theme.py").read_text(encoding="utf-8")
+        theme_source = Path("python/infernux/engine/ui/theme.py").read_text(encoding="utf-8")
         reorder = source[
             source.index("void HierarchyPanel::RenderReorderSep") :
             source.index("void HierarchyPanel::RenderMultiDropTarget")
@@ -727,7 +727,7 @@ class TestHierarchyPanel:
         assert "ReparentToRoot(payload, lastWorldId);" in source
 
     def test_hierarchy_rows_use_compact_theme_padding(self):
-        from Infernux.engine.ui.theme import Theme
+        from infernux.engine.ui.theme import Theme
 
         native_theme = Path("cpp/infernux/function/editor/EditorTheme.h").read_text(encoding="utf-8")
         assert Theme.TREE_FRAME_PAD == pytest.approx((2.0, 2.0))

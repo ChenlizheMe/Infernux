@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.components import InxComponent
-from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
-from Infernux.engine.runtime_mouse_events import MouseEventDispatcher
+from infernux.components import InxComponent
+from infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+from infernux.engine.runtime_mouse_events import MouseEventDispatcher
 
 
 class MouseProbe(InxComponent):
@@ -43,7 +43,7 @@ def mouse(monkeypatch):
     dispatcher = MouseEventDispatcher()
     hit = SimpleNamespace(game_object=target)
     state = [False, False, False]  # held, down, up
-    monkeypatch.setattr("Infernux.engine.runtime_mouse_events.Input.get_game_mouse_frame_state",
+    monkeypatch.setattr("infernux.engine.runtime_mouse_events.Input.get_game_mouse_frame_state",
                         lambda _button: (0, 0, 0, 0, *state))
     try:
         yield probe, dispatcher, hit, state, queries
@@ -135,7 +135,7 @@ def test_discard_drops_retired_capture_without_reading_the_object(mouse):
 def test_input_snapshot_is_read_once_and_explicit_snapshot_is_reused(mouse, monkeypatch):
     probe, dispatcher, hit, state, _queries = mouse
     reads = []
-    monkeypatch.setattr("Infernux.engine.runtime_mouse_events.Input.get_game_mouse_frame_state",
+    monkeypatch.setattr("infernux.engine.runtime_mouse_events.Input.get_game_mouse_frame_state",
                         lambda button: reads.append(button) or (0, 0, 0, 0, *state))
     run(dispatcher, hit)
     assert reads == [0]

@@ -10,7 +10,7 @@ annotation defaults.
 
 from __future__ import annotations
 
-from Infernux.lib import InxMaterial, RenderStateOverride
+from infernux.lib import InxMaterial, RenderStateOverride
 
 _ALL_FLAGS = (
     RenderStateOverride.CULL_MODE,
@@ -71,7 +71,7 @@ def test_authored_state_survives_shader_annotation_defaults():
 
 
 def test_facade_single_field_edit_claims_only_its_own_override():
-    from Infernux.core.material import Material
+    from infernux.core.material import Material
 
     material = Material(native=InxMaterial("FacadeEdit", "Unlit"))
     material.cull_mode = 0

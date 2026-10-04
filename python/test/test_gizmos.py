@@ -1,17 +1,17 @@
-"""Tests for Infernux.gizmos — Gizmos drawing API and GizmosCollector."""
+"""Tests for infernux.gizmos — Gizmos drawing API and GizmosCollector."""
 
 import math
 from types import SimpleNamespace
 
 import pytest
 
-from Infernux.gizmos.gizmos import Gizmos
-from Infernux.gizmos.collector import GizmosCollector
-from Infernux.components.builtin import Camera
-from Infernux.components.particle_system import ParticleBoundsMode, ParticleSystem
-from Infernux.lib import Vector3
+from infernux.gizmos.gizmos import Gizmos
+from infernux.gizmos.collector import GizmosCollector
+from infernux.components.builtin import Camera
+from infernux.components.particle_system import ParticleBoundsMode, ParticleSystem
+from infernux.lib import Vector3
 import numpy as np
-from Infernux.particle import EmitterShape, EmitterShapeKind
+from infernux.particle import EmitterShape, EmitterShapeKind
 
 
 def test_numpy_line_batch_captures_inputs_and_preserves_index_offsets():
@@ -36,7 +36,7 @@ def test_numpy_line_batch_captures_inputs_and_preserves_index_offsets():
 
 
 def test_resident_line_dispatch_matches_vector_and_scalar_buffer_layout(monkeypatch):
-    from Infernux.gizmos import gizmos as gizmo_module
+    from infernux.gizmos import gizmos as gizmo_module
 
     class FakeBuffer:
         def __init__(self, shape, dtype, device="gpu", data=None):
@@ -71,7 +71,7 @@ def test_resident_line_dispatch_matches_vector_and_scalar_buffer_layout(monkeypa
 
 
 def test_resident_wire_sphere_dispatch_matches_vector_center_layout(monkeypatch):
-    from Infernux.gizmos import gizmos as gizmo_module
+    from infernux.gizmos import gizmos as gizmo_module
 
     class FakeBuffer:
         def __init__(self, shape, dtype, device="gpu", data=None):
@@ -122,7 +122,7 @@ def test_line_batch_only_splits_when_world_matrix_changes():
 
 
 def test_geometry_profile_counts_nested_helper_once(monkeypatch):
-    from Infernux.gizmos import gizmos as gizmo_module
+    from infernux.gizmos import gizmos as gizmo_module
 
     if not gizmo_module._GEOMETRY_PROFILE_COMPILED:
         pytest.skip("Gizmo helper profiling is compiled out of this native configuration")
@@ -431,8 +431,8 @@ class TestGizmosCollectorActiveHierarchy:
     def test_inactive_hierarchy_blocks_selected_particle_system_gizmo(
         self, monkeypatch
     ):
-        from Infernux.components.component import InxComponent
-        import Infernux.lib as lib
+        from infernux.components.component import InxComponent
+        import infernux.lib as lib
 
         hierarchy_reads = []
         parent = SimpleNamespace(active_in_hierarchy=False)
@@ -513,7 +513,7 @@ class TestGizmosCollectorActiveHierarchy:
 class TestGizmosCollectorWorkGates:
     @staticmethod
     def _scene_manager(monkeypatch, scene):
-        import Infernux.lib as lib
+        import infernux.lib as lib
 
         class SceneManager:
             @staticmethod
@@ -526,7 +526,7 @@ class TestGizmosCollectorWorkGates:
         monkeypatch.setattr(lib, "SceneManager", SceneManager)
 
     def test_unselected_icon_only_gizmo_never_creates_wrapper(self, monkeypatch):
-        from Infernux.components.component import InxComponent
+        from infernux.components.component import InxComponent
 
         created = []
         callbacks = []
@@ -641,8 +641,8 @@ class TestGizmosCollectorWorkGates:
         assert len(lookups) > initial_lookups
 
     def test_release_profile_off_skips_timers_and_helper_wrapping(self, monkeypatch):
-        import Infernux.gizmos.collector as collector_module
-        import Infernux.gizmos.gizmos as gizmo_module
+        import infernux.gizmos.collector as collector_module
+        import infernux.gizmos.gizmos as gizmo_module
 
         monkeypatch.setattr(collector_module, "_GEOMETRY_PROFILE_COMPILED", False)
         monkeypatch.setattr(gizmo_module, "_GEOMETRY_PROFILE_COMPILED", False)
@@ -668,10 +668,10 @@ class TestGizmosCollectorWorkGates:
     def test_disabled_large_python_gizmo_stops_geometry_and_upload_work(
         self, monkeypatch
     ):
-        from Infernux.components.component import InxComponent
-        import Infernux.gizmos.collector as collector_module
+        from infernux.components.component import InxComponent
+        import infernux.gizmos.collector as collector_module
 
-        from Infernux.gizmos import gizmos as gizmo_module
+        from infernux.gizmos import gizmos as gizmo_module
 
         profile_enabled = bool(gizmo_module._GEOMETRY_PROFILE_COMPILED)
 
@@ -796,8 +796,8 @@ class TestGizmosCollectorWorkGates:
     def test_scene_visibility_and_global_switch_gate_before_collection(
         self, scene_visible, show_gizmos, expected
     ):
-        from Infernux.engine.engine import Engine
-        from Infernux.engine.runtime_change_journal import RuntimeFrameBarrier
+        from infernux.engine.engine import Engine
+        from infernux.engine.runtime_change_journal import RuntimeFrameBarrier
 
         events = []
         engine = Engine.__new__(Engine)
@@ -842,7 +842,7 @@ class TestGizmosCollectorWorkGates:
     def test_disabled_builtin_skips_icon_transform_and_wrapper_creation(
         self, monkeypatch
     ):
-        from Infernux.components.component import InxComponent
+        from infernux.components.component import InxComponent
 
         class Wrapper:
             _gizmo_icon_color = (1.0, 1.0, 1.0)
@@ -919,8 +919,8 @@ class TestGizmosCollectorWorkGates:
     def test_inactive_hierarchy_blocks_builtin_icon_and_selected_gizmo(
         self, monkeypatch, type_name
     ):
-        from Infernux.components.component import InxComponent
-        import Infernux.lib as lib
+        from infernux.components.component import InxComponent
+        import infernux.lib as lib
 
         callbacks = []
 

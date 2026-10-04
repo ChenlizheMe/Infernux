@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.ui.model_material_search import find_material_candidates
+from infernux.engine.ui.model_material_search import find_material_candidates
 
 
 @pytest.mark.parametrize("scope,expected", [("local", 2), ("upwards", 2), ("project", 3)])
@@ -50,9 +50,9 @@ def test_package_model_can_search_project_without_walking_outside_assets(tmp_pat
 
 
 def test_search_requires_explicit_confirmation_and_invalidates_catalog_changes(monkeypatch, tmp_path):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import asset_reference_catalog
-    from Infernux.engine.ui import asset_details_renderer as ui
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import asset_reference_catalog
+    from infernux.engine.ui import asset_details_renderer as ui
 
     root = tmp_path / "Assets"
     path = root / "Red.mat"

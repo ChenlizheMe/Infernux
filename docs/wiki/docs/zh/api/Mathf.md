@@ -1,7 +1,7 @@
 # Mathf
 
 <div class="class-info">
-类位于 <b>Infernux.mathf</b>
+类位于 <b>infernux.mathf</b>
 </div>
 
 ## 描述

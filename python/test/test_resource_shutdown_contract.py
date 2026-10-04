@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.resources_manager import ResourcesManager
+from infernux.engine.resources_manager import ResourcesManager
 
 
 class _Database:

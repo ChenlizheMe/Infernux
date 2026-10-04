@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture
 def animation_replacement_services(monkeypatch):
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         CloseCoordinator,
         DocumentRegistry,
         EditorCommandRegistry,
@@ -16,7 +16,7 @@ def animation_replacement_services(monkeypatch):
         ModalService,
         SelectionService,
     )
-    from Infernux.engine.ui.dirty_panel_confirmation import (
+    from infernux.engine.ui.dirty_panel_confirmation import (
         DirtyPanelConfirmationCoordinator,
     )
 
@@ -55,7 +55,7 @@ def animation_replacement_services(monkeypatch):
     (
         (
             lambda: __import__(
-                "Infernux.engine.ui.animclip2d_editor_panel",
+                "infernux.engine.ui.animclip2d_editor_panel",
                 fromlist=["AnimClip2DEditorPanel"],
             ).AnimClip2DEditorPanel(),
             "command_new_clip_document",
@@ -64,7 +64,7 @@ def animation_replacement_services(monkeypatch):
         ),
         (
             lambda: __import__(
-                "Infernux.engine.ui.animfsm_editor_panel",
+                "infernux.engine.ui.animfsm_editor_panel",
                 fromlist=["AnimFSMEditorPanel"],
             ).AnimFSMEditorPanel(),
             "command_new_fsm",
@@ -81,7 +81,7 @@ def test_animation_new_command_uses_shared_save_discard_cancel_replacement(
     can_name,
     model_identity,
 ):
-    from Infernux.engine.interaction import CloseIntentKind
+    from infernux.engine.interaction import CloseIntentKind
 
     documents, close, confirmation = animation_replacement_services
     panel = panel_factory()

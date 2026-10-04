@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.engine.ui.theme import (
+from infernux.engine.ui.theme import (
     Theme,
     srgb_to_linear,
     srgb3,
@@ -149,7 +149,7 @@ def test_theme_helpers_are_exposed():
 
 
 def test_native_theme_failures_are_not_replaced_with_empty_values(monkeypatch):
-    import Infernux.lib as native
+    import infernux.lib as native
 
     def fail():
         raise RuntimeError("native theme registry unavailable")

@@ -7,8 +7,8 @@ import py_compile
 
 import pytest
 
-from Infernux._jit_kernels import build_interpreted_cpu_source
-from Infernux.engine.player_package_native import write_pack
+from infernux._jit_kernels import build_interpreted_cpu_source
+from infernux.engine.player_package_native import write_pack
 from scripts.acceptance.verify_web_jit_fixture import (
     GAME_DATA,
     SCRIPT_BYTECODE,

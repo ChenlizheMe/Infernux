@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.engine.engine import Engine
+from infernux.engine.engine import Engine
 
 
 class _NativeEngine:

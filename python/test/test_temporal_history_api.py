@@ -3,9 +3,9 @@ import ast
 import inspect
 from pathlib import Path
 
-from Infernux import renderstack
-from Infernux.rendergraph.graph import RenderGraph
-from Infernux.renderstack.temporal_aa_effect import TemporalAAEffect
+from infernux import renderstack
+from infernux.rendergraph.graph import RenderGraph
+from infernux.renderstack.temporal_aa_effect import TemporalAAEffect
 
 
 def test_temporal_effect_is_exported_by_runtime_and_stub():

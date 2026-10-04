@@ -79,8 +79,8 @@ $GeneratedRoots = @(
     'out', 'build', 'dist', 'Library', 'mcp_captures',
     'packaging/runtime', 'packaging/Nuitka', 'packaging/_vendor',
     'packaging/InfernuxHubData', 'packaging/nuitka-crash-report.xml',
-    'python/Infernux.egg-info', 'python/Infernux/_runtime_packs',
-    'python/Infernux/_runtime_modules', 'python/Infernux/resources/player_runtime'
+    'python/infernux.egg-info', 'python/infernux/_runtime_packs',
+    'python/infernux/_runtime_modules', 'python/infernux/resources/player_runtime'
 )
 foreach ($Relative in $GeneratedRoots) {
     Remove-GeneratedPath $Root $Relative

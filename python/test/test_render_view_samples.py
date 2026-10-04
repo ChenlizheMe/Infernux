@@ -5,15 +5,15 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
-from Infernux.core.asset_ref import RenderEffectRef
-from Infernux.core.assets import AssetManager
-from Infernux.rendergraph.graph import RenderGraph
-from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
-from Infernux.renderstack.render_effect import RenderEffect
-from Infernux.renderstack.render_effect_asset import RenderEffectAsset
-from Infernux.renderstack.render_pipeline import RenderPipeline
-from Infernux.renderstack.render_stack import RenderStack
-from Infernux.renderstack.render_stack_pipeline import RenderStackPipeline
+from infernux.core.asset_ref import RenderEffectRef
+from infernux.core.assets import AssetManager
+from infernux.rendergraph.graph import RenderGraph
+from infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
+from infernux.renderstack.render_effect import RenderEffect
+from infernux.renderstack.render_effect_asset import RenderEffectAsset
+from infernux.renderstack.render_pipeline import RenderPipeline
+from infernux.renderstack.render_stack import RenderStack
+from infernux.renderstack.render_stack_pipeline import RenderStackPipeline
 
 
 def _stack(pipeline=None):
@@ -190,7 +190,7 @@ def test_standalone_pipeline_builds_once_per_output_contract():
 
 @pytest.mark.parametrize("samples", [0, 1, 2, 4, 8])
 def test_bilingual_msaa_example_builds_for_each_output_contract(samples):
-    from Infernux import rendergraph
+    from infernux import rendergraph
 
     guide = Path(__file__).parents[2] / "docs" / "learn" / "rendergraph-advanced.md"
     blocks = re.findall(r"```python\n(.*?)\n```", guide.read_text(encoding="utf-8"), re.DOTALL)

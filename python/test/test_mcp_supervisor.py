@@ -9,7 +9,7 @@ import pytest
 
 from infernux_mcp import supervisor as supervisor_module
 from infernux_mcp.supervisor import SupervisorSession
-from Infernux.engine.player_package_native import read_manifest, write_pack
+from infernux.engine.player_package_native import read_manifest, write_pack
 
 
 class _RunningProcess:
@@ -712,7 +712,7 @@ def test_supervisor_launches_only_current_debug_player_output(tmp_path, monkeypa
     )
     assert "_INFERNUX_PLAYER_DEBUG_BUILD" not in captured["env"]
     assert supervisor.player_runtime_log_path == str(
-        local_state / "Infernux" / "Players" / "Pilot" / "Logs" / "player.log"
+        local_state / "infernux" / "Players" / "Pilot" / "Logs" / "player.log"
     )
     supervisor._close_player_log()
 
@@ -788,7 +788,7 @@ def test_supervisor_player_logs_only_report_current_launch(tmp_path, monkeypatch
     supervisor = SupervisorSession(str(project), session_id="current-player-logs")
     supervisor.prepare_project()
     executable = _write_debug_player_output(tmp_path, project)
-    logs_root = local_state / "Infernux" / "Players" / "Pilot" / "Logs"
+    logs_root = local_state / "infernux" / "Players" / "Pilot" / "Logs"
     logs_root.mkdir(parents=True)
     runtime_log = logs_root / "player.log"
     debug_log = logs_root / "Pilot_debug.log"

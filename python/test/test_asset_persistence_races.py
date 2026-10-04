@@ -4,14 +4,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.assets import (
+from infernux.core.assets import (
     AssetManager,
     _AssetRevisionState,
     _PendingDocumentWrite,
 )
-from Infernux.engine.interaction import DocumentKey, DocumentKind, DocumentRegistry
-from Infernux.engine.path_utils import path_key
-from Infernux.engine.resources_manager import ResourceChangeHandler, _AssetImportNotReady
+from infernux.engine.interaction import DocumentKey, DocumentKind, DocumentRegistry
+from infernux.engine.path_utils import path_key
+from infernux.engine.resources_manager import ResourceChangeHandler, _AssetImportNotReady
 
 
 @pytest.fixture(autouse=True)
@@ -548,7 +548,7 @@ def test_registered_and_unregistered_imports_share_external_publish(monkeypatch,
 
 
 def test_inspector_asset_write_replaces_a_changed_target(tmp_path):
-    from Infernux.core.document_store import DocumentStore, capture_document_file_state
+    from infernux.core.document_store import DocumentStore, capture_document_file_state
 
     path = tmp_path / "world.effectgroup"
     path.write_text("before", encoding="utf-8")

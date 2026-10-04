@@ -815,7 +815,7 @@ class EnumValue:
 @dataclass
 class ClassInfo:
     name: str
-    module: str                         # e.g. "Infernux" or "Infernux.core"
+    module: str                         # e.g. "Infernux" or "infernux.core"
     doc: str = ""
     bases: List[str] = field(default_factory=list)
     properties: List[MethodInfo] = field(default_factory=list)
@@ -840,7 +840,7 @@ class FunctionInfo:
 
 @dataclass
 class ModuleInfo:
-    name: str                           # e.g. "Infernux.core"
+    name: str                           # e.g. "infernux.core"
     classes: List[ClassInfo] = field(default_factory=list)
     functions: List[FunctionInfo] = field(default_factory=list)
     doc: str = ""
@@ -1615,10 +1615,10 @@ PUBLIC_API_FUNCTIONS = {
 }
 
 # Function names are not globally unique. Keep module-specific APIs qualified so
-# similarly named functions (for example ``Infernux.compute.statistics``) cannot
+# similarly named functions (for example ``infernux.compute.statistics``) cannot
 # silently share and overwrite a generated page.
 PUBLIC_API_FUNCTIONS_BY_MODULE = {
-    "Infernux.jit": {"compile", "statistics", "warmup"},
+    "infernux.jit": {"compile", "statistics", "warmup"},
 }
 
 
@@ -1627,12 +1627,12 @@ def _path_to_module(rel_path: Path) -> str:
 
     Examples
     --------
-    core/material.py      → Infernux.core
-    input/__init__.py     → Infernux.input
+    core/material.py      → infernux.core
+    input/__init__.py     → infernux.input
     lib/_Infernux.pyi    → Infernux
-    debug.py              → Infernux.debug
-    gizmos/gizmos.py      → Infernux.gizmos
-    math/vector.py        → Infernux.math
+    debug.py              → infernux.debug
+    gizmos/gizmos.py      → infernux.gizmos
+    math/vector.py        → infernux.math
     __init__.py           → Infernux
     """
     parts = list(rel_path.parts)
@@ -1661,7 +1661,7 @@ def _path_to_module(rel_path: Path) -> str:
 
 
 def auto_discover_sources() -> List[Tuple[str, Path]]:
-    """Walk *python/Infernux/* and collect every parseable .pyi / .py file.
+    """Walk *python/infernux/* and collect every parseable .pyi / .py file.
 
     When both ``foo.pyi`` and ``foo.py`` exist in the same directory the
     ``.pyi`` stub is preferred (it has cleaner type information).

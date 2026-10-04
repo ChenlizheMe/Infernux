@@ -7,13 +7,13 @@ import inspect
 import pytest
 import numpy as np
 
-import Infernux.jit as jit
-import Infernux._jit_kernels as jit_kernels
+import infernux.jit as jit
+import infernux._jit_kernels as jit_kernels
 
 
 @pytest.fixture(autouse=True)
 def jit_project_cache(tmp_path):
-    from Infernux.engine.project_context import using_project_root
+    from infernux.engine.project_context import using_project_root
 
     with using_project_root(str(tmp_path)):
         yield
@@ -136,7 +136,7 @@ def test_repeated_conditional_reduction_runs_in_parallel():
     _mutated_index, _mixed_reduction, _reset_reduction,
 ])
 def test_player_source_embedding_uses_the_same_scalar_legality(function):
-    source = "from Infernux import jit\n@jit.compile\n" + inspect.getsource(function)
+    source = "from infernux import jit\n@jit.compile\n" + inspect.getsource(function)
     assert jit_kernels.build_auto_parallel_embedded_source(source) is None
     with pytest.raises(ValueError, match="parallel_policy='required' rejected"):
         jit_kernels.build_auto_parallel_embedded_source(
@@ -242,7 +242,7 @@ class TestPublicJitCompile:
 
     @pytest.mark.parametrize("auto_parallel", [False, True])
     def test_same_vector_retains_aliasing_between_positional_and_keyword_arguments(self, auto_parallel):
-        import Infernux as inx
+        import infernux as inx
 
         @jit.compile(auto_parallel=auto_parallel)
         def modify(first, second):
@@ -255,7 +255,7 @@ class TestPublicJitCompile:
         assert value.x == pytest.approx(9.0)
 
     def test_serial_warmup_does_not_mutate_author_data(self):
-        import Infernux as inx
+        import infernux as inx
 
         @jit.compile(auto_parallel=False)
         def modify(values):
@@ -272,7 +272,7 @@ class TestPublicJitCompile:
 
     @pytest.mark.parametrize("auto_parallel", [False, True])
     def test_vector_partial_writes_survive_runtime_error_without_replay(self, auto_parallel):
-        import Infernux as inx
+        import infernux as inx
 
         @jit.compile(auto_parallel=auto_parallel)
         def modify(value):
@@ -296,7 +296,7 @@ class TestPublicJitCompile:
         np.testing.assert_array_equal(values, [0.0, 0.0])
 
     def test_legacy_numba_decorator_is_not_public(self):
-        import Infernux as inx
+        import infernux as inx
 
         assert not hasattr(jit, "njit")
         assert not hasattr(jit, "prange")
@@ -362,7 +362,7 @@ class TestPublicJitCompile:
             return original_import(name, *args, **kwargs)
 
         monkeypatch.setattr(builtins, "__import__", import_without_numpy)
-        monkeypatch.setitem(sys.modules, "Infernux._jit_kernels", SimpleNamespace(
+        monkeypatch.setitem(sys.modules, "infernux._jit_kernels", SimpleNamespace(
             JIT_AVAILABLE=False, njit=None, warmup=None))
         monkeypatch.setenv("INFERNUX_WEB_RUNTIME", "1")
         loaded = runpy.run_path(jit.__file__)
@@ -371,7 +371,7 @@ class TestPublicJitCompile:
             loaded["compile"](function)
 
     def test_cpu_buffer_is_direct_jit_storage_and_gpu_is_explicitly_rejected(self):
-        import Infernux as inx
+        import infernux as inx
 
         values = inx.buffer(
             shape=4,
@@ -399,7 +399,7 @@ class TestPublicJitCompile:
             scale(gpu, 2.0)
 
     def test_public_engine_vectors_use_typed_cpu_jit_values(self):
-        import Infernux as inx
+        import infernux as inx
 
         @jit.compile(auto_parallel=False)
         def move(value, amount):
@@ -448,7 +448,7 @@ class TestAutoParallelNjit:
     @pytest.mark.parametrize("policy", ["auto", "required"])
     @pytest.mark.parametrize("failure", ["execution", "mismatch", "benchmark", "isolation"])
     def test_warmup_failure_is_not_silently_published_as_serial(self, monkeypatch, policy, failure):
-        from Infernux.jit_runtime import StaticCostDecision
+        from infernux.jit_runtime import StaticCostDecision
 
         monkeypatch.setattr(jit_kernels, "static_cost_decision", lambda *args, **kwargs:
                             StaticCostDecision("serial", "gray", 100, "requires measurement"))
@@ -524,7 +524,7 @@ class TestAutoParallelNjit:
         assert len(dispatcher.decisions) == 0
 
     def test_aliasing_cannot_reuse_an_independent_array_parallel_decision(self, monkeypatch):
-        from Infernux.jit_runtime import StaticCostDecision
+        from infernux.jit_runtime import StaticCostDecision
 
         monkeypatch.setattr(jit_kernels, "static_cost_decision", lambda *args, **kwargs:
                             StaticCostDecision("parallel", "high", 10_000_000, "test workload"))
@@ -689,7 +689,7 @@ class TestAutoParallelNjit:
 
     def test_public_compile_embedded_source_supplies_parallel_impl_without_sidecar(self):
         source = (
-            "from Infernux import jit\n"
+            "from infernux import jit\n"
             "@jit.compile\n"
             "def burn(n):\n"
             "    total = 0\n"
@@ -705,9 +705,9 @@ class TestAutoParallelNjit:
 
     @pytest.mark.parametrize(("imports", "decorator"), [
         ("import infernux as inx", "inx.jit.compile"),
-        ("import Infernux.jit as cpu", "cpu.compile"),
-        ("from Infernux import jit as cpu", "cpu.compile"),
-        ("from Infernux.jit import compile as optimize", "optimize"),
+        ("import infernux.jit as cpu", "cpu.compile"),
+        ("from infernux import jit as cpu", "cpu.compile"),
+        ("from infernux.jit import compile as optimize", "optimize"),
     ])
     def test_public_jit_compile_import_forms_embed_parallel_impl(self, imports, decorator):
         source = (
@@ -730,7 +730,7 @@ class TestAutoParallelNjit:
 
     def test_bare_public_jit_compile_decorator_embeds_parallel_impl(self):
         source = (
-            "from Infernux import jit\n"
+            "from infernux import jit\n"
             "@jit.compile\n"
             "def fill(values):\n"
             "    for i in range(len(values)):\n"
@@ -746,7 +746,7 @@ class TestAutoParallelNjit:
 
     def test_public_jit_compile_can_explicitly_disable_auto_parallel_embedding(self):
         source = (
-            "from Infernux import jit\n"
+            "from infernux import jit\n"
             "@jit.compile(auto_parallel=False)\n"
             "def fill(values):\n"
             "    for i in range(len(values)):\n"
@@ -819,7 +819,7 @@ class TestAutoParallelNjit:
 
     def test_build_embedded_source_handles_mult_reduction(self):
         source = (
-            "from Infernux import jit\n"
+            "from infernux import jit\n"
             "@jit.compile\n"
             "def product(n):\n"
             "    acc = 1\n"
@@ -833,7 +833,7 @@ class TestAutoParallelNjit:
 
     def test_build_embedded_source_handles_indexed_store(self):
         source = (
-            "from Infernux import jit\n"
+            "from infernux import jit\n"
             "@jit.compile\n"
             "def fill(arr):\n"
             "    for i in range(len(arr)):\n"

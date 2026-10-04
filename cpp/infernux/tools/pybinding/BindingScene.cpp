@@ -2312,7 +2312,7 @@ void RegisterSceneBindings(py::module_ &m)
 
                 py::object pyType = pyComponentInstance.attr("__class__");
                 py::object constraints =
-                    py::module_::import("Infernux.components.registry").attr("get_component_constraints")(pyType);
+                    py::module_::import("infernux.components.registry").attr("get_component_constraints")(pyType);
                 std::string cppTypeName;
                 if (py::hasattr(pyType, "_cpp_type_name")) {
                     try {
@@ -2353,7 +2353,7 @@ void RegisterSceneBindings(py::module_ &m)
                 bool dependencyFailed = false;
                 if (requiredTypes.size() > 0) {
                     for (auto reqType : requiredTypes) {
-                        const std::string requiredToken = py::module_::import("Infernux.components.registry")
+                        const std::string requiredToken = py::module_::import("infernux.components.registry")
                                                               .attr("component_constraint_type_id")(reqType)
                                                               .cast<std::string>();
                         bool found = obj->GetTransform()->IsComponentType(requiredToken);

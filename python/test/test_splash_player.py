@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.engine import splash_player as splash_module
-from Infernux.engine.splash_player import SplashPlayer
+from infernux.engine import splash_player as splash_module
+from infernux.engine.splash_player import SplashPlayer
 
 
 class _DrawContext:

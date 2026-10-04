@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.interaction import PanelViewStateField, PanelViewStateSchema
-from Infernux.engine.ui.editor_panel import EditorPanel
+from infernux.engine.interaction import PanelViewStateField, PanelViewStateSchema
+from infernux.engine.ui.editor_panel import EditorPanel
 
 
 class _UnpersistedPanel(EditorPanel):
@@ -96,18 +96,18 @@ def test_declared_panel_view_state_rejects_nonfinite_and_runtime_values() -> Non
 
 
 def test_editor_panel_has_no_heuristic_instance_state_persistence() -> None:
-    source = Path(__file__).parents[1] / "Infernux" / "engine" / "ui" / "editor_panel.py"
+    source = Path(__file__).parents[1] / "infernux" / "engine" / "ui" / "editor_panel.py"
     text = source.read_text(encoding="utf-8")
     for forbidden in ("__auto_state__", "_collect_auto_state", "_AUTO_STATE_SKIP"):
         assert forbidden not in text
 
 
 def test_authoring_panels_never_persist_document_payload_in_panel_state() -> None:
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.ui.animclip2d_editor_panel import AnimClip2DEditorPanel
-    from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.ui.animclip2d_editor_panel import AnimClip2DEditorPanel
+    from infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     DocumentRegistry()
     panels = (
@@ -147,7 +147,7 @@ def test_authoring_panels_never_persist_document_payload_in_panel_state() -> Non
 
 
 def test_panel_persistence_only_publishes_its_view_state(monkeypatch, tmp_path) -> None:
-    from Infernux.engine.ui import panel_state
+    from infernux.engine.ui import panel_state
 
     panel_state.init(str(tmp_path / "layout"))
     sentinel_session = {"documents": [{"document_id": "owned-by-bootstrap"}]}
@@ -167,9 +167,9 @@ def test_panel_persistence_only_publishes_its_view_state(monkeypatch, tmp_path) 
 
 
 def test_editor_bootstrap_owns_document_session_and_disk_flush(monkeypatch, tmp_path) -> None:
-    from Infernux.engine.bootstrap import EditorBootstrap
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.ui import panel_state
+    from infernux.engine.bootstrap import EditorBootstrap
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.ui import panel_state
 
     panel_state.init(str(tmp_path / "layout"))
     panel = _DeclaredPanel()
@@ -233,7 +233,7 @@ def test_editor_bootstrap_owns_document_session_and_disk_flush(monkeypatch, tmp_
 
 
 def test_panel_state_rejects_invalid_persisted_document(tmp_path):
-    from Infernux.engine.ui import panel_state
+    from infernux.engine.ui import panel_state
 
     layout = tmp_path / "layout"
     layout.mkdir()
@@ -244,8 +244,8 @@ def test_panel_state_rejects_invalid_persisted_document(tmp_path):
 
 
 def test_panel_state_save_exposes_document_store_failure(tmp_path, monkeypatch):
-    from Infernux.core import document_store
-    from Infernux.engine.ui import panel_state
+    from infernux.core import document_store
+    from infernux.engine.ui import panel_state
 
     panel_state.init(str(tmp_path / "layout"))
     panel_state.put("panel:console", {"filter": "error"})

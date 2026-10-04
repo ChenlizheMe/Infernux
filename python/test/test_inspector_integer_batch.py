@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux import lib
-from Infernux.components.fields import FieldType
-from Infernux.engine.ui.inspector_utils import build_scalar_desc
+from infernux import lib
+from infernux.components.fields import FieldType
+from infernux.engine.ui.inspector_utils import build_scalar_desc
 
 
 @pytest.mark.parametrize("value,limits,slider", [

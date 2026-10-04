@@ -2,23 +2,23 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from Infernux.engine.ui.scene_view_panel import SceneViewPanel
-from Infernux.engine.ui._scene_view_gizmo import SceneViewGizmoMixin
-from Infernux.engine.ui.scene_view_panel import (
+from infernux.engine.ui.scene_view_panel import SceneViewPanel
+from infernux.engine.ui._scene_view_gizmo import SceneViewGizmoMixin
+from infernux.engine.ui.scene_view_panel import (
     TOOL_RECT,
     TOOL_ROTATE,
     TOOL_TRANSLATE,
 )
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     ContinuousEditService,
     FocusService,
     SelectionService,
     TransientInteractionService,
     ViewCommandService,
 )
-from Infernux.engine.undo import UndoManager
-from Infernux.lib import Vector3
-from Infernux.components import (
+from infernux.engine.undo import UndoManager
+from infernux.lib import Vector3
+from infernux.components import (
     DrivenTransformProperties,
     InxComponent,
     drives_transform,
@@ -131,7 +131,7 @@ def test_frame_selected_camera_state_is_undoable_without_dirtying_scene():
 
 
 def test_gizmo_drag_orders_selection_primary_first(monkeypatch):
-    import Infernux.lib._Infernux as native
+    import infernux.lib._Infernux as native
 
     old = SelectionService._instance
     selection = SelectionService()
@@ -263,7 +263,7 @@ def test_rect_gizmo_rejects_missing_frame_without_opening_a_transaction(scene):
 
 
 def test_particle_system_owner_gizmo_drag_records_direct_transform_undo(scene):
-    from Infernux.components import ParticleSystem
+    from infernux.components import ParticleSystem
 
     previous_manager = UndoManager.instance()
     manager = UndoManager()
@@ -349,8 +349,8 @@ def test_rect_gizmo_records_multiple_objects_as_one_undo(scene):
 
 
 def test_rect_gizmo_records_world_ui_layout_instead_of_transform_scale(scene):
-    from Infernux.ui import UIFrame
-    from Infernux.ui.enums import UILayoutSizing
+    from infernux.ui import UIFrame
+    from infernux.ui.enums import UILayoutSizing
 
     previous_manager = UndoManager.instance()
     manager = UndoManager()
@@ -391,8 +391,8 @@ def test_rect_gizmo_records_world_ui_layout_instead_of_transform_scale(scene):
 
 
 def test_world_ui_rect_frame_uses_layout_size_and_engine_scale(scene):
-    from Infernux.engine.ui.ui_rect_manipulation import resolve_world_ui_frame
-    from Infernux.ui import UIFrame
+    from infernux.engine.ui.ui_rect_manipulation import resolve_world_ui_frame
+    from infernux.ui import UIFrame
 
     owner = scene.create_game_object("World UI Bounds")
     owner.transform.position = Vector3(2.0, 3.0, 4.0)
@@ -412,7 +412,7 @@ def test_world_ui_rect_frame_uses_layout_size_and_engine_scale(scene):
 
 
 def test_gizmo_transform_history_preserves_pointer_down_selection(scene):
-    from Infernux.engine.interaction import ContextRestoreStatus, EditorContextSnapshot
+    from infernux.engine.interaction import ContextRestoreStatus, EditorContextSnapshot
 
     previous_manager = UndoManager.instance()
     previous_selection = SelectionService._instance
@@ -463,7 +463,7 @@ def test_gizmo_transform_history_preserves_pointer_down_selection(scene):
 
 
 def test_gizmo_tool_switch_commits_live_transform_once(scene):
-    from Infernux.engine.ui.inspector_snapshot import (
+    from infernux.engine.ui.inspector_snapshot import (
         InspectorSnapshotService,
         InspectorTarget,
     )
@@ -721,7 +721,7 @@ def test_missing_drag_root_cancels_before_next_rect_mutation(scene, monkeypatch)
 
 
 def test_rect_transaction_rebinds_reloaded_ui_component_by_live_owner(scene):
-    from Infernux.ui import UIFrame
+    from infernux.ui import UIFrame
 
     previous, manager, _transients = _install_gizmo_interaction_services()
     try:

@@ -1,6 +1,6 @@
 """Shared fixtures for Infernux integration tests.
 
-All tests use the real C++ backend (Infernux.lib). No fake/mock objects.
+All tests use the real C++ backend (infernux.lib). No fake/mock objects.
 
 Session-scoped ``engine`` fixture (autouse) initialises Vulkan + SDL once for
 the entire test run — every test executes with the real C++ engine running.
@@ -37,7 +37,7 @@ _MCP_PLUGIN_RUNTIME = (
 if str(_MCP_PLUGIN_RUNTIME) not in sys.path:
     sys.path.insert(0, str(_MCP_PLUGIN_RUNTIME))
 
-from Infernux.lib import (
+from infernux.lib import (
     Infernux as NativeEngine,
     LogLevel,
     SceneManager,
@@ -47,23 +47,23 @@ from Infernux.lib import (
     NativeRuntimeFrameBarrier,
     lib_dir,
 )
-from Infernux.resources import resources_path
-from Infernux.input import Input
-from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
-from Infernux.engine.runtime_change_journal import RuntimeFrameBarrier
+from infernux.resources import resources_path
+from infernux.input import Input
+from infernux.components._component_lifecycle import RuntimeExecutionScheduler
+from infernux.engine.runtime_change_journal import RuntimeFrameBarrier
 
 
 @pytest.fixture(autouse=True)
 def _reset_editor_interaction_state():
     """Prevent process-wide editor interaction state from leaking across tests."""
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         ClipboardService,
         DocumentRegistry,
         EditorInteractionCore,
     )
 
     previous_core = EditorInteractionCore._instance
-    from Infernux.engine.play_mode import PlayModeManager
+    from infernux.engine.play_mode import PlayModeManager
 
     # PlayModeManager is a process singleton, but most tests construct a
     # short-lived manager for their own scenario.  Keeping that manager alive
@@ -74,11 +74,11 @@ def _reset_editor_interaction_state():
     try:
         yield registry
     finally:
-        from Infernux.engine.ui.asset_resource_preview import (
+        from infernux.engine.ui.asset_resource_preview import (
             release_all_preview_authoring,
         )
-        from Infernux.core.assets import AssetManager
-        from Infernux.particle.artifact import ParticleArtifactRegistry
+        from infernux.core.assets import AssetManager
+        from infernux.particle.artifact import ParticleArtifactRegistry
 
         current_core = EditorInteractionCore._instance
         if current_core is not None and current_core is not previous_core:

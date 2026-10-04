@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-import Infernux.lib as lib_module
+import infernux.lib as lib_module
 
-from Infernux.lib import (
+from infernux.lib import (
     GameObject,
     InvalidNativeObjectError,
     Vector3,
@@ -299,7 +299,7 @@ class TestInstantiateOverloads:
                 raise AssertionError("legacy prefab path_hint must not be read")
 
         monkeypatch.setattr(
-            "Infernux.engine.prefab_manager.instantiate_prefab",
+            "infernux.engine.prefab_manager.instantiate_prefab",
             lambda **_kwargs: pytest.fail("path-only PrefabRef must not be instantiated"),
         )
 
@@ -323,7 +323,7 @@ class TestInstantiateOverloads:
             return None
 
         monkeypatch.setattr(
-            "Infernux.engine.prefab_manager.instantiate_prefab",
+            "infernux.engine.prefab_manager.instantiate_prefab",
             instantiate_prefab,
         )
 

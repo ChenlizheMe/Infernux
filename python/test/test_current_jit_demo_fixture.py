@@ -8,8 +8,8 @@ import sys
 
 import numpy as np
 
-from Infernux import _jit_kernels
-from Infernux.engine.script_candidate_policy import analyze_script_candidate
+from infernux import _jit_kernels
+from infernux.engine.script_candidate_policy import analyze_script_candidate
 
 
 _ROOT = Path(__file__).resolve().parents[2]

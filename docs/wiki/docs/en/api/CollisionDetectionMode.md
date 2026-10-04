@@ -1,7 +1,7 @@
 # CollisionDetectionMode
 
 <div class="class-info">
-enum in <b>Infernux.components.builtin</b>
+enum in <b>infernux.components.builtin</b>
 </div>
 
 ## Description

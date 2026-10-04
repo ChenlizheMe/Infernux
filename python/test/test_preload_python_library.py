@@ -1,6 +1,6 @@
 """Bundled compiler libraries have a preload lifetime, not component reload."""
 import json
-from Infernux.engine.project_context import (
+from infernux.engine.project_context import (
     register_preload_python_library, release_preload_python_libraries,
     is_project_component_script,
 )
@@ -22,7 +22,7 @@ def test_library_boundary_does_not_hide_author_scripts_or_other_projects(tmp_pat
         assert not is_project_component_script(str(library),str(project))
         assert is_project_component_script(str(author),str(project))
         # Meta/asset inclusion is unaffected; only component-script discovery changes.
-        from Infernux.engine.project_context import package_script_reference
+        from infernux.engine.project_context import package_script_reference
         assert package_script_reference(str(library),str(project))=='example/compiler'
     finally:
         release_preload_python_libraries('owner')

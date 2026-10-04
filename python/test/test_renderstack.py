@@ -1,4 +1,4 @@
-"""Tests for Infernux.renderstack — InjectionPoint, RenderPass, ResourceBus, FullScreenEffect (real C++ backend)."""
+"""Tests for infernux.renderstack — InjectionPoint, RenderPass, ResourceBus, FullScreenEffect (real C++ backend)."""
 
 from __future__ import annotations
 
@@ -7,15 +7,15 @@ import types
 
 import pytest
 
-from Infernux.renderstack.injection_point import InjectionPoint
-from Infernux.renderstack.resource_bus import ResourceBus
-from Infernux.renderstack.render_pass import RenderPass
-from Infernux.renderstack.fullscreen_effect import FullScreenEffect
+from infernux.renderstack.injection_point import InjectionPoint
+from infernux.renderstack.resource_bus import ResourceBus
+from infernux.renderstack.render_pass import RenderPass
+from infernux.renderstack.fullscreen_effect import FullScreenEffect
 
 
 def test_pipeline_file_callback_adopts_transactionally_published_module(monkeypatch):
-    from Infernux.renderstack._render_pipeline_reload import PipelineReloadMixin
-    import Infernux.renderstack.discovery as discovery
+    from infernux.renderstack._render_pipeline_reload import PipelineReloadMixin
+    import infernux.renderstack.discovery as discovery
 
     module_name = "_infernux_test_pipeline_reload"
     previous_module = types.ModuleType(module_name)
@@ -52,11 +52,11 @@ def test_pipeline_file_callback_adopts_transactionally_published_module(monkeypa
 
 
 def test_pipeline_catalog_change_filter_ignores_ordinary_component(tmp_path):
-    from Infernux.renderstack.discovery import script_may_affect_pipeline_catalog
+    from infernux.renderstack.discovery import script_may_affect_pipeline_catalog
 
     component = tmp_path / "player.py"
     component.write_text(
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class Player(InxComponent):\n"
         "    pass\n",
         encoding="utf-8",
@@ -66,11 +66,11 @@ def test_pipeline_catalog_change_filter_ignores_ordinary_component(tmp_path):
 
 
 def test_pipeline_catalog_change_filter_accepts_pipeline_source(tmp_path):
-    from Infernux.renderstack.discovery import script_may_affect_pipeline_catalog
+    from infernux.renderstack.discovery import script_may_affect_pipeline_catalog
 
     pipeline = tmp_path / "pipeline.py"
     pipeline.write_text(
-        "from Infernux.renderstack import RenderPipeline\n"
+        "from infernux.renderstack import RenderPipeline\n"
         "class CustomPipeline(RenderPipeline):\n"
         "    pass\n",
         encoding="utf-8",
@@ -80,8 +80,8 @@ def test_pipeline_catalog_change_filter_accepts_pipeline_source(tmp_path):
 
 
 def test_project_catalog_invalidates_without_a_renderstack(tmp_path, monkeypatch):
-    import Infernux.renderstack.discovery as discovery
-    from Infernux.engine.resources_manager import ResourcesManager
+    import infernux.renderstack.discovery as discovery
+    from infernux.engine.resources_manager import ResourcesManager
 
     pipeline = tmp_path / "NewPipeline.py"
     pipeline.write_text("class NewPipeline(RenderPipeline):\n    pass\n", encoding="utf-8")
@@ -94,8 +94,8 @@ def test_project_catalog_invalidates_without_a_renderstack(tmp_path, monkeypatch
 
 
 def test_catalog_is_invalidated_before_consumers_but_not_for_gameplay(tmp_path, monkeypatch):
-    import Infernux.renderstack.discovery as discovery
-    from Infernux.engine.resources_manager import ResourcesManager
+    import infernux.renderstack.discovery as discovery
+    from infernux.engine.resources_manager import ResourcesManager
 
     source = tmp_path / "Edited.py"
     source.write_text("class Player(InxComponent):\n    pass\n", encoding="utf-8")
@@ -112,14 +112,14 @@ def test_catalog_is_invalidated_before_consumers_but_not_for_gameplay(tmp_path, 
 
 
 def test_pipeline_discovery_finds_indirect_project_subclass(tmp_path):
-    from Infernux.engine.project_context import get_project_root, set_project_root
-    from Infernux.renderstack.discovery import discover_pipelines, invalidate_discovery_cache
+    from infernux.engine.project_context import get_project_root, set_project_root
+    from infernux.renderstack.discovery import discover_pipelines, invalidate_discovery_cache
 
     project = tmp_path / "IndirectPipelineProject"
     assets = project / "Assets"
     assets.mkdir(parents=True)
     (assets / "pipeline_base.py").write_text(
-        "from Infernux.renderstack import RenderPipeline\n"
+        "from infernux.renderstack import RenderPipeline\n"
         "class ProjectPipelineBase(RenderPipeline):\n"
         "    name = '_project_pipeline_base'\n",
         encoding="utf-8",
@@ -146,15 +146,15 @@ def test_pipeline_discovery_finds_indirect_project_subclass(tmp_path):
 
 
 def test_pipeline_discovery_finds_project_subclass_of_builtin_pipeline(tmp_path):
-    from Infernux.engine.project_context import get_project_root, set_project_root
-    from Infernux.renderstack.discovery import discover_pipelines, invalidate_discovery_cache
+    from infernux.engine.project_context import get_project_root, set_project_root
+    from infernux.renderstack.discovery import discover_pipelines, invalidate_discovery_cache
 
     project = tmp_path / "BuiltinPipelineBaseProject"
     assets = project / "Assets"
     assets.mkdir(parents=True)
     source = assets / "showcase_pipeline.py"
     source.write_text(
-        "from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline\n"
+        "from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline\n"
         "class BuiltinDerivedShowcasePipeline(DefaultForwardPipeline):\n"
         "    name = 'Builtin Derived Showcase Regression'\n",
         encoding="utf-8",
@@ -176,7 +176,7 @@ def test_pipeline_discovery_finds_project_subclass_of_builtin_pipeline(tmp_path)
 
 
 def test_player_missing_custom_pipeline_is_not_silently_replaced(monkeypatch):
-    from Infernux.renderstack.render_stack import RenderStack
+    from infernux.renderstack.render_stack import RenderStack
 
     stack = RenderStack()
     stack.pipeline_class_name = "Missing Packaged Pipeline"
@@ -190,7 +190,7 @@ def test_player_missing_custom_pipeline_is_not_silently_replaced(monkeypatch):
 
 
 def test_editor_missing_custom_pipeline_is_not_silently_replaced(monkeypatch):
-    from Infernux.renderstack.render_stack import RenderStack
+    from infernux.renderstack.render_stack import RenderStack
 
     stack = RenderStack()
     stack.pipeline_class_name = "Missing Editor Pipeline"
@@ -204,7 +204,7 @@ def test_editor_missing_custom_pipeline_is_not_silently_replaced(monkeypatch):
 
 
 def test_removed_pipeline_keeps_selection_and_invalidates_for_transactional_rebuild():
-    from Infernux.renderstack._render_pipeline_reload import PipelineReloadMixin
+    from infernux.renderstack._render_pipeline_reload import PipelineReloadMixin
 
     class Subject(PipelineReloadMixin):
         DEFAULT_PIPELINE_NAME = "Default Forward"
@@ -233,7 +233,7 @@ def test_removed_pipeline_keeps_selection_and_invalidates_for_transactional_rebu
 
 
 def test_set_pipeline_replaces_runtime_pipeline_and_invalidates_graph_once(monkeypatch):
-    from Infernux.renderstack.render_stack import RenderStack
+    from infernux.renderstack.render_stack import RenderStack
 
     stack = RenderStack()
     stack.pipeline_class_name = "Pipeline A"
@@ -257,15 +257,15 @@ def test_set_pipeline_replaces_runtime_pipeline_and_invalidates_graph_once(monke
 
 
 def test_effect_feature_lookup_discovers_project_registration_module(tmp_path):
-    from Infernux.engine.project_context import get_project_root, set_project_root
-    from Infernux.renderstack.discovery import invalidate_discovery_cache
-    from Infernux.renderstack.render_effect_compiler import get_render_effect_feature
+    from infernux.engine.project_context import get_project_root, set_project_root
+    from infernux.renderstack.discovery import invalidate_discovery_cache
+    from infernux.renderstack.render_effect_compiler import get_render_effect_feature
 
     project = tmp_path / "EffectFeatureDiscoveryProject"
     assets = project / "Assets"
     assets.mkdir(parents=True)
     (assets / "project_effect.py").write_text(
-        "from Infernux.renderstack import FullScreenEffect, render_effect_feature\n"
+        "from infernux.renderstack import FullScreenEffect, render_effect_feature\n"
         "@render_effect_feature('tests.post.lazy_project_feature')\n"
         "class ProjectEffect(FullScreenEffect):\n"
         "    name = 'Project Effect Discovery Regression'\n",
@@ -286,7 +286,7 @@ def test_effect_feature_lookup_discovers_project_registration_module(tmp_path):
 def test_effect_feature_decorator_replaces_same_source_candidate_class(tmp_path):
     import importlib.util
 
-    from Infernux.renderstack.render_effect_compiler import (
+    from infernux.renderstack.render_effect_compiler import (
         get_render_effect_feature,
         render_effect_feature,
     )
@@ -439,7 +439,7 @@ class TestFullScreenEffect:
         assert fx.enabled is False
 
     def test_bind_buffers_uses_instance_resource_contract(self):
-        from Infernux.renderstack.resource_bus import ResourceBus
+        from infernux.renderstack.resource_bus import ResourceBus
 
         class TestFX(FullScreenEffect):
             name = "test_fx"

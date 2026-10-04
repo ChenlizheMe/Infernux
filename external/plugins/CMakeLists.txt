@@ -20,7 +20,7 @@ set(INFERNUX_OFFICIAL_PLUGIN_ARTIFACTS
     "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/official-registry.json"
     "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/default-libraries.json"
     "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.mcp.inxpkg"
-    "${CMAKE_SOURCE_DIR}/python/Infernux/resources/infernux.mcp.inxpkg"
+    "${CMAKE_SOURCE_DIR}/python/infernux/resources/infernux.mcp.inxpkg"
 )
 
 # The plugin builder imports the freshly linked native module.  On ELF hosts
@@ -46,7 +46,7 @@ add_custom_target(infernux_official_plugins ALL
         --catalog "${CMAKE_CURRENT_SOURCE_DIR}/plugins.json"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${INFERNUX_OFFICIAL_PLUGIN_OUTPUT_DIR}/infernux.mcp.inxpkg"
-        "${CMAKE_SOURCE_DIR}/python/Infernux/resources/infernux.mcp.inxpkg"
+        "${CMAKE_SOURCE_DIR}/python/infernux/resources/infernux.mcp.inxpkg"
     DEPENDS
         _Infernux
         "${CMAKE_CURRENT_SOURCE_DIR}/build_official_plugins.py"

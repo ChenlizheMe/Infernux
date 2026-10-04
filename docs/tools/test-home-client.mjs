@@ -32,7 +32,7 @@ const api = sandbox.__infernuxHomeTest;
 assert.ok(api, "home client must expose its isolated test surface");
 
 const highlightedCode = {
-    textContent: "from Infernux import InxComponent\r\n\r\nclass Mover(InxComponent):\r\n    pass\r\n"
+    textContent: "from infernux import InxComponent\r\n\r\nclass Mover(InxComponent):\r\n    pass\r\n"
 };
 const button = {
     closest(selector) {
@@ -40,7 +40,7 @@ const button = {
         return { querySelector(innerSelector) { assert.equal(innerSelector, "code"); return highlightedCode; } };
     }
 };
-const expected = "from Infernux import InxComponent\n\nclass Mover(InxComponent):\n    pass\n";
+const expected = "from infernux import InxComponent\n\nclass Mover(InxComponent):\n    pass\n";
 assert.equal(api.extractStarterCode(button), expected, "copy must preserve exact code text, indentation, blank lines, and a final newline");
 assert.equal(await api.copyHomeText(expected), true, "Clipboard API success should be reported");
 assert.equal(copiedText, expected, "Clipboard API must receive the exact extracted source");

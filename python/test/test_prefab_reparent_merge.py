@@ -3,10 +3,10 @@ import copy
 
 import pytest
 
-from Infernux.engine.prefab_manager import (
+from infernux.engine.prefab_manager import (
     _read_prefab_document, instantiate_prefab, save_prefab,
 )
-from Infernux.engine.prefab_overrides import (
+from infernux.engine.prefab_overrides import (
     apply_overrides_to_prefab, build_prefab_apply_command,
     resolve_scene_prefab_documents,
 )

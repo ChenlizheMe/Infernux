@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from Infernux.graph import (
+from infernux.graph import (
     CoordinateSpace,
     ExpressionCompileError,
     ExpressionCompiler,

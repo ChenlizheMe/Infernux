@@ -7,15 +7,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import Infernux as inx
-from Infernux.application import Application
-from Infernux.components.fields import resolve_annotation, get_serialized_fields
-from Infernux.core import AssetManager, RenderTexture, RenderTextureRef
-from Infernux.lib import AssetRegistry, PixelFormat
+import infernux as inx
+from infernux.application import Application
+from infernux.components.fields import resolve_annotation, get_serialized_fields
+from infernux.core import AssetManager, RenderTexture, RenderTextureRef
+from infernux.lib import AssetRegistry, PixelFormat
 
 
 def test_project_file_manager_creates_render_texture_description(tmp_path):
-    from Infernux.engine.ui.project_file_ops import create_render_texture
+    from infernux.engine.ui.project_file_ops import create_render_texture
 
     ok, error = create_render_texture(str(tmp_path), "GameplayTarget")
     assert ok, error
@@ -38,14 +38,14 @@ class MonitorDescription(inx.SerializableObject):
 
 
 def test_raw_image_alias_reuses_the_managed_image_component():
-    from Infernux.ui import UIImage, UIRawImage
+    from infernux.ui import UIImage, UIRawImage
 
     assert UIRawImage is UIImage
 
 
 def test_image_persistent_target_uses_concrete_guid_and_shared_owner(imported_target):
-    from Infernux.ui import UIImage
-    from Infernux.components.fields import get_raw_field_value
+    from infernux.ui import UIImage
+    from infernux.components.fields import get_raw_field_value
     source, guid, _, _ = imported_target
     image = UIImage()
     image.texture = RenderTextureRef(guid, str(source))
@@ -69,7 +69,7 @@ def test_image_persistent_target_uses_concrete_guid_and_shared_owner(imported_ta
 
 
 def test_image_target_reimport_delete_and_restore_keeps_saved_guid(imported_target):
-    from Infernux.ui import UIImage
+    from infernux.ui import UIImage
     source, guid, document, database = imported_target
     image = UIImage()
     image.texture = RenderTexture.load_by_guid(guid)
@@ -95,9 +95,9 @@ def test_image_target_reimport_delete_and_restore_keeps_saved_guid(imported_targ
 
 
 def test_image_obsolete_texture_path_is_ignored(imported_target, tmp_path):
-    from Infernux.ui import UIImage
-    from Infernux.components.fields import get_raw_field_value
-    from Infernux.core.asset_ref import TextureRef
+    from infernux.ui import UIImage
+    from infernux.components.fields import get_raw_field_value
+    from infernux.core.asset_ref import TextureRef
     _, _, _, database = imported_target
     from PIL import Image
     path = tmp_path / 'Image.png'
@@ -111,9 +111,9 @@ def test_image_obsolete_texture_path_is_ignored(imported_target, tmp_path):
 
 
 def test_sampled_field_rejects_union_identity_and_keeps_static_fields_narrow():
-    from Infernux.ui import UIImage
-    from Infernux.components.value_codec import VALUE_CODECS
-    from Infernux.components.value_document import make_asset_ref
+    from infernux.ui import UIImage
+    from infernux.components.value_codec import VALUE_CODECS
+    from infernux.components.value_document import make_asset_ref
     metadata = get_serialized_fields(UIImage)['texture']
     assert metadata.asset_type == 'Texture.Sampled'
     for kind in ('Texture', 'RenderTexture'):
@@ -126,8 +126,8 @@ def test_sampled_field_rejects_union_identity_and_keeps_static_fields_narrow():
 
 
 def test_image_inspector_assignment_uses_concrete_type(imported_target):
-    from Infernux.ui import UIImage
-    from Infernux.engine.ui._inspector_references import _create_asset_ref_from_payload
+    from infernux.ui import UIImage
+    from infernux.engine.ui._inspector_references import _create_asset_ref_from_payload
     source, guid, _, _ = imported_target
     metadata = get_serialized_fields(UIImage)['texture']
     ref = _create_asset_ref_from_payload(metadata, str(source))
@@ -135,9 +135,9 @@ def test_image_inspector_assignment_uses_concrete_type(imported_target):
 
 
 def test_image_real_drawer_keeps_all_descriptor_drop_types(monkeypatch):
-    from Infernux.ui import UIImage
-    from Infernux.engine.ui import _inspector_references as drawer
-    from Infernux.engine.ui.igui import IGUI
+    from infernux.ui import UIImage
+    from infernux.engine.ui import _inspector_references as drawer
+    from infernux.engine.ui.igui import IGUI
     monkeypatch.setattr(drawer, 'field_label', lambda *args: None)
     monkeypatch.setattr(drawer, 'semantic_capture_enabled', lambda ctx: False)
     models = []
@@ -152,10 +152,10 @@ def test_image_real_drawer_keeps_all_descriptor_drop_types(monkeypatch):
 
 
 def test_image_object_field_document_transaction_clear_override_and_undo(imported_target):
-    from Infernux.ui import UIImage
-    from Infernux.engine.ui._inspector_references import _create_asset_ref_from_payload
-    from Infernux.engine.interaction import AssetReferenceFieldModel, make_python_component_property_transaction
-    from Infernux.engine.undo import UndoManager
+    from infernux.ui import UIImage
+    from infernux.engine.ui._inspector_references import _create_asset_ref_from_payload
+    from infernux.engine.interaction import AssetReferenceFieldModel, make_python_component_property_transaction
+    from infernux.engine.undo import UndoManager
     source, guid, _, _ = imported_target
     image = UIImage()
     meta = get_serialized_fields(UIImage)['texture']
@@ -304,11 +304,11 @@ def test_material_runtime_override_does_not_replace_persistent_slot(imported_tar
 
 
 def test_ui_material_samples_imported_target_without_source_path_lookup(imported_target, engine):
-    from Infernux.ui.ui_render_dispatch import material_visual_state, image_texture_source
+    from infernux.ui.ui_render_dispatch import material_visual_state, image_texture_source
     _, guid, _, _ = imported_target
     material = inx.Material.create_unlit('UIMonitor')
     material.set_texture_guid('texSampler', guid)
-    from Infernux.ui import UIImage
+    from infernux.ui import UIImage
     image = UIImage()
     image.material = material
     state = material_visual_state(image)
@@ -318,7 +318,7 @@ def test_ui_material_samples_imported_target_without_source_path_lookup(imported
 
 
 def test_sampled_texture_picker_accepts_targets_without_widening_static_texture_fields(imported_target):
-    from Infernux.core.asset_reference_types import asset_type_registry
+    from infernux.core.asset_reference_types import asset_type_registry
     source, guid, _, _ = imported_target
     payload = {'asset_type': 'RenderTexture', 'guid': guid, 'path_hint': str(source)}
     assert asset_type_registry.require('Texture.Sampled').incompatibility(payload) == ''
@@ -330,7 +330,7 @@ def test_load_path_guid_reference_and_camera_share_owner(imported_target, scene)
     target = RenderTexture.load(str(source))
     assert target.guid == guid and Path(target.file_path) == source
     assert target.display_name == source.name
-    from Infernux.engine.ui._inspector_references import _get_reference_display_name
+    from infernux.engine.ui._inspector_references import _get_reference_display_name
     assert _get_reference_display_name(inx.FieldType.ASSET, target) == source.name
     assert (target.width, target.height) == (53, 29)
     assert RenderTexture.load_by_guid(guid)._native is target._native
@@ -349,7 +349,7 @@ def test_load_path_guid_reference_and_camera_share_owner(imported_target, scene)
 
 
 def test_new_project_asset_assigns_to_camera_without_depth_setup(imported_target, scene, engine, tmp_path):
-    from Infernux.engine.ui.project_file_ops import create_render_texture
+    from infernux.engine.ui.project_file_ops import create_render_texture
     _, _, _, database = imported_target
     assert create_render_texture(str(tmp_path), 'NewCameraTarget') == (True, '')
     source = tmp_path / 'NewCameraTarget.rendertexture'
@@ -388,7 +388,7 @@ def test_camera_scene_identity_decodes_without_allocating_then_renders(imported_
     assert not AssetRegistry.instance().is_loaded(guid)
     assert isinstance(camera.target_texture, RenderTextureRef)
     assert camera.target_texture.guid == guid
-    from Infernux.engine.ui.inspector_components import _declared_native_fields
+    from infernux.engine.ui.inspector_components import _declared_native_fields
     for instance in (cpp, camera):
         projected = {name: value for name, _, _, value in _declared_native_fields(instance)}
         assert projected['targetTextureGuid'].guid == guid
@@ -463,7 +463,7 @@ def test_camera_delete_and_restore_preserve_guid_and_reconnect(imported_target, 
 
 @pytest.mark.parametrize('scope', ['scene', 'subtree'])
 def test_camera_asset_events_follow_published_component_identity(imported_target, scene, engine, scope):
-    from Infernux.lib import _Infernux as native
+    from infernux.lib import _Infernux as native
     source, guid, _, database = imported_target
     owner = scene.create_game_object('ReopenedTargetCamera')
     camera = owner.add_component('Camera')
@@ -487,20 +487,20 @@ def test_camera_asset_events_follow_published_component_identity(imported_target
 
 
 def test_camera_target_is_in_native_scene_cook_dependency_closure(imported_target, scene):
-    from Infernux.lib import _Infernux as native
+    from infernux.lib import _Infernux as native
     _, guid, _, _ = imported_target
     camera = scene.create_game_object('CookedTargetCamera').add_component('Camera')
     camera._require_cpp_component().target_texture_guid = guid
     dependencies = native._collect_scene_resource_dependencies(scene.serialize_document())
     assert (guid, 'RenderTexture') in [tuple(value) for value in dependencies]
     assert not AssetRegistry.instance().is_loaded(guid)
-    from Infernux.engine.runtime_artifact_catalog import _asset_refs
+    from infernux.engine.runtime_artifact_catalog import _asset_refs
     assert (guid, '') in list(_asset_refs(scene.serialize_document()))
 
 
 def test_camera_asset_slot_edit_undo_redo_uses_native_identity(imported_target, scene):
-    from Infernux.engine.ui.inspector_components import _apply_multi_builtin_change
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.ui.inspector_components import _apply_multi_builtin_change
+    from infernux.engine.undo import UndoManager
     _, guid, _, _ = imported_target
     camera = scene.create_game_object('UndoTargetCamera').add_component('Camera')
     previous = UndoManager._instance
@@ -521,9 +521,9 @@ def test_camera_asset_slot_edit_undo_redo_uses_native_identity(imported_target, 
 
 
 def test_automation_camera_asset_slot_uses_public_adapter_and_shared_history(imported_target, scene, monkeypatch):
-    from Infernux.host import EditorAutomationHost
-    from Infernux.engine.interaction.components import ComponentCommandService
-    from Infernux.engine.undo import UndoManager
+    from infernux.host import EditorAutomationHost
+    from infernux.engine.interaction.components import ComponentCommandService
+    from infernux.engine.undo import UndoManager
 
     _, guid, _, _ = imported_target
     owner = scene.create_game_object('AutomationTargetCamera')
@@ -681,9 +681,9 @@ def test_removed_asset_is_not_resurrected_by_native_or_reference_cache(imported_
 
 
 def test_inspector_document_is_cpu_only_and_rejects_invalid_edit(imported_target):
-    from Infernux.engine.ui.render_texture_inspector import RenderTextureDocument
-    from Infernux.core.asset_types import asset_category_from_extension
-    from Infernux.engine.ui import asset_details_renderer
+    from infernux.engine.ui.render_texture_inspector import RenderTextureDocument
+    from infernux.core.asset_types import asset_category_from_extension
+    from infernux.engine.ui import asset_details_renderer
 
     source, guid, document, _ = imported_target
     registry = AssetRegistry.instance()
@@ -702,9 +702,9 @@ def test_inspector_document_is_cpu_only_and_rejects_invalid_edit(imported_target
 
 
 def test_asset_document_save_undo_redo_reconfigures_same_graphics_owner(imported_target):
-    from Infernux.engine.ui.render_texture_inspector import RenderTextureDocument
-    from Infernux.engine.interaction import DocumentKind, DocumentRegistry, ensure_editable_resource_document
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.ui.render_texture_inspector import RenderTextureDocument
+    from infernux.engine.interaction import DocumentKind, DocumentRegistry, ensure_editable_resource_document
+    from infernux.engine.undo import UndoManager
 
     source, guid, original, _ = imported_target
     target = RenderTexture.load_by_guid(guid)

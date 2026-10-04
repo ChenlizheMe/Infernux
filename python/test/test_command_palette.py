@@ -1,5 +1,5 @@
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     COMMAND_PALETTE_CONTEXT_ID,
     COMMAND_PALETTE_MODAL_ID,
     CommandSource,
@@ -17,7 +17,7 @@ from Infernux.engine.interaction import (
     ShortcutRouter,
     ShortcutScope,
 )
-from Infernux.engine.interaction.command_palette import CommandPaletteService
+from infernux.engine.interaction.command_palette import CommandPaletteService
 
 
 def _palette():

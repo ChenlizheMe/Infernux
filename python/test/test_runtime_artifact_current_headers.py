@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.engine.runtime_artifact_catalog import (
+from infernux.engine.runtime_artifact_catalog import (
     RuntimeArtifactError,
     artifact_source_hash,
 )

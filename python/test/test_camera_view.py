@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from Infernux import lib
-from Infernux.components.builtin.camera import Camera
+from infernux import lib
+from infernux.components.builtin.camera import Camera
 
 
 @pytest.fixture

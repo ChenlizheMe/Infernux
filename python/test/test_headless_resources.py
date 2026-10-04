@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from Infernux import resources
-from Infernux.engine import headless
-from Infernux.engine import library_sync
-from Infernux.plugins import PluginManager
+from infernux import resources
+from infernux.engine import headless
+from infernux.engine import library_sync
+from infernux.plugins import PluginManager
 
 
 def test_headless_prepares_resources_before_plugin_startup(tmp_path, monkeypatch):
@@ -42,12 +42,12 @@ def test_headless_prepares_resources_before_plugin_startup(tmp_path, monkeypatch
         lambda project: events.append(("resources.activate", project)),
     )
     monkeypatch.setattr(
-        "Infernux.engine._acquire_project_lock",
+        "infernux.engine._acquire_project_lock",
         lambda project, owner: events.append(("lock.acquire", project, owner))
         or (str(tmp_path / "project.lock"), "token"),
     )
     monkeypatch.setattr(
-        "Infernux.engine._remove_project_lock",
+        "infernux.engine._remove_project_lock",
         lambda path, token: events.append(("lock.remove", path, token)),
     )
     monkeypatch.setattr(
@@ -59,7 +59,7 @@ def test_headless_prepares_resources_before_plugin_startup(tmp_path, monkeypatch
         or _Plugins(),
     )
 
-    from Infernux.version import ENGINE_VERSION
+    from infernux.version import ENGINE_VERSION
 
     project_dir = tmp_path / "project"
     project_dir.mkdir()

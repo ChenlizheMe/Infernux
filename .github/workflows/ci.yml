@@ -176,7 +176,7 @@ jobs:
           conda activate infernux
           $softwareVulkan = Resolve-Path "out\toolchains\windows-swiftshader\runtime\vk_swiftshader.dll"
           $destinations = @(
-            "python\Infernux\lib\vulkan-1.dll",
+            "python\infernux\lib\vulkan-1.dll",
             "out\build\windows-msvc-release\Release\vulkan-1.dll"
           )
           foreach ($destination in $destinations) {

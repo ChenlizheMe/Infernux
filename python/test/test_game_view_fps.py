@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.ui import game_view_panel as game_view_module
-from Infernux.engine.ui.game_view_panel import GameViewPanel
+from infernux.engine.ui import game_view_panel as game_view_module
+from infernux.engine.ui.game_view_panel import GameViewPanel
 
 
 class _Context:

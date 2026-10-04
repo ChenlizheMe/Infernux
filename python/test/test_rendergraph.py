@@ -1,11 +1,11 @@
-"""Tests for Infernux.rendergraph.graph — RenderGraph, Format, TextureHandle (real C++ backend)."""
+"""Tests for infernux.rendergraph.graph — RenderGraph, Format, TextureHandle (real C++ backend)."""
 
 from __future__ import annotations
 
 import pytest
-import Infernux.lib as native
+import infernux.lib as native
 
-from Infernux.lib import (
+from infernux.lib import (
     CommandBuffer, DrawParameterBlock,
     RenderGraphDescription, GraphPassDesc, GraphTextureDesc,
     GraphBufferUsage, GraphCommandType, GraphMaterialFilter,
@@ -13,8 +13,8 @@ from Infernux.lib import (
     GraphPassType,
     MaterialPassType, PixelFormat, SampleCount,
 )
-from Infernux.rendergraph.graph import BufferHandle, RenderGraph, Format, TextureHandle
-from Infernux.renderstack.effect_stage import EffectScope
+from infernux.rendergraph.graph import BufferHandle, RenderGraph, Format, TextureHandle
+from infernux.renderstack.effect_stage import EffectScope
 
 
 # ── Helpers ──

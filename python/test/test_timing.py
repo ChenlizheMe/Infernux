@@ -1,4 +1,4 @@
-"""Tests for Infernux.timing — Time class (metaclass-based static timing)."""
+"""Tests for infernux.timing — Time class (metaclass-based static timing)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.timing import Time
+from infernux.timing import Time
 
 
 @pytest.fixture(autouse=True)
@@ -115,7 +115,7 @@ class TestTimeProperties:
 
         monkeypatch.setitem(
             sys.modules,
-            "Infernux.engine.play_mode",
+            "infernux.engine.play_mode",
             SimpleNamespace(PlayModeManager=BrokenPlayModeManager),
         )
 

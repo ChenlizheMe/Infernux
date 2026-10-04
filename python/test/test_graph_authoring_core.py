@@ -2,7 +2,7 @@ import importlib
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     DocumentCapability,
     DocumentKey,
     DocumentKind,
@@ -17,11 +17,11 @@ from Infernux.engine.interaction import (
     SelectionService,
     SelectionTarget,
 )
-from Infernux.engine.undo import GraphDiffCommand, UndoManager
+from infernux.engine.undo import GraphDiffCommand, UndoManager
 
 
 def test_graph_snapshot_undo_legacy_api_is_removed():
-    undo = importlib.import_module("Infernux.engine.undo")
+    undo = importlib.import_module("infernux.engine.undo")
 
     for name in (
         "NodeGraphSnapshotCommand",
@@ -32,7 +32,7 @@ def test_graph_snapshot_undo_legacy_api_is_removed():
         assert not hasattr(undo, name)
 
     with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("Infernux.engine.undo._animfsm_commands")
+        importlib.import_module("infernux.engine.undo._animfsm_commands")
 
 
 class _View:

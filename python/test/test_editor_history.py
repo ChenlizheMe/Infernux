@@ -1,4 +1,4 @@
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     ActionOrigin,
     CommandSource,
     EditorActionJournal,
@@ -12,8 +12,8 @@ from Infernux.engine.interaction import (
     SelectionSnapshot,
     SelectionTarget,
 )
-from Infernux.engine.undo import LambdaCommand, UndoManager
-from Infernux.engine.ui.history_panel import HistoryPanel
+from infernux.engine.undo import LambdaCommand, UndoManager
+from infernux.engine.ui.history_panel import HistoryPanel
 
 
 def _command(description: str):

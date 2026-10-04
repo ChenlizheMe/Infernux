@@ -5,11 +5,11 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-from Infernux.components._gizmo_ids import ICON_KIND_CAMERA, ICON_KIND_LIGHT
-from Infernux.components.builtin.camera import Camera
-from Infernux.components.builtin.light import Light, _light_gizmo_color
-from Infernux.gizmos.collector import GizmosCollector
-from Infernux.gizmos.gizmos import Gizmos
+from infernux.components._gizmo_ids import ICON_KIND_CAMERA, ICON_KIND_LIGHT
+from infernux.components.builtin.camera import Camera
+from infernux.components.builtin.light import Light, _light_gizmo_color
+from infernux.gizmos.collector import GizmosCollector
+from infernux.gizmos.gizmos import Gizmos
 
 
 def test_camera_and_light_billboards_keep_distinct_kinds_and_tints():
@@ -41,7 +41,7 @@ def test_light_billboard_and_selected_outline_use_emitted_color():
 
 def test_camera_and_light_gizmo_textures_are_alpha_silhouettes():
     for name in ("gizmo_camera.png", "gizmo_light.png"):
-        image = Image.open(Path("python/Infernux/resources/icons") / name).convert("RGBA")
+        image = Image.open(Path("python/infernux/resources/icons") / name).convert("RGBA")
         pixels = tuple(image.get_flattened_data())
         visible = [pixel for pixel in pixels if pixel[3] != 0]
         assert visible, name
@@ -50,7 +50,7 @@ def test_camera_and_light_gizmo_textures_are_alpha_silhouettes():
         assert min(pixel[3] for pixel in pixels) == 0, name
 
     light = Image.open(
-        Path("python/Infernux/resources/icons/gizmo_light.png")
+        Path("python/infernux/resources/icons/gizmo_light.png")
     ).convert("RGBA")
     visible_light = [pixel for pixel in light.get_flattened_data() if pixel[3] != 0]
     assert {pixel[:3] for pixel in visible_light} == {(255, 255, 255)}

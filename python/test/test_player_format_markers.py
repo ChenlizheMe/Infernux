@@ -1,4 +1,4 @@
-from Infernux.engine.player_package_audit import _is_format_marker_group, _is_runtime_license_group
+from infernux.engine.player_package_audit import _is_format_marker_group, _is_runtime_license_group
 
 
 def test_package_local_format_markers_can_repeat():

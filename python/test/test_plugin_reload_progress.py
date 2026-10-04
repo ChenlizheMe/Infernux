@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from Infernux.engine.interaction import EditorInteractionCore
-from Infernux.engine.interaction.modals import ModalService
-from Infernux.engine.ui.plugin_reload_progress import PluginReloadProgressService
+from infernux.engine.interaction import EditorInteractionCore
+from infernux.engine.interaction.modals import ModalService
+from infernux.engine.ui.plugin_reload_progress import PluginReloadProgressService
 
 
 class _Manager:

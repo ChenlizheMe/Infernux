@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-from Infernux.components import InxComponent
-from Infernux.components._component_coroutine import ComponentCoroutineMixin
-from Infernux.components._component_lifecycle import ComponentLifecycleMixin
-from Infernux.components._component_native import ComponentNativeMixin
-from Infernux.components._component_registration import (
+from infernux.components import InxComponent
+from infernux.components._component_coroutine import ComponentCoroutineMixin
+from infernux.components._component_lifecycle import ComponentLifecycleMixin
+from infernux.components._component_native import ComponentNativeMixin
+from infernux.components._component_registration import (
     candidate_component_registration_scope,
 )
-from Infernux.engine.runtime_dispatch import (
+from infernux.engine.runtime_dispatch import (
     current_runtime_epoch,
     publish_runtime_dispatch_epoch,
 )

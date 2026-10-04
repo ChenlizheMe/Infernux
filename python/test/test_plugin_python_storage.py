@@ -11,7 +11,7 @@ import zipfile
 
 import pytest
 
-from Infernux.plugins.manager import PluginManager, _pip_requirement_targets
+from infernux.plugins.manager import PluginManager, _pip_requirement_targets
 
 
 @pytest.mark.parametrize("shared", [False, True])
@@ -106,7 +106,7 @@ def test_plugin_requirements_cannot_replace_the_pinned_engine(spec):
 
 @pytest.mark.parametrize("installer", ["project", "plugin"])
 def test_real_pip_rejects_transitive_engine_upgrades(tmp_path, monkeypatch, installer):
-    from Infernux.engine import project_requirements
+    from infernux.engine import project_requirements
 
     # All packages are local and pip only resolves a dry run, never installing
     # anything into the interpreter used for engine validation.

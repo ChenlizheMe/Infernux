@@ -7,8 +7,8 @@ import pytest
 
 @pytest.fixture
 def ui_editor_view_services():
-    from Infernux.engine.interaction import ContinuousEditService, ViewCommandService
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ContinuousEditService, ViewCommandService
+    from infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager._instance
     previous_edits = ContinuousEditService._instance
@@ -27,7 +27,7 @@ def ui_editor_view_services():
 
 
 def _panel_with_persistence_spy():
-    from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
+    from infernux.engine.ui.ui_editor_panel import UIEditorPanel
 
     panel = UIEditorPanel()
     writes = []
@@ -36,7 +36,7 @@ def _panel_with_persistence_spy():
 
 
 def test_ui_editor_visibility_has_no_hierarchy_mode_side_effects():
-    from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
+    from infernux.engine.ui.ui_editor_panel import UIEditorPanel
 
     panel = UIEditorPanel()
     panel._load_view_settings = lambda: None

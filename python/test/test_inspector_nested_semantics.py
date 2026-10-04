@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.components.fields import serialized_field
-from Infernux.engine.ui import inspector_declarative as ui
-from Infernux.renderstack.render_pipeline import RenderPipeline
+from infernux.components.fields import serialized_field
+from infernux.engine.ui import inspector_declarative as ui
+from infernux.renderstack.render_pipeline import RenderPipeline
 
 
 class ExamplePipeline(RenderPipeline):

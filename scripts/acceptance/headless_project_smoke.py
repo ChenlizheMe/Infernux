@@ -20,12 +20,12 @@ if _SOURCE_PYTHON.is_dir():
     sys.path.insert(0, str(_SOURCE_PYTHON))
 
 import infernux as inx
-from Infernux import run_headless
-from Infernux.debug import DebugConsole, LogType
-from Infernux.engine.path_utils import resolved_path, same_path
-from Infernux.engine.scene_manager import SceneFileManager
-from Infernux.lib import SceneManager as NativeSceneManager
-from Infernux.scene import SceneManager
+from infernux import run_headless
+from infernux.debug import DebugConsole, LogType
+from infernux.engine.path_utils import resolved_path, same_path
+from infernux.engine.scene_manager import SceneFileManager
+from infernux.lib import SceneManager as NativeSceneManager
+from infernux.scene import SceneManager
 
 
 @dataclass

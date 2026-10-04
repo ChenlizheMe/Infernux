@@ -90,7 +90,7 @@ class _Engine:
 
 
 def _install_scene_manager(monkeypatch, scene, persistent_scene=None) -> None:
-    import Infernux.lib as lib
+    import infernux.lib as lib
 
     monkeypatch.setattr(
         lib,
@@ -111,9 +111,9 @@ class _UIElementStub:
 
 
 def test_runtime_submission_publishes_latest_hud_without_a_game_panel(monkeypatch):
-    import Infernux.engine.runtime_screen_ui as module
-    from Infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
-    from Infernux.ui.enums import RenderMode
+    import infernux.engine.runtime_screen_ui as module
+    from infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
+    from infernux.ui.enums import RenderMode
 
     renderer = _Renderer()
     engine = _Engine(renderer)
@@ -185,9 +185,9 @@ def test_runtime_submission_publishes_latest_hud_without_a_game_panel(monkeypatc
 
 
 def test_runtime_submission_anchors_against_live_logical_canvas(monkeypatch):
-    import Infernux.engine.runtime_screen_ui as module
-    from Infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
-    from Infernux.ui.enums import RenderMode
+    import infernux.engine.runtime_screen_ui as module
+    from infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
+    from infernux.ui.enums import RenderMode
 
     renderer = _Renderer()
     engine = _Engine(renderer)
@@ -243,10 +243,10 @@ def test_runtime_submission_anchors_against_live_logical_canvas(monkeypatch):
 
 
 def test_runtime_submission_resolves_text_before_geometry_and_keeps_authored_size(monkeypatch, scene):
-    import Infernux.engine.runtime_screen_ui as module
-    from Infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
-    from Infernux.ui import UICanvas, UIText, TextResizeMode
-    from Infernux.ui.enums import RenderMode
+    import infernux.engine.runtime_screen_ui as module
+    from infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
+    from infernux.ui import UICanvas, UIText, TextResizeMode
+    from infernux.ui.enums import RenderMode
 
     renderer = _Renderer()
     engine = _Engine(renderer)
@@ -300,10 +300,10 @@ def test_runtime_submission_resolves_text_before_geometry_and_keeps_authored_siz
 
 
 def test_world_auto_text_uses_one_size_for_draw_input_and_rect_tool(monkeypatch, scene):
-    import Infernux.engine.runtime_screen_ui as module
-    from Infernux.engine.ui.ui_rect_manipulation import resolve_world_ui_frame
-    from Infernux.lib import ScreenUIList
-    from Infernux.ui import UIText, TextResizeMode
+    import infernux.engine.runtime_screen_ui as module
+    from infernux.engine.ui.ui_rect_manipulation import resolve_world_ui_frame
+    from infernux.lib import ScreenUIList
+    from infernux.ui import UIText, TextResizeMode
 
     text = UIText()
     text.width, text.height = 17.0, 29.0
@@ -322,10 +322,10 @@ def test_world_auto_text_uses_one_size_for_draw_input_and_rect_tool(monkeypatch,
 
 
 def test_canvas_free_ui_submits_each_element_as_transform_owned_world_geometry(monkeypatch, scene):
-    import Infernux.engine.runtime_screen_ui as module
-    from Infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
-    from Infernux.lib import ScreenUIList, Vector3
-    from Infernux.ui import UIFrame, UIImage
+    import infernux.engine.runtime_screen_ui as module
+    from infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
+    from infernux.lib import ScreenUIList, Vector3
+    from infernux.ui import UIFrame, UIImage
 
     root_object = scene.create_game_object("World panel")
     root_object.transform.position = Vector3(2.0, 3.0, 4.0)
@@ -411,8 +411,8 @@ def test_canvas_free_ui_submits_each_element_as_transform_owned_world_geometry(m
 
 
 def test_world_ui_snapshot_tracks_membership_and_canvas_reparenting(scene):
-    from Infernux.engine.runtime_screen_ui import _collect_world_ui_elements
-    from Infernux.ui import UIText, UICanvas
+    from infernux.engine.runtime_screen_ui import _collect_world_ui_elements
+    from infernux.ui import UIText, UICanvas
 
     obj = scene.create_game_object("World text")
     text = UIText()
@@ -433,9 +433,9 @@ def test_world_ui_snapshot_tracks_membership_and_canvas_reparenting(scene):
 
 
 def test_world_ui_snapshot_uses_world_identity_when_native_scene_address_is_reused():
-    from Infernux.engine.runtime_screen_ui import _collect_world_ui_elements
-    from Infernux.ui.ui_render_dispatch import runtime_ui_revision
-    from Infernux.ui import UIText, UIImage
+    from infernux.engine.runtime_screen_ui import _collect_world_ui_elements
+    from infernux.ui.ui_render_dispatch import runtime_ui_revision
+    from infernux.ui import UIText, UIImage
 
     old = UIText()
     new = UIImage()
@@ -454,10 +454,10 @@ def test_world_ui_snapshot_uses_world_identity_when_native_scene_address_is_reus
 
 
 def test_world_ui_revision_tracks_group_material_visibility_and_persistent_scene(scene, monkeypatch):
-    from Infernux.ui import UIText, UIGroup
-    from Infernux.ui.ui_render_dispatch import runtime_ui_revision
-    import Infernux.ui.ui_render_dispatch as dispatch
-    from Infernux.lib import Vector3
+    from infernux.ui import UIText, UIGroup
+    from infernux.ui.ui_render_dispatch import runtime_ui_revision
+    import infernux.ui.ui_render_dispatch as dispatch
+    from infernux.lib import Vector3
 
     parent = scene.create_game_object("Group")
     group = UIGroup()
@@ -467,8 +467,8 @@ def test_world_ui_revision_tracks_group_material_visibility_and_persistent_scene
     text = UIText()
     obj.add_py_component(text)
     persistent = SimpleNamespace(structure_version=1)
-    from Infernux.core.material import Material
-    from Infernux.lib import InxMaterial
+    from infernux.core.material import Material
+    from infernux.lib import InxMaterial
     text.material = Material(InxMaterial("Tracked UI material", "Unlit"))
     version = [1]
     monkeypatch.setattr(dispatch, "material_visual_revision", lambda *_args: ("material", version[0]))
@@ -495,14 +495,14 @@ def test_world_ui_revision_tracks_group_material_visibility_and_persistent_scene
 
 
 def test_world_ui_pointer_uses_the_element_coordinate_contract(scene, monkeypatch):
-    from Infernux.engine.runtime_screen_ui import (
+    from infernux.engine.runtime_screen_ui import (
         WorldUIElementTarget,
         map_runtime_ui_pointer,
     )
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
 
-    from Infernux.lib import Vector3 as vector
-    from Infernux.ui import UIText
+    from infernux.lib import Vector3 as vector
+    from infernux.ui import UIText
     obj = scene.create_game_object('World text')
     obj.layer = 30
     root = UIText()
@@ -534,13 +534,13 @@ def test_world_ui_pointer_uses_the_element_coordinate_contract(scene, monkeypatc
 
 
 def test_world_ui_scene_pick_uses_each_elements_own_transform_and_z(scene):
-    from Infernux.engine.runtime_screen_ui import (
+    from infernux.engine.runtime_screen_ui import (
         WorldUIElementTarget,
         map_world_ui_ray,
         pick_world_ui_object_ids,
     )
-    from Infernux.lib import Vector3
-    from Infernux.ui import UIFrame, UIText
+    from infernux.lib import Vector3
+    from infernux.ui import UIFrame, UIText
 
     panel_object = scene.create_game_object("World panel")
     panel = UIFrame()
@@ -577,9 +577,9 @@ def test_world_ui_scene_pick_uses_each_elements_own_transform_and_z(scene):
 
 
 def test_world_ui_scene_pick_skips_visual_neutral_frame(scene):
-    from Infernux.engine.runtime_screen_ui import pick_world_ui_object_ids
-    from Infernux.lib import Vector3
-    from Infernux.ui import UIFrame, UIImage
+    from infernux.engine.runtime_screen_ui import pick_world_ui_object_ids
+    from infernux.lib import Vector3
+    from infernux.ui import UIFrame, UIImage
 
     frame_object = scene.create_game_object("World layout group")
     frame = UIFrame()
@@ -606,7 +606,7 @@ def test_world_ui_scene_pick_skips_visual_neutral_frame(scene):
 
 
 def test_world_ui_never_inherits_parent_frame_clipping(scene):
-    from Infernux.ui import UIFrame, UIText
+    from infernux.ui import UIFrame, UIText
 
     panel_object = scene.create_game_object("World panel")
     panel = UIFrame()
@@ -623,14 +623,14 @@ def test_world_ui_never_inherits_parent_frame_clipping(scene):
 
 
 def test_world_ui_pointer_is_rejected_behind_a_physics_occluder(scene, monkeypatch):
-    from Infernux.engine.runtime_screen_ui import (
+    from infernux.engine.runtime_screen_ui import (
         WorldUIElementTarget,
         map_runtime_ui_pointer,
     )
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
 
-    from Infernux.lib import Vector3 as vector
-    from Infernux.ui import UIText
+    from infernux.lib import Vector3 as vector
+    from infernux.ui import UIText
     obj = scene.create_game_object('Occluded world text')
     root = UIText()
     obj.add_py_component(root)
@@ -657,7 +657,7 @@ def test_world_ui_pointer_is_rejected_behind_a_physics_occluder(scene, monkeypat
 
 
 def test_world_ui_input_target_identity_survives_frame_collection(monkeypatch):
-    import Infernux.engine.runtime_screen_ui as module
+    import infernux.engine.runtime_screen_ui as module
 
     class Root:
         pass
@@ -678,7 +678,7 @@ def test_world_ui_input_target_identity_survives_frame_collection(monkeypatch):
 
 
 def test_runtime_input_surfaces_reuse_canvas_snapshot_until_membership_changes(monkeypatch):
-    import Infernux.engine.runtime_screen_ui as module
+    import infernux.engine.runtime_screen_ui as module
 
     scene = SimpleNamespace()
     calls = []
@@ -700,7 +700,7 @@ def test_runtime_input_surfaces_reuse_canvas_snapshot_until_membership_changes(m
 
 
 def test_runtime_submission_clears_stale_commands_without_an_active_scene(monkeypatch):
-    from Infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
+    from infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
 
     renderer = _Renderer()
     engine = _Engine(renderer)
@@ -713,8 +713,8 @@ def test_runtime_submission_clears_stale_commands_without_an_active_scene(monkey
 
 
 def test_runtime_barrier_remains_lifecycle_only():
-    from Infernux.engine.engine import Engine
-    from Infernux.engine.runtime_change_journal import RuntimeFrameBarrier
+    from infernux.engine.engine import Engine
+    from infernux.engine.runtime_change_journal import RuntimeFrameBarrier
 
     calls = []
     engine = Engine.__new__(Engine)
@@ -730,10 +730,10 @@ def test_runtime_barrier_remains_lifecycle_only():
 
 
 def test_script_free_physics_barriers_do_not_open_an_unowned_native_frame(monkeypatch):
-    from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
-    from Infernux.engine.engine import Engine
-    from Infernux.engine.runtime_change_journal import RuntimeFrameBarrier
-    import Infernux.compute as compute
+    from infernux.components._component_lifecycle import RuntimeExecutionScheduler
+    from infernux.engine.engine import Engine
+    from infernux.engine.runtime_change_journal import RuntimeFrameBarrier
+    import infernux.compute as compute
 
     anchors = []
     monkeypatch.setattr(compute, "_poll_transform_bindings", lambda: anchors.append("pose"))
@@ -763,8 +763,8 @@ def test_script_free_physics_barriers_do_not_open_an_unowned_native_frame(monkey
 
 
 def test_snapshot_barrier_publishes_native_transform_revision_changes():
-    from Infernux.engine.engine import Engine
-    from Infernux.engine.runtime_change_journal import (
+    from infernux.engine.engine import Engine
+    from infernux.engine.runtime_change_journal import (
         RuntimeChangeDomain,
         RuntimeFrameBarrier,
     )
@@ -803,7 +803,7 @@ def test_snapshot_barrier_publishes_native_transform_revision_changes():
 
 
 def test_render_pipeline_submits_ui_before_delegating_camera_render(monkeypatch):
-    import Infernux.engine.runtime_screen_ui as module
+    import infernux.engine.runtime_screen_ui as module
 
     calls = []
     submission = SimpleNamespace(submit=lambda: calls.append("screen_ui"))
@@ -824,7 +824,7 @@ def test_render_pipeline_submits_ui_before_delegating_camera_render(monkeypatch)
 
 
 def test_render_pipeline_does_not_render_a_frame_after_screen_ui_failure():
-    from Infernux.engine.runtime_screen_ui import RuntimeScreenUIRenderPipeline
+    from infernux.engine.runtime_screen_ui import RuntimeScreenUIRenderPipeline
 
     calls = []
 
@@ -849,7 +849,7 @@ def test_render_pipeline_does_not_render_a_frame_after_screen_ui_failure():
 
 
 def test_render_pipeline_requires_delegate_dispose_contract():
-    from Infernux.engine.runtime_screen_ui import RuntimeScreenUIRenderPipeline
+    from infernux.engine.runtime_screen_ui import RuntimeScreenUIRenderPipeline
 
     pipeline = RuntimeScreenUIRenderPipeline(
         SimpleNamespace(submit=lambda: None),
@@ -863,8 +863,8 @@ def test_render_pipeline_requires_delegate_dispose_contract():
 
 
 def test_engine_wraps_custom_python_pipelines_with_runtime_ui_submission():
-    from Infernux.engine.engine import Engine
-    from Infernux.engine.runtime_screen_ui import RuntimeScreenUIRenderPipeline
+    from infernux.engine.engine import Engine
+    from infernux.engine.runtime_screen_ui import RuntimeScreenUIRenderPipeline
 
     installed = []
     engine = Engine.__new__(Engine)
@@ -883,6 +883,6 @@ def test_engine_wraps_custom_python_pipelines_with_runtime_ui_submission():
 
 
 def test_player_gui_does_not_own_gpu_screen_ui_submission():
-    from Infernux.engine.player_gui import PlayerGUI
+    from infernux.engine.player_gui import PlayerGUI
 
     assert not hasattr(PlayerGUI, "_render_screen_ui")

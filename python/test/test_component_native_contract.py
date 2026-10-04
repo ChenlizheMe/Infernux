@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-import Infernux.components._component_native as native_module
-from Infernux.components import InxComponent
-from Infernux.components._component_native import ComponentNativeMixin
+import infernux.components._component_native as native_module
+from infernux.components import InxComponent
+from infernux.components._component_native import ComponentNativeMixin
 
 
 def test_native_component_liveness_only_treats_runtime_failure_as_destroyed():

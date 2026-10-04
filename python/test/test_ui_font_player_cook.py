@@ -5,18 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.application import Application
-from Infernux.core.asset_ref import TextureRef, create_asset_ref
-from Infernux.core.assets import AssetManager
-from Infernux.engine.game_builder import GameBuilder
-from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
-from Infernux.engine.project_context import (
+from infernux.application import Application
+from infernux.core.asset_ref import TextureRef, create_asset_ref
+from infernux.core.assets import AssetManager
+from infernux.engine.game_builder import GameBuilder
+from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+from infernux.engine.project_context import (
     resolve_runtime_asset_guid,
     set_runtime_asset_resolver,
 )
-from Infernux.engine.runtime_artifact_catalog import build_catalog, runtime_artifact_id
-from Infernux.ui import UIButton, UIText
-from Infernux.ui.ui_render_dispatch import _extract_text_attrs
+from infernux.engine.runtime_artifact_catalog import build_catalog, runtime_artifact_id
+from infernux.ui import UIButton, UIText
+from infernux.ui.ui_render_dispatch import _extract_text_attrs
 
 
 def _binding(guid: str, source_path: str) -> dict[str, object]:

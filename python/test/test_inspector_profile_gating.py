@@ -1,4 +1,4 @@
-from Infernux.engine.ui import inspector_support
+from infernux.engine.ui import inspector_support
 
 
 def test_profile_metrics_are_noop_when_native_profiling_is_disabled(monkeypatch):

@@ -1,7 +1,7 @@
 # Physics
 
 <div class="class-info">
-类位于 <b>Infernux.physics</b>
+类位于 <b>infernux.physics</b>
 </div>
 
 ## 描述

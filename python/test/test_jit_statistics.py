@@ -15,8 +15,8 @@ from llvmlite.binding.executionengine import ExecutionEngine
 import numpy as np
 import pytest
 
-from Infernux import jit
-from Infernux._jit_kernels import _compiled_cache
+from infernux import jit
+from infernux._jit_kernels import _compiled_cache
 
 
 def _increment(value):
@@ -197,7 +197,7 @@ def test_failed_unpublished_signature_is_not_reported_as_live_code(monkeypatch):
 def test_cache_load_reports_current_preparation_not_old_compiler_timings(tmp_path):
     fixture_dir = Path(__file__).with_name("fixtures")
     script = (
-        "import sys,json; from dataclasses import asdict; from Infernux import jit; "
+        "import sys,json; from dataclasses import asdict; from infernux import jit; "
         "sys.path.insert(0,sys.argv[1]); from jit_cache_publication import direct; "
         "value=direct(3); print(json.dumps({'value':value,'report':asdict(jit.statistics(direct))}))"
     )

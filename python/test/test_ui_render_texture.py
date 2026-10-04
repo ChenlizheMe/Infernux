@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.render_texture import RenderTexture
-from Infernux.ui import UIImage
-from Infernux.ui.ui_render_dispatch import image_texture_source, material_visual_state, runtime_ui_revision
+from infernux.core.render_texture import RenderTexture
+from infernux.ui import UIImage
+from infernux.ui.ui_render_dispatch import image_texture_source, material_visual_state, runtime_ui_revision
 
 
 def target():
@@ -15,8 +15,8 @@ def target():
 
 
 def test_image_runtime_override_preserves_authored_texture():
-    from Infernux.components.fields import get_raw_field_value
-    from Infernux.core.asset_ref import TextureRef
+    from infernux.components.fields import get_raw_field_value
+    from infernux.core.asset_ref import TextureRef
 
     image = UIImage()
     authored = TextureRef(path_hint='Assets/Textures/monitor.png')
@@ -32,9 +32,9 @@ def test_image_runtime_override_preserves_authored_texture():
 
 
 def test_button_runtime_override_preserves_guid_backed_background_texture():
-    from Infernux.components.fields import get_raw_field_value
-    from Infernux.core.asset_ref import TextureRef
-    from Infernux.ui import UIButton
+    from infernux.components.fields import get_raw_field_value
+    from infernux.core.asset_ref import TextureRef
+    from infernux.ui import UIButton
 
     button = UIButton()
     authored = TextureRef(
@@ -53,7 +53,7 @@ def test_button_runtime_override_preserves_guid_backed_background_texture():
 
 
 def test_screen_command_cache_tracks_resize_without_component_mutation(scene):
-    from Infernux.ui import UICanvas
+    from infernux.ui import UICanvas
     image = UIImage()
     image.texture = target()
     owner = scene.create_game_object("Canvas")
@@ -70,7 +70,7 @@ def test_screen_command_cache_tracks_resize_without_component_mutation(scene):
 
 
 def test_button_command_cache_tracks_live_background_resize(scene):
-    from Infernux.ui import UIButton, UICanvas
+    from infernux.ui import UIButton, UICanvas
 
     button = UIButton()
     button.background_texture = target()
@@ -106,7 +106,7 @@ def test_material_live_source_revision_and_explicit_image_priority():
 
 
 def test_material_sampled_texture_keeps_guid_identity_until_cache_resolution():
-    from Infernux.core.asset_ref import TextureRef
+    from infernux.core.asset_ref import TextureRef
 
     texture_guid = "8a51dcd72aa64cd5963731d9b4f2507f"
     material = SimpleNamespace(
@@ -132,8 +132,8 @@ def test_material_sampled_texture_keeps_guid_identity_until_cache_resolution():
 
 
 def test_ui_gpu_texture_publication_does_not_resolve_an_asset_path(monkeypatch):
-    from Infernux.lib import _Infernux
-    from Infernux.ui import ui_texture_cache as module
+    from infernux.lib import _Infernux
+    from infernux.ui import ui_texture_cache as module
 
     class NativeTarget:
         pass

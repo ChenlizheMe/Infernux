@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     ExternalDropKind,
     ExternalDropStatus,
     ExternalDropTargetService,
@@ -12,7 +12,7 @@ from Infernux.engine.interaction import (
     PanelInteractionDescriptor,
     PanelInteractionRegistry,
 )
-from Infernux.engine.ui.core_panel_interactions import project_panel_interaction
+from infernux.engine.ui.core_panel_interactions import project_panel_interaction
 
 
 class _Panel:
@@ -141,7 +141,7 @@ def test_project_panel_descriptor_declares_external_file_drop() -> None:
 
 
 def test_external_drop_forwarder_runs_after_native_panels() -> None:
-    source = Path("python/Infernux/engine/bootstrap_project.py").read_text(
+    source = Path("python/infernux/engine/bootstrap_project.py").read_text(
         encoding="utf-8"
     )
     registration = source[source.index('"project_drop_forwarder"') :]

@@ -1,14 +1,14 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from Infernux.core.node_graph import (
+from infernux.core.node_graph import (
     NodeGraph,
     NodeInlineFieldDef,
     NodeTypeDef,
     PinDef,
     PinKind,
 )
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     CommandSource,
     EditorCommand,
     EditorCommandRegistry,
@@ -19,14 +19,14 @@ from Infernux.engine.interaction import (
     SelectionService,
     TransientInteractionService,
 )
-from Infernux.engine.ui.node_graph_editor_panel import (
+from infernux.engine.ui.node_graph_editor_panel import (
     GraphWorkspaceEntry,
     NODE_GRAPH_PANEL_INTERACTION,
     NodeGraphEditorPanel,
 )
-from Infernux.engine.ui.node_graph_view import NodeGraphView
-from Infernux.engine.ui.inspector_utils import render_color_value_bar
-from Infernux.engine.i18n import t
+from infernux.engine.ui.node_graph_view import NodeGraphView
+from infernux.engine.ui.inspector_utils import render_color_value_bar
+from infernux.engine.i18n import t
 
 
 class _ContextMenuProbe:
@@ -118,7 +118,7 @@ def test_shared_color_bar_supports_node_sized_rgba_fields():
 
 
 def test_node_inline_color_uses_color_bar_instead_of_xyzw(monkeypatch):
-    import Infernux.engine.ui.node_graph_view as node_graph_view
+    import infernux.engine.ui.node_graph_view as node_graph_view
 
     calls = []
 
@@ -165,7 +165,7 @@ def test_node_inline_color_uses_color_bar_instead_of_xyzw(monkeypatch):
 
 
 def test_node_inline_color_follows_field_hdr_flag(monkeypatch):
-    import Infernux.engine.ui.node_graph_view as node_graph_view
+    import infernux.engine.ui.node_graph_view as node_graph_view
 
     calls = []
 
@@ -296,7 +296,7 @@ def test_context_menu_disables_commands_rejected_by_the_global_registry():
 
 def test_context_add_node_routes_coordinates_and_creation_payload_through_commands():
     core = EditorInteractionCore()
-    from Infernux.engine.ui.editor_services import EditorServices
+    from infernux.engine.ui.editor_services import EditorServices
 
     EditorServices.instance()._interaction_core = core
 
@@ -1029,7 +1029,7 @@ def test_workspace_rename_and_delete_use_shared_graph_edit_commands():
 
 
 def test_context_menu_capability_query_does_not_mutate_global_focus():
-    from Infernux.engine.interaction import ContextMenuBuilder, ContextMenuCommand
+    from infernux.engine.interaction import ContextMenuBuilder, ContextMenuCommand
 
     focus = FocusService()
     focus.activate_panel("project", record_history=False)

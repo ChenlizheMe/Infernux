@@ -1,10 +1,10 @@
-"""Tests for Infernux.core.asset_ref — AssetRefBase, TextureRef, ShaderRef, etc."""
+"""Tests for infernux.core.asset_ref — AssetRefBase, TextureRef, ShaderRef, etc."""
 
 from __future__ import annotations
 
 import pytest
 
-from Infernux.core.asset_ref import (
+from infernux.core.asset_ref import (
     AssetRefBase,
     AudioClipRef,
     MaterialRef,

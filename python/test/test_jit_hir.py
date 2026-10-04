@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.jit_hir import (
+from infernux.jit_hir import (
     AliasRiskKind,
     BasicBlockKind,
     BufferAccessKind,
@@ -130,7 +130,7 @@ def test_nested_aliases_are_not_proven_by_missing_hir_accesses():
     "    first.fill(0)\n",
 ])
 def test_parallel_alias_proof_does_not_admit_unanalyzed_array_operations_or_loop_fusion(extra):
-    from Infernux.jit_hir import parallel_alias_pairs
+    from infernux.jit_hir import parallel_alias_pairs
 
     source = "def kernel(first, second):\n    for i in range(len(first)):\n        first[i] += second[i]\n"
     assert parallel_alias_pairs(build_hir(source)) == (("first", "second"),)

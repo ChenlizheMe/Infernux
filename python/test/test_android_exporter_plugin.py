@@ -8,9 +8,9 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from Infernux.version import ENGINE_VERSION
+from infernux.version import ENGINE_VERSION
 
-from Infernux.engine.build import (
+from infernux.engine.build import (
     BuildConfiguration,
     BuildExporterRegistry,
     BuildProfile,
@@ -405,7 +405,7 @@ def test_android_exporter_doctor_validates_target_python_runtime(
 def test_android_compute_aot_is_requested_from_shared_cook(monkeypatch, tmp_path):
     _android_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_android.exporter")
-    platform_cook = importlib.import_module("Infernux.engine.platform_content_cook")
+    platform_cook = importlib.import_module("infernux.engine.platform_content_cook")
     project = tmp_path / "project"
     captured = {}
     request = BuildRequest(
@@ -461,7 +461,7 @@ def test_android_rejects_direct_jit_imports_in_selected_sources(
 ):
     _android_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_android.exporter")
-    platform_cook = importlib.import_module("Infernux.engine.platform_content_cook")
+    platform_cook = importlib.import_module("infernux.engine.platform_content_cook")
     selected = tmp_path / "Assets" / "Scripts" / "Gameplay.py"
     selected.parent.mkdir(parents=True)
     selected.write_text(import_source, encoding="utf-8")
@@ -719,7 +719,7 @@ def test_android_launcher_icons_are_generated_from_the_cooked_project_icon(
     _android_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_android.exporter")
     staging = tmp_path / "host"
-    source_icon = ROOT / "python/Infernux/resources/icons/icon.png"
+    source_icon = ROOT / "python/infernux/resources/icons/icon.png"
 
     exporter_module._stage_android_launcher_icons(staging, source_icon.read_bytes())
 
@@ -1147,12 +1147,12 @@ def test_android_engine_staging_excludes_desktop_runtime_payloads(
     _android_module(monkeypatch)
     exporter_module = importlib.import_module("infernux_android.exporter")
     source_root = tmp_path / "source"
-    package = source_root / "python/Infernux"
+    package = source_root / "python/infernux"
     bootstrap = package / "engine/platform_player_bootstrap.py"
     bootstrap.parent.mkdir(parents=True)
     bootstrap.write_text("def run_platform_player(): pass\n", encoding="utf-8")
-    public_api = source_root / "python/infernux.py"
-    public_api.write_text("import Infernux as _api\n", encoding="utf-8")
+    public_api = package / "__init__.py"
+    public_api.write_text("__version__ = '0.4.1'\n", encoding="utf-8")
     shader = package / "resources/shaders/standard.vert"
     shader.parent.mkdir(parents=True)
     shader.write_text("void main() {}\n", encoding="utf-8")
@@ -1181,8 +1181,8 @@ def test_android_engine_staging_excludes_desktop_runtime_payloads(
 
     exporter_module._stage_engine_python_package(request, staging, package)
 
-    destination = staging / "app/src/main/assets/python/site-packages/Infernux"
-    assert (destination.parent / "infernux.py").read_text(encoding="utf-8") == public_api.read_text(
+    destination = staging / "app/src/main/assets/python/site-packages/infernux"
+    assert (destination / "__init__.py").read_text(encoding="utf-8") == public_api.read_text(
         encoding="utf-8"
     )
     assert (destination / "engine/platform_player_bootstrap.py").is_file()
@@ -1237,12 +1237,12 @@ def test_android_python_runtime_identity_includes_engine_modules(monkeypatch, tm
     staging = tmp_path / "staging"
     python_assets = staging / "app/src/main/assets/python"
     site_packages = python_assets / "site-packages"
-    (site_packages / "Infernux").mkdir(parents=True)
+    (site_packages / "infernux").mkdir(parents=True)
     (site_packages / "packaging").mkdir()
     (python_assets / "infernux-runtime.id").write_text(
         "a" * 64 + "\n", encoding="ascii"
     )
-    engine_module = site_packages / "Infernux/__init__.py"
+    engine_module = site_packages / "infernux/__init__.py"
     engine_module.write_text("ENGINE = 1\n", encoding="utf-8")
     (site_packages / "packaging/__init__.py").write_text(
         "VERSION = 1\n", encoding="utf-8"

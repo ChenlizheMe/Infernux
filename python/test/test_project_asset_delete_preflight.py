@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     ClipboardService,
     DocumentKey,
     DocumentKind,
@@ -13,7 +13,7 @@ from Infernux.engine.interaction import (
     ProjectAssetInteractionService,
     SelectionService,
 )
-from Infernux.engine.undo import ProjectAssetDeleteCommand
+from infernux.engine.undo import ProjectAssetDeleteCommand
 
 
 class _Database:
@@ -31,7 +31,7 @@ def _service(tmp_path):
 
 
 def _scene_manager(monkeypatch, path):
-    from Infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.scene_manager import SceneFileManager
 
     monkeypatch.setattr(
         SceneFileManager,
@@ -153,7 +153,7 @@ def test_delete_command_restores_asset_and_meta_for_undo(tmp_path):
 
 
 def test_asset_delete_registers_deleted_watcher_echo(monkeypatch, tmp_path):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     asset = tmp_path / "Echo.mat"
     asset.write_text("material\n", encoding="utf-8")

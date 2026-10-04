@@ -6,11 +6,11 @@ import ast
 from pathlib import Path
 from types import SimpleNamespace
 
-import Infernux.engine.runtime_screen_ui as runtime_screen_ui
-import Infernux.engine.ui.runtime_canvas_snapshot as canvas_snapshot
-import Infernux.input as input_module
-from Infernux.input import TouchPhase
-from Infernux.ui.ui_event_data import PointerType
+import infernux.engine.runtime_screen_ui as runtime_screen_ui
+import infernux.engine.ui.runtime_canvas_snapshot as canvas_snapshot
+import infernux.input as input_module
+from infernux.input import TouchPhase
+from infernux.ui.ui_event_data import PointerType
 
 
 BOOTSTRAP = (

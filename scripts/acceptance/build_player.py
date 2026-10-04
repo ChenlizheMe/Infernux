@@ -115,11 +115,11 @@ def _prepare_engine(*, installed: bool) -> dict[str, str]:
         python_root = str(REPOSITORY_ROOT / "python")
         if python_root not in sys.path:
             sys.path.insert(0, python_root)
-    import Infernux
-    from Infernux.lib import _Infernux
+    import infernux
+    from infernux.lib import _Infernux
 
     origins = {
-        "python": str(Path(Infernux.__file__).resolve()),
+        "python": str(Path(infernux.__file__).resolve()),
         "native": str(Path(_Infernux.__file__).resolve()),
     }
     if installed and any(Path(path).is_relative_to(REPOSITORY_ROOT) for path in origins.values()):
@@ -141,7 +141,7 @@ def _installed_exporter_registry(project: Path, target: str):
         project / "Packages" / "infernux" / f"platform-{plugin}" / "editor"
     )
     exporter = _load_exporter(target, editor_root_override=editor_root)
-    from Infernux.engine.build import BuildExporterRegistry
+    from infernux.engine.build import BuildExporterRegistry
 
     registry = BuildExporterRegistry()
     registry.register("scripts/acceptance/build-player", exporter)
@@ -157,17 +157,17 @@ def _prepare_project_registry(project: Path, *, runtime_host: bool = True):
     meant DataAsset documents containing project SerializableObject subclasses
     failed during Cook with an unknown type id.
     """
-    from Infernux.engine.build import exporter_registry
-    from Infernux.engine.library_sync import sync_resources
-    from Infernux.engine.project_context import (
+    from infernux.engine.build import exporter_registry
+    from infernux.engine.library_sync import sync_resources
+    from infernux.engine.project_context import (
         is_editor_asset_path,
         package_script_role,
         set_project_root,
     )
-    from Infernux.plugins import PluginManager
-    from Infernux.components.script_loader import load_all_components_from_file
-    from Infernux.components.component_identity import bind_asset_script_guid
-    from Infernux.components.registry import publish_component_script_types
+    from infernux.plugins import PluginManager
+    from infernux.components.script_loader import load_all_components_from_file
+    from infernux.components.component_identity import bind_asset_script_guid
+    from infernux.components.registry import publish_component_script_types
 
     set_project_root(str(project))
     sync_resources(str(project))
@@ -317,7 +317,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     engine_origins = _prepare_engine(installed=arguments.installed)
-    from Infernux.engine.build import (
+    from infernux.engine.build import (
         BuildConfiguration,
         BuildExporterRegistry,
         BuildProfile,

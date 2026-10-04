@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from Infernux.core.animation_clip3d import (
+from infernux.core.animation_clip3d import (
     AnimationClip3D,
     embedded_take_descriptors,
     is_asset_guid_string,
@@ -103,8 +103,8 @@ def test_embedded_take_descriptors_require_current_published_clip_table() -> Non
 
 
 def test_animation_clip_imported_curves_events_and_mask_round_trip() -> None:
-    from Infernux.core.animation_clip3d import ImportedFloatCurve
-    from Infernux.core.animation_event import AnimationEvent
+    from infernux.core.animation_clip3d import ImportedFloatCurve
+    from infernux.core.animation_event import AnimationEvent
 
     clip = AnimationClip3D(
         curves=[ImportedFloatCurve("Speed", ((0.0, 2.0), (1.0, 6.0)))],

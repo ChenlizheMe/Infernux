@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.components._component_lifecycle import (
+from infernux.components._component_lifecycle import (
     ComponentLifecycleMixin,
     RuntimeExecutionScheduler,
 )
-from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
-from Infernux.components.component import InxComponent
-from Infernux.engine.runtime_dispatch import build_type_dispatch_descriptor
+from infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+from infernux.components.component import InxComponent
+from infernux.engine.runtime_dispatch import build_type_dispatch_descriptor
 
 
 class _ScheduledProbe(ComponentLifecycleMixin):
@@ -98,7 +98,7 @@ def test_runtime_scheduler_executes_public_physics_boundaries_in_order():
 
 
 def test_runtime_callbacks_use_the_compute_recording_boundary(monkeypatch):
-    import Infernux.components._component_lifecycle as lifecycle
+    import infernux.components._component_lifecycle as lifecycle
 
     events = []
 
@@ -142,7 +142,7 @@ def test_runtime_scheduler_builds_once_and_reuses_stable_plan():
 
 
 def test_component_base_exposes_unity_mouse_hooks_without_extra_component():
-    from Infernux.components import InxComponent
+    from infernux.components import InxComponent
     component = InxComponent()
     for name in (
         "on_mouse_enter", "on_mouse_over", "on_mouse_exit", "on_mouse_down",
@@ -234,7 +234,7 @@ def test_scene_membership_refresh_recovers_missed_incremental_notification(monke
     scheduler.bind_native_bridge(manager)
     component = _ScheduledProbe(31)
 
-    from Infernux.components.component import InxComponent
+    from infernux.components.component import InxComponent
 
     monkeypatch.setattr(
         InxComponent,
@@ -249,9 +249,9 @@ def test_scene_membership_refresh_recovers_missed_incremental_notification(monke
 
 
 def test_scene_registry_rebuild_keeps_persistent_components_in_runtime_plan(monkeypatch):
-    from Infernux.components.component import InxComponent
-    from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
-    import Infernux.lib as native_lib
+    from infernux.components.component import InxComponent
+    from infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
+    import infernux.lib as native_lib
 
     class _SceneObject:
         def __init__(self, object_id, component):
@@ -307,9 +307,9 @@ def test_scene_registry_rebuild_keeps_persistent_components_in_runtime_plan(monk
 
 
 def test_scene_registry_reconcile_restores_other_resident_components(monkeypatch):
-    from Infernux.components.component import InxComponent
-    from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
-    import Infernux.lib as native_lib
+    from infernux.components.component import InxComponent
+    from infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
+    import infernux.lib as native_lib
 
     class _SceneObject:
         def __init__(self, object_id, component):
@@ -371,8 +371,8 @@ def test_scene_registry_reconcile_restores_other_resident_components(monkeypatch
 
 
 def test_scene_registry_rebuild_propagates_persistent_scene_failure(monkeypatch):
-    from Infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
-    import Infernux.lib as native_lib
+    from infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
+    import infernux.lib as native_lib
 
     class _Scene:
         @staticmethod
@@ -424,7 +424,7 @@ def test_runtime_scheduler_reuses_immutable_execution_snapshot_between_frames():
 
 
 def test_runtime_scheduler_does_not_rescan_dispatch_types_in_steady_state(monkeypatch):
-    import Infernux.engine.runtime_dispatch as runtime_dispatch
+    import infernux.engine.runtime_dispatch as runtime_dispatch
 
     calls = 0
     original = runtime_dispatch.ensure_runtime_dispatch_types

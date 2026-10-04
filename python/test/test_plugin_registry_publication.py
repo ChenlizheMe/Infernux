@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.core.document_store import DocumentStore
-from Infernux.plugins.registry import PluginRegistry
+from infernux.core.document_store import DocumentStore
+from infernux.plugins.registry import PluginRegistry
 
 
 def test_registry_and_lock_use_the_shared_document_writer(tmp_path):

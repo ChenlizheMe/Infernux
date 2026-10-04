@@ -6,7 +6,7 @@ import tempfile
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     ActionOrigin,
     ClipboardService,
     EditorActionJournal,
@@ -15,13 +15,13 @@ from Infernux.engine.interaction import (
     SelectionService,
     SelectionTarget,
 )
-from Infernux.engine.undo import UndoManager
+from infernux.engine.undo import UndoManager
 
 
 @pytest.fixture()
 def project_asset_commands(tmp_path, monkeypatch):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.ui import project_file_ops
+    from infernux.core.assets import AssetManager
+    from infernux.engine.ui import project_file_ops
 
     assets = tmp_path / "Assets"
     assets.mkdir()
@@ -417,7 +417,7 @@ def test_native_project_drop_has_no_filesystem_copy_fallback():
         os.path.join(
             os.path.dirname(__file__),
             "..",
-            "Infernux",
+            "infernux",
             "engine",
             "interaction",
             "project_assets.py",

@@ -2,10 +2,10 @@
 
 import pytest
 
-from Infernux.engine.interaction.commands import EditorCommand, EditorCommandRegistry
-from Infernux.engine.interaction.shortcuts import KeyChord, ShortcutBinding, ShortcutRouter
-from Infernux.engine.ui.panel_registry import PanelRegistry
-from Infernux.plugins.preload import _remove_editor_contribution_owner
+from infernux.engine.interaction.commands import EditorCommand, EditorCommandRegistry
+from infernux.engine.interaction.shortcuts import KeyChord, ShortcutBinding, ShortcutRouter
+from infernux.engine.ui.panel_registry import PanelRegistry
+from infernux.plugins.preload import _remove_editor_contribution_owner
 
 
 @pytest.fixture
@@ -80,7 +80,7 @@ def test_refused_panel_close_keeps_commands_and_shortcuts(registries, monkeypatc
 
 
 def test_shortcut_profiles_preserve_preload_bindings(registries):
-    from Infernux.engine.interaction.preferences import PreferencesCommandService
+    from infernux.engine.interaction.preferences import PreferencesCommandService
 
     _, router = registries
     preferences = PreferencesCommandService()

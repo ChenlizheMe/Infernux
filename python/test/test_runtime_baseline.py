@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.runtime_baseline import (
+from infernux.engine.runtime_baseline import (
     RUNTIME_BASELINE_COMPONENT_COUNTS,
     RUNTIME_BASELINE_COUNTERS,
     RUNTIME_BASELINE_LIFECYCLE_CALLBACKS,
@@ -193,7 +193,7 @@ def test_runner_executes_complete_fixed_workload_matrix():
 
 
 def test_empty_document_exposes_the_complete_contract_without_collecting(monkeypatch):
-    import Infernux.engine.runtime_baseline as baseline_module
+    import infernux.engine.runtime_baseline as baseline_module
 
     monkeypatch.setattr(
         baseline_module,
@@ -364,7 +364,7 @@ def test_native_window_capture_is_explicit_and_keeps_cpu_gpu_sections():
 
 @pytest.fixture
 def timing_engine(engine):
-    from Infernux.renderstack.render_stack_pipeline import RenderStackPipeline
+    from infernux.renderstack.render_stack_pipeline import RenderStackPipeline
 
     pipeline = RenderStackPipeline()
     idle_fps, cap = engine.get_editor_idle_fps(), engine.get_editor_fps_cap()
@@ -548,7 +548,7 @@ def test_recorder_rejects_unknown_matrix_cases_and_non_finite_values():
 
 def test_distributed_json_schemas_validate_generated_documents():
     jsonschema = pytest.importorskip("jsonschema")
-    schema_root = Path(__file__).parents[1] / "Infernux" / "resources" / "schemas"
+    schema_root = Path(__file__).parents[1] / "infernux" / "resources" / "schemas"
     baseline = _recorder(build="Release").snapshot()
     comparison = compare_runtime_baselines(
         baseline, _recorder(build="Release").snapshot()

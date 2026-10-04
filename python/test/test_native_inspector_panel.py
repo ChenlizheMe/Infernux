@@ -8,7 +8,7 @@ editor interaction services.
 from pathlib import Path
 
 import pytest
-from Infernux.lib import (
+from infernux.lib import (
     InspectorPanel,
     InspectorComponentInfo,
     InspectorObjectInfo,
@@ -41,7 +41,7 @@ class TestInspectorPanelCreation:
         assert ip is not None
 
     def test_is_editor_panel(self):
-        from Infernux.lib import EditorPanel
+        from infernux.lib import EditorPanel
         ip = InspectorPanel()
         assert isinstance(ip, EditorPanel)
 
@@ -235,7 +235,7 @@ class TestInspectorCallbacks:
             encoding="utf-8"
         )
         bootstrap = Path(
-            "python/Infernux/engine/bootstrap_inspector/_wire.py"
+            "python/infernux/engine/bootstrap_inspector/_wire.py"
         ).read_text(encoding="utf-8")
 
         assert 'ExecuteEditorCommand("scene.set_object_property"' in source
@@ -260,7 +260,7 @@ class TestInspectorCallbacks:
             encoding="utf-8"
         )
         wiring = Path(
-            "python/Infernux/engine/_bootstrap_wiring.py"
+            "python/infernux/engine/_bootstrap_wiring.py"
         ).read_text(encoding="utf-8")
 
         assert '"gesture_id"' in source
@@ -394,7 +394,7 @@ class TestInspectorCallbacks:
         assert result.override_count == 2
 
     def test_prefab_callback_projects_structural_rows(self):
-        source = Path("python/Infernux/engine/bootstrap_inspector/_wire.py").read_text(
+        source = Path("python/infernux/engine/bootstrap_inspector/_wire.py").read_text(
             encoding="utf-8"
         )
         assert "get_structural_overrides" in source
@@ -405,7 +405,7 @@ class TestInspectorCallbacks:
         source = Path("cpp/infernux/function/editor/InspectorPanel.cpp").read_text(encoding="utf-8")
         header = Path("cpp/infernux/function/editor/InspectorPanel.h").read_text(encoding="utf-8")
         binding = Path("cpp/infernux/tools/pybinding/BindingGUI.cpp").read_text(encoding="utf-8")
-        bootstrap = Path("python/Infernux/engine/bootstrap_inspector/_wire.py").read_text(encoding="utf-8")
+        bootstrap = Path("python/infernux/engine/bootstrap_inspector/_wire.py").read_text(encoding="utf-8")
 
         assert source.count(
             'ExecuteEditorCommand("window.open", "tag_layer_settings", "pointer")'

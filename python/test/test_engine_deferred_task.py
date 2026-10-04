@@ -1,4 +1,4 @@
-"""Tests for Infernux.engine.deferred_task — DeferredTaskRunner."""
+"""Tests for infernux.engine.deferred_task — DeferredTaskRunner."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _stub_engine_status(monkeypatch):
     """Stub EngineStatus so DeferredTaskRunner.submit/tick work."""
-    fake_status = types.ModuleType("Infernux.engine.ui.engine_status")
+    fake_status = types.ModuleType("infernux.engine.ui.engine_status")
 
     class EngineStatus:
         _label = ""
@@ -28,13 +28,13 @@ def _stub_engine_status(monkeypatch):
             cls._progress = 0.0
 
     fake_status.EngineStatus = EngineStatus
-    monkeypatch.setitem(sys.modules, "Infernux.engine.ui.engine_status", fake_status)
+    monkeypatch.setitem(sys.modules, "infernux.engine.ui.engine_status", fake_status)
     yield EngineStatus
 
 
 @pytest.fixture
 def runner():
-    from Infernux.engine.deferred_task import DeferredTaskRunner
+    from infernux.engine.deferred_task import DeferredTaskRunner
     # Reset singleton
     DeferredTaskRunner._instance = None
     return DeferredTaskRunner.instance()
@@ -42,7 +42,7 @@ def runner():
 
 class TestDeferredTaskRunner:
     def test_singleton(self, runner):
-        from Infernux.engine.deferred_task import DeferredTaskRunner
+        from infernux.engine.deferred_task import DeferredTaskRunner
         assert DeferredTaskRunner.instance() is runner
 
     def test_not_busy_initially(self, runner):

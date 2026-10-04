@@ -12,17 +12,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.anim_state_machine import (
+from infernux.core.anim_state_machine import (
     AnimCondition,
     AnimParameter,
     AnimState,
     AnimStateMachine,
     AnimTransition,
 )
-from Infernux.graph import TypeRef, ValueType
-from Infernux.components.skeletal_animator import SkeletalAnimator
-from Infernux.components.builtin.skinned_mesh_renderer import SkinnedMeshRenderer
-from Infernux.components.spirit_animator import SpiritAnimator
+from infernux.graph import TypeRef, ValueType
+from infernux.components.skeletal_animator import SkeletalAnimator
+from infernux.components.builtin.skinned_mesh_renderer import SkinnedMeshRenderer
+from infernux.components.spirit_animator import SpiritAnimator
 
 
 def _make_animator() -> SkeletalAnimator:
@@ -372,7 +372,7 @@ def test_blend_state_pose_cache_includes_both_clip_masks(monkeypatch):
 
 
 def test_imported_float_curve_drives_animator_float_parameter():
-    from Infernux.core.animation_clip3d import ImportedFloatCurve
+    from infernux.core.animation_clip3d import ImportedFloatCurve
 
     animator = _make_animator()
     clip = _FakeClip(curves=[ImportedFloatCurve("FootPlant", ((0.0, 0.0), (1.0, 2.0)))])
@@ -383,7 +383,7 @@ def test_imported_float_curve_drives_animator_float_parameter():
 
 
 def test_imported_events_dispatch_every_occurrence_across_multiple_wraps(monkeypatch):
-    from Infernux.core.animation_event import AnimationEvent
+    from infernux.core.animation_event import AnimationEvent
 
     calls = []
 
@@ -705,40 +705,40 @@ class TestNormalizedTime:
 
 class TestSafeConditionEvaluator:
     def test_simple_compare(self):
-        from Infernux.core.anim_state_machine import evaluate_anim_condition
+        from infernux.core.anim_state_machine import evaluate_anim_condition
         assert evaluate_anim_condition("speed > 2.0", {"speed": 3.0}) is True
         assert evaluate_anim_condition("speed > 2.0", {"speed": 1.0}) is False
 
     def test_and_chain(self):
-        from Infernux.core.anim_state_machine import evaluate_anim_condition
+        from infernux.core.anim_state_machine import evaluate_anim_condition
         ctx = {"speed": 3.0, "grounded": True}
         assert evaluate_anim_condition("(speed > 0.5) and (grounded == 1.0)", ctx) is True
         ctx["grounded"] = False
         assert evaluate_anim_condition("(speed > 0.5) and (grounded == 1.0)", ctx) is False
 
     def test_or_and_not(self):
-        from Infernux.core.anim_state_machine import evaluate_anim_condition
+        from infernux.core.anim_state_machine import evaluate_anim_condition
         assert evaluate_anim_condition("a or b", {"a": False, "b": True}) is True
         assert evaluate_anim_condition("not grounded", {"grounded": False}) is True
         assert evaluate_anim_condition("not grounded", {"grounded": True}) is False
 
     def test_bool_param_truthiness(self):
-        from Infernux.core.anim_state_machine import evaluate_anim_condition
+        from infernux.core.anim_state_machine import evaluate_anim_condition
         assert evaluate_anim_condition("is_running", {"is_running": True}) is True
         assert evaluate_anim_condition("is_running", {"is_running": False}) is False
 
     def test_string_state_compare(self):
-        from Infernux.core.anim_state_machine import evaluate_anim_condition
+        from infernux.core.anim_state_machine import evaluate_anim_condition
         assert evaluate_anim_condition('state == "idle"', {"state": "idle"}) is True
         assert evaluate_anim_condition('state == "idle"', {"state": "run"}) is False
 
     def test_unknown_identifier_defaults_zero(self):
-        from Infernux.core.anim_state_machine import evaluate_anim_condition
+        from infernux.core.anim_state_machine import evaluate_anim_condition
         assert evaluate_anim_condition("missing > 0", {}) is False
         assert evaluate_anim_condition("missing == 0", {}) is True
 
     def test_malformed_raises(self):
-        from Infernux.core.anim_state_machine import evaluate_anim_condition, AnimConditionError
+        from infernux.core.anim_state_machine import evaluate_anim_condition, AnimConditionError
         # Calls / attribute access / subscripts are rejected (no eval()).
         with pytest.raises((AnimConditionError, SyntaxError)):
             evaluate_anim_condition("__import__('os').system('x')", {})
@@ -770,29 +770,29 @@ class _FakeGameObject:
 
 class TestAnimationEventWindowing:
     def _ev(self, t, name="e"):
-        from Infernux.core.animation_event import AnimationEvent
+        from infernux.core.animation_event import AnimationEvent
         return AnimationEvent(time_normalized=t, function=name)
 
     def test_forward_window(self):
-        from Infernux.core.animation_event import collect_crossed_events
+        from infernux.core.animation_event import collect_crossed_events
         evs = [self._ev(0.3), self._ev(0.6)]
         fired = collect_crossed_events(evs, 0.2, 0.5, looped=False)
         assert [e.time_normalized for e in fired] == [0.3]
 
     def test_no_double_fire(self):
-        from Infernux.core.animation_event import collect_crossed_events
+        from infernux.core.animation_event import collect_crossed_events
         evs = [self._ev(0.3)]
         assert collect_crossed_events(evs, 0.3, 0.5, looped=False) == []  # exclusive lower bound
 
     def test_loop_wrap_window(self):
-        from Infernux.core.animation_event import collect_crossed_events
+        from infernux.core.animation_event import collect_crossed_events
         evs = [self._ev(0.9), self._ev(0.05)]
         fired = collect_crossed_events(evs, 0.8, 0.1, looped=True)
         names = sorted(e.time_normalized for e in fired)
         assert names == [0.05, 0.9]
 
     def test_dispatch_calls_generic_and_named(self):
-        from Infernux.core.animation_event import AnimationEvent, dispatch_animation_events
+        from infernux.core.animation_event import AnimationEvent, dispatch_animation_events
         sink = _EventSink()
         go = _FakeGameObject([sink])
         evs = [AnimationEvent(time_normalized=0.5, function="footstep", string_arg="L", number_arg=2.0)]
@@ -801,10 +801,10 @@ class TestAnimationEventWindowing:
         assert sink.calls == [("footstep", "L", 2.0)]
 
     def test_dispatch_uses_precomputed_arity_without_signature_reflection(self, monkeypatch):
-        from Infernux.core import animation_event
-        from Infernux.core.animation_event import AnimationEvent
-        from Infernux.engine import runtime_dispatch
-        from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+        from infernux.core import animation_event
+        from infernux.core.animation_event import AnimationEvent
+        from infernux.engine import runtime_dispatch
+        from infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
 
         class AritySink:
             def __init__(self):
@@ -845,8 +845,8 @@ class TestAnimationEventWindowing:
             publication.rollback()
 
     def test_generic_sink_and_named_alias_are_invoked_once(self):
-        from Infernux.core.animation_event import AnimationEvent, dispatch_animation_events
-        from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+        from infernux.core.animation_event import AnimationEvent, dispatch_animation_events
+        from infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
 
         class AliasSink:
             def __init__(self):
@@ -873,8 +873,8 @@ class TestAnimationEventWindowing:
             publication.rollback()
 
     def test_event_batch_keeps_one_epoch_after_handler_publishes_reload(self):
-        from Infernux.core.animation_event import AnimationEvent, dispatch_animation_events
-        from Infernux.engine.runtime_dispatch import (
+        from infernux.core.animation_event import AnimationEvent, dispatch_animation_events
+        from infernux.engine.runtime_dispatch import (
             current_runtime_epoch,
             publish_runtime_dispatch_epoch,
         )
@@ -955,8 +955,8 @@ class TestAnimationSerialization:
         assert tr2.synchronize_normalized_time is True
 
     def test_clip2d_events_round_trip(self):
-        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
-        from Infernux.core.animation_event import AnimationEvent
+        from infernux.core.animation_clip import AnimationClip, AnimationFrame
+        from infernux.core.animation_event import AnimationEvent
         clip = AnimationClip(
             name="walk",
             frames=[
@@ -972,8 +972,8 @@ class TestAnimationSerialization:
         assert clip2.events[0].time_normalized == 0.5
 
     def test_clip3d_events_round_trip(self):
-        from Infernux.core.animation_clip3d import AnimationClip3D
-        from Infernux.core.animation_event import AnimationEvent
+        from infernux.core.animation_clip3d import AnimationClip3D
+        from infernux.core.animation_event import AnimationEvent
         clip = AnimationClip3D(name="run", take_name="Run")
         clip.events = [AnimationEvent(0.25, "hit", "", 3.0)]
         clip2 = AnimationClip3D.from_dict(clip.to_dict())
@@ -990,7 +990,7 @@ def _write_texture_asset_metadata(
 ):
     import json
 
-    from Infernux.core.asset_types import SpriteFrame, TextureImportSettings
+    from infernux.core.asset_types import SpriteFrame, TextureImportSettings
 
     texture_path.parent.mkdir(parents=True, exist_ok=True)
     texture_path.write_bytes(b"test texture")
@@ -1027,7 +1027,7 @@ class TestAnimationClipSpriteFrameReferences:
     TEXTURE_GUID = "a" * 32
 
     def test_legacy_authoring_texture_path_is_ignored_on_load(self):
-        from Infernux.core.animation_clip import AnimationClip
+        from infernux.core.animation_clip import AnimationClip
 
         document = AnimationClip(authoring_texture_guid=self.TEXTURE_GUID).to_dict()
         document["authoring_texture_path"] = "Assets/Sprites/obsolete.png"
@@ -1038,7 +1038,7 @@ class TestAnimationClipSpriteFrameReferences:
         assert "authoring_texture_path" not in clip.to_dict()
 
     def test_sprite_frames_require_texture_guid(self):
-        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
+        from infernux.core.animation_clip import AnimationClip, AnimationFrame
 
         clip = AnimationClip(
             frames=[AnimationFrame(sprite_frame_id=self.FRAME_A)],
@@ -1048,8 +1048,8 @@ class TestAnimationClipSpriteFrameReferences:
             clip.validate_sprite_frame_references()
 
     def test_valid_sprite_frame_references_resolve_guid_mapping(self, tmp_path):
-        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
-        from Infernux.core.asset_types import TextureType
+        from infernux.core.animation_clip import AnimationClip, AnimationFrame
+        from infernux.core.asset_types import TextureType
 
         project = tmp_path / "project"
         texture = project / "Assets" / "Sprites" / "sheet.png"
@@ -1072,8 +1072,8 @@ class TestAnimationClipSpriteFrameReferences:
         assert resolved == str(texture)
 
     def test_missing_sprite_frame_reference_is_rejected(self, tmp_path):
-        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
-        from Infernux.core.asset_types import TextureType
+        from infernux.core.animation_clip import AnimationClip, AnimationFrame
+        from infernux.core.asset_types import TextureType
 
         texture = tmp_path / "sheet.png"
         _write_texture_asset_metadata(
@@ -1093,8 +1093,8 @@ class TestAnimationClipSpriteFrameReferences:
             )
 
     def test_non_sprite_texture_is_rejected_before_frame_lookup(self, tmp_path):
-        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
-        from Infernux.core.asset_types import TextureType
+        from infernux.core.animation_clip import AnimationClip, AnimationFrame
+        from infernux.core.asset_types import TextureType
 
         texture = tmp_path / "albedo.png"
         _write_texture_asset_metadata(
@@ -1115,9 +1115,9 @@ class TestAnimationClipSpriteFrameReferences:
     def test_guid_survives_file_round_trip_and_resolves_moved_texture(
         self, tmp_path, monkeypatch
     ):
-        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
-        from Infernux.core.asset_types import TextureType
-        from Infernux.core.assets import AssetManager
+        from infernux.core.animation_clip import AnimationClip, AnimationFrame
+        from infernux.core.asset_types import TextureType
+        from infernux.core.assets import AssetManager
 
         project = tmp_path / "project"
         texture = project / "Assets" / "Sprites" / "sheet.png"
@@ -1157,8 +1157,8 @@ class TestAnimationClipSpriteFrameReferences:
 
 
 def test_spirit_animator_guid_does_not_fall_back_to_stale_path(monkeypatch, tmp_path):
-    from Infernux.components import spirit_animator as animator_module
-    from Infernux.core.anim_state_machine import AnimState
+    from infernux.components import spirit_animator as animator_module
+    from infernux.core.anim_state_machine import AnimState
 
     stale_path = tmp_path / "stale.animclip2d"
     stale_path.write_text("{}", encoding="utf-8")
@@ -1178,7 +1178,7 @@ def test_spirit_animator_guid_does_not_fall_back_to_stale_path(monkeypatch, tmp_
 
 
 def test_skeletal_animator_asset_database_failure_is_not_suppressed(monkeypatch):
-    from Infernux.components import skeletal_animator as animator_module
+    from infernux.components import skeletal_animator as animator_module
 
     class Database:
         @staticmethod
@@ -1192,8 +1192,8 @@ def test_skeletal_animator_asset_database_failure_is_not_suppressed(monkeypatch)
 
 
 def test_skeletal_animator_only_uses_model_guid():
-    from Infernux.components import skeletal_animator as animator_module
-    from Infernux.core.animation_clip3d import AnimationClip3D
+    from infernux.components import skeletal_animator as animator_module
+    from infernux.core.animation_clip3d import AnimationClip3D
 
     clip = AnimationClip3D(source_model_guid="d" * 32)
 
@@ -1203,7 +1203,7 @@ def test_skeletal_animator_only_uses_model_guid():
 class TestSpiritAnimatorAssetReload:
     @staticmethod
     def _clip(frame_count: int, fps: float):
-        from Infernux.core.animation_clip import AnimationClip, AnimationFrame
+        from infernux.core.animation_clip import AnimationClip, AnimationFrame
 
         return AnimationClip(
             frames=[
@@ -1217,7 +1217,7 @@ class TestSpiritAnimatorAssetReload:
         self, tmp_path, monkeypatch
     ):
         import json
-        from Infernux.components import spirit_animator as animator_module
+        from infernux.components import spirit_animator as animator_module
 
         path = tmp_path / "walk.animclip2d"
         clip_guid = "a" * 32
@@ -1255,7 +1255,7 @@ class TestSpiritAnimatorAssetReload:
 
         replacement = self._clip(8, 8.0)
         path.write_text(json.dumps(replacement.to_dict()), encoding="utf-8")
-        from Infernux.engine.interaction import AssetMutation, AssetMutationKind
+        from infernux.engine.interaction import AssetMutation, AssetMutationKind
 
         animator._on_asset_changed(
             AssetMutation(
@@ -1278,7 +1278,7 @@ class TestSpiritAnimatorAssetReload:
         self, tmp_path, monkeypatch
     ):
         import json
-        from Infernux.components import spirit_animator as animator_module
+        from infernux.components import spirit_animator as animator_module
 
         path = tmp_path / "walk.animclip2d"
         clip_guid = "b" * 32
@@ -1301,7 +1301,7 @@ class TestSpiritAnimatorAssetReload:
         animator._sprite_renderer = None
 
         path.write_text("not json", encoding="utf-8")
-        from Infernux.engine.interaction import AssetMutation, AssetMutationKind
+        from infernux.engine.interaction import AssetMutation, AssetMutationKind
 
         animator._on_asset_changed(
             AssetMutation(
@@ -1319,15 +1319,15 @@ class TestSpiritAnimatorAssetReload:
     def test_controller_hot_reload_preserves_timeline_progress_without_clip_parse(
         self, tmp_path, monkeypatch
     ):
-        from Infernux.core.animation_timeline import AnimationTimeline
-        from Infernux.core.animation_clip import AnimationClip
-        from Infernux.core.asset_ref import AnimStateMachineRef
+        from infernux.core.animation_timeline import AnimationTimeline
+        from infernux.core.animation_clip import AnimationClip
+        from infernux.core.asset_ref import AnimStateMachineRef
 
         controller_path = tmp_path / "controller.animfsm"
         controller_guid = "d" * 32
         timeline_path = tmp_path / "motion.animtimeline"
         timeline_guid = "c" * 32
-        from Infernux.components import spirit_animator as animator_module
+        from infernux.components import spirit_animator as animator_module
         database = type(
             "Database",
             (),
@@ -1398,7 +1398,7 @@ class TestSpiritAnimatorAssetReload:
             lambda value, elapsed: applied.append((value, elapsed)),
         )
 
-        from Infernux.engine.interaction import AssetMutation, AssetMutationKind
+        from infernux.engine.interaction import AssetMutation, AssetMutationKind
 
         animator._on_asset_changed(
             AssetMutation(

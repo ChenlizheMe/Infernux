@@ -1,4 +1,4 @@
-"""Tests for Infernux.engine.play_mode — PlayModeState, PlayModeEvent, PlayModeManager."""
+"""Tests for infernux.engine.play_mode — PlayModeState, PlayModeEvent, PlayModeManager."""
 
 import sys
 import time
@@ -6,11 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.components import InxComponent
-from Infernux.components.component_identity import bind_asset_script_guid
-from Infernux.components.missing_script import MissingScript
-from Infernux.core.asset_ref import MaterialRef
-from Infernux.engine.play_mode import PlayModeState, PlayModeEvent, PlayModeManager
+from infernux.components import InxComponent
+from infernux.components.component_identity import bind_asset_script_guid
+from infernux.components.missing_script import MissingScript
+from infernux.core.asset_ref import MaterialRef
+from infernux.engine.play_mode import PlayModeState, PlayModeEvent, PlayModeManager
 
 
 class _FakeRuntimeGameObject:
@@ -170,7 +170,7 @@ class TestPlayModeManager:
         assert mgr.step_sequence == 2
 
     def test_paused_step_runs_after_authoring_transaction(self):
-        from Infernux.engine.runtime_change_journal import RuntimeChangeJournal
+        from infernux.engine.runtime_change_journal import RuntimeChangeJournal
 
         journal = RuntimeChangeJournal()
         mgr = PlayModeManager()
@@ -199,8 +199,8 @@ class TestPlayModeManager:
         mgr._state = PlayModeState.PLAYING
         mgr._native_engine = None
 
-        from Infernux.scene import SceneManager
-        from Infernux.timing import Time
+        from infernux.scene import SceneManager
+        from infernux.timing import Time
 
         # This is a steady frame, not the zero-delta frame after a scene load.
         monkeypatch.setattr(Time, "_reset_delta_on_next_tick", False)
@@ -219,7 +219,7 @@ class TestPlayModeManager:
         assert mgr._delta_time > 0.0
 
     def test_engine_steady_play_tick_does_not_prepare_python_phase_plan(self):
-        from Infernux.engine.engine import Engine
+        from infernux.engine.engine import Engine
 
         class Scheduler:
             prepare_calls = 0
@@ -252,7 +252,7 @@ class TestPlayModeManager:
         assert scheduler.prepare_calls == 0
 
     def test_engine_tick_propagates_resource_transaction_failure(self):
-        from Infernux.engine.engine import Engine
+        from infernux.engine.engine import Engine
 
         class Resources:
             @staticmethod
@@ -275,7 +275,7 @@ class TestPlayModeManager:
         assert mgr._scene_path_backup is None
 
     def test_restore_scene_path_reasserts_authored_scene_persistence(self, monkeypatch, tmp_path):
-        from Infernux.engine.scene_manager import SceneFileManager
+        from infernux.engine.scene_manager import SceneFileManager
 
         authored = str(tmp_path / "racetrack.scene")
         runtime = str(tmp_path / "results.scene")
@@ -291,7 +291,7 @@ class TestPlayModeManager:
         mgr = PlayModeManager()
         mgr._scene_path_backup = authored
         mgr._scene_document_id_backup = manager.document_id
-        from Infernux.engine.interaction import DocumentRegistry
+        from infernux.engine.interaction import DocumentRegistry
 
         document = DocumentRegistry.instance().require(manager.document_id)
         DocumentRegistry.instance().mark_changed(document.document_id)
@@ -308,8 +308,8 @@ class TestPlayModeManager:
         assert scene_changed == [True]
 
     def test_restore_unsaved_scene_preserves_document_identity_and_revision(self):
-        from Infernux.engine.interaction import DocumentRegistry
-        from Infernux.engine.scene_manager import SceneFileManager
+        from infernux.engine.interaction import DocumentRegistry
+        from infernux.engine.scene_manager import SceneFileManager
 
         manager = SceneFileManager()
         original_document_id = manager.document_id
@@ -341,8 +341,8 @@ class TestPlayModeManager:
     def test_exit_play_mode_restores_document_state_from_current_snapshot(
         self, monkeypatch
     ):
-        from Infernux.engine.deferred_task import DeferredTaskRunner
-        from Infernux.input import Input
+        from infernux.engine.deferred_task import DeferredTaskRunner
+        from infernux.input import Input
 
         class _SceneManager:
             def __init__(self):
@@ -410,9 +410,9 @@ class TestPlayModeManager:
         assert waits == []
 
     def test_enter_play_mode_drains_before_native_start(self, monkeypatch):
-        from Infernux.engine.deferred_task import DeferredTaskRunner
-        from Infernux.core.assets import AssetManager
-        from Infernux.components.builtin_component import BuiltinComponent
+        from infernux.engine.deferred_task import DeferredTaskRunner
+        from infernux.core.assets import AssetManager
+        from infernux.components.builtin_component import BuiltinComponent
 
         order = []
         monkeypatch.setattr(BuiltinComponent, "_clear_cache", lambda: order.append("clear_native_cache"))
@@ -450,8 +450,8 @@ class TestPlayModeManager:
         assert order == ["asset_play_begin", "invalidate", "play", "mark"]
 
     def test_exit_play_mode_invalidates_gpu_view_state_after_restore(self, monkeypatch):
-        from Infernux.engine.deferred_task import DeferredTaskRunner
-        from Infernux.core.assets import AssetManager
+        from infernux.engine.deferred_task import DeferredTaskRunner
+        from infernux.core.assets import AssetManager
 
         class _SceneManager:
             def stop(self):
@@ -663,8 +663,8 @@ class TestPlayModeManager:
         assert game_object.add_calls == 0
 
         script.write_text(
-            "from Infernux.components import InxComponent\n"
-            "from Infernux.core.asset_ref import MaterialRef\n"
+            "from infernux.components import InxComponent\n"
+            "from infernux.core.asset_ref import MaterialRef\n"
             "CALLS = []\n"
             "class ScriptProbe(InxComponent):\n"
             "    _uses_component_data_store = False\n"
@@ -689,7 +689,7 @@ class TestPlayModeManager:
         assert restored._script_guid == script_guid
         assert restored._script_path == str(script.resolve())
         assert restored.speed == 7.5
-        from Infernux.components.fields import get_raw_field_value
+        from infernux.components.fields import get_raw_field_value
 
         restored_material = get_raw_field_value(restored, "material")
         assert restored_material.guid == "material-guid"
@@ -710,8 +710,8 @@ class TestPlayModeManager:
         tmp_path,
         monkeypatch,
     ):
-        from Infernux.components.registry import snapshot_component_registry_state
-        from Infernux.engine.project_context import get_script_module_name
+        from infernux.components.registry import snapshot_component_registry_state
+        from infernux.engine.project_context import get_script_module_name
 
         script_guid = "2" * 32
 
@@ -748,7 +748,7 @@ class TestPlayModeManager:
         before_module = sys.modules.get(module_name)
 
         script.write_text(
-            "from Infernux.components import InxComponent\n"
+            "from infernux.components import InxComponent\n"
             "class AtomicRecoveryProbe(InxComponent):\n"
             "    _uses_component_data_store = False\n"
             "    speed: float = 1.0\n",
@@ -822,7 +822,7 @@ class TestPlayModeManager:
             (args, kwargs)
         )
 
-        from Infernux.engine import component_restore
+        from infernux.engine import component_restore
 
         def reject(*_args, **_kwargs):
             raise RuntimeError("component transaction rejected")
@@ -933,7 +933,7 @@ class TestPlayModeManager:
         scene = _FakeScene()
         scene_manager = _FakeSceneManager(scene)
         monkeypatch.setattr(mgr, "_get_scene_manager", lambda: scene_manager)
-        from Infernux.engine import component_restore
+        from infernux.engine import component_restore
         monkeypatch.setattr(
             component_restore,
             "preflight_scene_python_components",

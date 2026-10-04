@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.engine.path_utils import path_key
-from Infernux.engine.runtime_script_revision import ScriptRevisionJournal
+from infernux.engine.path_utils import path_key
+from infernux.engine.runtime_script_revision import ScriptRevisionJournal
 
 
 def test_generation_is_monotonic_and_duplicate_content_is_coalesced(tmp_path):

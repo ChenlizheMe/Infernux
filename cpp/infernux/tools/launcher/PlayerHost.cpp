@@ -85,7 +85,7 @@ std::filesystem::path FindPythonLibrary(const std::filesystem::path &cacheRoot)
 
 bool HasPlayerModule(const std::filesystem::path &cacheRoot)
 {
-    for (const auto &directory : {cacheRoot, cacheRoot / "Infernux" / "lib"}) {
+    for (const auto &directory : {cacheRoot, cacheRoot / "infernux" / "lib"}) {
         std::error_code error;
         for (std::filesystem::directory_iterator iterator(directory, error), end; !error && iterator != end;
              iterator.increment(error)) {
@@ -241,13 +241,13 @@ bool PlayerHost::LoadPython(const Layout &layout)
         return Fail(ErrorText(L"Unable to configure the secure Player DLL search policy"));
     AddSearchDirectory(layout.runtimeRoot);
     AddSearchDirectory(pythonLibrary.parent_path());
-    AddSearchDirectory(layout.runtimeRoot / "Infernux" / "lib");
+    AddSearchDirectory(layout.runtimeRoot / "infernux" / "lib");
 #endif
 
     if (!SetEnvironmentPath("_INFERNUX_PLAYER_INSTALL_ROOT", layout.installRoot) ||
         !SetEnvironmentPath("_INFERNUX_PLAYER_DATA_ROOT", layout.dataRoot) ||
         !SetEnvironmentPath("_INFERNUX_PLAYER_RUNTIME_ROOT", layout.runtimeRoot) ||
-        !SetEnvironmentPath("INFERNUX_NATIVE_MODULE_DIR", layout.runtimeRoot / "Infernux" / "lib"))
+        !SetEnvironmentPath("INFERNUX_NATIVE_MODULE_DIR", layout.runtimeRoot / "infernux" / "lib"))
         return Fail(ErrorText(L"Unable to configure the Player runtime environment"));
     // The isolated PyConfig below owns all import paths. Remove inherited
     // Python environment variables before loading any extension module.
@@ -333,7 +333,7 @@ int PlayerHost::ExecuteModule(const Layout &layout, const std::vector<std::wstri
     const std::vector<std::filesystem::path> searchPaths = {
         layout.runtimeRoot,
         layout.runtimeRoot / "stdlib",
-        layout.runtimeRoot / "Infernux" / "lib",
+        layout.runtimeRoot / "infernux" / "lib",
     };
     for (const auto &path : searchPaths) {
         const std::wstring widePath = WidePath(path);

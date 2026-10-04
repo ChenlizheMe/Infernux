@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from Infernux.engine import prefab_manager
-from Infernux.engine.interaction.scene_objects import SceneObjectCommandService
+from infernux.engine import prefab_manager
+from infernux.engine.interaction.scene_objects import SceneObjectCommandService
 
 
 def _prefab_document(canvas_name: str = "") -> dict:
@@ -99,7 +99,7 @@ def test_unregistered_prefab_path_is_never_a_cache_identity(tmp_path):
 
 
 def test_scene_prefab_path_is_resolved_before_runtime_calls(monkeypatch):
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     database = _AssetDatabase(
         {"prefab-guid": "Assets/Moved.prefab"},
@@ -107,7 +107,7 @@ def test_scene_prefab_path_is_resolved_before_runtime_calls(monkeypatch):
     )
     registry = SimpleNamespace(get_asset_database=lambda: database)
     monkeypatch.setattr(
-        "Infernux.lib.AssetRegistry.instance", staticmethod(lambda: registry),
+        "infernux.lib.AssetRegistry.instance", staticmethod(lambda: registry),
     )
 
     class Selection:

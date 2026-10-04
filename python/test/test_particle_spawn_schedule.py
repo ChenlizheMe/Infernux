@@ -1,6 +1,6 @@
-from Infernux.particle import EmitterSettings, ParticleBurst
-from Infernux.particle.gpu_control import GpuParticleEmitterController
-from Infernux.particle.spawn_schedule import ParticleSpawnScheduleState
+from infernux.particle import EmitterSettings, ParticleBurst
+from infernux.particle.gpu_control import GpuParticleEmitterController
+from infernux.particle.spawn_schedule import ParticleSpawnScheduleState
 
 
 def _combined_settings() -> EmitterSettings:

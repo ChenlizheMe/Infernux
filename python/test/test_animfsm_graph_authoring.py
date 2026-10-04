@@ -1,4 +1,4 @@
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     ClipboardDomain,
     ClipboardItem,
     ClipboardService,
@@ -8,12 +8,12 @@ from Infernux.engine.interaction import (
     GraphElementRef,
     SelectionService,
 )
-from Infernux.core.anim_state_machine import AnimCondition, AnimState, AnimTransition
-from Infernux.engine.ui.animfsm_graph_authoring import AnimFSMGraphAuthoringModel
-from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
-from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
-from Infernux.engine.play_mode import PlayModeManager, PlayModeState
-from Infernux.engine.undo import UndoManager
+from infernux.core.anim_state_machine import AnimCondition, AnimState, AnimTransition
+from infernux.engine.ui.animfsm_graph_authoring import AnimFSMGraphAuthoringModel
+from infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
+from infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
+from infernux.engine.play_mode import PlayModeManager, PlayModeState
+from infernux.engine.undo import UndoManager
 
 
 def _panel_with_history():
@@ -51,8 +51,8 @@ def test_animfsm_uses_the_shared_node_graph_editor_and_domain_adapter():
 
 
 def test_animfsm_disk_discard_reconciles_document_revision(tmp_path):
-    from Infernux.core.anim_state_machine import AnimStateMachine
-    from Infernux.engine.interaction import DocumentActionStatus
+    from infernux.core.anim_state_machine import AnimStateMachine
+    from infernux.engine.interaction import DocumentActionStatus
 
     target = tmp_path / "Saved.animfsm"
     assert AnimStateMachine(name="Saved").save(str(target))
@@ -177,9 +177,9 @@ def test_animfsm_parameter_edit_uses_stable_diff_and_document_revision():
 def test_node_graph_edit_records_revealed_panel_before_its_mutation():
     from types import SimpleNamespace
 
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import FocusService
-    from Infernux.engine.undo import GlobalFocusCommand
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import FocusService
+    from infernux.engine.undo import GlobalFocusCommand
 
     DocumentRegistry()
     selection = SelectionService()
@@ -233,9 +233,9 @@ def test_node_graph_edit_records_revealed_panel_before_its_mutation():
 def test_node_graph_edit_scene_switch_and_scene_edit_undo_in_exact_order():
     from types import SimpleNamespace
 
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import FocusService
-    from Infernux.engine.undo import GlobalFocusCommand, LambdaCommand
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import FocusService
+    from infernux.engine.undo import GlobalFocusCommand, LambdaCommand
 
     DocumentRegistry()
     selection = SelectionService()

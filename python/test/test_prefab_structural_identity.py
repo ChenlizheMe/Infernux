@@ -4,11 +4,11 @@ import json
 
 import pytest
 
-from Infernux.components import InxComponent, FieldType, serialized_field
-from Infernux.components.ref_wrappers import GameObjectRef, ComponentRef
-from Infernux.engine.component_restore import clone_game_object_transactionally
-from Infernux.engine.prefab_manager import PrefabDocumentError, _read_prefab_document, instantiate_prefab, save_prefab, _make_prefab_baseline
-from Infernux.engine.prefab_overrides import (
+from infernux.components import InxComponent, FieldType, serialized_field
+from infernux.components.ref_wrappers import GameObjectRef, ComponentRef
+from infernux.engine.component_restore import clone_game_object_transactionally
+from infernux.engine.prefab_manager import PrefabDocumentError, _read_prefab_document, instantiate_prefab, save_prefab, _make_prefab_baseline
+from infernux.engine.prefab_overrides import (
     apply_overrides_to_prefab, build_prefab_apply_command, compute_overrides,
     get_structural_overrides, revert_overrides,
 )
@@ -160,10 +160,10 @@ def test_prefab_rejects_missing_allocator_watermark(scene, tmp_path, field):
 
 
 def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene, tmp_path, monkeypatch):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.interaction import EditorInteractionCore, DocumentRegistry, SelectionDomain
-    from Infernux.lib import SceneManager
+    from infernux.core.assets import AssetManager
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.interaction import EditorInteractionCore, DocumentRegistry, SelectionDomain
+    from infernux.lib import SceneManager
     from types import SimpleNamespace
 
     path, first, second = _make_prefab(scene, tmp_path)
@@ -239,10 +239,10 @@ def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene
 
 
 def test_scene_reopen_merges_updated_source_and_keeps_instance_references(scene, tmp_path):
-    from Infernux.engine._scene_prefab import ScenePrefabMixin
-    from Infernux.engine.prefab_manager import save_prefab_document
-    from Infernux.engine.component_restore import serialize_game_object_document_authoritatively
-    from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
+    from infernux.engine._scene_prefab import ScenePrefabMixin
+    from infernux.engine.prefab_manager import save_prefab_document
+    from infernux.engine.component_restore import serialize_game_object_document_authoritatively
+    from infernux.engine.scene_document_transaction import SceneDocumentTransaction
 
     path, first, second = _make_prefab(scene, tmp_path)
     first_id, second_id = first.id, second.id
@@ -284,7 +284,7 @@ def test_scene_reopen_merges_updated_source_and_keeps_instance_references(scene,
 
 
 def test_prefab_rejects_unversioned_scene_baseline(scene, tmp_path):
-    from Infernux.engine.prefab_manager import _prefab_baseline_root
+    from infernux.engine.prefab_manager import _prefab_baseline_root
     path, _, _ = _make_prefab(scene, tmp_path)
     baseline = _read_prefab_document(path)["root_object"]
     with pytest.raises(PrefabDocumentError, match="Unsupported prefab component identity baseline"):
@@ -292,7 +292,7 @@ def test_prefab_rejects_unversioned_scene_baseline(scene, tmp_path):
 
 
 def test_player_cook_strips_only_objectgraph_prefab_baselines(tmp_path):
-    from Infernux.engine.game_builder import GameBuilder
+    from infernux.engine.game_builder import GameBuilder
     builder = GameBuilder.__new__(GameBuilder)
     builder.project_path = str(tmp_path)
     source = tmp_path / "payload.scene"
@@ -308,8 +308,8 @@ def test_player_cook_strips_only_objectgraph_prefab_baselines(tmp_path):
 
 
 def test_unopened_scene_cook_merges_source_without_live_objects(scene, tmp_path):
-    from Infernux.engine.prefab_overrides import resolve_scene_prefab_documents
-    from Infernux.engine.component_restore import serialize_game_object_document_authoritatively
+    from infernux.engine.prefab_overrides import resolve_scene_prefab_documents
+    from infernux.engine.component_restore import serialize_game_object_document_authoritatively
 
     path, first, second = _make_prefab(scene, tmp_path)
     second.get_child(0).name = "Local Override"
@@ -363,9 +363,9 @@ def _all_nodes(root):
 
 
 def test_builder_stages_latest_prefab_for_unopened_scene(scene, tmp_path):
-    from Infernux.engine.game_builder import GameBuilder
-    from Infernux.engine.prefab_manager import save_prefab_document
-    from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
+    from infernux.engine.game_builder import GameBuilder
+    from infernux.engine.prefab_manager import save_prefab_document
+    from infernux.engine.scene_document_transaction import SceneDocumentTransaction
 
     assets = tmp_path / "Assets"
     assets.mkdir()
@@ -402,7 +402,7 @@ def test_builder_stages_latest_prefab_for_unopened_scene(scene, tmp_path):
 
 
 def test_scene_cook_rejects_missing_prefab_source(scene, tmp_path):
-    from Infernux.engine.prefab_overrides import resolve_scene_prefab_documents
+    from infernux.engine.prefab_overrides import resolve_scene_prefab_documents
     _make_prefab(scene, tmp_path)
     document = scene.serialize_document()
 

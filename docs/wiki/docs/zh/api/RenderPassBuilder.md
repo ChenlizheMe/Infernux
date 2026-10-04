@@ -1,7 +1,7 @@
 # RenderPassBuilder
 
 <div class="class-info">
-类位于 <b>Infernux.rendergraph</b>
+类位于 <b>infernux.rendergraph</b>
 </div>
 
 ## 描述

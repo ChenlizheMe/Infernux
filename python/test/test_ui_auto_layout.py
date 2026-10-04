@@ -2,9 +2,9 @@
 
 import pytest
 
-from Infernux.lib import Vector3
-from Infernux.resources import engine_font_path
-from Infernux.ui import (
+from infernux.lib import Vector3
+from infernux.resources import engine_font_path
+from infernux.ui import (
     UIFrame,
     UIGroup,
     UIImage,
@@ -17,7 +17,7 @@ from Infernux.ui import (
     UIText,
     TextResizeMode,
 )
-from Infernux.ui.ui_render_dispatch import extract_common
+from infernux.ui.ui_render_dispatch import extract_common
 
 
 def _child(scene, parent, name, width, height):
@@ -196,7 +196,7 @@ def test_ui_group_multiplies_alpha_and_independently_gates_raycast(scene):
 
     inner.blocks_raycast = False
     assert image.effectively_blocks_raycast() is False
-    from Infernux.engine.runtime_screen_ui import WorldUIElementTarget
+    from infernux.engine.runtime_screen_ui import WorldUIElementTarget
     target = WorldUIElementTarget(image)
     assert target.raycast(1.0, 1.0) is None
 
@@ -282,7 +282,7 @@ def test_text_intrinsic_layout_is_derived_and_shared_with_hit_testing(scene, wor
     assert (text.width, text.height) == (17.0, 29.0)
 
     if world:
-        from Infernux.engine.runtime_screen_ui import WorldUIElementTarget
+        from infernux.engine.runtime_screen_ui import WorldUIElementTarget
         target = WorldUIElementTarget(text)
         assert target.raycast(122.0, 20.0) is text
         assert target.raycast(124.0, 20.0) is None
@@ -311,10 +311,10 @@ def test_auto_height_measurement_uses_authored_wrap_width():
 
 
 def test_text_intrinsic_layout_forwards_explicit_font_chain(monkeypatch):
-    from Infernux.application import Application
-    from Infernux.core.asset_ref import create_asset_ref
-    from Infernux.engine.project_context import set_runtime_asset_resolver
-    from Infernux.ui.inx_ui_screen_component import _get_layout_revision
+    from infernux.application import Application
+    from infernux.core.asset_ref import create_asset_ref
+    from infernux.engine.project_context import set_runtime_asset_resolver
+    from infernux.ui.inx_ui_screen_component import _get_layout_revision
     text = UIText()
     paths = {
         "font-cjk": "Assets/Fonts/CJK.ttf",
@@ -344,7 +344,7 @@ def test_text_intrinsic_layout_forwards_explicit_font_chain(monkeypatch):
 
 @pytest.mark.parametrize('direction', [UILayoutDirection.Horizontal, UILayoutDirection.Vertical])
 def test_flow_group_measures_each_child_once_per_arrangement(scene, monkeypatch, direction):
-    from Infernux.ui.inx_ui_screen_component import clear_rect_cache
+    from infernux.ui.inx_ui_screen_component import clear_rect_cache
 
     owner = _screen_root(scene, 'Batch')
     frame = UIFrame()
@@ -377,7 +377,7 @@ def test_flow_group_measures_each_child_once_per_arrangement(scene, monkeypatch,
 
 
 def test_nested_hug_measures_subtrees_without_sibling_rewalk(scene, monkeypatch):
-    from Infernux.ui.inx_ui_screen_component import clear_rect_cache
+    from infernux.ui.inx_ui_screen_component import clear_rect_cache
 
     owner = _screen_root(scene, 'Nested batch')
     outer = UIFrame()
@@ -415,7 +415,7 @@ def test_nested_hug_measures_subtrees_without_sibling_rewalk(scene, monkeypatch)
 
 @pytest.mark.parametrize('mutation', ['padding', 'direction', 'fill', 'absolute', 'intrinsic', 'viewport'])
 def test_batched_flow_matches_fresh_layout_after_mutation(scene, mutation):
-    from Infernux.ui.inx_ui_screen_component import clear_rect_cache
+    from infernux.ui.inx_ui_screen_component import clear_rect_cache
 
     owner = _screen_root(scene, 'Live batch')
     frame = UIFrame()
@@ -459,7 +459,7 @@ def test_batched_flow_matches_fresh_layout_after_mutation(scene, mutation):
 
 
 def test_world_frame_does_not_arrange_or_clip_world_children(scene, monkeypatch):
-    from Infernux.lib import Vector3
+    from infernux.lib import Vector3
 
     root = scene.create_game_object('World frame')
     frame = UIFrame()
@@ -481,9 +481,9 @@ def test_world_frame_does_not_arrange_or_clip_world_children(scene, monkeypatch)
 
 @pytest.mark.parametrize('mutation', ['create', 'destroy', 'reparent', 'native_parent_move'])
 def test_flow_layout_observes_native_scene_publication(scene, mutation):
-    from Infernux.lib import Vector3
-    from Infernux.ui.inx_ui_screen_component import clear_rect_cache
-    from Infernux.ui.ui_render_dispatch import runtime_ui_revision
+    from infernux.lib import Vector3
+    from infernux.ui.inx_ui_screen_component import clear_rect_cache
+    from infernux.ui.ui_render_dispatch import runtime_ui_revision
 
     owner = _screen_root(scene, 'Published flow')
     frame = UIFrame()
@@ -518,9 +518,9 @@ def test_flow_layout_observes_native_scene_publication(scene, mutation):
 
 @pytest.mark.parametrize('world', [False, True])
 def test_one_rect_query_resolves_owner_once_and_tracks_live_hierarchy(scene, monkeypatch, world):
-    from Infernux.components._component_native import ComponentNativeMixin
-    from Infernux.lib import Vector3
-    from Infernux.ui.inx_ui_screen_component import clear_rect_cache
+    from infernux.components._component_native import ComponentNativeMixin
+    from infernux.lib import Vector3
+    from infernux.ui.inx_ui_screen_component import clear_rect_cache
 
     screen_root = _screen_root(scene, 'Owner query')
     owner = scene.create_game_object('Text')

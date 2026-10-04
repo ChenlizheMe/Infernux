@@ -161,7 +161,7 @@ PyComponentProxy::PyComponentProxy(py::object pyComponent)
             } else {
                 try {
                     const py::object constraints =
-                        py::module_::import("Infernux.components.registry").attr("get_component_constraints")(pyType);
+                        py::module_::import("infernux.components.registry").attr("get_component_constraints")(pyType);
                     m_typeConstraints.allowMultiple = constraints.attr("allow_multiple").cast<bool>();
                     m_typeConstraints.userAddable = constraints.attr("user_addable").cast<bool>();
                     m_typeConstraints.removable = constraints.attr("removable").cast<bool>();
@@ -324,6 +324,18 @@ void PyComponentProxy::ResetLifecycleForPlay()
 void PyComponentProxy::RefreshPythonLifecycleDispatch()
 {
     py::gil_scoped_acquire acquire;
+    if (!m_pyComponent.is_none()) {
+        // A body reload retains this proxy and its component/script identity. Authored
+        // declaration names must still follow the published Python class so
+        // fields and ComponentRecord identity describe the same revision.
+        const py::object pyType = m_pyComponent.attr("__class__");
+        m_typeName = pyType.attr("__name__").cast<std::string>();
+        m_moduleName = pyType.attr("__module__").cast<std::string>();
+        m_qualifiedName = pyType.attr("__qualname__").cast<std::string>();
+        m_typeGuid = pyType.attr("_get_type_guid")().cast<std::string>();
+        m_pyComponent.attr("_component_name") = py::str(m_typeName);
+        RefreshConstraintTypeId();
+    }
     RefreshPythonLifecycleDispatchPlan();
     RefreshPythonLifecycleOverrideMask();
 }
@@ -341,7 +353,7 @@ void PyComponentProxy::RefreshPythonLifecycleOverrideMask()
     }
 
     const py::object pyType = m_pyComponent.attr("__class__");
-    const py::object inxComponentType = py::module_::import("Infernux.components").attr("InxComponent");
+    const py::object inxComponentType = py::module_::import("infernux.components").attr("InxComponent");
     m_overridesCollisionEnter = !pyType.attr("on_collision_enter").is(inxComponentType.attr("on_collision_enter"));
     m_overridesCollisionStay = !pyType.attr("on_collision_stay").is(inxComponentType.attr("on_collision_stay"));
     m_overridesCollisionExit = !pyType.attr("on_collision_exit").is(inxComponentType.attr("on_collision_exit"));

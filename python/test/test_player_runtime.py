@@ -4,7 +4,7 @@ import pytest
 
 
 def _runtime_contract(tmp_path):
-    from Infernux.engine.player_service_graph import (
+    from infernux.engine.player_service_graph import (
         PlayerRuntimeAssetCatalog,
         RuntimeFeatureSet,
         RuntimeFlavor,
@@ -32,7 +32,7 @@ def _runtime_contract(tmp_path):
 
 
 def _fake_scene_manager(monkeypatch, scene):
-    import Infernux.lib as native_lib
+    import infernux.lib as native_lib
 
     class SceneManager:
         @staticmethod
@@ -56,8 +56,8 @@ def _fake_scene_manager(monkeypatch, scene):
 
 
 def test_player_runtime_default_scheduler_publishes_native_phase_work(monkeypatch):
-    import Infernux.components._component_lifecycle as lifecycle
-    from Infernux.engine.player_runtime import PlayerRuntimeSession
+    import infernux.components._component_lifecycle as lifecycle
+    from infernux.engine.player_runtime import PlayerRuntimeSession
 
     created = []
 
@@ -74,7 +74,7 @@ def test_player_runtime_default_scheduler_publishes_native_phase_work(monkeypatc
 
 
 def test_player_runtime_exposes_only_its_published_runtime_database():
-    from Infernux.engine.player_runtime import PlayerRuntimeSession
+    from infernux.engine.player_runtime import PlayerRuntimeSession
 
     database = object()
     session = PlayerRuntimeSession(
@@ -93,8 +93,8 @@ def test_player_runtime_exposes_only_its_published_runtime_database():
 
 
 def test_player_runtime_activation_does_not_snapshot_scene(monkeypatch, tmp_path):
-    from Infernux.engine.player_runtime import PlayerRuntimeSession
-    from Infernux.scene import SceneManager as RuntimeSceneManager
+    from infernux.engine.player_runtime import PlayerRuntimeSession
+    from infernux.scene import SceneManager as RuntimeSceneManager
 
     calls = []
 
@@ -112,10 +112,10 @@ def test_player_runtime_activation_does_not_snapshot_scene(monkeypatch, tmp_path
     scene_manager = _fake_scene_manager(monkeypatch, scene)
     monkeypatch.setattr(scene_manager, "play", lambda: calls.append("play"))
     monkeypatch.setattr(
-        "Infernux.engine.player_runtime.PlayerRuntimeSession._refresh_loaded_scene",
+        "infernux.engine.player_runtime.PlayerRuntimeSession._refresh_loaded_scene",
         staticmethod(lambda current: calls.append(("refresh", current))),
     )
-    monkeypatch.setattr("Infernux.timing.Time._reset", lambda: calls.append("reset"))
+    monkeypatch.setattr("infernux.timing.Time._reset", lambda: calls.append("reset"))
     monkeypatch.setattr(
         RuntimeSceneManager,
         "install_runtime_service",
@@ -155,7 +155,7 @@ def test_player_runtime_activation_does_not_snapshot_scene(monkeypatch, tmp_path
 def test_player_runtime_load_scene_success_does_not_initialize_runtime_state(
     monkeypatch, tmp_path
 ):
-    from Infernux.engine.player_runtime import PlayerRuntimeSession
+    from infernux.engine.player_runtime import PlayerRuntimeSession
 
     scene_path = tmp_path / "Main.scene"
     scene_path.write_text("scene", encoding="utf-8")
@@ -204,7 +204,7 @@ def test_player_runtime_load_scene_success_does_not_initialize_runtime_state(
 def test_player_runtime_load_scene_failure_keeps_previous_scene_state(
     monkeypatch, tmp_path
 ):
-    from Infernux.engine.player_runtime import PlayerRuntimeSession
+    from infernux.engine.player_runtime import PlayerRuntimeSession
 
     scene_path = tmp_path / "Broken.scene"
     scene_path.write_text("scene", encoding="utf-8")
@@ -241,8 +241,8 @@ def test_player_runtime_load_scene_failure_keeps_previous_scene_state(
 
 
 def test_player_runtime_tick_and_shutdown_own_runtime_lifecycle(monkeypatch):
-    import Infernux.components.component as component_module
-    from Infernux.engine.player_runtime import PlayerRuntimeSession
+    import infernux.components.component as component_module
+    from infernux.engine.player_runtime import PlayerRuntimeSession
 
     calls = []
 
@@ -256,7 +256,7 @@ def test_player_runtime_tick_and_shutdown_own_runtime_lifecycle(monkeypatch):
         "_clear_all_instances",
         lambda: calls.append("clear"),
     )
-    monkeypatch.setattr("Infernux.timing.Time._tick", lambda value: calls.append(("tick", value)))
+    monkeypatch.setattr("infernux.timing.Time._tick", lambda value: calls.append(("tick", value)))
 
     class NativeEngine:
         @staticmethod
@@ -275,7 +275,7 @@ def test_player_runtime_tick_and_shutdown_own_runtime_lifecycle(monkeypatch):
 
 
 def test_player_runtime_steady_tick_does_not_prepare_python_phase_plan(monkeypatch):
-    from Infernux.engine.player_runtime import PlayerRuntimeSession
+    from infernux.engine.player_runtime import PlayerRuntimeSession
 
     class Scheduler:
         prepare_calls = 0
@@ -288,7 +288,7 @@ def test_player_runtime_steady_tick_does_not_prepare_python_phase_plan(monkeypat
             return None
 
     scheduler = Scheduler()
-    monkeypatch.setattr("Infernux.timing.Time._tick", lambda _value: None)
+    monkeypatch.setattr("infernux.timing.Time._tick", lambda _value: None)
 
     session = PlayerRuntimeSession(scheduler=scheduler)
     session._state = "playing"

@@ -32,7 +32,7 @@ def _asset_documents(scene_path="Assets/Scenes/Main.scene"):
 
 @pytest.mark.parametrize("invalid", ["duplicate", "dependency", "path"])
 def test_runtime_catalog_owner_rejects_invalid_asset_relationships(tmp_path, invalid):
-    from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+    from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
 
     catalog, records = _asset_documents()
     if invalid == "duplicate":
@@ -46,7 +46,7 @@ def test_runtime_catalog_owner_rejects_invalid_asset_relationships(tmp_path, inv
 
 
 def test_runtime_asset_catalog_never_falls_back_to_source_discovery(tmp_path):
-    from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+    from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
 
     scene = tmp_path / "Assets" / "Scenes" / "Main.scene"
     scene.parent.mkdir(parents=True)
@@ -66,7 +66,7 @@ def test_runtime_asset_catalog_never_falls_back_to_source_discovery(tmp_path):
 
 
 def test_runtime_asset_catalog_resolves_scene_guid_to_cooked_document(tmp_path):
-    from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+    from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
 
     cooked = (
         tmp_path
@@ -113,7 +113,7 @@ def test_runtime_asset_catalog_resolves_scene_guid_to_cooked_document(tmp_path):
 
 
 def test_runtime_asset_catalog_resolves_any_source_alias_to_cooked_payload(tmp_path):
-    from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+    from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
 
     cooked = tmp_path / "Library" / "Artifacts" / "Blob" / "cache-guid.npy"
     cooked.parent.mkdir(parents=True)
@@ -162,8 +162,8 @@ def test_runtime_asset_catalog_resolves_any_source_alias_to_cooked_payload(tmp_p
 
 
 def test_player_scene_service_requires_catalog_membership(tmp_path):
-    from Infernux.engine.player_scene import PlayerSceneService
-    from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+    from infernux.engine.player_scene import PlayerSceneService
+    from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
 
     scene = tmp_path / "Assets" / "Scenes" / "Main.scene"
     scene.parent.mkdir(parents=True)
@@ -186,7 +186,7 @@ def test_player_scene_service_requires_catalog_membership(tmp_path):
 
 
 def test_player_scene_service_starts_prepared_load_without_waiting_for_tick(monkeypatch):
-    from Infernux.engine.player_scene import PlayerSceneService
+    from infernux.engine.player_scene import PlayerSceneService
 
     calls = []
 
@@ -220,7 +220,7 @@ def test_player_scene_service_starts_prepared_load_without_waiting_for_tick(monk
 
 
 def test_player_scene_service_can_hold_and_activate_prepared_load(monkeypatch):
-    from Infernux.engine.player_scene import PlayerSceneService
+    from infernux.engine.player_scene import PlayerSceneService
 
     calls = []
 
@@ -256,7 +256,7 @@ def test_player_scene_service_can_hold_and_activate_prepared_load(monkeypatch):
 
 
 def test_player_scene_service_publishes_prepared_additive_target(monkeypatch):
-    from Infernux.engine.player_scene import PlayerSceneService
+    from infernux.engine.player_scene import PlayerSceneService
 
     calls = []
     target_scene = object()
@@ -303,7 +303,7 @@ def test_player_scene_service_publishes_prepared_additive_target(monkeypatch):
 
 
 def test_player_prepared_load_advances_one_phase_per_frame(monkeypatch):
-    from Infernux.engine.player_scene import PlayerSceneService
+    from infernux.engine.player_scene import PlayerSceneService
 
     calls = []
 
@@ -346,7 +346,7 @@ def test_player_prepared_load_advances_one_phase_per_frame(monkeypatch):
 
 
 def test_player_type_registry_never_falls_back_when_not_installed(monkeypatch):
-    from Infernux.engine.runtime_type_registry import (
+    from infernux.engine.runtime_type_registry import (
         clear_runtime_type_registry,
         validate_runtime_component_identity,
     )

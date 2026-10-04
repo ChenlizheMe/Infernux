@@ -17,7 +17,7 @@ def _matrix():
 
 def test_engine_and_current_release_metadata_use_one_version():
     version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
-    runtime = ast.parse((ROOT / "python/Infernux/version.py").read_text(encoding="utf-8"))
+    runtime = ast.parse((ROOT / "python/infernux/version.py").read_text(encoding="utf-8"))
     assignment = next(node for node in runtime.body if isinstance(node, ast.Assign) and node.targets[0].id == "ENGINE_VERSION")
     assert ast.literal_eval(assignment.value) == version
     # Published downloads stay on the last public version while the next

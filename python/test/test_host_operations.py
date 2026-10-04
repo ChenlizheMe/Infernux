@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from Infernux.host import (
+from infernux.host import (
     MainThreadCommandQueue,
     Operation,
     OperationError,

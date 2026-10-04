@@ -6,11 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine import player_control
-from Infernux.engine import player_gui as player_gui_module
-from Infernux.engine.player_control import PlayerControlChannel
-from Infernux.engine.player_gui import PlayerGUI, _player_render_scale
-from Infernux.input import Input, TouchPhase
+from infernux.engine import player_control
+from infernux.engine import player_gui as player_gui_module
+from infernux.engine.player_control import PlayerControlChannel
+from infernux.engine.player_gui import PlayerGUI, _player_render_scale
+from infernux.input import Input, TouchPhase
 
 
 class _Native:
@@ -397,7 +397,7 @@ def test_player_control_waits_until_sdl_key_delivery(tmp_path, monkeypatch):
         "get_key_down": lambda self, scancode: scancode == 26,
         "get_key_up": lambda self, scancode: False,
     })()
-    monkeypatch.setattr("Infernux.lib.InputManager.instance", lambda: input_manager)
+    monkeypatch.setattr("infernux.lib.InputManager.instance", lambda: input_manager)
     monkeypatch.setattr(Input, "is_game_focused", lambda: True)
     assert channel.poll(engine) is None
     payload = json.loads(response.read_text(encoding="utf-8"))
@@ -450,7 +450,7 @@ def test_player_control_press_owns_hold_duration_inside_player(tmp_path, monkeyp
         "get_key_down": lambda self, scancode: False,
         "get_key_up": lambda self, scancode: scancode == 26,
     })()
-    monkeypatch.setattr("Infernux.lib.InputManager.instance", lambda: input_manager)
+    monkeypatch.setattr("infernux.lib.InputManager.instance", lambda: input_manager)
     monkeypatch.setattr(Input, "is_game_focused", lambda: True)
 
     assert channel.poll(engine) is None
@@ -826,8 +826,8 @@ def test_player_observation_reports_component_diagnostics(monkeypatch):
         "get_player_runtime": lambda self: None,
     })()
 
-    monkeypatch.setattr("Infernux.lib.SceneManager.instance", lambda: scene_manager)
-    monkeypatch.setattr("Infernux.scene.GameObjectQuery.find", lambda name: obj if name == "Prompt" else None)
+    monkeypatch.setattr("infernux.lib.SceneManager.instance", lambda: scene_manager)
+    monkeypatch.setattr("infernux.scene.GameObjectQuery.find", lambda name: obj if name == "Prompt" else None)
     monkeypatch.setattr(Input, "is_game_focused", lambda: True)
 
     data = player_control._observe_player(
@@ -970,7 +970,7 @@ def test_player_observation_discovers_bounded_objects_by_public_component_type(m
         "get_player_runtime": lambda self: None,
     })()
 
-    monkeypatch.setattr("Infernux.lib.SceneManager.instance", lambda: scene_manager)
+    monkeypatch.setattr("infernux.lib.SceneManager.instance", lambda: scene_manager)
     monkeypatch.setattr(Input, "is_game_focused", lambda: True)
 
     data = player_control._observe_player(

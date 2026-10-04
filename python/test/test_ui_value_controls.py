@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.ui import UICanvas, UIFillDirection, UIProgressBar, UISlider
-from Infernux.ui.ui_render_dispatch import dispatch
+from infernux.ui import UICanvas, UIFillDirection, UIProgressBar, UISlider
+from infernux.ui.ui_render_dispatch import dispatch
 
 
 def _pointer(x, y):
@@ -106,7 +106,7 @@ def test_obsolete_ui_layout_fields_are_ignored_without_mutating_transform(scene)
 
 @pytest.mark.parametrize("world", [False, True])
 def test_current_ui_scene_roundtrip_uses_transform_as_sole_pose(scene, world):
-    from Infernux.lib import Vector3
+    from infernux.lib import Vector3
 
     parent = None
     if not world:

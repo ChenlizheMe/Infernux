@@ -5,13 +5,13 @@ import pytest
 
 
 def _property_handle(targets, *, validate=lambda _value: "", publish=None):
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         FieldSchema,
         SerializedObjectView,
         SerializedPropertyBinding,
         SerializedPropertyHandle,
     )
-    from Infernux.engine.undo import SetPropertyCommand
+    from infernux.engine.undo import SetPropertyCommand
 
     bindings = []
     ids = []
@@ -37,8 +37,8 @@ def _property_handle(targets, *, validate=lambda _value: "", publish=None):
 
 
 def test_property_transaction_commits_mixed_targets_as_one_journal_action():
-    from Infernux.engine.interaction import PropertyTransaction
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import PropertyTransaction
+    from infernux.engine.undo import UndoManager
 
     first = SimpleNamespace(value=1.0)
     second = SimpleNamespace(value=2.0)
@@ -63,8 +63,8 @@ def test_property_transaction_commits_mixed_targets_as_one_journal_action():
 
 
 def test_property_transaction_validates_all_targets_before_any_write():
-    from Infernux.engine.interaction import PropertyTransaction
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import PropertyTransaction
+    from infernux.engine.undo import UndoManager
 
     first = SimpleNamespace(value=1.0)
     second = SimpleNamespace(value=2.0)
@@ -88,8 +88,8 @@ def test_property_transaction_validates_all_targets_before_any_write():
 
 
 def test_snapshot_property_transaction_commits_and_replays_one_aggregate():
-    from Infernux.engine.interaction import SnapshotPropertyTransaction
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import SnapshotPropertyTransaction
+    from infernux.engine.undo import UndoManager
 
     state = {"value": {"position": [1.0, 2.0, 3.0], "scale": [1.0, 1.0, 1.0]}}
     previous = UndoManager._instance
@@ -116,8 +116,8 @@ def test_snapshot_property_transaction_commits_and_replays_one_aggregate():
 
 
 def test_snapshot_property_transaction_merges_continuous_same_target_edits():
-    from Infernux.engine.interaction import SnapshotPropertyTransaction
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import SnapshotPropertyTransaction
+    from infernux.engine.undo import UndoManager
 
     state = {"value": 1.0}
     previous = UndoManager._instance
@@ -140,8 +140,8 @@ def test_snapshot_property_transaction_merges_continuous_same_target_edits():
 
 
 def test_snapshot_property_gesture_merges_until_pointer_release_boundary():
-    from Infernux.engine.interaction import SnapshotPropertyTransaction
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import SnapshotPropertyTransaction
+    from infernux.engine.undo import UndoManager
 
     state = {"value": 1.0}
     previous = UndoManager._instance
@@ -177,8 +177,8 @@ def test_snapshot_property_gesture_merges_until_pointer_release_boundary():
 
 
 def test_snapshot_property_transaction_normalizes_and_clears_aggregate():
-    from Infernux.engine.interaction import SnapshotPropertyTransaction
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import SnapshotPropertyTransaction
+    from infernux.engine.undo import UndoManager
 
     state = {"value": {"asset": "old", "subresource": "old-frame"}}
     previous = UndoManager._instance
@@ -208,7 +208,7 @@ def test_snapshot_property_transaction_normalizes_and_clears_aggregate():
 
 
 def test_asset_reference_drawer_is_owned_by_property_drawer_registry():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         AssetReferenceFieldModel,
         property_drawer_registry,
     )
@@ -223,8 +223,8 @@ def test_asset_reference_drawer_is_owned_by_property_drawer_registry():
 
 
 def test_attribute_property_transactions_merge_continuous_edits():
-    from Infernux.engine.interaction import make_attribute_property_transaction
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import make_attribute_property_transaction
+    from infernux.engine.undo import UndoManager
 
     target = SimpleNamespace(value=1.0)
     previous = UndoManager._instance
@@ -248,12 +248,12 @@ def test_attribute_property_transactions_merge_continuous_edits():
 
 
 def test_python_reference_transaction_enforces_required_component(monkeypatch):
-    from Infernux.components import InxComponent, serialized_field
-    from Infernux.lib import GameObject
-    from Infernux.components import ref_wrappers
-    from Infernux.components.fields import get_raw_field_value
-    from Infernux.engine.interaction import make_python_component_property_transaction
-    from Infernux.engine.undo import UndoManager
+    from infernux.components import InxComponent, serialized_field
+    from infernux.lib import GameObject
+    from infernux.components import ref_wrappers
+    from infernux.components.fields import get_raw_field_value
+    from infernux.engine.interaction import make_python_component_property_transaction
+    from infernux.engine.undo import UndoManager
 
     class Probe(InxComponent):
         target: GameObject = serialized_field(default=None, required_component="MeshRenderer")
@@ -280,11 +280,11 @@ def test_python_reference_transaction_enforces_required_component(monkeypatch):
 
 
 def test_python_component_multi_edit_is_one_atomic_document_action():
-    from Infernux.components import InxComponent
-    from Infernux.engine.interaction import (
+    from infernux.components import InxComponent
+    from infernux.engine.interaction import (
         make_python_component_property_transaction,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     class ProbeComponent(InxComponent):
         speed: float = 1.0
@@ -316,11 +316,11 @@ def test_python_component_multi_edit_is_one_atomic_document_action():
 
 
 def test_serialized_field_assignment_is_storage_not_an_implicit_editor_command():
-    from Infernux.components import InxComponent
-    from Infernux.engine.interaction import (
+    from infernux.components import InxComponent
+    from infernux.engine.interaction import (
         make_python_component_property_transaction,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     class ProbeComponent(InxComponent):
         speed: float = 1.0
@@ -349,10 +349,10 @@ def test_serialized_field_assignment_is_storage_not_an_implicit_editor_command()
 
 
 def test_python_property_schema_comes_from_the_field_declaration():
-    from Infernux.components import InxComponent, serialized_field
-    from Infernux.components.fields import get_field_schema
-    from Infernux.engine.interaction import make_python_component_property_transaction
-    from Infernux.engine.undo import UndoManager
+    from infernux.components import InxComponent, serialized_field
+    from infernux.components.fields import get_field_schema
+    from infernux.engine.interaction import make_python_component_property_transaction
+    from infernux.engine.undo import UndoManager
 
     class ReadOnlyProbe(InxComponent):
         speed = serialized_field(1.0, readonly=True)
@@ -375,8 +375,8 @@ def test_python_property_schema_comes_from_the_field_declaration():
 
 
 def test_python_property_transaction_requires_a_declared_field():
-    from Infernux.components import InxComponent
-    from Infernux.engine.interaction import make_python_component_property_transaction
+    from infernux.components import InxComponent
+    from infernux.engine.interaction import make_python_component_property_transaction
 
     class Probe(InxComponent):
         _runtime_only: float = 1.0
@@ -387,9 +387,9 @@ def test_python_property_transaction_requires_a_declared_field():
 
 def test_python_property_transaction_normalizes_declared_enum_and_undo():
     from enum import Enum
-    from Infernux.components import InxComponent, serialized_field
-    from Infernux.engine.interaction import make_python_component_property_transaction
-    from Infernux.engine.undo import UndoManager
+    from infernux.components import InxComponent, serialized_field
+    from infernux.engine.interaction import make_python_component_property_transaction
+    from infernux.engine.undo import UndoManager
 
     class Mode(Enum):
         WALK = 1
@@ -418,12 +418,12 @@ def test_python_property_transaction_normalizes_declared_enum_and_undo():
 
 @pytest.mark.parametrize("surface", ["transaction", "command", "inspector"])
 def test_python_field_edit_surfaces_share_range_and_no_change_semantics(surface):
-    from Infernux.components import InxComponent, get_serialized_fields, serialized_field
-    from Infernux.engine.interaction import (
+    from infernux.components import InxComponent, get_serialized_fields, serialized_field
+    from infernux.engine.interaction import (
         ComponentCommandService, make_python_component_property_transaction,
     )
-    from Infernux.engine.ui.inspector_components import _commit_python_component_field
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.ui.inspector_components import _commit_python_component_field
+    from infernux.engine.undo import UndoManager
 
     class RangeProbe(InxComponent):
         speed = serialized_field(1.0, range=(0.0, 5.0))
@@ -466,8 +466,8 @@ def test_python_field_edit_surfaces_share_range_and_no_change_semantics(surface)
 
 
 def test_python_multi_edit_respects_readonly_on_every_target():
-    from Infernux.components import InxComponent, serialized_field
-    from Infernux.engine.interaction import make_python_component_property_transaction
+    from infernux.components import InxComponent, serialized_field
+    from infernux.engine.interaction import make_python_component_property_transaction
 
     class Writable(InxComponent):
         speed = serialized_field(1.0)
@@ -486,8 +486,8 @@ def test_serialized_field_layer_has_no_editor_undo_or_dirty_hook():
     import importlib
     from pathlib import Path
 
-    module = importlib.import_module("Infernux.components.fields")
-    bootstrap_module = importlib.import_module("Infernux.engine.bootstrap")
+    module = importlib.import_module("infernux.components.fields")
+    bootstrap_module = importlib.import_module("infernux.engine.bootstrap")
 
     serialized_source = Path(module.__file__).read_text(encoding="utf-8")
     bootstrap_source = Path(bootstrap_module.__file__).read_text(encoding="utf-8")
@@ -498,8 +498,8 @@ def test_serialized_field_layer_has_no_editor_undo_or_dirty_hook():
 
 
 def test_multi_target_property_write_rolls_back_when_one_target_rejects():
-    from Infernux.engine.interaction import make_attribute_property_transaction
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import make_attribute_property_transaction
+    from infernux.engine.undo import UndoManager
 
     class Probe:
         def __init__(self, value, reject=False):

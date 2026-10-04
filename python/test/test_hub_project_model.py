@@ -37,11 +37,11 @@ class _FakeVersionManager:
 
 
 def test_hub_generated_assets_are_readable_by_native_asset_database(engine, scene, monkeypatch):
-    from Infernux.lib import ResourceMeta, ResourceType
-    from Infernux.engine.build_settings import load_build_settings_for_build
-    from Infernux.engine.component_restore import deserialize_scene_document_transactionally
-    from Infernux.renderstack.render_stack import RenderStack
-    from Infernux.renderstack.render_effect_asset import parse_render_effect_document
+    from infernux.lib import ResourceMeta, ResourceType
+    from infernux.engine.build_settings import load_build_settings_for_build
+    from infernux.engine.component_restore import deserialize_scene_document_transactionally
+    from infernux.renderstack.render_stack import RenderStack
+    from infernux.renderstack.render_effect_asset import parse_render_effect_document
 
     project_model = _load_project_model(monkeypatch)
     database = engine.get_asset_database()
@@ -129,9 +129,9 @@ def test_frozen_vscode_workspace_keeps_private_runtime_paths_portable(tmp_path, 
 
 def _write_infernux_wheel(path: Path, version: str = "0.1.6") -> None:
     with zipfile.ZipFile(path, "w") as wheel:
-        wheel.writestr("Infernux/__init__.py", "__version__ = '0.1.6'\n")
-        wheel.writestr("Infernux/lib/__init__.py", "")
-        wheel.writestr("Infernux/lib/_Infernux.cp312-win_amd64.pyd", b"native")
+        wheel.writestr("infernux/__init__.py", "__version__ = '0.1.6'\n")
+        wheel.writestr("infernux/lib/__init__.py", "")
+        wheel.writestr("infernux/lib/_Infernux.cp312-win_amd64.pyd", b"native")
         wheel.writestr(
             f"infernux-{version}.dist-info/METADATA",
             f"Name: Infernux\nVersion: {version}\nRequires-Dist: numpy>=1.21.0\n",
@@ -173,8 +173,8 @@ def test_frozen_project_runtime_installs_infernux_by_extracting_wheel(tmp_path, 
     model._install_infernux_in_runtime(str(project_dir), "0.1.6")
 
     assert captured_args == []
-    assert (site_packages / "Infernux" / "__init__.py").is_file()
-    assert (site_packages / "Infernux" / "lib" / "_Infernux.cp312-win_amd64.pyd").is_file()
+    assert (site_packages / "infernux" / "__init__.py").is_file()
+    assert (site_packages / "infernux" / "lib" / "_Infernux.cp312-win_amd64.pyd").is_file()
     assert (site_packages / "infernux-0.1.6.dist-info" / "METADATA").is_file()
     assert (site_packages / "numpy").is_dir()
 
@@ -231,7 +231,7 @@ def test_frozen_project_runtime_direct_install_replaces_old_infernux_only(tmp_pa
     site_packages = Path(
         project_model.ProjectModel._get_site_packages(str(project_dir))
     )
-    old_package = site_packages / "Infernux"
+    old_package = site_packages / "infernux"
     old_dist_info = site_packages / "infernux-0.1.5.dist-info"
     dependency_dir = site_packages / "numba"
     old_package.mkdir(parents=True)
@@ -244,9 +244,9 @@ def test_frozen_project_runtime_direct_install_replaces_old_infernux_only(tmp_pa
     model = project_model.ProjectModel(None, version_manager=_FakeVersionManager(str(wheel_path)))
     model._install_infernux_in_runtime(str(project_dir), "0.1.6")
 
-    assert not (site_packages / "Infernux" / "old.py").exists()
+    assert not (site_packages / "infernux" / "old.py").exists()
     assert not old_dist_info.exists()
-    assert (site_packages / "Infernux" / "__init__.py").is_file()
+    assert (site_packages / "infernux" / "__init__.py").is_file()
     assert (site_packages / "infernux-0.1.6.dist-info" / "METADATA").is_file()
     assert dependency_dir.is_dir()
 

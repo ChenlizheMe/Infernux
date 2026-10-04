@@ -7,13 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.animation_timeline import TimelineKeyframe
-from Infernux.engine.interaction import ModalService
-from Infernux.engine.ui.animclip2d_editor_panel import AnimClip2DEditorPanel
-from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
-from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
-from Infernux.engine.ui.asset_save_dialog import AssetSaveAsDialog
-from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+from infernux.core.animation_timeline import TimelineKeyframe
+from infernux.engine.interaction import ModalService
+from infernux.engine.ui.animclip2d_editor_panel import AnimClip2DEditorPanel
+from infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
+from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+from infernux.engine.ui.asset_save_dialog import AssetSaveAsDialog
+from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
 
 class _SemanticContext:
@@ -224,7 +224,7 @@ def test_timeline_playback_requests_full_speed_editor_frames():
 
 
 def test_timeline_new_document_and_dirty_draft_round_trip_through_registry_session():
-    from Infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.interaction import DocumentRegistry
 
     panel = AnimTimelineEditorPanel()
     assert panel._document_is_dirty() is False
@@ -247,7 +247,7 @@ def test_timeline_new_document_and_dirty_draft_round_trip_through_registry_sessi
 
 
 def test_timeline_discard_cleans_an_unsaved_draft():
-    from Infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
+    from infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
 
     panel = AnimTimelineEditorPanel()
     panel._timeline.keyframes.append(TimelineKeyframe(time=1.25))
@@ -270,7 +270,7 @@ def test_timeline_gpu_preview_is_polled_until_first_texture(monkeypatch):
             return 23 if self.calls >= 2 else 0
 
     native = _Native()
-    from Infernux.engine.ui import asset_resource_preview
+    from infernux.engine.ui import asset_resource_preview
 
     monkeypatch.setattr(asset_resource_preview, "_resolve_native_engine", lambda _panel: native)
     panel = AnimTimelineEditorPanel()
@@ -281,8 +281,8 @@ def test_timeline_gpu_preview_is_polled_until_first_texture(monkeypatch):
     assert native.calls == 2
 
 
-from Infernux.engine.ui import asset_save_dialog
-from Infernux.engine.ui.animclip2d_editor_panel import AnimClip2DEditorPanel, _ClipState
+from infernux.engine.ui import asset_save_dialog
+from infernux.engine.ui.animclip2d_editor_panel import AnimClip2DEditorPanel, _ClipState
 
 
 class _AnimClipSaveAsContext:
@@ -538,12 +538,12 @@ def test_particle_graph_save_as_clears_document_dirty_state(
     tmp_path,
     monkeypatch,
 ):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import (
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import (
         DocumentActionStatus,
         EditorInteractionCore,
     )
-    from Infernux.engine.ui.particle_graph_editor_panel import (
+    from infernux.engine.ui.particle_graph_editor_panel import (
         ParticleGraphEditorPanel,
     )
 
@@ -580,7 +580,7 @@ def test_particle_graph_save_as_clears_document_dirty_state(
         panel._save_as_dialog.name = "Smoke"
         core.modals.render(_ConfirmSaveAsContext())
 
-        from Infernux.core.document_store import DocumentStore
+        from infernux.core.document_store import DocumentStore
 
         target = tmp_path / "Assets" / "VFX" / "Smoke.particlegraph"
         DocumentStore.flush(str(target))
@@ -614,15 +614,15 @@ def test_animclip_save_as_callback_keeps_the_requested_clip_target():
 
 import os
 
-from Infernux.engine.scene_manager import SceneFileManager
-from Infernux.engine.interaction import (
+from infernux.engine.scene_manager import SceneFileManager
+from infernux.engine.interaction import (
     DocumentCapability,
     DocumentKind,
     DocumentRegistry,
     EditorInteractionCore,
 )
-from Infernux.engine.ui.dirty_panel_confirmation import DirtyPanelConfirmationCoordinator
-import Infernux.engine._scene_save as scene_save
+from infernux.engine.ui.dirty_panel_confirmation import DirtyPanelConfirmationCoordinator
+import infernux.engine._scene_save as scene_save
 
 
 class _TestResourceDocumentController:
@@ -925,7 +925,7 @@ def test_dirty_scene_open_uses_replace_document_transaction(monkeypatch):
 
 
 def _enter_fake_prefab_mode(manager: SceneFileManager, prefab_path: str) -> tuple[str, str]:
-    from Infernux.engine.interaction import DocumentKey, DocumentKind
+    from infernux.engine.interaction import DocumentKey, DocumentKind
 
     previous_document_id = manager.document_id
     manager._previous_scene_document_id = previous_document_id
@@ -1057,8 +1057,8 @@ def test_prefab_exit_records_history_only_after_deferred_transition_completes(
     tmp_path,
     monkeypatch,
 ):
-    from Infernux.engine.interaction import EditorContextSnapshot, PrefabCommandService
-    from Infernux.engine.undo import PrefabModeCommand, UndoManager
+    from infernux.engine.interaction import EditorContextSnapshot, PrefabCommandService
+    from infernux.engine.undo import PrefabModeCommand, UndoManager
 
     manager = _scene_manager()
     previous_undo = UndoManager._instance

@@ -1,4 +1,4 @@
-"""Tests for Infernux.physics — Physics query API and physics settings (real C++ backend)."""
+"""Tests for infernux.physics — Physics query API and physics settings (real C++ backend)."""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ import tempfile
 
 import pytest
 
-import Infernux.physics as physics_module
-from Infernux.math.coerce import coerce_vec3
-from Infernux.lib import CollisionInfo, EngineConfig, SceneManager, Vector3, Physics as CppPhysics
-from Infernux.physics.settings import (
+import infernux.physics as physics_module
+from infernux.math.coerce import coerce_vec3
+from infernux.lib import CollisionInfo, EngineConfig, SceneManager, Vector3, Physics as CppPhysics
+from infernux.physics.settings import (
     DEFAULT_PHYSICS_SETTINGS,
     PhysicsSettingsError,
     apply as apply_physics_settings,
@@ -19,7 +19,7 @@ from Infernux.physics.settings import (
     save as save_physics_settings,
     settings_path,
 )
-from Infernux.components.builtin import (
+from infernux.components.builtin import (
     CollisionDetectionMode,
     RigidbodyConstraints,
     RigidbodyInterpolation,

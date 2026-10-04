@@ -4,7 +4,7 @@ from itertools import permutations
 
 import pytest
 
-from Infernux.graph import (
+from infernux.graph import (
     GRAPH_PARAMETER_HDR_ATTRIBUTE,
     CoordinateSpace,
     GraphParameterAuthoringPolicy,

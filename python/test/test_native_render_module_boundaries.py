@@ -108,7 +108,7 @@ def test_lit_geometry_uses_the_camera_local_lighting_domain() -> None:
 
 
 def test_texture_hot_reload_keeps_last_gpu_publication_during_async_decode() -> None:
-    engine = (ROOT / "cpp" / "infernux" / "Infernux.cpp").read_text(encoding="utf-8")
+    engine = (ROOT / "cpp" / "infernux" / "infernux.cpp").read_text(encoding="utf-8")
     renderer = (RENDERER / "InxVkCoreModular.cpp").read_text(encoding="utf-8")
     reload_texture = _function_body(engine, "void Infernux::ReloadTexture")
     invalidate_texture = _function_body(
@@ -722,7 +722,7 @@ def test_fullscreen_triangle_uses_the_standard_three_vertex_extent() -> None:
     source = (
         ROOT
         / "python"
-        / "Infernux"
+        / "infernux"
         / "resources"
         / "shaders"
         / "fullscreen_triangle.vert"
@@ -946,7 +946,7 @@ def test_msaa_public_contract_is_exactly_1_2_4_8() -> None:
     pipeline = (
         ROOT
         / "python"
-        / "Infernux"
+        / "infernux"
         / "renderstack"
         / "default_forward_pipeline.py"
     ).read_text(encoding="utf-8")
@@ -1116,7 +1116,7 @@ def test_camera_stack_uses_target_owned_color_and_depth_attachments() -> None:
 
 
 def test_player_shader_scan_uses_catalog_metadata_for_opaque_artifacts() -> None:
-    source = (ROOT / "cpp" / "infernux" / "Infernux.cpp").read_text(
+    source = (ROOT / "cpp" / "infernux" / "infernux.cpp").read_text(
         encoding="utf-8"
     )
     body = _function_body(source, "void Infernux::LoadAndRegisterShaders")
@@ -1129,7 +1129,7 @@ def test_player_shader_scan_uses_catalog_metadata_for_opaque_artifacts() -> None
 
 
 def test_player_init_skips_full_asset_refresh_when_runtime_catalog_exists() -> None:
-    source = (ROOT / "cpp" / "infernux" / "Infernux.cpp").read_text(encoding="utf-8")
+    source = (ROOT / "cpp" / "infernux" / "infernux.cpp").read_text(encoding="utf-8")
     body = _function_body(source, "void Infernux::InitRenderer")
     catalog_install = body.index("InstallRuntimeAssetCatalog(runtimeAssetCatalog, true)")
     refresh = body.index("->Refresh()")
@@ -1138,7 +1138,7 @@ def test_player_init_skips_full_asset_refresh_when_runtime_catalog_exists() -> N
 
 
 def test_player_init_pumps_events_around_shader_and_pipeline_work() -> None:
-    source = (ROOT / "cpp" / "infernux" / "Infernux.cpp").read_text(encoding="utf-8")
+    source = (ROOT / "cpp" / "infernux" / "infernux.cpp").read_text(encoding="utf-8")
     body = _function_body(source, "void Infernux::InitRenderer")
     assert "PumpStartupEvents" in body
     assert body.index("PumpStartupEvents") < body.index("LoadAndRegisterShaders")
@@ -1207,7 +1207,7 @@ def test_play_mode_supports_an_explicit_frame_cap() -> None:
         ROOT / "cpp" / "infernux" / "platform" / "window" / "InxView.cpp"
     ).read_text(encoding="utf-8")
     process_events = _function_body(view_source, "void InxView::ProcessEvent")
-    engine = (ROOT / "python" / "Infernux" / "engine" / "engine.py").read_text(
+    engine = (ROOT / "python" / "infernux" / "engine" / "engine.py").read_text(
         encoding="utf-8"
     )
 
@@ -1306,7 +1306,7 @@ def test_native_pack_writers_release_the_gil_during_compression() -> None:
 def test_renderer_keeps_primary_selection_separate_from_outline_subtree() -> None:
     renderer = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
     renderer_body = _function_body(renderer, "void InxRenderer::SetSelectionState")
-    engine = (ROOT / "cpp" / "infernux" / "Infernux.cpp").read_text(
+    engine = (ROOT / "cpp" / "infernux" / "infernux.cpp").read_text(
         encoding="utf-8"
     )
     outline_body = _function_body(engine, "void Infernux::SetSelectionOutlines")

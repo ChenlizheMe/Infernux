@@ -5,18 +5,18 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.components import _cds_bridge
-from Infernux.components._component_registration import (
+from infernux.components import _cds_bridge
+from infernux.components._component_registration import (
     candidate_component_registration_scope,
     is_component_registration_pending,
 )
-from Infernux.components.component import InxComponent
-from Infernux.components.component_identity import bind_asset_script_guid
-from Infernux.components.registry import (
+from infernux.components.component import InxComponent
+from infernux.components.component_identity import bind_asset_script_guid
+from infernux.components.registry import (
     restore_component_registry_state,
     snapshot_component_registry_state,
 )
-from Infernux.components.script_loader import (
+from infernux.components.script_loader import (
     ComponentBodyReloadRequest,
     ScriptLoadError,
     ScriptReloadRejected,
@@ -24,8 +24,8 @@ from Infernux.components.script_loader import (
     load_all_components_from_file,
     stage_component_body_reload_batch,
 )
-from Infernux.engine.project_context import get_project_root, set_project_root
-import Infernux.engine.runtime_dispatch as runtime_dispatch
+from infernux.engine.project_context import get_project_root, set_project_root
+import infernux.engine.runtime_dispatch as runtime_dispatch
 
 
 class _CDSProbe:
@@ -289,7 +289,7 @@ def test_ordinary_loader_execution_still_registers_immediately(
 ):
     assets, probe = candidate_environment
     source = (
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class OrdinaryLoaderProbe(InxComponent):\n"
         "    amount: float = 1.0\n"
     )
@@ -312,7 +312,7 @@ def test_candidate_schema_is_published_only_by_successful_owner_commit(
 ):
     assets, probe = candidate_environment
     source = (
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class CandidateCommitProbe(InxComponent):\n"
         "    amount: float = 1.0\n"
     )
@@ -338,7 +338,7 @@ def test_candidate_import_failure_never_registers_python_or_cds_state(
 ):
     assets, probe = candidate_environment
     source = (
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class CandidateImportFailure(InxComponent):\n"
         "    amount: float = 1.0\n"
         "raise RuntimeError('candidate import failed')\n"
@@ -359,12 +359,12 @@ def test_recursive_candidate_imports_share_the_registration_scope(
 ):
     assets, probe = candidate_environment
     helper_source = (
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class CandidateDependency(InxComponent):\n"
         "    amount: float = 2.0\n"
     )
     root_source = (
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "from candidate_dependency import CandidateDependency\n"
         "class CandidateRoot(InxComponent):\n"
         "    amount: float = CandidateDependency().amount\n"
@@ -400,7 +400,7 @@ def test_live_publication_failure_precedes_registry_and_schema_publication(
 ):
     assets, probe = candidate_environment
     source = (
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class CandidateLiveFailure(InxComponent):\n"
         "    amount: float = 1.0\n"
     )
@@ -536,7 +536,7 @@ def test_registry_failure_after_live_mutation_restores_body_schema_and_registry(
     candidate_environment,
     monkeypatch,
 ):
-    import Infernux.components.registry as registry
+    import infernux.components.registry as registry
 
     assets, probe = candidate_environment
     name = "SchemaRegistryPublishFailure"
@@ -596,7 +596,7 @@ def test_dispatch_failure_after_epoch_commit_rolls_back_owner_transaction(
     bind_asset_script_guid(target, guid)
     instance = target()
     source = (
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         f"class {name}(InxComponent):\n"
         "    _uses_component_data_store = False\n"
         "    def update(self, _dt): return 'new'\n"
@@ -632,11 +632,11 @@ def test_candidate_module_failure_after_sys_modules_write_restores_every_entry(
     candidate_environment,
     monkeypatch,
 ):
-    from Infernux.components.serializable_object import get_serializable_class
+    from infernux.components.serializable_object import get_serializable_class
 
     assets, probe = candidate_environment
     source = (
-        "from Infernux.components import InxComponent, SerializableObject\n"
+        "from infernux.components import InxComponent, SerializableObject\n"
         "class Rules(SerializableObject):\n"
         "    score: int = 17\n"
         "class CandidateModuleCommitFailure(InxComponent):\n"
@@ -675,11 +675,11 @@ def test_partial_pending_marker_publication_is_restored_on_failure(
     candidate_environment,
     monkeypatch,
 ):
-    import Infernux.components._component_registration as registration
+    import infernux.components._component_registration as registration
 
     assets, probe = candidate_environment
     source = (
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class PendingMarkerFirst(InxComponent):\n"
         "    amount: float = 1.0\n"
         "class PendingMarkerSecond(InxComponent):\n"
@@ -720,7 +720,7 @@ def test_discarded_candidate_has_no_cds_state(
 ):
     assets, probe = candidate_environment
     source = (
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         f"class Candidate{discard_reason.title()}(InxComponent):\n"
         "    amount: float = 1.0\n"
     )
@@ -756,11 +756,11 @@ def test_component_free_helper_commit_does_not_create_cds_state(
 
 
 def test_data_only_script_uses_the_existing_reload_publication(candidate_environment):
-    from Infernux.components.serializable_object import get_serializable_class
+    from infernux.components.serializable_object import get_serializable_class
 
     assets, probe = candidate_environment
     source = (
-        "from Infernux.components import SerializableObject\n"
+        "from infernux.components import SerializableObject\n"
         "class Rules(SerializableObject):\n"
         "    score: int = 17\n"
     )
@@ -830,7 +830,7 @@ def _schema_target(name: str, guid: str) -> type:
 def _schema_candidate_source(name: str) -> str:
     return (
         "from typing import Annotated\n"
-        "from Infernux.components import InxComponent, FormerlySerializedAs\n"
+        "from infernux.components import InxComponent, FormerlySerializedAs\n"
         f"class {name}(InxComponent):\n"
         "    velocity: Annotated[float, FormerlySerializedAs('count')] = 0.0\n"
         "    label: str = 'new'\n"
@@ -973,7 +973,7 @@ def test_schema_transaction_nth_instance_failure_restores_every_live_surface(
     candidate_environment,
     monkeypatch,
 ):
-    import Infernux.components.script_loader as script_loader
+    import infernux.components.script_loader as script_loader
 
     assets, probe = candidate_environment
     name = "SchemaNthFailureProbe"

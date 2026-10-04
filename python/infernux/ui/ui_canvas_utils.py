@@ -1,0 +1,255 @@
+"""Shared canvas-discovery utilities for the UI system.
+
+Avoids duplicating the recursive canvas-collection logic across
+UIEditorPanel and GameViewPanel.
+"""
+
+from __future__ import annotations
+
+from typing import List, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass  # avoid circular imports at runtime
+
+def _sort_key(canvas):
+    # Older Web component overlays may not carry newly added serialized
+    # ordering fields; the authored default is zero and remains deterministic.
+    return int(getattr(canvas, "sort_order", 0) or 0)
+
+# ── Cached canvas collection ────────────────────────────────────────
+# Avoids a full DFS every frame; rebuilt only when Canvas membership changes.
+_canvas_cache: list = []
+_canvas_sorted_cache: list = []
+_canvas_with_go_cache: list = []
+_canvas_cache_scene = None
+_canvas_cache_scene_key = None
+_canvas_cache_membership_revision: int = -1
+_runtime_canvas_cache: list = []
+_runtime_canvas_with_go_cache: list = []
+_runtime_canvas_cache_key = None
+_runtime_canvas_sort_signature: tuple = ()
+_canvas_membership_revision: int = 0
+
+
+def _is_uicanvas_component(component, canvas_type) -> bool:
+    """Recognize the built-in Canvas across a project-module overlay.
+
+    Player script publication can load ``infernux.ui.ui_canvas`` twice.  The
+    resulting class objects are distinct, but the component's stable module and
+    qualified name remain authoritative for Canvas discovery.
+    """
+    if isinstance(component, canvas_type):
+        return True
+    component_type = type(component)
+    return (
+        component_type.__module__ == canvas_type.__module__
+        and component_type.__qualname__ == canvas_type.__qualname__
+    )
+
+
+def _registered_canvas_entries(*scenes) -> list[tuple]:
+    """Return live Canvas owners from the component lifecycle registry.
+
+    Canvas discovery is component discovery, so walking every GameObject and
+    RTTI-scanning every native component each frame boundary is both wasteful
+    and unsafe while a scene transaction retires the previous graph. Python
+    component publication already owns an exact live-instance registry. Scene
+    world IDs make that registry a deterministic query for active and
+    DontDestroyOnLoad worlds, including nested Canvases.
+    """
+    from infernux.components import InxComponent
+    from infernux.ui import UICanvas
+
+    world_order = {
+        int(scene.world_id): index
+        for index, scene in enumerate(scenes)
+        if scene is not None
+    }
+    if not world_order:
+        return []
+
+    result = []
+    seen = set()
+    for components in tuple(InxComponent._active_instances.values()):
+        for component in tuple(components):
+            if id(component) in seen or not _is_uicanvas_component(component, UICanvas):
+                continue
+            seen.add(id(component))
+            native_scene = getattr(component, "_native_scene", None)
+            world_id = int(getattr(native_scene, "world_id", 0) or 0)
+            if world_id not in world_order:
+                continue
+            owner = component._try_get_game_object()
+            if owner is None:
+                continue
+            result.append((world_order[world_id], int(owner.id), owner, component))
+    result.sort(key=lambda entry: (entry[0], entry[1], int(entry[3].component_id)))
+    return [(owner, component) for _, _, owner, component in result]
+
+
+def scene_canvas_cache_key(scene) -> tuple[int, int] | None:
+    """Return the stable scene epoch used by Canvas discovery.
+
+    General hierarchy revisions deliberately do not participate here. A scene
+    containing thousands of unrelated 3D objects can change topology without
+    changing its Canvas membership. Canvas attach/detach publishes the
+    dedicated revision below, while a temporal discontinuity covers reloads
+    that retain the same native scene wrapper.
+    """
+    if scene is None:
+        return None
+    world_id = int(getattr(scene, "world_id", 0) or 0)
+    return (
+        world_id if world_id > 0 else id(scene),
+        int(getattr(scene, "temporal_discontinuity_revision", 0)),
+    )
+
+
+def canvas_membership_revision() -> int:
+    """Return the monotonic revision for Canvas discovery snapshots."""
+    return _canvas_membership_revision
+
+
+def _rebuild_cache(scene) -> None:
+    global _canvas_cache, _canvas_sorted_cache, _canvas_with_go_cache
+    global _canvas_cache_scene, _canvas_cache_scene_key
+    global _canvas_cache_membership_revision
+    result = _registered_canvas_entries(scene)
+
+    _canvas_with_go_cache = result
+    _canvas_cache = [comp for _, comp in result]
+    _canvas_sorted_cache = sorted(_canvas_cache, key=_sort_key)
+    _canvas_cache_scene = scene
+    _canvas_cache_scene_key = scene_canvas_cache_key(scene)
+    _canvas_cache_membership_revision = _canvas_membership_revision
+
+
+def _ensure_cache(scene, *, allow_stale_empty: bool = False) -> None:
+    global _canvas_cache_scene, _canvas_cache_scene_key
+    global _canvas_cache_membership_revision
+    if scene is None:
+        return
+
+    scene_key = scene_canvas_cache_key(scene)
+    if (
+        scene is _canvas_cache_scene
+        and scene_key == _canvas_cache_scene_key
+        and _canvas_cache_membership_revision == _canvas_membership_revision
+    ):
+        return
+    _rebuild_cache(scene)
+
+
+def invalidate_canvas_cache() -> None:
+    """Publish a Canvas membership change and invalidate derived snapshots."""
+    global _canvas_cache_scene, _canvas_cache_scene_key
+    global _canvas_cache_membership_revision, _runtime_canvas_cache
+    global _runtime_canvas_with_go_cache
+    global _runtime_canvas_cache_key, _runtime_canvas_sort_signature
+    global _canvas_membership_revision
+    _canvas_membership_revision += 1
+    _canvas_cache_scene = None
+    _canvas_cache_scene_key = None
+    _canvas_cache_membership_revision = -1
+    _runtime_canvas_cache = []
+    _runtime_canvas_with_go_cache = []
+    _runtime_canvas_cache_key = None
+    _runtime_canvas_sort_signature = ()
+
+
+def collect_canvases_with_go(scene) -> List[Tuple]:
+    """Return ``[(GameObject, UICanvas), ...]`` for every canvas in *scene*.
+
+    Walks the full scene hierarchy.  Used by UIEditorPanel which needs
+    both the owning GameObject and the canvas component.
+    """
+    if scene is None:
+        return []
+    _ensure_cache(scene)
+    return _canvas_with_go_cache
+
+
+def collect_canvases(scene, *, allow_stale_empty: bool = False) -> list:
+    """Return ``[UICanvas, ...]`` for every canvas in *scene*.
+
+    Lighter variant used by GameViewPanel which only needs the component.
+    """
+    if scene is None:
+        return []
+    _ensure_cache(scene, allow_stale_empty=allow_stale_empty)
+    return _canvas_cache
+
+
+def collect_sorted_canvases(scene, *, allow_stale_empty: bool = False) -> list:
+    """Return ``[UICanvas, ...]`` sorted by ``sort_order`` (cached)."""
+    if scene is None:
+        return []
+    _ensure_cache(scene, allow_stale_empty=allow_stale_empty)
+    return _canvas_sorted_cache
+
+
+def collect_sorted_runtime_canvases(
+    active_scene,
+    persistent_scene=None,
+    *,
+    allow_stale_empty: bool = False,
+) -> list:
+    """Return sorted canvases from both runtime-owned scenes.
+
+    ``DontDestroyOnLoad`` transfers roots into a separate native Scene. Runtime
+    UI remains one visual/input domain, so the active and persistent scenes
+    must be collected as one cached snapshot.
+    """
+    global _runtime_canvas_cache, _runtime_canvas_cache_key
+    global _runtime_canvas_with_go_cache
+    global _runtime_canvas_sort_signature
+
+    scenes = []
+    for scene in (active_scene, persistent_scene):
+        if scene is not None and all(scene is not existing for existing in scenes):
+            scenes.append(scene)
+    scenes = tuple(scenes)
+    key = (
+        tuple(scene_canvas_cache_key(scene) for scene in scenes),
+        _canvas_membership_revision,
+    )
+    if key == _runtime_canvas_cache_key:
+        sort_signature = tuple(_sort_key(canvas) for canvas in _runtime_canvas_cache)
+        if sort_signature != _runtime_canvas_sort_signature:
+            _runtime_canvas_cache.sort(key=_sort_key)
+            _runtime_canvas_sort_signature = tuple(
+                _sort_key(canvas) for canvas in _runtime_canvas_cache
+            )
+        return _runtime_canvas_cache
+
+    result = _registered_canvas_entries(*scenes)
+
+    _runtime_canvas_with_go_cache = result
+    _runtime_canvas_cache = sorted(
+        (component for _, component in result),
+        key=_sort_key,
+    )
+    _runtime_canvas_cache_key = key
+    _runtime_canvas_sort_signature = tuple(
+        _sort_key(canvas) for canvas in _runtime_canvas_cache
+    )
+    return _runtime_canvas_cache
+
+
+def collect_runtime_canvases_with_go(
+    active_scene,
+    persistent_scene=None,
+    *,
+    allow_stale_empty: bool = False,
+) -> List[Tuple]:
+    """Return canvases from the complete runtime world with their owners.
+
+    The editor and player share one UI domain even though
+    ``DontDestroyOnLoad`` roots live in a separate native Scene.
+    """
+    collect_sorted_runtime_canvases(
+        active_scene,
+        persistent_scene,
+        allow_stale_empty=allow_stale_empty,
+    )
+    return _runtime_canvas_with_go_cache

@@ -9,16 +9,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.i18n import t
-from Infernux.engine.interaction import DocumentRegistry
-from Infernux.engine.ui.graph_document_authoring import (
+from infernux.engine.i18n import t
+from infernux.engine.interaction import DocumentRegistry
+from infernux.engine.ui.graph_document_authoring import (
     GraphDocumentAuthoringModel,
     ParticleEmitterGraphAuthoringModel,
     particle_stage_definition_filter,
 )
-from Infernux.graph import GraphDocument, GraphNodeRecord
-from Infernux.graph.types import CoordinateSpace, TypeRef, ValueType
-from Infernux.particle.asset import (
+from infernux.graph import GraphDocument, GraphNodeRecord
+from infernux.graph.types import CoordinateSpace, TypeRef, ValueType
+from infernux.particle.asset import (
     EmitterSettings,
     ParticleEmitterAsset,
     ParticleEventField,
@@ -28,7 +28,7 @@ from Infernux.particle.asset import (
     ParticleParameter,
     particle_attribute_cache_id,
 )
-from Infernux.particle.nodes import (
+from infernux.particle.nodes import (
     PARTICLE_EVENT_ACTIVE_TYPE_ID,
     PARTICLE_EVENT_TRIGGER_TYPE_ID,
     particle_event_payload_port_id,
@@ -38,8 +38,8 @@ from Infernux.particle.nodes import (
 
 @pytest.fixture(autouse=True)
 def _isolate_particle_graph_panel_dirty_tracking(monkeypatch):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.undo import UndoManager
+    from infernux.core.assets import AssetManager
+    from infernux.engine.undo import UndoManager
 
     class _AssetDatabase:
         def __init__(self):
@@ -90,7 +90,7 @@ def _isolate_particle_graph_panel_dirty_tracking(monkeypatch):
 
 
 def _register_asset_reference(path, guid: str) -> None:
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     AssetManager.require_asset_database().register(str(path), guid)
 
@@ -103,7 +103,7 @@ def _stage_model(document):
 
 
 def _finish_particle_graph_save(panel, path) -> None:
-    from Infernux.core.document_store import DocumentStore
+    from infernux.core.document_store import DocumentStore
 
     DocumentStore.flush(str(path))
     panel._authoring_document_controller.poll_pending_writes()
@@ -633,7 +633,7 @@ def test_set_parameter_only_offers_writable_parameters_and_uses_typed_input():
 
 
 def test_set_parameter_color_inline_follows_hdr_attribute():
-    from Infernux.graph.parameters import GRAPH_PARAMETER_HDR_ATTRIBUTE
+    from infernux.graph.parameters import GRAPH_PARAMETER_HDR_ATTRIBUTE
 
     def value_field(attributes=()):
         asset = ParticleGraphAsset(
@@ -665,13 +665,13 @@ def test_set_parameter_color_inline_follows_hdr_attribute():
 
 
 def test_color_parameter_hdr_toggle_writes_the_hdr_attribute(monkeypatch):
-    from Infernux.engine.interaction import GraphElementKind, GraphElementRef
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-    from Infernux.graph.parameters import GRAPH_PARAMETER_HDR_ATTRIBUTE
+    from infernux.engine.interaction import GraphElementKind, GraphElementRef
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.graph.parameters import GRAPH_PARAMETER_HDR_ATTRIBUTE
 
     captured = {}
     monkeypatch.setattr(
-        "Infernux.engine.ui.node_graph_editor_panel.render_color_value_bar",
+        "infernux.engine.ui.node_graph_editor_panel.render_color_value_bar",
         lambda _ctx, _widget_id, value, **kwargs: captured.update(kwargs) or list(value),
     )
     panel = ParticleGraphEditorPanel()
@@ -763,7 +763,7 @@ def test_set_emitter_playing_dropdown_excludes_the_owning_emitter():
     assert node_type.label == "Set Emitter Playing: Trail"
     assert emitter_field.enum_values == ("trail", "impact")
 
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._asset = asset
@@ -805,7 +805,7 @@ def test_vector_field_sample_connects_to_simulation_space_acceleration():
 
 
 def test_particle_trigger_event_is_available_after_event_flow_is_implemented():
-    from Infernux.particle import default_event_graph
+    from infernux.particle import default_event_graph
 
     source = ParticleEmitterAsset(
         stable_id="source",
@@ -917,7 +917,7 @@ def test_numeric_ports_accept_convertible_shapes_across_common_and_set_nodes():
 
 
 def test_transform_position_palette_can_create_set_position_from_its_output():
-    from Infernux.core.node_graph import PinKind
+    from infernux.core.node_graph import PinKind
 
     model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
     model.prepare_node_creation("update")
@@ -995,7 +995,7 @@ def test_particle_common_operator_chain_follows_the_lifecycle_node_it_feeds():
 
 
 def test_particle_port_drag_rehomes_and_connects_a_common_operator():
-    from Infernux.engine.ui.node_graph_view import NodeGraphView, PinKind
+    from infernux.engine.ui.node_graph_view import NodeGraphView, PinKind
 
     model = ParticleEmitterGraphAuthoringModel(ParticleGraphAsset().emitters[0])
     model.prepare_node_creation("init")
@@ -1104,7 +1104,7 @@ def test_particle_link_topology_edits_never_move_authoring_nodes():
 
 
 def test_particle_graph_palette_request_freezes_source_or_canvas_stage():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -1121,7 +1121,7 @@ def test_particle_graph_palette_request_freezes_source_or_canvas_stage():
 
 
 def test_particle_graph_blackboard_api_updates_and_removes_reference_nodes():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -1147,7 +1147,7 @@ def test_particle_graph_blackboard_api_updates_and_removes_reference_nodes():
 
 
 def test_particle_parameter_canvas_drop_creates_the_selected_parameter_node():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -1189,7 +1189,7 @@ def test_particle_parameter_canvas_drop_creates_the_selected_parameter_node():
 
 
 def test_particle_parameter_canvas_drop_ignores_inactive_collision_lanes():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -1218,8 +1218,8 @@ def test_particle_parameter_canvas_drop_ignores_inactive_collision_lanes():
 
 
 def test_particle_vector_parameter_adopts_fixed_attribute_space_and_compiles():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-    from Infernux.particle import ParticleGraphCompiler, ParticleKernelLowerer
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.particle import ParticleGraphCompiler, ParticleKernelLowerer
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -1244,8 +1244,8 @@ def test_particle_vector_parameter_adopts_fixed_attribute_space_and_compiles():
 
 
 def test_world_position_parameter_requires_and_preserves_explicit_space_transform():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-    from Infernux.particle import (
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.particle import (
         GpuParticleGlslLowerer,
         ParticleGraphCompiler,
         ParticleKernelLowerer,
@@ -1308,8 +1308,8 @@ def test_particle_parameters_reject_emitter_relative_coordinate_spaces():
 
 
 def test_world_direction_transform_uses_vector_semantics_without_translation():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-    from Infernux.particle import (
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.particle import (
         GpuParticleGlslLowerer,
         ParticleGraphCompiler,
         ParticleKernelLowerer,
@@ -1345,7 +1345,7 @@ def test_world_direction_transform_uses_vector_semantics_without_translation():
 
 
 def test_direction_space_conversion_does_not_apply_emitter_scale():
-    from Infernux.particle.gpu_glsl_backend import _space_conversion
+    from infernux.particle.gpu_glsl_backend import _space_conversion
 
     glsl = _space_conversion(
         "local_velocity",
@@ -1361,7 +1361,7 @@ def test_direction_space_conversion_does_not_apply_emitter_scale():
 
 
 def test_position_and_vector_space_conversion_keep_affine_semantics():
-    from Infernux.particle.gpu_glsl_backend import _space_conversion
+    from infernux.particle.gpu_glsl_backend import _space_conversion
 
     position = _space_conversion(
         "local_point",
@@ -1386,8 +1386,8 @@ def test_position_and_vector_space_conversion_keep_affine_semantics():
 
 
 def test_particle_compose4_connects_directly_to_color_attribute_and_compiles():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-    from Infernux.particle import ParticleGraphCompiler
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.particle import ParticleGraphCompiler
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -1443,7 +1443,7 @@ def test_get_attribute_dropdown_discovers_node_owned_cache_type():
 
 
 def test_particle_graph_editor_authors_texture2d_parameter_node():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -1464,7 +1464,7 @@ def test_particle_graph_editor_authors_texture2d_parameter_node():
 def test_unsaved_particle_graph_edits_do_not_publish_runtime_artifacts(
     monkeypatch, tmp_path
 ):
-    import Infernux.engine.ui.particle_graph_editor_panel as module
+    import infernux.engine.ui.particle_graph_editor_panel as module
 
     panel = module.ParticleGraphEditorPanel()
     panel._file_path = str(tmp_path / "Draft.particlegraph")
@@ -1482,11 +1482,11 @@ def test_unsaved_particle_graph_edits_do_not_publish_runtime_artifacts(
 
 
 def _particle_panel_with_command_core():
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui.particle_graph_editor_panel import (
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui.particle_graph_editor_panel import (
         ParticleGraphEditorPanel,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     core = EditorInteractionCore()
     manager = UndoManager(core.action_journal)
@@ -1507,8 +1507,8 @@ def _particle_panel_with_command_core():
 def test_particle_emitter_row_defers_model_rebind_until_list_render_finishes(
     monkeypatch,
 ):
-    import Infernux.engine.ui.particle_graph_editor_panel as module
-    import Infernux.engine.ui.node_graph_editor_panel as shared_module
+    import infernux.engine.ui.particle_graph_editor_panel as module
+    import infernux.engine.ui.node_graph_editor_panel as shared_module
 
     panel, _core, _manager = _particle_panel_with_command_core()
     panel._asset = ParticleGraphAsset(
@@ -1558,8 +1558,8 @@ def test_particle_emitter_row_defers_model_rebind_until_list_render_finishes(
 
 
 def test_particle_workspace_defers_add_until_all_rows_finish(monkeypatch):
-    import Infernux.engine.ui.node_graph_editor_panel as shared_module
-    from Infernux.engine.ui.particle_graph_editor_panel import (
+    import infernux.engine.ui.node_graph_editor_panel as shared_module
+    from infernux.engine.ui.particle_graph_editor_panel import (
         ParticleGraphEditorPanel,
     )
 
@@ -1617,7 +1617,7 @@ def test_particle_workspace_defers_add_until_all_rows_finish(monkeypatch):
 
 
 def test_particle_parameter_workspace_rename_uses_the_existing_undoable_api():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -1641,7 +1641,7 @@ def test_particle_parameter_workspace_rename_uses_the_existing_undoable_api():
 
 
 def test_shared_palette_notifies_host_with_the_complete_creation_request():
-    from Infernux.engine.ui.node_graph_view import NodeGraphView, PinKind
+    from infernux.engine.ui.node_graph_view import NodeGraphView, PinKind
 
     view = NodeGraphView()
     requests = []
@@ -1704,8 +1704,8 @@ def test_particle_value_input_connection_can_be_replaced_atomically():
 
 
 def test_particle_graph_editor_restores_single_canvas_dirty_document_session():
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -1742,9 +1742,9 @@ def test_particle_graph_editor_restores_single_canvas_dirty_document_session():
 
 
 def test_particle_graph_editor_discards_incompatible_document_session(tmp_path):
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-    from Infernux.particle import ParticleGraphAsset
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.particle import ParticleGraphAsset
 
     target = tmp_path / "Current.particlegraph"
     ParticleGraphAsset(stable_id="current-graph", name="Current").save(str(target))
@@ -1765,7 +1765,7 @@ def test_particle_graph_editor_discards_incompatible_document_session(tmp_path):
 
 
 def test_particle_graph_editor_explicitly_discards_an_unsaved_memory_document():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -1784,8 +1784,8 @@ def test_particle_graph_editor_explicitly_discards_an_unsaved_memory_document():
 
 
 def test_particle_graph_editor_ignores_float32_widget_round_trip_noise():
-    from Infernux.engine.ui.inspector_utils import preserve_ui_float_precision
-    from Infernux.particle.asset import EmitterSettings
+    from infernux.engine.ui.inspector_utils import preserve_ui_float_precision
+    from infernux.particle.asset import EmitterSettings
 
     original = EmitterSettings(spawn_rate=3.7)
     float32 = lambda value: struct.unpack("f", struct.pack("f", value))[0]
@@ -1797,8 +1797,8 @@ def test_particle_graph_editor_ignores_float32_widget_round_trip_noise():
 
 
 def test_particle_graph_save_publishes_view_state_without_global_session_flush(tmp_path, monkeypatch):
-    from Infernux.engine.ui import panel_state
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui import panel_state
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     layout = tmp_path / "layout"
     panel_state.init(str(layout))
@@ -1826,8 +1826,8 @@ def test_particle_graph_save_publishes_view_state_without_global_session_flush(t
 
 
 def test_particle_graph_save_surfaces_compile_errors(tmp_path, monkeypatch):
-    import Infernux.engine.ui.particle_graph_editor_panel as module
-    from Infernux.particle.artifact import ParticleArtifactError
+    import infernux.engine.ui.particle_graph_editor_panel as module
+    from infernux.particle.artifact import ParticleArtifactError
 
     panel = module.ParticleGraphEditorPanel()
     target = tmp_path / "Broken.particlegraph"
@@ -1844,7 +1844,7 @@ def test_particle_graph_save_surfaces_compile_errors(tmp_path, monkeypatch):
 
 
 def test_particle_graph_save_compiles_untyped_transform_direction(tmp_path):
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -1862,10 +1862,10 @@ def test_particle_graph_save_compiles_untyped_transform_direction(tmp_path):
 
 
 def test_particle_graph_scalar_properties_publish_stable_semantic_ids():
-    from Infernux.engine.ui.particle_graph_editor_panel import (
+    from infernux.engine.ui.particle_graph_editor_panel import (
         _record_scalar_node_property_semantics,
     )
-    from Infernux.graph.types import ValueType
+    from infernux.graph.types import ValueType
 
     class Context:
         semantic_capture_enabled = True
@@ -1917,7 +1917,7 @@ def test_particle_graph_scalar_properties_publish_stable_semantic_ids():
 
 
 def test_particle_graph_alignment_property_publishes_combo_semantic():
-    from Infernux.engine.ui.particle_graph_editor_panel import (
+    from infernux.engine.ui.particle_graph_editor_panel import (
         _record_scalar_node_property_semantics,
     )
 
@@ -1954,7 +1954,7 @@ def test_particle_graph_alignment_property_publishes_combo_semantic():
 
 
 def test_particle_graph_alignment_axis_is_only_visible_in_axis_mode():
-    from Infernux.engine.ui.particle_graph_editor_panel import (
+    from infernux.engine.ui.particle_graph_editor_panel import (
         _node_property_is_visible,
     )
 
@@ -1968,7 +1968,7 @@ def test_particle_graph_alignment_axis_is_only_visible_in_axis_mode():
 
 
 def test_particle_output_exposes_selected_shader_properties_as_node_inputs():
-    from Infernux.engine.ui.particle_graph_editor_panel import (
+    from infernux.engine.ui.particle_graph_editor_panel import (
         ParticleGraphEditorPanel,
     )
 
@@ -2001,7 +2001,7 @@ def test_particle_output_exposes_selected_shader_properties_as_node_inputs():
     ),
 )
 def test_every_particle_output_uses_the_same_shader_property_contract(type_id):
-    from Infernux.engine.ui.particle_graph_editor_panel import (
+    from infernux.engine.ui.particle_graph_editor_panel import (
         ParticleGraphEditorPanel,
     )
 
@@ -2039,7 +2039,7 @@ def test_every_particle_output_uses_the_same_shader_property_contract(type_id):
 def test_particle_output_texture_port_uses_live_asset_reference_path(
     tmp_path, monkeypatch
 ):
-    from Infernux.engine.ui import particle_graph_editor_panel as module
+    from infernux.engine.ui import particle_graph_editor_panel as module
 
     texture_path = tmp_path / "Smoke.png"
     texture_path.write_bytes(b"png")
@@ -2070,9 +2070,9 @@ def test_particle_inline_texture_field_uses_structured_picker_and_clear_contract
 ):
     from types import SimpleNamespace
 
-    from Infernux.engine.ui import igui
-    from Infernux.engine.ui import node_graph_view as graph_view
-    from Infernux.engine.ui import particle_graph_editor_panel as module
+    from infernux.engine.ui import igui
+    from infernux.engine.ui import node_graph_view as graph_view
+    from infernux.engine.ui import particle_graph_editor_panel as module
 
     texture_path = tmp_path / "Smoke.png"
     texture_path.write_bytes(b"png")
@@ -2145,7 +2145,7 @@ def test_particle_inline_texture_field_uses_structured_picker_and_clear_contract
 def test_particle_node_inspector_texture_field_uses_live_asset_reference_path(
     tmp_path, monkeypatch
 ):
-    from Infernux.engine.ui import particle_graph_editor_panel as module
+    from infernux.engine.ui import particle_graph_editor_panel as module
 
     texture_path = tmp_path / "Smoke.png"
     texture_path.write_bytes(b"png")
@@ -2205,7 +2205,7 @@ def test_particle_node_inspector_texture_field_uses_live_asset_reference_path(
 def test_particle_node_inspector_texture_clear_uses_live_asset_reference_path(
     monkeypatch,
 ):
-    from Infernux.engine.ui import particle_graph_editor_panel as module
+    from infernux.engine.ui import particle_graph_editor_panel as module
 
     class Context:
         semantic_capture_enabled = False
@@ -2247,7 +2247,7 @@ def test_particle_node_inspector_texture_clear_uses_live_asset_reference_path(
 
 
 def test_particle_inline_mesh_field_offers_builtin_meshes():
-    from Infernux.engine.ui.particle_graph_editor_panel import (
+    from infernux.engine.ui.particle_graph_editor_panel import (
         ParticleGraphEditorPanel,
     )
 
@@ -2270,7 +2270,7 @@ def test_particle_inline_mesh_field_offers_builtin_meshes():
 
 
 def test_particle_output_shader_schema_hot_reload_preserves_selection(monkeypatch):
-    from Infernux.engine.ui import particle_graph_editor_panel as module
+    from infernux.engine.ui import particle_graph_editor_panel as module
 
     panel = module.ParticleGraphEditorPanel()
     output_uid = "rendering::output.sprite"
@@ -2289,7 +2289,7 @@ def test_particle_output_shader_schema_hot_reload_preserves_selection(monkeypatc
 
 
 def test_particle_output_shader_switch_preserves_compatible_ports_and_links():
-    from Infernux.engine.ui.particle_graph_editor_panel import (
+    from infernux.engine.ui.particle_graph_editor_panel import (
         ParticleGraphEditorPanel,
     )
 
@@ -2320,13 +2320,13 @@ def test_particle_output_shader_switch_preserves_compatible_ports_and_links():
 
 
 def _particle_panel_with_history():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         DocumentRegistry,
         EditorContextSnapshot,
         SelectionService,
     )
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.undo import UndoManager
 
     DocumentRegistry()
     selection = SelectionService()
@@ -2348,7 +2348,7 @@ def _particle_panel_with_history():
 
 
 def test_six_way_output_exposes_texture_ports_but_not_internal_controls():
-    from Infernux.engine.ui.particle_graph_editor_panel import (
+    from infernux.engine.ui.particle_graph_editor_panel import (
         ParticleGraphEditorPanel,
     )
 
@@ -2366,10 +2366,10 @@ def test_six_way_output_exposes_texture_ports_but_not_internal_controls():
 
 
 def test_particle_output_compiler_strips_stale_internal_shader_properties():
-    from Infernux.engine.ui.particle_graph_editor_panel import (
+    from infernux.engine.ui.particle_graph_editor_panel import (
         ParticleGraphEditorPanel,
     )
-    from Infernux.particle import ParticleGraphCompiler
+    from infernux.particle import ParticleGraphCompiler
 
     panel = ParticleGraphEditorPanel()
     panel.set_node_property(
@@ -2406,10 +2406,10 @@ def test_particle_output_compiler_strips_stale_internal_shader_properties():
 
 
 def test_particle_graph_parameter_connects_directly_to_output_shader_property():
-    from Infernux.engine.ui.particle_graph_editor_panel import (
+    from infernux.engine.ui.particle_graph_editor_panel import (
         ParticleGraphEditorPanel,
     )
-    from Infernux.particle import ParticleGraphCompiler
+    from infernux.particle import ParticleGraphCompiler
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -2436,7 +2436,7 @@ def test_particle_graph_parameter_connects_directly_to_output_shader_property():
 def test_particle_graph_editor_sets_mesh_asset_through_live_authoring_model(
     tmp_path, monkeypatch
 ):
-    from Infernux.engine.ui import particle_graph_editor_panel as module
+    from infernux.engine.ui import particle_graph_editor_panel as module
 
     mesh_path = tmp_path / "ParticleShard.obj"
     mesh_path.write_text("o ParticleShard\nv 0 0 0\n", encoding="utf-8")
@@ -2485,7 +2485,7 @@ def test_particle_graph_editor_sets_mesh_asset_through_live_authoring_model(
 
 
 def test_particle_graph_editor_rejects_wrong_asset_kind(tmp_path):
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     texture_path = tmp_path / "not-a-mesh.png"
     texture_path.write_bytes(b"png")
@@ -2499,7 +2499,7 @@ def test_particle_graph_editor_rejects_wrong_asset_kind(tmp_path):
 
 
 def test_particle_graph_editor_hides_internal_volume_authoring():
-    from Infernux.engine.ui import particle_graph_editor_panel as module
+    from infernux.engine.ui import particle_graph_editor_panel as module
 
     panel = module.ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -2530,7 +2530,7 @@ def test_particle_graph_editor_hides_internal_volume_authoring():
 def test_particle_graph_editor_authors_mesh_input_as_constant_or_parameter(
     tmp_path, monkeypatch
 ):
-    from Infernux.engine.ui import particle_graph_editor_panel as module
+    from infernux.engine.ui import particle_graph_editor_panel as module
 
     mesh_path = tmp_path / "Surface.fbx"
     mesh_path.write_bytes(b"fbx")
@@ -2567,7 +2567,7 @@ def test_particle_graph_editor_authors_mesh_input_as_constant_or_parameter(
 
 
 def test_particle_graph_editor_accepts_builtin_mesh_references():
-    from Infernux.engine.ui import particle_graph_editor_panel as module
+    from infernux.engine.ui import particle_graph_editor_panel as module
 
     panel = module.ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -2584,7 +2584,7 @@ def test_particle_graph_editor_accepts_builtin_mesh_references():
 
 
 def test_particle_graph_editor_semantic_authoring_edits_orientation_exec_chains():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -2627,7 +2627,7 @@ def test_particle_graph_editor_semantic_authoring_edits_orientation_exec_chains(
 
 
 def test_particle_graph_editor_public_api_disconnects_exec_and_value_links():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -2662,7 +2662,7 @@ def test_particle_graph_editor_public_api_disconnects_exec_and_value_links():
 
 
 def test_particle_graph_editor_type_catalog_is_searchable_and_paged():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     catalog = panel.authoring_type_catalog(query="ribbon", offset=0, limit=1)
@@ -2675,7 +2675,7 @@ def test_particle_graph_editor_type_catalog_is_searchable_and_paged():
 
 
 def test_particle_graph_editor_exposes_asset_local_burst_node():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -2696,7 +2696,7 @@ def test_particle_graph_editor_exposes_asset_local_burst_node():
 
 
 def test_particle_graph_editor_switches_emitter_without_old_selection_winning():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -2712,7 +2712,7 @@ def test_particle_graph_editor_switches_emitter_without_old_selection_winning():
 
 
 def test_particle_graph_editor_edits_unlinked_value_input_defaults():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -2737,7 +2737,7 @@ def test_particle_graph_editor_edits_unlinked_value_input_defaults():
 
 
 def test_particle_graph_editor_rejects_default_edit_for_linked_value_input():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -2754,7 +2754,7 @@ def test_particle_graph_editor_rejects_default_edit_for_linked_value_input():
 
 
 def test_particle_graph_editor_rejects_camera_sort_for_ribbon_output():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -2771,7 +2771,7 @@ def test_particle_graph_editor_rejects_camera_sort_for_ribbon_output():
 
 
 def test_particle_graph_editor_exposes_vector_components_and_dimension_policies():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     definitions = {
@@ -2806,8 +2806,8 @@ def test_particle_graph_editor_exposes_vector_components_and_dimension_policies(
 
 
 def test_particle_graph_editor_authors_trigger_and_independent_event_flow():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-    from Infernux.particle import ParticleGraphCompiler, ParticleKernelLowerer
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.particle import ParticleGraphCompiler, ParticleKernelLowerer
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -2856,7 +2856,7 @@ def test_particle_graph_editor_authors_trigger_and_independent_event_flow():
 
 
 def test_particle_graph_editor_dragged_event_root_uses_canvas_position():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -2900,8 +2900,8 @@ def test_particle_graph_editor_dragged_event_root_uses_canvas_position():
 def test_particle_graph_defers_canvas_drop_target_until_after_floating_sources():
     import inspect
 
-    from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     source = inspect.getsource(NodeGraphEditorPanel._render_node_graph_workspace)
     graph_render = source.index("self._view.render(")
@@ -2914,11 +2914,11 @@ def test_particle_graph_defers_canvas_drop_target_until_after_floating_sources()
 
 
 def test_particle_graph_uses_the_shared_editor_shell_and_node_graph_model():
-    from Infernux.engine.ui.graph_document_authoring import (
+    from infernux.engine.ui.graph_document_authoring import (
         ParticleEmitterGraphAuthoringModel,
     )
-    from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
 
@@ -2930,7 +2930,7 @@ def test_particle_graph_uses_the_shared_editor_shell_and_node_graph_model():
 
 
 def test_particle_event_canvas_drop_creates_an_independent_event_flow():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -2952,8 +2952,8 @@ def test_particle_event_canvas_drop_creates_an_independent_event_flow():
 
 
 def test_particle_event_row_binds_drag_source_before_context_menu(monkeypatch):
-    import Infernux.engine.ui.particle_graph_editor_panel as module
-    import Infernux.engine.ui.node_graph_editor_panel as shared_module
+    import infernux.engine.ui.particle_graph_editor_panel as module
+    import infernux.engine.ui.node_graph_editor_panel as shared_module
 
     panel, _core, _manager = _particle_panel_with_command_core()
     panel._record = lambda *_args: None
@@ -3010,7 +3010,7 @@ def test_particle_event_row_binds_drag_source_before_context_menu(monkeypatch):
 
 
 def test_particle_graph_editor_event_schema_edit_prunes_only_invalid_payload_links():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -3067,7 +3067,7 @@ def test_particle_graph_editor_event_schema_edit_prunes_only_invalid_payload_lin
 
 
 def test_particle_graph_editor_event_schema_edit_migrates_trigger_literals_atomically():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -3134,7 +3134,7 @@ def test_particle_graph_editor_event_schema_edit_migrates_trigger_literals_atomi
 
 
 def test_particle_graph_editor_removing_event_clears_reusable_event_nodes():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._record = lambda *_args: None
@@ -3175,7 +3175,7 @@ def test_particle_graph_editor_removing_event_clears_reusable_event_nodes():
 
 
 def test_particle_node_inspector_edits_unconnected_value_input_defaults():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     class Context:
         semantic_capture_enabled = True
@@ -3213,7 +3213,7 @@ def test_particle_node_inspector_edits_unconnected_value_input_defaults():
 
 
 def test_particle_node_numeric_semantics_are_bound_during_widget_submission():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     class Context:
         semantic_capture_enabled = True
@@ -3251,7 +3251,7 @@ def test_particle_node_numeric_semantics_are_bound_during_widget_submission():
 
 
 def test_particle_node_color_inputs_use_shared_color_bar(monkeypatch):
-    import Infernux.engine.ui.particle_graph_editor_panel as particle_editor
+    import infernux.engine.ui.particle_graph_editor_panel as particle_editor
 
     class Context:
         semantic_capture_enabled = False
@@ -3298,16 +3298,16 @@ def test_particle_node_color_inputs_use_shared_color_bar(monkeypatch):
 def test_color_node_can_drive_sprite_output_and_compile_to_gpu_glsl():
     from dataclasses import replace
 
-    from Infernux.engine.ui.graph_document_authoring import (
+    from infernux.engine.ui.graph_document_authoring import (
         ParticleEmitterGraphAuthoringModel,
     )
-    from Infernux.particle import (
+    from infernux.particle import (
         GpuParticleGlslLowerer,
         ParticleGraphCompiler,
         ParticleKernelLowerer,
     )
-    from Infernux.particle.asset import ParticleGraphAsset
-    from Infernux.particle.nodes import particle_graph_node_definitions
+    from infernux.particle.asset import ParticleGraphAsset
+    from infernux.particle.nodes import particle_graph_node_definitions
 
     asset = ParticleGraphAsset()
     emitter = asset.emitters[0]
@@ -3349,9 +3349,9 @@ def test_color_node_can_drive_sprite_output_and_compile_to_gpu_glsl():
 
 
 def test_particle_gradient_editor_uses_shared_hdr_color_bar_and_channel_semantics(monkeypatch):
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-    from Infernux.engine.ui import inspector_utils
-    from Infernux.graph.ramp import Gradient
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui import inspector_utils
+    from infernux.graph.ramp import Gradient
 
     color_calls = []
 
@@ -3420,9 +3420,9 @@ def test_particle_gradient_editor_uses_shared_hdr_color_bar_and_channel_semantic
 
 
 def test_particle_graph_editor_save_aot_compiles_and_reopens(tmp_path, monkeypatch):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-    from Infernux.particle.artifact import ParticleArtifactRegistry
+    from infernux.core.assets import AssetManager
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.particle.artifact import ParticleArtifactRegistry
 
     ParticleArtifactRegistry.clear()
     monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(lambda cls, _path: None))
@@ -3445,9 +3445,9 @@ def test_particle_graph_editor_save_aot_compiles_and_reopens(tmp_path, monkeypat
 
 
 def test_particle_graph_close_reopen_preserves_direct_save_target(tmp_path, monkeypatch):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     DocumentRegistry()
     monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(lambda cls, _path: None))
@@ -3482,9 +3482,9 @@ def test_particle_graph_close_reopen_preserves_direct_save_target(tmp_path, monk
 def test_particle_graph_deferred_save_stays_clean_after_same_frame_edit(
     tmp_path, monkeypatch
 ):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     registry = DocumentRegistry()
     monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(lambda cls, _path: None))
@@ -3513,9 +3513,9 @@ def test_particle_graph_deferred_save_stays_clean_after_same_frame_edit(
 def test_particle_graph_pending_save_as_clears_the_serialized_revision(
     tmp_path, monkeypatch
 ):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     registry = DocumentRegistry()
     monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(lambda cls, _path: None))
@@ -3542,9 +3542,9 @@ def test_particle_graph_pending_save_as_clears_the_serialized_revision(
 def test_particle_graph_async_save_keeps_edits_after_capture_dirty(
     tmp_path, monkeypatch
 ):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     registry = DocumentRegistry()
     monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(lambda cls, _path: None))
@@ -3576,9 +3576,9 @@ def test_particle_graph_async_save_keeps_edits_after_capture_dirty(
 def test_particle_graph_save_absorbs_synchronous_reimport_bookkeeping_revision(
     tmp_path, monkeypatch
 ):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     registry = DocumentRegistry()
     path = tmp_path / "ReimportBookkeeping.particlegraph"
@@ -3607,13 +3607,13 @@ def test_particle_graph_save_absorbs_synchronous_reimport_bookkeeping_revision(
 def test_particle_graph_document_revision_and_selection_are_globally_authoritative(
     tmp_path, monkeypatch
 ):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import (
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import (
         DocumentRegistry,
         GraphElementKind,
         SelectionService,
     )
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     DocumentRegistry()
     selection = SelectionService()
@@ -3641,7 +3641,7 @@ def test_particle_graph_document_revision_and_selection_are_globally_authoritati
 
 
 def test_particle_parameter_insert_and_update_use_precise_graph_diffs():
-    from Infernux.engine.interaction import GraphElementKind
+    from infernux.engine.interaction import GraphElementKind
 
     panel, manager = _particle_panel_with_history()
     document = panel._particle_document()
@@ -3725,7 +3725,7 @@ def test_particle_emitter_settings_use_one_precise_undo_action():
 
 
 def test_particle_data_interface_edit_uses_one_precise_undo_action():
-    from Infernux.particle.data_interface import VectorField
+    from infernux.particle.data_interface import VectorField
 
     panel, manager = _particle_panel_with_history()
     emitter = panel.asset.emitters[0]
@@ -3785,9 +3785,9 @@ def test_particle_event_type_and_flow_use_precise_domain_diffs():
 
 
 def test_particle_graph_disk_discard_reconciles_document_revision(tmp_path):
-    from Infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-    from Infernux.particle import ParticleGraphAsset
+    from infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.particle import ParticleGraphAsset
 
     target = tmp_path / "Saved.particlegraph"
     ParticleGraphAsset(stable_id="saved-graph", name="Saved").save(str(target))
@@ -3872,16 +3872,16 @@ def test_connect_vector3_to_set_velocity_never_moves_nodes_through_panel_history
 
 def test_particle_node_drag_keeps_exact_cross_panel_history_order():
     """A graph drag must remain between the two Scene editing sessions."""
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import (
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import (
         ContextRestoreStatus,
         EditorInteractionCore,
         PanelInteractionDescriptor,
         SelectionDomain,
         SelectionTarget,
     )
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
-    from Infernux.engine.undo import SetPropertyCommand, UndoManager
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.undo import SetPropertyCommand, UndoManager
 
     core = EditorInteractionCore()
     manager = UndoManager(core.action_journal)
@@ -4010,7 +4010,7 @@ def test_particle_node_and_link_deletion_is_one_precise_undo_action():
 
 
 def test_particle_graph_uses_shared_typed_subgraph_clipboard_and_undo():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         ClipboardDomain,
         ClipboardService,
         GraphElementKind,
@@ -4058,7 +4058,7 @@ def test_particle_graph_uses_shared_typed_subgraph_clipboard_and_undo():
 
 
 def test_particle_graph_shared_commands_duplicate_and_cut_atomically():
-    from Infernux.engine.interaction import GraphElementKind
+    from infernux.engine.interaction import GraphElementKind
 
     panel, manager = _particle_panel_with_history()
     panel._model.set_authoring_stage("update")
@@ -4101,8 +4101,8 @@ def test_particle_graph_shared_commands_duplicate_and_cut_atomically():
 
 
 def test_project_create_particlegraph_writes_loadable_asset(tmp_path, monkeypatch):
-    from Infernux.engine.ui.project_file_ops import create_particlegraph
-    from Infernux.particle.artifact import ParticleArtifactRegistry
+    from infernux.engine.ui.project_file_ops import create_particlegraph
+    from infernux.particle.artifact import ParticleArtifactRegistry
 
     ParticleArtifactRegistry.clear()
 
@@ -4130,7 +4130,7 @@ def test_project_create_particlegraph_writes_loadable_asset(tmp_path, monkeypatc
 
 
 def test_particle_graph_document_state_does_not_serialize_stale_model(monkeypatch):
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._file_path = "Assets/VFX/Legacy.particlegraph"
@@ -4147,8 +4147,8 @@ def test_particle_graph_document_state_does_not_serialize_stale_model(monkeypatc
 
 
 def test_particle_system_inspector_metadata_is_localizable_and_backend_is_emitter_owned():
-    from Infernux.components.particle_system import ParticleSystem
-    from Infernux.components.fields import get_serialized_fields
+    from infernux.components.particle_system import ParticleSystem
+    from infernux.components.fields import get_serialized_fields
 
     fields = get_serialized_fields(ParticleSystem)
     assert {
@@ -4189,7 +4189,7 @@ def test_particle_system_inspector_metadata_is_localizable_and_backend_is_emitte
         == "particle_system.manual_bounds_size"
     )
 def test_particle_graph_workspace_child_context_is_stable_and_restorable():
-    from Infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
 
     panel = ParticleGraphEditorPanel()
     panel._workspace_tab_index = 1

@@ -1,11 +1,11 @@
-"""Tests for Infernux.components.builtin.rigidbody — Rigidbody wrapper (real C++ backend)."""
+"""Tests for infernux.components.builtin.rigidbody — Rigidbody wrapper (real C++ backend)."""
 
 from __future__ import annotations
 
 import pytest
 
-from Infernux.lib import Vector3, quatf, ForceMode as CppForceMode
-from Infernux.components.builtin.rigidbody import (
+from infernux.lib import Vector3, quatf, ForceMode as CppForceMode
+from infernux.components.builtin.rigidbody import (
     CollisionDetectionMode,
     Rigidbody,
     RigidbodyConstraints,

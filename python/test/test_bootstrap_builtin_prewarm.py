@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.bootstrap import EditorBootstrap
-from Infernux.engine.player_runtime import PlayerRuntimeSession
-from Infernux.engine.startup_warmup import (
+from infernux.engine.bootstrap import EditorBootstrap
+from infernux.engine.player_runtime import PlayerRuntimeSession
+from infernux.engine.startup_warmup import (
     PlayerStartupWarmup,
     create_player_startup_warmup,
     run_project_script_warmups,
@@ -15,7 +15,7 @@ from Infernux.engine.startup_warmup import (
 
 @pytest.mark.parametrize("stale_player_registry", [False, True])
 def test_empty_editor_project_does_not_use_player_warmup_registry(tmp_path, stale_player_registry, monkeypatch):
-    monkeypatch.setattr("Infernux.application.Application.is_player", lambda: False)
+    monkeypatch.setattr("infernux.application.Application.is_player", lambda: False)
     (tmp_path / "Assets" / "Scripts").mkdir(parents=True)
     if stale_player_registry:
         library = tmp_path / "Library"
@@ -25,7 +25,7 @@ def test_empty_editor_project_does_not_use_player_warmup_registry(tmp_path, stal
 
 
 def test_player_warmup_still_requires_its_build_registry(tmp_path, monkeypatch):
-    monkeypatch.setattr("Infernux.application.Application.is_player", lambda: True)
+    monkeypatch.setattr("infernux.application.Application.is_player", lambda: True)
     with pytest.raises(FileNotFoundError, match="RuntimeTypeRegistry"):
         create_player_startup_warmup(project_path=str(tmp_path))
     with pytest.raises(FileNotFoundError, match="RuntimeTypeRegistry"):
@@ -33,7 +33,7 @@ def test_player_warmup_still_requires_its_build_registry(tmp_path, monkeypatch):
 
 
 def test_player_warmup_uses_cooked_registry_even_with_authored_sources(tmp_path, monkeypatch):
-    monkeypatch.setattr("Infernux.application.Application.is_player", lambda: True)
+    monkeypatch.setattr("infernux.application.Application.is_player", lambda: True)
     scripts = tmp_path / "Assets" / "Scripts"
     scripts.mkdir(parents=True)
     (scripts / "unused.py").write_text("this is not valid Python!", encoding="utf-8")
@@ -67,7 +67,7 @@ def _bootstrap(native):
 
 def _install_registry(monkeypatch, registry):
     monkeypatch.setattr(
-        "Infernux.lib.AssetRegistry.instance",
+        "infernux.lib.AssetRegistry.instance",
         lambda: registry,
     )
 
@@ -150,16 +150,16 @@ def test_player_cpu_warmup_resolves_on_owner_and_executes_on_worker(monkeypatch)
         return hook, 0.0
 
     monkeypatch.setattr(
-        "Infernux.engine.startup_warmup._resolve_player_warmup_record", resolve
+        "infernux.engine.startup_warmup._resolve_player_warmup_record", resolve
     )
     monkeypatch.setattr(
-        "Infernux.engine.startup_warmup.wait_cpu_runtime_preload", lambda: None
+        "infernux.engine.startup_warmup.wait_cpu_runtime_preload", lambda: None
     )
     monkeypatch.setattr(
-        "Infernux.engine.startup_warmup.Debug.log", lambda *_args, **_kwargs: None
+        "infernux.engine.startup_warmup.Debug.log", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
-        "Infernux.engine.player_log.write_player_log", lambda *_args, **_kwargs: None
+        "infernux.engine.player_log.write_player_log", lambda *_args, **_kwargs: None
     )
     record = {"module": "Scripts.Cpu", "qualname": "Cpu"}
     warmup = PlayerStartupWarmup(
@@ -185,17 +185,17 @@ def test_player_gpu_warmup_advances_while_cpu_worker_is_busy(monkeypatch):
         return True
 
     monkeypatch.setattr(
-        "Infernux.engine.startup_warmup.wait_cpu_runtime_preload", lambda: None
+        "infernux.engine.startup_warmup.wait_cpu_runtime_preload", lambda: None
     )
     monkeypatch.setattr(
-        "Infernux.compute._prepare_now",
+        "infernux.compute._prepare_now",
         lambda declaration, params: prepared.append((declaration, params)),
     )
     monkeypatch.setattr(
-        "Infernux.engine.startup_warmup.Debug.log", lambda *_args, **_kwargs: None
+        "infernux.engine.startup_warmup.Debug.log", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(
-        "Infernux.engine.player_log.write_player_log", lambda *_args, **_kwargs: None
+        "infernux.engine.player_log.write_player_log", lambda *_args, **_kwargs: None
     )
     declaration = object()
     warmup = PlayerStartupWarmup("project", (), scope="test")

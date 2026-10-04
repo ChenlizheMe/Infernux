@@ -2,20 +2,20 @@ from pathlib import Path as FilePath
 
 import pytest
 
-from Infernux.core.asset_ref import RenderEffectRef
-from Infernux.rendergraph.graph import Format, RenderGraph
-from Infernux.renderstack.effect_stage import EffectScope
-from Infernux.renderstack.pipeline_dsl import Path, PipelineBuilder, Queue
-from Infernux.renderstack.pipeline_compiler import compile_pipeline_definition
-from Infernux.renderstack.render_effect import RenderEffect
-from Infernux.renderstack.render_effect_asset import RenderEffectAsset
-from Infernux.renderstack.render_effect_compiler import (
+from infernux.core.asset_ref import RenderEffectRef
+from infernux.rendergraph.graph import Format, RenderGraph
+from infernux.renderstack.effect_stage import EffectScope
+from infernux.renderstack.pipeline_dsl import Path, PipelineBuilder, Queue
+from infernux.renderstack.pipeline_compiler import compile_pipeline_definition
+from infernux.renderstack.render_effect import RenderEffect
+from infernux.renderstack.render_effect_asset import RenderEffectAsset
+from infernux.renderstack.render_effect_compiler import (
     RenderEffectCompileError,
     get_render_effect_feature,
 )
-from Infernux.renderstack.render_pipeline import RenderPipeline
-from Infernux.renderstack.render_stack import RenderStack
-from Infernux.renderstack.route_policy import RoutePolicy, merge_route_policies
+from infernux.renderstack.render_pipeline import RenderPipeline
+from infernux.renderstack.render_stack import RenderStack
+from infernux.renderstack.route_policy import RoutePolicy, merge_route_policies
 
 
 def _forward_mixed_definition():
@@ -604,7 +604,7 @@ def test_pixelation_clamps_runtime_parameters_to_production_limits():
 def test_pixelation_shader_replaces_instead_of_blending_the_source_image():
     shader_path = (
         FilePath(__file__).parents[1]
-        / "Infernux"
+        / "infernux"
         / "resources"
         / "shaders"
         / "pixelation.frag"

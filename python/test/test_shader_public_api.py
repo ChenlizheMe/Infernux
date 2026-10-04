@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.application import Application
-from Infernux.core.assets import AssetManager
-from Infernux.core.shader import Shader
-from Infernux.lib import AssetRegistry
+from infernux.application import Application
+from infernux.core.assets import AssetManager
+from infernux.core.shader import Shader
+from infernux.lib import AssetRegistry
 
 
 @pytest.fixture

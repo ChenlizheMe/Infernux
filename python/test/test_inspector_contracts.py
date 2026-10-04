@@ -7,16 +7,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.asset_types import SpriteFrame, TextureImportSettings, TextureType
-from Infernux.engine.ui import asset_details_renderer as details
-from Infernux.engine.ui import inspector_material
-from Infernux.engine.ui import inspector_support
-from Infernux.engine.ui import inspector_utils
+from infernux.core.asset_types import SpriteFrame, TextureImportSettings, TextureType
+from infernux.engine.ui import asset_details_renderer as details
+from infernux.engine.ui import inspector_material
+from infernux.engine.ui import inspector_support
+from infernux.engine.ui import inspector_utils
 
 
 def test_generic_native_inspector_uses_declared_schema(scene):
-    from Infernux.engine.ui import inspector_components
-    from Infernux.components.fields import FieldType
+    from infernux.engine.ui import inspector_components
+    from infernux.components.fields import FieldType
 
     owner = scene.create_game_object("DeclaredInspectorCamera")
     camera = owner.add_component("Camera")
@@ -36,7 +36,7 @@ def test_generic_native_inspector_uses_declared_schema(scene):
 
 
 def test_generic_native_inspector_does_not_infer_document_values():
-    from Infernux.engine.ui import inspector_components
+    from infernux.engine.ui import inspector_components
 
     class UndeclaredNativeProbe:
         type_name = "UndeclaredNativeProbe"
@@ -57,9 +57,9 @@ class _FakeSemanticContext:
 
 
 def test_mesh_copy_dialog_uses_project_command_and_cancel_has_no_effect(monkeypatch):
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui import _dialogs, _inspector_extra_renderers as extra
-    from Infernux.engine.ui import _inspector_references as references
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui import _dialogs, _inspector_extra_renderers as extra
+    from infernux.engine.ui import _inspector_references as references
 
     calls = []
     mesh = object()
@@ -85,13 +85,13 @@ def test_mesh_copy_dialog_uses_project_command_and_cancel_has_no_effect(monkeypa
 
 @pytest.mark.parametrize("mesh", [None, SimpleNamespace(has_skinned_data=True)])
 def test_mesh_copy_button_does_not_offer_unsupported_sources(mesh):
-    from Infernux.engine.ui import _inspector_extra_renderers as extra
+    from infernux.engine.ui import _inspector_extra_renderers as extra
 
     extra._render_mesh_save_copy(object(), SimpleNamespace(get_mesh_asset=lambda: mesh))
 
 
 def test_mesh_copy_button_dispatches_current_geometry_and_reports_failure(monkeypatch):
-    from Infernux.engine.ui import _inspector_extra_renderers as extra
+    from infernux.engine.ui import _inspector_extra_renderers as extra
 
     mesh = SimpleNamespace(has_skinned_data=False)
     component = SimpleNamespace(component_id=42, get_mesh_asset=lambda: mesh)
@@ -113,7 +113,7 @@ def test_mesh_copy_button_dispatches_current_geometry_and_reports_failure(monkey
 
 
 def test_material_guid_resolution_requires_asset_database(monkeypatch):
-    import Infernux.lib as lib
+    import infernux.lib as lib
 
     class _Registry:
         @staticmethod
@@ -134,7 +134,7 @@ def test_material_guid_resolution_requires_asset_database(monkeypatch):
 
 
 def test_material_guid_resolution_rejects_unregistered_guid(monkeypatch):
-    import Infernux.lib as lib
+    import infernux.lib as lib
 
     class _AssetDatabase:
         @staticmethod
@@ -236,7 +236,7 @@ def test_builtin_material_shader_sync_updates_readonly_cache_without_user_edit(m
 
 
 def test_shader_annotation_reflection_tracks_structure_not_value_version(monkeypatch):
-    import Infernux.engine.ui.inspector_material as module
+    import infernux.engine.ui.inspector_material as module
 
     reflection_calls = []
     sync_calls = []
@@ -289,7 +289,7 @@ def test_shader_annotation_reflection_tracks_structure_not_value_version(monkeyp
 
 
 def test_material_shader_ui_cache_replays_catalog_and_path_without_requery(monkeypatch):
-    import Infernux.engine.ui.inspector_material as module
+    import infernux.engine.ui.inspector_material as module
 
     catalog_calls = []
     path_calls = []
@@ -331,7 +331,7 @@ def test_material_shader_ui_cache_replays_catalog_and_path_without_requery(monke
 
 
 def test_material_property_layout_cache_ignores_value_edits_until_schema_revision(monkeypatch):
-    import Infernux.engine.ui.inspector_material as module
+    import infernux.engine.ui.inspector_material as module
 
     order_calls = []
     monkeypatch.setattr(module, "get_locale", lambda: "en")
@@ -372,8 +372,8 @@ def test_material_property_layout_cache_ignores_value_edits_until_schema_revisio
 
 
 def test_inline_material_document_binding_is_not_repeated_for_stable_state(monkeypatch):
-    import Infernux.engine.interaction as interaction
-    import Infernux.engine.ui.inspector_material as module
+    import infernux.engine.interaction as interaction
+    import infernux.engine.ui.inspector_material as module
 
     bind_calls = []
 
@@ -407,7 +407,7 @@ def test_inline_material_document_binding_is_not_repeated_for_stable_state(monke
 
 
 def test_serialized_bool_and_vector_fields_keep_stable_widget_ids(monkeypatch):
-    from Infernux.components.fields import FieldMetadata, FieldType
+    from infernux.components.fields import FieldMetadata, FieldType
 
     checkbox_calls = []
     monkeypatch.setattr(
@@ -529,7 +529,7 @@ def _text_component():
 
 
 def test_inspector_component_semantic_id_uses_object_and_component_identity():
-    from Infernux.engine.ui.inspector_utils import inspector_component_semantic_id
+    from infernux.engine.ui.inspector_utils import inspector_component_semantic_id
 
     assert inspector_component_semantic_id(_text_component(), "text") == (
         "inspector.object.55.component.186.text"
@@ -538,7 +538,7 @@ def test_inspector_component_semantic_id_uses_object_and_component_identity():
 
 
 def test_inspector_semantics_skip_component_identity_work_outside_snapshot():
-    from Infernux.engine.ui.inspector_utils import record_inspector_component_item
+    from infernux.engine.ui.inspector_utils import record_inspector_component_item
 
     class _NoIdentityAccess:
         @property
@@ -555,8 +555,8 @@ def test_inspector_semantics_skip_component_identity_work_outside_snapshot():
 
 
 def test_scalar_batch_descriptor_keeps_its_semantic_identity():
-    from Infernux.components.fields import FieldType
-    from Infernux.engine.ui.inspector_utils import build_scalar_desc
+    from infernux.components.fields import FieldType
+    from infernux.engine.ui.inspector_utils import build_scalar_desc
 
     metadata = SimpleNamespace(
         field_type=FieldType.FLOAT,
@@ -580,8 +580,8 @@ def test_scalar_batch_descriptor_keeps_its_semantic_identity():
 
 
 def test_scalar_batch_descriptor_preserves_full_int32_range_as_integers():
-    from Infernux.components.fields import FieldType
-    from Infernux.engine.ui.inspector_utils import build_scalar_desc
+    from infernux.components.fields import FieldType
+    from infernux.engine.ui.inspector_utils import build_scalar_desc
 
     metadata = SimpleNamespace(
         field_type=FieldType.INT,
@@ -602,8 +602,8 @@ def test_scalar_batch_descriptor_preserves_full_int32_range_as_integers():
 
 
 def test_scalar_batch_descriptor_accepts_sequence_vector_values():
-    from Infernux.components.fields import FieldType
-    from Infernux.engine.ui.inspector_utils import build_scalar_desc
+    from infernux.components.fields import FieldType
+    from infernux.engine.ui.inspector_utils import build_scalar_desc
 
     metadata = SimpleNamespace(
         field_type=FieldType.VEC2,
@@ -622,8 +622,8 @@ def test_scalar_batch_descriptor_accepts_sequence_vector_values():
 
 
 def test_sprite_renderer_exposes_native_shadow_fields_to_inspector():
-    from Infernux.components.builtin.sprite_renderer import SpriteRenderer
-    from Infernux.engine.ui.inspector_components import _collect_cpp_properties
+    from infernux.components.builtin.sprite_renderer import SpriteRenderer
+    from infernux.engine.ui.inspector_components import _collect_cpp_properties
 
     properties = dict(_collect_cpp_properties(SpriteRenderer))
 
@@ -634,7 +634,7 @@ def test_sprite_renderer_exposes_native_shadow_fields_to_inspector():
 
 
 def test_text_inspector_exposes_stable_semantics_for_editable_fields(monkeypatch):
-    import Infernux.engine.ui.inspector_ui_components as module
+    import infernux.engine.ui.inspector_ui_components as module
 
     monkeypatch.setattr(module, "render_compact_section_header", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(module, "field_label", lambda *_args, **_kwargs: None)
@@ -655,7 +655,7 @@ def test_text_inspector_exposes_stable_semantics_for_editable_fields(monkeypatch
 
 
 def test_inline_button_rows_record_each_stable_action():
-    from Infernux.engine.ui.theme import Theme
+    from infernux.engine.ui.theme import Theme
 
     ctx = _FakeThemeContext()
     Theme.render_inline_button_row(
@@ -672,7 +672,7 @@ def test_inline_button_rows_record_each_stable_action():
 
 
 def test_ui_layout_vector_exposes_stable_axis_semantic_base(monkeypatch):
-    import Infernux.engine.ui.inspector_ui_components as module
+    import infernux.engine.ui.inspector_ui_components as module
 
     monkeypatch.setattr(module, "render_compact_section_header", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(module, "render_compact_section_title", lambda *_args, **_kwargs: None)
@@ -696,14 +696,14 @@ def test_ui_layout_vector_exposes_stable_axis_semantic_base(monkeypatch):
 
 
 def test_ui_size_edit_keeps_position_set_after_rect_was_cached(scene):
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui.inspector_ui_components import (
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui.inspector_ui_components import (
         _apply_size_preserve_top_left,
         _apply_visual_position,
     )
-    from Infernux.ui import UIButton, UICanvas
-    from Infernux.ui.inx_ui_screen_component import clear_rect_cache
-    from Infernux.engine.undo import UndoManager
+    from infernux.ui import UIButton, UICanvas
+    from infernux.ui.inx_ui_screen_component import clear_rect_cache
+    from infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager._instance
     manager = UndoManager()
@@ -745,11 +745,11 @@ def test_ui_size_edit_keeps_position_set_after_rect_was_cached(scene):
 @pytest.mark.parametrize("rotation", [0.0, 37.0, 90.0])
 @pytest.mark.parametrize("world", [False, True])
 def test_ui_resize_undo_restores_geometry_and_transform_together(scene, rotation, world):
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui.inspector_ui_components import _apply_size_preserve_top_left
-    from Infernux.engine.undo import UndoManager
-    from Infernux.lib import Vector3
-    from Infernux.ui import UIButton, UICanvas
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui.inspector_ui_components import _apply_size_preserve_top_left
+    from infernux.engine.undo import UndoManager
+    from infernux.lib import Vector3
+    from infernux.ui import UIButton, UICanvas
 
     canvas = None
     owner = scene.create_game_object("Resize target")
@@ -798,14 +798,14 @@ def test_ui_resize_undo_restores_geometry_and_transform_together(scene, rotation
 
 
 def test_ui_position_and_quarter_turn_edit_the_native_transform(scene):
-    from Infernux.components.value_codec import VALUE_CODECS
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui.inspector_ui_components import (
+    from infernux.components.value_codec import VALUE_CODECS
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui.inspector_ui_components import (
         _apply_visual_position,
         _rotate_component_90,
     )
-    from Infernux.engine.undo import UndoManager
-    from Infernux.ui import UIButton, UICanvas
+    from infernux.engine.undo import UndoManager
+    from infernux.ui import UIButton, UICanvas
 
     canvas_object = scene.create_game_object("TransformUICanvas")
     canvas = canvas_object.add_py_component(UICanvas())
@@ -847,7 +847,7 @@ def test_ui_position_and_quarter_turn_edit_the_native_transform(scene):
 
 
 def test_object_field_picker_button_opens_picker_and_records_semantic(monkeypatch):
-    from Infernux.engine.ui.igui import IGUI
+    from infernux.engine.ui.igui import IGUI
 
     monkeypatch.setattr(IGUI, "_mini_icon_button", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(IGUI, "_render_object_picker_popup", lambda *_args, **_kwargs: None)
@@ -874,7 +874,7 @@ def test_object_field_picker_button_opens_picker_and_records_semantic(monkeypatc
 
 
 def test_object_field_body_locates_and_double_click_can_open(monkeypatch):
-    from Infernux.engine.ui.igui import IGUI
+    from infernux.engine.ui.igui import IGUI
 
     monkeypatch.setattr(IGUI, "_render_object_picker_popup", lambda *_args, **_kwargs: None)
     located = []
@@ -903,7 +903,7 @@ def test_object_field_body_locates_and_double_click_can_open(monkeypatch):
 
 
 def test_object_picker_executes_mutation_after_imgui_scopes_close(monkeypatch):
-    from Infernux.engine.ui.igui import IGUI
+    from infernux.engine.ui.igui import IGUI
 
     events = []
 
@@ -961,9 +961,9 @@ def test_object_picker_executes_mutation_after_imgui_scopes_close(monkeypatch):
 
 
 def test_inspector_property_edit_fails_closed_without_transaction_authority():
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui._inspector_undo import _record_property
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui._inspector_undo import _record_property
+    from infernux.engine.undo import UndoManager
 
     previous = UndoManager._instance
     core = EditorInteractionCore()
@@ -979,9 +979,9 @@ def test_inspector_property_edit_fails_closed_without_transaction_authority():
 
 
 def test_multi_builtin_inspector_edit_is_one_global_action():
-    from Infernux.components.fields import FieldType
-    from Infernux.engine.ui.inspector_components import _apply_multi_builtin_change
-    from Infernux.engine.undo import UndoManager
+    from infernux.components.fields import FieldType
+    from infernux.engine.ui.inspector_components import _apply_multi_builtin_change
+    from infernux.engine.undo import UndoManager
 
     first = SimpleNamespace(value=1.0)
     second = SimpleNamespace(value=2.0)
@@ -1002,8 +1002,8 @@ def test_multi_builtin_inspector_edit_is_one_global_action():
 
 
 def test_python_asset_reference_field_uses_component_semantic(monkeypatch):
-    import Infernux.engine.ui._inspector_references as module
-    from Infernux.components.fields import FieldType
+    import infernux.engine.ui._inspector_references as module
+    from infernux.components.fields import FieldType
 
     captured = {}
     monkeypatch.setattr(module, "field_label", lambda *_args, **_kwargs: None)
@@ -1027,9 +1027,9 @@ def test_python_asset_reference_field_uses_component_semantic(monkeypatch):
 
 
 def test_python_generic_asset_field_uses_unified_reference_widget(monkeypatch):
-    import Infernux.engine.ui.inspector_components as module
-    from Infernux.components.particle_system import ParticleSystem
-    from Infernux.components.fields import FieldType, get_serialized_fields
+    import infernux.engine.ui.inspector_components as module
+    from infernux.components.particle_system import ParticleSystem
+    from infernux.components.fields import FieldType, get_serialized_fields
 
     metadata = get_serialized_fields(ParticleSystem)["graph"]
     rendered = []
@@ -1062,7 +1062,7 @@ def test_all_asset_reference_widgets_use_the_unified_typed_contract():
     import ast
     from pathlib import Path
 
-    package_root = Path(__file__).resolve().parents[1] / "Infernux"
+    package_root = Path(__file__).resolve().parents[1] / "infernux"
     issues = []
     for source_path in package_root.rglob("*.py"):
         tree = ast.parse(
@@ -1095,8 +1095,8 @@ def test_all_asset_reference_widgets_use_the_unified_typed_contract():
 
 
 def test_scene_reference_fields_use_hierarchy_ping_contract(monkeypatch):
-    import Infernux.engine.ui._inspector_references as module
-    from Infernux.components.ref_wrappers import ComponentRef, GameObjectRef
+    import infernux.engine.ui._inspector_references as module
+    from infernux.components.ref_wrappers import ComponentRef, GameObjectRef
 
     captured = []
     pinged = []
@@ -1138,11 +1138,11 @@ def test_scene_reference_fields_use_hierarchy_ping_contract(monkeypatch):
 
 
 def test_builtin_asset_reference_field_records_native_property(monkeypatch, tmp_path):
-    import Infernux.engine.ui._inspector_references as module
-    from Infernux.components.fields import FieldType
-    from Infernux.core.asset_ref import PhysicMaterialRef
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine import project_context
+    import infernux.engine.ui._inspector_references as module
+    from infernux.components.fields import FieldType
+    from infernux.core.asset_ref import PhysicMaterialRef
+    from infernux.core.assets import AssetManager
+    from infernux.engine import project_context
 
     project_root = tmp_path / "project"
     material_path = str(project_root / "Assets" / "Bouncy.physicMaterial")
@@ -1173,7 +1173,7 @@ def test_builtin_asset_reference_field_records_native_property(monkeypatch, tmp_
     )
     metadata = SimpleNamespace(asset_type="PhysicMaterial")
 
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     previous = UndoManager._instance
     manager = UndoManager()
@@ -1197,8 +1197,8 @@ def test_builtin_asset_reference_field_records_native_property(monkeypatch, tmp_
 
 
 def test_inline_material_state_and_preview_query_are_reused(monkeypatch):
-    import Infernux.engine.ui.inspector_material as module
-    from Infernux.engine.ui import asset_resource_preview
+    import infernux.engine.ui.inspector_material as module
+    from infernux.engine.ui import asset_resource_preview
 
     serialize_calls = []
 
@@ -1257,7 +1257,7 @@ def test_inline_material_state_and_preview_query_are_reused(monkeypatch):
 
 
 def test_material_preview_does_not_cache_stale_generation(monkeypatch):
-    import Infernux.engine.ui.inspector_material as module
+    import infernux.engine.ui.inspector_material as module
 
     state = SimpleNamespace(extra={})
     queries = iter(((41, "material-key"), (42, "material-key"), (42, "material-key")))
@@ -1272,7 +1272,7 @@ def test_material_preview_does_not_cache_stale_generation(monkeypatch):
 
 
 def test_material_preview_prefers_new_live_document_over_stale_cache_tag(monkeypatch):
-    import Infernux.engine.ui.inspector_material as module
+    import infernux.engine.ui.inspector_material as module
 
     query_args = []
     state = SimpleNamespace(extra={"cached_json": '{"color":"B"}'})
@@ -1294,7 +1294,7 @@ def test_material_preview_prefers_new_live_document_over_stale_cache_tag(monkeyp
 def test_shader_reference_recovers_from_stale_path_hint(monkeypatch, tmp_path):
     import os
 
-    from Infernux.engine.ui import inspector_shader_utils as shader_utils
+    from infernux.engine.ui import inspector_shader_utils as shader_utils
 
     shader_path = tmp_path / "Recovered.frag"
     shader_path.write_text('ShaderInfo { Name "Recovered" }\n', encoding="utf-8")
@@ -1329,7 +1329,7 @@ def test_shader_reference_recovers_from_stale_path_hint(monkeypatch, tmp_path):
 def test_shader_picker_path_is_resolved_to_shader_info_name(monkeypatch, tmp_path):
     import os
 
-    from Infernux.engine.ui import inspector_shader_utils as shader_utils
+    from infernux.engine.ui import inspector_shader_utils as shader_utils
 
     shader_path = tmp_path / "lit.frag"
     shader_path.write_text('ShaderInfo { Name "Lit" }\n', encoding="utf-8")
@@ -1344,8 +1344,8 @@ def test_shader_picker_path_is_resolved_to_shader_info_name(monkeypatch, tmp_pat
 
 
 def test_builtin_shader_picker_persists_only_the_shader_id(monkeypatch, tmp_path):
-    from Infernux.engine import project_context
-    from Infernux.engine.ui import inspector_shader_utils as shader_utils
+    from infernux.engine import project_context
+    from infernux.engine.ui import inspector_shader_utils as shader_utils
 
     project_root = tmp_path / "Project"
     shader_path = project_root / "Library" / "Resources" / "shaders" / "lit.frag"
@@ -1363,8 +1363,8 @@ def test_builtin_shader_picker_persists_only_the_shader_id(monkeypatch, tmp_path
 def test_generated_library_shader_persists_only_id_before_project_context(
     monkeypatch, tmp_path
 ):
-    from Infernux.engine import project_context
-    from Infernux.engine.ui import inspector_shader_utils as shader_utils
+    from infernux.engine import project_context
+    from infernux.engine.ui import inspector_shader_utils as shader_utils
 
     shader_path = tmp_path / "Project" / "Library" / "Resources" / "shaders" / "standard.vert"
     shader_path.parent.mkdir(parents=True)
@@ -1379,8 +1379,8 @@ def test_generated_library_shader_persists_only_id_before_project_context(
 
 
 def test_initial_material_preview_uses_the_in_memory_document(monkeypatch, tmp_path):
-    import Infernux.engine.ui.inspector_material as module
-    from Infernux.engine.ui import asset_resource_preview
+    import infernux.engine.ui.inspector_material as module
+    from infernux.engine.ui import asset_resource_preview
 
     path = tmp_path / "Fresh.mat"
     path.write_text('{"name":"Fresh"}', encoding="utf-8")
@@ -1405,7 +1405,7 @@ def test_initial_material_preview_uses_the_in_memory_document(monkeypatch, tmp_p
 
 
 def test_texture_preview_uses_live_settings_generation(tmp_path):
-    from Infernux.engine.ui import asset_resource_preview
+    from infernux.engine.ui import asset_resource_preview
 
     path = tmp_path / "Live.png"
     path.write_bytes(b"preview-source")
@@ -1433,7 +1433,7 @@ def test_texture_preview_uses_live_settings_generation(tmp_path):
 
 
 def test_texture_live_preview_can_be_released(monkeypatch, tmp_path):
-    from Infernux.engine.ui import asset_resource_preview
+    from infernux.engine.ui import asset_resource_preview
 
     class _Native:
         def __init__(self):
@@ -1451,7 +1451,7 @@ def test_texture_live_preview_can_be_released(monkeypatch, tmp_path):
 
 
 def test_texture_preview_query_failure_is_not_suppressed(tmp_path):
-    from Infernux.engine.ui import asset_resource_preview
+    from infernux.engine.ui import asset_resource_preview
 
     path = tmp_path / "Broken.png"
     path.write_bytes(b"preview-source")
@@ -1468,7 +1468,7 @@ def test_texture_preview_query_failure_is_not_suppressed(tmp_path):
 
 
 def test_preview_authoring_release_failure_preserves_owner(monkeypatch):
-    from Infernux.engine.ui import asset_resource_preview
+    from infernux.engine.ui import asset_resource_preview
 
     class _Native:
         @staticmethod
@@ -1489,7 +1489,7 @@ def test_preview_authoring_release_failure_preserves_owner(monkeypatch):
 
 
 def test_material_undo_snapshot_is_decoded_only_when_edit_occurs():
-    import Infernux.engine.ui.inspector_material as module
+    import infernux.engine.ui.inspector_material as module
 
     state = SimpleNamespace(extra={"cached_json": '{"properties":{"roughness":0.25}}'})
     edited_document = {"properties": {"roughness": 0.75}}
@@ -1500,7 +1500,7 @@ def test_material_undo_snapshot_is_decoded_only_when_edit_occurs():
 
 
 def test_material_surface_controls_use_one_native_batch():
-    import Infernux.engine.ui.inspector_material as module
+    import infernux.engine.ui.inspector_material as module
 
     captured = []
 
@@ -1539,7 +1539,7 @@ def test_material_surface_controls_use_one_native_batch():
 
 
 def test_material_surface_batch_reuses_structure_but_refreshes_live_values():
-    import Infernux.engine.ui.inspector_material as module
+    import infernux.engine.ui.inspector_material as module
 
     class Context:
         def __init__(self):
@@ -1586,7 +1586,7 @@ def test_material_surface_batch_reuses_structure_but_refreshes_live_values():
 
 
 def test_material_surface_batch_keeps_complete_native_enum_contract_in_cached_plan():
-    import Infernux.engine.ui.inspector_material as module
+    import infernux.engine.ui.inspector_material as module
 
     class Context:
         def __init__(self):
@@ -1662,7 +1662,7 @@ def test_material_surface_batch_keeps_complete_native_enum_contract_in_cached_pl
 
 
 def test_material_surface_batch_rebuilds_for_locale_even_when_width_is_unchanged(monkeypatch):
-    import Infernux.engine.ui.inspector_material as module
+    import infernux.engine.ui.inspector_material as module
 
     locale = {"value": "zh"}
     monkeypatch.setattr(module, "get_locale", lambda: locale["value"])
@@ -1706,8 +1706,8 @@ def test_material_surface_batch_rebuilds_for_locale_even_when_width_is_unchanged
 
 
 def test_audio_track_renderer_exposes_picker_callbacks_and_semantic(monkeypatch):
-    import Infernux.engine.ui._inspector_extra_renderers as module
-    from Infernux.engine.play_mode import PlayModeManager
+    import infernux.engine.ui._inspector_extra_renderers as module
+    from infernux.engine.play_mode import PlayModeManager
 
     captured = {}
     monkeypatch.setattr(module, "field_label", lambda *_args, **_kwargs: None)
@@ -1747,8 +1747,8 @@ def test_audio_track_renderer_exposes_picker_callbacks_and_semantic(monkeypatch)
 
 
 def test_particle_parameter_renderer_adapts_vector_storage(monkeypatch):
-    import Infernux.engine.ui._inspector_extra_renderers as module
-    from Infernux.lib import Vector3
+    import infernux.engine.ui._inspector_extra_renderers as module
+    from infernux.lib import Vector3
 
     captured = {}
     monkeypatch.setattr(module, "max_label_w", lambda *_args, **_kwargs: 120.0)
@@ -1786,7 +1786,7 @@ def test_particle_parameter_renderer_adapts_vector_storage(monkeypatch):
 
 
 def test_particle_color_parameter_inspector_uses_schema_hdr(monkeypatch):
-    import Infernux.engine.ui._inspector_extra_renderers as module
+    import infernux.engine.ui._inspector_extra_renderers as module
 
     captured = []
     monkeypatch.setattr(module, "max_label_w", lambda *_args, **_kwargs: 120.0)
@@ -1825,8 +1825,8 @@ def test_particle_color_parameter_inspector_uses_schema_hdr(monkeypatch):
 
 
 def test_particle_texture_parameter_renders_in_the_parameter_section(monkeypatch):
-    import Infernux.engine.ui._inspector_extra_renderers as module
-    import Infernux.lib as lib
+    import infernux.engine.ui._inspector_extra_renderers as module
+    import infernux.lib as lib
 
     class _AssetDatabase:
         @staticmethod
@@ -1909,7 +1909,7 @@ def test_particle_texture_parameter_renders_in_the_parameter_section(monkeypatch
 
 
 def test_particle_instance_sections_are_real_collapsible_groups(monkeypatch):
-    import Infernux.engine.ui._inspector_extra_renderers as module
+    import infernux.engine.ui._inspector_extra_renderers as module
 
     rendered = []
     monkeypatch.setattr(module, "max_label_w", lambda *_args, **_kwargs: 120.0)
@@ -1954,7 +1954,7 @@ def test_particle_instance_sections_are_real_collapsible_groups(monkeypatch):
 
 
 def test_particle_emitter_playback_controls_edit_the_component_instance(monkeypatch):
-    import Infernux.engine.ui._inspector_extra_renderers as module
+    import infernux.engine.ui._inspector_extra_renderers as module
 
     updates = []
     monkeypatch.setattr(module, "max_label_w", lambda *_args, **_kwargs: 120.0)
@@ -1998,7 +1998,7 @@ def test_particle_emitter_playback_controls_edit_the_component_instance(monkeypa
 
 
 def test_particle_emitter_playback_controls_have_stable_unique_imgui_ids(monkeypatch):
-    import Infernux.engine.ui._inspector_extra_renderers as module
+    import infernux.engine.ui._inspector_extra_renderers as module
 
     labels = []
     monkeypatch.setattr(module, "max_label_w", lambda *_args, **_kwargs: 120.0)
@@ -2041,8 +2041,8 @@ def test_particle_emitter_playback_controls_have_stable_unique_imgui_ids(monkeyp
 
 
 def test_audio_track_picker_assigns_and_clears_registered_guid(monkeypatch):
-    import Infernux.engine.ui._inspector_extra_renderers as module
-    import Infernux.lib as lib
+    import infernux.engine.ui._inspector_extra_renderers as module
+    import infernux.lib as lib
 
     class _AssetDatabase:
         def get_guid_from_path(self, path):
@@ -2180,7 +2180,7 @@ def test_texture_import_fields_publish_stable_semantics(monkeypatch):
 
 
 def test_sprite_slice_controls_are_distinct_and_report_values(monkeypatch):
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     settings = TextureImportSettings(
         texture_type=TextureType.SPRITE,
@@ -2321,7 +2321,7 @@ def test_only_categories_with_shared_document_contract_are_read_write():
 
 
 def test_color_inspector_respects_field_hdr_metadata(monkeypatch):
-    from Infernux.components.fields import FieldMetadata, FieldType
+    from infernux.components.fields import FieldMetadata, FieldType
 
     calls = []
 
@@ -2364,9 +2364,9 @@ def test_color_inspector_respects_field_hdr_metadata(monkeypatch):
 
 
 def test_animation_curve_serialized_field_uses_shared_popup_editor(monkeypatch):
-    from Infernux.components.fields import FieldMetadata, FieldType
-    from Infernux.engine.ui import curve_editor
-    from Infernux.graph.ramp import AnimationCurve, Keyframe
+    from infernux.components.fields import FieldMetadata, FieldType
+    from infernux.engine.ui import curve_editor
+    from infernux.graph.ramp import AnimationCurve, Keyframe
 
     captured = {}
     monkeypatch.setattr(inspector_utils, "_label_or_fullwidth", lambda *_args: None)
@@ -2401,8 +2401,8 @@ def test_animation_curve_serialized_field_uses_shared_popup_editor(monkeypatch):
 
 
 def test_builtin_list_field_is_planned_and_committed_generically(monkeypatch):
-    from Infernux.components.fields import FieldMetadata, FieldType
-    from Infernux.engine.ui import inspector_components as module
+    from infernux.components.fields import FieldMetadata, FieldType
+    from infernux.engine.ui import inspector_components as module
 
     metadata = FieldMetadata(
         name="points",
@@ -2451,8 +2451,8 @@ def test_builtin_list_field_is_planned_and_committed_generically(monkeypatch):
 
 
 def test_builtin_custom_field_keeps_cpp_property_declaration_order():
-    from Infernux.components.fields import FieldMetadata, FieldType
-    from Infernux.engine.ui import inspector_components as module
+    from infernux.components.fields import FieldMetadata, FieldType
+    from infernux.engine.ui import inspector_components as module
 
     def _property(name):
         return SimpleNamespace(
@@ -2485,8 +2485,8 @@ def test_builtin_custom_field_keeps_cpp_property_declaration_order():
 
 
 def test_builtin_field_visibility_failure_is_not_treated_as_visible():
-    from Infernux.components.fields import FieldMetadata, FieldType
-    from Infernux.engine.ui import inspector_components as module
+    from infernux.components.fields import FieldMetadata, FieldType
+    from infernux.engine.ui import inspector_components as module
 
     def invalid_visibility(_component):
         raise RuntimeError("invalid visibility dependency")

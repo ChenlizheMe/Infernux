@@ -1,7 +1,7 @@
 # Camera
 
 <div class="class-info">
-class in <b>Infernux.components.builtin</b>
+class in <b>infernux.components.builtin</b>
 </div>
 
 **Inherits from:** [BuiltinComponent](Component.md)

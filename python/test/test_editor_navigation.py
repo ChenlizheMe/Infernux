@@ -1,11 +1,11 @@
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     ContextRestoreStatus,
     EditorInteractionCore,
     NavigationService,
     SelectionService,
     SelectionTarget,
 )
-from Infernux.engine.undo import UndoManager
+from infernux.engine.undo import UndoManager
 
 
 def _restore_context(core, snapshot, _phase):
@@ -34,7 +34,7 @@ def test_navigation_records_panel_focus_before_target_selection():
             True,
         )[-1],
     )
-    from Infernux.engine.undo import GlobalFocusCommand, GlobalSelectionCommand
+    from infernux.engine.undo import GlobalFocusCommand, GlobalSelectionCommand
 
     core.focus.add_change_listener(
         lambda change: manager.record(
@@ -59,7 +59,7 @@ def test_navigation_records_panel_focus_before_target_selection():
         else None
     )
     try:
-        from Infernux.engine.interaction import SelectionDomain
+        from infernux.engine.interaction import SelectionDomain
 
         core.panels.register_selection_authority("project", (SelectionDomain.ASSET,))
         assert core.navigation.locate(target, owner_id="project")
@@ -150,7 +150,7 @@ def test_navigation_fails_closed_without_action_journal():
 
 
 def test_bootstrap_navigation_delegates_window_presentation_to_manager():
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
 
     calls = []
 
@@ -173,11 +173,11 @@ def test_explicit_asset_navigation_changes_project_directory_as_non_dirty_view_s
 ):
     from types import SimpleNamespace
 
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine import project_context
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import SelectionDomain
-    from Infernux.engine.path_utils import lexical_path
+    from infernux.core.assets import AssetManager
+    from infernux.engine import project_context
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import SelectionDomain
+    from infernux.engine.path_utils import lexical_path
 
     previous_core = EditorInteractionCore._instance
     previous_manager = UndoManager._instance
@@ -254,15 +254,15 @@ def test_explicit_asset_navigation_changes_project_directory_as_non_dirty_view_s
 def test_asset_navigation_rejects_existing_engine_path(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine import project_context
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import SelectionTarget
-    from Infernux.engine.path_utils import lexical_path
+    from infernux.core.assets import AssetManager
+    from infernux.engine import project_context
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import SelectionTarget
+    from infernux.engine.path_utils import lexical_path
 
     project = tmp_path / "Project"
     (project / "Assets").mkdir(parents=True)
-    builtin = tmp_path / "Infernux" / "lib" / "standard.vert"
+    builtin = tmp_path / "infernux" / "lib" / "standard.vert"
     builtin.parent.mkdir(parents=True)
     builtin.write_text("builtin", encoding="ascii")
     monkeypatch.setattr(project_context, "_project_root", str(project))
@@ -293,11 +293,11 @@ def test_asset_navigation_rejects_existing_engine_path(tmp_path, monkeypatch):
 def test_asset_navigation_can_restore_the_assets_folder(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine import project_context
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import SelectionTarget
-    from Infernux.engine.path_utils import lexical_path
+    from infernux.core.assets import AssetManager
+    from infernux.engine import project_context
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import SelectionTarget
+    from infernux.engine.path_utils import lexical_path
 
     project = tmp_path / "Project"
     assets = project / "Assets"

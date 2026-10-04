@@ -1,7 +1,7 @@
 # CollisionDetectionMode
 
 <div class="class-info">
-枚举位于 <b>Infernux.components.builtin</b>
+枚举位于 <b>infernux.components.builtin</b>
 </div>
 
 ## 描述

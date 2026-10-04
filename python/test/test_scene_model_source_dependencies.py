@@ -8,7 +8,7 @@ def test_empty_model_root_remains_a_mesh_dependency(scene):
     in the Scene dependency closure so a later source-node addition can be
     reconciled without relying on a surviving MeshRenderer.
     """
-    from Infernux.lib import _Infernux as native
+    from infernux.lib import _Infernux as native
 
     root = scene.create_game_object("Empty Model Root")
     root._set_model_source("model-source-guid", [])
@@ -22,7 +22,7 @@ def test_empty_model_root_remains_a_mesh_dependency(scene):
 
 def test_nested_model_source_is_collected_once_without_renderers(scene):
     """Every object-level source is authoritative and dependency output deduplicates."""
-    from Infernux.lib import _Infernux as native
+    from infernux.lib import _Infernux as native
 
     root = scene.create_game_object("Model Root")
     root._set_model_source("model-source-guid", [])

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     DocumentActionResult,
     DocumentActionStatus,
     DocumentCapability,
@@ -38,7 +38,7 @@ class _AssetDatabase:
 
 @pytest.fixture
 def asset_database(monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     database = _AssetDatabase()
     monkeypatch.setattr(AssetManager, "_asset_database", database)
@@ -887,7 +887,7 @@ def test_close_view_retires_a_document_after_its_last_view_closes():
 
 
 def test_timeline_panel_binds_a_real_revisioned_document():
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 
     registry = DocumentRegistry.instance()
     panel = AnimTimelineEditorPanel()
@@ -909,7 +909,7 @@ def test_timeline_panel_binds_a_real_revisioned_document():
 
 
 def test_scene_file_manager_uses_document_revisions_as_its_only_dirty_state():
-    from Infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.scene_manager import SceneFileManager
 
     registry = DocumentRegistry.instance()
     previous = SceneFileManager._instance
@@ -937,8 +937,8 @@ def test_scene_file_manager_uses_document_revisions_as_its_only_dirty_state():
 
 
 def test_scene_undo_replays_document_revisions_without_owning_the_save_point():
-    from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.undo import SetPropertyCommand, UndoManager
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.undo import SetPropertyCommand, UndoManager
 
     class Target:
         value = 0
@@ -975,8 +975,8 @@ def test_scene_undo_replays_document_revisions_without_owning_the_save_point():
 
 
 def test_scene_undo_crosses_a_registry_save_point_without_moving_it():
-    from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.undo import SetPropertyCommand, UndoManager
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.undo import SetPropertyCommand, UndoManager
 
     class Target:
         value = 0
@@ -1025,8 +1025,8 @@ def test_scene_undo_crosses_a_registry_save_point_without_moving_it():
 
 
 def test_scene_command_merge_cannot_cross_completed_or_pending_save_points():
-    from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.undo import SetPropertyCommand, UndoManager
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.undo import SetPropertyCommand, UndoManager
 
     class Target:
         value = 0
@@ -1073,8 +1073,8 @@ def test_scene_command_merge_cannot_cross_completed_or_pending_save_points():
 
 
 def test_failed_scene_save_never_moves_the_registry_save_point():
-    from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.undo import SetPropertyCommand, UndoManager
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.undo import SetPropertyCommand, UndoManager
 
     class Target:
         value = 0
@@ -1105,7 +1105,7 @@ def test_failed_scene_save_never_moves_the_registry_save_point():
 
 
 def test_focused_save_uses_the_document_registry_without_panel_fallback():
-    from Infernux.engine.interaction import EditorSaveService, FocusService
+    from infernux.engine.interaction import EditorSaveService, FocusService
 
     registry = DocumentRegistry.instance()
     document, controller = _document(registry, dirty=True)
@@ -1135,8 +1135,8 @@ def test_focused_save_uses_the_document_registry_without_panel_fallback():
 
 
 def test_focused_scene_save_queues_every_dirty_resident_scene():
-    from Infernux.engine.interaction import EditorSaveService, FocusService
-    from Infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.interaction import EditorSaveService, FocusService
+    from infernux.engine.scene_manager import SceneFileManager
 
     registry = DocumentRegistry.instance()
     documents = []
@@ -1416,7 +1416,7 @@ def test_clear_removes_dormant_document_records():
 
 
 def test_interaction_context_captures_active_document_locator(tmp_path):
-    from Infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.interaction import EditorInteractionCore
 
     core = EditorInteractionCore()
     asset_path = tmp_path / "Smoke.particlegraph"
@@ -1524,7 +1524,7 @@ def test_restore_capture_failure_does_not_leave_registry_half_closed():
 
 
 def test_document_registry_is_the_only_scene_save_point_authority():
-    package_root = Path(__file__).resolve().parents[1] / "Infernux" / "engine"
+    package_root = Path(__file__).resolve().parents[1] / "infernux" / "engine"
     forbidden_tokens = (
         "mark_save_point",
         "save_signature",
@@ -1552,7 +1552,7 @@ def test_document_registry_is_the_only_scene_save_point_authority():
 
 
 def test_authoring_panels_do_not_restore_private_dirty_or_open_authority():
-    package_root = Path(__file__).resolve().parents[1] / "Infernux" / "engine"
+    package_root = Path(__file__).resolve().parents[1] / "infernux" / "engine"
     panel_sources = (
         package_root / "ui" / "particle_graph_editor_panel.py",
         package_root / "ui" / "animfsm_editor_panel.py",

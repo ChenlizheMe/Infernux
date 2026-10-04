@@ -28,7 +28,7 @@ def _project_python_version(project_dir: str) -> str:
 def source_engine_version() -> str:
     """Read the source release identity without importing the native engine."""
     engine_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    return runpy.run_path(os.path.join(engine_root, "python", "Infernux", "version.py"))["ENGINE_VERSION"]
+    return runpy.run_path(os.path.join(engine_root, "python", "infernux", "version.py"))["ENGINE_VERSION"]
 
 
 def _write_json_document(path: str, document: dict, *, indent: int = 2) -> None:
@@ -62,7 +62,7 @@ def _write_asset_identity_meta(path: str, guid: str, resource_type: str, *, proj
 
 def _read_source_project_template(name: str) -> bytes:
     engine_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    path = os.path.join(engine_root, "python", "Infernux", "resources", "project_templates", name)
+    path = os.path.join(engine_root, "python", "infernux", "resources", "project_templates", name)
     try:
         with open(path, "rb") as stream:
             return stream.read()
@@ -165,7 +165,7 @@ def _summarize_output(output: str) -> str:
 
 
 _NATIVE_IMPORT_SMOKE_TEST = (
-    "import Infernux.lib\n"
+    "import infernux.lib\n"
     "print('INFERNUX_NATIVE_IMPORT_OK')\n"
 )
 
@@ -431,7 +431,7 @@ class ProjectModel:
             [
                 project_python,
                 "-m",
-                "Infernux.plugins.official",
+                "infernux.plugins.official",
                 "--project",
                 project_dir,
             ],
@@ -459,7 +459,7 @@ class ProjectModel:
         if not wheel or not os.path.isfile(wheel):
             raise RuntimeError(f"Required Infernux project template is unavailable: {source_name}")
         with zipfile.ZipFile(wheel) as archive:
-            archive_name = f"Infernux/resources/project_templates/{source_name}"
+            archive_name = f"infernux/resources/project_templates/{source_name}"
             matches = [name for name in archive.namelist() if name == archive_name]
             if len(matches) != 1:
                 raise RuntimeError(
@@ -484,7 +484,7 @@ class ProjectModel:
         """Copy the default requirements.txt to *dest_path*.
 
         Resolves the file from the source tree (dev mode) or extracts it
-        from the engine wheel, avoiding any ``import Infernux`` in the Hub
+        from the engine wheel, avoiding any ``import infernux`` in the Hub
         process (which doesn't have the engine package installed).
         """
         self._copy_bundled_support_file("requirements.txt", dest_path, engine_version)

@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from Infernux import lib
-from Infernux.components.builtin.camera import Camera
+from infernux import lib
+from infernux.components.builtin.camera import Camera
 
 
 @pytest.fixture
@@ -196,7 +196,7 @@ def test_oblique_clips_positive_halfspace_and_gizmos_use_the_same_near_corners(c
 
 
 def test_gizmo_infinite_far_is_finite_and_batched(camera, monkeypatch):
-    from Infernux.gizmos import Gizmos
+    from infernux.gizmos import Gizmos
     camera.set_clip_planes(.1, 1e8)
     batches = []
     monkeypatch.setattr(Gizmos, 'draw_lines', lambda positions, indices: batches.append((positions, indices)))

@@ -2,7 +2,7 @@
 
 import os
 
-from Infernux import jit
+from infernux import jit
 import jit_cache_dependency as settings
 from jit_cache_dependency import multiply
 

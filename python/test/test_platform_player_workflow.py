@@ -58,7 +58,7 @@ def test_ci_software_driver_is_included_in_the_staged_wheel(tmp_path):
         destination = scratch_path / "wheel-source"
         subprocess.run([cmake, "--install", str(build), "--prefix", str(destination),
                         "--component", "PythonWheel"], check=True, capture_output=True)
-        assert (destination / "python/Infernux/lib/vulkan-1.dll").read_bytes() == driver.read_bytes()
+        assert (destination / "python/infernux/lib/vulkan-1.dll").read_bytes() == driver.read_bytes()
         # Reconfiguring for delivery must remove the test-only install rule.
         subprocess.run([cmake, "-S", str(project), "-B", str(build),
                         "-U", "CMAKE_PROJECT_Infernux_INCLUDE"], check=True, capture_output=True)
@@ -66,7 +66,7 @@ def test_ci_software_driver_is_included_in_the_staged_wheel(tmp_path):
         subprocess.run([cmake, "--install", str(build), "--prefix", str(public_destination),
                         "--component", "PythonWheel"], check=True, capture_output=True)
         assert (public_destination / "CMakeLists.txt").is_file()
-        assert not (public_destination / "python/Infernux/lib/vulkan-1.dll").exists()
+        assert not (public_destination / "python/infernux/lib/vulkan-1.dll").exists()
 
 
 def test_desktop_distribution_disables_the_test_driver_install_hook():
@@ -187,7 +187,7 @@ def test_windows_native_build_can_load_the_vulkan_linked_module():
     build_step = text.index("- name: Build Windows Player runtime")
 
     assert loader_step < build_step
-    assert 'Copy-Item -LiteralPath $softwareVulkan -Destination "python\\Infernux\\lib\\vulkan-1.dll"' in text[loader_step:build_step]
+    assert 'Copy-Item -LiteralPath $softwareVulkan -Destination "python\\infernux\\lib\\vulkan-1.dll"' in text[loader_step:build_step]
     assert (
         'Copy-Item -LiteralPath $softwareVulkan -Destination '
         '"out\\build\\windows-msvc-release\\Release\\vulkan-1.dll"'
@@ -197,7 +197,7 @@ def test_windows_native_build_can_load_the_vulkan_linked_module():
     assert "VK_DRIVER_FILES=$swiftShaderManifest" in text[loader_step:build_step]
     assert "CMAKE_PROJECT_Infernux_INCLUDE=$PWD/scripts/acceptance/windows_software_vulkan.cmake" in text
     install_rule = (ROOT / "scripts/acceptance/windows_software_vulkan.cmake").read_text()
-    assert 'DESTINATION "python/Infernux/lib"' in install_rule
+    assert 'DESTINATION "python/infernux/lib"' in install_rule
     assert 'RENAME "vulkan-1.dll"' in install_rule
     assert "COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}" in install_rule
 

@@ -4,15 +4,15 @@ from pathlib import Path
 
 import pytest
 
-from Infernux import LineRenderer as LineRendererComponent
-from Infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
-from Infernux.lib import (
+from infernux import LineRenderer as LineRendererComponent
+from infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
+from infernux.lib import (
     LineAlignment,
     LineRenderer as NativeLineRenderer,
     LineTextureMode,
     Vector3,
 )
-from Infernux.engine.scene_document_transaction import SceneDocumentTransaction
+from infernux.engine.scene_document_transaction import SceneDocumentTransaction
 
 
 def _xyz(value):
@@ -50,7 +50,7 @@ def test_line_renderer_default_material_survives_shader_annotation_defaults(scen
     deletes every folded (reversed-winding) trail section and flickers the
     live tip, so the authored fields must be marked as explicit overrides.
     """
-    from Infernux.lib import RenderStateOverride
+    from infernux.lib import RenderStateOverride
 
     line = scene.create_game_object("OverrideLine").add_component("LineRenderer")
     material = line._cpp_component.get_effective_material()
@@ -68,9 +68,9 @@ def test_line_renderer_default_material_survives_shader_annotation_defaults(scen
 
 
 def test_line_renderer_inspector_is_entirely_generic_serialized_fields():
-    from Infernux.components.builtin.line_renderer import LineRenderer
-    from Infernux.components.fields import FieldType
-    from Infernux.engine.ui.inspector_components import _collect_cpp_properties
+    from infernux.components.builtin.line_renderer import LineRenderer
+    from infernux.components.fields import FieldType
+    from infernux.engine.ui.inspector_components import _collect_cpp_properties
 
     assert "render_inspector" not in LineRenderer.__dict__
 
@@ -117,7 +117,7 @@ def test_line_renderer_ignores_consecutive_duplicate_samples_in_generated_ribbon
 def test_line_renderer_view_alignment_preserves_winding_when_direction_reverses():
     shader_root = (
         Path(__file__).parents[1]
-        / "Infernux"
+        / "infernux"
         / "resources"
         / "shaders"
         / "_templates"

@@ -98,15 +98,23 @@ def test_supervisor_lease_is_verified_but_never_exposed_in_status_or_trace(tmp_p
     assert trace_payload["steps"][0]["arguments"] == {"lease_token": "<redacted>"}
 
 
-def test_public_api_lint_rejects_internal_and_reflection_imports():
-    accepted = session.validate_script("from Infernux.components import Component\nclass Drive(Component):\n    pass\n")
-    assert accepted["passed"] is True
-
-    rejected = session.validate_script(
-        "import inspect\nfrom Infernux.lib import _Infernux\ninspect.getsource(_Infernux)\n"
+def test_script_validation_allows_normal_python_imports_and_reflection():
+    accepted = session.validate_script(
+        "import inspect, importlib, zipfile\n"
+        "import infernux.renderstack\n"
+        "from infernux.renderstack import RenderStack\n"
+        "from infernux.lib import _Infernux\n"
+        "inspect.getsource(RenderStack)\n"
+        "importlib.import_module('infernux.renderstack')\n"
     )
+    assert accepted["passed"] is True
+    assert accepted["violations"] == []
+
+def test_script_validation_rejects_invalid_syntax_without_executing_code():
+    assert session.validate_script("raise RuntimeError('must not execute')\n")["passed"] is True
+    rejected = session.validate_script("return 3\n")
     assert rejected["passed"] is False
-    assert {item["code"] for item in rejected["violations"]} >= {"forbidden_import", "private_symbol", "reflection"}
+    assert {item["code"] for item in rejected["violations"]} == {"syntax_error"}
 
 
 def test_developer_assist_prepares_only_lint_clean_assets_scripts(tmp_path):
@@ -114,7 +122,7 @@ def test_developer_assist_prepares_only_lint_clean_assets_scripts(tmp_path):
 
     result = session.prepare_project_script_write(
         "Racing/drive.py",
-        "from Infernux.components import Component\n",
+        "from infernux.components import Component\n",
     )
     assert result["path"] == "Assets/Racing/drive.py"
     assert result["lint"]["passed"] is True

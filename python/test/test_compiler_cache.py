@@ -4,12 +4,12 @@ import os
 
 import pytest
 
-from Infernux import jit
-from Infernux.application import Application
-from Infernux._compiler.cache import compiler_cache_root, prune_cache_files
-from Infernux import _jit_cache
-from Infernux.engine.project_context import using_project_root
-from Infernux.engine.player_package_native import write_pack
+from infernux import jit
+from infernux.application import Application
+from infernux._compiler.cache import compiler_cache_root, prune_cache_files
+from infernux import _jit_cache
+from infernux.engine.project_context import using_project_root
+from infernux.engine.player_package_native import write_pack
 
 
 def test_player_gpu_artifacts_are_shipped_while_cpu_cache_remains_writable(tmp_path, monkeypatch):

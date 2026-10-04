@@ -6,11 +6,11 @@ import json
 
 import pytest
 
-from Infernux.components import FieldType, InxComponent, serialized_field
-from Infernux.components.builtin import BoxCollider
-from Infernux.components.ref_wrappers import ComponentRef, GameObjectRef
-from Infernux.components.value_document import make_game_object_ref
-from Infernux.engine.prefab_manager import (
+from infernux.components import FieldType, InxComponent, serialized_field
+from infernux.components.builtin import BoxCollider
+from infernux.components.ref_wrappers import ComponentRef, GameObjectRef
+from infernux.components.value_document import make_game_object_ref
+from infernux.engine.prefab_manager import (
     PrefabDocumentError,
     _PREFAB_TEMPLATE_CACHE,
     _link_created_prefab_source,
@@ -18,7 +18,7 @@ from Infernux.engine.prefab_manager import (
     instantiate_prefab,
     save_prefab,
 )
-from Infernux.engine.prefab_overrides import (
+from infernux.engine.prefab_overrides import (
     _build_reverted_prefab_document,
     apply_overrides_to_prefab,
     build_prefab_apply_command,
@@ -27,14 +27,14 @@ from Infernux.engine.prefab_overrides import (
     resolve_prefab_instance_root,
     revert_overrides,
 )
-from Infernux.engine.undo import (
+from infernux.engine.undo import (
     BuiltinPropertyCommand,
     PrefabRevertCommand,
     UndoManager,
 )
-from Infernux.math import Vector3
-from Infernux.lib import SceneManager
-from Infernux.engine.component_restore import (
+from infernux.math import Vector3
+from infernux.lib import SceneManager
+from infernux.engine.component_restore import (
     clone_game_object_transactionally,
     serialize_game_object_document_authoritatively,
 )
@@ -138,8 +138,8 @@ def test_prefab_revert_new_nodes_reserve_stable_redo_ids(scene, tmp_path):
 
 
 def test_prefab_source_identity_survives_clone_document_and_unpack(scene, tmp_path):
-    from Infernux.engine.component_restore import deserialize_game_object_document_transactionally
-    from Infernux.engine.undo import PrefabUnpackCommand
+    from infernux.engine.component_restore import deserialize_game_object_document_transactionally
+    from infernux.engine.undo import PrefabUnpackCommand
 
     source = scene.create_game_object("SourceIdentity")
     path = tmp_path / "identity.prefab"
@@ -150,7 +150,7 @@ def test_prefab_source_identity_survives_clone_document_and_unpack(scene, tmp_pa
     clone = clone_game_object_transactionally(scene, instance)
     assert clone.id != instance.id
     assert clone.prefab_source_id == source_id
-    from Infernux.engine.prefab_manager import _make_prefab_baseline
+    from infernux.engine.prefab_manager import _make_prefab_baseline
     baseline = _make_prefab_baseline(_read_prefab_document(str(path))["root_object"])
     assert clone._prefab_source_document == baseline
     document = serialize_game_object_document_authoritatively(instance)
@@ -201,7 +201,7 @@ def test_invalid_prefab_source_identity_does_not_replace_live_object(scene, inva
 
 
 def test_reserving_document_ids_does_not_publish_live_objects(scene):
-    from Infernux.lib import GameObject
+    from infernux.lib import GameObject
 
     before = {obj.id for obj in scene.get_all_objects()}
     objects, components = GameObject._reserve_document_ids(3, 4)
@@ -338,7 +338,7 @@ def test_link_created_prefab_source_stamps_root_and_children(scene, tmp_path):
 
 
 def test_prefab_save_fails_when_asset_registration_fails(scene, tmp_path, monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     class FailedMutation:
         error = "registration rejected"
@@ -496,9 +496,9 @@ def test_prefab_save_is_strict_typed_and_atomic(scene, tmp_path):
 
 
 def test_canvas_free_world_ui_uses_normal_clone_save_and_prefab_lifecycle(scene, tmp_path):
-    from Infernux.components.fields import get_raw_field_value
-    from Infernux.core.asset_ref import TextureRef
-    from Infernux.ui import UIButton, UICanvas, UIFrame
+    from infernux.components.fields import get_raw_field_value
+    from infernux.core.asset_ref import TextureRef
+    from infernux.ui import UIButton, UICanvas, UIFrame
 
     root = scene.create_game_object("WorldPanel")
     root.transform.position = Vector3(2.0, 3.0, 4.0)

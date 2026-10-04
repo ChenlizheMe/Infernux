@@ -1,7 +1,7 @@
 # Format
 
 <div class="class-info">
-枚举位于 <b>Infernux.rendergraph</b>
+枚举位于 <b>infernux.rendergraph</b>
 </div>
 
 ## 描述

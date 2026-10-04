@@ -27,7 +27,7 @@ def test_asset_runtime_has_explicit_source_and_symbol_ownership() -> None:
 
 
 def test_asset_runtime_is_part_of_the_packaged_player_contract() -> None:
-    abi = (ROOT / "python" / "Infernux" / "engine" / "python_abi.py").read_text(encoding="utf-8")
+    abi = (ROOT / "python" / "infernux" / "engine" / "python_abi.py").read_text(encoding="utf-8")
 
     assert '"InfernuxAssetRuntime.dll"' in abi
     assert '"libInfernuxAssetRuntime.so"' in abi

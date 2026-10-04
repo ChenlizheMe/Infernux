@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     AuthoringAssetSnapshot,
     AuthoringDocumentController,
     AuthoringMutationService,
@@ -21,7 +21,7 @@ from Infernux.engine.interaction import (
     DocumentRegistry,
     document_content_token,
 )
-from Infernux.engine.undo import UndoManager
+from infernux.engine.undo import UndoManager
 
 
 @dataclass
@@ -122,8 +122,8 @@ def test_authoring_window_save_close_and_history_matrix(
     view_id,
     extension,
 ):
-    from Infernux.core.assets import AssetManager
-    import Infernux.engine.interaction.authoring_documents as persistence
+    from infernux.core.assets import AssetManager
+    import infernux.engine.interaction.authoring_documents as persistence
 
     io_tickets: list[_IOTicket] = []
 

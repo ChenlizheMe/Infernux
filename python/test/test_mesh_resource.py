@@ -3,10 +3,10 @@ from __future__ import annotations
 import numpy as np
 
 import infernux as inx
-from Infernux.components.builtin import MeshRenderer
-from Infernux.lib import AssetRegistry
-from Infernux.core.assets import AssetManager
-from Infernux.core.asset_types import read_mesh_import_settings
+from infernux.components.builtin import MeshRenderer
+from infernux.lib import AssetRegistry
+from infernux.core.assets import AssetManager
+from infernux.core.asset_types import read_mesh_import_settings
 
 
 def _enable_mesh_read_write(database, source):
@@ -18,7 +18,7 @@ def _enable_mesh_read_write(database, source):
 
 def test_imported_model_nodes_preserve_source_hierarchy_and_are_detached(engine, monkeypatch):
     from pathlib import Path
-    from Infernux.host import asset_operations
+    from infernux.host import asset_operations
 
     database = engine.get_asset_database()
     target = Path(database.assets_root) / "ModelHierarchyContract.gltf"
@@ -201,7 +201,7 @@ def test_public_mesh_range_validation_is_atomic(engine):
 
 
 def test_runtime_mesh_survives_play_mode_scene_rebuild(engine, scene):
-    from Infernux.engine.play_mode import PlayModeManager
+    from infernux.engine.play_mode import PlayModeManager
 
     positions, indices, _, _ = _quad()
     mesh = inx.Mesh.from_data(positions, indices, name="Play Runtime Quad")

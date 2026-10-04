@@ -6,17 +6,17 @@ import threading
 
 import pytest
 
-from Infernux.components._component_lifecycle import (
+from infernux.components._component_lifecycle import (
     ComponentLifecycleMixin,
     RuntimeExecutionScheduler,
 )
-from Infernux.components.script_loader import (
+from infernux.components.script_loader import (
     ComponentBodyReloadRequest,
     ComponentBodyReloadTransaction,
     _plan_component_class_body_patch,
 )
-from Infernux.components.registry import snapshot_component_registry_state
-from Infernux.engine.runtime_dispatch import (
+from infernux.components.registry import snapshot_component_registry_state
+from infernux.engine.runtime_dispatch import (
     RuntimeDispatchPublication,
     build_type_dispatch_descriptor,
     current_runtime_epoch,
@@ -381,7 +381,7 @@ def test_publication_validation_failure_does_not_advance_epoch(monkeypatch):
             return "stable"
 
     before = current_runtime_epoch()
-    import Infernux.engine.runtime_dispatch as runtime_dispatch
+    import infernux.engine.runtime_dispatch as runtime_dispatch
 
     def fail_validation(*_args, **_kwargs):
         raise RuntimeError("validation failure")
@@ -425,7 +425,7 @@ def test_runtime_epoch_publication_rejects_non_owner_thread():
             return "stable"
 
     # Bind the publication owner deterministically before starting the worker.
-    from Infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
+    from infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
 
     assert_runtime_dispatch_safe_point()
     failures = []

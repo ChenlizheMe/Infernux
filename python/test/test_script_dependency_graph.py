@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.script_dependency_graph import (
+from infernux.engine.script_dependency_graph import (
     DependencyGraphRollbackError,
     DependencyKind,
     ModuleIdentityError,
@@ -142,7 +142,7 @@ def test_external_dependencies_are_recorded_but_not_indexed(tmp_path):
     source = _write(
         assets,
         "main.py",
-        "import json\nimport Infernux\nimport numpy\nfrom .missing import value\n",
+        "import json\nimport infernux\nimport numpy\nfrom .missing import value\n",
     )
     graph = ScriptDependencyGraph(project)
     graph.index_assets()
@@ -150,7 +150,7 @@ def test_external_dependencies_are_recorded_but_not_indexed(tmp_path):
     edges = graph.external_dependencies(source)
     by_name = {edge.external_name: edge for edge in edges}
     assert by_name["json"].external_origin == "stdlib"
-    assert by_name["Infernux"].external_origin == "engine"
+    assert by_name["infernux"].external_origin == "engine"
     assert by_name["numpy"].external_origin == "third_party"
     unresolved = [edge for edge in edges if edge.kind is DependencyKind.UNRESOLVED]
     assert unresolved and unresolved[0].external_name == ""

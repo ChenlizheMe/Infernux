@@ -133,7 +133,7 @@ int main()
     assert(unpublishedCamera.drawCalls.empty());
 
     const auto sourcePath = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
-                            "python/Infernux/resources/icons/gizmo_light.png";
+                            "python/infernux/resources/icons/gizmo_light.png";
     const std::string iconPath = infernux::FromFsPath(sourcePath);
     std::ifstream source(sourcePath, std::ios::binary);
     assert(source.good());

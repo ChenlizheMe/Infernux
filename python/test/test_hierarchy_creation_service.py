@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.hierarchy_creation_service import (
+from infernux.engine.hierarchy_creation_service import (
     _component_names,
     _unique_scene_object_name,
 )
@@ -43,7 +43,7 @@ def test_component_names_deduplicates_python_components_in_combined_component_vi
 
 
 def test_hierarchy_creation_wiring_only_configures_shared_creation_service(monkeypatch):
-    from Infernux.engine.bootstrap_hierarchy import _creation
+    from infernux.engine.bootstrap_hierarchy import _creation
 
     class _Service:
         configured = None
@@ -76,7 +76,7 @@ def test_hierarchy_creation_wiring_only_configures_shared_creation_service(monke
 
 
 def test_hierarchy_creation_catalog_includes_ui_frame_and_image():
-    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from infernux.engine.hierarchy_creation_service import HierarchyCreationService
 
     service = HierarchyCreationService()
     kinds = {entry["kind"] for entry in service.list_create_kinds()}
@@ -92,9 +92,9 @@ def test_hierarchy_creation_catalog_includes_ui_frame_and_image():
 
 
 def test_hierarchy_creation_targets_active_scene_without_pausing_other_loaded_scene(scene):
-    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
-    from Infernux.engine.undo import UndoManager
-    from Infernux.lib import SceneManager
+    from infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from infernux.engine.undo import UndoManager
+    from infernux.lib import SceneManager
 
     native = SceneManager.instance()
     other = native.create_scene("HierarchyCreationDestination")
@@ -119,9 +119,9 @@ def test_hierarchy_creation_targets_active_scene_without_pausing_other_loaded_sc
 
 
 def test_creation_selects_through_typed_service_and_records_one_context():
-    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
-    from Infernux.engine.interaction import SelectionService, SelectionTarget
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from infernux.engine.interaction import SelectionService, SelectionTarget
+    from infernux.engine.undo import UndoManager
 
     revealed = []
     selection = SelectionService()
@@ -157,8 +157,8 @@ def test_creation_selects_through_typed_service_and_records_one_context():
 
 
 def test_ui_creation_uses_only_canvas_only_without_an_explicit_world_parent():
-    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
-    from Infernux.ui import UICanvas
+    from infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from infernux.ui import UICanvas
 
     class _UiObject:
         def __init__(self, object_id, components=(), parent=None):
@@ -193,8 +193,8 @@ def test_ui_creation_uses_only_canvas_only_without_an_explicit_world_parent():
 
 
 def test_ui_element_creation_preserves_a_selected_parent_inside_canvas():
-    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
-    from Infernux.ui import UICanvas, UIFrame
+    from infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from infernux.ui import UICanvas, UIFrame
 
     class _UiObject:
         def __init__(self, object_id, components=(), parent=None):
@@ -228,9 +228,9 @@ def test_ui_element_creation_preserves_a_selected_parent_inside_canvas():
 
 
 def test_hierarchy_creation_configures_ui_after_parenting_and_records_once(scene):
-    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
-    from Infernux.engine.undo import UndoManager
-    from Infernux.ui import UICanvas, UIImage
+    from infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from infernux.engine.undo import UndoManager
+    from infernux.ui import UICanvas, UIImage
 
     canvas = scene.create_game_object("Canvas")
     canvas.add_py_component(UICanvas())
@@ -267,14 +267,14 @@ def test_hierarchy_creation_configures_ui_after_parenting_and_records_once(scene
 
 
 def test_hierarchy_creation_absorbs_initializer_property_edits_into_create(scene):
-    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
-    from Infernux.engine.interaction import EditorContextSnapshot, SelectionService
-    from Infernux.engine.undo import (
+    from infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from infernux.engine.interaction import EditorContextSnapshot, SelectionService
+    from infernux.engine.undo import (
         SetPropertyCommand,
         UndoManager,
     )
-    from Infernux.lib import Vector3
-    from Infernux.ui import UICanvas, UIText
+    from infernux.lib import Vector3
+    from infernux.ui import UICanvas, UIText
 
     canvas = scene.create_game_object("Canvas")
     canvas.add_py_component(UICanvas())
@@ -326,9 +326,9 @@ def test_hierarchy_creation_absorbs_initializer_property_edits_into_create(scene
 
 
 def test_hierarchy_creation_configuration_failure_rolls_back_without_history(scene):
-    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
-    from Infernux.engine.interaction import SelectionService
-    from Infernux.ui import UICanvas
+    from infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from infernux.engine.interaction import SelectionService
+    from infernux.ui import UICanvas
 
     canvas = scene.create_game_object("Canvas")
     canvas.add_py_component(UICanvas())
@@ -351,9 +351,9 @@ def test_hierarchy_creation_configuration_failure_rolls_back_without_history(sce
 
 
 def test_hierarchy_creation_rejected_by_history_rolls_back_object_and_selection(scene):
-    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
-    from Infernux.engine.interaction import SelectionService, SelectionTarget
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from infernux.engine.interaction import SelectionService, SelectionTarget
+    from infernux.engine.undo import UndoManager
 
     selection = SelectionService.instance()
     anchor = scene.create_game_object("Anchor")
@@ -382,10 +382,10 @@ def test_hierarchy_creation_rejected_by_history_rolls_back_object_and_selection(
 
 
 def test_ui_editor_creation_uses_shared_atomic_hierarchy_service(scene, monkeypatch):
-    from Infernux.engine.hierarchy_creation_service import HierarchyCreationService
-    from Infernux.engine.interaction import EditorContextSnapshot, SelectionService
-    from Infernux.engine.undo import UndoManager
-    from Infernux.ui import UICanvas, UIText
+    from infernux.engine.hierarchy_creation_service import HierarchyCreationService
+    from infernux.engine.interaction import EditorContextSnapshot, SelectionService
+    from infernux.engine.undo import UndoManager
+    from infernux.ui import UICanvas, UIText
 
     class _Navigation:
         def __init__(self):
@@ -455,8 +455,8 @@ def test_ui_editor_creation_uses_shared_atomic_hierarchy_service(scene, monkeypa
 
 
 def test_ui_editor_creation_buttons_submit_the_global_scene_command(monkeypatch):
-    from Infernux.engine.interaction import CommandResult, CommandStatus, EditorCommandRegistry
-    from Infernux.engine.ui._ui_editor_creation import UIEditorCreationMixin
+    from infernux.engine.interaction import CommandResult, CommandStatus, EditorCommandRegistry
+    from infernux.engine.ui._ui_editor_creation import UIEditorCreationMixin
 
     calls = []
     registry = SimpleNamespace(

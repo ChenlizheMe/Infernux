@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.bootstrap import EditorBootstrap
+from infernux.engine.bootstrap import EditorBootstrap
 
 
 class _Database:

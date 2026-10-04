@@ -2,11 +2,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.model_import import toolchain
+from infernux.engine.model_import import toolchain
 
 
 def test_blender_preference_updates_live_database_and_does_not_touch_project(monkeypatch, tmp_path):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
     state, calls = {}, []
     monkeypatch.delenv("INFERNUX_BLENDER_EXECUTABLE", raising=False)
     monkeypatch.setattr(toolchain, "find_associated_blender", lambda: "")
@@ -52,8 +52,8 @@ def test_hub_managed_blender_is_used_until_author_sets_an_override(monkeypatch, 
 
 
 def test_blender_preference_is_a_shared_undo_command(monkeypatch):
-    from Infernux.engine.interaction import CommandSource, EditorInteractionCore
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import CommandSource, EditorInteractionCore
+    from infernux.engine.undo import UndoManager
     state = {"path": "old"}
     monkeypatch.setattr(toolchain, "get_blender_executable", lambda: state["path"])
     monkeypatch.setattr(toolchain, "set_blender_executable", lambda value: state.__setitem__("path", value))

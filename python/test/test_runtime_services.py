@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.runtime_services import (
+from infernux.runtime_services import (
     get_runtime_service,
     install_runtime_service,
     remove_runtime_service,

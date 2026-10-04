@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.animation_clip import AnimationClip, AnimationFrame
-from Infernux.core.asset_types import SpriteFrame
-from Infernux.engine.ui.animclip2d_editor_panel import (
+from infernux.core.animation_clip import AnimationClip, AnimationFrame
+from infernux.core.asset_types import SpriteFrame
+from infernux.engine.ui.animclip2d_editor_panel import (
     AnimClip2DEditorPanel,
     _ClipState,
     _TextureState,
@@ -16,7 +16,7 @@ from Infernux.engine.ui.animclip2d_editor_panel import (
     _PLAYBACK_STOPPED,
     _sprite_frame_by_id,
 )
-from Infernux.engine.path_utils import resolved_path
+from infernux.engine.path_utils import resolved_path
 
 
 def _source_id(index: int) -> str:
@@ -76,7 +76,7 @@ def test_animation_clip_rejects_duplicate_occurrence_ids():
 
 @pytest.fixture(autouse=True)
 def _isolate_animclip_panel_dirty_tracking():
-    from Infernux.engine.interaction import DocumentRegistry, FocusService
+    from infernux.engine.interaction import DocumentRegistry, FocusService
 
     previous_documents = DocumentRegistry._instance
     previous_focus = FocusService._instance
@@ -91,7 +91,7 @@ def _isolate_animclip_panel_dirty_tracking():
 
 
 def test_animclip_panel_owns_one_clean_registered_document_until_first_edit():
-    from Infernux.engine.interaction import DocumentKind, DocumentRegistry
+    from infernux.engine.interaction import DocumentKind, DocumentRegistry
 
     panel = AnimClip2DEditorPanel()
     document = DocumentRegistry.instance().require(panel.document_id)
@@ -103,8 +103,8 @@ def test_animclip_panel_owns_one_clean_registered_document_until_first_edit():
 
 
 def test_animclip_committed_mutation_publishes_one_document_revision():
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.undo import UndoManager
 
     manager = UndoManager()
     panel = AnimClip2DEditorPanel()
@@ -121,8 +121,8 @@ def test_animclip_committed_mutation_publishes_one_document_revision():
 
 
 def test_animclip_authoring_snapshot_participates_in_global_undo():
-    from Infernux.engine.interaction import AuthoringMutationService, DocumentRegistry
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import AuthoringMutationService, DocumentRegistry
+    from infernux.engine.undo import UndoManager
 
     manager = UndoManager()
     previous_service = AuthoringMutationService._instance
@@ -162,14 +162,14 @@ def test_animclip_authoring_snapshot_participates_in_global_undo():
 
 
 def test_animclip_frame_delete_restores_stable_identity_and_selection():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         AuthoringMutationService,
         ContextRestoreStatus,
         DocumentRegistry,
         EditorContextSnapshot,
         SelectionService,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     selection = SelectionService()
     manager = UndoManager()
@@ -285,7 +285,7 @@ def test_animclip_preview_frame_is_explicit_view_state():
 
 
 def test_animclip_sequence_selection_projects_to_preview_by_stable_identity():
-    from Infernux.engine.interaction import SelectionSnapshot
+    from infernux.engine.interaction import SelectionSnapshot
 
     panel = AnimClip2DEditorPanel()
     panel._clips[0].frames = _frames(0, 1, 2)
@@ -505,7 +505,7 @@ def test_open_panel_refreshes_sprite_slices_on_asset_change(monkeypatch, tmp_pat
     monkeypatch.setattr(panel, "_read_source_dimensions", lambda _path, _frames: (128, 64))
     monkeypatch.setattr(panel, "_build_texture_stamp", lambda *_args: 99)
 
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         AssetMutationKind,
         AssetMutationService,
         DocumentRegistry,
@@ -530,12 +530,12 @@ def test_open_panel_refreshes_sprite_slices_on_asset_change(monkeypatch, tmp_pat
 
 
 def test_loop_round_trips_document_session_and_saved_clip(monkeypatch, tmp_path):
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         DocumentActionStatus,
         DocumentIdentityKind,
         DocumentRegistry,
     )
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     texture_path = tmp_path / "countdown.png"
     texture_path.write_bytes(b"png")
@@ -577,7 +577,7 @@ def test_loop_round_trips_document_session_and_saved_clip(monkeypatch, tmp_path)
     registry = DocumentRegistry.instance()
     result = registry.request_save(panel.document_id)
     assert result.accepted
-    from Infernux.core.document_store import DocumentStore
+    from infernux.core.document_store import DocumentStore
 
     DocumentStore.flush(saved_path)
     registry.process_pending_saves()
@@ -600,8 +600,8 @@ def test_animclip_save_uses_ticket_resource_path_and_never_directly_marks_saved(
     monkeypatch,
     tmp_path,
 ):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import (
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import (
         DocumentActionStatus,
         DocumentRegistry,
     )
@@ -642,7 +642,7 @@ def test_animclip_save_uses_ticket_resource_path_and_never_directly_marks_saved(
     )
 
     result = registry.request_save(panel.document_id)
-    from Infernux.core.document_store import DocumentStore
+    from infernux.core.document_store import DocumentStore
 
     DocumentStore.flush(target)
     registry.process_pending_saves()
@@ -659,9 +659,9 @@ def test_animclip_save_absorbs_reimport_revision_when_content_is_unchanged(
     monkeypatch,
     tmp_path,
 ):
-    from Infernux.core.animation_clip import AnimationClip
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
+    from infernux.core.animation_clip import AnimationClip
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
 
     panel = AnimClip2DEditorPanel()
     panel._tex = _TextureState(file_path="Assets/smoke.png", guid="texture-guid")
@@ -693,7 +693,7 @@ def test_animclip_save_absorbs_reimport_revision_when_content_is_unchanged(
     monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(_reimport))
 
     result = registry.request_save(panel.document_id)
-    from Infernux.core.document_store import DocumentStore
+    from infernux.core.document_store import DocumentStore
 
     DocumentStore.flush(target)
     registry.process_pending_saves()
@@ -706,7 +706,7 @@ def test_animclip_save_absorbs_reimport_revision_when_content_is_unchanged(
 
 
 def test_animclip_new_document_and_dirty_draft_round_trip_through_registry_session():
-    from Infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.interaction import DocumentRegistry
 
     panel = AnimClip2DEditorPanel()
     assert panel._document_is_dirty() is False

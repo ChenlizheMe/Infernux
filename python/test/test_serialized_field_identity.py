@@ -2,9 +2,9 @@
 
 import pytest
 
-from Infernux.components import InxComponent, SerializableObject, serialized_field
-from Infernux.components._component_registration import candidate_component_registration_scope
-from Infernux.components.fields import get_field_schema, get_serialized_fields
+from infernux.components import InxComponent, SerializableObject, serialized_field
+from infernux.components._component_registration import candidate_component_registration_scope
+from infernux.components.fields import get_field_schema, get_serialized_fields
 
 
 def _declare(base, **fields):
@@ -67,7 +67,7 @@ def test_multiple_inheritance_cannot_merge_distinct_fields_with_the_same_id(base
 
 
 def test_rejected_data_declaration_does_not_replace_registered_type():
-    from Infernux.components.serializable_object import get_serializable_class, get_serializable_type_id
+    from infernux.components.serializable_object import get_serializable_class, get_serializable_type_id
 
     existing = _declare(SerializableObject, value=1)
     with pytest.raises(ValueError, match="duplicate field_id"):

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.core.anim_state_machine import (
+from infernux.core.anim_state_machine import (
     AnimStateMachine,
     AnimState,
     AnimTransition,
@@ -17,7 +17,7 @@ from Infernux.core.anim_state_machine import (
     AnimConditionError,
     evaluate_anim_condition,
 )
-from Infernux.graph import TypeRef, ValueType
+from infernux.graph import TypeRef, ValueType
 
 
 # ── evaluate_anim_condition ─────────────────────────────────────────────────

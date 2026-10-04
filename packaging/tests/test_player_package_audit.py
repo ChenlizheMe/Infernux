@@ -19,50 +19,50 @@ sys.path.insert(0, str(SOURCE_PYTHON))
 # Import the two pure-Python packaging modules without requiring the runtime
 # initializer when this test runs in isolation. Never replace an Infernux
 # package already imported by another test module during collection.
-if "Infernux" not in sys.modules:
-    _infernux_stub = types.ModuleType("Infernux")
-    _infernux_stub.__path__ = [str(SOURCE_PYTHON / "Infernux")]
-    sys.modules["Infernux"] = _infernux_stub
-if "Infernux.engine" not in sys.modules:
-    _engine_stub = types.ModuleType("Infernux.engine")
-    _engine_stub.__path__ = [str(SOURCE_PYTHON / "Infernux" / "engine")]
-    sys.modules["Infernux.engine"] = _engine_stub
-    setattr(sys.modules["Infernux"], "engine", _engine_stub)
-if "Infernux.core" not in sys.modules:
-    _core_stub = types.ModuleType("Infernux.core")
-    _core_stub.__path__ = [str(SOURCE_PYTHON / "Infernux" / "core")]
-    sys.modules["Infernux.core"] = _core_stub
-    setattr(sys.modules["Infernux"], "core", _core_stub)
-if "Infernux.core.asset_types" not in sys.modules:
+if "infernux" not in sys.modules:
+    _infernux_stub = types.ModuleType("infernux")
+    _infernux_stub.__path__ = [str(SOURCE_PYTHON / "infernux")]
+    sys.modules["infernux"] = _infernux_stub
+if "infernux.engine" not in sys.modules:
+    _engine_stub = types.ModuleType("infernux.engine")
+    _engine_stub.__path__ = [str(SOURCE_PYTHON / "infernux" / "engine")]
+    sys.modules["infernux.engine"] = _engine_stub
+    setattr(sys.modules["infernux"], "engine", _engine_stub)
+if "infernux.core" not in sys.modules:
+    _core_stub = types.ModuleType("infernux.core")
+    _core_stub.__path__ = [str(SOURCE_PYTHON / "infernux" / "core")]
+    sys.modules["infernux.core"] = _core_stub
+    setattr(sys.modules["infernux"], "core", _core_stub)
+if "infernux.core.asset_types" not in sys.modules:
     _asset_types_spec = importlib.util.spec_from_file_location(
-        "Infernux.core.asset_types",
-        SOURCE_PYTHON / "Infernux" / "core" / "asset_types.py",
+        "infernux.core.asset_types",
+        SOURCE_PYTHON / "infernux" / "core" / "asset_types.py",
     )
     if _asset_types_spec is None or _asset_types_spec.loader is None:
         raise RuntimeError("Unable to load the asset type contracts for package tests")
     _asset_types_module = importlib.util.module_from_spec(_asset_types_spec)
-    sys.modules["Infernux.core.asset_types"] = _asset_types_module
+    sys.modules["infernux.core.asset_types"] = _asset_types_module
     _asset_types_spec.loader.exec_module(_asset_types_module)
 
-from Infernux.engine.player_package_audit import (
+from infernux.engine.player_package_audit import (
     BOOTSTRAP_NATIVE_ROOT_ALLOWLIST,
     RUNTIME_CONDITIONAL_NATIVE_FILES,
     RUNTIME_REQUIRED_NATIVE_FILES,
     audit_player_package,
 )
-import Infernux.engine.player_package_audit as player_package_audit
-from Infernux.engine.player_package_native import read_entry, read_manifest, set_test_backend, write_pack
-from Infernux.engine.python_abi import (
+import infernux.engine.player_package_audit as player_package_audit
+from infernux.engine.player_package_native import read_entry, read_manifest, set_test_backend, write_pack
+from infernux.engine.python_abi import (
     BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
     BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
 )
-from Infernux.engine.player_service_graph import (
+from infernux.engine.player_service_graph import (
     RuntimeFeatureSet,
     RuntimeFlavor,
     player_runtime_contract_sections,
     runtime_service_graph_for,
 )
-from Infernux.engine.runtime_artifact_catalog import (
+from infernux.engine.runtime_artifact_catalog import (
     RuntimeArtifactError,
     WINDOWS_FILETIME_EPOCH_OFFSET_TICKS,
     build_catalog,
@@ -93,7 +93,7 @@ def _bootstrap_native_fixture() -> (
             ("ffi.dll", b"libffi ABI"),
             ("_InfernuxBootstrap.pyd", b"bootstrap"),
             ("_InfernuxPlayer.cp313-win_amd64.pyd", b"player module"),
-            ("Infernux/lib/InfernuxFoundation.dll", b"foundation"),
+            ("infernux/lib/InfernuxFoundation.dll", b"foundation"),
         )
     else:
         ctypes_name = f"_ctypes{_EXTENSION_SUFFIX}"
@@ -556,7 +556,7 @@ def _valid_player(tmp_path: Path) -> Path:
     (data / "Library" / "RuntimeAssetCatalog.json").parent.mkdir(parents=True)
     (source / "runtime.bin").write_bytes(b"runtime payload")
     (source / "content.bin").write_bytes(b"content payload")
-    runtime_sources = [("Infernux/resources/runtime.bin", source / "runtime.bin")]
+    runtime_sources = [("infernux/resources/runtime.bin", source / "runtime.bin")]
     for index, relative in enumerate(sorted(RUNTIME_REQUIRED_NATIVE_FILES)):
         native_source = source / f"native-{index}.bin"
         native_source.write_bytes(
@@ -758,7 +758,7 @@ def test_audit_rejects_runtime_contract_service_graph_drift(tmp_path: Path):
     root = _valid_player(tmp_path)
     build_manifest = _read_sealed_document(root, "BuildManifest.json")
     build_manifest["runtime_contract"]["services"]["graph"][0]["module"] = (
-        "Infernux/engine/undo/_manager.pyc"
+        "infernux/engine/undo/_manager.pyc"
     )
     _write_catalog(root, build_manifest_override=build_manifest)
 
@@ -1020,7 +1020,7 @@ def test_audit_rejects_unknown_root_surface(tmp_path: Path):
 
 def test_audit_rejects_editor_i18n_in_loose_payload(tmp_path: Path):
     root = _valid_player(tmp_path)
-    locale = root / "Infernux" / "engine" / "locales"
+    locale = root / "infernux" / "engine" / "locales"
     locale.mkdir(parents=True)
     (locale / "zh.json").write_text("{}", encoding="utf-8")
 
@@ -1141,11 +1141,11 @@ def test_audit_allows_only_controlled_runtime_builtin_shaders(tmp_path: Path):
         root,
         "Runtime.inxrt",
         (
-            ("Infernux/resources/shaders/builtin.glsl", sources["glsl"].read_bytes()),
-            ("Infernux/resources/shaders/builtin.vert", sources["vert"].read_bytes()),
-            ("Infernux/resources/shaders/builtin.frag", sources["frag"].read_bytes()),
+            ("infernux/resources/shaders/builtin.glsl", sources["glsl"].read_bytes()),
+            ("infernux/resources/shaders/builtin.vert", sources["vert"].read_bytes()),
+            ("infernux/resources/shaders/builtin.frag", sources["frag"].read_bytes()),
             (
-                "Infernux/resources/shaders/builtin.shadingmodel",
+                "infernux/resources/shaders/builtin.shadingmodel",
                 sources["shadingmodel"].read_bytes(),
             ),
         ),
@@ -1174,7 +1174,7 @@ def test_audit_rejects_uncontrolled_runtime_shader_path(tmp_path: Path):
     source = tmp_path / "uncontrolled.vert"
     source.write_bytes(b"uncontrolled shader payload")
     write_pack(
-        (("Infernux/resources/not-shaders/uncontrolled.vert", source),),
+        (("infernux/resources/not-shaders/uncontrolled.vert", source),),
         root / "Balance_Data" / "Runtime.inxrt",
     )
 

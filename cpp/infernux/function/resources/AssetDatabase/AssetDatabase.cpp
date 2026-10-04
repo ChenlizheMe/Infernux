@@ -1003,7 +1003,7 @@ void AssetDatabase::InstallRuntimeAssetCatalog(const std::string &catalogPath, b
         const auto runtimeArtifacts = entry.find("runtime_artifacts");
         if (runtimeArtifacts != entry.end() && runtimeArtifacts->is_array()) {
             const std::string primaryArtifactId = entry.value("primary_runtime_artifact_id", std::string{});
-            constexpr std::string_view builtinPrefix = "Infernux/resources/";
+            constexpr std::string_view builtinPrefix = "infernux/resources/";
             bool resolvedPrimaryArtifact = false;
             for (const auto &artifact : *runtimeArtifacts) {
                 if (!artifact.is_object())

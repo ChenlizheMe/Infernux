@@ -3,7 +3,7 @@ requires = ["setuptools>=70.1"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "Infernux"
+name = "infernux"
 version = "0.4.1"
 description = "Infernux (熔炉) — a Python-first game engine advancing toward Neural Network-Native Engine (3N), powered by C++, Vulkan and WebGPU."
 authors = [{name = "Lizhe Chen", email = "chenlizheme@outlook.com"}]
@@ -39,7 +39,7 @@ Repository = "https://github.com/ChenlizheMe/Infernux"
 Issues = "https://github.com/ChenlizheMe/Infernux/issues"
 
 [project.scripts]
-inx = "Infernux.plugins.cli:main"
+inx = "infernux.plugins.cli:main"
 
 [project.optional-dependencies]
 launcher = ["PySide6>=6.5.0"]
@@ -47,11 +47,10 @@ launcher = ["PySide6>=6.5.0"]
 [tool.setuptools]
 packages = {find = {where = ["python"], exclude = ["test", "test.*", "*.test", "*.test.*", "*.tests", "*.tests.*", "*.__pycache__", "*.__pycache__.*"]}}
 package-dir = {"" = "python"}
-py-modules = ["infernux"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-Infernux = [
+infernux = [
     "py.typed",
     "*.pyi",
     "**/*.pyi",
@@ -79,7 +78,7 @@ Infernux = [
 ]
 
 [tool.setuptools.exclude-package-data]
-Infernux = [
+infernux = [
     "**/*.meta",
     "**/*.bak",
     "**/*.pdb",

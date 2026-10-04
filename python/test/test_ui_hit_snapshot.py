@@ -1,8 +1,8 @@
 """Cached broad-phase geometry must preserve live UI input semantics."""
 import pytest
 
-from Infernux.ui import UICanvas, UIButton, UIFrame, UIGroup, UIText, TextResizeMode
-from Infernux.lib import Vector3
+from infernux.ui import UICanvas, UIButton, UIFrame, UIGroup, UIText, TextResizeMode
+from infernux.lib import Vector3
 
 
 def screen(scene):
@@ -115,7 +115,7 @@ def test_resolved_text_size_changes_invalidate_input_snapshot(scene):
 
 
 def test_stationary_mouse_refreshes_hover_after_motion_and_disable(scene):
-    from Infernux.ui.ui_event_system import UIEventProcessor
+    from infernux.ui.ui_event_system import UIEventProcessor
     root, canvas = screen(scene)
     button = control(scene, root)
     processor = UIEventProcessor()
@@ -137,7 +137,7 @@ def test_stationary_mouse_refreshes_hover_after_motion_and_disable(scene):
 
 
 def test_world_rejects_outside_bounds_before_policy_traversal(scene, monkeypatch):
-    from Infernux.engine.runtime_screen_ui import WorldUIElementTarget
+    from infernux.engine.runtime_screen_ui import WorldUIElementTarget
     item = control(scene, scene.create_game_object('World root'))
     def unexpected():
         raise AssertionError('Miss queried ancestor policy')
@@ -157,7 +157,7 @@ def test_destroy_and_new_member_does_not_reuse_hit_records(scene):
 
 
 def test_render_dependencies_refresh_child_layout_without_an_input_query(scene):
-    from Infernux.ui.ui_render_dispatch import runtime_ui_revision
+    from infernux.ui.ui_render_dispatch import runtime_ui_revision
     root, canvas = screen(scene)
     parent = control(scene, root, UIFrame, width=400, height=200)
     child = control(scene, parent.game_object)

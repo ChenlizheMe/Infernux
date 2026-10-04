@@ -2,8 +2,8 @@
 
 import pytest
 
-from Infernux.rendergraph.graph import Format, RenderGraph
-from Infernux.renderstack.resource_bus import ResourceBus
+from infernux.rendergraph.graph import Format, RenderGraph
+from infernux.renderstack.resource_bus import ResourceBus
 
 
 def test_buffer_published_to_stage_and_pass_result():

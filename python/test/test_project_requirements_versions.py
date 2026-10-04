@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine import project_requirements as requirements
+from infernux.engine import project_requirements as requirements
 
 
 def test_importable_wrong_version_does_not_satisfy_project_pin(monkeypatch):
@@ -38,7 +38,7 @@ def test_project_requirements_cannot_install_or_replace_the_pinned_engine(tmp_pa
 
 
 def test_editor_stops_before_native_initialization_when_dependencies_are_missing(tmp_path, monkeypatch):
-    from Infernux.engine.bootstrap import EditorBootstrap
+    from infernux.engine.bootstrap import EditorBootstrap
 
     monkeypatch.setattr(requirements, "ensure_project_requirements", lambda *_args, **_kwargs: False)
     with pytest.raises(RuntimeError, match="Project Python requirements could not be satisfied"):

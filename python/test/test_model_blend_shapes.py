@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 
 import infernux as inx
-from Infernux.core.assets import AssetManager
-from Infernux.core.asset_types import read_mesh_import_settings
-from Infernux.lib import AssetRegistry
+from infernux.core.assets import AssetManager
+from infernux.core.asset_types import read_mesh_import_settings
+from infernux.lib import AssetRegistry
 
 
 def test_model_blend_shape_publication_and_authoring_switch(engine, tmp_path, monkeypatch):

@@ -6,15 +6,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     DocumentKey,
     DocumentKind,
     DocumentRegistry,
     DocumentState,
     ExternalDocumentConflictService,
 )
-from Infernux.engine.scene_manager import SceneFileManager
-from Infernux.host import EditorAutomationHost, OperationError
+from infernux.engine.scene_manager import SceneFileManager
+from infernux.host import EditorAutomationHost, OperationError
 
 
 @pytest.mark.parametrize("field", ["__type_name__", "__component_id__"])
@@ -22,7 +22,7 @@ from Infernux.host import EditorAutomationHost, OperationError
 def test_scene_entry_points_reject_invalid_disk_fields_and_publish_reason(
     scene, tmp_path, monkeypatch, field, entry,
 ):
-    import Infernux.engine.scene_manager as scene_files
+    import infernux.engine.scene_manager as scene_files
 
     owner = scene.create_game_object("KeepLocalTank")
     original = scene.serialize_document()
@@ -119,7 +119,7 @@ def test_save_conflict_reports_document_state_to_automation(monkeypatch):
 
 
 def test_pending_conflict_reload_preserves_specific_failure(monkeypatch, tmp_path):
-    import Infernux.engine.deferred_task as deferred
+    import infernux.engine.deferred_task as deferred
 
     monkeypatch.setattr(SceneFileManager, "_instance", None)
     manager = SceneFileManager()
@@ -146,7 +146,7 @@ def test_pending_conflict_reload_preserves_specific_failure(monkeypatch, tmp_pat
 
 @pytest.fixture
 def persisted_scene(scene, engine, tmp_path, monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     owner = scene.create_game_object("LocalTank")
     path = tmp_path / "TankBattle.scene"
@@ -223,9 +223,9 @@ def _drain_scene_load(manager):
 def test_queued_external_reload_reports_newer_disk_revision_as_conflict(
     persisted_scene, scene, monkeypatch,
 ):
-    import Infernux.engine.deferred_task as deferred
-    from Infernux.engine.interaction import DocumentActionStatus
-    from Infernux.core.document_store import capture_document_file_state
+    import infernux.engine.deferred_task as deferred
+    from infernux.engine.interaction import DocumentActionStatus
+    from infernux.core.document_store import capture_document_file_state
 
     manager, registry, path, _owner = persisted_scene
     document = registry.require(manager.document_id)
@@ -339,8 +339,8 @@ def test_scene_baseline_keeps_read_snapshot_when_disk_changes_before_publish(
 def test_watcher_publishes_disk_change_after_scene_read_before_open_completes(
     persisted_scene, scene, engine, monkeypatch, entry, dirty, watcher_delivery,
 ):
-    from Infernux.engine.resources_manager import ResourceChangeHandler
-    from Infernux.engine.scene_document_transaction import SceneDocumentTransactionState
+    from infernux.engine.resources_manager import ResourceChangeHandler
+    from infernux.engine.scene_document_transaction import SceneDocumentTransactionState
 
     manager, registry, original_path, _owner = persisted_scene
     previous_document_id = manager.document_id

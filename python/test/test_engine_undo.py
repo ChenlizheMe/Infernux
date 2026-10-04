@@ -1,7 +1,7 @@
-"""Tests for Infernux.engine.undo — UndoCommand subclasses and UndoManager.
+"""Tests for infernux.engine.undo — UndoCommand subclasses and UndoManager.
 
 Pure-Python tests — no C++ backend needed.
-Imports bypass the heavy Infernux.__init__ / native-module chain by loading
+Imports bypass the heavy infernux.__init__ / native-module chain by loading
 the undo package directly via importlib.
 """
 
@@ -21,11 +21,11 @@ import pytest
 # pull in the C++ native backend.
 
 _PROJECT_PY = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), os.pardir, "Infernux"))
+    os.path.join(os.path.dirname(__file__), os.pardir, "infernux"))
 
 
 def _direct_import(module_name: str, rel_path: str):
-    """Import *rel_path* (relative to python/Infernux/) as *module_name*."""
+    """Import *rel_path* (relative to python/infernux/) as *module_name*."""
     if module_name in sys.modules:
         return sys.modules[module_name]
     filepath = os.path.join(_PROJECT_PY, *rel_path.split("/"))
@@ -63,20 +63,20 @@ def _direct_import(module_name: str, rel_path: str):
 
 # Pre-register lightweight stub packages so sub-module imports resolve.
 for _pkg in [
-    "Infernux",
-    "Infernux.engine",
+    "infernux",
+    "infernux.engine",
 ]:
     if _pkg not in sys.modules:
         _p = types.ModuleType(_pkg)
         _p.__path__ = [os.path.join(_PROJECT_PY,
-                                     *_pkg.split(".")[1:])] if _pkg != "Infernux" \
+                                     *_pkg.split(".")[1:])] if _pkg != "infernux" \
                        else [_PROJECT_PY]
         _p.__package__ = _pkg
         sys.modules[_pkg] = _p
 
 # Now load the actual modules we need — this executes their code but
-# won't trigger Infernux/__init__.py's heavy imports.
-_undo_mod = _direct_import("Infernux.engine.undo", "engine/undo.py")
+# won't trigger infernux/__init__.py's heavy imports.
+_undo_mod = _direct_import("infernux.engine.undo", "engine/undo.py")
 
 # Pull symbols into module scope for convenience.
 UndoCommand = _undo_mod.UndoCommand
@@ -98,15 +98,15 @@ PrefabUnpackCommand = _undo_mod.PrefabUnpackCommand
 PrefabRevertCommand = _undo_mod.PrefabRevertCommand
 RenderStackFieldCommand = _undo_mod.RenderStackFieldCommand
 _snapshot_value = _undo_mod._snapshot_value
-SelectionService = sys.modules["Infernux.engine.interaction"].SelectionService
-SelectionSnapshot = sys.modules["Infernux.engine.interaction"].SelectionSnapshot
-SelectionTarget = sys.modules["Infernux.engine.interaction"].SelectionTarget
-EditorContextSnapshot = sys.modules["Infernux.engine.interaction"].EditorContextSnapshot
-ContextRestoreStatus = sys.modules["Infernux.engine.interaction"].ContextRestoreStatus
-_helpers_mod = sys.modules["Infernux.engine.undo._helpers"]
-_property_mod = sys.modules["Infernux.engine.undo._property_commands"]
-_structural_mod = sys.modules["Infernux.engine.undo._structural_commands"]
-_recreate_mod = sys.modules["Infernux.engine.undo._recreate"]
+SelectionService = sys.modules["infernux.engine.interaction"].SelectionService
+SelectionSnapshot = sys.modules["infernux.engine.interaction"].SelectionSnapshot
+SelectionTarget = sys.modules["infernux.engine.interaction"].SelectionTarget
+EditorContextSnapshot = sys.modules["infernux.engine.interaction"].EditorContextSnapshot
+ContextRestoreStatus = sys.modules["infernux.engine.interaction"].ContextRestoreStatus
+_helpers_mod = sys.modules["infernux.engine.undo._helpers"]
+_property_mod = sys.modules["infernux.engine.undo._property_commands"]
+_structural_mod = sys.modules["infernux.engine.undo._structural_commands"]
+_recreate_mod = sys.modules["infernux.engine.undo._recreate"]
 
 
 def _patch_undo_modules(monkeypatch, attr: str, value):
@@ -502,9 +502,9 @@ class TestMaterialDocumentCommand:
                     "Undo/Redo must not publish durable completion before IO finishes"
                 )
 
-        assets_module = types.ModuleType("Infernux.core.assets")
+        assets_module = types.ModuleType("infernux.core.assets")
         assets_module.AssetManager = _AssetManagerProbe
-        monkeypatch.setitem(sys.modules, "Infernux.core.assets", assets_module)
+        monkeypatch.setitem(sys.modules, "infernux.core.assets", assets_module)
 
         material = _AsyncMaterial()
         command = MaterialDocumentCommand(
@@ -854,7 +854,7 @@ class TestPrefabModeCommand:
                 return True
 
         fake_sfm = _FakeSceneManager()
-        scene_manager_mod = types.ModuleType("Infernux.engine.scene_manager")
+        scene_manager_mod = types.ModuleType("infernux.engine.scene_manager")
 
         class _SceneFileManager:
             @staticmethod
@@ -862,7 +862,7 @@ class TestPrefabModeCommand:
                 return fake_sfm
 
         scene_manager_mod.SceneFileManager = _SceneFileManager
-        monkeypatch.setitem(sys.modules, "Infernux.engine.scene_manager", scene_manager_mod)
+        monkeypatch.setitem(sys.modules, "infernux.engine.scene_manager", scene_manager_mod)
 
         cmd = PrefabModeCommand("prefab-guid", enter_mode=True)
         cmd.execute()
@@ -893,7 +893,7 @@ class TestPrefabModeCommand:
                 return True
 
         fake_sfm = _FakeSceneManager()
-        scene_manager_mod = types.ModuleType("Infernux.engine.scene_manager")
+        scene_manager_mod = types.ModuleType("infernux.engine.scene_manager")
 
         class _SceneFileManager:
             @staticmethod
@@ -901,7 +901,7 @@ class TestPrefabModeCommand:
                 return fake_sfm
 
         scene_manager_mod.SceneFileManager = _SceneFileManager
-        monkeypatch.setitem(sys.modules, "Infernux.engine.scene_manager", scene_manager_mod)
+        monkeypatch.setitem(sys.modules, "infernux.engine.scene_manager", scene_manager_mod)
 
         command = PrefabModeCommand("prefab-guid", enter_mode=True)
         command.execute()
@@ -926,7 +926,7 @@ class TestPrefabModeCommand:
                 del preserve_undo_history
                 return False
 
-        scene_manager_mod = types.ModuleType("Infernux.engine.scene_manager")
+        scene_manager_mod = types.ModuleType("infernux.engine.scene_manager")
 
         class _SceneFileManager:
             @staticmethod
@@ -934,7 +934,7 @@ class TestPrefabModeCommand:
                 return _FakeSceneManager()
 
         scene_manager_mod.SceneFileManager = _SceneFileManager
-        monkeypatch.setitem(sys.modules, "Infernux.engine.scene_manager", scene_manager_mod)
+        monkeypatch.setitem(sys.modules, "infernux.engine.scene_manager", scene_manager_mod)
 
         command = PrefabModeCommand("prefab-guid", enter_mode=True)
         with pytest.raises(RuntimeError, match="Enter Prefab Mode was rejected"):
@@ -990,7 +990,7 @@ class TestUndoManager:
     def test_deferred_replay_does_not_restore_context_inside_ui_callback(
         self, _reset_undo_manager, runtime_scheduler,
     ):
-        from Infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
+        from infernux.engine.runtime_dispatch import assert_runtime_dispatch_safe_point
 
         mgr = _reset_undo_manager
         restored = []
@@ -1169,7 +1169,7 @@ class TestUndoManager:
         assert len(mgr.action_journal.applied_entries()) == 5
 
     def test_disabled_rejects_user_edits_but_allows_explicit_system_work(self, _reset_undo_manager):
-        from Infernux.engine.interaction import ActionOrigin
+        from infernux.engine.interaction import ActionOrigin
 
         mgr = _reset_undo_manager
         mgr.enabled = False
@@ -1306,7 +1306,7 @@ class TestSelectionUndoIntegration:
     @staticmethod
     def _install_recording_listener():
         module = _direct_import(
-            "Infernux.engine._bootstrap_selection",
+            "infernux.engine._bootstrap_selection",
             "engine/_bootstrap_selection.py",
         )
         selection = module.BootstrapSelectionMixin()
@@ -1750,11 +1750,11 @@ class TestImmediateDestroyHelpers:
 
         w1 = _FakeWrapper()
         w2 = _FakeWrapper()
-        fake_builtin_mod = types.ModuleType("Infernux.components.builtin_component")
+        fake_builtin_mod = types.ModuleType("infernux.components.builtin_component")
         fake_builtin_mod.BuiltinComponent = types.SimpleNamespace(
             _wrapper_cache={10: w1, 20: w2}
         )
-        monkeypatch.setitem(sys.modules, "Infernux.components.builtin_component", fake_builtin_mod)
+        monkeypatch.setitem(sys.modules, "infernux.components.builtin_component", fake_builtin_mod)
 
         child = _FakeObject(2, "Child", [_FakeComp(20)])
         root = _FakeObject(1, "Root", [_FakeComp(10)], [child])

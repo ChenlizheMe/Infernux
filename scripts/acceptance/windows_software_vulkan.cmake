@@ -4,7 +4,7 @@
 function(_infernux_install_ci_vulkan)
     install(FILES
         "${CMAKE_SOURCE_DIR}/out/toolchains/windows-swiftshader/runtime/vk_swiftshader.dll"
-        DESTINATION "python/Infernux/lib"
+        DESTINATION "python/infernux/lib"
         RENAME "vulkan-1.dll"
         COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT})
 endfunction()

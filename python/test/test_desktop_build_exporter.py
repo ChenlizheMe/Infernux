@@ -4,7 +4,7 @@ import json
 import sys
 from pathlib import Path
 
-from Infernux.engine.build import (
+from infernux.engine.build import (
     BuildConfiguration,
     BuildExporterRegistry,
     BuildProfile,
@@ -12,7 +12,7 @@ from Infernux.engine.build import (
     current_host_player_target,
     exporter_registry,
 )
-from Infernux.plugins import InxPackage, PluginManager
+from infernux.plugins import InxPackage, PluginManager
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "external" / "plugins"
@@ -85,7 +85,7 @@ def test_host_plugin_owns_its_registered_target():
 def test_host_exporter_doctor_rejects_invalid_project(tmp_path, monkeypatch):
     # Isolate project validation from locally generated Player payloads.
     monkeypatch.setattr(
-        "Infernux.engine.precompiled_player.inspect_desktop_runtime", lambda _root: None,
+        "infernux.engine.precompiled_player.inspect_desktop_runtime", lambda _root: None,
     )
     target = host_target()
     assert target is not None
@@ -108,7 +108,7 @@ def test_host_exporter_doctor_reports_missing_runtime_and_invalid_project(tmp_pa
         raise FileNotFoundError("Player payload missing")
 
     monkeypatch.setattr(
-        "Infernux.engine.precompiled_player.inspect_desktop_runtime", missing_runtime,
+        "infernux.engine.precompiled_player.inspect_desktop_runtime", missing_runtime,
     )
     target = host_target()
     request = BuildRequest(str(tmp_path / "MissingProject"), target.id, str(tmp_path / "Player"))
@@ -141,7 +141,7 @@ def test_host_exporter_routes_settings_catalog_progress_and_cancellation(
             on_progress("Cooking", 0.25)
             return captured["output"]
 
-    monkeypatch.setattr("Infernux.engine.game_builder.GameBuilder", _Builder)
+    monkeypatch.setattr("infernux.engine.game_builder.GameBuilder", _Builder)
     progress = []
     request = _request(
         tmp_path,
@@ -195,7 +195,7 @@ def test_host_exporter_publishes_catalog_for_a_clean_standalone_project(
         def build(self, **_kwargs):
             return str(tmp_path / "Player")
 
-    monkeypatch.setattr("Infernux.engine.game_builder.GameBuilder", _Builder)
+    monkeypatch.setattr("infernux.engine.game_builder.GameBuilder", _Builder)
 
     def publish(root):
         lifecycle.append("publish")
@@ -205,7 +205,7 @@ def test_host_exporter_publishes_catalog_for_a_clean_standalone_project(
         }
 
     monkeypatch.setattr(
-        "Infernux.engine.player_build_preflight.publish_player_asset_catalog_for_host",
+        "infernux.engine.player_build_preflight.publish_player_asset_catalog_for_host",
         publish,
     )
 

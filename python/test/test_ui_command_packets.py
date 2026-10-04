@@ -85,7 +85,7 @@ class Renderer:
 
 
 def test_runtime_ui_material_contract_uses_guid_generation_and_pipeline_key():
-    from Infernux.ui.ui_render_dispatch import _bind_runtime_material
+    from infernux.ui.ui_render_dispatch import _bind_runtime_material
 
     calls = []
     native = SimpleNamespace(
@@ -123,7 +123,7 @@ def test_runtime_ui_material_contract_uses_guid_generation_and_pipeline_key():
 
 
 def test_ui_material_generation_rebuilds_screen_and_world_packets(ui):
-    from Infernux.core.asset_ref import MaterialRef
+    from infernux.core.asset_ref import MaterialRef
 
     element = ui.add()
     revision = [3]
@@ -155,9 +155,9 @@ def test_ui_material_generation_rebuilds_screen_and_world_packets(ui):
 
 @pytest.fixture(params=[False, True], ids=['screen', 'world'])
 def ui(scene, monkeypatch, request):
-    from Infernux.ui import UICanvas, UIText
-    import Infernux.lib as lib
-    import Infernux.engine.runtime_screen_ui as module
+    from infernux.ui import UICanvas, UIText
+    import infernux.lib as lib
+    import infernux.engine.runtime_screen_ui as module
 
     root = scene.create_game_object('Root')
     canvas = None
@@ -198,7 +198,7 @@ def ui(scene, monkeypatch, request):
         return rebuilt, list(renderer.commands)
 
     def matches_fresh():
-        from Infernux.ui.ui_command_packets import UICommandPackets
+        from infernux.ui.ui_command_packets import UICommandPackets
         rebuilt, actual = frame()
         assert rebuilt
         submission._command_packets = UICommandPackets()
@@ -229,9 +229,9 @@ def test_only_changed_label_reextracts_and_remeasures(ui, field):
 @pytest.mark.parametrize('change', ['transform', 'parent_transform', 'group', 'mirror',
                                    'enabled', 'active', 'reparent', 'viewport', 'global_dirty'])
 def test_shared_dependencies_match_fresh_submission(ui, change):
-    from Infernux.lib import Vector3
-    from Infernux.ui import UIGroup
-    from Infernux.ui.ui_render_revision import mark_runtime_ui_dirty
+    from infernux.lib import Vector3
+    from infernux.ui import UIGroup
+    from infernux.ui.ui_render_revision import mark_runtime_ui_dirty
     group = UIGroup()
     ui.root.add_py_component(group)
     label, other = ui.add(), ui.add()
@@ -267,7 +267,7 @@ def test_shared_dependencies_match_fresh_submission(ui, change):
 
 
 def test_button_private_state_rebuilds_only_the_button(ui):
-    from Infernux.ui import UIButton
+    from infernux.ui import UIButton
     button, label = ui.add(UIButton), ui.add()
     ui.frame()
     button.on_pointer_enter(None)
@@ -280,7 +280,7 @@ def test_button_private_state_rebuilds_only_the_button(ui):
 
 
 def test_local_change_visits_only_the_changed_text_measurement(ui, monkeypatch):
-    from Infernux.ui.ui_command_packets import UICommandPackets
+    from infernux.ui.ui_command_packets import UICommandPackets
     labels = [ui.add() for _ in range(100)]
     ui.frame()
     visits = []
@@ -297,7 +297,7 @@ def test_local_change_visits_only_the_changed_text_measurement(ui, monkeypatch):
 
 
 def test_two_submission_owners_observe_edits_independently(ui):
-    from Infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
+    from infernux.engine.runtime_screen_ui import RuntimeScreenUISubmission
     first, second = ui.add(), ui.add()
     ui.frame()
     renderer = Renderer()
@@ -336,7 +336,7 @@ def test_released_submission_groups_do_not_stay_on_components(ui):
 
 @pytest.mark.parametrize('pose', ['position', 'rotation'])
 def test_transform_edit_rebuilds_only_the_affected_leaf(ui, pose):
-    from Infernux.lib import Vector3
+    from infernux.lib import Vector3
     labels = [ui.add() for _ in range(24)]
     ui.frame()
     target = labels[9]
@@ -351,8 +351,8 @@ def test_transform_edit_rebuilds_only_the_affected_leaf(ui, pose):
 
 
 def test_parent_ui_pose_updates_descendants_not_unrelated_branches(ui):
-    from Infernux.lib import Vector3
-    from Infernux.ui import UIFrame
+    from infernux.lib import Vector3
+    from infernux.ui import UIFrame
     parent = ui.add(UIFrame)
     child = ui.add(parent=parent.game_object)
     bridge = ui.scene.create_game_object('Non-UI hierarchy bridge')
@@ -384,8 +384,8 @@ def test_world_layer_edit_does_not_rebuild_other_world_geometry(ui):
 def test_world_parent_animation_reuses_local_geometry(ui, monkeypatch):
     if not ui.world:
         pytest.skip('World geometry is independent of its scene pose')
-    from Infernux.lib import Vector3
-    from Infernux.ui.ui_command_packets import UICommandPackets
+    from infernux.lib import Vector3
+    from infernux.ui.ui_command_packets import UICommandPackets
     labels = [ui.add() for _ in range(60)]
     for index, label in enumerate(labels):
         label.game_object.transform.local_position = Vector3(index * .1, 0, 0)
@@ -405,8 +405,8 @@ def test_world_parent_animation_reuses_local_geometry(ui, monkeypatch):
 
 
 def test_screen_and_world_pose_invalidations_stay_independent(ui):
-    from Infernux.lib import Vector3
-    from Infernux.ui import UICanvas
+    from infernux.lib import Vector3
+    from infernux.ui import UICanvas
     first, untouched = ui.add(), ui.add()
     island = ui.scene.create_game_object('Other UI space')
     if ui.world:
@@ -423,8 +423,8 @@ def test_screen_and_world_pose_invalidations_stay_independent(ui):
 
 
 def test_custom_draw_layout_edit_reaches_later_cached_sibling(ui):
-    from Infernux.ui import UIButton, UIText, UIFrame, UILayoutDirection
-    from Infernux.ui import ui_render_dispatch as dispatch
+    from infernux.ui import UIButton, UIText, UIFrame, UILayoutDirection
+    from infernux.ui import ui_render_dispatch as dispatch
     parent = ui.add(UIFrame)
     parent.layout_direction = UILayoutDirection.Horizontal
     first = ui.add(UIButton, parent.game_object)
@@ -451,7 +451,7 @@ def test_custom_draw_layout_edit_reaches_later_cached_sibling(ui):
 
 
 def test_frame_clip_and_auto_sized_text_refresh_siblings(ui):
-    from Infernux.ui import UIFrame, UIText, UILayoutDirection, TextResizeMode
+    from infernux.ui import UIFrame, UIText, UILayoutDirection, TextResizeMode
     parent = ui.add(UIFrame)
     parent.layout_direction = UILayoutDirection.Horizontal
     first, second = ui.add(UIText, parent.game_object), ui.add(UIText, parent.game_object)
@@ -468,10 +468,10 @@ def test_frame_clip_and_auto_sized_text_refresh_siblings(ui):
 
 
 def test_material_version_and_image_resize_refresh_commands(ui):
-    from Infernux.lib import InxMaterial
-    from Infernux.core.material import Material
-    from Infernux.core.render_texture import RenderTexture
-    from Infernux.ui import UIImage
+    from infernux.lib import InxMaterial
+    from infernux.core.material import Material
+    from infernux.core.render_texture import RenderTexture
+    from infernux.ui import UIImage
     image = ui.add(UIImage)
     material = Material(InxMaterial('UI packets', 'Unlit'))
     image.material = material
@@ -495,7 +495,7 @@ def test_material_version_and_image_resize_refresh_commands(ui):
 
 
 def _assert_current_commands_match_fresh(ui, actual):
-    from Infernux.ui.ui_command_packets import UICommandPackets
+    from infernux.ui.ui_command_packets import UICommandPackets
     ui.submission._command_packets = UICommandPackets()
     ui.renderer.key = None
     assert ui.frame()[1] == actual
@@ -503,9 +503,9 @@ def _assert_current_commands_match_fresh(ui, actual):
 
 @pytest.mark.parametrize('slot', ['material', 'text_material'])
 def test_material_edit_reextracts_only_its_consumers(ui, slot):
-    from Infernux.lib import InxMaterial
-    from Infernux.core.material import Material
-    from Infernux.ui import UIButton
+    from infernux.lib import InxMaterial
+    from infernux.core.material import Material
+    from infernux.ui import UIButton
     materials = [Material(InxMaterial(f'UI source {i}', 'Unlit')) for i in range(3)]
     buttons = [ui.add(UIButton) for _ in range(12)]
     for index, button in enumerate(buttons):
@@ -532,10 +532,10 @@ def test_material_edit_reextracts_only_its_consumers(ui, slot):
 
 @pytest.mark.parametrize('change', ['text', 'color', 'width', 'hover'])
 def test_visual_edits_keep_resource_binding_membership(ui, change):
-    from Infernux.core.material import Material
-    from Infernux.lib import InxMaterial
-    from Infernux.ui import UIButton
-    from Infernux.ui import ui_render_dispatch as dispatch
+    from infernux.core.material import Material
+    from infernux.lib import InxMaterial
+    from infernux.ui import UIButton
+    from infernux.ui import ui_render_dispatch as dispatch
     material = Material(InxMaterial('Retained binding', 'Unlit'))
     labels = [ui.add() for _ in range(24)]
     for label in labels:
@@ -552,8 +552,8 @@ def test_visual_edits_keep_resource_binding_membership(ui, change):
 
 
 def test_material_owner_replacement_does_not_hide_other_reference_owners(ui, monkeypatch):
-    from Infernux.core.material import Material
-    from Infernux.lib import InxMaterial
+    from infernux.core.material import Material
+    from infernux.lib import InxMaterial
     original = Material(InxMaterial('Previous owner', 'Unlit'))
     replacement = Material(InxMaterial('Replacement owner', 'Unlit'))
     replacement.set_color('baseColor', .1, .5, .9, 1.)
@@ -572,10 +572,10 @@ def test_material_owner_replacement_does_not_hide_other_reference_owners(ui, mon
 
 
 def test_material_binding_document_restore_and_removal_match_fresh(ui, monkeypatch):
-    from Infernux.components.value_document import make_asset_ref
-    from Infernux.core.assets import AssetManager
-    from Infernux.core.material import Material
-    from Infernux.lib import InxMaterial
+    from infernux.components.value_document import make_asset_ref
+    from infernux.core.assets import AssetManager
+    from infernux.core.material import Material
+    from infernux.lib import InxMaterial
     material = Material(InxMaterial('Inspector material', 'Unlit'))
     material.set_color('baseColor', .2, .4, .8, 1.)
     monkeypatch.setattr(AssetManager, 'load_by_guid', lambda *_args, **_kwargs: material)
@@ -589,8 +589,8 @@ def test_material_binding_document_restore_and_removal_match_fresh(ui, monkeypat
 
 
 def test_render_texture_resize_reextracts_only_its_images(ui):
-    from Infernux.core.render_texture import RenderTexture
-    from Infernux.ui import UIImage
+    from infernux.core.render_texture import RenderTexture
+    from infernux.ui import UIImage
     targets = []
     for revision in (1, 10):
         target = RenderTexture.__new__(RenderTexture)
@@ -608,8 +608,8 @@ def test_render_texture_resize_reextracts_only_its_images(ui):
 
 
 def test_button_render_texture_assignment_tracks_later_target_revision(ui):
-    from Infernux.core.render_texture import RenderTexture
-    from Infernux.ui import UIButton
+    from infernux.core.render_texture import RenderTexture
+    from infernux.ui import UIButton
 
     button = ui.add(UIButton)
     ui.frame()
@@ -651,11 +651,11 @@ def test_destroyed_element_packets_do_not_survive_membership_change(ui):
 
 
 def test_explicit_font_chain_and_measured_size_publication(ui, monkeypatch):
-    from Infernux.application import Application
-    from Infernux.core.asset_ref import create_asset_ref
-    from Infernux.engine.project_context import set_runtime_asset_resolver
-    from Infernux.ui import TextResizeMode
-    from Infernux.ui.ui_render_revision import mark_runtime_ui_dirty
+    from infernux.application import Application
+    from infernux.core.asset_ref import create_asset_ref
+    from infernux.engine.project_context import set_runtime_asset_resolver
+    from infernux.ui import TextResizeMode
+    from infernux.ui.ui_render_revision import mark_runtime_ui_dirty
     paths = {
         "font-cjk": "Assets/Fonts/CJK.ttf",
         "font-emoji": "Assets/Fonts/Emoji.ttf",
@@ -683,7 +683,7 @@ def test_explicit_font_chain_and_measured_size_publication(ui, monkeypatch):
 
 
 def test_custom_renderer_keeps_its_native_renderer_contract(ui, monkeypatch):
-    from Infernux.ui import ui_render_dispatch as dispatch
+    from infernux.ui import ui_render_dispatch as dispatch
     calls = []
     def custom(element, renderer, **_):
         assert renderer is ui.renderer
@@ -716,7 +716,7 @@ def test_geometry_packets_batch_and_font_epoch_invalidates(ui):
 
 
 def test_unchanged_packets_do_not_rediscover_renderer_capabilities(ui, monkeypatch):
-    from Infernux.ui import ui_command_packets as packets
+    from infernux.ui import ui_command_packets as packets
     labels = [ui.add() for _ in range(24)]
     ui.frame()
     calls = []
@@ -731,7 +731,7 @@ def test_unchanged_packets_do_not_rediscover_renderer_capabilities(ui, monkeypat
 
 
 def test_registered_renderer_replacement_invalidates_warm_packets(ui):
-    from Infernux.ui import ui_render_dispatch as dispatch
+    from infernux.ui import ui_render_dispatch as dispatch
     label = ui.add()
     ui.frame()
     original = dispatch.get_ui_renderer('UIText', 'runtime')
@@ -754,7 +754,7 @@ def test_registered_renderer_replacement_invalidates_warm_packets(ui):
 
 
 def test_packet_capture_failure_does_not_publish_partial_geometry(ui, monkeypatch):
-    import Infernux.engine.runtime_screen_ui as runtime
+    import infernux.engine.runtime_screen_ui as runtime
     label = ui.add()
     original = runtime._ui_dispatch
     def fail(*_args, **_kwargs):
@@ -770,7 +770,7 @@ def test_packet_capture_failure_does_not_publish_partial_geometry(ui, monkeypatc
 
 @pytest.mark.parametrize('inactive', [False, True])
 def test_font_epoch_remeasures_intrinsic_size_without_field_edits(ui, monkeypatch, inactive):
-    from Infernux.ui import TextResizeMode
+    from infernux.ui import TextResizeMode
     label = ui.add()
     label.resize_mode = TextResizeMode.AutoWidth
     ui.frame()
@@ -788,8 +788,8 @@ def test_font_epoch_remeasures_intrinsic_size_without_field_edits(ui, monkeypatc
 
 
 def test_custom_renderer_preserves_order_between_retained_packets(ui, monkeypatch):
-    from Infernux.ui import UIButton
-    from Infernux.ui import ui_render_dispatch as dispatch
+    from infernux.ui import UIButton
+    from infernux.ui import ui_render_dispatch as dispatch
     first = ui.add(UIButton)
     first.label = 'before'
     custom = ui.add()

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from Infernux.components import InxComponent, SerializableObject, serialized_field, FieldType
-from Infernux.components.fields import get_raw_field_value
-from Infernux.components.ref_wrappers import MaterialRef
-from Infernux.core import Material, Texture
-from Infernux.core.asset_ref import TextureRef
-from Infernux.lib import InxMaterial
+from infernux.components import InxComponent, SerializableObject, serialized_field, FieldType
+from infernux.components.fields import get_raw_field_value
+from infernux.components.ref_wrappers import MaterialRef
+from infernux.core import Material, Texture
+from infernux.core.asset_ref import TextureRef
+from infernux.lib import InxMaterial
 
 
 class RefViewData(SerializableObject):

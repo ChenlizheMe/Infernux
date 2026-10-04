@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.build import BuildProfile, BuildRequest
-from Infernux.plugins import player_file_exported
-from Infernux.version import ENGINE_VERSION
+from infernux.engine.build import BuildProfile, BuildRequest
+from infernux.plugins import player_file_exported
+from infernux.version import ENGINE_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -428,7 +428,7 @@ def test_web_assembly_reuses_runtime_and_packs_project_without_compilation(
     _web_module(monkeypatch)
     exporter = importlib.import_module("infernux_web.exporter")
     pipeline = importlib.import_module("infernux_web.shader_pipeline")
-    from Infernux.engine.player_package_native import read_entry
+    from infernux.engine.player_package_native import read_entry
 
     root = _installed_web_payload(tmp_path)
     request = _request(tmp_path)
@@ -456,7 +456,7 @@ def test_web_assembly_reuses_runtime_and_packs_project_without_compilation(
                "tint": str(root / "tools/windows-x64/tint.exe")}
     presentation = {"display_mode": mode, "window_width": 960, "window_height": 540}
     exporter._assemble_web_host(
-        request, staging, assets, details, ROOT / "python/Infernux", presentation,
+        request, staging, assets, details, ROOT / "python/infernux", presentation,
         PLUGIN_EDITOR / "infernux_web/templates/host/shell.html", None,
     )
     artifacts, revision = exporter._publish_web_player(request, staging / "host-build", None)
@@ -709,7 +709,7 @@ def test_web_export_publishes_versioned_cooked_player(monkeypatch, tmp_path):
     monkeypatch.setattr(
         exporter,
         "doctor",
-        lambda _request: importlib.import_module("Infernux.engine.build").CapabilityReport(
+        lambda _request: importlib.import_module("infernux.engine.build").CapabilityReport(
             True,
             details={
                 "distribution": "fixture",
@@ -877,7 +877,7 @@ def test_web_branding_uses_cooked_project_icon_and_game_name(monkeypatch, tmp_pa
     icon = data_root / "Branding" / "project-icon.png"
     icon.parent.mkdir(parents=True)
     Image.new("RGBA", (96, 48), (240, 96, 48, 255)).save(icon)
-    from Infernux.engine.player_package_native import read_manifest, write_pack
+    from infernux.engine.player_package_native import read_manifest, write_pack
 
     write_pack(
         (("Branding/project-icon.png", icon),),
@@ -918,7 +918,7 @@ def test_web_branding_uses_cooked_project_icon_and_game_name(monkeypatch, tmp_pa
 
     branding = exporter_module._stage_web_branding(
         player_assets,
-        ROOT / "python/Infernux",
+        ROOT / "python/infernux",
         "Branding Game",
     )
 
@@ -1217,8 +1217,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "pageshow" in shell
     assert 'install_runtime_service("text-input", web_host)' in bootstrap
     assert '"AudioSource": "audio_source"' in bootstrap
-    assert 'import_module("Infernux.components.decorators")' in bootstrap
-    assert 'import_module("Infernux.components.ref_wrappers")' in bootstrap
+    assert 'import_module("infernux.components.decorators")' in bootstrap
+    assert 'import_module("infernux.components.ref_wrappers")' in bootstrap
     assert '"SerializableObject": serializable_module.SerializableObject' in bootstrap
     assert '"int_field": fields_module.int_field' in bootstrap
     assert '"list_field": fields_module.list_field' in bootstrap
@@ -1239,7 +1239,7 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "screen_ui_release_texture" in bootstrap
     assert "document.createElement" not in bootstrap
     assert "!g_splashActive && !g_webGpuValidationFailed" in main
-    assert 'importlib.import_module("Infernux.screen")' in bootstrap
+    assert 'importlib.import_module("infernux.screen")' in bootstrap
     assert '"Application": application_module.Application' in bootstrap
     assert '"InxPreload": lifecycle_public_module.InxPreload' in bootstrap
     assert '"PreloadContext": lifecycle_public_module.PreloadContext' in bootstrap
@@ -1575,7 +1575,7 @@ def test_web_native_runtime_excludes_model_authoring_and_links_stream_audio():
 def test_web_shader_stage_deduplicates_shared_particle_kernel(monkeypatch, tmp_path):
     _web_module(monkeypatch)
     exporter = importlib.import_module("infernux_web.exporter")
-    native = importlib.import_module("Infernux.lib")._Infernux
+    native = importlib.import_module("infernux.lib")._Infernux
     monkeypatch.setattr(
         native,
         "_prepare_authored_shader_glsl",
@@ -1675,7 +1675,7 @@ def test_web_asset_revision_covers_content_runtime_and_shader_inputs(
     second = exporter_module._web_asset_revision(
         staging, player, runtime, presentation=fullscreen
     )
-    bytecode = player / "python" / "site-packages" / "Infernux" / "__pycache__"
+    bytecode = player / "python" / "site-packages" / "infernux" / "__pycache__"
     bytecode.mkdir(parents=True)
     (bytecode / "runtime.cpython-313.opt-1.pyc").write_bytes(b"compiled")
     third = exporter_module._web_asset_revision(

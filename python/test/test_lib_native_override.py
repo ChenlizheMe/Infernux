@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-import Infernux.lib as lib
+import infernux.lib as lib
 
 
 def test_crt_preload_uses_ctypes_and_preserves_dependency_order(tmp_path, monkeypatch):
@@ -55,18 +55,18 @@ def test_override_loads_exact_abi_module_under_package_name(tmp_path, monkeypatc
     monkeypatch.setattr(
         lib.importlib.util,
         "module_from_spec",
-        lambda _spec: types.ModuleType("Infernux.lib._Infernux"),
+        lambda _spec: types.ModuleType("infernux.lib._Infernux"),
     )
     monkeypatch.setitem(
         sys.modules,
-        "Infernux.lib._Infernux",
+        "infernux.lib._Infernux",
         types.ModuleType("old_native_module"),
     )
 
     module = lib._load_native_module_from_dir(str(tmp_path))
 
-    assert loaded == [("Infernux.lib._Infernux", True)]
-    assert sys.modules["Infernux.lib._Infernux"] is module
+    assert loaded == [("infernux.lib._Infernux", True)]
+    assert sys.modules["infernux.lib._Infernux"] is module
     assert module.PublicSymbol == "override"
 
 
@@ -83,7 +83,7 @@ def test_native_override_diagnostic_reports_actual_directory(tmp_path, monkeypat
 
 
 def test_native_loader_without_override_preserves_package_import(monkeypatch):
-    expected = types.ModuleType("Infernux.lib._Infernux")
+    expected = types.ModuleType("infernux.lib._Infernux")
     imported = []
 
     def _import_module(name):
@@ -93,7 +93,7 @@ def test_native_loader_without_override_preserves_package_import(monkeypatch):
     monkeypatch.setattr(lib.importlib, "import_module", _import_module)
 
     assert lib._load_native_module(None) is expected
-    assert imported == ["Infernux.lib._Infernux"]
+    assert imported == ["infernux.lib._Infernux"]
 
 
 def test_explicit_native_override_excludes_package_library_directory(monkeypatch):

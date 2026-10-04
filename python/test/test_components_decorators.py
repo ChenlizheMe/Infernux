@@ -1,6 +1,6 @@
-"""Tests for Infernux.components.decorators — component class decorators."""
+"""Tests for infernux.components.decorators — component class decorators."""
 
-from Infernux.components.decorators import (
+from infernux.components.decorators import (
     require_component,
     disallow_multiple,
     execute_in_edit_mode,

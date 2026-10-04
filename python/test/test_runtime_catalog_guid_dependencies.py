@@ -1,6 +1,6 @@
 import json
 
-from Infernux.engine.runtime_artifact_catalog import build_catalog
+from infernux.engine.runtime_artifact_catalog import build_catalog
 
 
 def test_runtime_catalog_uses_guid_and_ignores_path_hints_for_dependencies():

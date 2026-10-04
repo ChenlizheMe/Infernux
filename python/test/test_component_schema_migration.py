@@ -4,13 +4,13 @@ from typing import Annotated
 
 import pytest
 
-from Infernux.components import FormerlySerializedAs, InxComponent, serialized_field
-from Infernux.components._cds_migration import (
+from infernux.components import FormerlySerializedAs, InxComponent, serialized_field
+from infernux.components._cds_migration import (
     FieldSchemaMigrationError,
     build_class_schema_migration,
     prepare_instance_values,
 )
-from Infernux.components._component_registration import (
+from infernux.components._component_registration import (
     candidate_component_registration_scope,
 )
 
@@ -184,8 +184,8 @@ def test_schema_migration_rejects_one_source_claimed_twice():
 def test_retired_cds_slot_waits_for_old_runtime_epoch_then_drains(monkeypatch):
     import gc
 
-    from Infernux.components import _cds_bridge
-    from Infernux.engine.runtime_dispatch import (
+    from infernux.components import _cds_bridge
+    from infernux.engine.runtime_dispatch import (
         current_runtime_epoch,
         ensure_runtime_dispatch_types,
         publish_runtime_dispatch_epoch,

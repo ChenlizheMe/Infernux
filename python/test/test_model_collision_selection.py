@@ -3,12 +3,12 @@ import numpy as np
 import pytest
 
 import infernux as inx
-from Infernux.lib import Physics, Vector3
+from infernux.lib import Physics, Vector3
 
 
 def test_model_selection_schema_uses_native_declarations(scene, monkeypatch):
-    from Infernux.field_schema import get_native_field_schemas
-    from Infernux.host.editor import EditorAutomationHost
+    from infernux.field_schema import get_native_field_schemas
+    from infernux.host.editor import EditorAutomationHost
 
     go = scene.create_game_object("Model schema")
     renderer = go.add_component("MeshRenderer")

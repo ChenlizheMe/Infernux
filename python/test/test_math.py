@@ -1,4 +1,4 @@
-"""Tests for Infernux.mathf (Mathf utility class) and Infernux.jit kernels."""
+"""Tests for infernux.mathf (Mathf utility class) and infernux.jit kernels."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import math
 
 import pytest
 
-from Infernux.mathf import Mathf
-from Infernux.lib import Vector2, Vector3, quatf, vec4f
+from infernux.mathf import Mathf
+from infernux.lib import Vector2, Vector3, quatf, vec4f
 
 
 class TestVector3Validation:

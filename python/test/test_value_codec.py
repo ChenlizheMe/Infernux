@@ -4,21 +4,21 @@ import inspect
 
 import pytest
 
-from Infernux.components.fields import FieldMetadata, FieldType
-from Infernux.components.value_codec import ValueCodecDescriptor, ValueCodecRegistry
-from Infernux.components.value_document import (
+from infernux.components.fields import FieldMetadata, FieldType
+from infernux.components.value_codec import ValueCodecDescriptor, ValueCodecRegistry
+from infernux.components.value_document import (
     TYPE_KEY,
     GAME_OBJECT_REF,
     COMPONENT_REF,
     ASSET_REF,
 )
-from Infernux.core.asset_ref import (
+from infernux.core.asset_ref import (
     GenericAssetRef,
     create_asset_ref,
     get_all_asset_type_configs,
     register_asset_type,
 )
-from Infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
+from infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
 
 
 def _meta(field_type: FieldType, name: str = "field") -> FieldMetadata:
@@ -296,8 +296,8 @@ def test_asset_reference_uses_declared_field_type_for_retired_type_tag():
 
 
 def test_asset_reference_path_hint_does_not_become_runtime_identity(monkeypatch):
-    from Infernux.core.assets import AssetManager
-    from Infernux.core.asset_ref import TextureRef
+    from infernux.core.assets import AssetManager
+    from infernux.core.asset_ref import TextureRef
 
     class Database:
         def get_guid_from_path(self, _path):
@@ -311,7 +311,7 @@ def test_asset_reference_path_hint_does_not_become_runtime_identity(monkeypatch)
 
 
 def test_asset_reference_clipboard_ignores_extra_fields_and_keeps_builtins():
-    from Infernux.core.asset_reference_types import AssetReferenceCodec
+    from infernux.core.asset_reference_types import AssetReferenceCodec
 
     payload = AssetReferenceCodec.decode(
         'infernux.asset_reference {"asset_type":"Texture","builtin":"white",'
@@ -327,7 +327,7 @@ def test_asset_reference_clipboard_ignores_extra_fields_and_keeps_builtins():
 
 
 def test_structured_path_only_asset_reference_is_empty_and_cannot_select_union_type():
-    from Infernux.core.asset_reference_types import AssetReferenceCodec
+    from infernux.core.asset_reference_types import AssetReferenceCodec
 
     payload = AssetReferenceCodec.normalize(
         "Texture.Sampled",
@@ -340,7 +340,7 @@ def test_structured_path_only_asset_reference_is_empty_and_cannot_select_union_t
 
 
 def test_structured_asset_reference_keeps_explicit_concrete_type_without_path_inference():
-    from Infernux.core.asset_reference_types import AssetReferenceCodec
+    from infernux.core.asset_reference_types import AssetReferenceCodec
 
     payload = AssetReferenceCodec.normalize(
         "Texture.Sampled",
@@ -357,8 +357,8 @@ def test_structured_asset_reference_keeps_explicit_concrete_type_without_path_in
 
 
 def test_raw_editor_path_is_normalized_to_guid_when_imported(monkeypatch):
-    from Infernux.core.asset_reference_types import AssetReferenceCodec
-    from Infernux.core.assets import AssetManager
+    from infernux.core.asset_reference_types import AssetReferenceCodec
+    from infernux.core.assets import AssetManager
 
     class Database:
         def get_guid_from_path(self, path):
@@ -374,9 +374,9 @@ def test_raw_editor_path_is_normalized_to_guid_when_imported(monkeypatch):
 
 
 def test_raw_project_relative_editor_path_can_resolve_to_guid(monkeypatch):
-    from Infernux.core.asset_reference_types import AssetReferenceCodec
-    from Infernux.core.assets import AssetManager
-    import Infernux.engine.project_context as project_context
+    from infernux.core.asset_reference_types import AssetReferenceCodec
+    from infernux.core.assets import AssetManager
+    import infernux.engine.project_context as project_context
     import os
 
     class Database:
@@ -503,9 +503,9 @@ def test_asset_list_codec_rejects_wrong_element_type():
         codec.decode(document, metadata, "Probe.clips")
 @pytest.mark.parametrize("enum_name,member_name", [("CameraProjection", "Orthographic"), ("CameraClearFlags", "SolidColor")])
 def test_native_enum_uses_the_shared_enum_document(enum_name, member_name):
-    from Infernux import lib
-    from Infernux.components.fields import FieldMetadata, FieldType
-    from Infernux.components.value_codec import VALUE_CODECS
+    from infernux import lib
+    from infernux.components.fields import FieldMetadata, FieldType
+    from infernux.components.value_codec import VALUE_CODECS
 
     enum_type = getattr(lib, enum_name)
     value = enum_type.__members__[member_name]
@@ -516,16 +516,16 @@ def test_native_enum_uses_the_shared_enum_document(enum_name, member_name):
 
 
 def test_undeclared_native_enum_value_cannot_be_serialized():
-    from Infernux.lib import CameraProjection
-    from Infernux.components.value_codec import VALUE_CODECS
+    from infernux.lib import CameraProjection
+    from infernux.components.value_codec import VALUE_CODECS
 
     with pytest.raises(ValueError, match="unknown.*enum member"):
         VALUE_CODECS.encode(CameraProjection(99))
 
 
 def test_native_enum_encoding_does_not_depend_on_import_module_name(monkeypatch):
-    from Infernux.lib import CameraProjection
-    from Infernux.components.value_codec import VALUE_CODECS
+    from infernux.lib import CameraProjection
+    from infernux.components.value_codec import VALUE_CODECS
 
     monkeypatch.setattr(CameraProjection, "__module__", "_Infernux")
     assert VALUE_CODECS.encode(CameraProjection.Perspective) == {

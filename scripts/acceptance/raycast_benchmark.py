@@ -23,14 +23,14 @@ if (ROOT / "python").is_dir():
     sys.path.insert(0, str(ROOT / "python"))
 
 import infernux as inx
-from Infernux import run_headless
-from Infernux.debug import DebugConsole, LogType
-from Infernux.engine.path_utils import resolved_path, same_path
-from Infernux.engine.scene_manager import SceneFileManager
-from Infernux.lib import Physics as NativePhysics
-from Infernux.lib import SceneManager as NativeSceneManager
-from Infernux.lib import Vector3
-from Infernux.scene import SceneManager
+from infernux import run_headless
+from infernux.debug import DebugConsole, LogType
+from infernux.engine.path_utils import resolved_path, same_path
+from infernux.engine.scene_manager import SceneFileManager
+from infernux.lib import Physics as NativePhysics
+from infernux.lib import SceneManager as NativeSceneManager
+from infernux.lib import Vector3
+from infernux.scene import SceneManager
 
 
 def _output(count: int) -> dict[str, np.ndarray]:

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.player_package_native import read_manifest, write_pack
+from infernux.engine.player_package_native import read_manifest, write_pack
 
 
 ROOT = Path(__file__).resolve().parents[2]

@@ -2,15 +2,15 @@
 import json
 from pathlib import Path
 
-from Infernux.components.skeletal_animator import SkeletalAnimator
-from Infernux.core.animation_clip3d import AnimationClip3D
-from Infernux.core.asset_ref import AnimationClip3DRef
-from Infernux.core.asset_types import read_meta_file, read_mesh_import_settings
-from Infernux.core.assets import AssetManager
-from Infernux.engine.game_builder import GameBuilder
-from Infernux.engine.runtime_artifact_catalog import load_asset_index, source_fingerprint, build_catalog
-from Infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
-from Infernux.lib import AssetDependencyGraph
+from infernux.components.skeletal_animator import SkeletalAnimator
+from infernux.core.animation_clip3d import AnimationClip3D
+from infernux.core.asset_ref import AnimationClip3DRef
+from infernux.core.asset_types import read_meta_file, read_mesh_import_settings
+from infernux.core.assets import AssetManager
+from infernux.engine.game_builder import GameBuilder
+from infernux.engine.runtime_artifact_catalog import load_asset_index, source_fingerprint, build_catalog
+from infernux.engine.ui.animfsm_editor_panel import AnimFSMEditorPanel
+from infernux.lib import AssetDependencyGraph
 from test_model_animation_clips import model, spec
 
 
@@ -129,7 +129,7 @@ def test_owned_clip_identity_survives_rename_mode_toggle_refresh_and_move(model)
 
 def test_clip_picker_returns_owned_guid(model, monkeypatch):
     _, source, _ = model
-    from Infernux.engine.interaction import asset_reference_catalog
+    from infernux.engine.interaction import asset_reference_catalog
     monkeypatch.setattr(asset_reference_catalog, "items", lambda *_: [("Model", str(source))])
     _, value = AnimFSMEditorPanel._embedded_clip3d_picker_items("")[0]
     assert value["guid"] == output(source)["guid"]
@@ -138,7 +138,7 @@ def test_clip_picker_returns_owned_guid(model, monkeypatch):
 
 def test_clip_inspector_uses_child_identity_not_parent_model(model):
     database, source, model_guid = model
-    from Infernux.engine.ui import asset_details_renderer as ui
+    from infernux.engine.ui import asset_details_renderer as ui
     record = output(source)
     ui._ensure_categories()
     state = ui._State()

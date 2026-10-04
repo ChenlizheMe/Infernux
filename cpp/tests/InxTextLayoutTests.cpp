@@ -153,7 +153,7 @@ int main()
     const std::filesystem::path repositoryRoot =
         std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
     const std::string latinFont = (repositoryRoot / "external/imgui/misc/fonts/Roboto-Medium.ttf").string();
-    const std::string cjkFont = (repositoryRoot / "python/Infernux/resources/fonts/PingFangSC-Regular.ttf").string();
+    const std::string cjkFont = (repositoryRoot / "python/infernux/resources/fonts/PingFangSC-Regular.ttf").string();
     assert(std::filesystem::exists(latinFont));
     assert(std::filesystem::exists(cjkFont));
     infernux::textlayout::TextLayoutParams explicitChain{};

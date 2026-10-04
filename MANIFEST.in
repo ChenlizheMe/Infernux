@@ -1,10 +1,8 @@
-include python/infernux.py
-include python/infernux.pyi
-recursive-include python/Infernux *
-recursive-exclude python/Infernux/_runtime_packs *
-recursive-exclude python/Infernux/_runtime_modules *
-recursive-exclude python/Infernux/resources/player_runtime *
-recursive-exclude python/Infernux/test *
+recursive-include python/infernux *
+recursive-exclude python/infernux/_runtime_packs *
+recursive-exclude python/infernux/_runtime_modules *
+recursive-exclude python/infernux/resources/player_runtime *
+recursive-exclude python/infernux/test *
 recursive-exclude python/test *
 recursive-exclude python *.meta
 global-exclude __pycache__ *.pyc *.pyo *.bak *.pdb *.lib *.exp

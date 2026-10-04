@@ -2,18 +2,18 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.rendergraph.graph import Format, RenderGraph
-from Infernux.renderstack.geometry_buffers import (
+from infernux.rendergraph.graph import Format, RenderGraph
+from infernux.renderstack.geometry_buffers import (
     GeometryBufferTopologyError,
     geometry_buffer,
 )
-from Infernux.renderstack.render_pipeline import RenderPipeline
-from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
-from Infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
-from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
-from Infernux.renderstack.fullscreen_effect import FullScreenEffect
-from Infernux.renderstack.pipeline_dsl import PipelineBuilder
-from Infernux.renderstack.resource_bus import ResourceBus
+from infernux.renderstack.render_pipeline import RenderPipeline
+from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+from infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
+from infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
+from infernux.renderstack.fullscreen_effect import FullScreenEffect
+from infernux.renderstack.pipeline_dsl import PipelineBuilder
+from infernux.renderstack.resource_bus import ResourceBus
 
 
 def test_pass_result_write_preserves_parent_revision():
@@ -175,13 +175,13 @@ def test_deferred_public_normal_preserves_coverage_and_effect_revision():
     from pathlib import Path
 
     template = Path(
-        "python/Infernux/resources/shaders/_templates/surface_main_normal.glsl"
+        "python/infernux/resources/shaders/_templates/surface_main_normal.glsl"
     ).read_text(encoding="utf-8")
     packed_template = Path(
-        "python/Infernux/resources/shaders/_templates/default_gbuffer_evaluate.glsl"
+        "python/infernux/resources/shaders/_templates/default_gbuffer_evaluate.glsl"
     ).read_text(encoding="utf-8")
     deferred_lighting = Path(
-        "python/Infernux/resources/shaders/deferred_lighting.frag"
+        "python/infernux/resources/shaders/deferred_lighting.frag"
     ).read_text(encoding="utf-8")
     assert "s.alpha < material._AlphaClipThreshold) discard;" in template
     assert "outNormal = vec4(normalWS * 0.5 + 0.5, 1.0);" in template
@@ -466,7 +466,7 @@ def test_declarative_pipeline_propagates_effect_result_revision():
         )
 
     graph._effect_stage_callback = replace_color
-    from Infernux.renderstack.pipeline_compiler import compile_pipeline_definition
+    from infernux.renderstack.pipeline_compiler import compile_pipeline_definition
 
     compile_pipeline_definition(builder.build(), graph, pipeline=pipeline)
     effect_result = graph.get_pass_result("effect:stylized")

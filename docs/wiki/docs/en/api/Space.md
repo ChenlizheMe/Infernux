@@ -1,7 +1,7 @@
 # Space
 
 <div class="class-info">
-class in <b>Infernux.components</b>
+class in <b>infernux.components</b>
 </div>
 
 ## Description

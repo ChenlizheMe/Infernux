@@ -4,16 +4,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.lib import Vector3
-from Infernux.ui import UIText, UIButton, UISlider, UICanvas, UIGroup, TextResizeMode
-from Infernux.engine.runtime_screen_ui import (
+from infernux.lib import Vector3
+from infernux.ui import UIText, UIButton, UISlider, UICanvas, UIGroup, TextResizeMode
+from infernux.engine.runtime_screen_ui import (
     WorldUIElementTarget, collect_runtime_ui_input_surfaces, map_runtime_ui_pointer,
     map_runtime_ui_pointers, map_world_ui_ray, pick_world_ui_object_ids,
 )
-from Infernux.engine.runtime_event_queue import clear as clear_runtime_events
-from Infernux.engine.runtime_event_queue import drain as drain_runtime_events
-from Infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame
-from Infernux.ui.ui_event_data import PointerType
+from infernux.engine.runtime_event_queue import clear as clear_runtime_events
+from infernux.engine.runtime_event_queue import drain as drain_runtime_events
+from infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame
+from infernux.ui.ui_event_data import PointerType
 
 
 def control(scene, kind=UIButton, position=(0, 0, 0)):
@@ -37,7 +37,7 @@ def map_pointer(surfaces, view=None):
 
 @pytest.fixture(autouse=True)
 def no_occlusion(monkeypatch):
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
     clear_runtime_events()
     monkeypatch.setattr(Physics, 'raycast', lambda *_a, **_kw: None)
     yield
@@ -62,7 +62,7 @@ def test_batch_reads_native_pose_not_python_component_properties(scene, monkeypa
 
 @pytest.mark.parametrize('world_ui', [False, True])
 def test_scene_mouse_hit_without_world_plane_intersection(scene, monkeypatch, world_ui):
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
     surfaces = ()
     if world_ui:
         control(scene)
@@ -84,7 +84,7 @@ def test_scene_mouse_hit_without_world_plane_intersection(scene, monkeypatch, wo
 
 
 def test_no_scene_query_when_input_disabled_or_camera_absent(monkeypatch):
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
     def unexpected(*args, **kwargs):
         pytest.fail('Disabled scene input must not issue a physics query')
     monkeypatch.setattr(Physics, 'raycast', unexpected)
@@ -93,7 +93,7 @@ def test_no_scene_query_when_input_disabled_or_camera_absent(monkeypatch):
 
 
 def test_blocking_screen_ui_skips_the_hidden_scene_query(scene, monkeypatch):
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
 
     canvas_object = scene.create_game_object('Screen Canvas')
     canvas = UICanvas()
@@ -117,7 +117,7 @@ def test_blocking_screen_ui_skips_the_hidden_scene_query(scene, monkeypatch):
 
 
 def test_nonblocking_screen_ui_preserves_the_scene_query(scene, monkeypatch):
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
 
     canvas_object = scene.create_game_object('Screen Canvas')
     canvas = UICanvas()
@@ -145,7 +145,7 @@ def test_nonblocking_screen_ui_preserves_the_scene_query(scene, monkeypatch):
 
 
 def test_blocking_screen_ui_skips_world_ui_occlusion_and_scene_query(scene, monkeypatch):
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
 
     control(scene, position=(0, 0, 0))
     canvas_object = scene.create_game_object('Screen Canvas')
@@ -175,7 +175,7 @@ def test_blocking_screen_ui_skips_world_ui_occlusion_and_scene_query(scene, monk
 
 
 def test_world_ui_touch_contacts_share_one_physics_query_batch(scene, monkeypatch):
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
 
     control(scene, position=(0, 0, 0))
     surfaces = collect_runtime_ui_input_surfaces(scene)
@@ -207,7 +207,7 @@ def test_world_ui_touch_contacts_share_one_physics_query_batch(scene, monkeypatc
 
 
 def test_touch_batch_keeps_each_pointers_own_max_distance(scene, monkeypatch):
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
 
     _, element = control(scene, position=(0, 0, 0))
     element.width = element.height = 2000.0
@@ -238,7 +238,7 @@ def test_touch_batch_keeps_each_pointers_own_max_distance(scene, monkeypatch):
 
 
 def test_screen_ui_blocks_the_whole_touch_query_batch(scene, monkeypatch):
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
 
     control(scene, position=(0, 0, 0))
     canvas_object = scene.create_game_object('Screen Canvas')
@@ -258,7 +258,7 @@ def test_screen_ui_blocks_the_whole_touch_query_batch(scene, monkeypatch):
 
 
 def test_disabled_screen_ui_does_not_block_or_recompute_touch_mapping(scene, monkeypatch):
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
 
     control(scene, position=(0, 0, 0))
     canvas_object = scene.create_game_object('Disabled Screen Canvas')
@@ -285,7 +285,7 @@ def test_disabled_screen_ui_does_not_block_or_recompute_touch_mapping(scene, mon
 
 
 def test_ignore_raycast_solid_occludes_world_ui_but_is_not_mouse_target(scene, monkeypatch):
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
     control(scene)
     surfaces = collect_runtime_ui_input_surfaces(scene)
     blocker = SimpleNamespace(distance=1., game_object=SimpleNamespace(layer=2),

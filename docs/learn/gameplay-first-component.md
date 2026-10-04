@@ -75,6 +75,12 @@ Inside a live `InxComponent`:
 
 These owner properties are available during normal bound lifecycle use. Accessing them on a detached or destroyed component raises a runtime error, so cleanup should retain only the data it needs.
 
+## Imports and script reload {#imports-reload}
+
+`infernux` is the actual Python package. `import infernux as inx`, `import infernux.renderstack`, and `from infernux.renderstack import RenderStack` use ordinary Python imports and the same component registry. Installed Python libraries can be imported on first use without an engine import whitelist. Their ordinary factories, decorators, and field metadata are also allowed. Older scripts importing `Infernux` should use `infernux`.
+
+Saving a script compiles its source and stages its project dependencies before publishing the new revision to existing components. Syntax or import failure keeps the previously published revision running and reports the rejected source. Correcting the source allows the next save to publish; restarting the editor is unnecessary. The transaction protects script publication, not arbitrary external library side effects. Keep scene changes, file writes, and process or thread startup in lifecycle callbacks rather than module declarations.
+
 ## Lifecycle at a glance {#lifecycle}
 
 When a scene starts, Infernux first runs `awake` and `on_enable` across active objects, then runs `start` on enabled components. Per-frame execution follows with `update(delta_time)` and then `late_update(delta_time)`. `fixed_update(fixed_delta_time)` runs on the fixed simulation step and belongs to physics work.
@@ -184,6 +190,12 @@ class HelloComponent(inx.InxComponent):
 - `self.game_object.get_component(SomeType)` 返回第一个匹配组件；找不到时返回 `None`。
 
 组件脱离物体或已经销毁后，所属物体属性将不可用。清理逻辑只应使用自己确实需要的数据。
+
+## 导入与脚本热重载 {#imports-reload_1}
+
+`infernux` 就是引擎实际的 Python 包。`import infernux as inx`、`import infernux.renderstack` 和 `from infernux.renderstack import RenderStack` 都使用普通 Python 导入，共用同一套组件注册表。已安装的 Python 库可以在首次使用时导入，不需要引擎导入白名单；普通工厂、装饰器和字段元数据也允许使用。旧脚本使用的 `Infernux` 包名应改为 `infernux`。
+
+保存脚本后，引擎会先编译源码并准备项目依赖，再把新修订发布给已有组件。语法或导入失败时，上一份已发布修订继续运行，并报告被拒绝的源码；修正后再次保存即可发布，无需重启编辑器。事务保护的是脚本发布，不能回滚任意外部库的副作用。场景修改、文件写入、进程或线程启动应放在生命周期回调中，而不是模块声明阶段。
 
 ## 生命周期速览 {#lifecycle_1}
 

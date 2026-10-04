@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from Infernux.core.shader import Shader
-from Infernux.engine.ui.project_file_ops import create_shader
+from infernux.core.shader import Shader
+from infernux.engine.ui.project_file_ops import create_shader
 
 
 def test_camera_helpers_use_shader_linker_per_view_camera_contract():
     from pathlib import Path
 
-    source = Path("python/Infernux/resources/shaders/lib/camera.glsl").read_text(
+    source = Path("python/infernux/resources/shaders/lib/camera.glsl").read_text(
         encoding="utf-8"
     )
     camera_helpers = source[source.index("vec3 getCameraPosition()") :]
@@ -51,7 +51,7 @@ def test_shader_file_creation_accepts_graphics_stages(tmp_path):
 def test_pbr_specular_highlights_reaches_direct_light_brdf():
     from pathlib import Path
 
-    shader_root = Path("python/Infernux/resources/shaders")
+    shader_root = Path("python/infernux/resources/shaders")
     shading_model = (shader_root / "pbr.shadingmodel").read_text(encoding="utf-8")
     lighting = (shader_root / "lighting.glsl").read_text(encoding="utf-8")
     pbr = (shader_root / "pbr.glsl").read_text(encoding="utf-8")
@@ -65,7 +65,7 @@ def test_pbr_specular_highlights_reaches_direct_light_brdf():
 def test_surface_passes_fall_back_to_geometric_normal():
     from pathlib import Path
 
-    shader_root = Path("python/Infernux/resources/shaders")
+    shader_root = Path("python/infernux/resources/shaders")
     surface = (shader_root / "surface.glsl").read_text(encoding="utf-8")
     assert "s.normalWS = vec3(0.0);" in surface
     assert "vec3 ResolveSurfaceNormal(" in surface
@@ -87,7 +87,7 @@ def test_gizmo_icon_shader_applies_component_vertex_tint():
     from pathlib import Path
     import re
 
-    source = Path("python/Infernux/resources/shaders/gizmo_icon.frag").read_text(
+    source = Path("python/infernux/resources/shaders/gizmo_icon.frag").read_text(
         encoding="utf-8"
     )
     assert "texColor.rgb * v_Color * material.baseColor.rgb" in source
@@ -102,7 +102,7 @@ def test_gizmo_icon_shader_applies_component_vertex_tint():
 def test_gizmo_vertex_uses_the_draw_list_instance_transform():
     from pathlib import Path
 
-    shader_root = Path("python/Infernux/resources/shaders")
+    shader_root = Path("python/infernux/resources/shaders")
     gizmo_vertex = (shader_root / "gizmo.vert").read_text(encoding="utf-8")
     mesh_vertex = (shader_root / "_templates/vertex_main.glsl").read_text(
         encoding="utf-8"

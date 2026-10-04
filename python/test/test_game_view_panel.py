@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.ui.game_view_panel import (
+from infernux.engine.ui.game_view_panel import (
     GameViewPanel,
     _GAME_UI_BUTTON_SEMANTIC_PREFIX,
     _GAME_VIEW_FPS_SEMANTIC_ID,
@@ -29,10 +29,10 @@ class _Engine:
 
 
 def test_mouse_route_uses_live_play_manager_and_newly_focused_panel(monkeypatch):
-    import Infernux.lib as lib
-    import Infernux.engine.ui.game_view_panel as module
-    import Infernux.engine.runtime_screen_ui as ui
-    from Infernux.physics import Physics
+    import infernux.lib as lib
+    import infernux.engine.ui.game_view_panel as module
+    import infernux.engine.runtime_screen_ui as ui
+    from infernux.physics import Physics
 
     camera = SimpleNamespace(culling_mask=1, screen_point_to_ray=lambda *args: (1, 2))
     scene = SimpleNamespace(
@@ -83,8 +83,8 @@ class _RenderActivationEngine(_Engine):
 
 @pytest.mark.parametrize('transition', ['hidden', 'disabled', 'stopped', 'unfocused'])
 def test_game_input_departure_cancels_ui_and_mouse_capture(monkeypatch, transition):
-    import Infernux.engine.ui.game_view_panel as module
-    from Infernux.acceptance import RuntimeAcceptance
+    import infernux.engine.ui.game_view_panel as module
+    from infernux.acceptance import RuntimeAcceptance
 
     panel = GameViewPanel(engine=_RenderActivationEngine())
     resets = []
@@ -192,7 +192,7 @@ class _Context:
 
 
 def test_game_ui_button_is_exposed_as_a_play_only_semantic_target(monkeypatch):
-    import Infernux.engine.ui.game_view_panel as module
+    import infernux.engine.ui.game_view_panel as module
 
     class _Button:
         label = "START RACE"
@@ -213,7 +213,7 @@ def test_game_ui_button_is_exposed_as_a_play_only_semantic_target(monkeypatch):
 
 
 def test_game_viewport_is_exposed_as_a_semantic_click_target(monkeypatch):
-    import Infernux.engine.ui.game_view_panel as module
+    import infernux.engine.ui.game_view_panel as module
 
     monkeypatch.setattr(module, "_SM", SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: None)))
     monkeypatch.setattr(
@@ -248,7 +248,7 @@ def test_game_viewport_is_exposed_as_a_semantic_click_target(monkeypatch):
 
 
 def test_game_viewport_does_not_steal_clicks_through_a_floating_window(monkeypatch):
-    import Infernux.engine.ui.game_view_panel as module
+    import infernux.engine.ui.game_view_panel as module
 
     monkeypatch.setattr(module, "_SM", SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: None)))
     monkeypatch.setattr(
@@ -281,7 +281,7 @@ def test_game_viewport_does_not_steal_clicks_through_a_floating_window(monkeypat
 
 
 def test_game_viewport_activates_on_mouse_down_before_imgui_button_release(monkeypatch):
-    import Infernux.engine.ui.game_view_panel as module
+    import infernux.engine.ui.game_view_panel as module
 
     monkeypatch.setattr(module, "_SM", SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: None)))
     monkeypatch.setattr(
@@ -309,7 +309,7 @@ def test_game_viewport_activates_on_mouse_down_before_imgui_button_release(monke
 
 
 def test_visible_fps_counter_has_stable_semantic_target(monkeypatch):
-    import Infernux.engine.ui.game_view_panel as module
+    import infernux.engine.ui.game_view_panel as module
 
     monkeypatch.setattr(
         module,
@@ -353,7 +353,7 @@ def test_visible_fps_counter_has_stable_semantic_target(monkeypatch):
 
 
 def test_hidden_game_view_keeps_rendering_during_runtime_acceptance(monkeypatch):
-    from Infernux.acceptance import RuntimeAcceptance
+    from infernux.acceptance import RuntimeAcceptance
 
     engine = _RenderActivationEngine()
     panel = GameViewPanel(engine=engine)
@@ -366,7 +366,7 @@ def test_hidden_game_view_keeps_rendering_during_runtime_acceptance(monkeypatch)
 
 
 def test_hidden_game_view_disables_rendering_without_runtime_acceptance(monkeypatch):
-    from Infernux.acceptance import RuntimeAcceptance
+    from infernux.acceptance import RuntimeAcceptance
 
     engine = _RenderActivationEngine()
     panel = GameViewPanel(engine=engine)
@@ -380,7 +380,7 @@ def test_hidden_game_view_disables_rendering_without_runtime_acceptance(monkeypa
 
 
 def test_disabling_game_view_releases_game_focus_and_cursor(monkeypatch):
-    import Infernux.engine.ui.game_view_panel as module
+    import infernux.engine.ui.game_view_panel as module
 
     focus_calls: list[bool] = []
     lock_calls: list[bool] = []
@@ -522,7 +522,7 @@ def test_game_texture_handle_refreshes_when_native_target_generation_changes(mon
 
 
 def test_game_view_canvas_snapshot_ignores_unrelated_scene_structure_changes(monkeypatch):
-    import Infernux.engine.ui.game_view_panel as module
+    import infernux.engine.ui.game_view_panel as module
 
     class _Scene:
         structure_version = 7
@@ -575,7 +575,7 @@ def test_game_view_canvas_snapshot_ignores_unrelated_scene_structure_changes(mon
 
 
 def test_game_view_invalidates_canvas_snapshot_when_scene_is_cleared(monkeypatch):
-    import Infernux.engine.ui.game_view_panel as module
+    import infernux.engine.ui.game_view_panel as module
 
     class _Scene:
         structure_version = 1
@@ -606,7 +606,7 @@ def test_game_view_invalidates_canvas_snapshot_when_scene_is_cleared(monkeypatch
 
 
 def test_game_view_refreshes_empty_canvas_snapshot_on_membership_revision(monkeypatch):
-    import Infernux.engine.ui.game_view_panel as module
+    import infernux.engine.ui.game_view_panel as module
 
     class _Scene:
         structure_version = 1
@@ -645,7 +645,7 @@ def test_game_view_refreshes_empty_canvas_snapshot_on_membership_revision(monkey
 
 
 def test_game_view_reorders_retained_canvases_when_sort_order_changes(monkeypatch):
-    import Infernux.engine.ui.game_view_panel as module
+    import infernux.engine.ui.game_view_panel as module
 
     class _Scene:
         structure_version = 1
@@ -675,8 +675,8 @@ def test_game_view_reorders_retained_canvases_when_sort_order_changes(monkeypatc
 
 
 def test_visible_game_panel_does_not_duplicate_runtime_screen_ui_submission(monkeypatch):
-    import Infernux.engine.ui.game_view_panel as module
-    from Infernux.ui.enums import RenderMode
+    import infernux.engine.ui.game_view_panel as module
+    from infernux.ui.enums import RenderMode
 
     class _Renderer:
         @staticmethod
@@ -732,8 +732,8 @@ def test_visible_game_panel_does_not_duplicate_runtime_screen_ui_submission(monk
 
 
 def test_game_view_resolution_and_fit_are_non_dirty_undoable_view_actions(monkeypatch):
-    from Infernux.engine.interaction import ViewCommandService
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ViewCommandService
+    from infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager._instance
     previous_service = ViewCommandService._instance
@@ -784,8 +784,8 @@ def test_game_view_resolution_and_fit_are_non_dirty_undoable_view_actions(monkey
 
 
 def test_game_view_scale_drag_persists_once_after_gesture(monkeypatch):
-    from Infernux.engine.interaction import ViewCommandService
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ViewCommandService
+    from infernux.engine.undo import UndoManager
 
     class _GestureState:
         def __init__(self):

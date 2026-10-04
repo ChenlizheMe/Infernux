@@ -2,21 +2,21 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.engine.nuitka_builder import NuitkaBuilder
-from Infernux.engine.ui.curve_editor import render_curve_property
-from Infernux.engine.ui.dpi import editor_dpi_scale
-from Infernux.engine.ui.editor_modal import (
+from infernux.engine.nuitka_builder import NuitkaBuilder
+from infernux.engine.ui.curve_editor import render_curve_property
+from infernux.engine.ui.dpi import editor_dpi_scale
+from infernux.engine.ui.editor_modal import (
     EditorModalAction,
     begin_editor_modal,
     render_editor_modal_actions,
 )
-from Infernux.engine.ui.editor_panel import EditorPanel
-from Infernux.engine.ui.inspector_utils import (
+from infernux.engine.ui.editor_panel import EditorPanel
+from infernux.engine.ui.inspector_utils import (
     render_compact_section_header,
     render_inspector_checkbox,
 )
-from Infernux.engine.ui.theme import Theme
-from Infernux.graph.ramp import AnimationCurve
+from infernux.engine.ui.theme import Theme
+from infernux.graph.ramp import AnimationCurve
 
 
 class _ModalContext:

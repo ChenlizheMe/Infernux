@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from Infernux.core.parallel_backend import (
+from infernux.core.parallel_backend import (
     ParallelBackend,
     ParallelBufferView,
     ParallelCapabilities,

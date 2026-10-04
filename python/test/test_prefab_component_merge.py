@@ -2,11 +2,11 @@
 import copy
 import pytest
 
-from Infernux.engine.component_restore import deserialize_game_object_document_transactionally
-from Infernux.engine.prefab_manager import (
+from infernux.engine.component_restore import deserialize_game_object_document_transactionally
+from infernux.engine.prefab_manager import (
     PrefabDocumentError, _read_prefab_document, instantiate_prefab, save_prefab,
 )
-from Infernux.engine.prefab_overrides import (
+from infernux.engine.prefab_overrides import (
     apply_overrides_to_prefab, build_prefab_apply_command, compute_overrides,
     resolve_scene_prefab_documents, revert_overrides,
 )
@@ -98,7 +98,7 @@ def test_unversioned_scene_component_baseline_is_rejected(scene, tmp_path):
 
 
 def test_component_source_metadata_is_not_author_data(scene, tmp_path):
-    from Infernux.engine.component_restore import serialize_game_object_document_authoritatively
+    from infernux.engine.component_restore import serialize_game_object_document_authoritatively
     path, (first, _) = _pair(scene, tmp_path)
     document = serialize_game_object_document_authoritatively(first)
     for record in document["components"]:
@@ -119,7 +119,7 @@ def test_instance_reorder_survives_unrelated_source_field_change(scene, tmp_path
 
 
 def test_unpack_clears_component_links_and_undo_restores_them(scene, tmp_path):
-    from Infernux.engine.undo import PrefabUnpackCommand
+    from infernux.engine.undo import PrefabUnpackCommand
     _, (first, _) = _pair(scene, tmp_path)
     before = first.serialize_document()["components"]
     command = PrefabUnpackCommand(first.id)
@@ -143,8 +143,8 @@ def test_deleted_highest_component_id_is_not_reused(scene, tmp_path):
 
 @pytest.mark.parametrize("python_component", [False, True])
 def test_copying_linked_child_clears_native_and_python_component_links(scene, tmp_path, python_component):
-    from Infernux.components import InxComponent, serialized_field
-    from Infernux.engine.component_restore import clone_game_object_transactionally
+    from infernux.components import InxComponent, serialized_field
+    from infernux.engine.component_restore import clone_game_object_transactionally
 
     class ChildProbe(InxComponent):
         value = serialized_field(default=7)

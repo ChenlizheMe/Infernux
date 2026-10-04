@@ -5,11 +5,11 @@ import threading
 
 import pytest
 
-from Infernux.engine.player_package_native import read_entry, write_pack_isolated
+from infernux.engine.player_package_native import read_entry, write_pack_isolated
 
 
 def _native_inxpack():
-    module = importlib.import_module("Infernux.lib._Infernux")
+    module = importlib.import_module("infernux.lib._Infernux")
     if not hasattr(module, "_inxpack_write"):
         pytest.skip("the native InxPack binding is not installed")
     return module

@@ -5,11 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.assets import AssetManager
-from Infernux.debug import DebugConsole, LogEntry, LogType
-from Infernux.lib import ConsolePanel
-from Infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry
-from Infernux.renderstack.render_stack import RenderStack
+from infernux.core.assets import AssetManager
+from infernux.debug import DebugConsole, LogEntry, LogType
+from infernux.lib import ConsolePanel
+from infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry
+from infernux.renderstack.render_stack import RenderStack
 
 
 class PublicationContext:

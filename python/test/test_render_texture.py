@@ -2,11 +2,11 @@
 from types import SimpleNamespace
 
 import pytest
-import Infernux as inx
-from Infernux.application import Application
-from Infernux.core import RenderTexture
-from Infernux.lib import PixelFormat, SampleCount
-from Infernux.rendergraph.graph import RenderGraph
+import infernux as inx
+from infernux.application import Application
+from infernux.core import RenderTexture
+from infernux.lib import PixelFormat, SampleCount
+from infernux.rendergraph.graph import RenderGraph
 
 
 @pytest.mark.parametrize('size', [(0, 1), (1, -1), (True, 1), (1.5, 2), ('64', 64)])
@@ -299,7 +299,7 @@ def test_scene_and_game_target_replacement_uses_rhi_attachments(engine):
 
 
 def test_camera_cache_observes_additive_unload_without_a_render_frame(engine, scene):
-    from Infernux.lib import SceneManager
+    from infernux.lib import SceneManager
 
     manager = SceneManager.instance()
     baseline = set(engine.renderer_frame_snapshot['game_camera_ids'])

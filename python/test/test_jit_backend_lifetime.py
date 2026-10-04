@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from Infernux._jit_compat import prepare_cpu_backend
+from infernux._jit_compat import prepare_cpu_backend
 from llvmlite import binding as llvm
 from llvmlite.binding import ffi, newpassmanagers
 

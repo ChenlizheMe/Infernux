@@ -3,15 +3,15 @@ import copy
 import json
 import pytest
 
-from Infernux.components import InxComponent, serialized_field, FieldType
-from Infernux.components.fields import get_raw_field_value
-from Infernux.components.ref_wrappers import ComponentRef
-from Infernux.engine.component_restore import (
+from infernux.components import InxComponent, serialized_field, FieldType
+from infernux.components.fields import get_raw_field_value
+from infernux.components.ref_wrappers import ComponentRef
+from infernux.engine.component_restore import (
     deserialize_game_object_document_transactionally, clone_game_object_transactionally,
     deserialize_scene_document_transactionally,
 )
-from Infernux.engine.prefab_manager import save_prefab, instantiate_prefab
-from Infernux.engine.prefab_overrides import apply_overrides_to_prefab, compute_overrides
+from infernux.engine.prefab_manager import save_prefab, instantiate_prefab
+from infernux.engine.prefab_overrides import apply_overrides_to_prefab, compute_overrides
 
 
 class _ExactReferenceProbe(InxComponent):
@@ -91,7 +91,7 @@ def test_ref_identity_participates_in_equality(scene):
 
 
 def test_direct_construction_uses_the_bound_script_asset_identity(scene):
-    from Infernux.components.component_identity import bind_asset_script_guid
+    from infernux.components.component_identity import bind_asset_script_guid
     class AssetBoundProbe(InxComponent):
         target = serialized_field(default=None, field_type=FieldType.COMPONENT)
     bind_asset_script_guid(AssetBoundProbe, "041-script-asset")
@@ -118,7 +118,7 @@ def test_python_forward_reference_survives_prefab_projection(scene, tmp_path):
 
 
 def test_inspector_picker_offers_exact_same_type_components(scene):
-    from Infernux.engine.ui._inspector_references import _picker_scene_components, _create_component_ref_from_go
+    from infernux.engine.ui._inspector_references import _picker_scene_components, _create_component_ref_from_go
     root, _, identity = _source(scene)
     choices = _picker_scene_components("Exact reference", "BoxCollider")
     assert len(choices) == 2
@@ -130,7 +130,7 @@ def test_inspector_picker_offers_exact_same_type_components(scene):
 
 
 def test_scene_copy_remaps_native_and_python_references_without_mutating_source(scene):
-    from Infernux.lib import SceneManager
+    from infernux.lib import SceneManager
     root, probe, identity = _source(scene)
     other = scene.create_game_object("Python target")
     target = other.add_py_component(_ExactReferenceProbe())
@@ -163,7 +163,7 @@ def test_scene_round_trip_preserves_exact_component(scene):
 
 
 def test_cook_projects_exact_reference_after_source_component_reorder(scene, tmp_path):
-    from Infernux.engine.prefab_overrides import resolve_scene_prefab_documents
+    from infernux.engine.prefab_overrides import resolve_scene_prefab_documents
     root, _, _ = _source(scene)
     path = str(tmp_path / "cooked.prefab")
     assert save_prefab(root, path)
@@ -190,7 +190,7 @@ def test_legacy_reference_serialization_does_not_change_hash(scene):
 
 @pytest.mark.parametrize("identity", [-1, True, "42", 1.5])
 def test_component_reference_document_rejects_invalid_identity(identity):
-    from Infernux.components.value_document import is_component_ref_document, make_component_ref
+    from infernux.components.value_document import is_component_ref_document, make_component_ref
     document = make_component_ref(1, "BoxCollider")
     document["component_id"] = identity
     assert not is_component_ref_document(document)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.engine.ui.curve_editor import _evaluate_keys, _view_bounds
+from infernux.engine.ui.curve_editor import _evaluate_keys, _view_bounds
 
 
 def test_curve_editor_uses_cubic_hermite_tangents():

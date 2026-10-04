@@ -9,10 +9,10 @@ import subprocess
 
 import pytest
 
-import Infernux.particle.gpu_glsl_backend as gpu_backend
+import infernux.particle.gpu_glsl_backend as gpu_backend
 
-from Infernux.lib import _Infernux as native
-from Infernux.particle import (
+from infernux.lib import _Infernux as native
+from infernux.particle import (
     EmitterSettings,
     EmitterShape,
     GpuParticleGlslLowerer,
@@ -38,15 +38,15 @@ from Infernux.particle import (
     validate_gpu_particle_spirv,
     pack_gpu_particle_parameters,
 )
-from Infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
-from Infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
-from Infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
-from Infernux.particle.nodes import (
+from infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
+from infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
+from infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
+from infernux.particle.nodes import (
     PARTICLE_EVENT_ACTIVE_TYPE_ID,
     PARTICLE_EVENT_TRIGGER_TYPE_ID,
     particle_event_payload_port_id,
 )
-from Infernux.particle.asset import particle_attribute_cache_id
+from infernux.particle.asset import particle_attribute_cache_id
 
 
 def _gpu_source():
@@ -148,7 +148,7 @@ def test_gpu_nonfused_particle_recycling_has_one_stage_owner():
 
 def test_particle_script_until_compiles_to_valid_gpu_continuations():
     source_text = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class TimedMotion(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -185,7 +185,7 @@ class TimedMotion(ParticleScript):
 
 def test_target_position_motion_compiles_to_gpu_without_hidden_target_storage():
     source_text = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class TargetMotion(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -224,7 +224,7 @@ class TargetMotion(ParticleScript):
 
 def test_rendering_wait_uses_an_independent_gpu_timeline_and_keeps_exporting():
     source_text = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class RenderingTimeline(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -266,7 +266,7 @@ class RenderingTimeline(ParticleScript):
 
 def test_init_wait_gates_update_and_rendering_until_all_init_lanes_finish():
     source_text = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class DelayedBirth(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -329,7 +329,7 @@ def test_simultaneous_init_wait_lanes_serialize_completion_and_release_gate():
 
 def test_particle_script_delta_time_compiles_to_explicit_gpu_uniform_math():
     source_text = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class Gravity(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -362,7 +362,7 @@ class Gravity(ParticleScript):
 
 def test_particle_script_if_else_with_wait_compiles_to_valid_gpu_continuations():
     source_text = '''\
-from Infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
+from infernux.particle import ParticleScript, ParticleEmitter, EmitterSettings
 
 class ConditionalMotion(ParticleScript):
     class Emitter(ParticleEmitter):
@@ -2214,7 +2214,7 @@ def test_gpu_event_payload_round_trips_through_the_per_particle_fifo():
 
 def test_gpu_event_wait_keeps_one_fifo_invocation_active_until_resume():
     source_text = '''\
-from Infernux.particle import (
+from infernux.particle import (
     ParticleScript, ParticleEmitter, EmitterSettings, EventField, EventType, event,
 )
 
@@ -2472,11 +2472,11 @@ def test_gpu_vector_noise_uses_the_portable_hash_and_compiles_to_spirv():
 
 def test_geometry_and_particle_shadow_receivers_use_stable_pcf_without_blocker_search():
     python_root = Path(__file__).resolve().parents[1]
-    shader_path = python_root / "Infernux" / "resources" / "shaders" / "lighting.glsl"
+    shader_path = python_root / "infernux" / "resources" / "shaders" / "lighting.glsl"
     geometry_source = shader_path.read_text(encoding="utf-8")
-    particle_source = (python_root / "Infernux" / "particle" / "gpu_glsl_backend.py").read_text(encoding="utf-8")
+    particle_source = (python_root / "infernux" / "particle" / "gpu_glsl_backend.py").read_text(encoding="utf-8")
     lighting_ubo = (
-        python_root / "Infernux" / "resources" / "shaders" / "_templates" / "lighting_ubo.glsl"
+        python_root / "infernux" / "resources" / "shaders" / "_templates" / "lighting_ubo.glsl"
     ).read_text(encoding="utf-8")
 
     for source in (geometry_source, particle_source):
@@ -2504,7 +2504,7 @@ def test_geometry_and_particle_shadow_receivers_use_stable_pcf_without_blocker_s
 
 def test_shadow_vertex_keeps_shared_bias_out_of_caster_geometry_and_scopes_line_bias():
     python_root = Path(__file__).resolve().parents[1]
-    template_root = python_root / "Infernux" / "resources" / "shaders" / "_templates"
+    template_root = python_root / "infernux" / "resources" / "shaders" / "_templates"
     builtins = (template_root / "shadow_vertex_builtins.glsl").read_text(encoding="utf-8")
     vertex = (template_root / "shadow_vertex_main.glsl").read_text(encoding="utf-8")
 
@@ -2521,7 +2521,7 @@ def test_shadow_vertex_keeps_shared_bias_out_of_caster_geometry_and_scopes_line_
 
 def test_geometry_shadow_filter_applies_receiver_bias_before_stable_tent_pcf():
     python_root = Path(__file__).resolve().parents[1]
-    source = (python_root / "Infernux" / "resources" / "shaders" / "lighting.glsl").read_text(
+    source = (python_root / "infernux" / "resources" / "shaders" / "lighting.glsl").read_text(
         encoding="utf-8"
     )
 
@@ -3436,7 +3436,7 @@ def test_gpu_mesh_shape_uses_shared_mesh_buffers_and_compiles(mode):
 
 def test_gpu_mesh_parameter_exposes_all_static_mesh_attributes_and_compiles():
     source = '''\
-from Infernux.particle import AssetReference, EmitterSettings, Parameter, ParticleEmitter, ParticleScript
+from infernux.particle import AssetReference, EmitterSettings, Parameter, ParticleEmitter, ParticleScript
 
 class MeshSampling(ParticleScript):
     parameters = (

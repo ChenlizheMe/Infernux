@@ -1,7 +1,7 @@
 import math
 from types import SimpleNamespace
 
-from Infernux.engine.runtime_screen_ui import (
+from infernux.engine.runtime_screen_ui import (
     RuntimeScreenUISubmission,
     WorldUIElementTarget,
     collect_runtime_ui_input_surfaces,
@@ -9,10 +9,10 @@ from Infernux.engine.runtime_screen_ui import (
     map_runtime_ui_pointers,
     pick_world_ui_object_ids,
 )
-from Infernux.components import GameObjectRef
-from Infernux.lib import ScreenUIList, Vector3
-from Infernux.physics import Physics
-from Infernux.ui import UIButton
+from infernux.components import GameObjectRef
+from infernux.lib import ScreenUIList, Vector3
+from infernux.physics import Physics
+from infernux.ui import UIButton
 
 
 def _control(scene, name, depth, top=False):
@@ -155,7 +155,7 @@ def test_selective_input_does_not_treat_colliderless_objects_as_physics_blockers
 
 
 def test_world_submission_publishes_explicit_depth_policy(scene, monkeypatch):
-    import Infernux.engine.runtime_screen_ui as runtime_ui
+    import infernux.engine.runtime_screen_ui as runtime_ui
 
     _, element = _control(scene, "submitted", 0.0)
     associated = scene.create_game_object("associated")

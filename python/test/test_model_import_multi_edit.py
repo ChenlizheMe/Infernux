@@ -6,17 +6,17 @@ import time
 
 import pytest
 
-from Infernux.core.asset_types import MeshImportSettings
-from Infernux.core.asset_types import read_mesh_import_settings
-from Infernux.core.assets import AssetManager
-from Infernux.lib import AssetRegistry
-from Infernux.engine.interaction import (
+from infernux.core.asset_types import MeshImportSettings
+from infernux.core.asset_types import read_mesh_import_settings
+from infernux.core.assets import AssetManager
+from infernux.lib import AssetRegistry
+from infernux.engine.interaction import (
     AuthoringMutationService,
     DocumentCapability,
     DocumentRegistry,
 )
-from Infernux.engine.undo import UndoManager
-from Infernux.engine.ui import asset_details_renderer as details
+from infernux.engine.undo import UndoManager
+from infernux.engine.ui import asset_details_renderer as details
 
 
 class _ExecutionLayer:
@@ -133,7 +133,7 @@ def test_batch_apply_preflights_every_document_before_starting_work(authoring_se
 
     started = []
     monkeypatch.setattr(
-        "Infernux.core.assets.AssetManager.begin_model_reimport",
+        "infernux.core.assets.AssetManager.begin_model_reimport",
         lambda path, _settings: started.append(path) or object(),
     )
     registry.update_metadata(
@@ -161,11 +161,11 @@ def test_batch_apply_starts_next_model_only_after_first_publication(authoring_se
 
     started = []
     monkeypatch.setattr(
-        "Infernux.core.assets.AssetManager.begin_model_reimport",
+        "infernux.core.assets.AssetManager.begin_model_reimport",
         lambda path, _settings: started.append(path) or object(),
     )
     monkeypatch.setattr(
-        "Infernux.core.assets.AssetManager.poll_model_reimport",
+        "infernux.core.assets.AssetManager.poll_model_reimport",
         lambda _database: SimpleNamespace(error=""),
     )
 
@@ -199,9 +199,9 @@ def test_batch_apply_leaves_later_draft_dirty_when_its_start_fails(authoring_ser
             raise RuntimeError("second import rejected")
         return object()
 
-    monkeypatch.setattr("Infernux.core.assets.AssetManager.begin_model_reimport", begin)
+    monkeypatch.setattr("infernux.core.assets.AssetManager.begin_model_reimport", begin)
     monkeypatch.setattr(
-        "Infernux.core.assets.AssetManager.poll_model_reimport",
+        "infernux.core.assets.AssetManager.poll_model_reimport",
         lambda _database: SimpleNamespace(error=""),
     )
 
@@ -225,7 +225,7 @@ def test_batch_apply_stops_after_failed_owner_commit(authoring_services, monkeyp
     )
     started = []
     monkeypatch.setattr(
-        "Infernux.core.assets.AssetManager.begin_model_reimport",
+        "infernux.core.assets.AssetManager.begin_model_reimport",
         lambda path, _settings: started.append(path) or object(),
     )
 
@@ -236,7 +236,7 @@ def test_batch_apply_stops_after_failed_owner_commit(authoring_services, monkeyp
             return False
 
     monkeypatch.setattr(
-        "Infernux.core.assets.AssetManager.poll_model_reimport",
+        "infernux.core.assets.AssetManager.poll_model_reimport",
         lambda _database: _FailedCommit(),
     )
     assert batch.request_apply()

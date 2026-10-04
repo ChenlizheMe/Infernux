@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.core.node_graph import (
+from infernux.core.node_graph import (
     GraphCompiler,
     GraphCycleError,
     GraphDiagnostic,

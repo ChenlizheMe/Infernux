@@ -11,20 +11,20 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from Infernux.components.particle_system import (
+from infernux.components.particle_system import (
     ParticleBoundsMode,
     ParticleOffscreenPolicy,
     ParticleSystem,
     _normalize_mesh_source_value,
 )
-from Infernux.components.ref_wrappers import ComponentRef
-from Infernux.core.asset_ref import ParticleGraphRef
-from Infernux.core.assets import AssetManager
-from Infernux.core.material import Material
-from Infernux.debug import Debug
-from Infernux.application import Application
-from Infernux.engine.undo import PythonComponentDocumentCommand
-from Infernux.graph import (
+from infernux.components.ref_wrappers import ComponentRef
+from infernux.core.asset_ref import ParticleGraphRef
+from infernux.core.assets import AssetManager
+from infernux.core.material import Material
+from infernux.debug import Debug
+from infernux.application import Application
+from infernux.engine.undo import PythonComponentDocumentCommand
+from infernux.graph import (
     AssetReference,
     GraphDocument,
     GraphLinkRecord,
@@ -33,8 +33,8 @@ from Infernux.graph import (
     TypeRef,
     ValueType,
 )
-from Infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
-from Infernux.particle import (
+from infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
+from infernux.particle import (
     EmitterSettings,
     ParticleBurst,
     ParticleEmitterAsset,
@@ -50,10 +50,10 @@ from Infernux.particle import (
     VectorField,
     default_event_graph,
 )
-from Infernux.lib import AssetRegistry, GameObject
+from infernux.lib import AssetRegistry, GameObject
 
 
-particle_system_module = importlib.import_module("Infernux.components.particle_system")
+particle_system_module = importlib.import_module("infernux.components.particle_system")
 
 
 class _ParticleGraphGuidDatabase:
@@ -1042,11 +1042,11 @@ def test_particle_system_deserialize_repairs_missing_runtime_override_cache(
 def test_particle_system_inspector_document_edits_undo_fields_parameters_and_emitters(
     scene, monkeypatch, tmp_path
 ):
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui._inspector_undo import (
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui._inspector_undo import (
         _record_python_component_document_edit,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     source = tmp_path / "InspectorUndo.particlegraph"
     ParticleGraphAsset(
@@ -1173,7 +1173,7 @@ def test_particle_system_has_no_instance_resource_override_contract():
 
 
 def test_particle_system_manual_bounds_are_local_and_transform_to_world_aabb():
-    from Infernux.lib import Vector3
+    from infernux.lib import Vector3
 
     component = ParticleSystem()
     component.bounds_mode = ParticleBoundsMode.MANUAL
@@ -1204,8 +1204,8 @@ def test_particle_system_manual_bounds_are_local_and_transform_to_world_aabb():
 
 
 def test_particle_system_transform_payload_does_not_require_numpy(monkeypatch):
-    import Infernux.components.particle_system as particle_system_module
-    from Infernux.lib import Vector3
+    import infernux.components.particle_system as particle_system_module
+    from infernux.lib import Vector3
 
     local_to_world = (
         -2.0, 0.0, 0.0, 0.0,

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.components import InxComponent
-from Infernux.coroutine import Coroutine
-from Infernux.engine.runtime_dispatch import (
+from infernux.components import InxComponent
+from infernux.coroutine import Coroutine
+from infernux.engine.runtime_dispatch import (
     ReloadableCallbackRegistry,
     current_runtime_epoch,
     has_runtime_phase,
@@ -79,7 +79,7 @@ def test_failed_or_cancelled_retirement_restores_current_descriptor():
 
 
 def test_deferred_retirement_does_not_notify_scheduler_before_commit():
-    from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
+    from infernux.components._component_lifecycle import RuntimeExecutionScheduler
 
     class _SchedulerSpy:
         def __init__(self):
@@ -118,7 +118,7 @@ def test_deferred_retirement_does_not_notify_scheduler_before_commit():
 
 
 def test_retirement_cannot_cross_an_active_frame_safe_point():
-    from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
+    from infernux.components._component_lifecycle import RuntimeExecutionScheduler
 
     owner = _RetirementProbe()
     owner.calls = []
@@ -161,7 +161,7 @@ def test_retired_callback_reports_missing_without_executing_old_body():
 
 
 def test_script_move_publishes_new_type_and_retires_old_type_as_one_epoch():
-    from Infernux.components.registry import (
+    from infernux.components.registry import (
         publish_component_script_types_batch,
         restore_component_registry_state,
         snapshot_component_registry_state,
@@ -202,7 +202,7 @@ def test_script_move_publishes_new_type_and_retires_old_type_as_one_epoch():
 
 
 def test_script_delete_transaction_retires_only_at_commit():
-    from Infernux.engine.play_mode import ScriptDeleteBatch
+    from infernux.engine.play_mode import ScriptDeleteBatch
 
     class _Manager:
         @staticmethod
@@ -227,7 +227,7 @@ def test_script_delete_transaction_retires_only_at_commit():
 
 
 def test_retired_type_phase_fallback_cannot_reenter_scheduler_plan():
-    from Infernux.components._component_lifecycle import (
+    from infernux.components._component_lifecycle import (
         ComponentLifecycleMixin,
         RuntimeExecutionScheduler,
     )

@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     ContinuousEditService,
     DocumentKind,
     DocumentRegistry,
@@ -127,8 +127,8 @@ def test_interaction_core_commits_edits_on_selection_and_panel_transitions():
 
 
 def test_material_continuous_edit_publishes_one_document_command():
-    from Infernux.engine.ui.inspector_material import _update_material_edit_session
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.ui.inspector_material import _update_material_edit_session
+    from infernux.engine.undo import UndoManager
 
     class _Material:
         guid = "material-guid"
@@ -197,12 +197,12 @@ def test_material_continuous_edit_publishes_one_document_command():
 
 
 def test_material_structural_text_edit_does_not_record_intermediate_values():
-    from Infernux.engine.ui.inspector_material import (
+    from infernux.engine.ui.inspector_material import (
         _apply_material_changes,
         _flush_deferred_undo,
         _material_edit_session_key,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     class _Material:
         guid = "material-guid"
@@ -301,7 +301,7 @@ def test_material_structural_text_edit_does_not_record_intermediate_values():
 
 
 def test_transient_inline_material_edit_stays_memory_local():
-    from Infernux.engine.ui.inspector_material import _apply_material_changes
+    from infernux.engine.ui.inspector_material import _apply_material_changes
 
     class _TransientMaterial:
         guid = ""

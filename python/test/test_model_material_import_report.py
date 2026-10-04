@@ -1,6 +1,6 @@
 import json
 
-from Infernux.engine.ui import asset_details_renderer as renderer
+from infernux.engine.ui import asset_details_renderer as renderer
 
 
 def test_material_import_report_formats_authoritative_source_context(monkeypatch):

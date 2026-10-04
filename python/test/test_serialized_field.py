@@ -17,19 +17,19 @@ from typing import Annotated, Optional, List
 
 import pytest
 
-from Infernux.components import (
+from infernux.components import (
     InxComponent, serialized_field, FieldType, get_serialized_fields,
     Range, Tooltip, Header, Space, Group, InfoText, DragSpeed,
     Multiline, ReadOnly, HideInInspector, NonSerialized, HDR, Color,
     VALUE_CODECS,
 )
-from Infernux.components.fields import (
+from infernux.components.fields import (
     build_field_from_annotation, coerce_serialized_field_input,
     _unwrap_annotation, _UNSET,
 )
-from Infernux.components.ref_wrappers import MaterialRef, GameObjectRef, ComponentRef, PrefabRef
-from Infernux.core.asset_ref import AudioClipRef, ParticleGraphRef, TextureRef
-from Infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
+from infernux.components.ref_wrappers import MaterialRef, GameObjectRef, ComponentRef, PrefabRef
+from infernux.core.asset_ref import AudioClipRef, ParticleGraphRef, TextureRef
+from infernux.graph.ramp import AnimationCurve, Gradient, GradientKey, Keyframe
 
 
 # ── annotation unwrapping ────────────────────────────────────────────────
@@ -96,7 +96,7 @@ class TestBuildField:
         assert meta is not None and meta.hidden is True
 
     def test_non_serialized_returns_sentinel(self):
-        from Infernux.components.fields import NON_SERIALIZED_FIELD
+        from infernux.components.fields import NON_SERIALIZED_FIELD
         meta = build_field_from_annotation(Annotated[int, NonSerialized], default=7)
         assert meta is NON_SERIALIZED_FIELD
 
@@ -194,7 +194,7 @@ class TestBuildField:
 
     def test_prefab_path_coerces_to_guid_backed_prefab_ref(self, monkeypatch):
         meta = build_field_from_annotation(PrefabRef, default=_UNSET)
-        from Infernux.core.assets import AssetManager
+        from infernux.core.assets import AssetManager
 
         class Database:
             def get_guid_from_path(self, path):
@@ -377,7 +377,7 @@ class TestStrictSerializationFailures:
                 payload = serialized_field(default=None, field_type=FieldType.UNKNOWN)
 
     def test_non_finite_vector_falls_back_to_field_default(self):
-        from Infernux.math import Vector3
+        from infernux.math import Vector3
 
         class CameraRig(InxComponent):
             speed: float = serialized_field(default=2.4)
@@ -523,7 +523,7 @@ class TestStrictSerializationFailures:
 
 class TestColorInference:
     def test_color_factory_infers_as_color(self):
-        from Infernux.components.fields import infer_field_type_from_value
+        from infernux.components.fields import infer_field_type_from_value
         assert infer_field_type_from_value(Color(1, 0, 0)) == FieldType.COLOR
 
     def test_color_value_without_annotation(self):
@@ -539,7 +539,7 @@ class TestColorInference:
         import os
         script = textwrap.dedent('''
             from __future__ import annotations
-            from Infernux.components import InxComponent, Color
+            from infernux.components import InxComponent, Color
             class FutureColor(InxComponent):
                 tint: Color
         ''')
@@ -547,7 +547,7 @@ class TestColorInference:
         path = os.path.join(td, 'future_color.py')
         with open(path, 'w', encoding='utf-8') as f:
             f.write(script)
-        from Infernux.components.script_loader import load_component_from_file
+        from infernux.components.script_loader import load_component_from_file
         cls = load_component_from_file(path)
         fields = get_serialized_fields(cls)
         assert fields['tint'].field_type == FieldType.COLOR
@@ -564,7 +564,7 @@ class TestColorClass:
         assert c == [0.5, 0.6, 0.7, 0.8]
 
     def test_undo_snapshot_rgba(self):
-        from Infernux.engine.undo._base import _snapshot_value
+        from infernux.engine.undo._base import _snapshot_value
         src = Color(0.2, 0.4, 0.6)
         snap = _snapshot_value(src)
         assert isinstance(snap, list)
@@ -574,7 +574,7 @@ class TestColorClass:
 
 class TestEffectColorFieldsAllowHdr:
     def test_mixin_color_annotation_keeps_hdr(self):
-        from Infernux.renderstack._serialized_field_mixin import (
+        from infernux.renderstack._serialized_field_mixin import (
             SerializedFieldCollectorMixin,
         )
 

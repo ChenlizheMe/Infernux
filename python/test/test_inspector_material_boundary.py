@@ -4,7 +4,7 @@ import builtins
 
 import pytest
 
-from Infernux.engine.bootstrap_inspector._materials import (
+from infernux.engine.bootstrap_inspector._materials import (
     _rebuild_material_entries,
     wire_material_sections,
 )
@@ -30,7 +30,7 @@ def test_material_section_import_failure_stays_inside_inspector(monkeypatch) -> 
     original_import = builtins.__import__
 
     def _import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "Infernux.engine.ui" and "inspector_material" in fromlist:
+        if name == "infernux.engine.ui" and "inspector_material" in fromlist:
             raise ImportError("missing inspector_material test fixture")
         return original_import(name, globals, locals, fromlist, level)
 
@@ -71,9 +71,9 @@ def test_material_slot_query_failure_reaches_inspector_boundary() -> None:
 
 def test_texture_slot_uses_descriptor_drag_types_including_render_targets(monkeypatch):
     from types import SimpleNamespace
-    from Infernux.engine.ui import inspector_material
-    from Infernux.engine.ui.igui import IGUI
-    from Infernux.engine.interaction.object_fields import AssetReferenceFieldModel
+    from infernux.engine.ui import inspector_material
+    from infernux.engine.ui.igui import IGUI
+    from infernux.engine.interaction.object_fields import AssetReferenceFieldModel
 
     monkeypatch.setattr(inspector_material, '_get_asset_database',
                         lambda: SimpleNamespace(get_path_from_guid=lambda guid: ''))
@@ -92,7 +92,7 @@ def test_texture_slot_uses_descriptor_drag_types_including_render_targets(monkey
 
 def test_ui_shader_properties_use_shared_material_inspector_order(monkeypatch):
     from types import SimpleNamespace
-    from Infernux.engine.ui import inspector_material
+    from infernux.engine.ui import inspector_material
 
     class Context:
         @staticmethod
@@ -117,8 +117,8 @@ def test_ui_shader_properties_use_shared_material_inspector_order(monkeypatch):
 def test_sampled_texture_clipboard_preserves_concrete_asset_type(
     monkeypatch, extension, resource_type,
 ):
-    from Infernux.core.asset_reference_types import AssetReferenceCodec, asset_type_registry
-    from Infernux.core.assets import AssetManager
+    from infernux.core.asset_reference_types import AssetReferenceCodec, asset_type_registry
+    from infernux.core.assets import AssetManager
 
     path = f'Assets/Monitor.{extension}'
     monkeypatch.setattr(
@@ -140,8 +140,8 @@ def test_sampled_texture_clipboard_preserves_concrete_asset_type(
 
 def test_material_shader_reference_ignores_stale_structured_path(monkeypatch):
     from types import SimpleNamespace
-    import Infernux.lib as lib
-    from Infernux.engine.ui import inspector_shader_utils
+    import infernux.lib as lib
+    from infernux.engine.ui import inspector_shader_utils
 
     database = SimpleNamespace(
         get_path_from_guid=lambda guid: (

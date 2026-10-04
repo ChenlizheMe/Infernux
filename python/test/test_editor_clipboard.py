@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     ClipboardDomain,
     ClipboardItem,
     ClipboardOperation,

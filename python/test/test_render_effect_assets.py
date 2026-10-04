@@ -2,10 +2,10 @@ import json
 
 import pytest
 
-from Infernux.core.asset_ref import RenderEffectRef
-from Infernux.core.assets import AssetManager
-from Infernux.renderstack.effect_stage import EffectResourceContract, EffectScope, EffectStage
-from Infernux.renderstack.render_effect_asset import (
+from infernux.core.asset_ref import RenderEffectRef
+from infernux.core.assets import AssetManager
+from infernux.renderstack.effect_stage import EffectResourceContract, EffectScope, EffectStage
+from infernux.renderstack.render_effect_asset import (
     EffectAssetReference,
     RenderEffectAsset,
     RenderEffectGroupAsset,
@@ -14,7 +14,7 @@ from Infernux.renderstack.render_effect_asset import (
     dump_render_effect_document,
     parse_render_effect_document,
 )
-from Infernux.renderstack.render_effect import EditableRenderEffectGroup
+from infernux.renderstack.render_effect import EditableRenderEffectGroup
 
 
 def test_effect_stage_has_stable_identity_scope_and_contract():

@@ -49,7 +49,7 @@ int main()
 {
     py::scoped_interpreter interpreter{};
     py::exec(R"PY(
-from Infernux.components import InxComponent
+from infernux.components import InxComponent
 class CollisionEnterOnlyProbe(InxComponent):
     _uses_component_data_store = False
 

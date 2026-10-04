@@ -1,7 +1,7 @@
 # RigidbodyConstraints
 
 <div class="class-info">
-类位于 <b>Infernux.components.builtin</b>
+类位于 <b>infernux.components.builtin</b>
 </div>
 
 **继承自:** `IntFlag`

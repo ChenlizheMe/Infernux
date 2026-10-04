@@ -5,9 +5,9 @@ import inspect
 import numpy as np
 import pytest
 
-from Infernux import jit
-from Infernux import _jit_kernels as kernels
-from Infernux.jit_hir import build_hir
+from infernux import jit
+from infernux import _jit_kernels as kernels
+from infernux.jit_hir import build_hir
 
 
 def _advance(positions, velocities, dt):
@@ -123,8 +123,8 @@ def test_native_induction_axis_and_rank_match_python(kernel, shape):
 
 @pytest.mark.parametrize("vector", [False, True])
 def test_cpu_buffer_rows_share_the_same_native_path(vector):
-    from Infernux.compute import buffer
-    from Infernux.math import vector3
+    from infernux.compute import buffer
+    from infernux.math import vector3
 
     values = buffer(shape=1024 if vector else (1024, 3),
                     dtype=vector3 if vector else np.float32,
@@ -136,7 +136,7 @@ def test_cpu_buffer_rows_share_the_same_native_path(vector):
 
 
 def test_cooked_row_kernel_does_not_need_source(monkeypatch):
-    source = "from Infernux import jit\n@jit.compile(parallel_policy='required')\n" + inspect.getsource(_advance)
+    source = "from infernux import jit\n@jit.compile(parallel_policy='required')\n" + inspect.getsource(_advance)
     embedded = kernels.build_auto_parallel_embedded_source(source)
     assert embedded is not None
 

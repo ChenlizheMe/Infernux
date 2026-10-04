@@ -26,7 +26,7 @@ def _semantic(script_guid: str, type_guid: str, readable_id: str, lifecycle=()):
 def test_android_runtime_registry_does_not_require_editor_semantic_catalog(
     monkeypatch, tmp_path
 ):
-    from Infernux.engine import runtime_type_registry as registry
+    from infernux.engine import runtime_type_registry as registry
 
     path = tmp_path / "RuntimeTypeRegistry.json"
     path.write_text(
@@ -39,9 +39,9 @@ def test_android_runtime_registry_does_not_require_editor_semantic_catalog(
     class NativeWithoutEditorCatalog:
         pass
 
-    import Infernux.lib
+    import infernux.lib
 
-    monkeypatch.setattr(Infernux.lib, "_Infernux", NativeWithoutEditorCatalog())
+    monkeypatch.setattr(infernux.lib, "_Infernux", NativeWithoutEditorCatalog())
     try:
         assert registry.install_runtime_type_registry(str(path)) == 0
     finally:
@@ -51,8 +51,8 @@ def test_android_runtime_registry_does_not_require_editor_semantic_catalog(
 
 
 def test_runtime_type_registry_binds_declared_phase_contract(tmp_path):
-    from Infernux.components.component import InxComponent
-    from Infernux.engine.runtime_type_registry import (
+    from infernux.components.component import InxComponent
+    from infernux.engine.runtime_type_registry import (
         bind_runtime_lifecycle_contract,
         clear_runtime_type_registry,
         install_runtime_type_registry,
@@ -90,7 +90,7 @@ def test_runtime_type_registry_binds_declared_phase_contract(tmp_path):
 
     try:
         assert install_runtime_type_registry(str(path)) == 1
-        from Infernux.lib import _Infernux as native
+        from infernux.lib import _Infernux as native
 
         descriptor = native._semantic_catalog_snapshot().type_document(type_guid)
         assert descriptor["owner"] == "script:script-guid"
@@ -110,7 +110,7 @@ def test_runtime_type_registry_binds_declared_phase_contract(tmp_path):
 
 
 def test_runtime_type_registry_requires_cooked_semantics(tmp_path):
-    from Infernux.engine.runtime_type_registry import install_runtime_type_registry
+    from infernux.engine.runtime_type_registry import install_runtime_type_registry
 
     path = tmp_path / "RuntimeTypeRegistry.json"
     path.write_text(
@@ -138,7 +138,7 @@ def test_runtime_type_registry_requires_cooked_semantics(tmp_path):
 
 
 def test_runtime_type_registry_rejects_unlisted_component(tmp_path):
-    from Infernux.engine.runtime_type_registry import (
+    from infernux.engine.runtime_type_registry import (
         clear_runtime_type_registry,
         install_runtime_type_registry,
         validate_runtime_component_identity,
@@ -169,7 +169,7 @@ def test_runtime_type_registry_rejects_unlisted_component(tmp_path):
 
 
 def test_runtime_type_registry_rejects_identity_drift(tmp_path):
-    from Infernux.engine.runtime_type_registry import (
+    from infernux.engine.runtime_type_registry import (
         clear_runtime_type_registry,
         install_runtime_type_registry,
         validate_runtime_component_identity,
@@ -210,7 +210,7 @@ def test_runtime_type_registry_rejects_identity_drift(tmp_path):
 
 
 def test_runtime_type_registry_publishes_data_semantics_without_component_lifecycle(tmp_path):
-    from Infernux.engine.runtime_type_registry import (
+    from infernux.engine.runtime_type_registry import (
         clear_runtime_type_registry,
         install_runtime_type_registry,
     )
@@ -245,7 +245,7 @@ def test_runtime_type_registry_publishes_data_semantics_without_component_lifecy
     )
     try:
         assert install_runtime_type_registry(str(path)) == 1
-        from Infernux.lib import _Infernux as native
+        from infernux.lib import _Infernux as native
 
         descriptor = native._semantic_catalog_snapshot().type_document(type_guid)
         assert descriptor["readable_id"] == "python:data:tests.data.Config"

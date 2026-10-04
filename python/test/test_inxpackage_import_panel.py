@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from Infernux.engine.interaction import EditorInteractionCore
-from Infernux.engine.interaction.modals import ModalService
-from Infernux.engine.ui.asset_import_progress import AssetImportProgressService
-from Infernux.engine.ui.plugin_panel import InxPackageImportPanel
-from Infernux.plugins import PluginManager
+from infernux.engine.interaction import EditorInteractionCore
+from infernux.engine.interaction.modals import ModalService
+from infernux.engine.ui.asset_import_progress import AssetImportProgressService
+from infernux.engine.ui.plugin_panel import InxPackageImportPanel
+from infernux.plugins import PluginManager
 
 
 def test_inxpackage_import_waits_for_visible_progress_before_install(monkeypatch):
@@ -24,7 +24,7 @@ def test_inxpackage_import_waits_for_visible_progress_before_install(monkeypatch
     AssetImportProgressService._instance = None
     PluginManager._instance = _Manager()
     monkeypatch.setattr(
-        "Infernux.engine.ui.plugin_panel.t",
+        "infernux.engine.ui.plugin_panel.t",
         lambda key: key,
     )
     try:

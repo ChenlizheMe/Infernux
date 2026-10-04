@@ -5,13 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.interaction import EditorInteractionCore
-from Infernux.engine.interaction.modals import ModalService
-from Infernux.engine.ui.plugin_install_confirmation import (
+from infernux.engine.interaction import EditorInteractionCore
+from infernux.engine.interaction.modals import ModalService
+from infernux.engine.ui.plugin_install_confirmation import (
     PluginInstallConfirmationCoordinator,
 )
-from Infernux.engine.ui.plugin_install_progress import PluginInstallProgressService
-from Infernux.engine.ui.plugin_panel import PluginPanel
+from infernux.engine.ui.plugin_install_progress import PluginInstallProgressService
+from infernux.engine.ui.plugin_panel import PluginPanel
 
 
 @pytest.mark.parametrize("kind,update", [("source", False), ("source", True), ("pip", False)])

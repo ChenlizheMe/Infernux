@@ -11,7 +11,7 @@ import model.project_model as project_model
 def test_project_uses_wheel_identity_not_only_distribution_version(tmp_path, monkeypatch, marker_state):
     project = tmp_path / "Project"
     site_packages = project / ".runtime" / "site-packages"
-    package = site_packages / "Infernux"
+    package = site_packages / "infernux"
     package.mkdir(parents=True)
     installed_source = package / "__init__.py"
     installed_source.write_text("OLD", encoding="utf-8")
@@ -19,7 +19,7 @@ def test_project_uses_wheel_identity_not_only_distribution_version(tmp_path, mon
     python.touch()
     wheel = tmp_path / "infernux-0.4.0-cp313-cp313-win_amd64.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
-        archive.writestr("Infernux/__init__.py", "NEW")
+        archive.writestr("infernux/__init__.py", "NEW")
 
     monkeypatch.setattr(project_model, "is_frozen", lambda: True)
     monkeypatch.setattr(project_model.ProjectModel, "_get_project_python", staticmethod(lambda path: str(python)))

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.components import InxComponent
-from Infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
-from Infernux.engine.runtime_event_queue import clear as clear_runtime_events
-from Infernux.engine.runtime_event_queue import drain as drain_runtime_events
-from Infernux.ui.ui_event_data import PointerType
-from Infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame
+from infernux.components import InxComponent
+from infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+from infernux.engine.runtime_event_queue import clear as clear_runtime_events
+from infernux.engine.runtime_event_queue import drain as drain_runtime_events
+from infernux.ui.ui_event_data import PointerType
+from infernux.ui.ui_event_system import UIEventProcessor, UIPointerFrame
 
 
 @pytest.fixture(autouse=True)

@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.animation_clip3d import AnimationClip3D, embedded_take_descriptors
-from Infernux.core.asset_types import MeshImportSettings, read_mesh_import_settings, read_meta_file
-from Infernux.core.assets import AssetManager
-from Infernux.lib import AssetRegistry
+from infernux.core.animation_clip3d import AnimationClip3D, embedded_take_descriptors
+from infernux.core.asset_types import MeshImportSettings, read_mesh_import_settings, read_meta_file
+from infernux.core.assets import AssetManager
+from infernux.lib import AssetRegistry
 
 
 def spec(name="Middle", identity="a" * 32):
@@ -39,7 +39,7 @@ def test_clip_settings_copy_is_detached_and_requires_current_fields():
 
 
 def test_animation_processing_settings_round_trip_and_validate_declared_units():
-    from Infernux.core.asset_types import mesh_import_settings_schema
+    from infernux.core.asset_types import mesh_import_settings_schema
 
     declared = {item["name"]: item for item in mesh_import_settings_schema()["fields"]}
     for name in ("animation_sample_rate", "animation_position_error",
@@ -101,7 +101,7 @@ def test_animation_clip_extras_are_strict_and_deep_copied():
 
 @pytest.mark.parametrize("durations", [[0], [0, 2], [3]])
 def test_add_clip_uses_a_nonzero_duration_source(monkeypatch, durations):
-    from Infernux.engine.ui import asset_details_renderer as renderer
+    from infernux.engine.ui import asset_details_renderer as renderer
 
     sources = [{"name": f"Take {i}", "duration": duration} for i, duration in enumerate(durations)]
     settings = MeshImportSettings(custom_animation_clips=True)
@@ -125,7 +125,7 @@ def test_add_clip_uses_a_nonzero_duration_source(monkeypatch, durations):
 
 
 def test_model_animation_inspector_creates_clip_extras_by_stable_id(monkeypatch):
-    from Infernux.engine.ui import asset_details_renderer as renderer
+    from infernux.engine.ui import asset_details_renderer as renderer
 
     settings = MeshImportSettings()
     state = SimpleNamespace(settings=settings, meta={"model_animations": json.dumps([
@@ -297,7 +297,7 @@ def test_clip_extras_reject_missing_clip_without_partial_publication(model):
 
 
 def test_stable_source_clip_reference_survives_inventory_reordering(tmp_path, monkeypatch):
-    from Infernux.core import asset_types
+    from infernux.core import asset_types
     source = tmp_path / "clips.gltf"
     source.write_text("{}")
     published = [

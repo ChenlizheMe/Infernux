@@ -8,7 +8,7 @@ if str(_PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(_PYTHON_DIR))
 
 try:
-    from Infernux.runtime_utf8 import configure_process_utf8
+    from infernux.runtime_utf8 import configure_process_utf8
 
     configure_process_utf8()
 except Exception:

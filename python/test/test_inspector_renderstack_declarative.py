@@ -1,7 +1,7 @@
 import pytest
 from types import SimpleNamespace
 
-from Infernux.engine.ui.inspector_declarative import (
+from infernux.engine.ui.inspector_declarative import (
     InspectorChoice,
     InspectorList,
     InspectorMessages,
@@ -10,24 +10,24 @@ from Infernux.engine.ui.inspector_declarative import (
     InspectorSerializedTarget,
     render_inspector_model,
 )
-from Infernux.engine.ui.inspector_renderstack import build_renderstack_inspector_model
-from Infernux.components.fields import get_serialized_fields
-from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
-from Infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
-from Infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
-from Infernux.renderstack.render_stack import RenderStack
+from infernux.engine.ui.inspector_renderstack import build_renderstack_inspector_model
+from infernux.components.fields import get_serialized_fields
+from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+from infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
+from infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
+from infernux.renderstack.render_stack import RenderStack
 
 
 @pytest.fixture(autouse=True)
 def action_journal():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         EditorCommandRegistry,
         EditorInteractionCore,
         FocusService,
         RenderStackCommandService,
         SelectionService,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     previous = UndoManager.instance()
     previous_service = RenderStackCommandService.instance()
@@ -84,7 +84,7 @@ def test_shadow_resolution_range_is_enforced_outside_the_inspector():
 
 
 def test_default_forward_pipeline_uses_forward_for_opaque_and_transparent():
-    from Infernux.rendergraph.graph import RenderGraph
+    from infernux.rendergraph.graph import RenderGraph
 
     graph = RenderGraph("Default Forward")
     DefaultForwardPipeline().define_topology(graph)
@@ -103,7 +103,7 @@ def test_default_forward_pipeline_uses_forward_for_opaque_and_transparent():
 def test_mobile_profile_bounds_builtin_pipeline_cost_without_rewriting_authored_values(
     monkeypatch,
 ):
-    from Infernux.rendergraph.graph import RenderGraph
+    from infernux.rendergraph.graph import RenderGraph
 
     monkeypatch.setenv("INFERNUX_RENDER_PROFILE", "mobile")
     forward = DefaultForwardPipeline()
@@ -124,14 +124,14 @@ def test_mobile_profile_bounds_builtin_pipeline_cost_without_rewriting_authored_
 
 
 def test_builtin_pipeline_route_selector_is_not_an_exposed_parameter():
-    from Infernux.components.fields import get_serialized_fields
+    from infernux.components.fields import get_serialized_fields
 
     assert "material_pass" not in get_serialized_fields(DefaultForwardPipeline)
     assert "material_pass" not in get_serialized_fields(DefaultForwardPlusPipeline)
 
 
 def test_default_forward_plus_pipeline_uses_tiled_variants_for_all_geometry():
-    from Infernux.rendergraph.graph import RenderGraph
+    from infernux.rendergraph.graph import RenderGraph
 
     graph = RenderGraph("Default Forward+")
     DefaultForwardPlusPipeline().define_topology(graph)
@@ -146,7 +146,7 @@ def test_default_forward_plus_pipeline_uses_tiled_variants_for_all_geometry():
 
 
 def test_default_deferred_pipeline_uses_forward_plus_for_transparent():
-    from Infernux.rendergraph.graph import Format, RenderGraph
+    from infernux.rendergraph.graph import Format, RenderGraph
 
     graph = RenderGraph("Default Deferred")
     DefaultDeferredPipeline().define_topology(graph)
@@ -189,7 +189,7 @@ def test_default_deferred_pipeline_uses_forward_plus_for_transparent():
 
 
 def test_default_pipelines_publish_depth_tested_motion_for_both_queue_domains():
-    from Infernux.rendergraph.graph import Format, RenderGraph
+    from infernux.rendergraph.graph import Format, RenderGraph
 
     for pipeline in (
         DefaultForwardPipeline(),
@@ -238,8 +238,8 @@ def test_default_pipelines_publish_depth_tested_motion_for_both_queue_domains():
 
 
 def test_forward_motion_targets_follow_every_supported_msaa_value():
-    from Infernux.rendergraph.graph import RenderGraph
-    from Infernux.renderstack.default_forward_pipeline import MSAASamples
+    from infernux.rendergraph.graph import RenderGraph
+    from infernux.renderstack.default_forward_pipeline import MSAASamples
 
     revisions = set()
     for samples in MSAASamples:
@@ -282,7 +282,7 @@ def test_forward_motion_targets_follow_every_supported_msaa_value():
 
 
 def test_default_pipelines_omit_motion_without_a_consumer():
-    from Infernux.rendergraph.graph import RenderGraph
+    from infernux.rendergraph.graph import RenderGraph
 
     for pipeline in (
         DefaultForwardPipeline(),
@@ -300,7 +300,7 @@ def test_default_pipelines_omit_motion_without_a_consumer():
 
 
 def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state(action_journal):
-    from Infernux.renderstack.default_forward_pipeline import MSAASamples
+    from infernux.renderstack.default_forward_pipeline import MSAASamples
 
     stack = RenderStack()
     model = build_renderstack_inspector_model(stack)
@@ -328,8 +328,8 @@ def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state(actio
 
 
 def test_pipeline_parameter_undo_keeps_serialized_document_and_rebuild_in_sync():
-    from Infernux.engine.undo import UndoManager
-    from Infernux.renderstack.default_forward_pipeline import MSAASamples
+    from infernux.engine.undo import UndoManager
+    from infernux.renderstack.default_forward_pipeline import MSAASamples
 
     previous_manager = UndoManager.instance()
     manager = UndoManager()
@@ -391,7 +391,7 @@ def test_screen_ui_is_not_an_optional_pipeline_parameter():
 
 
 def test_default_pipeline_ui_and_effect_tail_has_canonical_order():
-    from Infernux.rendergraph.graph import RenderGraph
+    from infernux.rendergraph.graph import RenderGraph
 
     graph = RenderGraph("Default Forward")
     DefaultForwardPipeline().define_topology(graph)
@@ -549,7 +549,7 @@ def test_rejected_graph_rebuild_keeps_rendering_the_last_valid_graph(monkeypatch
 
 
 def test_initial_graph_build_failure_is_not_replaced_by_another_pipeline(monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     stack = RenderStack()
     stack._graph_state.description = None
@@ -583,7 +583,7 @@ def test_initial_graph_build_failure_is_not_replaced_by_another_pipeline(monkeyp
 
 
 def test_graph_publication_failure_restores_only_the_last_valid_graph(monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     stack = RenderStack()
     previous_graph = object()
@@ -625,7 +625,7 @@ def test_graph_publication_failure_restores_only_the_last_valid_graph(monkeypatc
 
 
 def test_initial_graph_publication_failure_is_not_replaced(monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     stack = RenderStack()
     candidate_graph = object()
@@ -656,7 +656,7 @@ def test_initial_graph_publication_failure_is_not_replaced(monkeypatch):
 
 
 def test_initial_graph_build_waits_for_asset_refresh_commit(monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     stack = RenderStack()
     build_calls = []
@@ -714,7 +714,7 @@ def test_declarative_lists_scope_nested_widget_ids_by_control_key(monkeypatch):
         rendered_scopes.append(tuple(_ctx.ids))
 
     monkeypatch.setattr(
-        "Infernux.engine.ui._inspector_list_field._render_list_field",
+        "infernux.engine.ui._inspector_list_field._render_list_field",
         render_list,
     )
     target = object()
@@ -744,8 +744,8 @@ def test_declarative_lists_scope_nested_widget_ids_by_control_key(monkeypatch):
 
 
 def test_renderstack_effect_slots_use_shared_command_service(action_journal):
-    from Infernux.engine.interaction import ActionOrigin, RenderStackCommandService
-    from Infernux.renderstack.effect_slot import EffectSlot
+    from infernux.engine.interaction import ActionOrigin, RenderStackCommandService
+    from infernux.renderstack.effect_slot import EffectSlot
 
     stack = RenderStack()
     stage_id = stack.effect_stages[0].stable_id
@@ -766,7 +766,7 @@ def test_renderstack_effect_slots_use_shared_command_service(action_journal):
     assert stack.get_effect_stage_slots(stage_id) == ()
 
 def test_renderstack_inspector_stage_list_uses_global_command_registry(action_journal):
-    from Infernux.renderstack.effect_slot import EffectSlot
+    from infernux.renderstack.effect_slot import EffectSlot
 
     stack = RenderStack()
     control = next(

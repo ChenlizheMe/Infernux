@@ -5,7 +5,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _restore_scene_manager_runtime_state():
-    from Infernux.scene import SceneManager
+    from infernux.scene import SceneManager
 
     fields = (
         "_pending_scene_load",
@@ -28,8 +28,8 @@ def _restore_scene_manager_runtime_state():
 
 
 def test_player_detection_uses_native_scene_manager_without_editor_manager(monkeypatch):
-    from Infernux.lib import SceneManager as native_scene_manager
-    from Infernux.scene import SceneManager
+    from infernux.lib import SceneManager as native_scene_manager
+    from infernux.scene import SceneManager
 
     class Native:
         @staticmethod
@@ -40,14 +40,14 @@ def test_player_detection_uses_native_scene_manager_without_editor_manager(monke
         def is_playing():
             return True
 
-    monkeypatch.setattr("Infernux.engine.play_mode.PlayModeManager._instance", None)
-    monkeypatch.setattr("Infernux.scene._NativeSceneManager", Native)
+    monkeypatch.setattr("infernux.engine.play_mode.PlayModeManager._instance", None)
+    monkeypatch.setattr("infernux.scene._NativeSceneManager", Native)
 
     assert SceneManager._is_in_play_mode() is True
 
 
 def test_player_runtime_load_is_queued_until_pending_transaction_is_processed(monkeypatch):
-    from Infernux.scene import SceneManager
+    from infernux.scene import SceneManager
 
     monkeypatch.setattr(SceneManager, "_runtime_scene_service", None)
     monkeypatch.setattr(SceneManager, "_is_in_play_mode", staticmethod(lambda: True))
@@ -57,7 +57,7 @@ def test_player_runtime_load_is_queued_until_pending_transaction_is_processed(mo
         staticmethod(lambda: ["/project/Scenes/Main.scene"]),
     )
     monkeypatch.setattr(
-        "Infernux.scene.os.path.isfile",
+        "infernux.scene.os.path.isfile",
         lambda path: path == "/project/Scenes/Main.scene",
     )
     monkeypatch.setattr(SceneManager, "_pending_scene_load", None)
@@ -68,8 +68,8 @@ def test_player_runtime_load_is_queued_until_pending_transaction_is_processed(mo
 
 
 def test_additive_runtime_load_publishes_target_without_switching_active(monkeypatch):
-    import Infernux.scene as scene_api
-    from Infernux.scene import LoadSceneMode, SceneManager
+    import infernux.scene as scene_api
+    from infernux.scene import LoadSceneMode, SceneManager
 
     calls = []
     active = object()
@@ -107,7 +107,7 @@ def test_additive_runtime_load_publishes_target_without_switching_active(monkeyp
         "_load_build_list",
         staticmethod(lambda: ["/project/Scenes/Additive.scene"]),
     )
-    monkeypatch.setattr("Infernux.scene.os.path.isfile", lambda _path: True)
+    monkeypatch.setattr("infernux.scene.os.path.isfile", lambda _path: True)
     monkeypatch.setattr(
         SceneManager,
         "_create_runtime_load_transaction",
@@ -125,7 +125,7 @@ def test_additive_runtime_load_publishes_target_without_switching_active(monkeyp
 
 
 def test_wait_for_load_scene_starts_background_read_immediately(monkeypatch):
-    from Infernux.scene import SceneManager
+    from infernux.scene import SceneManager
 
     calls = []
 
@@ -143,7 +143,7 @@ def test_wait_for_load_scene_starts_background_read_immediately(monkeypatch):
         "_load_build_list",
         staticmethod(lambda: ["/project/Scenes/Main.scene"]),
     )
-    monkeypatch.setattr("Infernux.scene.os.path.isfile", lambda _path: True)
+    monkeypatch.setattr("infernux.scene.os.path.isfile", lambda _path: True)
     monkeypatch.setattr(
         SceneManager,
         "_create_runtime_load_transaction",
@@ -160,7 +160,7 @@ def test_wait_for_load_scene_starts_background_read_immediately(monkeypatch):
 
 
 def test_new_runtime_scene_request_cancels_stale_preparation(monkeypatch):
-    from Infernux.scene import SceneManager
+    from infernux.scene import SceneManager
 
     calls = []
 
@@ -186,7 +186,7 @@ def test_new_runtime_scene_request_cancels_stale_preparation(monkeypatch):
             ]
         ),
     )
-    monkeypatch.setattr("Infernux.scene.os.path.isfile", lambda _path: True)
+    monkeypatch.setattr("infernux.scene.os.path.isfile", lambda _path: True)
     monkeypatch.setattr(SceneManager, "_pending_scene_load", None)
     monkeypatch.setattr(SceneManager, "_active_scene_transaction", old_transaction)
     monkeypatch.setattr(SceneManager, "_scene_load_generation", 7)
@@ -200,7 +200,7 @@ def test_new_runtime_scene_request_cancels_stale_preparation(monkeypatch):
 
 
 def test_stale_runtime_scene_generation_never_publishes(monkeypatch):
-    from Infernux.scene import SceneManager
+    from infernux.scene import SceneManager
 
     calls = []
 
@@ -229,7 +229,7 @@ def test_stale_runtime_scene_generation_never_publishes(monkeypatch):
 
 
 def test_stale_minimal_runtime_transaction_without_is_complete_is_cancelled(monkeypatch):
-    from Infernux.scene import SceneManager
+    from infernux.scene import SceneManager
 
     calls = []
 
@@ -257,8 +257,8 @@ def test_stale_minimal_runtime_transaction_without_is_complete_is_cancelled(monk
 
 
 def test_untracked_minimal_runtime_transaction_is_not_treated_as_stale(monkeypatch):
-    import Infernux.scene as scene_api
-    from Infernux.scene import SceneManager
+    import infernux.scene as scene_api
+    from infernux.scene import SceneManager
 
     calls = []
 
@@ -300,7 +300,7 @@ def test_untracked_minimal_runtime_transaction_is_not_treated_as_stale(monkeypat
 
 
 def test_wait_for_load_scene_delegates_to_player_preparation_service(monkeypatch):
-    from Infernux.scene import SceneManager
+    from infernux.scene import SceneManager
 
     calls = []
 
@@ -316,7 +316,7 @@ def test_wait_for_load_scene_delegates_to_player_preparation_service(monkeypatch
             return "/project/Scenes/Main.scene" if guid == "main-scene-guid" else ""
 
     monkeypatch.setattr(SceneManager, "_runtime_scene_service", RuntimeService())
-    monkeypatch.setattr("Infernux.core.assets.AssetManager._asset_database", Database())
+    monkeypatch.setattr("infernux.core.assets.AssetManager._asset_database", Database())
     monkeypatch.setattr(
         SceneManager,
         "_load_build_list",
@@ -324,14 +324,14 @@ def test_wait_for_load_scene_delegates_to_player_preparation_service(monkeypatch
     )
     # Packaged builds do not retain the authoring scene at this logical path;
     # the Player service resolves it through RuntimeAssetCatalog instead.
-    monkeypatch.setattr("Infernux.scene.os.path.isfile", lambda _path: False)
+    monkeypatch.setattr("infernux.scene.os.path.isfile", lambda _path: False)
 
     assert SceneManager.wait_for_load_scene("Main") is True
     assert calls == ["main-scene-guid"]
 
 
 def test_load_scene_delegates_missing_authoring_path_to_player_catalog(monkeypatch):
-    from Infernux.scene import SceneManager
+    from infernux.scene import SceneManager
 
     calls = []
 
@@ -349,20 +349,20 @@ def test_load_scene_delegates_missing_authoring_path_to_player_catalog(monkeypat
             return ""
 
     monkeypatch.setattr(SceneManager, "_runtime_scene_service", RuntimeService())
-    monkeypatch.setattr("Infernux.core.assets.AssetManager._asset_database", Database())
+    monkeypatch.setattr("infernux.core.assets.AssetManager._asset_database", Database())
     monkeypatch.setattr(
         SceneManager,
         "_load_build_list",
         staticmethod(lambda: ["main-scene-guid"]),
     )
-    monkeypatch.setattr("Infernux.scene.os.path.isfile", lambda _path: False)
+    monkeypatch.setattr("infernux.scene.os.path.isfile", lambda _path: False)
 
     assert SceneManager.load_scene("Main") is True
     assert calls == ["main-scene-guid"]
 
 
 def test_prepare_scene_holds_ready_transaction_until_explicit_activation(monkeypatch):
-    from Infernux.scene import SceneManager
+    from infernux.scene import SceneManager
 
     calls = []
 
@@ -387,7 +387,7 @@ def test_prepare_scene_holds_ready_transaction_until_explicit_activation(monkeyp
         "_load_build_list",
         staticmethod(lambda: ["/project/Scenes/Main.scene"]),
     )
-    monkeypatch.setattr("Infernux.scene.os.path.isfile", lambda _path: True)
+    monkeypatch.setattr("infernux.scene.os.path.isfile", lambda _path: True)
     monkeypatch.setattr(
         SceneManager,
         "_create_runtime_load_transaction",
@@ -407,8 +407,8 @@ def test_prepare_scene_holds_ready_transaction_until_explicit_activation(monkeyp
 
 
 def test_prepared_scene_advances_at_most_one_transaction_phase_per_tick(monkeypatch):
-    import Infernux.scene as scene_api
-    from Infernux.scene import SceneManager
+    import infernux.scene as scene_api
+    from infernux.scene import SceneManager
 
     calls = []
 
@@ -475,7 +475,7 @@ def test_prepared_scene_advances_at_most_one_transaction_phase_per_tick(monkeypa
 
 
 def test_player_runtime_tick_advances_pending_scene_load_before_time(monkeypatch):
-    from Infernux.engine.player_runtime import PlayerRuntimeSession
+    from infernux.engine.player_runtime import PlayerRuntimeSession
 
     calls = []
 
@@ -490,7 +490,7 @@ def test_player_runtime_tick_advances_pending_scene_load_before_time(monkeypatch
         def cancel_pending_load():
             return None
 
-    monkeypatch.setattr("Infernux.timing.Time._tick", lambda value: calls.append("time"))
+    monkeypatch.setattr("infernux.timing.Time._tick", lambda value: calls.append("time"))
 
     session = PlayerRuntimeSession(scene_service=RuntimeSceneService())
     session._state = "playing"
@@ -500,7 +500,7 @@ def test_player_runtime_tick_advances_pending_scene_load_before_time(monkeypatch
 
 
 def test_pending_scene_transaction_starts_the_new_scene_once(monkeypatch):
-    from Infernux.scene import SceneManager
+    from infernux.scene import SceneManager
 
     monkeypatch.setattr(SceneManager, "_runtime_scene_service", None)
     calls = []
@@ -530,7 +530,7 @@ def test_pending_scene_transaction_starts_the_new_scene_once(monkeypatch):
     monkeypatch.setattr(SceneManager, "_active_scene_transaction", Transaction())
     monkeypatch.setattr(SceneManager, "_active_scene_load_path", "/project/Scenes/Main.scene")
     monkeypatch.setattr(SceneManager, "_active_scene_file_manager", None)
-    monkeypatch.setattr("Infernux.scene._NativeSceneManager", Native)
+    monkeypatch.setattr("infernux.scene._NativeSceneManager", Native)
     monkeypatch.setattr(SceneManager, "_unload_other_scenes", staticmethod(lambda _scene: None))
 
     SceneManager.process_pending_load()

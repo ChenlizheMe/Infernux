@@ -1,6 +1,6 @@
 import pytest
 
-from Infernux.engine import prebuilt_runtime
+from infernux.engine import prebuilt_runtime
 
 
 def test_player_host_path_prefers_explicit_build_artifact(monkeypatch, tmp_path):

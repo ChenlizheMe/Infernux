@@ -27,12 +27,12 @@ if not _SOURCE_PYTHON.is_dir():
 if str(_SOURCE_PYTHON) not in sys.path:
     sys.path.insert(0, str(_SOURCE_PYTHON))
 
-from Infernux.plugins import InxPackage
-from Infernux.plugins.github_releases import (
+from infernux.plugins import InxPackage
+from infernux.plugins.github_releases import (
     RELEASE_MANIFEST_SCHEMA,
     release_manifest_name,
 )
-from Infernux.plugins.package import validate_reference
+from infernux.plugins.package import validate_reference
 
 
 _RELEASE_TAG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")

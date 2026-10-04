@@ -15,7 +15,7 @@ _PYTHON_ROOT = _REPOSITORY_ROOT / "python"
 if str(_PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(_PYTHON_ROOT))
 
-from Infernux.engine.player_package_native import read_entry, read_manifest  # noqa: E402
+from infernux.engine.player_package_native import read_entry, read_manifest  # noqa: E402
 
 
 MODEL_SUFFIXES = (".blend", ".fbx", ".gltf", ".glb", ".obj")

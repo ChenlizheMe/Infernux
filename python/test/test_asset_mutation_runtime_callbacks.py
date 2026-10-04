@@ -5,8 +5,8 @@ from __future__ import annotations
 import gc
 import weakref
 
-from Infernux.components import InxComponent
-from Infernux.engine.interaction import (
+from infernux.components import InxComponent
+from infernux.engine.interaction import (
     AssetContentChange,
     AssetMutation,
     AssetMutationKind,
@@ -14,7 +14,7 @@ from Infernux.engine.interaction import (
     DocumentRegistry,
     SelectionService,
 )
-from Infernux.engine.runtime_dispatch import RuntimeRevisionEpoch, publish_runtime_dispatch_epoch
+from infernux.engine.runtime_dispatch import RuntimeRevisionEpoch, publish_runtime_dispatch_epoch
 
 
 def _change(tmp_path):
@@ -72,7 +72,7 @@ def test_deleted_callback_is_reported_and_never_runs_old_body(tmp_path):
         {},
     )
 
-    import Infernux.engine.interaction.asset_mutations as asset_mutations
+    import infernux.engine.interaction.asset_mutations as asset_mutations
 
     original = asset_mutations.current_runtime_epoch
     asset_mutations.current_runtime_epoch = lambda: current
@@ -151,7 +151,7 @@ def test_asset_batch_captures_runtime_epoch_once(tmp_path, monkeypatch):
     owner.calls = []
     service.add_component_listener(owner.handle)
 
-    import Infernux.engine.interaction.asset_mutations as asset_mutations
+    import infernux.engine.interaction.asset_mutations as asset_mutations
 
     calls = []
     epoch = RuntimeRevisionEpoch(20000, {})

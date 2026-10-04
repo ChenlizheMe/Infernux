@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.model_import import _association as association, toolchain
+from infernux.engine.model_import import _association as association, toolchain
 
 
 def test_windows_default_association_is_used_without_managed_blender(monkeypatch, tmp_path):
@@ -54,7 +54,7 @@ def test_launcher_arguments_are_never_executed_as_blender(monkeypatch, tmp_path,
 
 
 def test_clearing_override_reconfigures_database_to_default(monkeypatch, tmp_path):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
     state = {"blender_executable": "override"}
     store = SimpleNamespace(get=lambda key, default="": state.get(key, default),
                             set=lambda key, value: state.__setitem__(key, value))

@@ -55,7 +55,7 @@ python -m pytest packaging/tests -q -ra
 On Linux use `linux-clang-release` and `linux-clang-player`; follow the CI
 display/Vulkan setup when running without a desktop. Configuration alone does
 not build anything. The default build generates the bundled MCP archive at
-`python/Infernux/resources/infernux.mcp.inxpkg`. The Player target assembles the
+`python/infernux/resources/infernux.mcp.inxpkg`. The Player target assembles the
 runtime payload and invokes the host platform submodule's `release.py`, producing
 `external/plugins/infernux_<platform>/dist/infernux.platform-<platform>.inxpkg`.
 Building only the editor wheel does not build this platform package.
@@ -296,3 +296,28 @@ resource references survive export, and the distribution does not expose loose
 `Assets` or `Library` directories. Capture report paths, exact asset names and
 source commits. Missing devices or unavailable network services are unverified
 coverage, not successful acceptance.
+
+## Python package and reload acceptance
+
+The installed runtime and type declarations belong to the real `infernux`
+package. The wheel must contain `infernux/__init__.py`, `__init__.pyi` and
+`py.typed`, with no uppercase package, flat `infernux.py` shim or separate stub
+mirror. `import infernux as inx`, nested imports and direct class imports must
+resolve to the same classes and component registry. On Windows an uppercase
+import must fail before loading a second copy of the native bindings.
+
+Check first-use third-party imports, factories and decorators in both Edit and
+Play. A failed candidate must report its source once and keep the published
+revision active; a corrected save must publish without restarting the Editor.
+Rename a live component, Stop, save and reopen the scene. Verify native/Python
+declaration names agree, authored fields survive, and Stop never executes an
+unpublished source revision. Test rollback against actual native proxies as
+well as Python class state.
+
+Package migration must update CMake staging, Hub installation, Player export,
+official plugin imports and entry points together. Engine distribution names
+are normalized by Python packaging; Hub R2 object keys retain their independent
+product artifact names. Published API snapshots remain immutable: compare the
+old and new namespace spellings in memory, and still reject real signature
+changes to a published snapshot. Windows builds do not establish Linux,
+Android or Web host acceptance.

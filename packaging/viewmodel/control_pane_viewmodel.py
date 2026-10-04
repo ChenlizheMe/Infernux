@@ -238,8 +238,8 @@ class ControlPaneViewModel:
         
         script = (
             'import sys;'
-            'from Infernux.engine import release_engine;'
-            'from Infernux.lib import LogLevel;'
+            'from infernux.engine import release_engine;'
+            'from infernux.lib import LogLevel;'
             'release_engine(engine_log_level=LogLevel.Info, project_path=sys.argv[1])'
         )
 

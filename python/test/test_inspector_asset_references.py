@@ -1,13 +1,13 @@
 import copy
-from Infernux.core.assets import AssetManager
-from Infernux.core.asset_ref import RenderEffectRef
-from Infernux.engine.ui._inspector_references import (
+from infernux.core.assets import AssetManager
+from infernux.core.asset_ref import RenderEffectRef
+from infernux.engine.ui._inspector_references import (
     _asset_guid_from_path,
     _is_project_asset_path,
     _portable_asset_path_hint,
     ping_asset_in_project,
 )
-from Infernux.renderstack.effect_slot import EffectSlot
+from infernux.renderstack.effect_slot import EffectSlot
 
 
 def test_asset_guid_lookup_requires_registered_identity(monkeypatch, tmp_path):
@@ -42,7 +42,7 @@ def test_asset_guid_lookup_rejects_unregistered_path(monkeypatch, tmp_path):
 
 
 def test_inspector_asset_path_hint_is_project_relative(monkeypatch, tmp_path):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     project = tmp_path / "PortableProject"
     asset = project / "Assets" / "VFX" / "Smoke.particlegraph"
@@ -54,11 +54,11 @@ def test_inspector_asset_path_hint_is_project_relative(monkeypatch, tmp_path):
 
 
 def test_builtin_asset_is_resolvable_but_not_project_navigable(monkeypatch, tmp_path):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     project = tmp_path / "PortableProject"
     (project / "Assets").mkdir(parents=True)
-    builtin = tmp_path / "Infernux" / "lib" / "shaders" / "standard.vert"
+    builtin = tmp_path / "infernux" / "lib" / "shaders" / "standard.vert"
     builtin.parent.mkdir(parents=True)
     builtin.write_text("builtin", encoding="ascii")
     monkeypatch.setattr(project_context, "_project_root", str(project))
@@ -68,7 +68,7 @@ def test_builtin_asset_is_resolvable_but_not_project_navigable(monkeypatch, tmp_
 
 
 def test_project_asset_ping_uses_the_assets_boundary(monkeypatch, tmp_path):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     project = tmp_path / "PortableProject"
     asset = project / "Assets" / "Materials" / "Test.mat"
@@ -82,8 +82,8 @@ def test_project_asset_ping_uses_the_assets_boundary(monkeypatch, tmp_path):
 def test_generated_project_shader_is_not_revealed_outside_assets(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
-    from Infernux.engine import project_context
-    from Infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine import project_context
+    from infernux.engine.interaction import EditorInteractionCore
 
     project = tmp_path / "PortableProject"
     shader = project / "Library" / "Resources" / "shaders" / "standard.vert"

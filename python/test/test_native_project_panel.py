@@ -4,8 +4,8 @@ import json
 import tempfile
 from pathlib import Path
 import pytest
-from Infernux.lib import AssetMutationResult, ProjectPanel
-from Infernux.engine.ui.project_file_ops import (
+from infernux.lib import AssetMutationResult, ProjectPanel
+from infernux.engine.ui.project_file_ops import (
     SCRIPT_TEMPLATE,
     create_material,
     create_physic_material,
@@ -31,7 +31,7 @@ class TestProjectPanelCreation:
         assert pp is not None
 
     def test_is_editor_panel(self):
-        from Infernux.lib import EditorPanel
+        from infernux.lib import EditorPanel
         pp = ProjectPanel()
         assert isinstance(pp, EditorPanel)
 
@@ -86,7 +86,7 @@ class TestProjectPanelCreation:
         })
 
     def test_create_render_effect_assets_write_current_documents(self, tmp_path):
-        from Infernux.renderstack.render_effect_asset import (
+        from infernux.renderstack.render_effect_asset import (
             RenderEffectAsset,
             RenderEffectGroupAsset,
             parse_render_effect_document,
@@ -112,7 +112,7 @@ class TestProjectPanelCreation:
         assert group.entries == ()
 
     def test_create_material_writes_current_document(self, tmp_path, engine):
-        from Infernux.lib import InxMaterial
+        from infernux.lib import InxMaterial
 
         class RecordingAssetDatabase:
             def __init__(self):
@@ -144,7 +144,7 @@ class TestProjectPanelCreation:
         assert material.name == "NewMaterial"
 
     def test_new_material_import_primes_native_preview(self, tmp_path, monkeypatch):
-        from Infernux.core.assets import AssetManager
+        from infernux.core.assets import AssetManager
 
         path = tmp_path / "Fresh.mat"
         path.write_text('{"name":"Fresh"}', encoding="utf-8")
@@ -177,7 +177,7 @@ class TestProjectPanelCreation:
         )]
 
     def test_create_prefab_links_the_saved_source(self, tmp_path, monkeypatch):
-        from Infernux.engine import prefab_manager
+        from infernux.engine import prefab_manager
 
         source = type("GameObject", (), {"name": "CheckpointGate"})()
         linked = []
@@ -365,7 +365,7 @@ class TestProjectPanelCallbacks:
         binding = Path("cpp/infernux/tools/pybinding/BindingGUI.cpp").read_text(
             encoding="utf-8"
         )
-        bootstrap = Path("python/Infernux/engine/bootstrap_project.py").read_text(
+        bootstrap = Path("python/infernux/engine/bootstrap_project.py").read_text(
             encoding="utf-8"
         )
         forbidden = (
@@ -399,7 +399,7 @@ class TestProjectPanelCallbacks:
             encoding="utf-8"
         )
         menu_source = Path(
-            "python/Infernux/engine/ui/core_context_menus.py"
+            "python/infernux/engine/ui/core_context_menus.py"
         ).read_text(encoding="utf-8")
 
         assert "HandleKeyboardShortcuts" not in source
@@ -425,7 +425,7 @@ class TestProjectPanelCallbacks:
         assert 'def_readwrite("do_rename"' not in binding
 
     def test_folder_rename_maps_nested_asset_paths(self, tmp_path, monkeypatch):
-        from Infernux.engine.ui import project_file_ops
+        from infernux.engine.ui import project_file_ops
 
         source = tmp_path / "OldFolder"
         nested = source / "Nested"
@@ -467,7 +467,7 @@ class TestProjectPanelCallbacks:
     def test_project_asset_operations_publish_stable_semantics(self):
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
         menu_source = Path(
-            "python/Infernux/engine/ui/core_context_menus.py"
+            "python/infernux/engine/ui/core_context_menus.py"
         ).read_text(encoding="utf-8")
         assert '"project.context.rename"' in menu_source
         assert '"project.context.delete"' in menu_source
@@ -576,7 +576,7 @@ class TestProjectPanelCallbacks:
         assert "if (!contextMenuRendered)" in grid
 
     def test_project_callbacks_never_forge_a_missing_command_context(self):
-        bootstrap = Path("python/Infernux/engine/bootstrap_project.py").read_text(
+        bootstrap = Path("python/infernux/engine/bootstrap_project.py").read_text(
             encoding="utf-8"
         )
 
@@ -627,7 +627,7 @@ class TestProjectPanelCallbacks:
         source = Path("cpp/infernux/function/editor/ProjectPanel.cpp").read_text(encoding="utf-8")
         header = Path("cpp/infernux/function/editor/ProjectPanel.h").read_text(encoding="utf-8")
         binding = Path("cpp/infernux/tools/pybinding/BindingGUI.cpp").read_text(encoding="utf-8")
-        bootstrap = Path("python/Infernux/engine/bootstrap_project.py").read_text(encoding="utf-8")
+        bootstrap = Path("python/infernux/engine/bootstrap_project.py").read_text(encoding="utf-8")
 
         assert source.count('ExecuteEditorCommand("prefab.save_as"') == 3
         assert "MakePrefabSaveAsCommandArgument" in source

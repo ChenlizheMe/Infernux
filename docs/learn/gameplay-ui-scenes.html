@@ -77,7 +77,7 @@
 
 <p>Attach <code>SceneActions</code> to the <code>SceneFlow</code> GameObject in both scenes. The two method names are public, take no arguments, and therefore appear in the Button method picker.</p>
 <p><code>inx.SceneManager.load_scene(...)</code> accepts a build index or a string resolved against the build list. A bare name such as <code>"Level01"</code> matches the scene filename without its extension. The return value reports whether the request was accepted. During Play mode, the editor defers the replacement to a safe frame boundary, so <code>True</code> does not mean that the new scene has already completed loading inside the current method call.</p>
-<div class="learn-note"><strong>Use the runtime scene API.</strong><p>Gameplay scripts import <code>SceneManager</code> from <code>infernux</code>. <code>Infernux.engine.SceneFileManager</code> owns editor file operations such as save prompts and authoring-time scene opening.</p></div>
+<div class="learn-note"><strong>Use the runtime scene API.</strong><p>Gameplay scripts import <code>SceneManager</code> from <code>infernux</code>. <code>infernux.engine.SceneFileManager</code> owns editor file operations such as save prompts and authoring-time scene opening.</p></div>
 
 <h2 id="bind-button">Bind a Button to a component method</h2>
 <p>Configure the Play Button first:</p>
@@ -186,7 +186,7 @@
 
 <p>在两个场景的 <code>SceneFlow</code> 上都挂载 <code>SceneActions</code>。这两个方法是无参数公开方法，因此会出现在 Button 的方法选择器中。</p>
 <p><code>inx.SceneManager.load_scene(...)</code> 接受 Build Index，也接受按构建列表解析的字符串。<code>"Level01"</code> 这样的裸名称会匹配去掉扩展名后的场景文件名。返回值表示请求是否被接受。Play 模式中，编辑器会把场景替换推迟到安全的帧边界；方法返回 <code>True</code> 时，新场景仍可能处于待切换状态。</p>
-<div class="learn-note"><strong>使用运行时场景 API。</strong><p>玩法脚本应从 <code>infernux</code> 导入 <code>SceneManager</code>。<code>Infernux.engine.SceneFileManager</code> 负责保存提示、编辑状态打开场景等文件操作。</p></div>
+<div class="learn-note"><strong>使用运行时场景 API。</strong><p>玩法脚本应从 <code>infernux</code> 导入 <code>SceneManager</code>。<code>infernux.engine.SceneFileManager</code> 负责保存提示、编辑状态打开场景等文件操作。</p></div>
 
 <h2 id="bind-button_1">把 Button 绑定到组件方法</h2>
 <p>先配置 Play Button：</p>

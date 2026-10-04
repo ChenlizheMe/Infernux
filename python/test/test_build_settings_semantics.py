@@ -7,13 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.build import BuildTarget, PlatformCapabilities
-from Infernux.engine.ui.build_settings_panel import BuildSettingsPanel
+from infernux.engine.build import BuildTarget, PlatformCapabilities
+from infernux.engine.ui.build_settings_panel import BuildSettingsPanel
 
 
 def test_shared_build_output_stays_relative_when_the_project_moves(monkeypatch, tmp_path):
-    from Infernux.engine.build import BuildRequest
-    from Infernux.engine.build_settings import normalize_build_settings
+    from infernux.engine.build import BuildRequest
+    from infernux.engine.build_settings import normalize_build_settings
 
     original = tmp_path / "AuthorProject"
     cloned = tmp_path / "ClonedProject"
@@ -36,7 +36,7 @@ def test_shared_build_output_stays_relative_when_the_project_moves(monkeypatch, 
 @pytest.mark.parametrize("field", ["scenes", "scene_paths", "icon_path", "scene_gudis"])
 def test_build_rejects_unknown_settings_without_rewriting_the_shared_document(tmp_path, field):
     import json
-    from Infernux.engine.build_settings import load_build_settings_for_build
+    from infernux.engine.build_settings import load_build_settings_for_build
 
     path = tmp_path / "ProjectSettings/BuildSettings.json"
     path.parent.mkdir()
@@ -225,9 +225,9 @@ class _Context:
 
 
 def test_build_settings_scene_controls_expose_stable_semantic_ids(monkeypatch):
-    import Infernux.engine.scene_manager as scene_manager
-    import Infernux.engine.ui.build_settings_panel as module
-    import Infernux.engine.ui.igui as igui
+    import infernux.engine.scene_manager as scene_manager
+    import infernux.engine.ui.build_settings_panel as module
+    import infernux.engine.ui.igui as igui
 
     monkeypatch.setattr(module, "get_project_root", lambda: "C:/RacingPilot")
     monkeypatch.setattr(
@@ -238,7 +238,7 @@ def test_build_settings_scene_controls_expose_stable_semantic_ids(monkeypatch):
     monkeypatch.setattr(igui.IGUI, "multi_drop_target", staticmethod(lambda *_args, **_kwargs: None))
     monkeypatch.setattr(igui.IGUI, "drop_target", staticmethod(lambda *_args, **_kwargs: None))
     monkeypatch.setattr(
-        "Infernux.engine.ui.editor_services.EditorServices.instance",
+        "infernux.engine.ui.editor_services.EditorServices.instance",
         staticmethod(lambda: SimpleNamespace(asset_database=SimpleNamespace(
             get_path_from_guid=lambda guid: {
                 "racetrack-guid": "C:/RacingPilot/Assets/racetrack.scene",
@@ -272,9 +272,9 @@ def test_build_settings_scene_controls_expose_stable_semantic_ids(monkeypatch):
 
 
 def test_build_settings_scene_row_survives_a_path_outside_the_project(monkeypatch):
-    import Infernux.engine.scene_manager as scene_manager
-    import Infernux.engine.ui.build_settings_panel as module
-    import Infernux.engine.ui.igui as igui
+    import infernux.engine.scene_manager as scene_manager
+    import infernux.engine.ui.build_settings_panel as module
+    import infernux.engine.ui.igui as igui
 
     monkeypatch.setattr(module, "get_project_root", lambda: "C:/RacingPilot")
 
@@ -288,7 +288,7 @@ def test_build_settings_scene_row_survives_a_path_outside_the_project(monkeypatc
     monkeypatch.setattr(igui.IGUI, "multi_drop_target", staticmethod(lambda *_args, **_kwargs: None))
     monkeypatch.setattr(igui.IGUI, "drop_target", staticmethod(lambda *_args, **_kwargs: None))
     monkeypatch.setattr(
-        "Infernux.engine.ui.editor_services.EditorServices.instance",
+        "infernux.engine.ui.editor_services.EditorServices.instance",
         staticmethod(lambda: SimpleNamespace(asset_database=SimpleNamespace(
             get_path_from_guid=lambda _guid: "D:/Other/Scene.scene"
         ))),
@@ -327,7 +327,7 @@ def test_build_settings_does_not_turn_external_splash_deletion_into_user_edit():
 
 
 def test_build_settings_loader_does_not_invent_a_missing_document(tmp_path):
-    from Infernux.engine.build_settings import load_build_settings
+    from infernux.engine.build_settings import load_build_settings
 
     project = tmp_path / "Project"
     (project / "ProjectSettings").mkdir(parents=True)
@@ -337,7 +337,7 @@ def test_build_settings_loader_does_not_invent_a_missing_document(tmp_path):
 
 
 def test_build_settings_loader_propagates_malformed_current_json(tmp_path):
-    from Infernux.engine.build_settings import load_build_settings
+    from infernux.engine.build_settings import load_build_settings
 
     settings = tmp_path / "Project" / "ProjectSettings" / "BuildSettings.json"
     settings.parent.mkdir(parents=True)
@@ -348,9 +348,9 @@ def test_build_settings_loader_propagates_malformed_current_json(tmp_path):
 
 
 def test_build_settings_add_open_scene_uses_the_button_result(monkeypatch):
-    import Infernux.engine.scene_manager as scene_manager
-    import Infernux.engine.ui.build_settings_panel as module
-    import Infernux.engine.ui.igui as igui
+    import infernux.engine.scene_manager as scene_manager
+    import infernux.engine.ui.build_settings_panel as module
+    import infernux.engine.ui.igui as igui
 
     current_scene = "C:/RacingPilot/Assets/racetrack.scene"
     monkeypatch.setattr(module, "get_project_root", lambda: "C:/RacingPilot")
@@ -362,7 +362,7 @@ def test_build_settings_add_open_scene_uses_the_button_result(monkeypatch):
     monkeypatch.setattr(igui.IGUI, "multi_drop_target", staticmethod(lambda *_args, **_kwargs: None))
     monkeypatch.setattr(igui.IGUI, "drop_target", staticmethod(lambda *_args, **_kwargs: None))
     monkeypatch.setattr(
-        "Infernux.engine.ui.editor_services.EditorServices.instance",
+        "infernux.engine.ui.editor_services.EditorServices.instance",
         staticmethod(lambda: SimpleNamespace(asset_database=SimpleNamespace(
             get_guid_from_path=lambda _path: "racetrack-guid",
             get_path_from_guid=lambda guid: current_scene
@@ -382,7 +382,7 @@ def test_build_settings_add_open_scene_uses_the_button_result(monkeypatch):
 
 
 def test_build_settings_rejects_scene_outside_assets(monkeypatch):
-    import Infernux.engine.ui.build_settings_panel as module
+    import infernux.engine.ui.build_settings_panel as module
 
     monkeypatch.setattr(module, "get_project_root", lambda: "C:/RacingPilot")
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
@@ -397,7 +397,7 @@ def test_build_settings_rejects_scene_outside_assets(monkeypatch):
 
 
 def test_build_settings_output_controls_expose_stable_semantic_ids(monkeypatch):
-    import Infernux.engine.ui.build_settings_panel as module
+    import infernux.engine.ui.build_settings_panel as module
 
     monkeypatch.setattr(module, "get_project_root", lambda: "C:/RacingPilot")
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
@@ -431,8 +431,8 @@ def test_build_settings_output_controls_expose_stable_semantic_ids(monkeypatch):
 
 
 def test_build_settings_output_error_stays_inside_editor(monkeypatch):
-    import Infernux.engine.ui.build_settings_panel as module
-    from Infernux.engine.game_builder import BuildOutputDirectoryError, GameBuilder
+    import infernux.engine.ui.build_settings_panel as module
+    from infernux.engine.game_builder import BuildOutputDirectoryError, GameBuilder
 
     assert not hasattr(module, "show_system_error_dialog")
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
@@ -564,7 +564,7 @@ def test_build_status_actions_expose_stable_semantic_ids():
 
 
 def test_build_window_hides_its_slider_while_preflight_owns_progress(monkeypatch):
-    import Infernux.engine.ui.build_preflight_progress as preflight
+    import infernux.engine.ui.build_preflight_progress as preflight
 
     monkeypatch.setattr(
         preflight.BuildPreflightProgressService,
@@ -609,7 +609,7 @@ def test_build_error_log_does_not_push_the_dismiss_button_offscreen():
 
 
 def test_build_progress_does_not_drive_a_second_status_bar_slider(monkeypatch):
-    import Infernux.engine.ui.engine_status as engine_status
+    import infernux.engine.ui.engine_status as engine_status
 
     recorded: list[tuple] = []
 
@@ -659,7 +659,7 @@ def test_build_commands_gate_start_and_cancel_without_entering_undo():
 def test_build_preparation_flushes_writes_before_publishing_asset_index(
     monkeypatch, tmp_path
 ):
-    import Infernux.core.assets as assets_module
+    import infernux.core.assets as assets_module
 
     events: list[str] = []
     index_path = tmp_path / "Library" / "AssetIndex.json"
@@ -681,19 +681,19 @@ def test_build_preparation_flushes_writes_before_publishing_asset_index(
         classmethod(lambda cls: events.append("flush_writes")),
     )
     monkeypatch.setattr(
-        "Infernux.engine.runtime_artifact_catalog.load_asset_index",
+        "infernux.engine.runtime_artifact_catalog.load_asset_index",
         lambda _root: [],
     )
     monkeypatch.setattr(
-        "Infernux.renderstack.discovery.discover_effect_features",
+        "infernux.renderstack.discovery.discover_effect_features",
         lambda: None,
     )
     monkeypatch.setattr(
-        "Infernux.particle.artifact.ParticleArtifactRegistry.ensure_project_compiled",
+        "infernux.particle.artifact.ParticleArtifactRegistry.ensure_project_compiled",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "Infernux.engine.ui.build_settings_panel.get_project_root",
+        "infernux.engine.ui.build_settings_panel.get_project_root",
         lambda: str(tmp_path),
     )
     monkeypatch.setattr(
@@ -763,11 +763,11 @@ def test_missing_platform_plugin_is_visible_and_blocks_build(monkeypatch):
     panel._save = lambda: None
     monkeypatch.setattr(panel, "_available_build_targets", lambda: (desktop,))
     monkeypatch.setattr(
-        "Infernux.engine.ui.build_settings_panel.platform_support_catalog",
+        "infernux.engine.ui.build_settings_panel.platform_support_catalog",
         lambda _root: (support,),
     )
     monkeypatch.setattr(
-        "Infernux.engine.ui.build_settings_panel.get_project_root",
+        "infernux.engine.ui.build_settings_panel.get_project_root",
         lambda: "C:/Project",
     )
     ctx = _Context()
@@ -805,7 +805,7 @@ def test_build_settings_opens_plugins_and_selects_required_reference():
 
 
 def test_plugin_panel_external_selection_clears_filters():
-    from Infernux.engine.ui.plugin_panel import PluginPanel
+    from infernux.engine.ui.plugin_panel import PluginPanel
 
     panel = PluginPanel()
     panel._scope_index = 1
@@ -818,7 +818,7 @@ def test_plugin_panel_external_selection_clears_filters():
 
 
 def test_plugin_panel_reads_the_current_shared_cache_contract():
-    from Infernux.engine.ui.plugin_panel import PluginPanel
+    from infernux.engine.ui.plugin_panel import PluginPanel
 
     registry = SimpleNamespace(
         available=lambda: (
@@ -847,8 +847,8 @@ def test_plugin_panel_reads_the_current_shared_cache_contract():
 
 
 def test_plugin_panel_distinguishes_downloadable_downloaded_and_local_available():
-    from Infernux.engine.i18n import t
-    from Infernux.engine.ui.plugin_panel import PluginPanel
+    from infernux.engine.i18n import t
+    from infernux.engine.ui.plugin_panel import PluginPanel
 
     assert PluginPanel._state_visual(None, {"_cached": False})[0] == t(
         "plugins.downloadable"
@@ -916,7 +916,7 @@ def test_build_settings_balances_child_and_style_stacks_when_body_raises():
 
 
 def test_android_target_exposes_artifact_choice_with_stable_semantics(monkeypatch):
-    from Infernux.engine.build import (
+    from infernux.engine.build import (
         BuildOption,
         BuildOptionChoice,
         BuildOptionKind,
@@ -945,11 +945,11 @@ def test_android_target_exposes_artifact_choice_with_stable_semantics(monkeypatc
         ),
     )
     monkeypatch.setattr(
-        "Infernux.engine.ui.build_settings_panel.exporter_registry.options",
+        "infernux.engine.ui.build_settings_panel.exporter_registry.options",
         lambda _target: (descriptor,),
     )
     monkeypatch.setattr(
-        "Infernux.engine.ui.build_settings_panel.exporter_registry.resolve_options",
+        "infernux.engine.ui.build_settings_panel.exporter_registry.resolve_options",
         lambda _target, configured, **_kwargs: {
             "android_artifact": configured.get("android_artifact", "apk")
         },
@@ -969,7 +969,7 @@ def test_android_target_exposes_artifact_choice_with_stable_semantics(monkeypatc
 
 
 def test_integer_platform_option_uses_the_native_input_int_contract(monkeypatch):
-    from Infernux.engine.build import BuildOption, BuildOptionKind
+    from infernux.engine.build import BuildOption, BuildOptionKind
 
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)
     panel._build_target = "windows-x64"
@@ -980,11 +980,11 @@ def test_integer_platform_option_uses_the_native_input_int_contract(monkeypatch)
         minimum=320, maximum=16384, step=1,
     )
     monkeypatch.setattr(
-        "Infernux.engine.ui.build_settings_panel.exporter_registry.options",
+        "infernux.engine.ui.build_settings_panel.exporter_registry.options",
         lambda _target: (descriptor,),
     )
     monkeypatch.setattr(
-        "Infernux.engine.ui.build_settings_panel.exporter_registry.resolve_options",
+        "infernux.engine.ui.build_settings_panel.exporter_registry.resolve_options",
         lambda _target, configured, **_kwargs: {
             "window_width": configured.get("window_width", 1280)
         },
@@ -1002,11 +1002,11 @@ def test_platform_option_contract_errors_are_not_hidden(monkeypatch):
     panel._build_target = "windows-x64"
     panel._platform_options = {"windows-x64": {"widht": 1280}}
     monkeypatch.setattr(
-        "Infernux.engine.ui.build_settings_panel.exporter_registry.options",
+        "infernux.engine.ui.build_settings_panel.exporter_registry.options",
         lambda _target: (),
     )
     monkeypatch.setattr(
-        "Infernux.engine.ui.build_settings_panel.exporter_registry.resolve_options",
+        "infernux.engine.ui.build_settings_panel.exporter_registry.resolve_options",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             ValueError("Unknown build options for windows-x64: widht")
         ),
@@ -1017,8 +1017,8 @@ def test_platform_option_contract_errors_are_not_hidden(monkeypatch):
 
 
 def test_platform_progress_mapping_is_phase_aware_and_monotonic(monkeypatch):
-    from Infernux.engine.build import BuildProgress
-    import Infernux.engine.ui.engine_status as engine_status
+    from infernux.engine.build import BuildProgress
+    import infernux.engine.ui.engine_status as engine_status
 
     monkeypatch.setattr(engine_status.EngineStatus, "set", classmethod(lambda *_args, **_kwargs: None))
     panel = BuildSettingsPanel.__new__(BuildSettingsPanel)

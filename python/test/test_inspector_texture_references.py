@@ -4,8 +4,8 @@ from __future__ import annotations
 def test_project_texture_reference_resolves_relative_to_project_root(
     tmp_path, monkeypatch
 ):
-    from Infernux.engine import project_context
-    from Infernux.engine.ui import _inspector_references as references
+    from infernux.engine import project_context
+    from infernux.engine.ui import _inspector_references as references
 
     project = tmp_path / "Game"
     texture = project / "Assets" / "VFX" / "Smoke.tga"
@@ -23,8 +23,8 @@ def test_project_texture_reference_resolves_relative_to_project_root(
 
 
 def test_project_texture_reference_rejects_engine_owned_icons(tmp_path, monkeypatch):
-    from Infernux.engine import project_context
-    from Infernux.engine.ui import _inspector_references as references
+    from infernux.engine import project_context
+    from infernux.engine.ui import _inspector_references as references
 
     project = tmp_path / "Game"
     (project / "Assets").mkdir(parents=True)

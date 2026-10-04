@@ -10,20 +10,20 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.components import InxComponent, serialized_field, FieldType
-from Infernux.components.ref_wrappers import ComponentRef
-from Infernux.components.value_document import make_game_object_ref
-from Infernux.components.builtin import BoxCollider as BoxColliderComponent
-from Infernux.components.builtin import Camera as CameraComponent
-from Infernux.components.builtin import PhysicsMaterialCombine
-from Infernux.core.assets import AssetManager
-from Infernux.core.material import Material
-from Infernux.renderstack.render_stack import RenderStack
-from Infernux.renderstack.render_stack_pipeline import RenderStackPipeline
-from Infernux.renderstack.effect_slot import EffectSlot
-from Infernux.core.asset_ref import RenderEffectRef
+from infernux.components import InxComponent, serialized_field, FieldType
+from infernux.components.ref_wrappers import ComponentRef
+from infernux.components.value_document import make_game_object_ref
+from infernux.components.builtin import BoxCollider as BoxColliderComponent
+from infernux.components.builtin import Camera as CameraComponent
+from infernux.components.builtin import PhysicsMaterialCombine
+from infernux.core.assets import AssetManager
+from infernux.core.material import Material
+from infernux.renderstack.render_stack import RenderStack
+from infernux.renderstack.render_stack_pipeline import RenderStackPipeline
+from infernux.renderstack.effect_slot import EffectSlot
+from infernux.core.asset_ref import RenderEffectRef
 
-from Infernux.lib import (
+from infernux.lib import (
     SceneManager,
     Vector3,
     PrimitiveType,
@@ -374,7 +374,7 @@ class _RestoreComponentReference(InxComponent):
 
 class TestComponentLifecycle:
     def test_pending_python_component_reference_targets_are_preflighted(self, scene):
-        from Infernux.engine.component_restore import (
+        from infernux.engine.component_restore import (
             PythonComponentRestoreError,
             deserialize_game_object_document_transactionally,
         )
@@ -390,7 +390,7 @@ class TestComponentLifecycle:
         assert scene.has_pending_py_components() is False
 
     def test_component_reference_can_target_same_pending_batch(self, scene):
-        from Infernux.engine.component_restore import deserialize_game_object_document_transactionally
+        from infernux.engine.component_restore import deserialize_game_object_document_transactionally
 
         game_object = scene.create_game_object("PendingReferenceRestore")
         target = game_object.add_py_component(_RestoreSecond())
@@ -416,7 +416,7 @@ class TestComponentLifecycle:
         assert restored_target is not target
 
     def test_pending_python_component_restore_repairs_invalid_field_atomically(self, scene):
-        from Infernux.engine.component_restore import deserialize_game_object_document_transactionally
+        from infernux.engine.component_restore import deserialize_game_object_document_transactionally
 
         game_object = scene.create_game_object("AtomicPythonRestore")
         game_object.add_py_component(_RestoreFirst())
@@ -433,8 +433,8 @@ class TestComponentLifecycle:
         assert scene.has_pending_py_components() is False
 
     def test_missing_python_component_type_restores_as_data_preserving_placeholder(self, scene):
-        from Infernux.components.missing_script import MissingScript
-        from Infernux.engine.component_restore import deserialize_game_object_document_transactionally
+        from infernux.components.missing_script import MissingScript
+        from infernux.engine.component_restore import deserialize_game_object_document_transactionally
 
         game_object = scene.create_game_object("MissingPythonType")
         game_object.add_py_component(_RestoreFirst())
@@ -473,7 +473,7 @@ class TestComponentLifecycle:
         assert go.get_components(ProbeComponent) == [probe]
 
     def test_python_component_constraints_are_enforced_from_registry(self, scene):
-        from Infernux.components.decorators import disallow_multiple, require_component
+        from infernux.components.decorators import disallow_multiple, require_component
 
         class RegistryDependency(InxComponent):
             pass
@@ -521,7 +521,7 @@ class TestComponentLifecycle:
         assert python_first.add_component("MeshRenderer") is None
 
     def test_failed_python_attachment_rolls_back_auto_added_dependencies(self, scene):
-        from Infernux.components.decorators import require_component
+        from infernux.components.decorators import require_component
 
         class AutoDependency(InxComponent):
             pass
@@ -553,7 +553,7 @@ class TestComponentLifecycle:
         assert go.get_component(SecondOwner) is None
 
     def test_python_require_component_uses_stable_type_identity(self, scene):
-        from Infernux.components.decorators import require_component
+        from infernux.components.decorators import require_component
 
         FirstDependency = type(
             "SharedDependency",
@@ -582,7 +582,7 @@ class TestComponentLifecycle:
         assert go.get_component(RequiredDependency) is required
 
     def test_python_satisfied_type_alias_is_used_by_add_and_remove(self, scene):
-        from Infernux.components.decorators import require_component
+        from infernux.components.decorators import require_component
 
         class CapabilityProvider(InxComponent):
             _component_satisfied_types_ = ("TestCapability",)
@@ -616,7 +616,7 @@ class TestComponentLifecycle:
         assert go.get_component(ExactCandidate) is None
 
     def test_prepared_python_component_requires_valid_complete_set_before_activation(self, scene):
-        from Infernux.components.decorators import require_component
+        from infernux.components.decorators import require_component
 
         class PreparedDependency(InxComponent):
             pass
@@ -704,7 +704,7 @@ class TestComponentLifecycle:
         original = go.add_component(DocumentProbeComponent)
         document = go.serialize_document()
 
-        from Infernux.engine.component_restore import deserialize_game_object_document_transactionally
+        from infernux.engine.component_restore import deserialize_game_object_document_transactionally
         assert deserialize_game_object_document_transactionally(go, document) is True
 
         restored = go.get_component(DocumentProbeComponent)
@@ -712,8 +712,8 @@ class TestComponentLifecycle:
         assert restored is not original
 
     def test_script_loader_preserves_class_identity_for_imports(self, scene, tmp_path):
-        from Infernux.components.script_loader import load_component_from_file
-        from Infernux.engine.project_context import (
+        from infernux.components.script_loader import load_component_from_file
+        from infernux.engine.project_context import (
             get_project_root,
             set_project_root,
             temporary_script_import_paths,
@@ -724,7 +724,7 @@ class TestComponentLifecycle:
         assets_root.mkdir(parents=True)
         script_path = assets_root / "a2.py"
         script_path.write_text(
-            "from Infernux.components import *\n\n"
+            "from infernux.components import *\n\n"
             "class NewComponent1(InxComponent):\n"
             "    pass\n",
             encoding="utf-8",
@@ -797,7 +797,7 @@ class TestComponentLifecycle:
         assert second_mesh.convex is True
 
     def test_undo_adding_dynamic_rigidbody_restores_mesh_collider_convex(self, scene):
-        from Infernux.engine.undo import (
+        from infernux.engine.undo import (
             AddComponentTransactionCommand,
             UndoManager,
         )
@@ -824,14 +824,14 @@ class TestComponentLifecycle:
             UndoManager._instance = previous_manager
 
     def test_native_component_clipboard_uses_global_payload_and_precise_undo(self, scene):
-        from Infernux.engine.bootstrap_inspector._wire import (
+        from infernux.engine.bootstrap_inspector._wire import (
             _component_clipboard_data,
             _paste_native_component_as_new,
             _paste_native_component_values,
             _publish_component_clipboard,
         )
-        from Infernux.engine.interaction import ClipboardDomain, ClipboardService
-        from Infernux.engine.undo import UndoManager
+        from infernux.engine.interaction import ClipboardDomain, ClipboardService
+        from infernux.engine.undo import UndoManager
 
         source = scene.create_game_object("ClipboardSource").add_component("BoxCollider")
         source.size = Vector3(2.0, 3.0, 4.0)
@@ -882,10 +882,10 @@ class TestComponentLifecycle:
             UndoManager._instance = previous_manager
 
     def test_failed_native_component_paste_rolls_back_without_history(self, scene):
-        from Infernux.engine.bootstrap_inspector._wire import (
+        from infernux.engine.bootstrap_inspector._wire import (
             _paste_native_component_as_new,
         )
-        from Infernux.engine.undo import UndoManager
+        from infernux.engine.undo import UndoManager
 
         source = scene.create_game_object("InvalidClipboardSource").add_component(
             "BoxCollider"
@@ -909,7 +909,7 @@ class TestComponentLifecycle:
             UndoManager._instance = previous_manager
 
     def test_dynamic_mesh_collider_survives_play_mode_document_rebuild(self, scene):
-        from Infernux.engine.play_mode import PlayModeManager
+        from infernux.engine.play_mode import PlayModeManager
 
         owner = scene.create_primitive(PrimitiveType.Cube, "PlayModeDynamicMesh")
         mesh = owner.add_component("MeshCollider")
@@ -1285,7 +1285,7 @@ class TestComponentLifecycle:
             manager.unload_scene(second_scene)
 
     def test_renderstack_active_instance_survives_play_mode_document_rebuild(self, scene):
-        from Infernux.engine.play_mode import PlayModeManager
+        from infernux.engine.play_mode import PlayModeManager
 
         owner = scene.create_game_object("PlayModeRenderStack")
         original = owner.add_component(RenderStack)
@@ -1408,14 +1408,14 @@ class TestColliders:
 
     def test_physic_material_inspector_edit_is_undoable_and_republishes(self):
         from types import SimpleNamespace
-        from Infernux.core.physic_material import PhysicMaterial
-        from Infernux.engine.interaction import (
+        from infernux.core.physic_material import PhysicMaterial
+        from infernux.engine.interaction import (
             DocumentKind,
             DocumentRegistry,
             ensure_editable_resource_document,
         )
-        from Infernux.engine.ui.asset_details_renderer import _apply_physic_material_edit
-        from Infernux.engine.undo import UndoManager
+        from infernux.engine.ui.asset_details_renderer import _apply_physic_material_edit
+        from infernux.engine.undo import UndoManager
 
         class _ExecutionLayer:
             def __init__(self):
@@ -1472,7 +1472,7 @@ class TestColliders:
             material.bounce_combine = -1
 
     def test_builtin_collider_exposes_typed_material_combine(self, scene):
-        from Infernux.core.physic_material import PhysicMaterial
+        from infernux.core.physic_material import PhysicMaterial
 
         collider = scene.create_game_object("TypedMaterial").add_component(BoxColliderComponent)
         material = PhysicMaterial()
@@ -1486,8 +1486,8 @@ class TestColliders:
         assert resolved.bounce_combine == PhysicsMaterialCombine.Maximum
 
     def test_builtin_collider_accepts_empty_physic_material_reference(self, scene):
-        from Infernux.core.asset_ref import PhysicMaterialRef
-        from Infernux.core.physic_material import PhysicMaterial
+        from infernux.core.asset_ref import PhysicMaterialRef
+        from infernux.core.physic_material import PhysicMaterial
 
         collider = scene.create_game_object("ClearMaterial").add_component(
             BoxColliderComponent
@@ -2012,7 +2012,7 @@ class TestComponentSerialization:
         assert component.serialize_document()["spatial_blend"] == pytest.approx(1.0)
 
     def test_audio_source_uses_fixed_named_bus_contract(self, scene):
-        from Infernux.lib import AudioEngine
+        from infernux.lib import AudioEngine
 
         owner = scene.create_game_object("BusAudio")
         component = owner.add_component("AudioSource")
@@ -2036,8 +2036,8 @@ class TestComponentSerialization:
             engine.set_bus_volume("Music", 1.0)
 
     def test_audio_priority_round_trip_and_runtime_budget(self, scene):
-        from Infernux.lib import AudioEngine
-        from Infernux.components.builtin.audio_source import AudioSource
+        from infernux.lib import AudioEngine
+        from infernux.components.builtin.audio_source import AudioSource
 
         owner = scene.create_game_object("PriorityAudio")
         native = owner.add_component("AudioSource")
@@ -2068,8 +2068,8 @@ class TestComponentSerialization:
 
     def test_audio_track_seek_is_runtime_state_and_uses_clip_seconds(self, scene, tmp_path):
         import wave
-        from Infernux.lib import AudioClip
-        from Infernux.components.builtin.audio_source import AudioSource
+        from infernux.lib import AudioClip
+        from infernux.components.builtin.audio_source import AudioSource
 
         clip_path = tmp_path / "seek.wav"
         with wave.open(str(clip_path), "wb") as output:
@@ -2109,7 +2109,7 @@ class TestComponentSerialization:
 
     def test_audio_bus_fade_uses_device_time_and_direct_write_cancels_it(self, engine, scene):
         import time
-        from Infernux.lib import AudioEngine
+        from infernux.lib import AudioEngine
 
         audio = AudioEngine.instance()
         if not audio.is_initialized:
@@ -2302,7 +2302,7 @@ class TestComponentSerialization:
         sm = SceneManager.instance()
         scene2 = sm.create_scene("reload")
         sm.set_active_scene(scene2)
-        from Infernux.engine.component_restore import deserialize_scene_document_transactionally
+        from infernux.engine.component_restore import deserialize_scene_document_transactionally
         assert deserialize_scene_document_transactionally(scene2, json.loads(json_str)) is True
 
         found = scene2.find("Persist")

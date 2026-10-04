@@ -2,10 +2,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.asset_types import TextureType
-from Infernux.engine.ui.plugin_panel import PluginPanel
-import Infernux.engine.ui.plugin_panel as panel_module
-from Infernux.engine import runtime_event_queue
+from infernux.core.asset_types import TextureType
+from infernux.engine.ui.plugin_panel import PluginPanel
+import infernux.engine.ui.plugin_panel as panel_module
+from infernux.engine import runtime_event_queue
 
 
 @pytest.mark.parametrize("pages", [[], [{"id": "usage", "title": "Usage"}, {"id": "notes", "title": "Notes"}]])

@@ -16,7 +16,7 @@ from types import CodeType
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY_ROOT / "python"))
 
-from Infernux.engine.player_package_native import read_entry, read_manifest  # noqa: E402
+from infernux.engine.player_package_native import read_entry, read_manifest  # noqa: E402
 
 
 GAME_DATA = "InfernuxPlatformFixture_Data"

@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from Infernux.components.component_identity import bind_asset_script_guid, component_type_guid
-from Infernux.components.missing_script import create_missing_script_component
-from Infernux.components.script_loader import load_component_class_from_file
-from Infernux.engine.component_restore import create_component_instance
-from Infernux.lib import _Vec3WritebackProxy
+from infernux.components.component_identity import bind_asset_script_guid, component_type_guid
+from infernux.components.missing_script import create_missing_script_component
+from infernux.components.script_loader import load_component_class_from_file
+from infernux.engine.component_restore import create_component_instance
+from infernux.lib import _Vec3WritebackProxy
 
 
 def test_asset_script_bind_is_stable_across_module_rename(tmp_path):
     script = tmp_path / "mover.py"
     script.write_text(
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class Mover(InxComponent):\n"
         "    speed: float = 1.0\n",
         encoding="utf-8",
@@ -34,7 +34,7 @@ def test_asset_script_bind_is_stable_across_module_rename(tmp_path):
 def test_asset_guid_binding_rekeys_numeric_component_data_store(tmp_path):
     script = tmp_path / "numeric_probe.py"
     script.write_text(
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class NumericProbe(InxComponent):\n"
         "    speed: float = 1.0\n",
         encoding="utf-8",
@@ -55,7 +55,7 @@ def test_asset_guid_binding_rekeys_numeric_component_data_store(tmp_path):
 def test_create_component_instance_accepts_stale_module_type_guid(tmp_path, monkeypatch):
     script = tmp_path / "jump.py"
     script.write_text(
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class Jump(InxComponent):\n"
         "    height: float = 2.0\n",
         encoding="utf-8",
@@ -87,7 +87,7 @@ def test_create_component_instance_accepts_stale_module_type_guid(tmp_path, monk
 def test_create_component_instance_follows_class_rename_in_one_component_script(tmp_path):
     script = tmp_path / "newcomponent2.py"
     script.write_text(
-        "from Infernux.components import InxComponent\n"
+        "from infernux.components import InxComponent\n"
         "class RenamedComponent(InxComponent):\n"
         "    speed: float = 5.0\n",
         encoding="utf-8",
@@ -115,7 +115,7 @@ def test_create_component_instance_follows_class_rename_in_one_component_script(
 
 
 def test_deleted_asset_is_not_resurrected_from_loaded_type_registry():
-    from Infernux.components import InxComponent
+    from infernux.components import InxComponent
 
     class DeletedProbe(InxComponent):
         pass
@@ -141,7 +141,7 @@ def test_deleted_asset_is_not_resurrected_from_loaded_type_registry():
 
 
 def test_builtin_component_can_use_loaded_type_without_project_asset():
-    from Infernux.components import InxComponent
+    from infernux.components import InxComponent
 
     class BuiltinProbe(InxComponent):
         pass

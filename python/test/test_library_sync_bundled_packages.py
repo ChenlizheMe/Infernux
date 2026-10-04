@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from Infernux.engine.library_sync import sync_resources
+from infernux.engine.library_sync import sync_resources
 
 
 def test_library_sync_does_not_mirror_wheel_mandatory_packages(tmp_path, monkeypatch):
@@ -16,7 +16,7 @@ def test_library_sync_does_not_mirror_wheel_mandatory_packages(tmp_path, monkeyp
     (nested / "catalog-artifact.inxpkg").write_bytes(b"catalog")
     project = tmp_path / "project"
     monkeypatch.setattr(
-        "Infernux.resources.get_package_resources_path", lambda: str(resources)
+        "infernux.resources.get_package_resources_path", lambda: str(resources)
     )
 
     destination = Path(sync_resources(str(project)))

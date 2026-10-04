@@ -13,7 +13,7 @@ import urllib.request
 from publish_hub_objects import Publisher
 
 ROOT = Path(__file__).resolve().parents[2]
-REGISTRY = ROOT / "python/Infernux/resources/official_packages/official-registry.json"
+REGISTRY = ROOT / "python/infernux/resources/official_packages/official-registry.json"
 
 
 def release_identity(package: dict) -> tuple[str, str, str]:

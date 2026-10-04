@@ -1,7 +1,7 @@
 # RenderStack
 
 <div class="class-info">
-class in <b>Infernux.renderstack</b>
+class in <b>infernux.renderstack</b>
 </div>
 
 **Inherits from:** [InxComponent](InxComponent.md)

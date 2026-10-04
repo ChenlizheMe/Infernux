@@ -8,15 +8,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.components import InxComponent
-from Infernux.components.script_loader import patch_component_class_body
-from Infernux.engine.runtime_dispatch import (
+from infernux.components import InxComponent
+from infernux.components.script_loader import patch_component_class_body
+from infernux.engine.runtime_dispatch import (
     ReloadableCallbackRegistry,
     RuntimeRevisionEpoch,
     current_runtime_epoch,
     publish_runtime_dispatch_epoch,
 )
-from Infernux.ui.ui_event import UIEvent, UIEvent1
+from infernux.ui.ui_event import UIEvent, UIEvent1
 
 
 class _MutableTargetRef:
@@ -39,7 +39,7 @@ class _PersistentTargetObject:
 
 
 def _persistent_entry(target_ref, component_name: str, method_name: str):
-    from Infernux.ui.ui_event_entry import UIEventEntry
+    from infernux.ui.ui_event_entry import UIEventEntry
 
     entry = UIEventEntry(
         component_name=component_name,
@@ -119,7 +119,7 @@ def test_callback_invoke_does_not_reflect_signature_after_registration(monkeypat
     publication = publish_runtime_dispatch_epoch((_ReloadableCallbackComponent,))
     publication.commit()
 
-    import Infernux.engine.runtime_dispatch as runtime_dispatch
+    import infernux.engine.runtime_dispatch as runtime_dispatch
 
     def unexpected_signature_reflection(_callback):
         raise AssertionError("invoke must not inspect callback signatures")
@@ -290,7 +290,7 @@ def test_uievent_preserves_callback_exception_propagation():
 def test_persistent_uievent_entry_uses_reloaded_body_without_hot_path_reflection(
     monkeypatch,
 ):
-    from Infernux.ui import UIButton
+    from infernux.ui import UIButton
 
     class PersistentTarget(InxComponent):
         def activate(self) -> None:
@@ -314,8 +314,8 @@ def test_persistent_uievent_entry_uses_reloaded_body_without_hot_path_reflection
     publication = publish_runtime_dispatch_epoch((PersistentTarget,))
     publication.commit()
     try:
-        import Infernux.engine.runtime_dispatch as runtime_dispatch
-        import Infernux.ui.ui_event_entry as ui_event_entry
+        import infernux.engine.runtime_dispatch as runtime_dispatch
+        import infernux.ui.ui_event_entry as ui_event_entry
 
         def reject_reflection(_callback):
             raise AssertionError("persistent callback invoke reflected its signature")
@@ -331,7 +331,7 @@ def test_persistent_uievent_entry_uses_reloaded_body_without_hot_path_reflection
 
 
 def test_persistent_uievent_entry_reuses_binding_across_target_wrappers():
-    from Infernux.ui import UIButton
+    from infernux.ui import UIButton
 
     class StableTarget(InxComponent):
         def activate(self) -> None:
@@ -361,7 +361,7 @@ def test_persistent_uievent_entry_reuses_binding_across_target_wrappers():
 
 
 def test_persistent_uievent_entry_rejects_removed_or_incompatible_method():
-    from Infernux.ui import UIButton
+    from infernux.ui import UIButton
 
     class PersistentContract(InxComponent):
         def activate(self) -> None:
@@ -397,8 +397,8 @@ def test_persistent_uievent_entry_rejects_removed_or_incompatible_method():
 def test_persistent_uievent_entry_reports_destroyed_owner_then_re_resolves_target(
     monkeypatch,
 ):
-    from Infernux.debug import Debug
-    from Infernux.ui import UIButton
+    from infernux.debug import Debug
+    from infernux.ui import UIButton
 
     class PersistentOwner(InxComponent):
         def activate(self) -> None:
@@ -430,8 +430,8 @@ def test_persistent_uievent_entry_reports_destroyed_owner_then_re_resolves_targe
 
 
 def test_persistent_uievent_entry_records_and_logs_user_exception(monkeypatch):
-    from Infernux.debug import Debug
-    from Infernux.ui import UIButton
+    from infernux.debug import Debug
+    from infernux.ui import UIButton
 
     class FailingPersistentOwner(InxComponent):
         def explode(self) -> None:
@@ -450,7 +450,7 @@ def test_persistent_uievent_entry_records_and_logs_user_exception(monkeypatch):
 
 
 def test_persistent_uievent_entry_validation_retires_obsolete_callback_contract():
-    from Infernux.ui import UIButton
+    from infernux.ui import UIButton
 
     class RetiredPersistentOwner(InxComponent):
         def activate(self) -> None:
@@ -485,7 +485,7 @@ def test_persistent_uievent_entry_validation_retires_obsolete_callback_contract(
 
 
 def test_debug_console_listener_uses_reloadable_registry_and_propagates(monkeypatch):
-    from Infernux.debug import DebugConsole, LogEntry, LogType
+    from infernux.debug import DebugConsole, LogEntry, LogType
 
     class ConsoleListener(InxComponent):
         def on_log(self, entry) -> None:

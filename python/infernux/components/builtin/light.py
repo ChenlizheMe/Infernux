@@ -1,0 +1,362 @@
+"""
+Light — Python InxComponent wrapper for the C++ Light component.
+
+Exposes all Light properties as CppProperty descriptors so they appear
+in the InxComponent serialized-field system and Inspector UI.
+
+The underlying rendering is handled entirely by C++.
+
+Example::
+
+    from infernux.components.builtin import Light
+    from infernux.lib import LightType, LightShadows
+
+    class DayNightCycle(InxComponent):
+        def start(self):
+            self.sun = self.game_object.get_component(Light)
+
+        def update(self, dt):
+            self.sun.intensity = ...
+"""
+
+from __future__ import annotations
+
+import math
+
+from infernux.components.builtin_component import BuiltinComponent, CppProperty
+from infernux.components.fields import FieldType
+from infernux.components._gizmo_ids import ICON_KIND_LIGHT
+
+
+_DIRECTIONAL_LIGHT = 0
+_POINT_LIGHT = 1
+_SPOT_LIGHT = 2
+_AREA_LIGHT = 3
+
+
+def _v_add(a, b):
+    return (a[0] + b[0], a[1] + b[1], a[2] + b[2])
+
+
+def _v_mul(v, scalar):
+    return (v[0] * scalar, v[1] * scalar, v[2] * scalar)
+
+
+def _v_length(v):
+    return math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+
+
+def _v_normalize(v):
+    length = _v_length(v)
+    if length <= 1e-6:
+        return (0.0, 0.0, 1.0)
+    inv = 1.0 / length
+    return (v[0] * inv, v[1] * inv, v[2] * inv)
+
+
+def _clamp(value, min_value, max_value):
+    return max(min_value, min(max_value, value))
+
+
+def _light_gizmo_color(light):
+    # Gizmo vertices are consumed in the linear scene pipeline and encoded once
+    # on presentation. Feeding display/sRGB values here would brighten every
+    # non-white light icon a second time.
+    # Native Light wrappers expose ``effective_linear_color``.  Keep icon
+    # collection independent from wrapper construction however: a component
+    # proxy can be intentionally minimal while a scene is being refreshed
+    # (and test doubles use the same contract).  In that case the authored
+    # gizmo tint is already linear and is the correct deterministic value.
+    rgba = getattr(light, "effective_linear_color", None)
+    if rgba is None:
+        rgba = getattr(light, "_gizmo_icon_color", (1.0, 1.0, 1.0))
+    r = float(rgba[0]) if len(rgba) > 0 else 1.0
+    g = float(rgba[1]) if len(rgba) > 1 else 1.0
+    b = float(rgba[2]) if len(rgba) > 2 else 1.0
+    return (
+        _clamp(r, 0.0, 1.0),
+        _clamp(g, 0.0, 1.0),
+        _clamp(b, 0.0, 1.0),
+    )
+
+
+def _rgb_to_rgba(v):
+    """Convert C++ vec3 color to [r, g, b, a] list for COLOR field."""
+    return [float(v[0]), float(v[1]), float(v[2]), float(getattr(v, 'w', 1.0)) if hasattr(v, 'w') else 1.0]
+
+
+def _rgba_to_vec3(v):
+    """Convert RGBA list/tuple back to Vector3 for C++ Light.color setter."""
+    if isinstance(v, (list, tuple)):
+        from infernux.lib import Vector3
+        return Vector3(float(v[0]), float(v[1]), float(v[2]))
+    return v
+
+
+def _vec2_to_list(v):
+    return [float(v[0]), float(v[1])]
+
+
+def _list_to_vec2(v):
+    if isinstance(v, (list, tuple)):
+        from infernux.lib import Vector2
+        return Vector2(float(v[0]), float(v[1]))
+    return v
+
+
+class Light(BuiltinComponent):
+    """Python wrapper for the C++ Light component.
+
+    Properties delegate to the C++ ``Light`` object via CppProperty.
+    All changes are immediately reflected in the renderer.
+    """
+
+    _cpp_type_name = "Light"
+    _component_category_ = "Rendering"
+    _always_show = False
+
+    # A white texture leaves the billboard free to take its tint from each light.
+    _gizmo_icon_color = (1.0, 1.0, 1.0)
+    _gizmo_icon_kind = ICON_KIND_LIGHT
+
+    # ---- Light type ----
+    light_type = CppProperty.from_native("Light", "light_type")
+
+    # ---- Color & intensity ----
+    color_mode = CppProperty.from_native("Light", "color_mode")
+    color = CppProperty(
+        "color",
+        FieldType.COLOR,
+        default=None,
+        tooltip="Authored sRGB color; a filter when using color temperature",
+        get_converter=_rgb_to_rgba,
+        set_converter=_rgba_to_vec3,
+    )
+    use_color_temperature = CppProperty.from_native("Light", "use_color_temperature")
+    color_temperature = CppProperty.from_native(
+        "Light", "color_temperature", visible_when=lambda comp: comp.use_color_temperature
+    )
+    intensity = CppProperty.from_native("Light", "intensity")
+
+    @property
+    def effective_color(self):
+        """Emitted sRGB color after the optional Kelvin filter, before intensity."""
+        return self._require_cpp_component().effective_color
+
+    @property
+    def effective_linear_color(self):
+        """Emitted linear RGB color used by rendering, before intensity."""
+        return self._require_cpp_component().effective_linear_color
+
+    # ---- Range (Point / Spot) ----
+    range = CppProperty.from_native(
+        "Light", "range", visible_when=lambda comp: int(comp.light_type) in (1, 2, 3)
+    )
+
+    # ---- Spot angles ----
+    spot_angle = CppProperty.from_native(
+        "Light", "spot_angle", visible_when=lambda comp: int(comp.light_type) == 2
+    )
+    outer_spot_angle = CppProperty.from_native(
+        "Light", "outer_spot_angle", visible_when=lambda comp: int(comp.light_type) == 2
+    )
+
+    area_size = CppProperty.from_native(
+        "Light", "area_size",
+        visible_when=lambda comp: int(comp.light_type) == _AREA_LIGHT,
+        get_converter=_vec2_to_list,
+        set_converter=_list_to_vec2,
+    )
+    area_two_sided = CppProperty.from_native(
+        "Light", "area_two_sided",
+        visible_when=lambda comp: int(comp.light_type) == _AREA_LIGHT,
+    )
+
+    # ---- Shadows ----
+    shadows = CppProperty.from_native("Light", "shadows")
+    shadow_strength = CppProperty.from_native(
+        "Light", "shadow_strength", visible_when=lambda comp: int(comp.shadows) > 0
+    )
+
+    @property
+    def shadow_bias(self) -> float:
+        """Engine-managed depth bias, expressed in shadow-map texels."""
+        return float(self._require_cpp_component().shadow_bias)
+
+    @property
+    def shadow_normal_bias(self) -> float:
+        """Engine-managed normal bias, expressed in shadow-map texels."""
+        return float(self._require_cpp_component().shadow_normal_bias)
+
+    shadow_softness = CppProperty.from_native(
+        "Light", "shadow_softness", visible_when=lambda comp: int(comp.shadows) == 2
+    )
+
+    affect_geometry = CppProperty(
+        "affect_geometry",
+        FieldType.BOOL,
+        default=True,
+        header="Influence",
+        tooltip="Allow this light to illuminate geometry renderers",
+    )
+    affect_particles = CppProperty(
+        "affect_particles",
+        FieldType.BOOL,
+        default=True,
+        tooltip="Allow this light to illuminate particle renderers",
+    )
+
+    @property
+    def culling_mask(self) -> int:
+        """Layer bitmask selecting which GameObjects this light affects."""
+        return int(self._require_cpp_component().culling_mask)
+
+    @culling_mask.setter
+    def culling_mask(self, value: int) -> None:
+        mask = int(value)
+        if not 0 <= mask <= 0xFFFFFFFF:
+            raise ValueError("Light.culling_mask must be an unsigned 32-bit integer")
+        self._require_cpp_component().culling_mask = mask
+
+    def serialize(self) -> str:
+        """Serialize Light to JSON string (delegates to C++)."""
+        cpp = self._cpp_component
+        if cpp is not None:
+            return cpp.serialize()
+        return "{}"
+
+    # ------------------------------------------------------------------
+    # Gizmos — light-type specific scene visualisation
+    # ------------------------------------------------------------------
+
+    def on_draw_gizmos_selected(self):
+        """Draw a type-specific light gizmo when selected in the editor."""
+        from infernux.gizmos import Gizmos
+
+        cpp = self._get_bound_native_component()
+        if cpp is None:
+            return
+
+        transform = self.transform
+        if transform is None:
+            return
+
+        pos = transform.position
+        position = (pos.x, pos.y, pos.z)
+        forward = _v_normalize((transform.forward.x, transform.forward.y, transform.forward.z))
+        up = _v_normalize((transform.up.x, transform.up.y, transform.up.z))
+        right = _v_normalize((transform.right.x, transform.right.y, transform.right.z))
+
+        old_color = Gizmos.color
+        Gizmos.color = _light_gizmo_color(self)
+
+        light_type = int(self.light_type)
+        if light_type == _DIRECTIONAL_LIGHT:
+            self._draw_directional_gizmo(position, forward, up, right)
+        elif light_type == _POINT_LIGHT:
+            self._draw_point_gizmo(position)
+        elif light_type == _SPOT_LIGHT:
+            self._draw_spot_gizmo(position, forward, up, right)
+        elif light_type == _AREA_LIGHT:
+            self._draw_area_gizmo(position, forward, up, right)
+        else:
+            self._draw_point_gizmo(position)
+
+        Gizmos.color = old_color
+
+    def _draw_directional_gizmo(self, position, forward, up, right):
+        from infernux.gizmos import Gizmos
+
+        shaft_length = 1.8
+        arrow_size = 0.35
+        offsets = [
+            (0.0, 0.0),
+            (-0.45, 0.35),
+            (0.45, 0.35),
+            (-0.45, -0.35),
+            (0.45, -0.35),
+        ]
+
+        for right_offset, up_offset in offsets:
+            origin = _v_add(position, _v_add(_v_mul(right, right_offset), _v_mul(up, up_offset)))
+            end = _v_add(origin, _v_mul(forward, shaft_length))
+            Gizmos.draw_line(origin, end)
+
+            head_base = _v_add(end, _v_mul(forward, -arrow_size))
+            Gizmos.draw_line(end, _v_add(head_base, _v_mul(right, arrow_size * 0.55)))
+            Gizmos.draw_line(end, _v_add(head_base, _v_mul(right, -arrow_size * 0.55)))
+            Gizmos.draw_line(end, _v_add(head_base, _v_mul(up, arrow_size * 0.55)))
+            Gizmos.draw_line(end, _v_add(head_base, _v_mul(up, -arrow_size * 0.55)))
+
+    def _draw_point_gizmo(self, position):
+        from infernux.gizmos import Gizmos
+
+        radius = max(0.05, float(self.range))
+        Gizmos.draw_wire_sphere(position, radius)
+
+        inner = min(radius * 0.2, 0.6)
+        Gizmos.draw_wire_sphere(position, inner, segments=16)
+
+    def _draw_spot_gizmo(self, position, forward, up, right):
+        from infernux.gizmos import Gizmos
+
+        light_range = max(0.05, float(self.range))
+        outer_angle = math.radians(float(self.outer_spot_angle) * 0.5)
+        inner_angle = math.radians(min(float(self.spot_angle), float(self.outer_spot_angle)) * 0.5)
+        outer_radius = math.tan(outer_angle) * light_range
+        inner_radius = math.tan(inner_angle) * light_range
+        cone_center = _v_add(position, _v_mul(forward, light_range))
+
+        ring_points = []
+        spokes = 12
+        for index in range(spokes):
+            angle = (math.tau * index) / spokes
+            radial = _v_add(_v_mul(right, math.cos(angle)), _v_mul(up, math.sin(angle)))
+            ring_point = _v_add(cone_center, _v_mul(radial, outer_radius))
+            ring_points.append(ring_point)
+
+        for index in range(spokes):
+            Gizmos.draw_line(ring_points[index], ring_points[(index + 1) % spokes])
+
+        for index in (0, 3, 6, 9):
+            Gizmos.draw_line(position, ring_points[index])
+
+        if inner_radius > 0.001:
+            Gizmos.draw_wire_arc(cone_center, forward, inner_radius, 0.0, 360.0, 24)
+
+        Gizmos.draw_ray(position, _v_mul(forward, light_range))
+
+    def _draw_area_gizmo(self, position, forward, up, right):
+        from infernux.gizmos import Gizmos
+
+        size = self.area_size
+        half_width = max(float(size[0]) * 0.5, 0.001)
+        half_height = max(float(size[1]) * 0.5, 0.001)
+
+        corners = [
+            _v_add(position, _v_add(_v_mul(right, -half_width), _v_mul(up, -half_height))),
+            _v_add(position, _v_add(_v_mul(right, half_width), _v_mul(up, -half_height))),
+            _v_add(position, _v_add(_v_mul(right, half_width), _v_mul(up, half_height))),
+            _v_add(position, _v_add(_v_mul(right, -half_width), _v_mul(up, half_height))),
+        ]
+
+        for index in range(4):
+            Gizmos.draw_line(corners[index], corners[(index + 1) % 4])
+
+        inset = 0.28
+        inner_corners = [
+            _v_add(position, _v_add(_v_mul(right, -half_width + inset), _v_mul(up, -half_height + inset))),
+            _v_add(position, _v_add(_v_mul(right, half_width - inset), _v_mul(up, -half_height + inset))),
+            _v_add(position, _v_add(_v_mul(right, half_width - inset), _v_mul(up, half_height - inset))),
+            _v_add(position, _v_add(_v_mul(right, -half_width + inset), _v_mul(up, half_height - inset))),
+        ]
+        for index in range(4):
+            Gizmos.draw_line(inner_corners[index], inner_corners[(index + 1) % 4])
+
+        for corner in corners:
+            Gizmos.draw_line(corner, _v_add(corner, _v_mul(forward, 0.45)))
+
+        center_tip = _v_add(position, _v_mul(forward, 0.75))
+        Gizmos.draw_line(position, center_tip)
+        Gizmos.draw_line(center_tip, _v_add(_v_add(center_tip, _v_mul(forward, -0.18)), _v_mul(right, 0.14)))
+        Gizmos.draw_line(center_tip, _v_add(_v_add(center_tip, _v_mul(forward, -0.18)), _v_mul(right, -0.14)))

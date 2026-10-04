@@ -5,13 +5,13 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
-from Infernux.components import (
+from infernux.components import (
     FieldType,
     SerializableObject,
     serialized_field,
 )
-from Infernux.core import AssetManager, DataAsset, DataAssetRef
-from Infernux.core.data_asset import (
+from infernux.core import AssetManager, DataAsset, DataAssetRef
+from infernux.core.data_asset import (
     decode_data_asset_artifact,
     encode_data_asset_artifact,
     get_registered_data_asset_types,
@@ -174,7 +174,7 @@ def test_data_asset_current_field_normalization_recurses_into_nested_data():
 
 
 def test_data_asset_current_typed_asset_reference_is_preserved():
-    from Infernux.components.fields import get_raw_field_value
+    from infernux.components.fields import get_raw_field_value
 
     authored = {
         "$type": "data_asset",
@@ -255,13 +255,13 @@ def test_data_asset_player_artifact_is_binary_and_deterministic():
 
 
 def test_data_asset_uses_shared_document_transaction_and_undo():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         DocumentKey,
         DocumentKind,
         DocumentRegistry,
         ensure_editable_resource_document,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     previous_registry = DocumentRegistry._instance
     previous_manager = UndoManager._instance
@@ -303,7 +303,7 @@ def test_data_asset_uses_shared_document_transaction_and_undo():
         manager.redo()
         assert source.speed == 11.0
     finally:
-        from Infernux.core.assets import AssetManager
+        from infernux.core.assets import AssetManager
 
         AssetManager.cancel_scheduled_save(source.file_path)
         DocumentRegistry._instance = previous_registry
@@ -408,7 +408,7 @@ def test_data_asset_first_loaded_during_play_is_discarded_on_stop(engine, monkey
 
 
 def test_data_asset_import_publishes_nested_asset_dependencies(engine, monkeypatch):
-    from Infernux.lib import AssetDependencyGraph
+    from infernux.lib import AssetDependencyGraph
 
     database = _install_database(engine, monkeypatch)
     target_path = Path(database.assets_root) / "DataAssetDependency.inxdata"
@@ -437,7 +437,7 @@ def test_data_asset_import_publishes_nested_asset_dependencies(engine, monkeypat
 def test_data_asset_catalog_and_project_creation_use_published_type(engine, monkeypatch):
     database = _install_database(engine, monkeypatch)
     target = Path(database.assets_root) / "NewCharacterData.inxdata"
-    from Infernux.engine.ui.project_file_ops import create_data_asset
+    from infernux.engine.ui.project_file_ops import create_data_asset
 
     assert (CharacterDataAsset.__serialized_type_id__, CharacterDataAsset) in (
         get_registered_data_asset_types()
@@ -477,7 +477,7 @@ def test_data_asset_authoring_rejects_wrong_location_extension_and_player(engine
     with pytest.raises(ValueError, match=r"\.inxdata extension"):
         source.save_to(str(Path(database.assets_root) / "wrong.json"))
 
-    from Infernux.application import Application
+    from infernux.application import Application
 
     monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
     with pytest.raises(RuntimeError, match="read-only in Player"):

@@ -5,17 +5,17 @@ import struct
 import pytest
 import numpy as np
 
-from Infernux import compute
-from Infernux._compiler.taichi import frontend
-from Infernux.engine.build import compute_aot
-from Infernux.engine.build.compute_aot import (
+from infernux import compute
+from infernux._compiler.taichi import frontend
+from infernux.engine.build import compute_aot
+from infernux.engine.build.compute_aot import (
     ComputeAotBuildError,
     declared_kernel_names,
     ensure_engine_compute_artifacts,
     stage_compute_artifacts,
 )
-from Infernux.engine.game_builder import GameBuilder
-from Infernux.engine.player_package_native import read_manifest
+from infernux.engine.game_builder import GameBuilder
+from infernux.engine.player_package_native import read_manifest
 
 
 def _write_artifact(path: Path, function: str) -> None:
@@ -40,8 +40,8 @@ def _write_kernel(project: Path) -> Path:
     source = project / "Assets/Scripts/Jelly.py"
     source.parent.mkdir(parents=True)
     source.write_text(
-        "import Infernux as inx\n"
-        "from Infernux import compute as gpu\n"
+        "import infernux as inx\n"
+        "from infernux import compute as gpu\n"
         "@inx.compute.function\n"
         "def helper(value):\n"
         "    return value\n"
@@ -64,7 +64,7 @@ def test_declared_kernel_names_accepts_explicit_static_class_kernel(tmp_path):
     source = tmp_path / "Assets/Scripts/Jelly.py"
     source.parent.mkdir(parents=True)
     source.write_text(
-        "import Infernux as inx\n"
+        "import infernux as inx\n"
         "class Jelly:\n"
         "    @staticmethod\n"
         "    @inx.compute.kernel\n"
@@ -100,7 +100,7 @@ def test_declared_kernel_names_reports_implicit_class_receiver_with_location(tmp
     source = tmp_path / "Assets/Scripts/Jelly.py"
     source.parent.mkdir(parents=True)
     source.write_text(
-        "import Infernux as inx\n"
+        "import infernux as inx\n"
         "class Jelly:\n"
         "    @inx.compute.kernel\n"
         "    def step(self, domain):\n"
@@ -123,7 +123,7 @@ def test_declared_kernel_names_reports_positional_only_class_receiver(tmp_path):
     source = tmp_path / "Assets/Scripts/Jelly.py"
     source.parent.mkdir(parents=True)
     source.write_text(
-        "import Infernux as inx\n"
+        "import infernux as inx\n"
         "class Jelly:\n"
         "    @inx.compute.kernel\n"
         "    def step(self, /, domain):\n"
@@ -140,7 +140,7 @@ def test_declared_kernel_names_reports_unbound_class_field_with_attribute_locati
     source = tmp_path / "Assets/Scripts/Jelly.py"
     source.parent.mkdir(parents=True)
     source.write_text(
-        "import Infernux as inx\n"
+        "import infernux as inx\n"
         "class Jelly:\n"
         "    @inx.compute.kernel\n"
         "    def step(domain):\n"
@@ -191,7 +191,7 @@ def test_stage_compute_artifacts_seals_selected_and_engine_kernels(tmp_path, mon
     source = _write_kernel(tmp_path)
     cache = tmp_path / "Library/Artifacts/Compute"
     _write_artifact(cache / "selected.inxgpu", "Scripts.Jelly.step")
-    _write_artifact(cache / "engine.inxgpu", "Infernux.compute._transform_anchor_points")
+    _write_artifact(cache / "engine.inxgpu", "infernux.compute._transform_anchor_points")
     _write_artifact(cache / "other.inxgpu", "Scripts.EditorOnly.step")
     data = tmp_path / "build/Data"
 
@@ -207,8 +207,8 @@ def test_stage_compute_artifacts_seals_selected_and_engine_kernels(tmp_path, mon
     assert (destination / "AotOnly").is_file()
     manifest = json.loads((destination / "AotManifest.json").read_text(encoding="utf-8"))
     assert [record["function"] for record in manifest["artifacts"]] == [
-        "Infernux.compute._transform_anchor_points",
         "Scripts.Jelly.step",
+        "infernux.compute._transform_anchor_points",
     ]
 
 
@@ -249,7 +249,7 @@ def test_stage_compute_artifacts_uses_platform_target_for_source_diagnostics(tmp
     source = tmp_path / "Assets/Scripts/Jelly.py"
     source.parent.mkdir(parents=True)
     source.write_text(
-        "import Infernux as inx\n"
+        "import infernux as inx\n"
         "class Jelly:\n"
         "    @inx.compute.kernel\n"
         "    def step(self, domain):\n"

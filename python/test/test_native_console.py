@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.debug import Debug, DebugConsole, LogEntry, LogType
-from Infernux.lib import ConsolePanel, LogLevel, inflog_internal
+from infernux.debug import Debug, DebugConsole, LogEntry, LogType
+from infernux.lib import ConsolePanel, LogLevel, inflog_internal
 
 
 # ═══════════════════════════════════════════════════════════════════════════

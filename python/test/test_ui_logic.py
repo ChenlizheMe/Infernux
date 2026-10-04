@@ -11,7 +11,7 @@ import os
 
 import pytest
 
-from Infernux.engine.ui.theme import Theme, srgb_to_linear, srgb3, hex_to_linear
+from infernux.engine.ui.theme import Theme, srgb_to_linear, srgb3, hex_to_linear
 
 
 class _WindowManagerPanelInteractions:
@@ -31,7 +31,7 @@ class _WindowManagerPanelInteractions:
 
 
 def _window_manager(engine, panel_interactions=None):
-    from Infernux.engine.ui.window_manager import WindowManager
+    from infernux.engine.ui.window_manager import WindowManager
 
     registrar = getattr(engine, "register_gui", None)
     if registrar is None:
@@ -44,7 +44,7 @@ def _window_manager(engine, panel_interactions=None):
 
 
 def test_window_manager_requires_explicit_interaction_and_gui_boundaries():
-    from Infernux.engine.ui.window_manager import WindowManager
+    from infernux.engine.ui.window_manager import WindowManager
 
     with pytest.raises(ValueError, match="PanelInteractionRegistry"):
         WindowManager(object(), None, lambda _window_id, _instance: None)
@@ -57,8 +57,8 @@ def test_window_manager_requires_explicit_interaction_and_gui_boundaries():
 def test_default_editor_and_game_ui_font_size_is_18px():
     import inspect
 
-    from Infernux.engine.engine import Engine
-    from Infernux.ui import UIButton, UIText
+    from infernux.engine.engine import Engine
+    from infernux.ui import UIButton, UIText
 
     assert Theme.UI_DEFAULT_FONT_SIZE == 18.0
     assert UIText().font_size == 18.0
@@ -67,12 +67,12 @@ def test_default_editor_and_game_ui_font_size_is_18px():
 
 
 def test_direct_ui_resize_makes_layout_axes_authoritative():
-    from Infernux.engine.ui.ui_rect_manipulation import (
+    from infernux.engine.ui.ui_rect_manipulation import (
         layout_snapshot,
         prepare_layout_resize,
     )
-    from Infernux.ui import UIText
-    from Infernux.ui.enums import TextResizeMode, UILayoutSizing
+    from infernux.ui import UIText
+    from infernux.ui.enums import TextResizeMode, UILayoutSizing
 
     text = UIText()
     text.width_sizing = UILayoutSizing.Fill
@@ -90,9 +90,9 @@ def test_direct_ui_resize_makes_layout_axes_authoritative():
 
 
 def test_shared_layout_size_commit_updates_only_touched_axes():
-    from Infernux.engine.ui.ui_rect_manipulation import apply_layout_size
-    from Infernux.ui import UIText
-    from Infernux.ui.enums import TextResizeMode, UILayoutSizing
+    from infernux.engine.ui.ui_rect_manipulation import apply_layout_size
+    from infernux.ui import UIText
+    from infernux.ui.enums import TextResizeMode, UILayoutSizing
 
     text = UIText()
     text.width = 120.0
@@ -111,9 +111,9 @@ def test_shared_layout_size_commit_updates_only_touched_axes():
 
 
 def test_button_render_color_consumes_selectable_state_tint():
-    from Infernux.ui import UIButton
-    from Infernux.ui.ui_render_dispatch import _get_button_bg
-    from Infernux.ui.ui_selectable import SelectionState
+    from infernux.ui import UIButton
+    from infernux.ui.ui_render_dispatch import _get_button_bg
+    from infernux.ui.ui_selectable import SelectionState
 
     button = UIButton()
     button.background_color = [0.8, 0.5, 0.25, 0.75]
@@ -130,9 +130,9 @@ def test_button_render_color_consumes_selectable_state_tint():
 
 
 def test_ui_material_slots_use_normal_material_assets_and_button_has_two_slots():
-    from Infernux.components.fields import get_serialized_fields
-    from Infernux.ui import UIButton, UIText
-    from Infernux.ui.ui_render_dispatch import _get_button_bg, _get_label_attrs
+    from infernux.components.fields import get_serialized_fields
+    from infernux.ui import UIButton, UIText
+    from infernux.ui.ui_render_dispatch import _get_button_bg, _get_label_attrs
 
     class Material:
         _texture_assets_pending = False
@@ -175,7 +175,7 @@ def test_ui_material_slots_use_normal_material_assets_and_button_has_two_slots()
 def test_engine_gui_registration_forwards_overlay_priority():
     from types import SimpleNamespace
 
-    from Infernux.engine.engine import Engine
+    from infernux.engine.engine import Engine
 
     calls = []
     engine = Engine.__new__(Engine)
@@ -196,7 +196,7 @@ def test_engine_gui_registration_forwards_overlay_priority():
 def test_engine_gui_registration_rejects_duplicate_renderable_identity():
     from types import SimpleNamespace
 
-    from Infernux.engine.engine import Engine
+    from infernux.engine.engine import Engine
 
     calls = []
     engine = Engine.__new__(Engine)
@@ -216,11 +216,11 @@ def test_engine_gui_registration_rejects_duplicate_renderable_identity():
 
 
 def test_existing_window_registration_is_atomic_when_native_registration_fails():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         EditorInteractionCore,
         PanelInteractionDescriptor,
     )
-    from Infernux.engine.ui.window_manager import WindowManager
+    from infernux.engine.ui.window_manager import WindowManager
 
     class Engine:
         @staticmethod
@@ -252,7 +252,7 @@ def test_existing_window_registration_is_atomic_when_native_registration_fails()
 def test_engine_docked_window_selection_forwards_modal_flag():
     from types import SimpleNamespace
 
-    from Infernux.engine.engine import Engine
+    from infernux.engine.engine import Engine
 
     calls = []
     engine = Engine.__new__(Engine)
@@ -268,7 +268,7 @@ def test_engine_docked_window_selection_forwards_modal_flag():
 
 
 def test_engine_docked_window_selection_rejects_stale_native_binding():
-    from Infernux.engine.engine import Engine
+    from infernux.engine.engine import Engine
 
     class LegacyNativeEngine:
         def __init__(self):
@@ -316,7 +316,7 @@ class TestThemeNativeSSOT:
     """The C++ EditorThemeRegistry is the single source of truth."""
 
     def test_native_registry_exposed(self):
-        from Infernux.lib import (
+        from infernux.lib import (
             get_editor_theme_colors,
             get_editor_theme_floats,
             get_editor_theme_vec2s,
@@ -328,7 +328,7 @@ class TestThemeNativeSSOT:
         assert isinstance(get_editor_theme_vec2s(), dict)
 
     def test_python_theme_overridden_from_native(self):
-        from Infernux.lib import get_editor_theme_colors
+        from infernux.lib import get_editor_theme_colors
         native = get_editor_theme_colors()
         assert getattr(Theme, "_NATIVE_OVERRIDES_APPLIED", 0) > 0
         # Every overlapping constant must match the native value exactly.
@@ -340,7 +340,7 @@ class TestThemeNativeSSOT:
         assert mismatches == []
 
     def test_native_values_are_rgba(self):
-        from Infernux.lib import get_editor_theme_colors
+        from infernux.lib import get_editor_theme_colors
         for name, value in get_editor_theme_colors().items():
             assert len(value) == 4, name
             assert all(isinstance(c, float) for c in value), name
@@ -370,7 +370,7 @@ class _FakeCtx:
 
 class TestViewportInfo:
     def _vp(self):
-        from Infernux.engine.ui.viewport_utils import ViewportInfo
+        from infernux.engine.ui.viewport_utils import ViewportInfo
         return ViewportInfo(image_min_x=100, image_min_y=50,
                             image_max_x=300, image_max_y=250)
 
@@ -431,15 +431,15 @@ class TestWindowManager:
 
     @staticmethod
     def _layout_reset_fixture():
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             DocumentCapability,
             DocumentKind,
             EditorInteractionCore,
             PanelInteractionDescriptor,
         )
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        from Infernux.engine.ui.editor_panel import EditorPanel
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.editor_panel import EditorPanel
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Engine:
             def __init__(self):
@@ -499,11 +499,11 @@ class TestWindowManager:
         return core, engine, manager, scene, graph, document, controller
 
     def test_native_titlebar_close_intent_uses_window_manager_lifecycle(self):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             EditorInteractionCore,
             PanelInteractionDescriptor,
         )
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def select_docked_window(self, *_args, **_kwargs):
@@ -562,8 +562,8 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def test_reset_layout_cancel_preserves_dirty_dynamic_view(self):
-        from Infernux.engine.interaction import CloseState
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.interaction import CloseState
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         previous = WindowManager._instance
         core = None
@@ -596,7 +596,7 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def test_reset_layout_discards_then_formally_retires_dynamic_view(self):
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         previous = WindowManager._instance
         core = None
@@ -623,8 +623,8 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def test_reset_layout_does_not_prompt_for_document_with_retained_view(self):
-        from Infernux.engine.interaction import CloseState
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.interaction import CloseState
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         previous = WindowManager._instance
         core = None
@@ -649,7 +649,7 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def test_document_panel_payload_without_formal_snapshot_is_pruned(self, monkeypatch):
-        from Infernux.engine.ui import panel_state
+        from infernux.engine.ui import panel_state
 
         monkeypatch.setattr(
             panel_state,
@@ -678,11 +678,11 @@ class TestWindowManager:
         self,
         _reset_editor_interaction_state,
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             PanelInteractionDescriptor,
             PanelInteractionRegistry,
         )
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.ui.window_manager import WindowManager
 
         previous = WindowManager._instance
         try:
@@ -713,12 +713,12 @@ class TestWindowManager:
         self,
         _reset_editor_interaction_state,
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             DocumentKind,
             PanelInteractionDescriptor,
             PanelInteractionRegistry,
         )
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         previous = WindowManager._instance
         try:
@@ -757,7 +757,7 @@ class TestWindowManager:
         _reset_editor_interaction_state,
         tmp_path,
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             AssetContentChange,
             AssetMutation,
             AssetMutationKind,
@@ -766,8 +766,8 @@ class TestWindowManager:
             PanelInteractionDescriptor,
             PanelInteractionRegistry,
         )
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             @staticmethod
@@ -837,11 +837,11 @@ class TestWindowManager:
         self,
         _reset_editor_interaction_state,
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             PanelInteractionDescriptor,
             PanelInteractionRegistry,
         )
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Panel:
             def __init__(self):
@@ -885,12 +885,12 @@ class TestWindowManager:
         self,
         _reset_editor_interaction_state,
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             DocumentKind,
             PanelInteractionDescriptor,
             PanelInteractionRegistry,
         )
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Controller:
             @staticmethod
@@ -942,12 +942,12 @@ class TestWindowManager:
         self,
         _reset_editor_interaction_state,
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             DocumentKind,
             PanelInteractionDescriptor,
             PanelInteractionRegistry,
         )
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Panel:
             def __init__(self):
@@ -1006,7 +1006,7 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def test_dynamic_panel_reload_restores_open_view_with_new_class(self):
-        from Infernux.engine.ui.window_manager import WindowState
+        from infernux.engine.ui.window_manager import WindowState
 
         class Engine:
             def __init__(self):
@@ -1056,9 +1056,9 @@ class TestWindowManager:
         assert manager.get_window_state("plugin.tool") is WindowState.OPEN
 
     def test_dynamic_panel_menu_close_finalizes_lifecycle_before_unregister(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.editor_panel import EditorPanel
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.editor_panel import EditorPanel
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -1115,8 +1115,8 @@ class TestWindowManager:
             WindowManager._instance = previous_manager
 
     def test_utility_settings_use_the_regular_dockable_panel_contract(self):
-        from Infernux.engine.interaction import PanelInteractionDescriptor
-        from Infernux.engine.ui import (
+        from infernux.engine.interaction import PanelInteractionDescriptor
+        from infernux.engine.ui import (
             BuildSettingsPanel,
             EditorPanel,
             EnvironmentSettingsPanel,
@@ -1142,7 +1142,7 @@ class TestWindowManager:
             assert "render" not in panel_class.__dict__
 
     def test_close_confirmation_restores_source_during_modal(self):
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -1166,7 +1166,7 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def test_close_confirmation_requires_canonical_engine_boundary(self):
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -1189,9 +1189,9 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def test_dynamic_views_keep_panel_type_separate_from_instance_identity(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.editor_panel import EditorPanel
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.editor_panel import EditorPanel
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             @staticmethod
@@ -1243,8 +1243,8 @@ class TestWindowManager:
             WindowManager._instance = previous_manager
 
     def test_panel_identity_transfer_preserves_an_early_document_binding(self):
-        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         previous_registry = DocumentRegistry._instance
         try:
@@ -1262,12 +1262,12 @@ class TestWindowManager:
             DocumentRegistry._instance = previous_registry
 
     def test_failed_native_registration_rolls_back_panel_interaction_binding(self):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             EditorInteractionCore,
             PanelInteractionDescriptor,
         )
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             @staticmethod
@@ -1298,8 +1298,8 @@ class TestWindowManager:
             WindowManager._instance = previous_manager
 
     def test_native_pointer_activation_is_distinct_user_focus_history(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Panel:
             is_open = True
@@ -1331,12 +1331,12 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_user_window_command_publishes_reveal_before_native_focus(self):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             EditorInteractionCore,
             PanelInteractionDescriptor,
         )
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Engine:
             @staticmethod
@@ -1376,12 +1376,12 @@ class TestWindowManager:
             WindowManager._instance = previous_manager
 
     def test_user_window_reveal_survives_early_focus_projection(self):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             EditorInteractionCore,
             PanelInteractionDescriptor,
         )
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -1423,12 +1423,12 @@ class TestWindowManager:
             WindowManager._instance = previous_manager
 
     def test_new_user_window_registers_before_focus_projection(self):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             EditorInteractionCore,
             PanelInteractionDescriptor,
         )
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -1483,12 +1483,12 @@ class TestWindowManager:
             WindowManager._instance = previous_manager
 
     def test_user_window_command_does_not_publish_visible_focus(self):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             EditorInteractionCore,
             PanelInteractionDescriptor,
         )
-        from Infernux.engine.ui.editor_panel import EditorPanel
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.editor_panel import EditorPanel
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -1534,8 +1534,8 @@ class TestWindowManager:
             WindowManager._instance = previous_manager
 
     def test_visible_native_panel_activation_is_not_focus_history(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Panel:
             is_open = True
@@ -1574,8 +1574,8 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_revealed_native_dock_tab_activation_remains_focus_history(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Panel:
             is_open = True
@@ -1616,8 +1616,8 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_revealed_dock_tab_reports_the_tab_it_replaced(self, monkeypatch):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Panel:
             is_open = True
@@ -1662,8 +1662,8 @@ class TestWindowManager:
     def test_user_window_command_captures_peer_before_dock_selection(
         self, monkeypatch
     ):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Engine:
             pass
@@ -1718,8 +1718,8 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_revealed_native_dock_tab_uses_previous_frame_visibility(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Panel:
             is_open = True
@@ -1760,8 +1760,8 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_native_focus_visibility_comes_from_the_event_source_instance(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.window_manager import WindowManager
 
         class StaleRegisteredPanel:
             is_open = True
@@ -1815,7 +1815,7 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_panel_child_context_can_be_restored_by_its_owner(self):
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Panel:
             is_open = True
@@ -1846,16 +1846,16 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def _fresh_manager(self):
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.ui.window_manager import WindowManager
         mgr = WindowManager.instance()
         return mgr
 
     def test_singleton(self):
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.ui.window_manager import WindowManager
         assert WindowManager.instance() is WindowManager.instance()
 
     def test_window_type_listener_fires_only_on_registration(self):
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.ui.window_manager import WindowManager
 
         previous = WindowManager._instance
         try:
@@ -1871,8 +1871,8 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def test_explicit_dynamic_window_state_machine(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -1935,7 +1935,7 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def test_focus_window_requires_known_open_panel(self):
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -1978,8 +1978,8 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def test_load_state_projects_restored_front_tab_into_focus_service(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -2026,8 +2026,8 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_completed_imgui_focus_reconciles_child_window_to_owning_panel(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Panel:
             def __init__(self):
@@ -2060,12 +2060,12 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_completed_imgui_focus_rebinds_document_for_already_focused_panel(self):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             DocumentKind,
             DocumentRegistry,
             FocusService,
         )
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Panel:
             def __init__(self):
@@ -2099,8 +2099,8 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_dynamic_window_locator_restores_instance_and_focuses_after_register(self):
-        from Infernux.engine.interaction import ContextRestoreStatus, FocusService
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.interaction import ContextRestoreStatus, FocusService
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -2171,8 +2171,8 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_visible_window_locator_does_not_steal_focus(self):
-        from Infernux.engine.interaction import ContextRestoreStatus, FocusService
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.interaction import ContextRestoreStatus, FocusService
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Engine:
             def __init__(self):
@@ -2216,8 +2216,8 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_hidden_dock_tab_still_requests_focus(self):
-        from Infernux.engine.interaction import ContextRestoreStatus, FocusService
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.interaction import ContextRestoreStatus, FocusService
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -2255,8 +2255,8 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_hidden_dock_tab_does_not_restore_from_logical_focus_alone(self):
-        from Infernux.engine.interaction import ContextRestoreStatus, FocusService
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.interaction import ContextRestoreStatus, FocusService
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -2305,8 +2305,8 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_builtin_window_locator_restores_without_dynamic_type_registration(self):
-        from Infernux.engine.interaction import ContextRestoreStatus, FocusService
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.interaction import ContextRestoreStatus, FocusService
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -2355,8 +2355,8 @@ class TestWindowManager:
             FocusService._instance = previous_focus
 
     def test_builtin_window_closes_without_unregistering(self):
-        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -2408,9 +2408,9 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def test_destroyed_dynamic_window_releases_its_document_view(self):
-        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Engine:
             @staticmethod
@@ -2444,9 +2444,9 @@ class TestWindowManager:
             WindowManager._instance = previous_manager
 
     def test_reopened_dynamic_singleton_restores_its_document_binding(self):
-        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        from Infernux.engine.ui.window_manager import WindowManager
+        from infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.window_manager import WindowManager
 
         class Engine:
             @staticmethod
@@ -2491,7 +2491,7 @@ class TestWindowManager:
             WindowManager._instance = previous_manager
 
     def test_dynamic_window_reopen_waits_for_native_close_transaction(self):
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -2548,12 +2548,12 @@ class TestWindowManager:
             WindowManager._instance = previous
 
     def test_user_reopen_during_close_publishes_focus_after_registration(self, monkeypatch):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             EditorInteractionCore,
             PanelInteractionDescriptor,
         )
-        from Infernux.engine.ui.closable_panel import ClosablePanel
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             def __init__(self):
@@ -2622,7 +2622,7 @@ class TestWindowManager:
             WindowManager._instance = previous_manager
 
     def test_window_menu_close_respects_panel_close_deferral(self):
-        from Infernux.engine.ui.window_manager import WindowManager, WindowState
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
 
         class Engine:
             @staticmethod
@@ -2663,7 +2663,7 @@ class TestWindowManager:
 
 class TestSceneViewMath:
     def test_dot_and_cross(self):
-        from Infernux.engine.ui import _scene_view_math as m
+        from infernux.engine.ui import _scene_view_math as m
         if not hasattr(m, "_dot3"):
             pytest.skip("helper not present")
         assert m._dot3((1, 0, 0), (0, 1, 0)) == 0
@@ -2684,7 +2684,7 @@ class TestIGUIFilters:
 
 class TestUICanvasRaycast:
     def test_inactive_hierarchy_does_not_receive_raycast(self, scene):
-        from Infernux.ui import UICanvas, UIButton
+        from infernux.ui import UICanvas, UIButton
 
         canvas = UICanvas()
         root = scene.create_game_object('Canvas')
@@ -2737,8 +2737,8 @@ class TestUICanvasCollectionCache:
             return [self._root]
 
     def test_same_name_and_version_do_not_alias_distinct_scenes(self):
-        from Infernux.ui import UICanvas
-        from Infernux.ui.ui_canvas_utils import collect_canvases, invalidate_canvas_cache
+        from infernux.ui import UICanvas
+        from infernux.ui.ui_canvas_utils import collect_canvases, invalidate_canvas_cache
 
         first_canvas = UICanvas()
         second_canvas = UICanvas()
@@ -2750,8 +2750,8 @@ class TestUICanvasCollectionCache:
         assert collect_canvases(second_scene) == [second_canvas]
 
     def test_temporal_discontinuity_rebuilds_same_scene_canvas_cache(self):
-        from Infernux.ui import UICanvas
-        from Infernux.ui.ui_canvas_utils import collect_canvases, invalidate_canvas_cache
+        from infernux.ui import UICanvas
+        from infernux.ui.ui_canvas_utils import collect_canvases, invalidate_canvas_cache
 
         first_canvas = UICanvas()
         second_canvas = UICanvas()
@@ -2769,8 +2769,8 @@ class TestUICanvasCollectionCache:
         assert collect_canvases(scene) == [second_canvas]
 
     def test_runtime_collection_includes_persistent_scene_canvases(self):
-        from Infernux.ui import UICanvas
-        from Infernux.ui.ui_canvas_utils import (
+        from infernux.ui import UICanvas
+        from infernux.ui.ui_canvas_utils import (
             collect_sorted_runtime_canvases,
             invalidate_canvas_cache,
         )
@@ -2789,8 +2789,8 @@ class TestUICanvasCollectionCache:
         assert canvases == [persistent_canvas, active_canvas]
 
     def test_runtime_collection_with_owners_includes_persistent_scene(self):
-        from Infernux.ui import UICanvas
-        from Infernux.ui.ui_canvas_utils import (
+        from infernux.ui import UICanvas
+        from infernux.ui.ui_canvas_utils import (
             collect_runtime_canvases_with_go,
             invalidate_canvas_cache,
         )
@@ -2810,8 +2810,8 @@ class TestUICanvasCollectionCache:
         ]
 
     def test_runtime_collection_does_not_duplicate_same_scene(self):
-        from Infernux.ui import UICanvas
-        from Infernux.ui.ui_canvas_utils import (
+        from infernux.ui import UICanvas
+        from infernux.ui.ui_canvas_utils import (
             collect_runtime_canvases_with_go,
             invalidate_canvas_cache,
         )
@@ -2825,8 +2825,8 @@ class TestUICanvasCollectionCache:
         ]
 
     def test_runtime_collection_tracks_dynamic_canvas_attach_and_detach(self):
-        from Infernux.ui import UICanvas
-        import Infernux.ui.ui_canvas_utils as canvas_utils
+        from infernux.ui import UICanvas
+        import infernux.ui.ui_canvas_utils as canvas_utils
 
         scene = self._Scene(None)
         canvas_utils.invalidate_canvas_cache()
@@ -2846,8 +2846,8 @@ class TestUICanvasCollectionCache:
         assert canvas_utils.collect_runtime_canvases_with_go(scene) == []
 
     def test_runtime_collection_ignores_unrelated_scene_structure_changes(self):
-        from Infernux.ui import UICanvas
-        from Infernux.ui.ui_canvas_utils import (
+        from infernux.ui import UICanvas
+        from infernux.ui.ui_canvas_utils import (
             collect_sorted_runtime_canvases,
             invalidate_canvas_cache,
         )
@@ -2865,8 +2865,8 @@ class TestUICanvasCollectionCache:
 
 
 def test_screen_ui_rect_cache_survives_frames_and_invalidates_on_geometry_change(scene, monkeypatch):
-    from Infernux.ui import UICanvas, UIText
-    from Infernux.ui.inx_ui_screen_component import clear_rect_cache
+    from infernux.ui import UICanvas, UIText
+    from infernux.ui.inx_ui_screen_component import clear_rect_cache
 
     element = UIText()
     root = scene.create_game_object('Rect cache Canvas')
@@ -2893,9 +2893,9 @@ def test_screen_ui_rect_cache_survives_frames_and_invalidates_on_geometry_change
 
 
 def test_runtime_ui_packet_cache_reuses_static_text_and_tracks_mutation(monkeypatch):
-    import Infernux.ui.ui_render_dispatch as dispatch_module
-    from Infernux.ui.ui_command_packets import UICommandPackets
-    from Infernux.ui import UIText
+    import infernux.ui.ui_render_dispatch as dispatch_module
+    from infernux.ui.ui_command_packets import UICommandPackets
+    from infernux.ui import UIText
 
     class Renderer:
         def __init__(self):
@@ -2963,8 +2963,8 @@ def test_runtime_ui_packet_cache_reuses_static_text_and_tracks_mutation(monkeypa
 
 
 def test_runtime_text_packet_tracks_parent_group_alpha(scene):
-    from Infernux.ui import UIText, UIGroup
-    from Infernux.ui.ui_render_dispatch import dispatch
+    from infernux.ui import UIText, UIGroup
+    from infernux.ui.ui_render_dispatch import dispatch
 
     parent = scene.create_game_object("Text group")
     group = UIGroup()
@@ -2989,8 +2989,8 @@ def test_runtime_text_packet_tracks_parent_group_alpha(scene):
 
 
 def test_text_overflow_clip_reaches_runtime_draw_packet():
-    import Infernux.ui.ui_render_dispatch as dispatch_module
-    from Infernux.ui import UIText, TextOverflow
+    import infernux.ui.ui_render_dispatch as dispatch_module
+    from infernux.ui import UIText, TextOverflow
 
     class Renderer:
         def __init__(self):
@@ -3022,11 +3022,11 @@ def test_text_overflow_clip_reaches_runtime_draw_packet():
 
 
 def test_explicit_fallback_font_chain_reaches_runtime_draw_packet(monkeypatch):
-    import Infernux.ui.ui_render_dispatch as dispatch_module
-    from Infernux.application import Application
-    from Infernux.core.asset_ref import create_asset_ref
-    from Infernux.engine.project_context import set_runtime_asset_resolver
-    from Infernux.ui import UIText, TextOverflow
+    import infernux.ui.ui_render_dispatch as dispatch_module
+    from infernux.application import Application
+    from infernux.core.asset_ref import create_asset_ref
+    from infernux.engine.project_context import set_runtime_asset_resolver
+    from infernux.ui import UIText, TextOverflow
 
     class Renderer:
         def __init__(self):
@@ -3075,11 +3075,11 @@ def test_explicit_fallback_font_chain_reaches_runtime_draw_packet(monkeypatch):
 
 
 def test_text_font_guids_resolve_through_active_player_catalog(monkeypatch):
-    import Infernux.ui.ui_render_dispatch as dispatch_module
-    from Infernux.application import Application
-    from Infernux.core.asset_ref import create_asset_ref
-    from Infernux.engine.project_context import set_runtime_asset_resolver
-    from Infernux.ui import UIText
+    import infernux.ui.ui_render_dispatch as dispatch_module
+    from infernux.application import Application
+    from infernux.core.asset_ref import create_asset_ref
+    from infernux.engine.project_context import set_runtime_asset_resolver
+    from infernux.ui import UIText
 
     resolved = {
         "font-primary": "Player/Library/Artifacts/Blob/primary.ttf",
@@ -3107,8 +3107,8 @@ def test_text_font_guids_resolve_through_active_player_catalog(monkeypatch):
 
 @pytest.mark.parametrize("component_type", ["UIText", "UIButton"])
 def test_ui_font_fields_serialize_guid_references_and_ignore_path_schema(component_type):
-    from Infernux.core.asset_ref import create_asset_ref
-    from Infernux.ui import UIButton, UIText
+    from infernux.core.asset_ref import create_asset_ref
+    from infernux.ui import UIButton, UIText
 
     component = {"UIText": UIText, "UIButton": UIButton}[component_type]()
     component.font = create_asset_ref(
@@ -3139,9 +3139,9 @@ def test_ui_font_fields_serialize_guid_references_and_ignore_path_schema(compone
 
 
 def test_runtime_ui_revision_is_stable_and_tracks_visual_state(scene):
-    from Infernux.ui.ui_render_dispatch import runtime_ui_revision
-    from Infernux.ui.ui_render_revision import mark_runtime_ui_dirty
-    from Infernux.ui import UICanvas, UIButton
+    from infernux.ui.ui_render_dispatch import runtime_ui_revision
+    from infernux.ui.ui_render_revision import mark_runtime_ui_dirty
+    from infernux.ui import UICanvas, UIButton
 
     owner = scene.create_game_object("Canvas")
     canvas = UICanvas()
@@ -3165,7 +3165,7 @@ def test_runtime_ui_revision_is_stable_and_tracks_visual_state(scene):
 
 
 def test_canvas_reference_resolution_scales_without_center_crop():
-    from Infernux.ui import UICanvas
+    from infernux.ui import UICanvas
 
     canvas = UICanvas()
     canvas.reference_width = 1920
@@ -3185,9 +3185,9 @@ def test_canvas_reference_resolution_scales_without_center_crop():
     assert portrait_height * portrait_scale_y == pytest.approx(1830.0)
 
 def test_ui_scalar_reassignment_does_not_invalidate_runtime_commands(monkeypatch):
-    from Infernux.ui import UIText
-    from Infernux.ui.ui_render_revision import get_runtime_ui_revision
-    from Infernux.ui import ui_render_revision
+    from infernux.ui import UIText
+    from infernux.ui.ui_render_revision import get_runtime_ui_revision
+    from infernux.ui import ui_render_revision
 
     text = UIText()
     initial_global = get_runtime_ui_revision()
@@ -3204,7 +3204,7 @@ def test_ui_scalar_reassignment_does_not_invalidate_runtime_commands(monkeypatch
 
 
 def test_persistent_event_combo_preserves_temporarily_unresolved_method():
-    from Infernux.engine.ui.inspector_ui_components import _persistent_event_combo_options
+    from infernux.engine.ui.inspector_ui_components import _persistent_event_combo_options
 
     labels, values = _persistent_event_combo_options(
         "toggle_settings", [], "None"
@@ -3234,7 +3234,7 @@ class TestUIButtonPersistentDispatch:
 
     @staticmethod
     def _entry(target, method_name):
-        from Infernux.ui.ui_event_entry import UIEventEntry
+        from infernux.ui.ui_event_entry import UIEventEntry
 
         entry = UIEventEntry(
             component_name="MenuController",
@@ -3245,7 +3245,7 @@ class TestUIButtonPersistentDispatch:
         return entry
 
     def test_invokes_bound_component_method_and_records_result(self):
-        from Infernux.ui import UIButton
+        from infernux.ui import UIButton
 
         class MenuController:
             def __init__(self):
@@ -3272,8 +3272,8 @@ class TestUIButtonPersistentDispatch:
         }]
 
     def test_missing_method_is_reported_instead_of_silently_ignored(self, monkeypatch):
-        from Infernux.debug import Debug
-        from Infernux.ui import UIButton
+        from infernux.debug import Debug
+        from infernux.ui import UIButton
 
         class MenuController:
             pass
@@ -3294,14 +3294,14 @@ class TestUIButtonPersistentDispatch:
 
 
 def test_focused_save_rejects_stale_document_instead_of_saving_scene():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         DocumentCapability,
         DocumentKind,
         DocumentRegistry,
         EditorSaveService,
         FocusService,
     )
-    from Infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.scene_manager import SceneFileManager
 
     class Controller:
         calls = 0
@@ -3345,8 +3345,8 @@ def test_focused_save_rejects_stale_document_instead_of_saving_scene():
 
 class TestPanelFocusEvents:
     def test_scene_change_binds_every_scene_backed_view_to_one_document(self):
-        from Infernux.engine.bootstrap import EditorBootstrap
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.bootstrap import EditorBootstrap
+        from infernux.engine.interaction import SelectionService
 
         class SceneFiles:
             document_id = "scene-document"
@@ -3385,12 +3385,12 @@ class TestPanelFocusEvents:
         assert bootstrap.ui_editor.bound == expected
 
     def test_document_binding_projects_focus_without_user_history(self):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             DocumentKind,
             DocumentRegistry,
             FocusService,
         )
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         previous_focus = FocusService._instance
         previous_registry = DocumentRegistry._instance
@@ -3417,8 +3417,8 @@ class TestPanelFocusEvents:
             FocusService._instance = previous_focus
 
     def test_loaded_document_switch_detaches_view_without_retiring_previous_document(self):
-        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         previous_registry = DocumentRegistry._instance
         registry = DocumentRegistry()
@@ -3439,14 +3439,14 @@ class TestPanelFocusEvents:
             DocumentRegistry._instance = previous_registry
 
     def test_closable_panel_publishes_focus_only_through_focus_service(self):
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         class FocusContext:
             def set_window_focus(self):
                 pass
 
         received = []
-        from Infernux.engine.interaction import FocusService
+        from infernux.engine.interaction import FocusService
 
         previous_focus = FocusService._instance
         focus = FocusService()
@@ -3465,7 +3465,7 @@ class TestPanelFocusEvents:
     def test_untyped_editor_event_bus_cannot_be_reintroduced(self):
         from pathlib import Path
 
-        root = Path("python/Infernux/engine")
+        root = Path("python/infernux/engine")
         assert not (root / "ui" / "event_bus.py").exists()
         assert all(
             "EditorEventBus" not in path.read_text(encoding="utf-8")
@@ -3473,7 +3473,7 @@ class TestPanelFocusEvents:
         )
 
     def test_closable_panel_keeps_child_window_focus_as_panel_focus(self):
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         class FocusContext:
             def __init__(self):
@@ -3497,7 +3497,7 @@ class TestPanelFocusEvents:
 
         panel = ClosablePanel("Child Focus Test", "child_focus_test")
         ctx = FocusContext()
-        from Infernux.engine.interaction import FocusService
+        from infernux.engine.interaction import FocusService
 
         previous_focus = FocusService._instance
         focus = FocusService()
@@ -3512,8 +3512,8 @@ class TestPanelFocusEvents:
             FocusService._instance = previous_focus
 
     def test_closable_panel_records_pointer_driven_dock_tab_focus(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         class FocusContext:
             @staticmethod
@@ -3549,8 +3549,8 @@ class TestPanelFocusEvents:
             FocusService._instance = previous_focus
 
     def test_closable_panel_does_not_claim_click_consumed_by_popup(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         class FocusContext:
             @staticmethod
@@ -3590,8 +3590,8 @@ class TestPanelFocusEvents:
             FocusService._instance = previous_focus
 
     def test_closable_panel_does_not_record_focus_when_already_visible(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         class FocusContext:
             @staticmethod
@@ -3632,8 +3632,8 @@ class TestPanelFocusEvents:
             FocusService._instance = previous_focus
 
     def test_closable_panel_carries_dock_press_to_next_focus_frame(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         class FocusContext:
             def __init__(self):
@@ -3675,8 +3675,8 @@ class TestPanelFocusEvents:
             FocusService._instance = previous_focus
 
     def test_hidden_dock_tab_clears_stale_focus_latch_before_reveal(self):
-        from Infernux.engine.interaction import FocusService
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.interaction import FocusService
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         class FocusContext:
             def __init__(self):
@@ -3729,8 +3729,8 @@ class TestPanelFocusEvents:
             FocusService._instance = previous_focus
 
     def test_non_authoring_panel_does_not_create_a_legacy_document(self):
-        from Infernux.engine.interaction import DocumentRegistry
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.interaction import DocumentRegistry
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         panel = ClosablePanel("Probe", "dirty_probe")
         panel._sync_dirty_registry()
@@ -3739,8 +3739,8 @@ class TestPanelFocusEvents:
         assert DocumentRegistry.instance().document_for_view(panel.window_id) is None
 
     def test_bound_document_dirty_state_is_a_per_view_panel_title_capability(self):
-        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         previous_registry = DocumentRegistry._instance
         registry = DocumentRegistry()
@@ -3758,8 +3758,8 @@ class TestPanelFocusEvents:
             DocumentRegistry._instance = previous_registry
 
     def test_shared_scene_document_does_not_broadcast_dirty_titles_to_every_view(self):
-        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         previous_registry = DocumentRegistry._instance
         registry = DocumentRegistry()
@@ -3787,8 +3787,8 @@ class TestPanelFocusEvents:
             DocumentRegistry._instance = previous_registry
 
     def test_legacy_shared_document_without_owner_chooses_one_view_instead_of_broadcasting(self):
-        from Infernux.engine.interaction import DocumentKind, DocumentRegistry
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.interaction import DocumentKind, DocumentRegistry
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         previous_registry = DocumentRegistry._instance
         registry = DocumentRegistry()
@@ -3812,12 +3812,12 @@ class TestPanelFocusEvents:
     def test_unbound_authoring_panel_reports_once_without_creating_state(
         self, monkeypatch
     ):
-        from Infernux.debug import Debug
-        from Infernux.engine.interaction import (
+        from infernux.debug import Debug
+        from infernux.engine.interaction import (
             DocumentRegistry,
             PanelInteractionDescriptor,
         )
-        from Infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.closable_panel import ClosablePanel
 
         class _AuthoringProbe(ClosablePanel):
             PANEL_INTERACTION = PanelInteractionDescriptor(document_backed=True)
@@ -3835,8 +3835,8 @@ class TestPanelFocusEvents:
 
 class TestSceneViewPicking:
     def test_particle_query_does_not_hide_scene_lifetime_failure(self, monkeypatch):
-        import Infernux.lib as infernux_lib
-        from Infernux.engine.ui import _scene_view_picking as picking
+        import infernux.lib as infernux_lib
+        from infernux.engine.ui import _scene_view_picking as picking
 
         class SceneManager:
             @staticmethod
@@ -3849,7 +3849,7 @@ class TestSceneViewPicking:
             picking._owns_particle_system(42)
 
     def test_pick_ray_rebuild_failure_is_not_reordered_as_a_valid_hit(self):
-        from Infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
+        from infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
 
         class Engine:
             @staticmethod
@@ -3863,9 +3863,9 @@ class TestSceneViewPicking:
             probe._insert_ids_by_depth([7], [9], 10.0, 12.0, 100.0, 80.0)
 
     def test_skinned_renderer_counts_as_mesh_pick_geometry(self, monkeypatch):
-        import Infernux.lib as infernux_lib
-        from Infernux.components.builtin import MeshRenderer, SkinnedMeshRenderer
-        from Infernux.engine.ui import _scene_view_picking as picking
+        import infernux.lib as infernux_lib
+        from infernux.components.builtin import MeshRenderer, SkinnedMeshRenderer
+        from infernux.engine.ui import _scene_view_picking as picking
 
         class Object:
             requested_types = []
@@ -3899,7 +3899,7 @@ class TestSceneViewPicking:
         assert Object.requested_types == [MeshRenderer, SkinnedMeshRenderer]
 
     def test_scene_click_keeps_immediate_cpu_pick_and_queues_gpu_refinement(self):
-        from Infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
+        from infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
 
         class Context:
             @staticmethod
@@ -3958,7 +3958,7 @@ class TestSceneViewPicking:
         assert probe._pending_scene_pick["cpu_candidates"] == [42]
 
     def test_world_ui_pick_is_not_overwritten_by_delayed_geometry_pick(self):
-        from Infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
+        from infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
 
         class Context:
             @staticmethod
@@ -4007,8 +4007,8 @@ class TestSceneViewPicking:
         assert probe._engine.requests == []
 
     def test_scene_click_defers_mesh_selection_until_gpu_refinement(self, monkeypatch):
-        from Infernux.engine.ui import _scene_view_picking as picking
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.interaction import SelectionService
 
         class Context:
             @staticmethod
@@ -4072,7 +4072,7 @@ class TestSceneViewPicking:
             selection.apply_snapshot(previous, record_history=False)
 
     def test_scene_icon_owner_with_mesh_selects_without_gpu_overwrite(self, monkeypatch):
-        from Infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.ui import _scene_view_picking as picking
 
         class Context:
             @staticmethod
@@ -4121,7 +4121,7 @@ class TestSceneViewPicking:
         assert probe._pending_scene_pick is None
 
     def test_scene_icon_precedes_conservative_mesh_bounds_at_same_pixel(self):
-        from Infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
+        from infernux.engine.ui._scene_view_picking import SceneViewPickingMixin
 
         class Context:
             @staticmethod
@@ -4170,8 +4170,8 @@ class TestSceneViewPicking:
         assert probe._pick_cycle_candidates == [411, 290, 291, 292, 293, 294]
 
     def test_deferred_mesh_selection_falls_back_when_gpu_pick_fails(self):
-        from Infernux.engine.ui import _scene_view_picking as picking
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.interaction import SelectionService
 
         class Engine:
             @staticmethod
@@ -4205,8 +4205,8 @@ class TestSceneViewPicking:
             selection.apply_snapshot(previous, record_history=False)
 
     def test_particle_refinement_keeps_icon_selection_but_joins_cycle(self, monkeypatch):
-        from Infernux.engine.ui import _scene_view_picking as picking
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.interaction import SelectionService
 
         class Engine:
             @staticmethod
@@ -4257,8 +4257,8 @@ class TestSceneViewPicking:
             sel.apply_snapshot(previous, record_history=False)
 
     def test_particle_refinement_corrects_mesh_behind_spray(self, monkeypatch):
-        from Infernux.engine.ui import _scene_view_picking as picking
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.interaction import SelectionService
 
         class Engine:
             @staticmethod
@@ -4308,7 +4308,7 @@ class TestSceneViewPicking:
             sel.apply_snapshot(previous, record_history=False)
 
     def test_particle_without_mesh_is_an_icon_only_pick_target(self, monkeypatch):
-        from Infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.ui import _scene_view_picking as picking
 
         monkeypatch.setattr(picking, "_has_mesh_pick_geometry", lambda object_id: object_id == 7)
         monkeypatch.setattr(picking, "_owns_particle_system", lambda object_id: object_id == 99)
@@ -4317,8 +4317,8 @@ class TestSceneViewPicking:
         assert picking._is_icon_only_pick_target(0) is False
 
     def test_gpu_refinement_does_not_replace_particle_with_mesh_behind(self, monkeypatch):
-        from Infernux.engine.ui import _scene_view_picking as picking
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.interaction import SelectionService
 
         class Engine:
             @staticmethod
@@ -4370,8 +4370,8 @@ class TestSceneViewPicking:
             sel.apply_snapshot(previous, record_history=False)
 
     def test_first_click_keeps_selected_particle_among_mesh_candidates(self, monkeypatch):
-        from Infernux.engine.ui import _scene_view_picking as picking
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.interaction import SelectionService
 
         class Engine:
             @staticmethod
@@ -4427,8 +4427,8 @@ class TestSceneViewPicking:
             sel.apply_snapshot(previous, record_history=False)
 
     def test_gpu_refinement_clears_mesh_aabb_false_positive(self, monkeypatch):
-        from Infernux.engine.ui import _scene_view_picking as picking
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.interaction import SelectionService
 
         class Engine:
             @staticmethod
@@ -4467,8 +4467,8 @@ class TestSceneViewPicking:
             selection.apply_snapshot(previous, record_history=False)
 
     def test_gpu_refinement_corrects_one_mesh_aabb_to_visible_mesh(self, monkeypatch):
-        from Infernux.engine.ui import _scene_view_picking as picking
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.interaction import SelectionService
 
         class Engine:
             @staticmethod
@@ -4515,8 +4515,8 @@ class TestSceneViewPicking:
             selection.apply_snapshot(previous, record_history=False)
 
     def test_gpu_refinement_preserves_intentional_overlap_cycle(self, monkeypatch):
-        from Infernux.engine.ui import _scene_view_picking as picking
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.interaction import SelectionService
 
         class Engine:
             @staticmethod
@@ -4558,8 +4558,8 @@ class TestSceneViewPicking:
             selection.apply_snapshot(previous, record_history=False)
 
     def test_particle_refinement_cannot_overwrite_a_newer_selection(self, monkeypatch):
-        from Infernux.engine.ui import _scene_view_picking as picking
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.interaction import SelectionService
 
         class Engine:
             @staticmethod
@@ -4613,7 +4613,7 @@ class TestSceneViewPicking:
             selection.apply_snapshot(previous, record_history=False)
 
     def test_same_spot_click_keeps_particle_in_depth_cycle(self, monkeypatch):
-        from Infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.ui import _scene_view_picking as picking
 
         class Engine:
             @staticmethod
@@ -4662,7 +4662,7 @@ class TestSceneViewPicking:
         assert probe._pick_scene_object(Context(), Viewport()) == 7
 
     def test_new_spot_does_not_keep_a_selected_non_particle_background(self, monkeypatch):
-        from Infernux.engine.ui import _scene_view_picking as picking
+        from infernux.engine.ui import _scene_view_picking as picking
 
         probe = picking.SceneViewPickingMixin()
         probe._pick_cycle_candidates = [211]
@@ -4684,8 +4684,8 @@ class TestSceneViewPicking:
 
 class TestEditorPanelVisibilityLifecycle:
     def test_panel_content_failure_is_isolated_and_deduplicated(self, monkeypatch):
-        from Infernux.debug import Debug
-        from Infernux.engine.ui.editor_panel import EditorPanel
+        from infernux.debug import Debug
+        from infernux.engine.ui.editor_panel import EditorPanel
 
         class Context:
             @staticmethod
@@ -4720,7 +4720,7 @@ class TestEditorPanelVisibilityLifecycle:
         assert len(errors) == 2
 
     def test_dock_presentation_survives_begin_window_false(self):
-        from Infernux.engine.ui.editor_panel import EditorPanel
+        from infernux.engine.ui.editor_panel import EditorPanel
 
         class Context:
             @staticmethod
@@ -4752,7 +4752,7 @@ class TestEditorPanelVisibilityLifecycle:
         assert panel._content_was_visible is True
 
     def test_hidden_hook_runs_only_on_visibility_transitions(self):
-        from Infernux.engine.ui.editor_panel import EditorPanel
+        from infernux.engine.ui.editor_panel import EditorPanel
 
         class Context:
             @staticmethod
@@ -4792,9 +4792,9 @@ class TestEditorPanelVisibilityLifecycle:
 def test_ui_editor_nudge_executes_before_recording_and_replays_through_history():
     from types import SimpleNamespace
 
-    from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
-    from Infernux.engine.undo import UndoManager
-    from Infernux.lib import Vector3
+    from infernux.engine.ui.ui_editor_panel import UIEditorPanel
+    from infernux.engine.undo import UndoManager
+    from infernux.lib import Vector3
 
     class ProbePanel(UIEditorPanel):
         def __init__(self, element):
@@ -4826,9 +4826,9 @@ def test_ui_editor_nudge_executes_before_recording_and_replays_through_history()
 def test_ui_reparent_preserves_canvas_rect_after_parent_change_and_undo_redo(
     scene, monkeypatch,
 ):
-    from Infernux.engine.undo import ReparentCommand
-    from Infernux.engine.undo import _structural_commands
-    from Infernux.ui import UICanvas, UIFrame, UIImage
+    from infernux.engine.undo import ReparentCommand
+    from infernux.engine.undo import _structural_commands
+    from infernux.ui import UICanvas, UIFrame, UIImage
 
     canvas_a_object = scene.create_game_object("Canvas A")
     canvas_a = UICanvas()
@@ -4885,10 +4885,10 @@ def test_ui_reparent_preserves_canvas_rect_after_parent_change_and_undo_redo(
 
 
 def test_ui_editor_rotation_geometry_reads_transform_authority(scene):
-    from Infernux.engine.ui._ui_editor_alignment import UIEditorAlignmentMixin
-    from Infernux.engine.ui._ui_editor_geometry import UIEditorGeometryMixin
-    from Infernux.lib import Vector3
-    from Infernux.ui import UIImage
+    from infernux.engine.ui._ui_editor_alignment import UIEditorAlignmentMixin
+    from infernux.engine.ui._ui_editor_geometry import UIEditorGeometryMixin
+    from infernux.lib import Vector3
+    from infernux.ui import UIImage
 
     owner = scene.create_game_object("Rotated UI")
     image = UIImage()
@@ -4915,7 +4915,7 @@ def test_ui_editor_rotation_geometry_reads_transform_authority(scene):
 def test_ui_editor_selection_identity_uses_game_object_id_not_wrapper_identity():
     from types import SimpleNamespace
 
-    from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
+    from infernux.engine.ui.ui_editor_panel import UIEditorPanel
 
     first_wrapper = SimpleNamespace(game_object=SimpleNamespace(id=42))
     refreshed_wrapper = SimpleNamespace(game_object=SimpleNamespace(id=42))
@@ -4927,9 +4927,9 @@ def test_ui_editor_selection_identity_uses_game_object_id_not_wrapper_identity()
 
 
 def test_runtime_image_packet_refreshes_when_async_texture_becomes_ready():
-    from Infernux.core.asset_ref import TextureRef
-    from Infernux.ui import UIImage
-    from Infernux.ui.ui_render_dispatch import _runtime_render_image
+    from infernux.core.asset_ref import TextureRef
+    from infernux.ui import UIImage
+    from infernux.ui.ui_render_dispatch import _runtime_render_image
 
     class Renderer:
         def __init__(self):
@@ -4982,10 +4982,10 @@ def test_runtime_image_packet_refreshes_when_async_texture_becomes_ready():
 
 
 def test_image_and_button_texture_sources_use_only_their_current_contracts():
-    from Infernux.core.asset_ref import TextureRef
-    from Infernux.engine.ui.inspector_ui_components import _has_native_size_texture
-    from Infernux.ui import UIButton, UIImage
-    from Infernux.ui.ui_render_dispatch import image_texture_source
+    from infernux.core.asset_ref import TextureRef
+    from infernux.engine.ui.inspector_ui_components import _has_native_size_texture
+    from infernux.ui import UIButton, UIImage
+    from infernux.ui.ui_render_dispatch import image_texture_source
 
     material_state = {"texture": None, "texture_guid": ""}
     image = UIImage()
@@ -5011,9 +5011,9 @@ def test_image_and_button_texture_sources_use_only_their_current_contracts():
 
 
 def test_button_obsolete_texture_path_is_ignored_in_favor_of_current_slot():
-    from Infernux.components.fields import get_raw_field_value
-    from Infernux.core.asset_ref import TextureRef
-    from Infernux.ui import UIButton
+    from infernux.components.fields import get_raw_field_value
+    from infernux.core.asset_ref import TextureRef
+    from infernux.ui import UIButton
 
     button = UIButton()
     current = TextureRef(
@@ -5028,9 +5028,9 @@ def test_button_obsolete_texture_path_is_ignored_in_favor_of_current_slot():
 
 
 def test_runtime_text_packet_refreshes_when_transform_rotation_changes(scene):
-    from Infernux.lib import Vector3
-    from Infernux.ui import UIText
-    from Infernux.ui.ui_render_dispatch import _runtime_render_text
+    from infernux.lib import Vector3
+    from infernux.ui import UIText
+    from infernux.ui.ui_render_dispatch import _runtime_render_text
 
     class Renderer:
         def __init__(self):
@@ -5093,14 +5093,14 @@ def test_runtime_text_packet_refreshes_when_transform_rotation_changes(scene):
 def test_ui_editor_continuous_manipulation_rejects_non_transform_targets():
     from types import SimpleNamespace
 
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         ContinuousEditService,
         EditorContextSnapshot,
         EditorInteractionCore,
         FocusService,
     )
-    from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.ui.ui_editor_panel import UIEditorPanel
+    from infernux.engine.undo import UndoManager
 
     class ProbePanel(UIEditorPanel):
         def __init__(self, element):
@@ -5141,16 +5141,16 @@ def test_ui_editor_continuous_manipulation_rejects_non_transform_targets():
 def test_ui_editor_transform_backed_gesture_records_native_transform():
     from types import SimpleNamespace
 
-    from Infernux.components.value_codec import VALUE_CODECS
-    from Infernux.engine.interaction import (
+    from infernux.components.value_codec import VALUE_CODECS
+    from infernux.engine.interaction import (
         ContinuousEditService,
         EditorContextSnapshot,
         EditorInteractionCore,
         FocusService,
     )
-    from Infernux.engine.ui.ui_editor_panel import UIEditorPanel
-    from Infernux.engine.undo import UndoManager
-    from Infernux.lib import Vector3
+    from infernux.engine.ui.ui_editor_panel import UIEditorPanel
+    from infernux.engine.undo import UndoManager
+    from infernux.lib import Vector3
 
     class ProbePanel(UIEditorPanel):
         def __init__(self, element):

@@ -11,7 +11,7 @@ import math
 
 import pytest
 
-from Infernux.core.animation_timeline import (
+from infernux.core.animation_timeline import (
     AnimationTimeline,
     TimelineKeyframe,
     INTERP_CONSTANT,

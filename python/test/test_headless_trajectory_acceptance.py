@@ -108,7 +108,7 @@ def test_smoke_report_rejects_logged_errors_even_after_requested_frames(
     tmp_path, monkeypatch, level, expected,
 ):
     from datetime import datetime
-    from Infernux.debug import DebugConsole, LogEntry, LogType
+    from infernux.debug import DebugConsole, LogEntry, LogType
     from scripts.acceptance import headless_project_smoke as smoke
 
     scene = tmp_path / "Assets" / "Main.scene"

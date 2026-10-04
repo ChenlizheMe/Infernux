@@ -1,0 +1,6 @@
+from infernux.rendergraph.graph import RenderGraph
+from infernux.renderstack.pipeline_dsl import PipelineDefinition
+
+def compile_pipeline_definition(
+    definition: PipelineDefinition, graph: RenderGraph, *, pipeline=...
+) -> None: ...

@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.candidate_import import (
+from infernux.engine.candidate_import import (
     CandidateImportError,
     CandidateImportTransaction,
 )
-from Infernux.engine.project_context import (
+from infernux.engine.project_context import (
     get_project_root,
     get_script_import_paths,
     get_script_module_name,
@@ -118,10 +118,10 @@ def test_registered_project_module_precedes_standard_library_root(candidate_proj
 
 
 def test_serializable_candidate_is_private_until_module_commit(candidate_project):
-    from Infernux.components.serializable_object import get_serializable_class
+    from infernux.components.serializable_object import get_serializable_class
 
     broker = _broker(candidate_project, "candidate_data", (
-        "from Infernux.components import SerializableObject, serialized_field\n"
+        "from infernux.components import SerializableObject, serialized_field\n"
         "class Rules(SerializableObject):\n"
         "    score: int = serialized_field(default=17)\n"
         "VALUE = Rules._deserialize(Rules()._serialize())\n"
@@ -140,10 +140,10 @@ def test_serializable_candidate_is_private_until_module_commit(candidate_project
 
 
 def test_serializable_failed_candidate_keeps_live_type(candidate_project):
-    from Infernux.components.serializable_object import get_serializable_class
+    from infernux.components.serializable_object import get_serializable_class
 
     source = (
-        "from Infernux.components import SerializableObject, serialized_field\n"
+        "from infernux.components import SerializableObject, serialized_field\n"
         "class Rules(SerializableObject):\n"
         "    score: int = serialized_field(default=17)\n"
     )
@@ -165,10 +165,10 @@ def test_serializable_failed_candidate_keeps_live_type(candidate_project):
 
 
 def test_serializable_replacement_retires_removed_types_and_can_rollback(candidate_project):
-    from Infernux.components.serializable_object import get_serializable_class
+    from infernux.components.serializable_object import get_serializable_class
 
     source = (
-        "from Infernux.components import SerializableObject\n"
+        "from infernux.components import SerializableObject\n"
         "class Rules(SerializableObject):\n"
         "    score: int = 17\n"
         "class Removed(SerializableObject):\n"
@@ -197,10 +197,10 @@ def test_serializable_replacement_retires_removed_types_and_can_rollback(candida
 
 
 def test_serializable_helper_defaults_use_private_candidate_types(candidate_project):
-    from Infernux.components.serializable_object import get_serializable_class
+    from infernux.components.serializable_object import get_serializable_class
 
     source = (
-        "from Infernux.components import SerializableObject, serialized_field\n"
+        "from infernux.components import SerializableObject, serialized_field\n"
         "from data_helper import Stats\n"
         "class Rules(SerializableObject):\n"
         "    stats: Stats = serialized_field(default=Stats())\n"
@@ -208,7 +208,7 @@ def test_serializable_helper_defaults_use_private_candidate_types(candidate_proj
     )
     helper = candidate_project / "data_helper.py"
     helper.write_text(
-        "from Infernux.components import SerializableObject\n"
+        "from infernux.components import SerializableObject\n"
         "class Stats(SerializableObject):\n"
         "    hp: int = 100\n", encoding="utf-8",
     )
@@ -228,10 +228,10 @@ def test_serializable_helper_defaults_use_private_candidate_types(candidate_proj
 
 
 def test_serializable_candidate_cannot_claim_another_modules_identity(candidate_project):
-    from Infernux.components.serializable_object import get_serializable_class
+    from infernux.components.serializable_object import get_serializable_class
 
     source = (
-        "from Infernux.components import SerializableObject\n"
+        "from infernux.components import SerializableObject\n"
         "class Rules(SerializableObject):\n"
         "    __serialized_type_id__ = 'tests:owned-rules'\n"
     )
@@ -251,9 +251,9 @@ def test_serializable_candidate_cannot_claim_another_modules_identity(candidate_
 
 
 def test_serializable_rollback_preserves_unrelated_publication(candidate_project):
-    from Infernux.components.serializable_object import get_serializable_class
+    from infernux.components.serializable_object import get_serializable_class
 
-    source = "from Infernux.components import SerializableObject\nclass Rules(SerializableObject): pass\n"
+    source = "from infernux.components import SerializableObject\nclass Rules(SerializableObject): pass\n"
     first = _broker(candidate_project, "first_data_owner", source)
     second = _broker(candidate_project, "second_data_owner", source)
     try:
@@ -288,7 +288,7 @@ def test_trusted_import_bypasses_project_descendant_scan(candidate_project, monk
     broker = _broker(
         candidate_project,
         "trusted_import_root",
-        "import Infernux\nVALUE = Infernux.__name__\n",
+        "import infernux\nVALUE = infernux.__name__\n",
     )
 
     def reject_scan(_name):
@@ -298,7 +298,7 @@ def test_trusted_import_bypasses_project_descendant_scan(candidate_project, monk
 
     module = broker.load("trusted_import_root")
 
-    assert module.VALUE == "Infernux"
+    assert module.VALUE == "infernux"
     broker.rollback()
 
 
@@ -345,7 +345,7 @@ def test_lowercase_public_engine_namespace_is_lazily_admitted(candidate_project)
 
         module = broker.load("lowercase_engine_candidate")
 
-        from Infernux import InxComponent
+        from infernux import InxComponent
 
         assert module.BASE is InxComponent
         assert sys.modules["infernux"].InxComponent is InxComponent
@@ -857,7 +857,7 @@ def test_public_jit_module_is_lazily_admitted_for_declaration_decorators(
     candidate_project,
 ):
     source = (
-        "from Infernux import jit\n"
+        "from infernux import jit\n"
         "@jit.compile\n"
         "def scale(values):\n"
         "    for index in range(len(values)):\n"
@@ -875,7 +875,7 @@ def test_public_jit_module_is_lazily_admitted_for_declaration_decorators(
 @pytest.mark.parametrize("auto_parallel", [False, True])
 def test_jit_candidate_publication_keeps_live_revision_until_commit(candidate_project, auto_parallel):
     source = (
-        "from Infernux import jit\n"
+        "from infernux import jit\n"
         "FACTOR = 2\n"
         "def helper(value): return value * FACTOR\n"
         f"@jit.compile(cache=True, auto_parallel={auto_parallel})\n"
@@ -904,16 +904,65 @@ def test_jit_candidate_publication_keeps_live_revision_until_commit(candidate_pr
         live.rollback()
 
 
-def test_missing_general_engine_submodule_is_not_lazily_imported(candidate_project):
-    source = "import Infernux.not_a_public_candidate_capability\n"
+def test_missing_engine_submodule_reports_python_import_error(candidate_project):
+    source = "import infernux.not_a_public_candidate_capability\n"
     broker = _broker(candidate_project, "unknown_engine_candidate", source)
 
     with pytest.raises(
-        CandidateImportError,
-        match="trusted candidate import is not preloaded",
+        ModuleNotFoundError,
+        match="infernux.not_a_public_candidate_capability",
     ):
         broker.load("unknown_engine_candidate")
     broker.rollback()
+
+
+def test_first_use_installed_dependency_needs_no_allowlist(candidate_project, tmp_path, monkeypatch):
+    installed = tmp_path / "site-packages"
+    package = installed / "open_ecosystem_library"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "settings.py").write_text(
+        "class Settings:\n    def __init__(self, value): self.value = value\n", encoding="utf-8"
+    )
+    monkeypatch.syspath_prepend(str(installed))
+    source = (
+        "from open_ecosystem_library import settings\n"
+        "from infernux.renderstack import RenderStack\n"
+        "from infernux.components.component import InxComponent\n"
+        "config = settings.Settings(37)\n"
+    )
+    broker = _broker(candidate_project, "external_library_authoring", source)
+    try:
+        candidate = broker.load("external_library_authoring")
+        from infernux.renderstack import RenderStack
+        from infernux.components import InxComponent
+        assert candidate.config.value == 37
+        assert candidate.RenderStack is RenderStack
+        assert candidate.InxComponent is InxComponent
+        assert "open_ecosystem_library" not in broker.modules
+        assert "external_library_authoring" not in sys.modules
+    finally:
+        broker.rollback()
+        for name in ("open_ecosystem_library.settings", "open_ecosystem_library"):
+            sys.modules.pop(name, None)
+
+
+def test_dynamic_project_import_stays_transaction_private(candidate_project):
+    broker = _broker(candidate_project, "dynamic_project_authoring", (
+        "import importlib\n"
+        "dependency = importlib.import_module('dynamic_helper')\n"
+        "value = dependency.VALUE\n"
+    ))
+    helper = candidate_project / "dynamic_helper.py"
+    helper.write_text("VALUE = 41\n", encoding="utf-8")
+    broker.register("dynamic_helper", str(helper), source="VALUE = 42\n")
+    try:
+        candidate = broker.load("dynamic_project_authoring")
+        assert candidate.value == 42
+        assert "dynamic_helper" not in sys.modules
+        assert candidate.dependency is broker.module_for("dynamic_helper")
+    finally:
+        broker.rollback()
 
 
 def test_unknown_import_is_fail_closed(candidate_project):

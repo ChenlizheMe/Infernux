@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from Infernux.core.assets import AssetManager
-from Infernux.core.asset_types import read_mesh_import_settings
-from Infernux.lib import AssetRegistry, AssetDependencyGraph
+from infernux.core.assets import AssetManager
+from infernux.core.asset_types import read_mesh_import_settings
+from infernux.lib import AssetRegistry, AssetDependencyGraph
 from test_model_material_defaults import imported_model
 
 
@@ -67,7 +67,7 @@ def test_embedded_texture_is_registered_previewable_reusable_and_cooked(imported
     assert not AssetManager.reimport_asset(path, database=database)
 
     database.flush_derived_index()
-    from Infernux.engine.runtime_artifact_catalog import load_asset_index, validate_artifact
+    from infernux.engine.runtime_artifact_catalog import load_asset_index, validate_artifact
     root = Path(database.assets_root).parent
     entry = next(entry for entry in load_asset_index(root) if entry["guid"] == guid)
     binding = validate_artifact(root, entry, root / entry["artifact_path"])
@@ -135,11 +135,11 @@ def test_failed_embedded_decode_does_not_publish_partial_children(imported_model
 
 @pytest.mark.parametrize("short_project_root", [False, True])
 def test_embedded_texture_is_in_picker_and_accepts_guid_or_path_drop(imported_model, monkeypatch, short_project_root):
-    from Infernux.engine import project_context
-    from Infernux.engine.interaction.object_fields import AssetReferenceCatalog
-    from Infernux.engine.ui._inspector_references import _project_texture_guid_and_path
-    from Infernux.engine.ui.inspector_material import _texture_display_name
-    from Infernux.core.asset_reference_types import asset_type_registry
+    from infernux.engine import project_context
+    from infernux.engine.interaction.object_fields import AssetReferenceCatalog
+    from infernux.engine.ui._inspector_references import _project_texture_guid_and_path
+    from infernux.engine.ui.inspector_material import _texture_display_name
+    from infernux.core.asset_reference_types import asset_type_registry
     _, document, source, database, _ = imported_model
     embed(document)
     source.write_text(json.dumps(document), encoding="utf-8")
@@ -186,8 +186,8 @@ def test_removing_owner_unregisters_children_without_erasing_material_reference(
 
 
 def test_project_selection_roundtrips_and_texture_fields_accept_owned_path(imported_model):
-    from Infernux.engine._bootstrap_selection import _project_selection_target, _project_path_for_target
-    from Infernux.core.asset_reference_types import asset_type_registry
+    from infernux.engine._bootstrap_selection import _project_selection_target, _project_path_for_target
+    from infernux.core.asset_reference_types import asset_type_registry
     _, document, source, database, _ = imported_model
     embed(document)
     source.write_text(json.dumps(document), encoding="utf-8")
@@ -208,7 +208,7 @@ def test_project_selection_roundtrips_and_texture_fields_accept_owned_path(impor
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 def test_owned_texture_import_settings_publish_in_model_sidecar(imported_model, asynchronous):
-    from Infernux.core.asset_types import (
+    from infernux.core.asset_types import (
         read_texture_import_settings, FilterMode, WrapMode, TextureCompression,
     )
     _, document, source, database, _ = imported_model
@@ -278,7 +278,7 @@ def test_owned_texture_failed_settings_preserve_owner_and_identity(imported_mode
 
 
 def test_owned_texture_inspector_has_its_own_settings_identity(imported_model):
-    from Infernux.engine.ui import asset_details_renderer as ui
+    from infernux.engine.ui import asset_details_renderer as ui
     _, document, source, database, _ = imported_model
     embed(document)
     source.write_text(json.dumps(document), encoding="utf-8")

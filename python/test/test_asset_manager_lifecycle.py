@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import Infernux.lib as native_lib
-from Infernux.core.assets import AssetManager
+import infernux.lib as native_lib
+from infernux.core.assets import AssetManager
 import pytest
 
 
@@ -83,9 +83,9 @@ def test_release_engine_does_not_clear_a_newer_engine(monkeypatch):
 
 def test_asset_reference_does_not_reuse_retired_play_mode_database(monkeypatch):
     from types import SimpleNamespace
-    from Infernux.core.asset_ref import AssetRefBase
-    from Infernux.engine.play_mode import PlayModeManager
-    from Infernux.engine.interaction import AssetMutationService
+    from infernux.core.asset_ref import AssetRefBase
+    from infernux.engine.play_mode import PlayModeManager
+    from infernux.engine.interaction import AssetMutationService
 
     class RetiredDatabase:
         def get_path_from_guid(self, _guid):

@@ -4,8 +4,8 @@ import weakref
 
 import pytest
 
-from Infernux.lib import GraphBufferAccessType, GraphCommandType
-from Infernux.rendergraph.graph import RenderGraph
+from infernux.lib import GraphBufferAccessType, GraphCommandType
+from infernux.rendergraph.graph import RenderGraph
 
 
 def test_fullscreen_buffer_binding_declares_read_and_serializes_resource_order():

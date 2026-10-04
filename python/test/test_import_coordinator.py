@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from Infernux.engine.import_coordinator import (
+from infernux.engine.import_coordinator import (
     AssetFsEvent,
     AssetFsEventKind,
     ImportCoordinator,

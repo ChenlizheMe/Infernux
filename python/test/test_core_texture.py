@@ -1,11 +1,11 @@
-"""Tests for Infernux.core.texture — Texture wrapper (real C++ backend)."""
+"""Tests for infernux.core.texture — Texture wrapper (real C++ backend)."""
 
 from __future__ import annotations
 
 import pytest
 
-from Infernux.core.texture import Texture
-from Infernux.lib import TextureLoader
+from infernux.core.texture import Texture
+from infernux.lib import TextureLoader
 
 
 # ═══════════════════════════════════════════════════════════════════════════

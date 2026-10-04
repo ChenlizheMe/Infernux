@@ -3,7 +3,7 @@
 import math
 import pytest
 
-from Infernux import lib
+from infernux import lib
 
 
 @pytest.fixture
@@ -77,7 +77,7 @@ def test_wrapper_atomic_clip_update_keeps_its_native_binding_after_rejection(sce
 
 
 def test_physical_camera_matches_unity_property_model_and_sensor_presets(scene):
-    from Infernux.components.builtin.camera import Camera
+    from infernux.components.builtin.camera import Camera
 
     camera = scene.create_game_object("UnityPhysicalCamera").add_component("Camera")
     assert not hasattr(lib.CameraProjection, "Physical")
@@ -139,8 +139,8 @@ def test_wrapper_culling_mask_writes_the_native_authoritative_field(scene):
 
 def test_camera_inspector_uses_named_layer_popup_instead_of_numeric_mask(scene, monkeypatch):
     """The authoring surface must never make users type the 32-bit mask."""
-    import Infernux.engine.ui.inspector_components as inspector_components
-    import Infernux.engine.ui.inspector_utils as inspector_utils
+    import infernux.engine.ui.inspector_components as inspector_components
+    import infernux.engine.ui.inspector_utils as inspector_utils
 
     wrapper = scene.create_game_object("LayerInspectorCamera").add_component("Camera")
     wrapper.culling_mask = (1 << 0) | (1 << 2)
@@ -231,9 +231,9 @@ def test_removing_preferred_camera_clears_borrowed_scene_reference(engine, scene
 
 
 def test_multi_camera_clip_edit_clamps_each_target_before_native_publication(scene):
-    from Infernux.components.builtin.camera import Camera
-    from Infernux.engine.ui.inspector_components import _apply_multi_builtin_change
-    from Infernux.engine.undo import UndoManager
+    from infernux.components.builtin.camera import Camera
+    from infernux.engine.ui.inspector_components import _apply_multi_builtin_change
+    from infernux.engine.undo import UndoManager
 
     first = scene.create_game_object("FirstCamera").add_component("Camera")
     second = scene.create_game_object("SecondCamera").add_component("Camera")

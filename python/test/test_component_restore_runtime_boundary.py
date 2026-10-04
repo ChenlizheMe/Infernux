@@ -3,8 +3,8 @@ from __future__ import annotations
 import builtins
 from types import SimpleNamespace
 
-from Infernux.application import Application
-from Infernux.engine import component_restore
+from infernux.application import Application
+from infernux.engine import component_restore
 
 
 def test_player_component_restore_does_not_import_editor_gizmos(monkeypatch):
@@ -12,7 +12,7 @@ def test_player_component_restore_does_not_import_editor_gizmos(monkeypatch):
     original_import = builtins.__import__
 
     def reject_gizmos(name, *args, **kwargs):
-        if name == "Infernux.gizmos" or name.startswith("Infernux.gizmos."):
+        if name == "infernux.gizmos" or name.startswith("infernux.gizmos."):
             raise AssertionError("Player component restore imported editor Gizmos")
         return original_import(name, *args, **kwargs)
 

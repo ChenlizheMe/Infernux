@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.engine.ui.dpi import editor_dpi_scale, scaled_editor_metric
+from infernux.engine.ui.dpi import editor_dpi_scale, scaled_editor_metric
 
 
 class _DpiContext:

@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-from Infernux.components.builtin_component import BuiltinComponent
-from Infernux.engine.bootstrap_inspector._wire import (
+from infernux.components.builtin_component import BuiltinComponent
+from infernux.engine.bootstrap_inspector._wire import (
     _wire_cache_init,
     _wire_component_list,
 )
@@ -89,7 +89,7 @@ def test_invalidated_builtin_wrapper_is_rebound_from_live_object(monkeypatch):
         SceneManager=_SceneManager,
         InspectorComponentInfo=_InspectorComponentInfo,
         InxComponent=__import__(
-            "Infernux.components.component", fromlist=["InxComponent"]
+            "infernux.components.component", fromlist=["InxComponent"]
         ).InxComponent,
         _inspector_support=SimpleNamespace(
             get_component_structure_version=lambda: 1,
@@ -127,7 +127,7 @@ def test_scene_structure_bump_rebinds_live_looking_builtin_wrapper(monkeypatch):
         SceneManager=_SceneManager,
         InspectorComponentInfo=_InspectorComponentInfo,
         InxComponent=__import__(
-            "Infernux.components.component", fromlist=["InxComponent"]
+            "infernux.components.component", fromlist=["InxComponent"]
         ).InxComponent,
         _inspector_support=SimpleNamespace(
             get_component_structure_version=lambda: 1,
@@ -170,7 +170,7 @@ def test_python_script_error_lookup_runs_only_when_diagnostics_change(monkeypatc
 
     lookups = []
     monkeypatch.setattr(
-        "Infernux.engine.bootstrap_inspector._helpers._get_component_script_error",
+        "infernux.engine.bootstrap_inspector._helpers._get_component_script_error",
         lambda comp, _database: lookups.append(comp) or None,
     )
 
@@ -178,7 +178,7 @@ def test_python_script_error_lookup_runs_only_when_diagnostics_change(monkeypatc
         SceneManager=_SceneManager,
         InspectorComponentInfo=_InspectorComponentInfo,
         InxComponent=__import__(
-            "Infernux.components.component", fromlist=["InxComponent"]
+            "infernux.components.component", fromlist=["InxComponent"]
         ).InxComponent,
         _inspector_support=SimpleNamespace(
             get_component_structure_version=lambda: 1,
@@ -194,7 +194,7 @@ def test_python_script_error_lookup_runs_only_when_diagnostics_change(monkeypatc
     ctx.ip.get_component_list(game_object.id)
     assert lookups == [component]
 
-    from Infernux.components.script_loader import _clear_script_error, set_script_error
+    from infernux.components.script_loader import _clear_script_error, set_script_error
 
     changed_script = tmp_path / "changed.py"
     set_script_error(str(changed_script), "syntax error")
@@ -225,7 +225,7 @@ def test_component_cache_resolves_dont_destroy_on_load_object_from_persistent_sc
         SceneManager=_SceneManager,
         InspectorComponentInfo=_InspectorComponentInfo,
         InxComponent=__import__(
-            "Infernux.components.component", fromlist=["InxComponent"]
+            "infernux.components.component", fromlist=["InxComponent"]
         ).InxComponent,
         _inspector_support=SimpleNamespace(
             get_component_structure_version=lambda: 1,

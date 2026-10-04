@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     ActionOrigin,
     ContextRestoreStatus,
     DocumentKey,
@@ -64,7 +64,7 @@ def test_editor_context_selection_replacement_preserves_document_locator():
     assert replaced.scene == scene
 
 
-from Infernux.engine.undo import UndoCommand, UndoManager
+from infernux.engine.undo import UndoCommand, UndoManager
 
 
 def test_undo_manager_exposes_only_the_global_journal_history():
@@ -503,7 +503,7 @@ def test_user_action_uses_outer_context_for_data_command():
 
 
 def test_focus_transition_is_never_grouped_with_following_data_command():
-    from Infernux.engine.undo import GlobalFocusCommand
+    from infernux.engine.undo import GlobalFocusCommand
 
     manager = UndoManager()
     hierarchy = EditorContextSnapshot(FocusSnapshot(active_panel_id="hierarchy"))
@@ -542,7 +542,7 @@ def test_focus_transition_is_never_grouped_with_following_data_command():
 
 
 def test_scene_transform_undo_precedes_workspace_and_selection_restore():
-    from Infernux.engine.undo import GlobalFocusCommand, GlobalSelectionCommand
+    from infernux.engine.undo import GlobalFocusCommand, GlobalSelectionCommand
 
     manager = UndoManager()
     empty = SelectionSnapshot()
@@ -606,7 +606,7 @@ def test_scene_transform_undo_precedes_workspace_and_selection_restore():
 
 
 def test_action_origin_scope_is_inherited_by_nested_editor_commands():
-    from Infernux.engine.interaction import action_origin_scope, current_action_origin
+    from infernux.engine.interaction import action_origin_scope, current_action_origin
 
     manager = UndoManager()
     state = {"value": 0}

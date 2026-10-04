@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.engine.player_gui import _FrameProfileWindow
+from infernux.engine.player_gui import _FrameProfileWindow
 
 
 class _SceneManager:
@@ -102,7 +102,7 @@ def test_frame_profile_restarts_baseline_after_runtime_frame_counter_reset():
 
 
 def test_player_frame_profile_is_not_allocated_when_disabled(monkeypatch):
-    from Infernux.engine.player_gui import PlayerGUI
+    from infernux.engine.player_gui import PlayerGUI
 
     monkeypatch.delenv("_INFERNUX_PLAYER_PROFILE_FRAMES", raising=False)
     player = PlayerGUI(object())

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.lib import Physics, SceneManager, Vector3
+from infernux.lib import Physics, SceneManager, Vector3
 
 DT = 1.0 / 60.0
 
@@ -137,7 +137,7 @@ def test_gizmo_style_drag_imparts_cross_velocity(scene):
     teleport: a sphere crossing the cube's path was pushed aside positionally
     but gained no velocity along the impact axis.
     """
-    from Infernux.lib import Physics
+    from infernux.lib import Physics
 
     Physics.set_gravity(Vector3(0, -9.81, 0))
     _make_ground(scene)

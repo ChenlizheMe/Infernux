@@ -14,18 +14,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.lib import AssetRegistry, GameObject, InxMaterial, SceneManager, Vector3, PrimitiveType, quatf
-from Infernux.components import (
+from infernux.lib import AssetRegistry, GameObject, InxMaterial, SceneManager, Vector3, PrimitiveType, quatf
+from infernux.components import (
     FieldType,
     InxComponent,
     SerializableObject,
     list_field,
     serialized_field,
 )
-from Infernux.components._cds_bridge import get_class_info
-from Infernux.components.decorators import disallow_multiple, require_component
-from Infernux.components.ref_wrappers import ComponentRef, GameObjectRef
-from Infernux.engine.component_restore import (
+from infernux.components._cds_bridge import get_class_info
+from infernux.components.decorators import disallow_multiple, require_component
+from infernux.components.ref_wrappers import ComponentRef, GameObjectRef
+from infernux.engine.component_restore import (
     PythonComponentRestoreError,
     clone_game_object_transactionally,
     deserialize_scene_document_transactionally,
@@ -36,23 +36,23 @@ from Infernux.engine.component_restore import (
     preflight_scene_python_components,
     replace_scene_python_components_for_play,
 )
-from Infernux.engine.scene_document_transaction import (
+from infernux.engine.scene_document_transaction import (
     SceneDocumentTransaction,
     SceneDocumentTransactionState,
 )
-from Infernux.engine.scene_manager import SceneFileManager
-from Infernux.engine.prefab_manager import PrefabDocumentError, _strip_prefab_runtime_fields
-from Infernux.instantiate import Instantiate
+from infernux.engine.scene_manager import SceneFileManager
+from infernux.engine.prefab_manager import PrefabDocumentError, _strip_prefab_runtime_fields
+from infernux.instantiate import Instantiate
 
 
 def test_scene_deleted_id_watermarks_survive_a_fresh_process(tmp_path):
-    from Infernux.lib import _Infernux
+    from infernux.lib import _Infernux
 
     path = tmp_path / "Deleted.scene"
     source = '''
 import json, sys
 from pathlib import Path
-from Infernux.lib import SceneManager
+from infernux.lib import SceneManager
 manager = SceneManager.instance()
 scene = manager.create_scene("IDs")
 obj = scene.create_game_object("Removed")
@@ -68,7 +68,7 @@ Path(sys.argv[1]).write_text(json.dumps(document), encoding="utf-8")
     restore = '''
 import json, sys
 from pathlib import Path
-from Infernux.lib import SceneManager
+from infernux.lib import SceneManager
 document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 manager = SceneManager.instance()
 scene = manager.create_scene("Restored")
@@ -97,7 +97,7 @@ def test_removed_component_watermark_is_persisted_without_saving_the_live_compon
 
 @pytest.fixture
 def editor_history():
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     previous = UndoManager._instance
     manager = UndoManager()
@@ -221,7 +221,7 @@ class _SingleInstanceSceneComponent(InxComponent):
 def _cds_alive_count(component_type) -> int:
     class_info = get_class_info(component_type)
     assert class_info is not None
-    from Infernux import lib
+    from infernux import lib
     return lib._cds_alive_count(class_info[0])
 
 
@@ -290,7 +290,7 @@ class TestSceneLifecycle:
         assert len(scene.get_all_objects()) == 0
 
     def test_public_loaded_scene_directory_is_distinct_from_build_list(self, scene, monkeypatch):
-        from Infernux.scene import SceneManager as PublicSceneManager
+        from infernux.scene import SceneManager as PublicSceneManager
 
         native = SceneManager.instance()
         loaded_before = native.scene_count
@@ -321,8 +321,8 @@ class TestSceneLifecycle:
     def test_additive_transaction_remaps_object_component_and_python_references(
         self, scene, tmp_path, monkeypatch
     ):
-        from Infernux.engine.scene_manager import SceneFileManager
-        from Infernux.scene import LoadSceneMode, SceneManager as PublicSceneManager
+        from infernux.engine.scene_manager import SceneFileManager
+        from infernux.scene import LoadSceneMode, SceneManager as PublicSceneManager
 
         native = SceneManager.instance()
         source_root = scene.create_game_object("AdditiveIdentityRoot")
@@ -393,8 +393,8 @@ class TestSceneLifecycle:
     def test_player_service_additive_loads_cataloged_scene_into_running_world(
         self, scene, tmp_path
     ):
-        from Infernux.engine.player_scene import PlayerSceneService
-        from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+        from infernux.engine.player_scene import PlayerSceneService
+        from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
 
         manager = SceneManager.instance()
         source = scene.create_game_object("PlayerWorldSource")
@@ -469,7 +469,7 @@ class TestSceneLifecycle:
                 manager.unload_scene(additive)
 
     def test_world_queries_and_root_scene_move_preserve_identity(self, scene):
-        from Infernux.scene import GameObjectQuery, SceneManager as PublicSceneManager
+        from infernux.scene import GameObjectQuery, SceneManager as PublicSceneManager
 
         manager = SceneManager.instance()
         active_match = scene.create_game_object("SharedQueryName")
@@ -628,12 +628,12 @@ class TestGameObject:
         assert go.active is True
 
     def test_batch_component_removal_restores_ids_and_selection(self, scene):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             SelectionService,
             SelectionSnapshot,
             SelectionTarget,
         )
-        from Infernux.engine.undo import (
+        from infernux.engine.undo import (
             RemoveComponentsCommand,
             RemoveNativeComponentCommand,
         )
@@ -694,8 +694,8 @@ class TestGameObject:
             SelectionService._instance = previous_selection
 
     def test_component_order_is_atomic_and_undoable(self, scene):
-        from Infernux.engine.interaction import SelectionService, SelectionTarget
-        from Infernux.engine.undo import ReorderComponentsCommand, UndoManager
+        from infernux.engine.interaction import SelectionService, SelectionTarget
+        from infernux.engine.undo import ReorderComponentsCommand, UndoManager
 
         obj = scene.create_game_object("ComponentOrder")
         collider = obj.add_component("BoxCollider")
@@ -748,8 +748,8 @@ class TestGameObject:
             SelectionService._instance = previous_selection
 
     def test_multi_object_component_reorder_is_one_atomic_action(self, scene):
-        from Infernux.engine.interaction import SelectionService, SelectionTarget
-        from Infernux.engine.undo import ReorderComponentsCommand, UndoManager
+        from infernux.engine.interaction import SelectionService, SelectionTarget
+        from infernux.engine.undo import ReorderComponentsCommand, UndoManager
 
         first = scene.create_game_object("FirstComponentOrder")
         second = scene.create_game_object("SecondComponentOrder")
@@ -811,7 +811,7 @@ class TestGameObject:
             SelectionService._instance = previous_selection
 
     def test_native_component_default_document_preserves_identity(self, scene):
-        from Infernux.engine.undo import GenericComponentCommand, UndoManager
+        from infernux.engine.undo import GenericComponentCommand, UndoManager
 
         obj = scene.create_game_object("ResetComponent")
         light = obj.add_component("Light")
@@ -850,7 +850,7 @@ class TestGameObject:
             UndoManager._instance = previous_undo
 
     def test_transform_default_document_is_resettable_and_preserves_identity(self, scene):
-        from Infernux.engine.undo import GenericComponentCommand
+        from infernux.engine.undo import GenericComponentCommand
 
         obj = scene.create_game_object("ResetTransform")
         transform = obj.transform
@@ -904,7 +904,7 @@ class TestGameObject:
         assert not second.can_add_component("MissingNativeComponent")
 
     def test_remove_component_undo_restores_original_order(self, scene):
-        from Infernux.engine.undo import RemoveNativeComponentCommand
+        from infernux.engine.undo import RemoveNativeComponentCommand
 
         obj = scene.create_game_object("RemoveOrder")
         collider = obj.add_component("BoxCollider")
@@ -930,8 +930,8 @@ class TestGameObject:
         assert tuple(obj.get_component_order()) == (before[0], before[2])
 
     def test_batch_remove_restores_adjacent_components_in_exact_order(self, scene):
-        from Infernux.engine.interaction import SelectionSnapshot, SelectionTarget
-        from Infernux.engine.undo import (
+        from infernux.engine.interaction import SelectionSnapshot, SelectionTarget
+        from infernux.engine.undo import (
             RemoveComponentsCommand,
             RemoveNativeComponentCommand,
         )
@@ -1415,13 +1415,13 @@ class TestInstantiate:
             component_type="_StrictSceneComponent",
         )
 
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.interaction import SelectionService
 
         selection = SelectionService.instance()
         selection.replace_scene_objects(
             [original.id], owner_id="hierarchy", record_history=False
         )
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             SceneObjectCommandService,
         )
@@ -1446,7 +1446,7 @@ class TestInstantiate:
         assert restored.target_component is pasted_child.get_py_component(_StrictSceneComponent)
 
     def test_hierarchy_rename_is_one_global_command(self, scene, editor_history):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             SceneObjectCommandService,
             SelectionService,
@@ -1467,7 +1467,7 @@ class TestInstantiate:
     def test_hierarchy_copy_uses_the_frozen_command_selection(
         self, scene, editor_history
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardDomain,
             ClipboardService,
             SceneObjectCommandService,
@@ -1496,7 +1496,7 @@ class TestInstantiate:
     def test_inspector_object_property_is_one_global_command(
         self, scene, editor_history
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             SceneObjectCommandService,
             SelectionService,
@@ -1533,7 +1533,7 @@ class TestInstantiate:
     def test_inspector_transform_edit_undo_redo_and_merge(
         self, scene, editor_history
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             SceneObjectCommandService,
             SelectionService,
@@ -1559,7 +1559,7 @@ class TestInstantiate:
     def test_inspector_multi_transform_is_one_atomic_command(
         self, scene, editor_history
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             SceneObjectCommandService,
             SelectionService,
@@ -1591,7 +1591,7 @@ class TestInstantiate:
     def test_hierarchy_multi_move_is_one_atomic_layout_command(
         self, scene, editor_history
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             SceneObjectCommandService,
             SelectionService,
@@ -1632,7 +1632,7 @@ class TestInstantiate:
     def test_hierarchy_move_ignores_selected_descendants(
         self, scene, editor_history
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             SceneObjectCommandService,
             SelectionService,
@@ -1661,7 +1661,7 @@ class TestInstantiate:
     def test_hierarchy_cycle_rejection_does_not_record_history(
         self, scene, editor_history
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             SceneObjectCommandService,
             SelectionService,
@@ -1690,13 +1690,13 @@ class TestInstantiate:
             component_type="_StrictSceneComponent",
         )
 
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.interaction import SelectionService
 
         selection = SelectionService.instance()
         selection.replace_scene_objects(
             [original.id], owner_id="hierarchy", record_history=False
         )
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             SceneObjectCommandService,
         )
@@ -1727,13 +1727,13 @@ class TestInstantiate:
             component_type="_StrictSceneComponent",
         )
 
-        from Infernux.engine.interaction import SelectionService
+        from infernux.engine.interaction import SelectionService
 
         selection = SelectionService.instance()
         selection.replace_scene_objects(
             [first.id, second.id], owner_id="hierarchy", record_history=False
         )
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             SceneObjectCommandService,
         )
@@ -1767,7 +1767,7 @@ class TestInstantiate:
         target = target_object.add_py_component(_RichCloneComponent())
         target_component_id = target.component_id
 
-        from Infernux.engine.bootstrap_inspector._wire import (
+        from infernux.engine.bootstrap_inspector._wire import (
             _apply_python_component_clipboard_document,
             _component_clipboard_data,
             _publish_component_clipboard,
@@ -1801,10 +1801,10 @@ class TestInstantiate:
         source = source_owner.add_py_component(_RichCloneComponent())
         source.count = 233
 
-        from Infernux.engine.bootstrap_inspector._wire import (
+        from infernux.engine.bootstrap_inspector._wire import (
             _python_component_clipboard_document,
         )
-        from Infernux.engine.undo import PythonComponentDocumentCommand
+        from infernux.engine.undo import PythonComponentDocumentCommand
 
         command = PythonComponentDocumentCommand(
             second,
@@ -1831,7 +1831,7 @@ class TestInstantiate:
         first.count = 3
         second.count = 5
 
-        from Infernux.engine.undo import SetPropertyCommand
+        from infernux.engine.undo import SetPropertyCommand
 
         command = SetPropertyCommand(second, "count", 5, 8, "Set second count")
         command.execute()
@@ -1849,7 +1849,7 @@ class TestInstantiate:
         component.values = [34, 55, 89]
         component.settings = _CloneSettings(gain=12.5, label="redo")
 
-        from Infernux.engine.undo import AddPyComponentCommand
+        from infernux.engine.undo import AddPyComponentCommand
 
         command = AddPyComponentCommand(owner.id, component, "Add rich component")
         command.undo()
@@ -1865,7 +1865,7 @@ class TestInstantiate:
         assert restored.settings.label == "redo"
 
     def test_component_add_transaction_owns_python_requirements(self, scene):
-        from Infernux.engine.undo import AddComponentTransactionCommand, UndoManager
+        from infernux.engine.undo import AddComponentTransactionCommand, UndoManager
 
         owner = scene.create_game_object("PythonAddTransactionOwner")
         prototype = _RequiresRigidbodyComponent()
@@ -1907,7 +1907,7 @@ class TestInstantiate:
             UndoManager._instance = previous_manager
 
     def test_component_add_transaction_preserves_exact_insertion_point(self, scene):
-        from Infernux.engine.undo import AddComponentTransactionCommand, UndoManager
+        from infernux.engine.undo import AddComponentTransactionCommand, UndoManager
 
         owner = scene.create_game_object("ComponentInsertionOwner")
         light = owner.add_component("Light")
@@ -1940,7 +1940,7 @@ class TestInstantiate:
             UndoManager._instance = previous_manager
 
     def test_component_add_transaction_can_insert_at_component_list_start(self, scene):
-        from Infernux.engine.undo import AddComponentTransactionCommand, UndoManager
+        from infernux.engine.undo import AddComponentTransactionCommand, UndoManager
 
         owner = scene.create_game_object("ComponentStartInsertionOwner")
         light = owner.add_component("Light")
@@ -1972,7 +1972,7 @@ class TestInstantiate:
             UndoManager._instance = previous_manager
 
     def test_component_add_rejects_conflicting_insertion_contract(self, scene):
-        from Infernux.engine.undo import AddComponentTransactionCommand
+        from infernux.engine.undo import AddComponentTransactionCommand
 
         owner = scene.create_game_object("ConflictingComponentInsertionOwner")
         camera = owner.add_component("Camera")
@@ -1985,7 +1985,7 @@ class TestInstantiate:
             )
 
     def test_component_add_inserts_required_components_as_one_block(self, scene):
-        from Infernux.engine.undo import AddComponentTransactionCommand, UndoManager
+        from infernux.engine.undo import AddComponentTransactionCommand, UndoManager
 
         owner = scene.create_game_object("RequiredComponentInsertionOwner")
         light = owner.add_component("Light")
@@ -2024,7 +2024,7 @@ class TestInstantiate:
             UndoManager._instance = previous_manager
 
     def test_component_add_transaction_rolls_back_failed_python_callback(self, scene):
-        from Infernux.engine.undo import AddComponentTransactionCommand, UndoManager
+        from infernux.engine.undo import AddComponentTransactionCommand, UndoManager
 
         owner = scene.create_game_object("FailedPythonAddTransaction")
         prototype = _ExplodingAfterDeserializeComponent()
@@ -2049,7 +2049,7 @@ class TestInstantiate:
     ):
         script_path = tmp_path / "pipe_probe.py"
         script_path.write_text(
-            "from Infernux.components import InxComponent\n\n"
+            "from infernux.components import InxComponent\n\n"
             "class PipeProbe(InxComponent):\n"
             "    speed: float = 2.8\n"
             "    wrap_distance: float = 18.0\n",
@@ -2074,7 +2074,7 @@ class TestInstantiate:
                 }
                 return identities.get(str(guid), "")
 
-        from Infernux.components.script_loader import load_and_create_component
+        from infernux.components.script_loader import load_and_create_component
 
         original = scene.create_game_object("AssetScriptCloneSource")
         source_component = load_and_create_component(
@@ -2103,7 +2103,7 @@ class TestInstantiate:
             assert restored.speed == pytest.approx(6.25)
             assert restored.wrap_distance == pytest.approx(42.0)
 
-        from Infernux.engine.prefab_manager import (
+        from infernux.engine.prefab_manager import (
             _PREFAB_TEMPLATE_CACHE,
             instantiate_prefab,
             save_prefab,
@@ -2124,16 +2124,16 @@ class TestInstantiate:
     def test_ui_prefab_drop_with_implicit_canvas_is_one_atomic_action(
         self, scene, tmp_path
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             EditorContextSnapshot,
             SceneObjectCommandService,
             SelectionService,
             SelectionTarget,
         )
-        from Infernux.engine.prefab_manager import save_prefab
-        from Infernux.engine.undo import UndoManager
-        from Infernux.ui import UICanvas
+        from infernux.engine.prefab_manager import save_prefab
+        from infernux.engine.undo import UndoManager
+        from infernux.ui import UICanvas
 
         source = scene.create_game_object("AtomicUIPrefab")
         prefab_path = tmp_path / "atomic_ui.prefab"
@@ -2196,14 +2196,14 @@ class TestInstantiate:
     def test_failed_ui_prefab_drop_rolls_back_implicit_canvas(
         self, scene, tmp_path, monkeypatch
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             SceneObjectCommandService,
             SelectionService,
             SelectionTarget,
         )
-        from Infernux.engine.prefab_manager import save_prefab
-        from Infernux.engine.undo import UndoManager
+        from infernux.engine.prefab_manager import save_prefab
+        from infernux.engine.undo import UndoManager
 
         source = scene.create_game_object("BrokenUIPrefab")
         prefab_path = tmp_path / "broken_ui.prefab"
@@ -2230,7 +2230,7 @@ class TestInstantiate:
             raise RuntimeError("intentional prefab failure")
 
         monkeypatch.setattr(
-            "Infernux.engine.prefab_manager.instantiate_prefab",
+            "infernux.engine.prefab_manager.instantiate_prefab",
             fail_instantiation,
         )
         try:
@@ -2254,7 +2254,7 @@ class TestInstantiate:
         component.values = [1, 1, 2, 3, 5]
         component.settings = _CloneSettings(gain=7.5, label="restored")
 
-        from Infernux.engine.undo import DeleteGameObjectCommand
+        from infernux.engine.undo import DeleteGameObjectCommand
 
         command = DeleteGameObjectCommand(original_id, "Delete rich source")
         command.execute()
@@ -2274,7 +2274,7 @@ class TestInstantiate:
     def test_structural_undo_keeps_additive_scene_ownership_after_active_scene_switch(
         self, scene, editor_history
     ):
-        from Infernux.engine.undo import (
+        from infernux.engine.undo import (
             CreateGameObjectCommand,
             DeleteGameObjectCommand,
         )
@@ -2313,7 +2313,7 @@ class TestInstantiate:
     def test_scene_object_edits_resolve_additive_target_after_active_scene_switch(
         self, scene, editor_history
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             SceneObjectCommandService,
             SelectionService,
@@ -2363,7 +2363,7 @@ class TestInstantiate:
     def test_hierarchy_move_transfers_ownership_between_loaded_scenes_and_undoes(
         self, scene, editor_history
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ClipboardService,
             SceneObjectCommandService,
             SelectionService,
@@ -2408,9 +2408,9 @@ class TestInstantiate:
         tmp_path,
         monkeypatch,
     ):
-        from Infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
-        from Infernux.engine.project_context import get_project_root, set_project_root
-        from Infernux.engine.undo import SetPropertyCommand, UndoManager
+        from infernux.engine.interaction import DocumentActionStatus, DocumentRegistry
+        from infernux.engine.project_context import get_project_root, set_project_root
+        from infernux.engine.undo import SetPropertyCommand, UndoManager
 
         previous_root = get_project_root()
         previous_manager = SceneFileManager._instance
@@ -2505,9 +2505,9 @@ class TestInstantiate:
         monkeypatch,
         immediate,
     ):
-        from Infernux.engine.interaction import EditorInteractionCore
-        from Infernux.engine.project_context import get_project_root, set_project_root
-        from Infernux.engine.undo import UndoManager
+        from infernux.engine.interaction import EditorInteractionCore
+        from infernux.engine.project_context import get_project_root, set_project_root
+        from infernux.engine.undo import UndoManager
 
         previous_root = get_project_root()
         previous_core = EditorInteractionCore._instance
@@ -2599,8 +2599,8 @@ class TestInstantiate:
         tmp_path,
     ):
         """A queued Header activation must not leave views on a retired document."""
-        from Infernux.engine.interaction import DocumentRegistry
-        from Infernux.engine.project_context import get_project_root, set_project_root
+        from infernux.engine.interaction import DocumentRegistry
+        from infernux.engine.project_context import get_project_root, set_project_root
 
         previous_root = get_project_root()
         previous_manager = SceneFileManager._instance
@@ -2652,9 +2652,9 @@ class TestInstantiate:
     def test_single_scene_open_resolves_every_dirty_resident_scene_document(
         self, scene, tmp_path, monkeypatch
     ):
-        from Infernux.engine.interaction import DocumentRegistry
-        from Infernux.engine.project_context import get_project_root, set_project_root
-        from Infernux.engine.ui.dirty_panel_confirmation import (
+        from infernux.engine.interaction import DocumentRegistry
+        from infernux.engine.project_context import get_project_root, set_project_root
+        from infernux.engine.ui.dirty_panel_confirmation import (
             DirtyPanelConfirmationCoordinator,
         )
 
@@ -2720,7 +2720,7 @@ class TestInstantiate:
     def test_single_scene_commit_unloads_every_other_resident_scene(
         self, scene, tmp_path, monkeypatch
     ):
-        from Infernux.engine.project_context import get_project_root, set_project_root
+        from infernux.engine.project_context import get_project_root, set_project_root
 
         previous_root = get_project_root()
         previous_manager = SceneFileManager._instance
@@ -3123,7 +3123,7 @@ class TestSceneSerialization:
         tmp_path,
         monkeypatch,
     ):
-        from Infernux.engine.project_context import get_project_root, set_project_root
+        from infernux.engine.project_context import get_project_root, set_project_root
 
         previous_root = get_project_root()
         previous_manager = SceneFileManager._instance
@@ -3175,7 +3175,7 @@ class TestSceneSerialization:
             SceneFileManager._instance = previous_manager
 
     def test_each_scene_content_mutation_allocates_a_revision(self):
-        from Infernux.engine.interaction import DocumentRegistry
+        from infernux.engine.interaction import DocumentRegistry
 
         previous_manager = SceneFileManager._instance
         try:
@@ -3218,7 +3218,7 @@ class TestSceneSerialization:
             assert manager.restore_document_locator(locator) is True
             assert scene.find("HistoryOnlyObject") is not None
 
-            from Infernux.engine.interaction import DocumentRegistry
+            from infernux.engine.interaction import DocumentRegistry
 
             restored = DocumentRegistry.instance().get(manager.document_id)
             assert restored is not None
@@ -3233,9 +3233,9 @@ class TestSceneSerialization:
         monkeypatch,
         tmp_path,
     ):
-        from Infernux.core.assets import AssetManager
-        from Infernux.engine.interaction import DocumentKey, DocumentKind, DocumentRegistry
-        from Infernux.engine.path_utils import resolved_path
+        from infernux.core.assets import AssetManager
+        from infernux.engine.interaction import DocumentKey, DocumentKind, DocumentRegistry
+        from infernux.engine.path_utils import resolved_path
 
         previous_manager = SceneFileManager._instance
         try:
@@ -3312,13 +3312,13 @@ class TestSceneSerialization:
         ``DocumentOpenService.open_resource`` rather than calling the scene
         manager directly.
         """
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             DocumentKind,
             DocumentOpenService,
             DocumentOpenStatus,
             DocumentRegistry,
         )
-        from Infernux.core.assets import AssetManager
+        from infernux.core.assets import AssetManager
 
         previous_manager = SceneFileManager._instance
         try:
@@ -3391,13 +3391,13 @@ class TestSceneSerialization:
         scene,
         monkeypatch,
     ):
-        from Infernux.engine.interaction import (
+        from infernux.engine.interaction import (
             ContextRestoreStatus,
             DocumentOpenStatus,
             DocumentKind,
             EditorInteractionCore,
         )
-        from Infernux.engine.undo import UndoManager
+        from infernux.engine.undo import UndoManager
 
         previous_core = EditorInteractionCore._instance
         previous_manager = SceneFileManager._instance
@@ -3456,8 +3456,8 @@ class TestSceneSerialization:
         tmp_path,
         monkeypatch,
     ):
-        from Infernux.engine.project_context import get_project_root, set_project_root
-        from Infernux.scene import SceneManager as RuntimeSceneManager
+        from infernux.engine.project_context import get_project_root, set_project_root
+        from infernux.scene import SceneManager as RuntimeSceneManager
 
         previous_root = get_project_root()
         previous_manager = SceneFileManager._instance
@@ -3607,7 +3607,7 @@ class TestSceneSerialization:
         tmp_path,
         monkeypatch,
     ):
-        from Infernux.engine.project_context import get_project_root, set_project_root
+        from infernux.engine.project_context import get_project_root, set_project_root
 
         previous_root = get_project_root()
         previous_manager = SceneFileManager._instance
@@ -3626,7 +3626,7 @@ class TestSceneSerialization:
                 def contains_path(_path):
                     return False
 
-            from Infernux.core.assets import AssetManager
+            from infernux.core.assets import AssetManager
 
             manager._asset_database = _AssetDatabase()
             monkeypatch.setattr(
@@ -3651,7 +3651,7 @@ class TestSceneSerialization:
         tmp_path,
         monkeypatch,
     ):
-        from Infernux.engine.project_context import get_project_root, set_project_root
+        from infernux.engine.project_context import get_project_root, set_project_root
 
         previous_root = get_project_root()
         previous_manager = SceneFileManager._instance
@@ -3671,7 +3671,7 @@ class TestSceneSerialization:
                 def contains_path(_path):
                     return True
 
-            from Infernux.core.assets import AssetManager
+            from infernux.core.assets import AssetManager
 
             manager._asset_database = _AssetDatabase()
             monkeypatch.setattr(
@@ -3689,7 +3689,7 @@ class TestSceneSerialization:
             set_project_root(previous_root)
 
     def test_runtime_scene_publish_rebuilds_scaled_collider_from_current_world_transform(self, scene):
-        from Infernux.lib import Physics
+        from infernux.lib import Physics
 
         platform = scene.create_game_object("RuntimeScaledPlatform")
         platform.transform.position = Vector3(0.0, 0.4, 16.0)
@@ -3725,7 +3725,7 @@ class TestSceneSerialization:
         assert scene.find_by_id(created_after_load.id) is created_after_load
 
     def test_empty_scene_document_uses_current_format(self, scene):
-        from Infernux.engine.scene_manager import _empty_scene_document
+        from infernux.engine.scene_manager import _empty_scene_document
 
         document = _empty_scene_document("BlankEditorScene")
         assert set(document) == {"name", "isPlaying", "objects"}
@@ -4180,9 +4180,9 @@ class TestSceneSerialization:
     def test_play_mode_isolates_and_restores_every_resident_scene(
         self, scene, tmp_path, monkeypatch
     ):
-        from Infernux.engine.interaction import DocumentRegistry
-        from Infernux.engine.play_mode import PlayModeManager
-        from Infernux.engine.project_context import get_project_root, set_project_root
+        from infernux.engine.interaction import DocumentRegistry
+        from infernux.engine.play_mode import PlayModeManager
+        from infernux.engine.project_context import get_project_root, set_project_root
 
         previous_root = get_project_root()
         previous_scene_files = SceneFileManager._instance
@@ -4263,9 +4263,9 @@ class TestSceneSerialization:
     def test_stop_recreates_authored_scene_set_after_runtime_single_replacement(
         self, scene, tmp_path, monkeypatch
     ):
-        from Infernux.engine.interaction import DocumentRegistry
-        from Infernux.engine.play_mode import PlayModeManager
-        from Infernux.engine.project_context import get_project_root, set_project_root
+        from infernux.engine.interaction import DocumentRegistry
+        from infernux.engine.play_mode import PlayModeManager
+        from infernux.engine.project_context import get_project_root, set_project_root
 
         previous_root = get_project_root()
         previous_scene_files = SceneFileManager._instance

@@ -8,8 +8,8 @@ import threading
 
 import pytest
 
-from Infernux.engine import project_context
-from Infernux.plugins import preload
+from infernux.engine import project_context
+from infernux.plugins import preload
 
 
 def _scope(kind, script, project):

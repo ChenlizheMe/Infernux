@@ -2,7 +2,7 @@
 
 #define IDI_INFERNUX_PLAYER 101
 
-IDI_INFERNUX_PLAYER ICON "../../../../python/Infernux/resources/icons/icon.ico"
+IDI_INFERNUX_PLAYER ICON "../../../../python/infernux/resources/icons/icon.ico"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION 0,4,1,0

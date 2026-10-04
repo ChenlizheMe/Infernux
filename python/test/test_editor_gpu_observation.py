@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from Infernux.host import EditorAutomationHost
+from infernux.host import EditorAutomationHost
 
 
 def test_performance_observation_includes_texture_publication_and_gpu_residency(monkeypatch):

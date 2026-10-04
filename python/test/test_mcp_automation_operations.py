@@ -6,15 +6,15 @@ from types import SimpleNamespace
 import pytest
 from pathlib import Path
 
-from Infernux.host import EditorAutomationHost, MainThreadCommandQueue, OperationError
+from infernux.host import EditorAutomationHost, MainThreadCommandQueue, OperationError
 from infernux_mcp import session
 from infernux_mcp.operations import build_operations
 
 
 def test_authoring_queue_drains_before_native_frame_and_reload(monkeypatch):
     from contextlib import nullcontext
-    import Infernux.lib as native
-    from Infernux.engine import engine as engine_module
+    import infernux.lib as native
+    from infernux.engine import engine as engine_module
 
     calls = []
     callbacks = {}
@@ -119,7 +119,7 @@ def test_renderer_parameter_operations_are_thin_shared_material_safe_projection(
 
 def test_runtime_compute_operations_use_host_and_editor_boundary(monkeypatch):
     from infernux_mcp import runtime_operations
-    from Infernux.host import OperationKind
+    from infernux.host import OperationKind
 
     calls = []
     snapshot = {"dispatch_count": 9, "wait_ms": 1.5, "gpu_time_ms": None}
@@ -152,7 +152,7 @@ def test_runtime_compute_operations_use_host_and_editor_boundary(monkeypatch):
 
 def test_runtime_compute_host_reuses_public_statistics_and_propagates_errors(monkeypatch):
     from dataclasses import dataclass
-    from Infernux import compute
+    from infernux import compute
 
     @dataclass
     class Snapshot:
@@ -246,7 +246,7 @@ def test_runtime_gizmo_statistics_reuses_editor_host(monkeypatch):
 
 
 def test_loaded_scene_activation_routes_through_the_editor_host(monkeypatch):
-    from Infernux.host import scene_operations
+    from infernux.host import scene_operations
 
     calls = []
     host = SimpleNamespace(
@@ -266,8 +266,8 @@ def test_loaded_scene_activation_routes_through_the_editor_host(monkeypatch):
 
 
 def test_asset_identity_uses_native_metadata_method(monkeypatch, tmp_path):
-    from Infernux.lib import ResourceType
-    from Infernux.host import operation_support
+    from infernux.lib import ResourceType
+    from infernux.host import operation_support
 
     database = SimpleNamespace(
         get_meta_by_path=lambda path: SimpleNamespace(get_resource_type=lambda: ResourceType.Mesh),
@@ -652,11 +652,11 @@ def test_operation_handlers_depend_on_host_api_not_editor_implementation():
         / "infernux_mcp"
     )
     forbidden = (
-        "Infernux.engine",
-        "Infernux.lib",
-        "Infernux.core",
-        "Infernux.components",
-        "Infernux.particle",
+        "infernux.engine",
+        "infernux.lib",
+        "infernux.core",
+        "infernux.components",
+        "infernux.particle",
     )
     violations = []
     for path in sorted(plugin.glob("*operations.py")):
@@ -672,7 +672,7 @@ def test_operation_handlers_depend_on_host_api_not_editor_implementation():
 
 
 def test_editor_host_deduplicates_components_and_prefers_api_wrappers(monkeypatch):
-    from Infernux.components.builtin_component import BuiltinComponent
+    from infernux.components.builtin_component import BuiltinComponent
 
     class RawLight:
         component_id = 7

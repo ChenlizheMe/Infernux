@@ -6,11 +6,11 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from Infernux.field_schema import FieldSchema
+from infernux.field_schema import FieldSchema
 
 
 def test_existing_editor_surface_reexports_the_same_runtime_type():
-    from Infernux.engine.interaction import FieldSchema as EditorFieldSchema
+    from infernux.engine.interaction import FieldSchema as EditorFieldSchema
 
     assert EditorFieldSchema is FieldSchema
 
@@ -59,8 +59,8 @@ def test_schema_document_rejects_unknown_keys():
 
 
 def test_declaration_schema_carries_constraints_without_executing_callbacks():
-    from Infernux.components.fields import FieldMetadata, FieldType
-    from Infernux.components.field_schema_compiler import compile_field_schema
+    from infernux.components.fields import FieldMetadata, FieldType
+    from infernux.components.field_schema_compiler import compile_field_schema
 
     def forbidden(*_args):
         raise AssertionError("schema compilation must not execute Inspector callbacks")
@@ -84,9 +84,9 @@ def test_declaration_schema_carries_constraints_without_executing_callbacks():
 
 def test_enum_and_nested_data_declarations_preserve_current_codec_identities():
     from enum import Enum
-    from Infernux.components import SerializableObject
-    from Infernux.components.fields import FieldMetadata, FieldType
-    from Infernux.components.field_schema_compiler import compile_field_schema
+    from infernux.components import SerializableObject
+    from infernux.components.fields import FieldMetadata, FieldType
+    from infernux.components.field_schema_compiler import compile_field_schema
 
     class Mode(Enum):
         WALK = 1
@@ -116,9 +116,9 @@ def test_enum_and_nested_data_declarations_preserve_current_codec_identities():
     ("MATERIAL", None, {}), ("TEXTURE", None, {}), ("SHADER", None, {}),
 ])
 def test_declaration_defaults_use_the_existing_value_codec(kind, default, options):
-    from Infernux.components.fields import FieldMetadata, FieldType, normalize_runtime_field_value
-    from Infernux.components.field_schema_compiler import compile_field_schema
-    from Infernux.components.value_codec import VALUE_CODECS
+    from infernux.components.fields import FieldMetadata, FieldType, normalize_runtime_field_value
+    from infernux.components.field_schema_compiler import compile_field_schema
+    from infernux.components.value_codec import VALUE_CODECS
 
     metadata = FieldMetadata("value", FieldType[kind], default, **options)
     schema = compile_field_schema(metadata, "Probe.value")
@@ -135,8 +135,8 @@ def test_declaration_defaults_use_the_existing_value_codec(kind, default, option
     ("FLOAT", float("nan"), {}, "invalid_default"),
 ])
 def test_incomplete_declarations_are_not_exported_as_semantic_fields(kind, default, options, code):
-    from Infernux.components.fields import FieldMetadata, FieldType
-    from Infernux.components.field_schema_compiler import FieldSchemaError, compile_field_schema
+    from infernux.components.fields import FieldMetadata, FieldType
+    from infernux.components.field_schema_compiler import FieldSchemaError, compile_field_schema
 
     with pytest.raises(FieldSchemaError) as error:
         compile_field_schema(FieldMetadata("value", FieldType[kind], default, **options), "Probe.value")
@@ -145,13 +145,13 @@ def test_incomplete_declarations_are_not_exported_as_semantic_fields(kind, defau
 
 
 def test_schema_read_and_metadata_cache_invalidation_never_recompile(monkeypatch):
-    from Infernux.components import SerializableObject
-    from Infernux.components.fields import clear_serialized_fields_cache, get_field_schema, get_serialized_fields
+    from infernux.components import SerializableObject
+    from infernux.components.fields import clear_serialized_fields_cache, get_field_schema, get_serialized_fields
 
     class Data(SerializableObject):
         speed: float = 2.0
 
-    from Infernux.components import field_schema_compiler
+    from infernux.components import field_schema_compiler
     def forbidden(*_args):
         raise AssertionError("a schema read must not compile declarations")
     monkeypatch.setattr(field_schema_compiler, "compile_field_schema", forbidden)
@@ -169,8 +169,8 @@ def test_schema_read_and_metadata_cache_invalidation_never_recompile(monkeypatch
 
 @pytest.mark.parametrize("native_storage", [False, True])
 def test_compiled_default_matches_the_actual_component_default(native_storage):
-    from Infernux.components import InxComponent, serialized_field
-    from Infernux.components.fields import get_field_schema
+    from infernux.components import InxComponent, serialized_field
+    from infernux.components.fields import get_field_schema
 
     class Defaults(InxComponent):
         _uses_component_data_store = native_storage
@@ -185,10 +185,10 @@ def test_compiled_default_matches_the_actual_component_default(native_storage):
 
 @pytest.mark.parametrize("kind", ["VEC2", "VEC3", "VEC4", "ANIMATION_CURVE", "GRADIENT", "ASSET", "LIST"])
 def test_structured_default_schema_roundtrip(kind):
-    from Infernux import lib
-    from Infernux.components.fields import FieldMetadata, FieldType
-    from Infernux.components.field_schema_compiler import compile_field_schema
-    from Infernux.graph.ramp import AnimationCurve, Gradient
+    from infernux import lib
+    from infernux.components.fields import FieldMetadata, FieldType
+    from infernux.components.field_schema_compiler import compile_field_schema
+    from infernux.graph.ramp import AnimationCurve, Gradient
 
     defaults = {
         "VEC2": lib.Vector2(1, 2), "VEC3": lib.Vector3(1, 2, 3),
@@ -203,13 +203,13 @@ def test_structured_default_schema_roundtrip(kind):
 
 
 def test_engine_python_component_catalog_has_compilable_field_declarations():
-    from Infernux.components.registry import ensure_engine_component_catalog_loaded, get_all_types
-    from Infernux.components.fields import get_field_schema, get_serialized_fields
+    from infernux.components.registry import ensure_engine_component_catalog_loaded, get_all_types
+    from infernux.components.fields import get_field_schema, get_serialized_fields
 
     ensure_engine_component_catalog_loaded()
     component_types = {
         cls for cls in get_all_types().values()
-        if cls.__module__.startswith("Infernux.") and getattr(cls, "_uses_component_data_store", True)
+        if cls.__module__.startswith("infernux.") and getattr(cls, "_uses_component_data_store", True)
     }
     assert any(cls.__name__ == "UIText" for cls in component_types)
     for cls in component_types:
@@ -219,9 +219,9 @@ def test_engine_python_component_catalog_has_compilable_field_declarations():
             assert schema.attributes["field_id"] == name
             assert FieldSchema.from_document(json.loads(json.dumps(schema.to_document()))) == schema
 def test_python_field_using_native_enum_shares_the_camera_enum_identity():
-    from Infernux.lib import CameraProjection, _Infernux
-    from Infernux.components.fields import FieldMetadata, FieldType
-    from Infernux.components.field_schema_compiler import compile_field_schema
+    from infernux.lib import CameraProjection, _Infernux
+    from infernux.components.fields import FieldMetadata, FieldType
+    from infernux.components.field_schema_compiler import compile_field_schema
 
     metadata = FieldMetadata("projection", FieldType.ENUM, CameraProjection.Perspective, enum_type=CameraProjection)
     schema = compile_field_schema(metadata, "Controller.projection")

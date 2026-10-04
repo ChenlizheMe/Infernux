@@ -4,11 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.renderstack.fullscreen_effect import FullScreenEffect
+from infernux.renderstack.fullscreen_effect import FullScreenEffect
 
 
 def test_fullscreen_effect_exposes_invalid_serialized_default(monkeypatch):
-    from Infernux.components import fields
+    from infernux.components import fields
 
     class BrokenEffect(FullScreenEffect):
         name = "Broken"

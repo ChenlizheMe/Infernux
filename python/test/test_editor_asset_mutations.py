@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.core.asset_ref import ParticleGraphRef
-from Infernux.engine.interaction import (
+from infernux.core.asset_ref import ParticleGraphRef
+from infernux.engine.interaction import (
     ActionOrigin,
     AssetContentChange,
     AssetMutationKind,
@@ -19,11 +19,11 @@ from Infernux.engine.interaction import (
     SelectionService,
     SelectionTarget,
 )
-from Infernux.engine.path_utils import path_key
-from Infernux.engine.project_context import get_project_root, set_project_root
-from Infernux.engine.ui import project_file_ops
-from Infernux.engine.undo import LambdaCommand, UndoManager
-from Infernux.particle.artifact import (
+from infernux.engine.path_utils import path_key
+from infernux.engine.project_context import get_project_root, set_project_root
+from infernux.engine.ui import project_file_ops
+from infernux.engine.undo import LambdaCommand, UndoManager
+from infernux.particle.artifact import (
     PARTICLE_RUNTIME_INDEX_FILENAME,
     PARTICLE_RUNTIME_INDEX_SCHEMA,
     ParticleArtifactRegistry,
@@ -129,7 +129,7 @@ def test_only_external_content_mutation_advances_document_external_revision(tmp_
 
 
 def test_project_directory_listener_flattens_typed_asset_notifications():
-    source = Path("python/Infernux/engine/bootstrap_project.py").read_text(
+    source = Path("python/infernux/engine/bootstrap_project.py").read_text(
         encoding="utf-8"
     )
 
@@ -138,9 +138,9 @@ def test_project_directory_listener_flattens_typed_asset_notifications():
 
 
 def test_asset_mutation_core_has_no_ui_event_bus_fallback():
-    assets_source = Path("python/Infernux/core/assets.py").read_text(encoding="utf-8")
-    event_bus_path = Path("python/Infernux/engine/ui/event_bus.py")
-    production_root = Path("python/Infernux")
+    assets_source = Path("python/infernux/core/assets.py").read_text(encoding="utf-8")
+    event_bus_path = Path("python/infernux/engine/ui/event_bus.py")
+    production_root = Path("python/infernux")
 
     assert "engine.ui.event_bus" not in assets_source
     assert not event_bus_path.exists()

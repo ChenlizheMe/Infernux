@@ -19,7 +19,7 @@ def verify_pypi(root: Path, version: str, *, allow_missing: bool = False) -> Non
     if len(wheels) != 2:
         raise ValueError('Expected exactly two release wheels')
     try:
-        with urllib.request.urlopen(f'https://pypi.org/pypi/Infernux/{version}/json', timeout=60) as response:
+        with urllib.request.urlopen(f'https://pypi.org/pypi/infernux/{version}/json', timeout=60) as response:
             files = json.load(response)['urls']
     except urllib.error.HTTPError as exc:
         if exc.code == 404 and allow_missing:

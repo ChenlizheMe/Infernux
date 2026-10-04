@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.path_utils import (
+from infernux.engine.path_utils import (
     is_lexical_path_within,
     is_path_within,
     lexical_path,

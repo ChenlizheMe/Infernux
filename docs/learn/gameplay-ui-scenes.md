@@ -57,7 +57,7 @@ Attach `SceneActions` to the `SceneFlow` GameObject in both scenes. The two meth
 
 `inx.SceneManager.load_scene(...)` accepts a build index or a string resolved against the build list. A bare name such as `"Level01"` matches the scene filename without its extension. The return value reports whether the request was accepted. During Play mode, the editor defers the replacement to a safe frame boundary, so `True` does not mean that the new scene has already completed loading inside the current method call.
 
-<div class="learn-note"><strong>Use the runtime scene API.</strong><p>Gameplay scripts import <code>SceneManager</code> from <code>infernux</code>. <code>Infernux.engine.SceneFileManager</code> owns editor file operations such as save prompts and authoring-time scene opening.</p></div>
+<div class="learn-note"><strong>Use the runtime scene API.</strong><p>Gameplay scripts import <code>SceneManager</code> from <code>infernux</code>. <code>infernux.engine.SceneFileManager</code> owns editor file operations such as save prompts and authoring-time scene opening.</p></div>
 
 ## Bind a Button to a component method {#bind-button}
 
@@ -201,7 +201,7 @@ class SceneActions(inx.InxComponent):
 
 `inx.SceneManager.load_scene(...)` 接受 Build Index，也接受按构建列表解析的字符串。`"Level01"` 这样的裸名称会匹配去掉扩展名后的场景文件名。返回值表示请求是否被接受。Play 模式中，编辑器会把场景替换推迟到安全的帧边界；方法返回 `True` 时，新场景仍可能处于待切换状态。
 
-<div class="learn-note"><strong>使用运行时场景 API。</strong><p>玩法脚本应从 <code>infernux</code> 导入 <code>SceneManager</code>。<code>Infernux.engine.SceneFileManager</code> 负责保存提示、编辑状态打开场景等文件操作。</p></div>
+<div class="learn-note"><strong>使用运行时场景 API。</strong><p>玩法脚本应从 <code>infernux</code> 导入 <code>SceneManager</code>。<code>infernux.engine.SceneFileManager</code> 负责保存提示、编辑状态打开场景等文件操作。</p></div>
 
 ## 把 Button 绑定到组件方法 {#bind-button_1}
 

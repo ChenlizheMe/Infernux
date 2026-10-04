@@ -1,6 +1,6 @@
 """A cached recursive CPU specialization with cross-signature calls."""
 
-from Infernux._jit_kernels import _compile_njit
+from infernux._jit_kernels import _compile_njit
 
 
 def factorial(value):

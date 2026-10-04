@@ -1,7 +1,7 @@
 # RenderPass
 
 <div class="class-info">
-class in <b>Infernux.renderstack</b>
+class in <b>infernux.renderstack</b>
 </div>
 
 ## Description

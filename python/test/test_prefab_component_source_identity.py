@@ -3,8 +3,8 @@ import copy
 
 import pytest
 
-from Infernux.components import InxComponent, serialized_field
-from Infernux.engine.component_restore import (
+from infernux.components import InxComponent, serialized_field
+from infernux.engine.component_restore import (
     deserialize_game_object_document_transactionally,
     deserialize_scene_document_transactionally,
     instantiate_game_object_document_transactionally,

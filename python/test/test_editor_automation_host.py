@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from Infernux.host import EditorAutomationHost
+from infernux.host import EditorAutomationHost
 
 
 def test_editor_automation_uses_interaction_asset_database(monkeypatch):
@@ -30,8 +30,8 @@ def test_editor_automation_creates_assets_through_interaction_service(monkeypatc
 
 
 def test_editor_automation_additive_load_uses_authoring_scene_manager(monkeypatch):
-    from Infernux.engine.play_mode import PlayModeManager
-    from Infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.play_mode import PlayModeManager
+    from infernux.engine.scene_manager import SceneFileManager
 
     calls = []
     manager = SimpleNamespace(

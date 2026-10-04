@@ -1,4 +1,4 @@
-"""Tests for Infernux.debug — Debug logging, DebugConsole, LogEntry."""
+"""Tests for infernux.debug — Debug logging, DebugConsole, LogEntry."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from Infernux.debug import (
+from infernux.debug import (
     Debug,
     DebugConsole,
     LogEntry,

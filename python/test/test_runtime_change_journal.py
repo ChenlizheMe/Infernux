@@ -4,18 +4,18 @@ from __future__ import annotations
 
 import pytest
 
-from Infernux.components._component_lifecycle import (
+from infernux.components._component_lifecycle import (
     ComponentLifecycleMixin,
     RuntimeExecutionScheduler,
     notify_runtime_component_changed,
     notify_runtime_component_value_changed,
 )
-from Infernux.components._component_registration import (
+from infernux.components._component_registration import (
     candidate_component_registration_scope,
 )
-from Infernux.components.component import InxComponent
-from Infernux.engine.player_runtime import PlayerRuntimeSession
-from Infernux.engine.runtime_change_journal import (
+from infernux.components.component import InxComponent
+from infernux.engine.player_runtime import PlayerRuntimeSession
+from infernux.engine.runtime_change_journal import (
     RuntimeChangeDomain,
     RuntimeChangeJournal,
     RuntimeFieldKey,

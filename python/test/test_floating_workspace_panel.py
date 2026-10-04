@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from Infernux.engine.ui.floating_workspace_panel import (
+from infernux.engine.ui.floating_workspace_panel import (
     FloatingOverlayState,
     render_floating_overlay,
 )

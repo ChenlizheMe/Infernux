@@ -21,7 +21,7 @@ def _run(mode: str, site_packages: Path, *, check: bool = True) -> subprocess.Co
 def test_residue_cleanup_is_scoped_to_infernux_pip_leftovers(tmp_path: Path):
     site_packages = tmp_path / "site-packages"
     site_packages.mkdir()
-    canonical = site_packages / "Infernux"
+    canonical = site_packages / "infernux"
     canonical.mkdir()
     unrelated = site_packages / "~umpy"
     unrelated.mkdir()
@@ -32,7 +32,7 @@ def test_residue_cleanup_is_scoped_to_infernux_pip_leftovers(tmp_path: Path):
 
     assert canonical.is_dir()
     assert unrelated.is_dir()
-    assert {path.name for path in site_packages.iterdir()} == {"Infernux", "~umpy"}
+    assert {path.name for path in site_packages.iterdir()} == {"infernux", "~umpy"}
 
 
 def test_purge_removes_canonical_package_and_distribution(tmp_path: Path):
@@ -48,7 +48,7 @@ def test_purge_removes_canonical_package_and_distribution(tmp_path: Path):
 
 def test_verify_rejects_metadata_inside_installed_package(tmp_path: Path):
     site_packages = tmp_path / "site-packages"
-    package = site_packages / "Infernux"
+    package = site_packages / "infernux"
     package.mkdir(parents=True)
 
     _run("verify", site_packages)

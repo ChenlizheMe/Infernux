@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.precompiled_player import inspect_desktop_runtime, stage_desktop_runtime
-from Infernux.engine.player_package_native import write_pack
-from Infernux.version import ENGINE_VERSION
+from infernux.engine.precompiled_player import inspect_desktop_runtime, stage_desktop_runtime
+from infernux.engine.player_package_native import write_pack
+from infernux.version import ENGINE_VERSION
 
 
 @pytest.fixture
@@ -27,17 +27,17 @@ def payload(tmp_path):
     (root / host).write_bytes(b"test host")
     source = tmp_path / "dependency.pyc"
     source.write_bytes(b"test payload")
-    write_pack([("Infernux/dependency.pyc", str(source))], root / "Runtime.inxrt")
+    write_pack([("infernux/dependency.pyc", str(source))], root / "Runtime.inxrt")
     write_pack([("numba/dependency.pyc", str(source))], root / "Parallel.inxmod")
     return root
 
 
 def test_consumer_extracts_plugin_archives_without_compiler_or_fingerprint(tmp_path, payload, monkeypatch):
-    from Infernux.engine.nuitka_builder import NuitkaBuilder
+    from infernux.engine.nuitka_builder import NuitkaBuilder
     for method in ("build", "_build_command", "_runtime_pack_fingerprint", "_runtime_pack_compatibility_key"):
         monkeypatch.setattr(NuitkaBuilder, method, lambda *args: pytest.fail("Consumer entered compiler/cache path"))
     staged = Path(stage_desktop_runtime(str(payload), str(tmp_path / "project/Cache/Build/Desktop"), parallel=True))
-    assert (staged / "Infernux/dependency.pyc").read_bytes() == b"test payload"
+    assert (staged / "infernux/dependency.pyc").read_bytes() == b"test payload"
     assert (staged / "Parallel.inxmod").read_bytes() == (payload / "Parallel.inxmod").read_bytes()
 
 
@@ -67,7 +67,7 @@ def test_missing_parallel_module_is_not_rebuilt(tmp_path, payload):
 
 
 def test_failed_archive_extraction_removes_only_owned_staging(tmp_path, payload, monkeypatch):
-    from Infernux.engine import precompiled_player
+    from infernux.engine import precompiled_player
     staging = tmp_path / "staging"
     staging.mkdir()
     (staging / "unrelated.txt").write_text("keep", encoding="utf-8")
@@ -82,7 +82,7 @@ def test_failed_archive_extraction_removes_only_owned_staging(tmp_path, payload,
 
 
 def test_release_engineering_exports_existing_formats_into_plugin_payload(tmp_path, payload):
-    from Infernux.engine.prebuilt_runtime import export_platform_player
+    from infernux.engine.prebuilt_runtime import export_platform_player
     target = tmp_path / "published"
     export_platform_player({"path": str(payload), "parallel_module_path": str(payload)}, str(target))
     assert inspect_desktop_runtime(str(target))["distribution"] == "platform-plugin"

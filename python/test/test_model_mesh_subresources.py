@@ -8,8 +8,8 @@ import pytest
 
 from test_model_hierarchy_instances import descendants, hierarchy_asset
 from test_model_material_defaults import imported_model
-from Infernux.lib import AssetRegistry, Vector3
-from Infernux.lib._Infernux import make_model_mesh_reference, split_model_mesh_reference
+from infernux.lib import AssetRegistry, Vector3
+from infernux.lib._Infernux import make_model_mesh_reference, split_model_mesh_reference
 
 
 @pytest.mark.parametrize('path', [['Assembly', 'Upper'], ['中文/节点', 'x::submesh: !\\y']])
@@ -52,7 +52,7 @@ def test_mesh_children_manifest_local_preview_and_scene_roundtrip(scene, hierarc
 
 
 def test_mesh_subresource_ids_survive_source_node_reorder(scene, hierarchy_asset, engine, monkeypatch):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -69,7 +69,7 @@ def test_mesh_subresource_ids_survive_source_node_reorder(scene, hierarchy_asset
 
 def test_mesh_subresource_id_survives_unique_source_node_rename(scene, hierarchy_asset, engine, monkeypatch):
     """A DCC leaf rename updates the path without replacing its asset identity."""
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -87,7 +87,7 @@ def test_mesh_subresource_id_survives_unique_source_node_rename(scene, hierarchy
 
 def test_mesh_subresource_id_survives_unique_parent_rename(scene, hierarchy_asset, engine, monkeypatch):
     """Renaming a DCC pivot must not orphan a child mesh reference."""
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -113,7 +113,7 @@ def test_mesh_subresource_id_survives_unique_parent_rename(scene, hierarchy_asse
 def test_mesh_subresource_id_survives_rename_with_artwork_edits(
         scene, hierarchy_asset, engine, monkeypatch):
     """Renaming while editing vertices/materials still addresses one source object."""
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -160,7 +160,7 @@ def test_mesh_subresource_id_survives_rename_with_artwork_edits(
 def test_mesh_renderer_cold_load_resolves_stable_identity_after_cross_parent_move(
         scene, hierarchy_asset, engine, monkeypatch):
     """A persisted node path is only a hint once a stable mesh identity exists."""
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -242,7 +242,7 @@ def test_identical_node_geometry_has_same_signature(hierarchy_asset):
 
 @pytest.mark.parametrize('keep_original', [True, False])
 def test_added_duplicate_cannot_steal_original_identity(hierarchy_asset, engine, monkeypatch, keep_original):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -272,7 +272,7 @@ def test_added_duplicate_cannot_steal_original_identity(hierarchy_asset, engine,
 
 def test_node_material_inspector_does_not_keep_previous_node(imported_model):
     from types import SimpleNamespace
-    from Infernux.engine.bootstrap_inspector._materials import _collect_material_renderers, _rebuild_material_entries
+    from infernux.engine.bootstrap_inspector._materials import _collect_material_renderers, _rebuild_material_entries
     renderer, _, _, _, _ = imported_model
     obj = renderer.game_object
     items = [SimpleNamespace(is_native=True, type_name='MeshRenderer', component_id=renderer.component_id)]
@@ -289,13 +289,13 @@ def test_node_material_inspector_does_not_keep_previous_node(imported_model):
 
 
 def test_node_drop_and_assignment_use_global_undo(scene, hierarchy_asset, monkeypatch, engine):
-    from Infernux.core.assets import AssetManager
-    from Infernux.engine.undo import UndoManager
-    from Infernux.engine.interaction import ClipboardService, SelectionService, SceneObjectCommandService
-    from Infernux.engine.ui._inspector_extra_renderers import (
+    from infernux.core.assets import AssetManager
+    from infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ClipboardService, SelectionService, SceneObjectCommandService
+    from infernux.engine.ui._inspector_extra_renderers import (
         _guid_and_path_from_model_payload, _mesh_additional_picker_items, _mesh_display_name,
     )
-    from Infernux.engine.interaction.components import ComponentCommandService
+    from infernux.engine.interaction.components import ComponentCommandService
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_engine', engine)
@@ -322,8 +322,8 @@ def test_node_drop_and_assignment_use_global_undo(scene, hierarchy_asset, monkey
         assert _mesh_display_name(renderer) == 'Upper'
         before = renderer.serialize_document()
         commands = ComponentCommandService()
-        from Infernux.engine.interaction.object_fields import AssetReferenceFieldModel
-        from Infernux.engine.ui._inspector_extra_renderers import _assign_model_mesh, _mesh_reference_value
+        from infernux.engine.interaction.object_fields import AssetReferenceFieldModel
+        from infernux.engine.ui._inspector_extra_renderers import _assign_model_mesh, _mesh_reference_value
         field = AssetReferenceFieldModel(field_id='test.mesh', display_text='Upper', type_hint='Mesh',
                                         reference_value=_mesh_reference_value(renderer),
                                         on_assign=lambda value: _assign_model_mesh(renderer, value))
@@ -345,8 +345,8 @@ def test_missing_mesh_does_not_create_or_modify_object(scene, hierarchy_asset):
 
 
 def test_project_selection_roundtrip(hierarchy_asset, monkeypatch):
-    from Infernux.engine._bootstrap_selection import _project_selection_target, _project_path_for_target
-    from Infernux.core.assets import AssetManager
+    from infernux.engine._bootstrap_selection import _project_selection_target, _project_path_for_target
+    from infernux.core.assets import AssetManager
 
     database, source, guid = hierarchy_asset
     monkeypatch.setattr(AssetManager, '_asset_database', database)

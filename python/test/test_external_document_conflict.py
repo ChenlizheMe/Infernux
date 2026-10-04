@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     DocumentActionResult,
     DocumentActionStatus,
     DocumentCapability,
@@ -16,7 +16,7 @@ from Infernux.engine.interaction import (
     ExternalDocumentConflictService,
     ModalService,
 )
-from Infernux.engine.ui.external_document_conflict import (
+from infernux.engine.ui.external_document_conflict import (
     ExternalDocumentConflictCoordinator,
 )
 
@@ -123,9 +123,9 @@ def test_scene_conflict_reload_stops_play_and_waits_for_edit_restore(
     monkeypatch,
     tmp_path,
 ):
-    from Infernux.engine.deferred_task import DeferredTaskRunner
-    from Infernux.engine.play_mode import PlayModeManager
-    from Infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.deferred_task import DeferredTaskRunner
+    from infernux.engine.play_mode import PlayModeManager
+    from infernux.engine.scene_manager import SceneFileManager
 
     registry = DocumentRegistry()
     manager = SceneFileManager()

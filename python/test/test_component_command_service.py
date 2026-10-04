@@ -5,7 +5,7 @@ import pytest
 
 def test_required_component_removal_is_rejected_before_journal_mutation(monkeypatch):
     from types import SimpleNamespace
-    from Infernux.engine.interaction import ComponentCommandService
+    from infernux.engine.interaction import ComponentCommandService
 
     component = SimpleNamespace(type_name="Rigidbody")
     owner = SimpleNamespace(
@@ -23,10 +23,10 @@ def test_required_component_removal_is_rejected_before_journal_mutation(monkeypa
 
 
 def test_component_add_resolves_engine_python_and_native_targets(monkeypatch):
-    import Infernux.components.registry as component_registry
-    import Infernux.engine.undo as undo_module
-    from Infernux.components.spirit_animator import SpiritAnimator
-    from Infernux.engine.interaction import ComponentCommandService
+    import infernux.components.registry as component_registry
+    import infernux.engine.undo as undo_module
+    from infernux.components.spirit_animator import SpiritAnimator
+    from infernux.engine.interaction import ComponentCommandService
 
     captured = []
 
@@ -82,10 +82,10 @@ def test_component_add_resolves_engine_python_and_native_targets(monkeypatch):
 def test_project_component_add_binds_asset_database_guid(monkeypatch, tmp_path, script_error):
     import types
 
-    import Infernux.components.registry as component_registry
-    import Infernux.components.script_loader as script_loader
-    import Infernux.engine.interaction as interaction_module
-    from Infernux.engine.interaction import ComponentCommandService
+    import infernux.components.registry as component_registry
+    import infernux.components.script_loader as script_loader
+    import infernux.engine.interaction as interaction_module
+    from infernux.engine.interaction import ComponentCommandService
 
     script_path = str(tmp_path / "Assets" / "Scripts" / "Controller.py")
     script_guid = "a" * 32
@@ -144,8 +144,8 @@ def test_project_component_add_binds_asset_database_guid(monkeypatch, tmp_path, 
 
 
 def test_component_document_edit_is_atomic_and_replayable():
-    from Infernux.engine.interaction import ComponentCommandService
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ComponentCommandService
+    from infernux.engine.undo import UndoManager
 
     class Probe:
         def __init__(self):
@@ -183,8 +183,8 @@ def test_component_document_edit_is_atomic_and_replayable():
 
 
 def test_component_document_noop_does_not_enter_history():
-    from Infernux.engine.interaction import ComponentCommandService
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ComponentCommandService
+    from infernux.engine.undo import UndoManager
 
     class Probe:
         value = 1
@@ -214,12 +214,12 @@ def test_component_document_noop_does_not_enter_history():
 
 
 def test_component_service_inherits_automation_origin():
-    from Infernux.engine.interaction import (
+    from infernux.engine.interaction import (
         ActionOrigin,
         ComponentCommandService,
         action_origin_scope,
     )
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.undo import UndoManager
 
     class Probe:
         value = 1
@@ -239,8 +239,8 @@ def test_component_service_inherits_automation_origin():
 
 
 def test_component_property_batch_is_one_atomic_history_entry():
-    from Infernux.engine.interaction import ComponentCommandService
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ComponentCommandService
+    from infernux.engine.undo import UndoManager
 
     class Probe:
         x = 1
@@ -270,8 +270,8 @@ def test_component_property_batch_is_one_atomic_history_entry():
 
 
 def test_rejected_live_component_batch_rolls_back_model():
-    from Infernux.engine.interaction import ComponentCommandService
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ComponentCommandService
+    from infernux.engine.undo import UndoManager
 
     class Probe:
         value = 2
@@ -294,8 +294,8 @@ def test_rejected_live_component_batch_rolls_back_model():
 
 
 def test_light_cpp_properties_are_not_python_document_fields():
-    from Infernux.components.builtin.light import Light
-    from Infernux.engine.interaction.components import ComponentCommandService
+    from infernux.components.builtin.light import Light
+    from infernux.engine.interaction.components import ComponentCommandService
 
     light = Light()
     assert ComponentCommandService._is_python_component(light) is False
@@ -306,10 +306,10 @@ def test_light_cpp_properties_are_not_python_document_fields():
 
 
 def test_transform_serialized_fields_edit_local_pose_and_undo(scene):
-    from Infernux.components.value_codec import VALUE_CODECS
-    from Infernux.engine.interaction import ComponentCommandService
-    from Infernux.engine.undo import UndoManager
-    from Infernux.math import Vector3
+    from infernux.components.value_codec import VALUE_CODECS
+    from infernux.engine.interaction import ComponentCommandService
+    from infernux.engine.undo import UndoManager
+    from infernux.math import Vector3
 
     parent = scene.create_game_object("TransformSchemaParent")
     child = scene.create_game_object("TransformSchemaChild")
@@ -356,7 +356,7 @@ def test_transform_serialized_fields_edit_local_pose_and_undo(scene):
 
 
 def test_transform_automation_schema_exposes_only_authoritative_fields(scene, monkeypatch):
-    from Infernux.host import EditorAutomationHost
+    from infernux.host import EditorAutomationHost
 
     owner = scene.create_game_object("TransformAutomationSchema")
     host = EditorAutomationHost()
@@ -373,8 +373,8 @@ def test_transform_automation_schema_exposes_only_authoritative_fields(scene, mo
 
 
 def test_native_automation_schema_projects_catalog_metadata(scene, monkeypatch):
-    from Infernux.components.builtin.camera import Camera
-    from Infernux.host import EditorAutomationHost
+    from infernux.components.builtin.camera import Camera
+    from infernux.host import EditorAutomationHost
 
     owner = scene.create_game_object("CameraAutomationSchema")
     native_camera = owner.add_component("Camera")
@@ -404,8 +404,8 @@ def test_native_automation_schema_projects_catalog_metadata(scene, monkeypatch):
 
 
 def test_light_automation_schema_uses_native_serialized_names(scene, monkeypatch):
-    from Infernux.components.builtin.light import Light
-    from Infernux.host import EditorAutomationHost
+    from infernux.components.builtin.light import Light
+    from infernux.host import EditorAutomationHost
 
     owner = scene.create_game_object("LightAutomationSchema")
     native_light = owner.add_component("Light")
@@ -424,7 +424,7 @@ def test_light_automation_schema_uses_native_serialized_names(scene, monkeypatch
 
 
 def test_automation_schema_does_not_infer_undeclared_json_fields(monkeypatch):
-    from Infernux.host import EditorAutomationHost
+    from infernux.host import EditorAutomationHost
 
     class SerializeOnlyProbe:
         component_id = 41
@@ -452,10 +452,10 @@ def test_automation_schema_does_not_infer_undeclared_json_fields(monkeypatch):
 ])
 def test_native_automation_edits_its_advertised_document_field(scene, monkeypatch, type_name, field, value):
     from types import SimpleNamespace
-    from Infernux.components.builtin_component import BuiltinComponent
-    from Infernux.engine.interaction import ComponentCommandService
-    from Infernux.engine.undo import UndoManager
-    from Infernux.host import EditorAutomationHost
+    from infernux.components.builtin_component import BuiltinComponent
+    from infernux.engine.interaction import ComponentCommandService
+    from infernux.engine.undo import UndoManager
+    from infernux.host import EditorAutomationHost
 
     owner = scene.create_game_object('NativeSchemaEdit')
     native = owner.add_component(type_name)

@@ -1,7 +1,7 @@
 """Compiled lifecycle discovery indexes one registry snapshot per refresh."""
 from types import SimpleNamespace
 
-from Infernux.plugins import preload
+from infernux.plugins import preload
 import pytest
 
 
@@ -13,7 +13,7 @@ import pytest
     ("Assets/Editors/Author.py", False),
 ])
 def test_player_preload_uses_project_editor_folder_boundary(tmp_path, relative, expected):
-    from Infernux.engine.project_context import is_editor_asset_path
+    from infernux.engine.project_context import is_editor_asset_path
 
     assert is_editor_asset_path(relative) is expected
     assert is_editor_asset_path(relative.replace("/", "\\")) is expected

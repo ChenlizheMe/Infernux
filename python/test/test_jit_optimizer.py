@@ -4,7 +4,7 @@ import llvmlite.binding as llvm
 from numba.core.registry import cpu_target
 import pytest
 
-from Infernux._jit_backend import _OwnedContext
+from infernux._jit_backend import _OwnedContext
 
 
 MODULE = """

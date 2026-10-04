@@ -5,9 +5,9 @@ import inspect
 import numpy as np
 import pytest
 
-from Infernux import jit
-from Infernux import _jit_kernels as kernels
-from Infernux.jit_runtime import (
+from infernux import jit
+from infernux import _jit_kernels as kernels
+from infernux.jit_runtime import (
     StaticCostDecision, array_arguments_alias, clone_call_arguments,
 )
 
@@ -40,7 +40,7 @@ def test_same_layout_shared_arguments_run_real_parallel_kernel(view):
 
 
 def test_cpu_buffer_same_storage_uses_the_same_parallel_proof():
-    from Infernux.compute import buffer
+    from infernux.compute import buffer
 
     values = buffer(shape=4096, dtype=np.float32, data=np.arange(4096, dtype=np.float32), device="cpu")
     compiled = jit.compile(_shared_update, parallel_policy="required")
@@ -148,7 +148,7 @@ def test_empty_warmup_views_keep_layout_without_out_of_owner_offsets(values):
 
 
 def test_cooked_alias_proof_needs_no_runtime_source_lookup(monkeypatch):
-    source = "from Infernux import jit\n@jit.compile(parallel_policy='required')\n" + inspect.getsource(_shared_update)
+    source = "from infernux import jit\n@jit.compile(parallel_policy='required')\n" + inspect.getsource(_shared_update)
     embedded = kernels.build_auto_parallel_embedded_source(source)
     assert embedded is not None
 

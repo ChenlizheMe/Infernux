@@ -1,7 +1,7 @@
 # Format
 
 <div class="class-info">
-enum in <b>Infernux.rendergraph</b>
+enum in <b>infernux.rendergraph</b>
 </div>
 
 ## Description

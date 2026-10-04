@@ -2,16 +2,16 @@ import copy
 import json
 from pathlib import Path
 
-from Infernux.engine.interaction import (
+from infernux.engine.interaction import (
     BUILD_SETTINGS_DEFAULTS,
     DocumentKind,
     DocumentRegistry,
     ProjectSettingsDocumentController,
     ensure_project_settings_document,
 )
-from Infernux.engine.interaction.project_settings import normalize_build_settings
-from Infernux.engine.undo import UndoManager
-from Infernux.physics import settings as physics_settings
+from infernux.engine.interaction.project_settings import normalize_build_settings
+from infernux.engine.undo import UndoManager
+from infernux.physics import settings as physics_settings
 
 
 def _tag_document():

@@ -2,8 +2,8 @@
 from datetime import datetime
 from threading import Thread
 
-from Infernux.debug import DebugConsole, LogEntry, LogType
-from Infernux.lib import ConsolePanel
+from infernux.debug import DebugConsole, LogEntry, LogType
+from infernux.lib import ConsolePanel
 
 
 def test_console_attachment_delivers_preload_history_once(capsys):

@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from Infernux.core.animation_timeline import AnimationTimeline, TimelineKeyframe
-from Infernux.engine.interaction import (
+from infernux.core.animation_timeline import AnimationTimeline, TimelineKeyframe
+from infernux.engine.interaction import (
     DocumentCapability,
     DocumentKind,
     EditorActionJournal,
@@ -12,7 +12,7 @@ from Infernux.engine.interaction import (
     SelectionService,
     SelectionTarget,
 )
-from Infernux.engine.undo import (
+from infernux.engine.undo import (
     TimelineInsertKeyframeCommand,
     TimelinePropertyCommand,
     TimelineRemoveKeyframeCommand,
@@ -84,7 +84,7 @@ def test_timeline_insert_is_exact_and_restores_selection_context(
 def test_unsaved_timeline_document_can_be_rebound_after_panel_close(
     _reset_editor_interaction_state,
 ):
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 
     registry = _reset_editor_interaction_state
     panel = AnimTimelineEditorPanel()
@@ -108,9 +108,9 @@ def test_unsaved_timeline_context_restores_through_document_open_adapter(
 ):
     from types import SimpleNamespace
 
-    from Infernux.engine._bootstrap_selection import BootstrapSelectionMixin
-    from Infernux.engine.interaction import DocumentOpenStatus
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine._bootstrap_selection import BootstrapSelectionMixin
+    from infernux.engine.interaction import DocumentOpenStatus
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 
     registry = _reset_editor_interaction_state
     panel = AnimTimelineEditorPanel()
@@ -238,7 +238,7 @@ def test_timeline_property_edits_merge_and_cross_save_points(
 def test_timeline_panel_add_delete_share_one_history_and_selection_authority(
     _reset_editor_interaction_state,
 ):
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 
     previous_selection = SelectionService._instance
     selection = SelectionService()
@@ -295,7 +295,7 @@ def test_timeline_panel_add_delete_share_one_history_and_selection_authority(
 def test_timeline_panel_projects_selection_without_a_private_listener(
     _reset_editor_interaction_state,
 ):
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 
     selection = SelectionService()
     panel = AnimTimelineEditorPanel()
@@ -338,7 +338,7 @@ def test_timeline_panel_projects_selection_without_a_private_listener(
 def test_timeline_panel_live_edit_commits_once_and_drops_no_op(
     _reset_editor_interaction_state,
 ):
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 
     manager = UndoManager(EditorActionJournal())
     panel = AnimTimelineEditorPanel()
@@ -396,7 +396,7 @@ def test_timeline_panel_live_edit_commits_once_and_drops_no_op(
 def test_selected_key_inspector_does_not_own_timeline_playhead(
     _reset_editor_interaction_state,
 ):
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 
     panel = AnimTimelineEditorPanel()
     key = TimelineKeyframe(time=1.0)
@@ -412,8 +412,8 @@ def test_timeline_preview_loop_is_view_state_and_wraps_without_stopping(
     _reset_editor_interaction_state,
     monkeypatch,
 ):
-    from Infernux.engine.ui import animtimeline_editor_panel as timeline_module
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.ui import animtimeline_editor_panel as timeline_module
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 
     panel = AnimTimelineEditorPanel()
     panel._timeline.duration = 2.0
@@ -436,8 +436,8 @@ def test_timeline_preview_without_loop_stops_at_the_end(
     _reset_editor_interaction_state,
     monkeypatch,
 ):
-    from Infernux.engine.ui import animtimeline_editor_panel as timeline_module
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.ui import animtimeline_editor_panel as timeline_module
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 
     panel = AnimTimelineEditorPanel()
     panel._timeline.duration = 2.0
@@ -456,7 +456,7 @@ def test_timeline_preview_without_loop_stops_at_the_end(
 def test_timeline_panel_rejects_discrete_edits_without_active_history(
     _reset_editor_interaction_state,
 ):
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 
     previous_manager = UndoManager._instance
     panel = AnimTimelineEditorPanel()
@@ -482,7 +482,7 @@ def test_timeline_panel_rejects_discrete_edits_without_active_history(
 def test_timeline_panel_rejects_live_edits_without_active_history(
     _reset_editor_interaction_state,
 ):
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
 
     previous_manager = UndoManager._instance
     panel = AnimTimelineEditorPanel()
@@ -511,8 +511,8 @@ def test_timeline_document_replacement_waits_for_dirty_resolution(
     _reset_editor_interaction_state,
     monkeypatch,
 ):
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
-    from Infernux.engine.ui.dirty_panel_confirmation import (
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.ui.dirty_panel_confirmation import (
         DirtyPanelConfirmationCoordinator,
     )
 

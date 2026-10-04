@@ -1,23 +1,23 @@
-"""Tests for Infernux.components.ref_wrappers — GameObjectRef, ComponentRef."""
+"""Tests for infernux.components.ref_wrappers — GameObjectRef, ComponentRef."""
 
 import copy
 import json
 import pytest
 
-from Infernux.components.component import InxComponent
-from Infernux.components.ref_wrappers import (
+from infernux.components.component import InxComponent
+from infernux.components.ref_wrappers import (
     GameObjectRef,
     PrefabRef,
     ComponentRef,
     _resolve_component_on_game_object,
     _infer_component_type_on_game_object,
 )
-from Infernux.components import ref_wrappers
-from Infernux.lib import GameObject
+from infernux.components import ref_wrappers
+from infernux.lib import GameObject
 
 
 def test_component_ref_rebinds_invalidated_wrapper_when_native_identity_survives(scene):
-    from Infernux.components.builtin_component import BuiltinComponent
+    from infernux.components.builtin_component import BuiltinComponent
 
     obj = scene.create_game_object('ReferencedCamera')
     obj.add_component('Camera')
@@ -35,7 +35,7 @@ def test_component_ref_rebinds_invalidated_wrapper_when_native_identity_survives
 
 
 def test_retiring_scene_reference_scope_keeps_other_worlds_and_restores_after_error(scene):
-    from Infernux.lib import SceneManager
+    from infernux.lib import SceneManager
 
     manager = SceneManager.instance()
     other = manager.create_scene('ReferenceScopeAdditive')
@@ -165,7 +165,7 @@ class TestPrefabRef:
         )
         fake_db = _FakeAssetDatabase(str(prefab_path))
         monkeypatch.setattr(
-            "Infernux.components.ref_wrappers._get_prefab_asset_database",
+            "infernux.components.ref_wrappers._get_prefab_asset_database",
             lambda: fake_db,
         )
 
@@ -182,7 +182,7 @@ class TestPrefabRef:
         )
         fake_db = _FakeAssetDatabase(str(old_path))
         monkeypatch.setattr(
-            "Infernux.components.ref_wrappers._get_prefab_asset_database",
+            "infernux.components.ref_wrappers._get_prefab_asset_database",
             lambda: fake_db,
         )
 
@@ -208,7 +208,7 @@ class TestPrefabRef:
 
     def test_path_hint_is_not_a_runtime_fallback(self, monkeypatch):
         monkeypatch.setattr(
-            "Infernux.components.ref_wrappers._get_prefab_asset_database",
+            "infernux.components.ref_wrappers._get_prefab_asset_database",
             lambda: None,
         )
 
@@ -224,7 +224,7 @@ class TestPrefabRef:
 
     def test_path_only_legacy_prefab_reference_is_empty(self, monkeypatch):
         monkeypatch.setattr(
-            "Infernux.components.ref_wrappers._get_prefab_asset_database",
+            "infernux.components.ref_wrappers._get_prefab_asset_database",
             lambda: pytest.fail("path-only references must not consult the database"),
         )
 

@@ -29,12 +29,12 @@ def _project(tmp_path: Path) -> Path:
     (project / "ProjectSettings" / "PythonRuntime.json").write_text('{"pythonVersion": "3.13"}\n', encoding="utf-8")
     (project / "ProjectSettings" / "requirements.txt").write_text("# Project dependencies\n", encoding="utf-8")
     (project / ".gitignore").write_text(
-        (ROOT / "python" / "Infernux" / "resources" / "project_templates" / "project.gitignore.txt")
+        (ROOT / "python" / "infernux" / "resources" / "project_templates" / "project.gitignore.txt")
         .read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     (project / ".gitattributes").write_text(
-        (ROOT / "python" / "Infernux" / "resources" / "project_templates" / "project.gitattributes.txt")
+        (ROOT / "python" / "infernux" / "resources" / "project_templates" / "project.gitattributes.txt")
         .read_text(encoding="utf-8"),
         encoding="utf-8",
     )

@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.engine.ui import project_file_ops as ops
-from Infernux.core.animation_clip import AnimationClip
-from Infernux.core.animation_clip3d import AnimationClip3D
-from Infernux.core.animation_timeline import AnimationTimeline
-from Infernux.core.anim_state_machine import AnimStateMachine
-from Infernux.lib import InxMaterial, InxPhysicMaterial
+from infernux.engine.ui import project_file_ops as ops
+from infernux.core.animation_clip import AnimationClip
+from infernux.core.animation_clip3d import AnimationClip3D
+from infernux.core.animation_timeline import AnimationTimeline
+from infernux.core.anim_state_machine import AnimStateMachine
+from infernux.lib import InxMaterial, InxPhysicMaterial
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ def test_created_scene_and_material_use_current_native_document_contract(scene, 
     success, path = ops.create_scene(str(directory), "新场景 {01}", database)
     assert success, path
     scene_document = json.loads(Path(path).read_bytes())
-    from Infernux.engine.component_restore import deserialize_scene_document_transactionally
+    from infernux.engine.component_restore import deserialize_scene_document_transactionally
 
     assert deserialize_scene_document_transactionally(scene, scene_document, database)
     assert scene.serialize_document()["name"] == "新场景 {01}"
@@ -110,8 +110,8 @@ def test_text_reimport_updates_local_statistics_without_changing_shared_meta(ass
 
 
 def test_model_read_write_import_setting_remains_shared_in_meta(asset_directory):
-    from Infernux.core.asset_types import read_mesh_import_settings
-    from Infernux.core.assets import AssetManager
+    from infernux.core.asset_types import read_mesh_import_settings
+    from infernux.core.assets import AssetManager
 
     database, directory = asset_directory
     source = directory / "Readable.obj"
@@ -158,7 +158,7 @@ def test_script_template_uses_explicit_serialization_and_valid_class_names(tmp_p
 
 @pytest.mark.parametrize("creator", [ops.create_physic_material, ops.create_render_texture])
 def test_asset_creation_reports_failed_import_instead_of_success(tmp_path, monkeypatch, creator):
-    from Infernux.core.assets import AssetManager
+    from infernux.core.assets import AssetManager
     from types import SimpleNamespace
 
     monkeypatch.setattr(AssetManager, "import_asset", lambda *args, **kwargs:
@@ -198,9 +198,9 @@ def test_creation_does_not_overwrite_a_file_published_after_the_ui_check(tmp_pat
 def test_typed_creation_preserves_an_asset_arriving_during_save(
     asset_directory, scene, monkeypatch, kind, extension,
 ):
-    from Infernux.core import DataAsset
-    from Infernux.core import document_store
-    from Infernux.particle.artifact import ParticleArtifactRegistry
+    from infernux.core import DataAsset
+    from infernux.core import document_store
+    from infernux.particle.artifact import ParticleArtifactRegistry
 
     class SharedCreationData(DataAsset):
         __serialized_type_id__ = "tests.creation.shared_data"
@@ -249,9 +249,9 @@ def test_typed_creation_preserves_an_asset_arriving_during_save(
 def test_created_typed_asset_is_current_and_preserves_shared_identity(
     asset_directory, scene, kind, extension,
 ):
-    from Infernux.core import DataAsset
-    from Infernux.particle.asset import ParticleGraphAsset
-    from Infernux.engine.prefab_manager import _read_prefab_document
+    from infernux.core import DataAsset
+    from infernux.particle.asset import ParticleGraphAsset
+    from infernux.engine.prefab_manager import _read_prefab_document
 
     class CurrentCreationData(DataAsset):
         __serialized_type_id__ = "tests.creation.current_data"

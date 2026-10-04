@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from Infernux import editor
-from Infernux.components import InxComponent, FieldType, serialized_field
-from Infernux.components.ref_wrappers import ComponentRef, GameObjectRef
-from Infernux.components._component_lifecycle import RuntimeExecutionScheduler
-from Infernux.core import AssetManager
-from Infernux.engine.interaction import EditorInteractionCore
-from Infernux.engine.undo import UndoManager
-from Infernux.lib import SceneManager, Vector3, Physics
+from infernux import editor
+from infernux.components import InxComponent, FieldType, serialized_field
+from infernux.components.ref_wrappers import ComponentRef, GameObjectRef
+from infernux.components._component_lifecycle import RuntimeExecutionScheduler
+from infernux.core import AssetManager
+from infernux.engine.interaction import EditorInteractionCore
+from infernux.engine.undo import UndoManager
+from infernux.lib import SceneManager, Vector3, Physics
 
 
 class ContentsProbe(InxComponent):
@@ -27,7 +27,7 @@ class ContentsProbe(InxComponent):
 
 @pytest.fixture
 def contents_project(engine, scene, monkeypatch, tmp_path):
-    from Infernux.engine import project_context
+    from infernux.engine import project_context
 
     database = engine.get_asset_database()
     monkeypatch.setattr(AssetManager, "_asset_database", database)
@@ -60,9 +60,9 @@ def make_asset(scene, path):
 
 @pytest.mark.parametrize("equal_value", [False, True])
 def test_variant_mode_draft_revert_save_and_undo_preserve_inheritance_intent(contents_project, scene, monkeypatch, equal_value):
-    from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.interaction import DocumentRegistry, SelectionDomain
-    from Infernux.engine.prefab_variant import variant_property_modifications
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.interaction import DocumentRegistry, SelectionDomain
+    from infernux.engine.prefab_variant import variant_property_modifications
 
     core, folder = contents_project
     database = AssetManager.require_asset_database()
@@ -120,9 +120,9 @@ def test_variant_mode_draft_revert_save_and_undo_preserve_inheritance_intent(con
 
 
 def test_variant_mode_reference_revert_remaps_ids_and_discard_keeps_source(contents_project, scene, monkeypatch):
-    from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.interaction import SelectionDomain
-    from Infernux.engine.prefab_variant import variant_property_modifications
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.interaction import SelectionDomain
+    from infernux.engine.prefab_variant import variant_property_modifications
 
     core, folder = contents_project
     database = AssetManager.require_asset_database()
@@ -165,9 +165,9 @@ def test_variant_mode_reference_revert_remaps_ids_and_discard_keeps_source(conte
 
 
 def test_variant_asset_property_revert_undo_and_later_inheritance(contents_project, scene):
-    from Infernux.engine.prefab_manager import instantiate_prefab, _read_resolved_prefab_document
-    from Infernux.engine.prefab_variant import variant_property_modifications
-    from Infernux.engine.ui.asset_details_renderer import _load_prefab
+    from infernux.engine.prefab_manager import instantiate_prefab, _read_resolved_prefab_document
+    from infernux.engine.prefab_variant import variant_property_modifications
+    from infernux.engine.ui.asset_details_renderer import _load_prefab
 
     core, folder = contents_project
     database = AssetManager.require_asset_database()
@@ -297,7 +297,7 @@ def test_contents_never_join_physics_even_after_enable_toggle(contents_project, 
 
 def test_existing_target_requires_explicit_load_and_prefab_mode_closed(contents_project, scene, monkeypatch):
     from types import SimpleNamespace
-    from Infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.scene_manager import SceneFileManager
 
     core, folder = contents_project
     path = folder / "Guard.prefab"
@@ -349,7 +349,7 @@ def test_nested_contents_preserve_references_and_save_as(contents_project, scene
     copy_path = folder / "Copy.prefab"
     make_asset(scene, inner)
     root = scene.create_game_object("Outer")
-    from Infernux.engine.prefab_manager import instantiate_prefab
+    from infernux.engine.prefab_manager import instantiate_prefab
     database = AssetManager.require_asset_database()
     for _ in range(2):
         instantiate_prefab(file_path=str(inner), guid=database.get_guid_from_path(str(inner)),
@@ -377,7 +377,7 @@ def test_missing_script_content_survives_offline_edit_at_safe_point(contents_pro
     record = document["root_object"]["components"][0]
     record["type_id"] = "python:" + "a" * 32 + ":" + "b" * 32 + ":Unavailable:LostScript"
     original_record = json.loads(json.dumps(record))
-    from Infernux.engine.interaction.session import EditorInteractionCore
+    from infernux.engine.interaction.session import EditorInteractionCore
     EditorInteractionCore.instance().project_assets.set_text(str(path), json.dumps(document))
     root = editor.load_prefab_contents(path)
     try:
@@ -405,7 +405,7 @@ def test_deleted_source_is_not_recreated_by_stale_contents(contents_project, sce
 
 
 def test_loaded_contents_follow_prefab_guid_after_project_rename(contents_project, scene):
-    from Infernux.engine.interaction import SelectionDomain
+    from infernux.engine.interaction import SelectionDomain
 
     core, folder = contents_project
     core.panels.register_selection_authority("project", (SelectionDomain.ASSET,))
@@ -416,7 +416,7 @@ def test_loaded_contents_follow_prefab_guid_after_project_rename(contents_projec
     try:
         destination = core.project_assets.rename(str(source), "AfterRename")
         assert destination
-        from Infernux.engine.path_utils import same_path
+        from infernux.engine.path_utils import same_path
 
         assert same_path(
             core.project_assets.asset_database.get_path_from_guid(guid),
@@ -433,10 +433,10 @@ def test_loaded_contents_follow_prefab_guid_after_project_rename(contents_projec
 @pytest.mark.parametrize("save_offline", [True, False])
 def test_source_edit_updates_all_worlds_nested_instances_and_history(contents_project, scene, monkeypatch, save_offline):
     from types import SimpleNamespace
-    from Infernux.engine.prefab_manager import instantiate_prefab
-    from Infernux.engine.prefab_overrides import build_prefab_apply_command
-    from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.interaction import DocumentRegistry, DocumentKind
+    from infernux.engine.prefab_manager import instantiate_prefab
+    from infernux.engine.prefab_overrides import build_prefab_apply_command
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.interaction import DocumentRegistry, DocumentKind
 
     core, folder = contents_project
     database = AssetManager.require_asset_database()
@@ -522,7 +522,7 @@ def test_source_edit_updates_all_worlds_nested_instances_and_history(contents_pr
 
 
 def test_offline_save_rejects_other_world_parent_cycle_before_publication(contents_project, scene):
-    from Infernux.engine.prefab_manager import instantiate_prefab
+    from infernux.engine.prefab_manager import instantiate_prefab
 
     _, folder = contents_project
     path = folder / "Cycle.prefab"
@@ -554,7 +554,7 @@ def test_offline_save_rejects_other_world_parent_cycle_before_publication(conten
 
 @pytest.mark.parametrize("direction", ["undo", "redo"])
 def test_prefab_history_never_overwrites_an_external_source_edit(contents_project, scene, direction):
-    from Infernux.engine.prefab_overrides import build_prefab_asset_edit_command
+    from infernux.engine.prefab_overrides import build_prefab_asset_edit_command
 
     _, folder = contents_project
     path = folder / "ExternalEdit.prefab"
@@ -578,7 +578,7 @@ def test_prefab_history_never_overwrites_an_external_source_edit(contents_projec
 
 @pytest.mark.parametrize("replace", [False, True])
 def test_prefab_history_does_not_recreate_deleted_or_replace_new_asset(contents_project, scene, replace):
-    from Infernux.engine.prefab_overrides import build_prefab_asset_edit_command
+    from infernux.engine.prefab_overrides import build_prefab_asset_edit_command
 
     core, folder = contents_project
     path = folder / "Replaced.prefab"
@@ -602,7 +602,7 @@ def test_prefab_history_does_not_recreate_deleted_or_replace_new_asset(contents_
 
 
 def test_prefab_history_allows_formatting_only_source_changes(contents_project, scene):
-    from Infernux.engine.prefab_overrides import build_prefab_asset_edit_command
+    from infernux.engine.prefab_overrides import build_prefab_asset_edit_command
 
     _, folder = contents_project
     path = folder / "Formatting.prefab"
@@ -620,8 +620,8 @@ def test_prefab_history_allows_formatting_only_source_changes(contents_project, 
 
 
 def test_missing_prefab_instance_world_is_resolved_before_source_write(contents_project, scene, monkeypatch):
-    from Infernux.engine import prefab_overrides as overrides
-    from Infernux.engine.prefab_manager import instantiate_prefab
+    from infernux.engine import prefab_overrides as overrides
+    from infernux.engine.prefab_manager import instantiate_prefab
 
     _, folder = contents_project
     path = folder / "ClosedWorld.prefab"
@@ -651,9 +651,9 @@ def test_missing_prefab_instance_world_is_resolved_before_source_write(contents_
 def test_prefab_history_restores_closed_scene_owners_additively(
     contents_project, scene, monkeypatch, closed_count, interrupt_publish,
 ):
-    from Infernux.engine.prefab_manager import instantiate_prefab
-    from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.interaction import DocumentRegistry
+    from infernux.engine.prefab_manager import instantiate_prefab
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.interaction import DocumentRegistry
 
     _, folder = contents_project
     database = AssetManager.require_asset_database()
@@ -699,7 +699,7 @@ def test_prefab_history_restores_closed_scene_owners_additively(
 
         close_owners()
         if interrupt_publish:
-            from Infernux.engine import prefab_overrides
+            from infernux.engine import prefab_overrides
             publish = prefab_overrides._publish_applied_prefab
             calls = []
 
@@ -753,8 +753,8 @@ def test_prefab_history_restores_closed_scene_owners_additively(
 
 @pytest.mark.parametrize("apply_instance", [False, True])
 def test_variant_source_update_and_all_dependents_share_one_history(contents_project, scene, apply_instance):
-    from Infernux.engine.prefab_manager import instantiate_prefab
-    from Infernux.engine.prefab_overrides import build_prefab_apply_command
+    from infernux.engine.prefab_manager import instantiate_prefab
+    from infernux.engine.prefab_overrides import build_prefab_apply_command
 
     _, folder = contents_project
     database = AssetManager.require_asset_database()
@@ -813,8 +813,8 @@ def test_variant_source_update_and_all_dependents_share_one_history(contents_pro
 
 @pytest.mark.parametrize("failure", ["dependent_write", "external_edit"])
 def test_variant_batch_failure_does_not_leave_partial_history(contents_project, scene, monkeypatch, failure):
-    from Infernux.engine import prefab_overrides
-    from Infernux.engine.prefab_manager import instantiate_prefab
+    from infernux.engine import prefab_overrides
+    from infernux.engine.prefab_manager import instantiate_prefab
 
     _, folder = contents_project
     database = AssetManager.require_asset_database()
@@ -897,7 +897,7 @@ def test_variant_resave_preserves_equal_base_override_intent(contents_project, s
 
 
 def test_external_base_change_invalidates_variant_template_without_rewriting_sources(contents_project, scene):
-    from Infernux.engine.prefab_manager import instantiate_prefab, _read_resolved_prefab_document
+    from infernux.engine.prefab_manager import instantiate_prefab, _read_resolved_prefab_document
 
     _, folder = contents_project
     database = AssetManager.require_asset_database()
@@ -940,7 +940,7 @@ def test_external_base_change_invalidates_variant_template_without_rewriting_sou
 
 
 def test_variant_resolver_rejects_missing_and_cyclic_bases(contents_project, scene):
-    from Infernux.engine.prefab_manager import _read_resolved_prefab_document, PrefabDocumentError
+    from infernux.engine.prefab_manager import _read_resolved_prefab_document, PrefabDocumentError
 
     _, folder = contents_project
     database = AssetManager.require_asset_database()
@@ -967,7 +967,7 @@ def test_variant_resolver_rejects_missing_and_cyclic_bases(contents_project, sce
 
 
 def test_self_dependent_prefab_is_rejected_before_graph_and_index_publication(contents_project, scene):
-    from Infernux.lib import AssetDependencyGraph
+    from infernux.lib import AssetDependencyGraph
 
     _, folder = contents_project
     database = AssetManager.require_asset_database()
@@ -1003,8 +1003,8 @@ def test_self_dependent_prefab_is_rejected_before_graph_and_index_publication(co
 
 
 def test_prefab_importer_owns_base_edges_and_save_does_not_scan_unrelated_assets(contents_project, scene):
-    from Infernux.lib import AssetDependencyGraph
-    from Infernux.engine.prefab_variant import dependent_variant_guids
+    from infernux.lib import AssetDependencyGraph
+    from infernux.engine.prefab_variant import dependent_variant_guids
 
     _, folder = contents_project
     database = AssetManager.require_asset_database()
@@ -1048,11 +1048,11 @@ def test_prefab_importer_owns_base_edges_and_save_does_not_scan_unrelated_assets
 @pytest.mark.parametrize("interrupt_publish", [False, True])
 def test_external_prefab_event_updates_loaded_variants_without_writing_their_sources(
         contents_project, scene, engine, monkeypatch, interrupt_publish):
-    from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.resources_manager import ResourceChangeHandler
-    from Infernux.engine.prefab_manager import instantiate_prefab
-    from Infernux.engine.interaction import DocumentRegistry
-    from Infernux.engine import prefab_overrides
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.resources_manager import ResourceChangeHandler
+    from infernux.engine.prefab_manager import instantiate_prefab
+    from infernux.engine.interaction import DocumentRegistry
+    from infernux.engine import prefab_overrides
 
     _, folder = contents_project
     database = AssetManager.require_asset_database()
@@ -1117,10 +1117,10 @@ def test_external_prefab_event_updates_loaded_variants_without_writing_their_sou
 @pytest.mark.parametrize("interrupt_write", [False, True])
 def test_prefab_mode_save_updates_variant_assets_and_suspended_and_additive_worlds(
         contents_project, scene, monkeypatch, interrupt_write):
-    from Infernux.engine import prefab_overrides
-    from Infernux.engine.prefab_manager import instantiate_prefab
-    from Infernux.engine.scene_manager import SceneFileManager
-    from Infernux.engine.interaction import DocumentRegistry, SelectionDomain
+    from infernux.engine import prefab_overrides
+    from infernux.engine.prefab_manager import instantiate_prefab
+    from infernux.engine.scene_manager import SceneFileManager
+    from infernux.engine.interaction import DocumentRegistry, SelectionDomain
 
     core, folder = contents_project
     database = AssetManager.require_asset_database()

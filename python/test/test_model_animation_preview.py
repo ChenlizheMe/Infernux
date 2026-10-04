@@ -4,7 +4,7 @@ import struct
 import json
 from types import SimpleNamespace
 
-from Infernux.engine.ui.model_animation_preview import AnimationPreviewTransport, render_animation_transport
+from infernux.engine.ui.model_animation_preview import AnimationPreviewTransport, render_animation_transport
 
 
 def test_transport_plays_with_wall_time_and_speed():
@@ -76,7 +76,7 @@ class TransportControls:
 
 
 def test_widget_float32_round_trip_does_not_stop_playback(monkeypatch):
-    monkeypatch.setattr("Infernux.engine.ui.model_animation_preview.time.perf_counter", lambda: 10.123456789)
+    monkeypatch.setattr("infernux.engine.ui.model_animation_preview.time.perf_counter", lambda: 10.123456789)
     state = AnimationPreviewTransport(playing=True, last_time=10.0)
     controls = TransportControls()
     render_animation_transport(controls, state, 2.0)
@@ -86,14 +86,14 @@ def test_widget_float32_round_trip_does_not_stop_playback(monkeypatch):
 
 
 def test_actual_scrub_stops_playback_even_when_value_is_unchanged(monkeypatch):
-    monkeypatch.setattr("Infernux.engine.ui.model_animation_preview.time.perf_counter", lambda: 10.0)
+    monkeypatch.setattr("infernux.engine.ui.model_animation_preview.time.perf_counter", lambda: 10.0)
     state = AnimationPreviewTransport(seconds=.75, playing=True, last_time=10.0)
     render_animation_transport(TransportControls(edited=True), state, 2.0)
     assert not state.playing and state.seconds == .75 and state.last_time is None
 
 
 def test_play_pause_uses_stable_widget_identity(monkeypatch):
-    monkeypatch.setattr("Infernux.engine.ui.model_animation_preview.time.perf_counter", lambda: 10.0)
+    monkeypatch.setattr("infernux.engine.ui.model_animation_preview.time.perf_counter", lambda: 10.0)
     state = AnimationPreviewTransport()
     controls = TransportControls(clicked=True)
     render_animation_transport(controls, state, 2.0)
@@ -116,11 +116,11 @@ def test_frame_grid_and_end_pose_do_not_change_clip_duration():
 
 @pytest.mark.parametrize("take", ["stable-id", "Walk"])
 def test_child_and_standalone_clip_preview_uses_published_owner(monkeypatch, take):
-    from Infernux.engine.ui import model_animation_preview as preview
+    from infernux.engine.ui import model_animation_preview as preview
     record = {"id": "stable-id", "name": "Walk", "duration": 2.0}
-    monkeypatch.setattr("Infernux.core.asset_types.read_asset_metadata",
+    monkeypatch.setattr("infernux.core.asset_types.read_asset_metadata",
                         lambda path: {"model_animations": json.dumps([record])})
-    monkeypatch.setattr("Infernux.core.assets.AssetManager.preview_dependency_signature", lambda path: 1)
+    monkeypatch.setattr("infernux.core.assets.AssetManager.preview_dependency_signature", lambda path: 1)
     calls = []
     monkeypatch.setattr(preview, "render_model_animation_preview",
                         lambda *args, **kwargs: calls.append((args, kwargs)))
@@ -130,10 +130,10 @@ def test_child_and_standalone_clip_preview_uses_published_owner(monkeypatch, tak
 
 
 def test_missing_clip_does_not_preview_a_different_take(monkeypatch):
-    from Infernux.engine.ui import model_animation_preview as preview
-    monkeypatch.setattr("Infernux.core.asset_types.read_asset_metadata",
+    from infernux.engine.ui import model_animation_preview as preview
+    monkeypatch.setattr("infernux.core.asset_types.read_asset_metadata",
                         lambda path: {"model_animations": "[]"})
-    monkeypatch.setattr("Infernux.core.assets.AssetManager.preview_dependency_signature", lambda path: 1)
+    monkeypatch.setattr("infernux.core.assets.AssetManager.preview_dependency_signature", lambda path: 1)
     messages = []
     ctx = SimpleNamespace(text_wrapped=messages.append)
     preview.render_clip_animation_preview(ctx, None, SimpleNamespace(extra={}), "model.fbx", "deleted")
@@ -141,14 +141,14 @@ def test_missing_clip_does_not_preview_a_different_take(monkeypatch):
 
 
 def test_clip_preview_source_cache_follows_published_dependency_revision(monkeypatch):
-    from Infernux.engine.ui import model_animation_preview as preview
+    from infernux.engine.ui import model_animation_preview as preview
     revision = [1]
     reads = []
-    monkeypatch.setattr("Infernux.core.assets.AssetManager.preview_dependency_signature", lambda path: revision[0])
+    monkeypatch.setattr("infernux.core.assets.AssetManager.preview_dependency_signature", lambda path: revision[0])
     def read(path):
         reads.append(path)
         return {"model_animations": "[]"}
-    monkeypatch.setattr("Infernux.core.asset_types.read_asset_metadata", read)
+    monkeypatch.setattr("infernux.core.asset_types.read_asset_metadata", read)
     ctx, state = SimpleNamespace(text_wrapped=lambda _: None), SimpleNamespace(extra={})
     for _ in range(10):
         preview.render_clip_animation_preview(ctx, None, state, "model.fbx", "deleted")

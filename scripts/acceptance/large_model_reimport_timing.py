@@ -17,10 +17,10 @@ _PYTHON_ROOT = _REPOSITORY_ROOT / "python"
 if str(_PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(_PYTHON_ROOT))
 
-from Infernux.core.asset_types import read_mesh_import_settings  # noqa: E402
-from Infernux.core.assets import AssetManager  # noqa: E402
-from Infernux.engine.engine import Engine  # noqa: E402
-from Infernux.lib import LogLevel, RuntimeMode  # noqa: E402
+from infernux.core.asset_types import read_mesh_import_settings  # noqa: E402
+from infernux.core.assets import AssetManager  # noqa: E402
+from infernux.engine.engine import Engine  # noqa: E402
+from infernux.lib import LogLevel, RuntimeMode  # noqa: E402
 
 
 def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:

@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from Infernux.components.value_document import TYPE_KEY, GAME_OBJECT_REF, COMPONENT_REF
-from Infernux.engine.prefab_manager import PrefabDocumentError
-from Infernux.engine.prefab_variant import (
+from infernux.components.value_document import TYPE_KEY, GAME_OBJECT_REF, COMPONENT_REF
+from infernux.engine.prefab_manager import PrefabDocumentError
+from infernux.engine.prefab_variant import (
     create_variant_definition, rebase_variant_definition, validate_variant_definition, rebase_variant_graph,
     variant_document, variant_definition, variant_property_modifications, revert_variant_property,
 )
@@ -65,7 +65,7 @@ def test_equal_valued_override_can_be_explicitly_reverted_without_touching_other
 
 
 def test_editing_override_to_equal_base_does_not_silently_restore_inheritance():
-    from Infernux.engine.prefab_variant import edit_variant_document
+    from infernux.engine.prefab_variant import edit_variant_document
 
     base = prefab()
     own = copy.deepcopy(base)
@@ -260,7 +260,7 @@ def test_nested_source_projection_does_not_rewrite_inner_baseline():
 
 
 def test_rebased_variant_instantiates_through_native_prefab_path(engine, scene, tmp_path):
-    from Infernux.engine.prefab_manager import serialize_prefab_document, save_prefab_document, instantiate_prefab
+    from infernux.engine.prefab_manager import serialize_prefab_document, save_prefab_document, instantiate_prefab
 
     source = scene.create_game_object("Native base")
     source.add_component("BoxCollider")

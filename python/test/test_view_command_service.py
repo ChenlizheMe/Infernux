@@ -7,8 +7,8 @@ import pytest
 
 
 def _bind_toolbar_scene_view(core) -> None:
-    from Infernux.engine.interaction import PanelInteractionDescriptor
-    from Infernux.engine.ui.core_panel_interactions import toolbar_panel_interaction
+    from infernux.engine.interaction import PanelInteractionDescriptor
+    from infernux.engine.ui.core_panel_interactions import toolbar_panel_interaction
 
     core.panels.register_type("toolbar", toolbar_panel_interaction())
     core.panels.register_type("scene_view", PanelInteractionDescriptor())
@@ -16,8 +16,8 @@ def _bind_toolbar_scene_view(core) -> None:
 
 
 def test_view_state_command_is_undoable_without_dirtying_documents():
-    from Infernux.engine.interaction import ViewCommandService
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ViewCommandService
+    from infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager._instance
     previous_service = ViewCommandService._instance
@@ -45,8 +45,8 @@ def test_view_state_command_is_undoable_without_dirtying_documents():
 
 
 def test_view_state_still_applies_when_history_is_temporarily_disabled():
-    from Infernux.engine.interaction import ViewCommandService
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ViewCommandService
+    from infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager._instance
     previous_service = ViewCommandService._instance
@@ -70,8 +70,8 @@ def test_view_state_still_applies_when_history_is_temporarily_disabled():
 
 
 def test_tree_foldout_uses_the_global_non_dirty_view_history():
-    from Infernux.engine.interaction import TreeViewStateService, ViewCommandService
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import TreeViewStateService, ViewCommandService
+    from infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager._instance
     previous_view_service = ViewCommandService._instance
@@ -106,7 +106,7 @@ def test_tree_foldout_uses_the_global_non_dirty_view_history():
 
 
 def test_ui_panels_do_not_own_undo_manager_authority():
-    ui_root = Path(__file__).resolve().parents[1] / "Infernux" / "engine" / "ui"
+    ui_root = Path(__file__).resolve().parents[1] / "infernux" / "engine" / "ui"
     offenders = []
     for path in ui_root.glob("*.py"):
         source = path.read_text(encoding="utf-8")
@@ -116,9 +116,9 @@ def test_ui_panels_do_not_own_undo_manager_authority():
 
 
 def test_toolbar_camera_drag_commits_one_non_dirty_view_command():
-    from Infernux.engine.bootstrap import EditorBootstrap
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.bootstrap import EditorBootstrap
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager._instance
     previous_core = EditorInteractionCore._instance
@@ -183,9 +183,9 @@ def test_toolbar_camera_drag_commits_one_non_dirty_view_command():
 
 
 def test_toolbar_grid_toggle_is_an_undoable_view_command():
-    from Infernux.engine.bootstrap import EditorBootstrap
-    from Infernux.engine.interaction import CommandSource, EditorInteractionCore
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.bootstrap import EditorBootstrap
+    from infernux.engine.interaction import CommandSource, EditorInteractionCore
+    from infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager._instance
     previous_core = EditorInteractionCore._instance
@@ -240,9 +240,9 @@ def test_toolbar_grid_toggle_is_an_undoable_view_command():
 
 
 def test_shared_node_graph_center_view_is_undoable_without_document_dirty():
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
+    from infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager._instance
     previous_core = EditorInteractionCore._instance
@@ -281,9 +281,9 @@ def test_shared_node_graph_center_view_is_undoable_without_document_dirty():
 
 
 def test_node_graph_view_gesture_commits_one_non_dirty_history_step():
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
-    from Infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui.node_graph_editor_panel import NodeGraphEditorPanel
+    from infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager._instance
     previous_core = EditorInteractionCore._instance
@@ -327,7 +327,7 @@ def test_node_graph_view_gesture_commits_one_non_dirty_history_step():
 
 
 def test_node_graph_view_groups_pan_and_wheel_into_completed_gestures():
-    from Infernux.engine.ui.node_graph_view import NodeGraphView
+    from infernux.engine.ui.node_graph_view import NodeGraphView
 
     view = NodeGraphView()
     committed = []
@@ -366,10 +366,10 @@ def test_node_graph_view_groups_pan_and_wheel_into_completed_gestures():
 
 
 def test_timeline_scrub_and_preview_camera_use_non_dirty_view_history():
-    from Infernux.core.animation_timeline import AnimationTimeline
-    from Infernux.engine.interaction import EditorInteractionCore
-    from Infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
-    from Infernux.engine.undo import UndoManager
+    from infernux.core.animation_timeline import AnimationTimeline
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui.animtimeline_editor_panel import AnimTimelineEditorPanel
+    from infernux.engine.undo import UndoManager
 
     previous_manager = UndoManager._instance
     previous_core = EditorInteractionCore._instance

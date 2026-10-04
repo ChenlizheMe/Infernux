@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import Infernux.screen as screen_module
-from Infernux.screen import Insets, Rect, Screen
+import infernux.screen as screen_module
+from infernux.screen import Insets, Rect, Screen
 
 
 class _Manager:

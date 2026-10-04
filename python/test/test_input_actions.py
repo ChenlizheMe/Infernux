@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import math
 
-import Infernux.input.actions as action_module
-from Infernux.input import (
+import infernux.input.actions as action_module
+from infernux.input import (
     InputAction,
     InputActionMap,
     InputActionPhase,

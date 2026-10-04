@@ -1,7 +1,7 @@
-"""Tests for Infernux.components.registry — get_type, get_all_types, T accessor."""
+"""Tests for infernux.components.registry — get_type, get_all_types, T accessor."""
 
-from Infernux.components.component import InxComponent
-from Infernux.components.registry import get_type, get_all_types, T
+from infernux.components.component import InxComponent
+from infernux.components.registry import get_type, get_all_types, T
 
 
 # ── Test components ──
@@ -79,7 +79,7 @@ class TestInxComponentSurface:
 
 class TestComponentsRootExports:
     def test_common_component_types_are_exported(self):
-        from Infernux import components
+        from infernux import components
 
         assert components.Transform is not None
         assert components.Rigidbody is not None

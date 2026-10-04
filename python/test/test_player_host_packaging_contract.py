@@ -20,7 +20,7 @@ def test_player_host_loads_the_direct_runtime_tree():
     assert "cpp/infernux/platform/filesystem/InxPack.cpp" not in cmake
     assert "INFERNUX_PLAYER_HOST_DEVELOPMENT_DIR" not in cmake
     assert 'set(INFERNUX_PLAYER_HOST_BUILD_PATH "$<TARGET_FILE:InfernuxPlayerHost>")' in cmake
-    assert "python/Infernux/resources/player_runtime" not in cmake
+    assert "python/infernux/resources/player_runtime" not in cmake
     assert "target_link_libraries(InfernuxPlayerHost PRIVATE InfernuxFoundation" not in cmake
     assert "target_link_libraries(InfernuxPlayerHost PRIVATE ${CMAKE_DL_LIBS})" in cmake
     assert "PyConfig_InitIsolatedConfig" in host
@@ -68,7 +68,7 @@ def test_source_wheel_includes_builtin_shader_sources():
 
 
 def test_prebuilt_runtime_requires_an_explicit_build_output():
-    source = (ROOT / "python/Infernux/engine/prebuilt_runtime.py").read_text(
+    source = (ROOT / "python/infernux/engine/prebuilt_runtime.py").read_text(
         encoding="utf-8"
     )
 
@@ -105,7 +105,7 @@ def test_wheel_refreshes_player_native_contract_after_cache_restore():
     assert '"-DTARGET_DIR=${PYTHON_TARGET_DIR}"' in refresh
     assert "DEPENDS _Infernux" in refresh
     assert "add_dependencies(prebuild_player_runtime refresh_player_native_contract)" in install
-    assert '"-DNATIVE_MODULE_DIR=${INFERNUX_STAGE_DIR}/python-wheel-source/python/Infernux/lib"' in install
+    assert '"-DNATIVE_MODULE_DIR=${INFERNUX_STAGE_DIR}/python-wheel-source/python/infernux/lib"' in install
 
 
 def test_runtime_pack_is_compiled_from_the_assembled_wheel_payload():
@@ -138,8 +138,8 @@ def test_linux_wheel_repair_uses_auditwheel_compatible_platform_detection():
 
 
 def test_player_package_contract_has_bootstrap_archive_and_no_root_bootstrap_files():
-    audit = (ROOT / "python/Infernux/engine/player_package_audit.py").read_text(encoding="utf-8")
-    builder = (ROOT / "python/Infernux/engine/game_builder.py").read_text(encoding="utf-8")
+    audit = (ROOT / "python/infernux/engine/player_package_audit.py").read_text(encoding="utf-8")
+    builder = (ROOT / "python/infernux/engine/game_builder.py").read_text(encoding="utf-8")
     assert "Bootstrap.inxrt" in audit
     assert "BOOTSTRAP_REQUIRED_ARCHIVE_FILES" in audit
     assert "stdlib/encodings/__init__.pyc" in audit
@@ -148,12 +148,12 @@ def test_player_package_contract_has_bootstrap_archive_and_no_root_bootstrap_fil
 
 
 def test_linux_bootstrap_foundation_is_a_sibling_of_the_bootstrap_module():
-    builder = (ROOT / "python/Infernux/engine/game_builder.py").read_text(
+    builder = (ROOT / "python/infernux/engine/game_builder.py").read_text(
         encoding="utf-8"
     )
-    audit = (ROOT / "python/Infernux/engine/player_package_audit.py").read_text(
+    audit = (ROOT / "python/infernux/engine/player_package_audit.py").read_text(
         encoding="utf-8"
     )
     assert '"libInfernuxFoundation.so": str(foundation)' in builder
-    assert '"Infernux/lib/libInfernuxFoundation.so": str(foundation)' not in builder
+    assert '"infernux/lib/libInfernuxFoundation.so": str(foundation)' not in builder
     assert '"libInfernuxFoundation.so",' in audit

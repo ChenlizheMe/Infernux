@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from Infernux.engine.runtime_screen_ui import (
+from infernux.engine.runtime_screen_ui import (
     RuntimeScreenUISubmission,
     collect_runtime_ui_input_surfaces,
     map_runtime_ui_pointer,
@@ -11,8 +11,8 @@ from Infernux.engine.runtime_screen_ui import (
     map_world_ui_ray,
     pick_world_ui_object_ids,
 )
-from Infernux.lib import ScreenUIList, Vector3
-from Infernux.ui import UIButton
+from infernux.lib import ScreenUIList, Vector3
+from infernux.ui import UIButton
 
 
 def _camera():
@@ -40,7 +40,7 @@ def _element(scene):
 
 
 def test_camera_policies_are_explicit_serialized_and_submitted(scene, monkeypatch):
-    import Infernux.engine.runtime_screen_ui as runtime_ui
+    import infernux.engine.runtime_screen_ui as runtime_ui
 
     _, element = _element(scene)
     assert element.world_billboard is False
@@ -73,7 +73,7 @@ def test_billboard_and_constant_screen_size_share_input_projection(scene, monkey
     assert fixed == pytest.approx((13.2, 10., 2.), abs=1e-4)
     assert pick_world_ui_object_ids(scene, ray_origin, ray_direction,
                                     camera=camera, viewport_height=128)
-    from Infernux.physics import Physics
+    from infernux.physics import Physics
     monkeypatch.setattr(Physics, "raycast", lambda *_args, **_kwargs: None)
     assert map_runtime_ui_pointer(surfaces, camera, 0, 0, 128, 128)[0] == pytest.approx(fixed)
     def no_occluders(origins, _directions, output, **_kwargs):

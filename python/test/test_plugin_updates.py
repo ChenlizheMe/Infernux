@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.plugins import InxPackage, PackageConflictError, PackageUpdateConflict, PluginManager
+from infernux.plugins import InxPackage, PackageConflictError, PackageUpdateConflict, PluginManager
 from test_inxpackage_plugins import _fake_inxpack, _project, _source
 
 
@@ -44,7 +44,7 @@ def next_package(source, version="2.0.0"):
 
 @pytest.mark.parametrize("changed", [False, True])
 def test_shared_cache_cannot_replace_an_installed_update_baseline(tmp_path, changed):
-    from Infernux.plugins.cache import SharedPackageCache
+    from infernux.plugins.cache import SharedPackageCache
 
     cache = SharedPackageCache(tmp_path / "cache")
     original = tmp_path / "original.inxpkg"
@@ -62,7 +62,7 @@ def test_shared_cache_cannot_replace_an_installed_update_baseline(tmp_path, chan
 
 
 def test_registry_readers_wait_for_complete_environment_publication(installed, monkeypatch):
-    from Infernux.plugins import registry as registry_module
+    from infernux.plugins import registry as registry_module
 
     manager, source, root = installed
     writer = manager.registry
@@ -281,7 +281,7 @@ def test_missing_original_cache_does_not_silently_overwrite(installed):
 
 
 def test_cloned_project_updates_using_the_new_users_cache(installed, tmp_path, monkeypatch):
-    from Infernux.plugins.cache import SharedPackageCache
+    from infernux.plugins.cache import SharedPackageCache
 
     manager, source, root = installed
     original_project = Path(manager.project_root)
@@ -313,8 +313,8 @@ def test_missing_synced_package_file_blocks_player_startup(installed):
 
 
 def test_player_plugin_state_uses_cooked_guids_without_editor_control_manifest(installed, monkeypatch):
-    from Infernux.application import Application
-    from Infernux.engine import project_context
+    from infernux.application import Application
+    from infernux.engine import project_context
 
     manager, source, root = installed
     record = manager.registry.installed_record("vendor/plugin")
@@ -384,7 +384,7 @@ def test_clone_restores_project_pip_requirements_without_another_users_baseline(
 
 def test_pinned_github_snapshot_uses_its_commit_without_release_lookup(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from Infernux.plugins import github_releases
+    from infernux.plugins import github_releases
 
     project = _project(tmp_path / "project")
     source = _source(tmp_path / "source/package", "vendor/plugin")
@@ -453,7 +453,7 @@ def test_publisher_importer_updates_apply_when_not_locally_modified(installed):
 
 
 def test_exact_update_download_does_not_change_the_project_pin(installed, monkeypatch):
-    from Infernux.plugins import github_releases
+    from infernux.plugins import github_releases
     manager, source, root = installed
     document = manager.registry.load()
     document["installed"][0]["source"] = {"type": "github", "location": "https://github.com/vendor/plugin"}
@@ -482,8 +482,8 @@ def test_local_author_update_does_not_download_remote(installed):
 
 
 def test_version_view_keeps_download_separate_from_publication(installed, monkeypatch):
-    from Infernux.engine.ui.plugin_versions import PluginVersionsView
-    from Infernux.engine.ui.plugin_install_progress import PluginInstallProgressService
+    from infernux.engine.ui.plugin_versions import PluginVersionsView
+    from infernux.engine.ui.plugin_install_progress import PluginInstallProgressService
     from types import SimpleNamespace
     manager, source, root = installed
     package = next_package(source)
@@ -598,7 +598,7 @@ def test_update_failure_restores_released_python_environment(installed, monkeypa
 
 
 def test_update_with_real_binary_archives_and_shared_cache(tmp_path):
-    from Infernux.engine import player_package_native
+    from infernux.engine import player_package_native
     player_package_native.set_test_backend(None)
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project), runtime=True)
@@ -628,7 +628,7 @@ def test_publisher_rename_moves_unmodified_location_but_keeps_guid(installed):
 
 
 def test_conflicting_python_upgrade_does_not_break_other_installed_package(installed, monkeypatch):
-    from Infernux.plugins.manager import _PipInstallEffect
+    from infernux.plugins.manager import _PipInstallEffect
     manager, source, root = installed
     document = manager.registry.load()
     document["python_dependencies"] = [{

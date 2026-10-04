@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from Infernux.renderstack import RenderStack
+from infernux.renderstack import RenderStack
 
 
 @pytest.mark.parametrize("language", ("en", "zh"))

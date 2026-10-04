@@ -5,8 +5,8 @@ import pytest
 
 
 def test_canvas_ancestor_snapshot_reuses_topology_and_tracks_reparent(scene, monkeypatch):
-    from Infernux.lib import GameObject, Vector3
-    from Infernux.ui import UICanvas, UIText
+    from infernux.lib import GameObject, Vector3
+    from infernux.ui import UICanvas, UIText
 
     root = scene.create_game_object("Canvas")
     canvas = UICanvas()
@@ -62,7 +62,7 @@ def test_canvas_ancestor_snapshot_reuses_topology_and_tracks_reparent(scene, mon
 
 @pytest.mark.parametrize("slot", ["material", "text_material"])
 def test_material_dependency_check_does_not_resolve_draw_data(slot):
-    from Infernux.ui.ui_render_dispatch import material_visual_revision
+    from infernux.ui.ui_render_dispatch import material_visual_revision
 
     class Native:
         guid = "same-guid"
@@ -108,8 +108,8 @@ def test_material_dependency_check_does_not_resolve_draw_data(slot):
 
 
 def test_private_ui_bookkeeping_does_not_read_previous_value_or_dirty_layout():
-    from Infernux.ui import UIText
-    from Infernux.ui.ui_render_revision import get_runtime_ui_revision
+    from infernux.ui import UIText
+    from infernux.ui.ui_render_revision import get_runtime_ui_revision
 
     class Text(UIText):
         @property
@@ -132,10 +132,10 @@ def test_private_ui_bookkeeping_does_not_read_previous_value_or_dirty_layout():
 
 
 def test_real_native_material_reference_keeps_identity_and_publishes_edits(scene):
-    from Infernux.core.material import Material
-    from Infernux.lib import InxMaterial
-    from Infernux.ui import UIImage
-    from Infernux.ui.ui_render_dispatch import material_visual_revision, material_visual_state
+    from infernux.core.material import Material
+    from infernux.lib import InxMaterial
+    from infernux.ui import UIImage
+    from infernux.ui.ui_render_dispatch import material_visual_revision, material_visual_state
 
     native = InxMaterial("UI dependency material", "Unlit")
     material = Material(native)

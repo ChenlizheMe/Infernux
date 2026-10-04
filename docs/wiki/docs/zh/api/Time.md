@@ -1,7 +1,7 @@
 # Time
 
 <div class="class-info">
-类位于 <b>Infernux.timing</b>
+类位于 <b>infernux.timing</b>
 </div>
 
 ## 描述

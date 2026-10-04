@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from Infernux.engine.ui.game_input_policy import should_process_game_ui_events, should_route_game_input
+from infernux.engine.ui.game_input_policy import should_process_game_ui_events, should_route_game_input
 
 
 class TestShouldRouteGameInput:
