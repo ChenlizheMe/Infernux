@@ -1285,7 +1285,7 @@ bool InxMaterial::SaveToFile() const
         return false;
     }
     try {
-        const std::string jsonStr = Serialize();
+        const std::string jsonStr = Serialize() + '\n';
         DocumentStore::Instance().WriteAndWait(m_filePath, jsonStr);
         INXLOG_DEBUG("InxMaterial::SaveToFile: Saved material '", m_name, "' to '", m_filePath, "'");
         return true;
@@ -1302,7 +1302,7 @@ bool InxMaterial::SaveToFile(const std::string &path)
         return false;
     }
     try {
-        const std::string jsonStr = Serialize();
+        const std::string jsonStr = Serialize() + '\n';
         DocumentStore::Instance().WriteAndWait(path, jsonStr);
 
         // Update stored file path

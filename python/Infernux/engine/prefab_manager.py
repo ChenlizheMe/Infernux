@@ -620,7 +620,7 @@ def save_prefab_document(prefab_data: dict, file_path: str, asset_database=None)
         from Infernux.core.document_store import DocumentStore
         payload = {**prefab_data, "next_local_id": _prefab_next_local_id(prefab_data),
                    "next_component_id": _prefab_next_component_id(prefab_data)}
-        content = json.dumps(payload, indent=2, ensure_ascii=False)
+        content = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
         DocumentStore.instance().write_and_wait(file_path, content)
     except (OSError, RuntimeError) as exc:
         Debug.log_error(f"Failed to write prefab file: {exc}")

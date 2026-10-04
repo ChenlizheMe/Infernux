@@ -3578,7 +3578,7 @@ class TestSceneSerialization:
         assert document["objects"][0]["name"] == "AtomicSceneObject"
         assert list(tmp_path.glob("atomic.scene.tmp.*")) == []
 
-    def test_large_scene_uses_dense_diffable_storage(self, scene, tmp_path):
+    def test_large_scene_keeps_properties_on_separate_lines_for_version_control(self, scene, tmp_path):
         for index in range(512):
             scene.create_game_object(f"Dense_{index}")
 
@@ -3587,16 +3587,19 @@ class TestSceneSerialization:
 
         content = scene_path.read_text(encoding="utf-8")
         document = json.loads(content)
-        pretty = json.dumps(document, indent=2)
+        pretty = json.dumps(document, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
 
         assert len(document["objects"]) == 512
-        assert content.count("\n") >= 512
-        assert len(content) < len(pretty) * 0.7
+        assert content == pretty
         assert all(
-            line.startswith("    {")
+            line.strip().startswith('"name": "Dense_')
             for line in content.splitlines()
             if '"Dense_' in line
         )
+        original = scene_path.read_bytes()
+        assert b"\r" not in original
+        assert scene.save_to_file(str(scene_path)) is True
+        assert scene_path.read_bytes() == original
 
     def test_scene_file_manager_serializes_save_as_name_before_writing(
         self,

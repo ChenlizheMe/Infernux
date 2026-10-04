@@ -80,7 +80,6 @@ jobs:
         run: python -m pip install pytest PySide6 packaging PyYAML
       - name: Audit project synchronization contract
         run: |
-          python python/Infernux/collaboration.py --install .
           python scripts/maintenance/audit_project_sync.py tests/fixtures/multiplatform_player --tracked
       # Keep this focused list synchronized with TESTING.md.
       - name: Test critical Hub workflows without a native engine

@@ -46,8 +46,8 @@ std::string DumpSceneDocument(const nlohmann::json &document, size_t objectCount
     if (objectCount < kDenseSceneObjectThreshold)
         return document.dump(2);
 
-    // Keep large authored scenes diffable by root object without paying the
-    // substantial whitespace cost of recursively pretty-printing every field.
+    // Compact large in-memory snapshots. Authored files always keep one
+    // property per line so ordinary version-control tools can merge edits.
     std::string output;
     output.reserve(objectCount * 1024 + 1024);
     output += "{\n";
@@ -1870,7 +1870,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
 bool Scene::SaveToFile(const std::string &path) const
 {
     try {
-        const std::string jsonStr = DumpSceneDocument(SerializeDocument(), m_objectsById.size());
+        const std::string jsonStr = SerializeDocument().dump(2) + '\n';
         DocumentStore::Instance().WriteAndWait(path, jsonStr);
         return true;
     } catch (const std::exception &e) {

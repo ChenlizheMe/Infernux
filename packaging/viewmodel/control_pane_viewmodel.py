@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QDialog, QVBoxLayout, QLabel, QProgressBar, QFileDialog, QInputDialog
 )
 from PySide6.QtCore import QThread, Signal, QObject, QTimer, Qt
-from model.project_model import ProjectModel, configure_project_collaboration
+from model.project_model import ProjectModel
 from hub_utils import HubLaunchContext, is_project_open
 from project_paths import ProjectPathError
 from project_migration import ProjectMigrationService
@@ -208,7 +208,6 @@ class LaunchPreparationWorker(QObject):
                 self.progress.emit("Updating editor integration...", 9)
                 self.model._create_vscode_workspace(project_path)
                 python_exe = sys.executable
-            configure_project_collaboration(project_path, python_exe)
         except Exception as exc:
             self.error.emit(str(exc))
             return

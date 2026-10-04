@@ -62,10 +62,6 @@ try {
         throw "The infernux environment is not using Python 3.13."
     }
 
-    python python/Infernux/collaboration.py --install .
-    if ($LASTEXITCODE -ne 0) {
-        throw "The Infernux Git merge driver could not be configured."
-    }
     Write-Host "Infernux development environment is ready."
     Write-Host "Next: cmake --preset windows-msvc-release"
     Write-Host "Then: cmake --build --preset windows-msvc-wheel"

@@ -6,23 +6,23 @@
 *.json text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
-*.scene text eol=lf merge=infernux
-*.prefab text eol=lf merge=infernux
-*.mat text eol=lf merge=infernux
-*.effect text eol=lf merge=infernux
-*.effectgroup text eol=lf merge=infernux
-*.particlegraph text eol=lf merge=infernux
-*.physicmaterial text eol=lf merge=infernux
-*.rendertexture text eol=lf merge=infernux
-*.inxdata text eol=lf merge=infernux
-*.animclip2d text eol=lf merge=infernux
-*.animclip3d text eol=lf merge=infernux
-*.animfsm text eol=lf merge=infernux
-*.timelinefsm text eol=lf merge=infernux
-*.animtimeline text eol=lf merge=infernux
-*.meta text eol=lf merge=infernux
-**/ProjectSettings/*.json text eol=lf merge=infernux
-**/InxPlugins.json text eol=lf merge=infernux
+*.scene text eol=lf merge=text
+*.prefab text eol=lf merge=text
+*.mat text eol=lf merge=text
+*.effect text eol=lf merge=text
+*.effectgroup text eol=lf merge=text
+*.particlegraph text eol=lf merge=text
+*.physicmaterial text eol=lf merge=text
+*.rendertexture text eol=lf merge=text
+*.inxdata text eol=lf merge=text
+*.animclip2d text eol=lf merge=text
+*.animclip3d text eol=lf merge=text
+*.animfsm text eol=lf merge=text
+*.timelinefsm text eol=lf merge=text
+*.animtimeline text eol=lf merge=text
+*.meta text eol=lf merge=text
+**/ProjectSettings/*.json text eol=lf merge=text
+**/InxPlugins.json text eol=lf merge=text
 
 # Project payloads are immutable bytes; Git must never rewrite them as text.
 *.png binary
