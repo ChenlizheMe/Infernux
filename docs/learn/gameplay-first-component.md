@@ -62,6 +62,8 @@ Private names beginning with `_` stay out of serialization and the Inspector. Th
 
 The exercise passes when there are no import or lifecycle exceptions, the one-second message appears only once per component instance, and enable-state changes produce the matching callbacks.
 
+Entering Play replaces the Edit-mode component instance. If that instance has already received `awake`, its teardown can log `OnDestroy` before the fresh Play instance logs `Awake: HelloObject`. These messages belong to different instance lifetimes.
+
 ## GameObject and component {#component-model}
 
 A `GameObject` supplies scene identity, hierarchy, active state, tag, layer, and an always-present `Transform`. Components supply behavior or data. Several components can share one owner.
@@ -177,6 +179,8 @@ class HelloComponent(inx.InxComponent):
 6. 停止 Play。销毁流程可能继续输出 `OnDisable` 与 `OnDestroy`。
 
 没有导入或生命周期异常、一秒提示对每个组件实例只出现一次、切换启用状态能得到对应回调，就算验证通过。
+
+进入 Play 时，引擎会替换编辑态组件实例。如果旧实例已经执行过 `awake`，销毁它时可能先输出 `OnDestroy`，随后新的 Play 实例才输出 `Awake: HelloObject`。这些日志属于不同实例的生命周期。
 
 ## GameObject 与组件 {#component-model_1}
 

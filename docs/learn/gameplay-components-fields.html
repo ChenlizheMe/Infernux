@@ -99,6 +99,7 @@
 <h2 id="references">Inspector references</h2>
 <p><code>target</code> is a GameObject field. Its stored form is a persistent scene-object reference; reading <code>self.target</code> resolves and returns the live <code>GameObject</code>, or <code>None</code> when the target is missing or destroyed. <code>required_component="MeshRenderer"</code> filters the picker and rejects Hierarchy drops whose object has no matching component.</p>
 <p><code>body</code> stores a component reference constrained to <code>Rigidbody</code>. Reading <code>self.body</code> returns the resolved component wrapper or <code>None</code>. A reference field does not add the referenced component and does not keep a destroyed object alive. Always handle <code>None</code>, especially for optional targets or objects that can be destroyed during play.</p>
+<p>Assigned component references store the exact component ID. Renaming a script's component class during reload preserves that reference, and the Inspector and saved document use the new class name. Removing the referenced component returns <code>None</code>; another component of the same type does not replace it.</p>
 <p>Scene-object and component slots accept Hierarchy selections through drag-and-drop or their picker. Save the scene after assignment so the persistent IDs are written to the scene document.</p>
 <h2 id="constraints">Component constraints</h2>
 <p>The two class decorators govern attachment:</p>
@@ -195,6 +196,7 @@
 <h2 id="references_1">Inspector 引用</h2>
 <p><code>target</code> 是 GameObject 字段。存储层保存持久场景物体引用；读取 <code>self.target</code> 时会解析并返回实时 <code>GameObject</code>，目标缺失或已销毁时返回 <code>None</code>。<code>required_component="MeshRenderer"</code> 会筛选选择器，并拒绝缺少对应组件的 Hierarchy 拖放对象。</p>
 <p><code>body</code> 保存限定为 <code>Rigidbody</code> 的组件引用。读取 <code>self.body</code> 会得到解析后的组件包装器，无法解析时返回 <code>None</code>。引用字段不会添加目标组件，也不会让已销毁物体继续存活。可选目标或运行中可能销毁的物体都要处理 <code>None</code>。</p>
+<p>已赋值的组件引用保存精确的组件 ID。热重载时修改脚本组件类名，不会破坏该引用；Inspector 和保存的文档会显示新类名。删除目标组件后引用返回 <code>None</code>，不会自动指向另一个同类组件。</p>
 <p>场景物体槽与组件槽支持从 Hierarchy 拖放，也可以使用选择器。赋值后保存场景，持久 ID 才会写入场景文档。</p>
 <h2 id="constraints_1">组件约束</h2>
 <p>两个类装饰器控制挂载规则：</p>

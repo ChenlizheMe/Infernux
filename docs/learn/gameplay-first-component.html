@@ -85,6 +85,7 @@
 <li>Stop Play mode. Teardown can add <code>OnDisable</code> and <code>OnDestroy</code> entries.</li>
 </ol>
 <p>The exercise passes when there are no import or lifecycle exceptions, the one-second message appears only once per component instance, and enable-state changes produce the matching callbacks.</p>
+<p>Entering Play replaces the Edit-mode component instance. If that instance has already received <code>awake</code>, its teardown can log <code>OnDestroy</code> before the fresh Play instance logs <code>Awake: HelloObject</code>. These messages belong to different instance lifetimes.</p>
 <h2 id="component-model">GameObject and component</h2>
 <p>A <code>GameObject</code> supplies scene identity, hierarchy, active state, tag, layer, and an always-present <code>Transform</code>. Components supply behavior or data. Several components can share one owner.</p>
 <p>Inside a live <code>InxComponent</code>:</p>
@@ -205,6 +206,7 @@
 <li>停止 Play。销毁流程可能继续输出 <code>OnDisable</code> 与 <code>OnDestroy</code>。</li>
 </ol>
 <p>没有导入或生命周期异常、一秒提示对每个组件实例只出现一次、切换启用状态能得到对应回调，就算验证通过。</p>
+<p>进入 Play 时，引擎会替换编辑态组件实例。如果旧实例已经执行过 <code>awake</code>，销毁它时可能先输出 <code>OnDestroy</code>，随后新的 Play 实例才输出 <code>Awake: HelloObject</code>。这些日志属于不同实例的生命周期。</p>
 <h2 id="component-model_1">GameObject 与组件</h2>
 <p><code>GameObject</code> 提供场景身份、层级、活动状态、Tag、Layer，以及始终存在的 <code>Transform</code>。组件负责行为或数据；一个物体可以同时拥有多个组件。</p>
 <p>在正常运行且已挂载的 <code>InxComponent</code> 中：</p>

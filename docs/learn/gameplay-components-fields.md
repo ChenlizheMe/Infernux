@@ -83,6 +83,8 @@ Under the hood, numeric fields (`int`, `float`, `bool`, `Vector2/3/4`) are backe
 
 `body` stores a component reference constrained to `Rigidbody`. Reading `self.body` returns the resolved component wrapper or `None`. A reference field does not add the referenced component and does not keep a destroyed object alive. Always handle `None`, especially for optional targets or objects that can be destroyed during play.
 
+Assigned component references store the exact component ID. Renaming a script's component class during reload preserves that reference, and the Inspector and saved document use the new class name. Removing the referenced component returns `None`; another component of the same type does not replace it.
+
 Scene-object and component slots accept Hierarchy selections through drag-and-drop or their picker. Save the scene after assignment so the persistent IDs are written to the scene document.
 
 ## Component constraints {#constraints}
@@ -202,6 +204,8 @@ class TargetReporter(inx.InxComponent):
 `target` 是 GameObject 字段。存储层保存持久场景物体引用；读取 `self.target` 时会解析并返回实时 `GameObject`，目标缺失或已销毁时返回 `None`。`required_component="MeshRenderer"` 会筛选选择器，并拒绝缺少对应组件的 Hierarchy 拖放对象。
 
 `body` 保存限定为 `Rigidbody` 的组件引用。读取 `self.body` 会得到解析后的组件包装器，无法解析时返回 `None`。引用字段不会添加目标组件，也不会让已销毁物体继续存活。可选目标或运行中可能销毁的物体都要处理 `None`。
+
+已赋值的组件引用保存精确的组件 ID。热重载时修改脚本组件类名，不会破坏该引用；Inspector 和保存的文档会显示新类名。删除目标组件后引用返回 `None`，不会自动指向另一个同类组件。
 
 场景物体槽与组件槽支持从 Hierarchy 拖放，也可以使用选择器。赋值后保存场景，持久 ID 才会写入场景文档。
 

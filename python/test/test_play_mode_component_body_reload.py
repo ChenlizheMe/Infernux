@@ -1934,6 +1934,8 @@ def test_play_class_rename_restores_snapshot_from_published_type_without_reading
     from infernux.engine.component_restore import create_component_instance
     from infernux.components.component_identity import component_type_guid
     from infernux.engine.game_builder import GameBuilder
+    from infernux.components.ref_wrappers import ComponentRef
+    import copy
 
     guid = f"play-rename-stop-{rollback}-guid"
     path, (component_type,) = component_script(
@@ -1950,6 +1952,9 @@ def test_play_class_rename_restores_snapshot_from_published_type_without_reading
     component._script_guid = guid
     owner = scene.create_game_object("RenameSnapshotOwner")
     owner.add_py_component(component)
+    reference = ComponentRef(component)
+    reference_hash = hash(reference)
+    assert reference.resolve() is component
     component.speed = 7.5
     old_guid = component_type._get_type_guid()
     old_slot = component._cds_slot
@@ -1977,6 +1982,16 @@ def test_play_class_rename_restores_snapshot_from_published_type_without_reading
         assert component.helper() == "new"
         assert component.type_name == "RenamedSnapshotProbe"
         assert component._cpp_component.type_name == "RenamedSnapshotProbe"
+        # References must resolve by their persistent ID after the display
+        # name changes, including uncached values restored from a document.
+        assert copy.deepcopy(reference).resolve() is component
+        reference_document = reference._serialize()
+        assert reference_document["component_type"] == "RenamedSnapshotProbe"
+        assert reference.display_name == "RenamedSnapshotProbe (RenameSnapshotOwner)"
+        reconstructed = ComponentRef._from_dict(reference_document)
+        assert reconstructed.resolve() is component
+        assert reconstructed == reference and hash(reconstructed) == reference_hash
+        assert hash(reference) == reference_hash
         assert "RenamedSnapshotProbe" in str(scene.serialize_document())
         assert canonical_guid in str(scene.serialize_document())
         assert sys.modules[component_type.__module__].RenamedSnapshotProbe is component_type
@@ -1995,6 +2010,13 @@ def test_play_class_rename_restores_snapshot_from_published_type_without_reading
             assert component.speed == 7.5
             assert component.type_name == "SnapshotRenameProbe"
             assert component._cpp_component.type_name == "SnapshotRenameProbe"
+            assert copy.deepcopy(reference).resolve() is component
+            assert reference._serialize()["component_type"] == "SnapshotRenameProbe"
+            assert reference.display_name == "SnapshotRenameProbe (RenameSnapshotOwner)"
+            assert reconstructed.resolve() is component
+            assert reconstructed.component_type == "SnapshotRenameProbe"
+            assert reconstructed == reference and hash(reconstructed) == reference_hash
+            assert hash(reference) == reference_hash
             assert "RenamedSnapshotProbe" not in str(scene.serialize_document())
         else:
             manager.finalize_script_reload_batch(batch)

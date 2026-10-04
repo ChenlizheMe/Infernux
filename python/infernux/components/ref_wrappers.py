@@ -433,7 +433,7 @@ def _iter_live_components_on_game_object(game_object) -> list[Any]:
 
 
 def _resolve_component_on_game_object(game_object, component_type: str = "", component_id: int = 0):
-    """Resolve a component on *game_object* by type name using internal rules."""
+    """Resolve an exact persistent ID, or a legacy type-only reference."""
     if game_object is None:
         return None
 
@@ -443,8 +443,10 @@ def _resolve_component_on_game_object(game_object, component_type: str = "", com
             if component.component_id != component_id:
                 continue
             name = getattr(component, "type_name", type(component).__name__)
-            if component_type and name != component_type:
-                return None
+            # An ID-bound reference names one component. Its old display name
+            # must not invalidate that identity when a script class is renamed.
+            # Type constraints are checked when assigning the reference; never
+            # select a different same-type component if this ID is missing.
             wrapper = BuiltinComponent._builtin_registry.get(name)
             if wrapper is not None and not isinstance(component, BuiltinComponent):
                 return wrapper._get_or_create_wrapper(component, game_object)
@@ -522,6 +524,8 @@ class ComponentRef:
 
     Stores the owning GameObject and exact component identities. Legacy
     type-only references remain readable; newly assigned instances bind an ID.
+    A bound ID survives a component class rename; the type name is a label,
+    not a second identity. Equality and hashing keep the bound identity stable.
 
     Usage::
 
@@ -612,6 +616,10 @@ class ComponentRef:
 
     @property
     def component_type(self) -> str:
+        if self._component_id:
+            component = self.resolve()
+            if component is not None:
+                return getattr(component, "type_name", type(component).__name__)
         return self._component_type
 
     @property
@@ -632,7 +640,7 @@ class ComponentRef:
             go_name = getattr(go, "name", "")
         elif hasattr(comp, 'name'):
             go_name = comp.name or ""
-        type_name = self._component_type or type(comp).__name__
+        type_name = getattr(comp, "type_name", type(comp).__name__)
         if go_name:
             return f"{type_name} ({go_name})"
         return type_name
@@ -642,11 +650,12 @@ class ComponentRef:
     def _serialize(self) -> dict:
         from .value_document import make_component_ref
         identity = self._component_id
-        if not identity and self._go_id:
-            component = self.resolve()
-            if component is not None:
-                identity = component.component_id
-        return make_component_ref(self._go_id, self._component_type, identity)
+        type_name = self._component_type
+        component = self.resolve() if self._go_id else None
+        if component is not None:
+            identity = component.component_id
+            type_name = getattr(component, "type_name", type(component).__name__)
+        return make_component_ref(self._go_id, type_name, identity)
 
     @classmethod
     def _from_dict(cls, data: dict) -> "ComponentRef":
@@ -681,15 +690,16 @@ class ComponentRef:
             return self._go_id == 0
         if isinstance(other, ComponentRef):
             return (self._go_id == other._go_id
-                    and self._component_type == other._component_type
-                    and self._component_id == other._component_id)
+                    and self._component_id == other._component_id
+                    and (self._component_id != 0 or self._component_type == other._component_type))
         return NotImplemented
 
     def __hash__(self):
-        return hash((self._go_id, self._component_type, self._component_id))
+        return hash((self._go_id, "" if self._component_id else self._component_type, self._component_id))
 
     def __repr__(self):
         comp = self.resolve()
         if comp is not None:
-            return f"ComponentRef({self._component_type}, go_id={self._go_id})"
+            type_name = getattr(comp, "type_name", type(comp).__name__)
+            return f"ComponentRef({type_name}, go_id={self._go_id})"
         return f"ComponentRef(None, type={self._component_type}, go_id={self._go_id})"
