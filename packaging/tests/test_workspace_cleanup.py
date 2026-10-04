@@ -54,6 +54,8 @@ def test_cleanup_handles_root_and_nested_submodule_outputs(repository, preview):
     binary = _write(repository, "python/Infernux/lib/generated.dll")
     local_tool = _write(repository, "update_distributions.py")
     tracked_binary = _write(repository, "fixture.dll", "authored fixture")
+    local_notes = _write(repository, "dev/collaboration/notes.md", "private research")
+    local_binary = _write(repository, "dev/collaboration/example.dll", "private example")
     _git(repository, "add", "-f", "fixture.dll")
     submodule = repository / "external/plugin"
     submodule.mkdir(parents=True)
@@ -76,6 +78,8 @@ def test_cleanup_handles_root_and_nested_submodule_outputs(repository, preview):
     for generated in (release, binary, payload, nested_cache):
         assert generated.exists() == preview, generated
     assert source.exists() and local_tool.exists() and tracked_binary.exists()
+    assert local_notes.read_text() == "private research"
+    assert local_binary.read_text() == "private example"
     # A second invocation must be safe and leave authored data intact.
     repeated = _clean(repository, *args)
     assert repeated.returncode == 0, repeated.stderr

@@ -2,10 +2,6 @@
 
 Thanks for contributing.
 
-多人协作、项目资产和 Packages 的同步边界见
-[`COLLABORATION.md`](COLLABORATION.md)。结构化项目文件默认拒绝 Git 自动合并，提交前
-请运行其中的同步审计。
-
 ## Before you start
 
 - Read the main `README.md` for project scope and current limitations.
@@ -44,7 +40,6 @@ Generated files have one canonical home:
 - `out/build/<preset>/` contains CMake configure and build trees.
 - `out/stage/<preset>/` contains disposable wheel and Hub assembly trees; verified wheels, Hub update archives, and installers are written to `dist/releases/<version>/`.
 - `dist/releases/<version>/` contains final, upload-ready release assets only.
-- `dev/` contains disposable local scratch work. Keep lasting documentation in version control.
 
 Do not create new top-level `build-*`, `release-*`, or package-output directories.
 Run `./scripts/maintenance/clean_workspace.ps1` from PowerShell to remove all

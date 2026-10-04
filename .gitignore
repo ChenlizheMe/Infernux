@@ -14,7 +14,7 @@
 **/Packages/.cache/
 /packaging/runtime/
 /packaging/InfernuxHubData/
-# Local scratch work is outside version control and removed by workspace cleanup.
+# Local research and documentation stay outside version control.
 /dev/
 /mcp_captures/
 /packaging/_vendor/

@@ -75,9 +75,8 @@ for ($Index = 0; $Index -lt $Repositories.Count; $Index++) {
 }
 
 # Current and old local releases are disposable, just like assembly trees.
-# dev/ is local scratch work, not a source or archive directory.
 $GeneratedRoots = @(
-    'out', 'build', 'dist', 'dev', 'Library', 'mcp_captures',
+    'out', 'build', 'dist', 'Library', 'mcp_captures',
     'packaging/runtime', 'packaging/Nuitka', 'packaging/_vendor',
     'packaging/InfernuxHubData', 'packaging/nuitka-crash-report.xml',
     'python/Infernux.egg-info', 'python/Infernux/_runtime_packs',
@@ -93,6 +92,9 @@ foreach ($Repository in $Repositories) {
     $Ignored = @(Get-GitPaths $Repository @('ls-files', '--others', '--ignored', '--exclude-standard', '--directory'))
     foreach ($Relative in $Ignored) {
         $Path = $Relative.Replace('\', '/')
+        if ($Repository -eq $Root -and ($Path -eq 'dev' -or $Path.StartsWith('dev/'))) {
+            continue
+        }
         $GeneratedDirectory = $Path -match '(^|/)(out|build|dist|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.gradle|node_modules|\.wrangler|CMakeFiles)(/|$)'
         $GeneratedDirectory = $GeneratedDirectory -or $Path -match '(^|/)[^/]+\.(egg-info|build|dist|onefile-build)(/|$)'
         $GeneratedDirectory = $GeneratedDirectory -or $Path -match '(^|/)(cmake-build-[^/]+|[^/]*_InxBuild|[^/]*_InfBuild)(/|$)'
