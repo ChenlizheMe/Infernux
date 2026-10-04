@@ -376,8 +376,8 @@ bool ApplyBlendMeta(RenderState &renderState, const std::string &blend, bool can
         renderState.srcColorBlendFactor = MaterialBlendFactor::SourceAlpha;
         renderState.dstColorBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
         renderState.colorBlendOp = MaterialBlendOp::Add;
-        renderState.srcAlphaBlendFactor = MaterialBlendFactor::Zero;
-        renderState.dstAlphaBlendFactor = MaterialBlendFactor::One;
+        renderState.srcAlphaBlendFactor = MaterialBlendFactor::One;
+        renderState.dstAlphaBlendFactor = MaterialBlendFactor::OneMinusSourceAlpha;
         renderState.alphaBlendOp = MaterialBlendOp::Add;
         return true;
     }
@@ -987,6 +987,8 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
                                         const std::string &alphaClip)
 {
     const uint64_t previousVersion = m_version;
+    const RenderState previousState = m_renderState;
+    const std::string previousPassTag = m_passTag;
     bool changed = false;
 
     // Shader metadata describes the complete default state, not a patch over
@@ -1110,8 +1112,14 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
         }
     }
 
-    if (changed)
+    // Default restoration is an intermediate calculation, not a publication.
+    // Reapplying the same shader contract must leave pipelines and versions
+    // stable, even when normalized defaults differ from RenderState{}.
+    changed = !(previousState == m_renderState) || previousPassTag != m_passTag;
+    if (changed) {
         m_pipelineDirty = true;
+        ++m_version;
+    }
     m_derivedVersion += m_version - previousVersion;
 }
 

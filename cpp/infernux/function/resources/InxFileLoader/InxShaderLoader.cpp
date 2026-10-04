@@ -610,27 +610,6 @@ void InxShaderLoader::CreateMeta(const char *content, size_t contentSize, const 
     // Parse shader into structured descriptor (single pass)
     auto desc = ParseShaderSource(std::string(content, contentSize), filePath);
 
-    // ----------------------------------------------------------------
-    // Apply surface defaults when the structured declaration does not
-    // explicitly override an individual render state.
-    // ----------------------------------------------------------------
-    if (EqualsInsensitive(desc.surfaceOptions.surfaceType, "transparent")) {
-        if (desc.renderQueue < 0)
-            desc.renderQueue = 3000;
-        if (desc.surfaceOptions.blendMode == "off")
-            desc.surfaceOptions.blendMode = "alpha";
-        if (desc.depthWrite.empty())
-            desc.depthWrite = "off";
-        if (desc.passTag.empty())
-            desc.passTag = "transparent";
-    } else {
-        // opaque defaults
-        if (desc.renderQueue < 0)
-            desc.renderQueue = 2000;
-        if (desc.passTag.empty())
-            desc.passTag = "opaque";
-    }
-
     // Determine shader type from file extension
     std::string type = "vertex";
     if (desc.fileExtension == ".frag")
@@ -847,6 +826,26 @@ ShaderDescriptor InxShaderLoader::ParseShaderSource(const std::string &source, c
                     ": ShaderInfo source must not declare layout(...); the stage linker owns Vulkan ABI");
             }
         }
+    }
+
+    // Publish one complete render contract from the parser. Imported metadata,
+    // linked-program prewarming, and live program publication all consume this
+    // descriptor; applying defaults only in CreateMeta made linked programs
+    // overwrite Transparent's queue/depth defaults with opaque state.
+    if (EqualsInsensitive(desc.surfaceOptions.surfaceType, "transparent")) {
+        if (desc.renderQueue < 0)
+            desc.renderQueue = 3000;
+        if (desc.surfaceOptions.blendMode == "off")
+            desc.surfaceOptions.blendMode = "alpha";
+        if (desc.depthWrite.empty())
+            desc.depthWrite = "off";
+        if (desc.passTag.empty())
+            desc.passTag = "transparent";
+    } else {
+        if (desc.renderQueue < 0)
+            desc.renderQueue = 2000;
+        if (desc.passTag.empty())
+            desc.passTag = "opaque";
     }
 
     const ShaderEntryPointSet entryPoints = DetectShaderEntryPoints(shaderCode);

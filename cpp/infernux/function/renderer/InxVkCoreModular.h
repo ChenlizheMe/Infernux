@@ -982,6 +982,9 @@ class InxVkCoreModular
     /// @brief Initialize material system (default material, pipelines)
     void InitializeMaterialSystem();
 
+    /// Resolve shader defaults before publishing queue/tag-dependent draw lists.
+    void PrepareMaterialRenderState(const std::shared_ptr<InxMaterial> &material);
+
     /// @brief Transactionally publish a new material-pipeline MSAA generation.
     /// Shader programs and descriptors remain resident; replaced GPU objects
     /// retire after the last reserved cross-queue completion epoch.
@@ -1657,6 +1660,8 @@ class InxVkCoreModular
     const std::vector<DrawCall> *m_shadowListMetadataSource = nullptr;
     uint64_t m_drawListBufferRevision = 0;
     uint64_t m_shadowListBufferRevision = 0;
+    uint64_t m_drawListRenderMetaRevision = 0;
+    uint64_t m_shadowListRenderMetaRevision = 0;
     std::vector<DrawListMetadata> m_drawListMetadata;
     std::vector<DrawListMetadata> m_shadowListMetadata;
     // SkyboxPass has an explicit RenderDomain contract. Keep its indices so

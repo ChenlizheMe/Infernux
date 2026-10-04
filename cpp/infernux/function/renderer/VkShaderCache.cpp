@@ -64,7 +64,8 @@ void VkShaderCache::UnloadShader(const char *name, vk::VkPipelineManager &pm, co
         m_vertCodes.erase(nameStr);
     }
     if (shaderType.empty() || shaderType == "fragment") {
-        m_renderMetas.erase(nameStr);
+        if (m_renderMetas.erase(nameStr))
+            ++m_renderMetaRevision;
         auto fragIt = m_fragModules.find(nameStr);
         if (fragIt != m_fragModules.end()) {
             pm.DestroyShaderModule(fragIt->second);
@@ -113,6 +114,7 @@ void VkShaderCache::StoreRenderMeta(const std::string &shaderId, const std::stri
     meta.stencil = stencil;
     meta.alphaClip = alphaClip;
     m_renderMetas[shaderId] = meta;
+    ++m_renderMetaRevision;
 }
 
 const ShaderRenderMeta *VkShaderCache::GetRenderMeta(const std::string &shaderId) const
@@ -293,6 +295,7 @@ void VkShaderCache::Clear()
     m_vertModules.clear();
     m_fragModules.clear();
     m_renderMetas.clear();
+    ++m_renderMetaRevision;
 }
 
 // ============================================================================

@@ -145,6 +145,27 @@ void VerifyRenderStateVersioning()
     state.blendEnable = !state.blendEnable;
     material.SetRenderState(state);
     assert(material.GetVersion() == initialVersion + 2);
+
+    InxMaterial authoredQueue("AuthoredQueue", "Unlit");
+    authoredQueue.SetRenderQueue(3042);
+    authoredQueue.ApplyShaderRenderMeta("back", "off", "less_equal", "alpha", 3000, "transparent");
+    assert(authoredQueue.GetRenderQueue() == 3042);
+    assert(!authoredQueue.GetRenderState().depthWriteEnable);
+    assert(authoredQueue.GetRenderState().srcAlphaBlendFactor == infernux::MaterialBlendFactor::One);
+    assert(authoredQueue.GetRenderState().dstAlphaBlendFactor == infernux::MaterialBlendFactor::OneMinusSourceAlpha);
+    const auto publishedVersion = authoredQueue.GetVersion();
+    const auto authoredVersion = authoredQueue.GetAuthoredVersion();
+    authoredQueue.ClearPipelineDirty();
+    authoredQueue.ApplyShaderRenderMeta("back", "off", "less_equal", "alpha", 3000, "transparent");
+    assert(!authoredQueue.IsPipelineDirty());
+    assert(authoredQueue.GetVersion() == publishedVersion);
+    assert(authoredQueue.GetAuthoredVersion() == authoredVersion);
+
+    // Explicitly authoring the current value must also protect it from reload.
+    InxMaterial unchangedQueue("UnchangedQueue", "Unlit");
+    unchangedQueue.SetRenderQueue(2000);
+    unchangedQueue.ApplyShaderRenderMeta("back", "off", "less_equal", "alpha", 3000, "transparent");
+    assert(unchangedQueue.GetRenderQueue() == 2000);
     material.SetRenderState(state);
     assert(material.GetVersion() == initialVersion + 2);
 }

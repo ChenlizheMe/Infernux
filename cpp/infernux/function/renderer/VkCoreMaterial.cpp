@@ -795,6 +795,19 @@ bool InxVkCoreModular::CommitMaterialPipelineGeneration(VkSampleCountFlagBits ne
     return true;
 }
 
+void InxVkCoreModular::PrepareMaterialRenderState(const std::shared_ptr<InxMaterial> &material)
+{
+    if (!material)
+        return;
+    const std::string &fragment = material->GetFragShaderName();
+    if (!m_shaderCache.GetRenderMeta(fragment) && m_shaderProgramArtifactResolver)
+        m_shaderProgramArtifactResolver(material, std::nullopt);
+    if (const auto *meta = m_shaderCache.GetRenderMeta(fragment)) {
+        material->ApplyShaderRenderMeta(meta->cullMode, meta->depthWrite, meta->depthTest, meta->blend, meta->queue,
+                                       meta->passTag, meta->stencil, meta->alphaClip);
+    }
+}
+
 bool InxVkCoreModular::RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
                                                const std::string &fragShaderName)
 {

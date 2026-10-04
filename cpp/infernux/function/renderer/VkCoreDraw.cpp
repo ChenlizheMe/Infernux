@@ -556,6 +556,7 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
 {
     if (!forceRefresh && m_drawCallsPtr == drawCalls && m_drawListMetadataSource == drawCalls &&
         m_drawListBufferRevision == m_objectBufferRevision &&
+        m_drawListRenderMetaRevision == m_shaderCache.GetRenderMetaRevision() &&
         (!drawCalls || m_drawListMetadata.size() == drawCalls->size()))
         return;
 
@@ -566,6 +567,7 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
     m_drawCallsPtr = drawCalls;
     m_drawListMetadataSource = drawCalls;
     m_drawListBufferRevision = 0;
+    m_drawListRenderMetaRevision = m_shaderCache.GetRenderMetaRevision();
     m_drawListMetadata.clear();
     m_skyboxDrawListSource = drawCalls;
     m_skyboxDrawCallIndices.clear();
@@ -586,9 +588,15 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
     m_drawListMetadata.reserve(drawCalls->size());
     m_skyboxDrawCallIndices.reserve(1);
     m_drawQueueValues.reserve(kTrackedQueueLimit);
+    std::unordered_set<InxMaterial *> preparedMaterials;
     for (size_t drawCallIndex = 0; drawCallIndex < drawCalls->size(); ++drawCallIndex) {
         const DrawCall &drawCall = (*drawCalls)[drawCallIndex];
-        InxMaterial *material = drawCall.material ? drawCall.material.get() : m_cachedDefaultLit.get();
+        const auto &owner = drawCall.material ? drawCall.material : m_cachedDefaultLit;
+        InxMaterial *material = owner.get();
+        // Queue and pass-tag filtering must see the shader's complete defaults
+        // before any pass can initialize its GPU pipeline lazily.
+        if (material && preparedMaterials.insert(material).second)
+            PrepareMaterialRenderState(owner);
         const int queue = material ? material->GetRenderQueue() : 2000;
         if (drawCall.identity.domain == RenderDomain::Skybox)
             m_skyboxDrawCallIndices.push_back(drawCallIndex);
@@ -618,12 +626,14 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
         m_drawQueueValues.push_back(queue);
     }
     m_drawListBufferRevision = m_objectBufferRevision;
+    m_drawListRenderMetaRevision = m_shaderCache.GetRenderMetaRevision();
 }
 
 void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls, bool forceRefresh)
 {
     if (!forceRefresh && m_shadowDrawCallsPtr == drawCalls && m_shadowListMetadataSource == drawCalls &&
         m_shadowListBufferRevision == m_objectBufferRevision &&
+        m_shadowListRenderMetaRevision == m_shaderCache.GetRenderMetaRevision() &&
         (!drawCalls || m_shadowListMetadata.size() == drawCalls->size()))
         return;
 
@@ -631,13 +641,18 @@ void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls
     m_shadowScratchValid = false;
     m_shadowListMetadataSource = drawCalls;
     m_shadowListBufferRevision = 0;
+    m_shadowListRenderMetaRevision = m_shaderCache.GetRenderMetaRevision();
     m_shadowListMetadata.clear();
     if (!drawCalls)
         return;
 
     m_shadowListMetadata.reserve(drawCalls->size());
+    std::unordered_set<InxMaterial *> preparedMaterials;
     for (const DrawCall &drawCall : *drawCalls) {
-        InxMaterial *material = drawCall.material ? drawCall.material.get() : m_cachedDefaultLit.get();
+        const auto &owner = drawCall.material ? drawCall.material : m_cachedDefaultLit;
+        InxMaterial *material = owner.get();
+        if (material && preparedMaterials.insert(material).second)
+            PrepareMaterialRenderState(owner);
         const auto bufferIt = m_perObjectBuffers.find(drawCall.objectId);
         if (bufferIt != m_perObjectBuffers.end()) {
             m_shadowListMetadata.push_back({drawCall.objectId, material, material ? material->GetRenderQueue() : 2000,
@@ -650,6 +665,7 @@ void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls
         }
     }
     m_shadowListBufferRevision = m_objectBufferRevision;
+    m_shadowListRenderMetaRevision = m_shaderCache.GetRenderMetaRevision();
 }
 
 void InxVkCoreModular::ReleaseActiveDrawLists() noexcept

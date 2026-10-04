@@ -497,6 +497,48 @@ VertexOutput vertex(inout VertexInput value) { return VertexOutput(); }
     assert(descriptor.textureProperties.size() == 1);
     assert(descriptor.inputs.size() == 2);
 
+    // The linked-program publication path consumes the parsed descriptor,
+    // while imported ShaderAssets consume CreateMeta. Both must observe the
+    // same surface defaults, before either publishes render-state metadata.
+    const std::string transparentSource = R"(
+#version 450
+ShaderInfo { Name "Tests/TransparentDefaults" Surface Transparent }
+void surface(out SurfaceData s) { s = InitSurfaceData(); }
+)";
+    const auto transparent = compiler.ParseShaderSource(transparentSource, "TransparentDefaults.frag");
+    assert(transparent.renderQueue == 3000);
+    assert(transparent.depthWrite == "off");
+    assert(transparent.surfaceOptions.blendMode == "alpha");
+    assert(transparent.passTag == "transparent");
+    infernux::InxResourceMeta transparentMetadata;
+    compiler.CreateMeta(transparentSource.data(), transparentSource.size(), "TransparentDefaults.frag",
+                        transparentMetadata);
+    assert(transparentMetadata.GetDataAs<int>("shader_queue") == transparent.renderQueue);
+    assert(transparentMetadata.GetDataAs<std::string>("shader_depth_write") == transparent.depthWrite);
+    assert(transparentMetadata.GetDataAs<std::string>("shader_blend") == transparent.surfaceOptions.blendMode);
+    assert(transparentMetadata.GetDataAs<std::string>("shader_pass_tag") == transparent.passTag);
+
+    const auto explicitTransparent = compiler.ParseShaderSource(R"(
+ShaderInfo {
+    Name "Tests/TransparentOverrides" Surface Transparent
+    Queue 3100 DepthWrite On Blend Additive PassTag "custom-transparent"
+}
+void surface(out SurfaceData s) { s = InitSurfaceData(); }
+)", "TransparentOverrides.frag");
+    assert(explicitTransparent.renderQueue == 3100);
+    assert(explicitTransparent.depthWrite == "on");
+    assert(explicitTransparent.surfaceOptions.blendMode == "additive");
+    assert(explicitTransparent.passTag == "custom-transparent");
+
+    const auto opaque = compiler.ParseShaderSource(R"(
+ShaderInfo { Name "Tests/OpaqueDefaults" }
+void surface(out SurfaceData s) { s = InitSurfaceData(); }
+)", "OpaqueDefaults.frag");
+    assert(opaque.renderQueue == 2000);
+    assert(opaque.depthWrite.empty());
+    assert(opaque.surfaceOptions.blendMode == "off");
+    assert(opaque.passTag == "opaque");
+
     infernux::InxResourceMeta richMetadata;
     compiler.CreateMeta(richSource.data(), richSource.size(), "WaveSurface.frag", richMetadata);
     assert(richMetadata.GetDataAs<std::string>("shader_schema_format") == "ShaderInfo");

@@ -88,6 +88,7 @@ class VkShaderCache
 
     /// Get render-state annotations (nullptr if none stored).
     [[nodiscard]] const ShaderRenderMeta *GetRenderMeta(const std::string &shaderId) const;
+    [[nodiscard]] uint64_t GetRenderMetaRevision() const noexcept { return m_renderMetaRevision; }
 
     // ── SPIR-V Code Lookup ─────────────────────────────────────────────────
 
@@ -145,6 +146,7 @@ class VkShaderCache
     std::unordered_map<std::string, std::vector<char>> m_vertCodes;
     std::unordered_map<std::string, std::vector<char>> m_fragCodes;
     std::unordered_map<std::string, ShaderRenderMeta> m_renderMetas;
+    uint64_t m_renderMetaRevision = 0;
     std::unordered_map<ShaderStagePair, std::shared_ptr<const ShaderProgramArtifact>, ShaderStagePairHash>
         m_programArtifacts;
     ShaderProgramCache m_programCache;

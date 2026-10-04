@@ -466,9 +466,10 @@ class InxMaterial
     }
     void SetRenderQueue(int32_t queue)
     {
-        if (m_renderState.renderQueue == queue)
+        if (m_renderState.renderQueue == queue && HasOverride(RenderStateOverride::RenderQueue))
             return;
         m_renderState.renderQueue = queue;
+        m_renderStateOverrides |= static_cast<uint32_t>(RenderStateOverride::RenderQueue);
         ++m_version;
     }
 

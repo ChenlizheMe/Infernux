@@ -1437,6 +1437,34 @@ if(INFERNUX_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
         )
     endforeach()
+    foreach(_transparency_path forward forward_plus deferred)
+        foreach(_transparency_samples 1 4)
+            set(_transparency_test "infernux.material_transparency_${_transparency_path}_${_transparency_samples}_gpu")
+            add_test(NAME ${_transparency_test}
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/python/Infernux/test/material_transparency_gpu_test.py
+                    --path ${_transparency_path} --samples ${_transparency_samples})
+            set_tests_properties(${_transparency_test} PROPERTIES
+                ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+                LABELS "requires_vulkan_device"
+                TIMEOUT 60
+                RUN_SERIAL TRUE
+                FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD")
+        endforeach()
+    endforeach()
+    foreach(_depth_samples 1 2 4 8)
+        set(_depth_test "infernux.fullscreen_depth_${_depth_samples}_gpu")
+        add_test(NAME ${_depth_test}
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/python/Infernux/test/fullscreen_depth_gpu_test.py
+                --samples ${_depth_samples})
+        set_tests_properties(${_depth_test} PROPERTIES
+            ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+            LABELS "requires_vulkan_device"
+            TIMEOUT 45
+            RUN_SERIAL TRUE
+            FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD")
+    endforeach()
     foreach(_shadow_path forward forward_plus deferred)
         set(_shadow_test "infernux.material_shadow_controls_${_shadow_path}_gpu")
         add_test(NAME ${_shadow_test}
