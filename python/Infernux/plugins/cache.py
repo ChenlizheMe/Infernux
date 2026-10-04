@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import filecmp
 import json
 import os
 import re
@@ -160,7 +161,16 @@ class SharedPackageCache:
         temporary = destination + f".tmp.{uuid.uuid4().hex}"
         try:
             shutil.copy2(source_path, temporary)
-            os.replace(temporary, destination)
+            try:
+                # Publish once, atomically. Installed projects use this archive
+                # as their update baseline; another download must not replace it.
+                os.link(temporary, destination)
+            except FileExistsError:
+                if not filecmp.cmp(temporary, destination, shallow=False):
+                    raise ValueError(
+                        f"Plugin version is immutable: {reference}@{version}; "
+                        "increment the package version before changing its content"
+                    ) from None
         finally:
             try:
                 os.remove(temporary)

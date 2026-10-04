@@ -2158,6 +2158,24 @@ class PluginManager:
         return True, destination
 
     def _guid_index(self) -> dict[str, str]:
+        from Infernux.application import Application
+
+        if self.runtime and Application.is_player():
+            from Infernux.engine.project_context import resolve_runtime_asset_guid
+
+            # A sealed Player owns cooked GUID bindings, not the Editor's
+            # source/.meta checkout. Resolve exported files through that one
+            # authority; the installation control manifest is not exported.
+            result = {}
+            for package in self.registry.installed():
+                for item in package.get("files", []):
+                    if not isinstance(item, Mapping):
+                        continue
+                    guid = str(item.get("guid", "")).casefold()
+                    path = resolve_runtime_asset_guid(guid) if guid else None
+                    if path:
+                        result[guid] = path
+            return result
         try:
             result, _native = project_guid_paths(
                 self.project_root,
@@ -2196,7 +2214,10 @@ class PluginManager:
         errors = [str(item.get("error", "")) for item in package_lifecycle if item.get("error")]
         enabled = bool(record.get("enabled", True))
         resources = {}
-        for item in [*record.get("files", []), record.get("control")]:
+        files = list(record.get("files", []))
+        if not self.runtime:
+            files.append(record.get("control"))
+        for item in files:
             if not isinstance(item, Mapping):
                 continue
             guid = str(item.get("guid", "")).casefold()

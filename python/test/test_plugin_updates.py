@@ -41,6 +41,25 @@ def next_package(source, version="2.0.0"):
     return str(package)
 
 
+@pytest.mark.parametrize("changed", [False, True])
+def test_shared_cache_cannot_replace_an_installed_update_baseline(tmp_path, changed):
+    from Infernux.plugins.cache import SharedPackageCache
+
+    cache = SharedPackageCache(tmp_path / "cache")
+    original = tmp_path / "original.inxpkg"
+    original.write_bytes(b"original package bytes")
+    baseline = Path(cache.store(str(original), reference="vendor/plugin", version="1.0.0"))
+    incoming = tmp_path / "incoming.inxpkg"
+    incoming.write_bytes(b"changed package bytes" if changed else original.read_bytes())
+    if changed:
+        with pytest.raises(ValueError, match="Plugin version is immutable"):
+            cache.store(str(incoming), reference="vendor/plugin", version="1.0.0")
+    else:
+        assert cache.store(str(incoming), reference="vendor/plugin", version="1.0.0") == str(baseline)
+    assert baseline.read_bytes() == original.read_bytes()
+    assert not list(baseline.parent.glob("*.tmp.*"))
+
+
 @pytest.mark.parametrize("modified", [False, True])
 def test_source_update_is_explicit_and_preserves_guid_and_local_edits(installed, modified):
     manager, source, root = installed
@@ -247,6 +266,30 @@ def test_missing_synced_package_file_blocks_player_startup(installed):
     with pytest.raises(RuntimeError, match="Project package checkout is incomplete"):
         PluginManager.startup(manager.project_root, runtime=True)
     assert PluginManager.instance() is None
+
+
+def test_player_plugin_state_uses_cooked_guids_without_editor_control_manifest(installed, monkeypatch):
+    from Infernux.application import Application
+    from Infernux.engine import project_context
+
+    manager, source, root = installed
+    record = manager.registry.installed_record("vendor/plugin")
+    payloads = {
+        item["guid"].casefold(): f"cooked/{item['guid']}.inxasset"
+        for item in record["files"]
+    }
+    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
+    monkeypatch.setattr(project_context, "resolve_runtime_asset_guid", payloads.get)
+    # No source files, metadata, or installation manifest survive the cook.
+    shutil.rmtree(root)
+    state = manager._rebuild_states()[0]
+    assert state.loaded, state.error
+    assert set(state.resources.values()) == set(payloads.values())
+    missing = record["files"][0]
+    del payloads[missing["guid"].casefold()]
+    state = manager._rebuild_states()[0]
+    assert not state.loaded
+    assert f"Missing package asset vendor/plugin: {missing['logical_path']}" in state.error
 
 
 def test_package_import_relocates_legacy_absolute_metadata(installed):
