@@ -110,6 +110,24 @@ class TestNativeConsolePanel:
         assert panel.get_warning_count() == 1
         assert panel.get_error_count() == 1
 
+    def test_source_diagnostic_prefix_preserves_other_owners_and_user_history(self, tmp_path):
+        panel = ConsolePanel()
+        source = str(tmp_path / "pipeline.py")
+        panel.log_from_python(LogLevel.Error, "[RenderStack:1] rejected", source_file=source)
+        panel.log_from_python(LogLevel.Error, "[RenderStack:2] rejected", source_file=source)
+        panel.log_from_python(LogLevel.Info, "user message", source_file=source)
+        # Drain one batch, then test removal in both published and pending logs.
+        entries = panel._get_visible_log_snapshot(10)
+        panel.set_selection_snapshot(entries[0]["uid"])
+        panel.log_from_python(LogLevel.Error, "[RenderStack:1] pending", source_file=source)
+        assert panel.remove_entries_from_source(source, "[RenderStack:1] ") == 2
+        assert panel.get_error_count() == 1
+        assert panel.get_info_count() == 1
+        assert not panel.has_selected_entry()
+        assert [entry["message"] for entry in panel._get_visible_log_snapshot(10)] == [
+            "[RenderStack:2] rejected", "user message",
+        ]
+
     def test_filter_properties(self):
         panel = ConsolePanel()
         assert panel.show_info is True

@@ -75,6 +75,7 @@ class DebugConsole:
     ) -> List[LogEntry]:
         """Get log entries filtered by type."""
         ...
+    def remove_source_entries(self, source_file: str, message_prefix: str = ...) -> int: ...
     def clear(self) -> None:
         """Clear all log entries."""
         ...
@@ -95,6 +96,8 @@ class DebugConsole:
 class Debug:
     """Utility class for logging messages to the console."""
 
+    @staticmethod
+    def clear_source_entries(source_file: str, message_prefix: str = ...) -> int: ...
     @staticmethod
     def log(message: Any, context: Any = ...) -> None:
         """Log a message to the console."""

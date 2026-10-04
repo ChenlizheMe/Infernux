@@ -40,7 +40,7 @@ class ConsolePanel : public EditorPanel
 
     /// Remove diagnostics owned by one source file without disturbing other
     /// Console history. Returns the number of removed entries.
-    size_t RemoveEntriesFromSource(const std::string &sourceFile);
+    size_t RemoveEntriesFromSource(const std::string &sourceFile, const std::string &messagePrefix = "");
 
     /// Query counts for status bar integration.
     int GetInfoCount() const;

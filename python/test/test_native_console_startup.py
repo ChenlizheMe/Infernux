@@ -85,3 +85,23 @@ def test_worker_logs_during_attachment_are_delivered_once():
         console.set_native_console(None)
         console.clear()
         DebugConsole._instance = None
+
+
+def test_source_diagnostic_prefix_survives_early_queue_and_native_attachment():
+    previous = DebugConsole._instance
+    console = DebugConsole()
+    panel = ConsolePanel()
+    try:
+        for message in ("[RenderStack:1] early failure", "[RenderStack:2] failure", "user message"):
+            console.log(LogEntry(message, LogType.ERROR, datetime.now(), source_file="pipeline.py"))
+        assert console.remove_source_entries("pipeline.py", "[RenderStack:1] ") == 1
+        console.set_native_console(panel)
+        console.log(LogEntry("[RenderStack:2] late failure", LogType.ERROR, datetime.now(), source_file="pipeline.py"))
+        assert console.remove_source_entries("pipeline.py", "[RenderStack:2] ") == 2
+        assert [entry.message for entry in console.get_entries()] == ["user message"]
+        assert [entry["message"] for entry in panel._get_visible_log_snapshot(10)] == ["user message"]
+        assert console.error_count == panel.get_error_count() == 1
+    finally:
+        console.set_native_console(None)
+        console.clear()
+        DebugConsole._instance = previous

@@ -273,31 +273,32 @@ class DebugConsole:
 
         return path_key(source_file)
 
-    def remove_source_entries(self, source_file: str) -> int:
+    def remove_source_entries(self, source_file: str, message_prefix: str = "") -> int:
         """Remove diagnostics emitted by one source file.
 
+        An optional message prefix limits removal to one diagnostic owner.
         Script publication uses this after a new revision has committed, so a
         corrected script loses only its stale errors while unrelated Console
         history remains intact.
         """
         with self._native_bridge_lock:
-            return self._remove_source_entries(source_file)
+            return self._remove_source_entries(source_file, message_prefix)
 
-    def _remove_source_entries(self, source_file: str) -> int:
+    def _remove_source_entries(self, source_file: str, message_prefix: str = "") -> int:
         source_key = self._source_key(source_file)
         if not source_key:
             return 0
         retained = [
             entry
             for entry in self._entries
-            if self._source_key(entry.source_file) != source_key
+            if self._source_key(entry.source_file) != source_key or not entry.message.startswith(message_prefix)
         ]
         removed = len(self._entries) - len(retained)
         if removed:
             self._entries = retained
             self._pending_native_entries = deque(
                 entry for entry in self._pending_native_entries
-                if self._source_key(entry.source_file) != source_key
+                if self._source_key(entry.source_file) != source_key or not entry.message.startswith(message_prefix)
             )
             self._log_count = 0
             self._warning_count = 0
@@ -311,7 +312,10 @@ class DebugConsole:
                 None,
             )
             if callable(remove_native):
-                remove_native(source_file)
+                if message_prefix:
+                    remove_native(source_file, message_prefix)
+                else:
+                    remove_native(source_file)
         return removed
     
     @property
@@ -510,9 +514,9 @@ class Debug:
         DebugConsole.instance().clear()
 
     @staticmethod
-    def clear_source_entries(source_file: str) -> int:
-        """Clear Console diagnostics owned by one source file."""
-        return DebugConsole.instance().remove_source_entries(source_file)
+    def clear_source_entries(source_file: str, message_prefix: str = "") -> int:
+        """Clear source diagnostics, optionally restricted to one message prefix."""
+        return DebugConsole.instance().remove_source_entries(source_file, message_prefix)
 
     @staticmethod
     def log_internal(message: Any, context: Any = None):

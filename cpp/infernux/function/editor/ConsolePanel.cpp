@@ -147,7 +147,7 @@ void ConsolePanel::Clear()
         PublishSelection(0, false);
 }
 
-size_t ConsolePanel::RemoveEntriesFromSource(const std::string &sourceFile)
+size_t ConsolePanel::RemoveEntriesFromSource(const std::string &sourceFile, const std::string &messagePrefix)
 {
     const std::string sourceKey = FilesystemPathKey(sourceFile);
     if (sourceKey.empty())
@@ -158,8 +158,9 @@ size_t ConsolePanel::RemoveEntriesFromSource(const std::string &sourceFile)
     uint64_t replacementSelection = 0;
     {
         std::lock_guard<std::mutex> lock(m_logMutex);
-        const auto matchesSource = [&sourceKey](const LogEntry &entry) {
-            return !entry.sourceFile.empty() && FilesystemPathKey(entry.sourceFile) == sourceKey;
+        const auto matchesSource = [&sourceKey, &messagePrefix](const LogEntry &entry) {
+            return !entry.sourceFile.empty() && FilesystemPathKey(entry.sourceFile) == sourceKey &&
+                   (messagePrefix.empty() || entry.message.compare(0, messagePrefix.size(), messagePrefix) == 0);
         };
         const auto selected = std::find_if(m_logs.begin(), m_logs.end(), [this, &matchesSource](const LogEntry &entry) {
             return entry.uid == m_selectedUid && matchesSource(entry);
