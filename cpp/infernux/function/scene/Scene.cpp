@@ -368,7 +368,7 @@ void Scene::AddGameObject(std::unique_ptr<GameObject> gameObject)
 
 void Scene::RemoveGameObject(GameObject *gameObject)
 {
-    if (!gameObject)
+    if (!gameObject || gameObject->IsDestroying())
         return;
 
     // 1. Locate and Detach ownership
@@ -386,7 +386,7 @@ void Scene::RemoveGameObject(GameObject *gameObject)
 
 void Scene::DestroyGameObject(GameObject *gameObject)
 {
-    if (!gameObject)
+    if (!gameObject || gameObject->IsDestroying())
         return;
 
     // Queue for removal at frame-end, not immediate

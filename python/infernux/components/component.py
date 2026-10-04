@@ -478,7 +478,7 @@ class InxComponent(ComponentNativeMixin, ComponentLifecycleMixin, ComponentPhysi
         After this call the component is considered destroyed and should
         not be used further.
         """
-        if self._is_destroyed:
+        if self._is_destroyed or self.__dict__.get("_is_destroying", False):
             return
         go = self._try_get_game_object()
         if go is None:

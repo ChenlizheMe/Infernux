@@ -71,6 +71,10 @@ class ComponentCoroutineMixin:
                         debug.log("Moving right")
                         yield WaitForSeconds(2)
         """
+        cleanup_binding = self.__dict__.get("_native_cleanup_binding")
+        if (self._is_destroyed or self.__dict__.get("_is_destroying", False)
+                or (cleanup_binding is not None and cleanup_binding[2])):
+            raise RuntimeError("cannot start a coroutine on a component being destroyed or already destroyed")
         from infernux.coroutine import CoroutineScheduler
         from infernux.engine.runtime_dispatch import current_runtime_epoch
 

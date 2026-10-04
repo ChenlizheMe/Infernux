@@ -1160,26 +1160,28 @@ class ComponentLifecycleMixin:
 
     def _call_on_destroy(self):
         """Internal: Trigger on_destroy lifecycle."""
-        if self._is_destroyed:
+        if self._is_destroyed or self.__dict__.get("_is_destroying", False):
             return  # Already destroyed, don't call again
-        self._is_destroyed = True
+        # Keep the native owner available until cleanup returns. The in-progress
+        # flag prevents reentrant destruction while disabled/removed membership
+        # prevents any further runtime phase from scheduling this component.
+        self.__dict__["_is_destroying"] = True
         self._enabled = False
-        # Stop all coroutines before on_destroy callback
-        if self._coroutine_scheduler is not None:
-            self._coroutine_scheduler.stop_all()
-            self._sync_coroutine_scheduler_state()
-            self._coroutine_scheduler = None
-        # Remove from active-instances registry (safety net; _set_game_object(None)
-        # should have done this already, but guard against missed calls)
-        self._remove_from_active_registry()
-        if self._awake_called:
-            self._safe_lifecycle_call("on_destroy")
-        self.__dict__["_runtime_coroutine_scheduler"] = None
-        # Clear references to help garbage collection
-        self._cpp_component = None
-        self._game_object = None
-        self._game_object_ref = None
-        self._release_component_data_slot()
+        try:
+            self._remove_from_active_registry()
+            try:
+                # Coroutine cleanup also runs while the owner is still bound.
+                if self._coroutine_scheduler is not None:
+                    self._coroutine_scheduler.stop_all()
+            finally:
+                self._coroutine_scheduler = None
+                self.__dict__["_runtime_coroutine_scheduler"] = None
+                if self._awake_called:
+                    self._safe_lifecycle_call("on_destroy")
+        finally:
+            self.__dict__["_runtime_coroutine_scheduler"] = None
+            self._invalidate_native_binding()
+            self.__dict__["_is_destroying"] = False
 
     def _finalize_play_domain_replacement(self, *, was_awake: bool) -> None:
         """Finish an edit-domain instance after transactional Play replacement.

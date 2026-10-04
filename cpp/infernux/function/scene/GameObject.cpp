@@ -104,15 +104,17 @@ GameObject::~GameObject()
 {
     m_isDestroying = true;
 
-    // Unregister self from Scene lookup
-    if (m_scene) {
-        m_scene->UnregisterGameObject(m_id);
-    }
-
     // Run lifecycle callbacks while all components are still alive.
     // This lets OnDisable/OnDestroy safely call GetComponents<>() on siblings.
     for (auto &comp : m_components) {
         comp->CallOnDestroy();
+    }
+
+    // Cleanup can resolve its owner and sibling components through scene
+    // handles. Retire lookup only after those callbacks have finished, and
+    // before component storage is released.
+    if (m_scene) {
+        m_scene->UnregisterGameObject(m_id);
     }
 
     // Move components out of the vector before destructors run.
@@ -795,7 +797,7 @@ void GameObject::PostAddComponent(Component *component)
 
 bool GameObject::RemoveComponent(Component *component)
 {
-    if (!component) {
+    if (!component || m_isDestroying || component->IsBeingDestroyed()) {
         return false;
     }
 

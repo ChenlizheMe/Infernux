@@ -207,6 +207,19 @@ void CallCachedLifecycleNoArg(const py::object &callable, const std::string &typ
     }
 }
 
+void CallCachedLifecycleCleanup(const py::object &pyComponent, const py::object &callable,
+                                Component *nativeComponent, const std::string &typeName, const char *displayName)
+{
+    try {
+        pyComponent.attr("_invoke_native_cleanup")(
+            callable, py::cast(nativeComponent, py::return_value_policy::reference),
+            py::cast(nativeComponent->GetGameObject(), py::return_value_policy::reference),
+            nativeComponent->IsBeingDestroyed());
+    } catch (const py::error_already_set &e) {
+        INXLOG_ERROR("[PyComponentProxy] Error in ", typeName, ".", displayName, "(): ", e.what());
+    }
+}
+
 PyComponentProxy::PyComponentProxy(PyComponentProxy &&other) noexcept
     : Component(std::move(other)), m_pyComponent(std::move(other.m_pyComponent)),
       m_callAwake(std::move(other.m_callAwake)), m_callStart(std::move(other.m_callStart)),
@@ -441,7 +454,7 @@ void PyComponentProxy::OnDisable()
         return;
 
     SyncPythonMirror();
-    CallCachedLifecycleNoArg(m_callOnDisable, m_typeName, "on_disable");
+    CallCachedLifecycleCleanup(m_pyComponent, m_callOnDisable, this, m_typeName, "on_disable");
 }
 
 void PyComponentProxy::OnGameObjectDeactivated()
@@ -460,7 +473,7 @@ void PyComponentProxy::OnDestroy()
     if (m_pyComponent.is_none())
         return;
 
-    CallCachedLifecycleNoArg(m_callOnDestroy, m_typeName, "on_destroy");
+    CallCachedLifecycleCleanup(m_pyComponent, m_callOnDestroy, this, m_typeName, "on_destroy");
 }
 
 void PyComponentProxy::OnValidate()

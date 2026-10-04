@@ -32,6 +32,24 @@ from infernux.lib import GameObject
 class ComponentNativeMixin:
     """ComponentNativeMixin method group for InxComponent."""
 
+    def _invoke_native_cleanup(self, callback, native_component, game_object, being_destroyed):
+        """Use the native caller's live graph for the duration of cleanup only.
+
+        Retained-world publication has already replaced the scene's ID indexes.
+        Resolving an old handle there would select the replacement or invalidate
+        this instance. The native lifecycle caller owns these exact pointers
+        until the callback returns; ordinary reference resolution is unchanged.
+        """
+        previous = self.__dict__.get("_native_cleanup_binding")
+        self.__dict__["_native_cleanup_binding"] = (native_component, game_object, being_destroyed)
+        try:
+            return callback()
+        finally:
+            if previous is None:
+                self.__dict__.pop("_native_cleanup_binding", None)
+            else:
+                self.__dict__["_native_cleanup_binding"] = previous
+
     @staticmethod
     def _is_native_game_object_alive(game_object: Optional['GameObject']) -> bool:
         """Return True when a native GameObject wrapper still points to live data."""
@@ -56,6 +74,9 @@ class ComponentNativeMixin:
         """Return the owning GameObject, or None when the component is unbound."""
         if self._is_destroyed:
             return None
+        cleanup_binding = self.__dict__.get("_native_cleanup_binding")
+        if cleanup_binding is not None:
+            return cleanup_binding[1]
         cpp_component = self._get_bound_native_component()
         if cpp_component is not None:
             try:
@@ -263,6 +284,9 @@ class ComponentNativeMixin:
 
     def _get_bound_native_component(self):
         """Return the native component if still alive, otherwise invalidate it."""
+        cleanup_binding = self.__dict__.get("_native_cleanup_binding")
+        if cleanup_binding is not None and not self._is_destroyed:
+            return cleanup_binding[0]
         cpp_component = getattr(self, '_cpp_component', None)
         if cpp_component is None:
             return None
