@@ -167,6 +167,9 @@ void ValidateImportedDependencyIdentities(const ImportArtifact &artifact, const 
     // Asset identity is GUID-only: paths and path_hint values are mutable
     // presentation metadata and must never be accepted as graph identities.
     for (const auto &dependency : artifact.dependencies) {
+        if (dependency == artifact.metadata.GetGuid()) {
+            throw std::runtime_error("Importer for '" + sourcePath + "' produced a self-dependency");
+        }
         if (!IsCanonicalAssetGuid(dependency)) {
             throw std::runtime_error("Importer for '" + sourcePath + "' produced a non-GUID dependency identity '" +
                                      dependency + "'");

@@ -951,15 +951,55 @@ def test_variant_resolver_rejects_missing_and_cyclic_bases(contents_project, sce
         editor.save_as_prefab_asset(root, variant_path)
     finally:
         editor.unload_prefab_contents(root)
-    variant = json.loads(variant_path.read_text(encoding="utf8"))
-    for guid, message in (("unavailable-source-guid", "unavailable"),
-                          (database.get_guid_from_path(str(variant_path)), "cycle")):
-        variant["variant"]["guid"] = guid
-        variant_path.write_text(json.dumps(variant), encoding="utf8")
-        before = variant_path.read_bytes()
-        with pytest.raises(PrefabDocumentError, match=message):
-            _read_resolved_prefab_document(str(variant_path), database)
-        assert variant_path.read_bytes() == before
+    original = variant_path.read_bytes()
+    variant = json.loads(original)
+    try:
+        for guid, message in (("unavailable-source-guid", "unavailable"),
+                              (database.get_guid_from_path(str(variant_path)), "cycle")):
+            variant["variant"]["guid"] = guid
+            variant_path.write_text(json.dumps(variant), encoding="utf8")
+            before = variant_path.read_bytes()
+            with pytest.raises(PrefabDocumentError, match=message):
+                _read_resolved_prefab_document(str(variant_path), database)
+            assert variant_path.read_bytes() == before
+    finally:
+        variant_path.write_bytes(original)
+
+
+def test_self_dependent_prefab_is_rejected_before_graph_and_index_publication(contents_project, scene):
+    from Infernux.lib import AssetDependencyGraph
+
+    _, folder = contents_project
+    database = AssetManager.require_asset_database()
+    base_path, variant_path = folder / "Base.prefab", folder / "Variant.prefab"
+    make_asset(scene, base_path)
+    root = editor.load_prefab_contents(base_path)
+    try:
+        editor.save_as_prefab_asset(root, variant_path)
+    finally:
+        editor.unload_prefab_contents(root)
+    guid = database.get_guid_from_path(str(variant_path))
+    original = variant_path.read_bytes()
+    meta_path = variant_path.with_name(variant_path.name + ".meta")
+    original_meta = meta_path.read_bytes()
+    document = json.loads(original)
+    document["variant"]["guid"] = guid
+    try:
+        variant_path.write_text(json.dumps(document), encoding="utf8")
+        result = database.reimport_asset(str(variant_path))
+        assert not result and "self-dependency" in result.error
+        assert meta_path.read_bytes() == original_meta
+        assert guid not in AssetDependencyGraph.instance().get_dependencies(guid)
+        database.refresh()
+        index = json.loads(Path(database.asset_index_path).read_text(encoding="utf8"))
+        entry = next(entry for entry in index["entries"] if entry["guid"] == guid)
+        assert not entry["import_succeeded"]
+        assert guid not in entry["dependencies"]
+        assert database.get_guid_from_path(str(variant_path)) == guid
+    finally:
+        variant_path.write_bytes(original)
+        restored = database.reimport_asset(str(variant_path))
+        assert restored, restored.error
 
 
 def test_prefab_importer_owns_base_edges_and_save_does_not_scan_unrelated_assets(contents_project, scene):
