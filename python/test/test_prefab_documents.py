@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import copy
 
 import pytest
 
@@ -54,6 +55,54 @@ class _PrefabAwakeRecorder(InxComponent):
 
     def awake(self):
         type(self)._placements.append(self.game_object.transform.position.x)
+
+
+@pytest.mark.parametrize("prefab", [False, True])
+def test_semantically_merged_additions_restore_both_internal_reference_sets(scene, tmp_path, prefab):
+    from Infernux.collaboration import merge_documents
+    from Infernux.engine.component_restore import deserialize_scene_document_transactionally
+
+    root = scene.create_game_object("MergeRoot")
+    path = tmp_path / "merge.prefab"
+    if prefab:
+        assert save_prefab(root, str(path))
+        base = json.loads(path.read_text(encoding="utf-8"))
+        from Infernux.engine.prefab_manager import _link_prefab_hierarchy
+        _link_prefab_hierarchy(root, base["root_object"], "b" * 32)
+    else:
+        base = scene.serialize_document()
+    child = scene.create_game_object("Sword")
+    child.set_parent(root)
+    child.add_py_component(_PrefabTargetComponent())
+    references = _PrefabReferenceComponent()
+    references.target_object = GameObjectRef(child)
+    references.target_component = ComponentRef(go_id=child.id, component_type="_PrefabTargetComponent")
+    child.add_py_component(references)
+    if prefab:
+        assert save_prefab(root, str(path))
+        ours = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        ours = scene.serialize_document()
+    theirs = copy.deepcopy(ours)
+    branch_root = theirs["root_object"] if prefab else theirs["objects"][0]
+    branch_root["children"][0]["name"] = "Bow"
+    merged = merge_documents(base, ours, theirs, "merge.prefab" if prefab else "merge.scene")
+    assert merged.clean, merged.conflicts
+    if prefab:
+        path.write_text(json.dumps(merged.document), encoding="utf-8")
+        _read_prefab_document(str(path))
+        _PREFAB_TEMPLATE_CACHE.clear()
+        restored_root = instantiate_prefab(file_path=str(path), scene=scene)
+    else:
+        assert deserialize_scene_document_transactionally(scene, merged.document)
+        restored_root = scene.find("MergeRoot")
+    assert restored_root.get_child_count() == 2
+    assert {restored_root.get_child(index).name for index in range(2)} == {"Sword", "Bow"}
+    for index in range(2):
+        restored = restored_root.get_child(index)
+        refs = restored.get_py_component(_PrefabReferenceComponent)
+        assert refs.target_object is restored
+        assert refs.target_component is restored.get_py_component(_PrefabTargetComponent)
 
 
 @pytest.mark.parametrize("operation", ["revert", "apply"])

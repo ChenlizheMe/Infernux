@@ -179,6 +179,7 @@ void MakeMetadataPortable(nlohmann::json &document, const std::string &projectRo
     if (fields != document.end() && fields->is_object()) {
         // This is a local observation, not an authored importer setting.
         fields->erase("last_modified");
+        fields->erase("content_hash");
         for (const auto *key : {"file_path"}) {
             auto entry = fields->find(key);
             if (entry != fields->end() && entry->at("type") == "string") {

@@ -604,7 +604,7 @@ class PluginManager:
                     transaction.write(str(control["absolute_path"]), control_payload)
                     transaction.write(
                         str(control["absolute_path"]) + ".meta",
-                        current_meta_bytes(str(control["guid"]), control_payload),
+                        portable_meta_bytes(current_meta_bytes(str(control["guid"]), control_payload), str(control["path_hint"])),
                     )
                 file_records = [
                     {

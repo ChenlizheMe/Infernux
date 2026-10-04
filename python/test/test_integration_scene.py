@@ -6,6 +6,8 @@ import json
 import math
 import os
 import threading
+import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,6 +43,56 @@ from Infernux.engine.scene_document_transaction import (
 from Infernux.engine.scene_manager import SceneFileManager
 from Infernux.engine.prefab_manager import PrefabDocumentError, _strip_prefab_runtime_fields
 from Infernux.instantiate import Instantiate
+
+
+def test_scene_deleted_id_watermarks_survive_a_fresh_process(tmp_path):
+    from Infernux.lib import _Infernux
+
+    path = tmp_path / "Deleted.scene"
+    source = '''
+import json, sys
+from pathlib import Path
+from Infernux.lib import SceneManager
+manager = SceneManager.instance()
+scene = manager.create_scene("IDs")
+obj = scene.create_game_object("Removed")
+component = obj.add_component("BoxCollider")
+object_id, component_id = obj.id, component.component_id
+scene.destroy_game_object(obj)
+scene.process_pending_destroys()
+document = scene.serialize_document()
+assert document["nextObjectId"] > object_id
+assert document["nextComponentId"] > component_id
+Path(sys.argv[1]).write_text(json.dumps(document), encoding="utf-8")
+'''
+    restore = '''
+import json, sys
+from pathlib import Path
+from Infernux.lib import SceneManager
+document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+manager = SceneManager.instance()
+scene = manager.create_scene("Restored")
+assert scene._commit_document(document)
+obj = scene.create_game_object("New")
+component = obj.add_component("BoxCollider")
+assert obj.id >= document["nextObjectId"]
+assert component.component_id >= document["nextComponentId"]
+'''
+    for script in (source, restore):
+        environment = os.environ.copy()
+        environment["INFERNUX_NATIVE_MODULE_DIR"] = str(Path(_Infernux.__file__).parent)
+        environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+        result = subprocess.run([sys.executable, "-c", script, str(path)], capture_output=True,
+                                text=True, encoding="utf-8", timeout=30, env=environment)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_removed_component_watermark_is_persisted_without_saving_the_live_component(scene):
+    obj = scene.create_game_object("ComponentIDs")
+    component = obj.add_component("BoxCollider")
+    removed_id = component.component_id
+    assert obj.remove_component(component)
+    assert scene.serialize_document()["nextComponentId"] > removed_id
 
 
 @pytest.fixture
@@ -3660,6 +3712,7 @@ class TestSceneSerialization:
         document = scene.serialize_document()
         persisted_id = 9_000_000
         document["objects"][0]["id"] = persisted_id
+        document["nextObjectId"] = persisted_id + 1
 
         assert scene._commit_document(document) is True
 

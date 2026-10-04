@@ -509,7 +509,7 @@ def test_package_enable_uses_live_scripts_and_retire_keeps_previous_paths(
     assert manager.registry.installed_record(reference)["files"] == before
 
 
-def test_install_writes_current_hashes_for_payload_and_control_assets(tmp_path):
+def test_install_writes_authored_metadata_without_derived_fingerprints(tmp_path):
     source = _source(tmp_path / "source", "vendor/current-meta")
     asset = source / "runtime" / "plugin.py"
     asset.parent.mkdir()
@@ -527,10 +527,8 @@ def test_install_writes_current_hashes_for_payload_and_control_assets(tmp_path):
         metadata = json.loads(
             installed.with_name(installed.name + ".meta").read_text(encoding="utf-8")
         )
-        assert metadata["metadata"]["content_hash"] == {
-            "type": "string",
-            "value": _fnv1a64(installed.read_bytes()),
-        }
+        assert "content_hash" not in metadata["metadata"]
+        assert len(metadata["metadata"]["guid"]["value"]) == 32
 
 
 def test_current_layout_routes_code_control_content_and_nested_packages(tmp_path):

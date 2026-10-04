@@ -39,10 +39,10 @@ REQUIRED_IGNORE = (
 )
 
 REQUIRED_ATTRIBUTES = (
-    ("*.scene", ("text", "eol=lf", "merge=binary")),
-    ("*.prefab", ("text", "eol=lf", "merge=binary")),
-    ("*.mat", ("text", "eol=lf", "merge=binary")),
-    ("*.meta", ("text", "eol=lf", "merge=binary")),
+    ("*.scene", ("text", "eol=lf", "merge=infernux")),
+    ("*.prefab", ("text", "eol=lf", "merge=infernux")),
+    ("*.mat", ("text", "eol=lf", "merge=infernux")),
+    ("*.meta", ("text", "eol=lf", "merge=infernux")),
     ("*.json", ("text", "eol=lf")),
     ("*.png", ("binary",)),
     ("*.fbx", ("binary",)),
@@ -339,6 +339,11 @@ def _audit_git_index(project: Path, guids: dict[str, str], report: AuditReport) 
     if completed.returncode:
         report.errors.append("--tracked requires a Git checkout")
         return
+    driver = subprocess.run(
+        ["git", "-C", str(project), "config", "--get", "merge.infernux.driver"], capture_output=True,
+    )
+    if driver.returncode or not driver.stdout.strip():
+        report.errors.append("Infernux semantic merge driver is not installed; open this project with its engine version first")
     tracked = set(completed.stdout.decode("utf-8").split("\0"))
     for path in [*guids.values(), *(path + ".meta" for path in guids.values()), ".gitignore", ".gitattributes"]:
         if path not in tracked:

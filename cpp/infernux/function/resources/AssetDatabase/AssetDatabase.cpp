@@ -223,8 +223,6 @@ InxResourceMeta LoadMetadataDocument(const std::string &path)
     const nlohmann::json document = nlohmann::json::parse(file);
     InxResourceMeta metadata;
     metadata.DeserializeDocument(document);
-    if (!metadata.HasKey("content_hash") || metadata.GetDataAs<std::string>("content_hash").empty())
-        throw std::invalid_argument("metadata sidecar has no current content_hash: " + path);
     return metadata;
 }
 
@@ -3297,7 +3295,11 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
     } else {
         if (metaFile.GetResourceType() != type)
             throw std::runtime_error("Asset metadata resource_type does not match its file extension: " + metaFilePath);
-        metaFile.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(filePath));
+        // Refresh intrinsic source observations without reapplying loader
+        // defaults over authored settings such as Mesh Read/Write.
+        const std::string existingGuid = metaFile.GetGuid();
+        metaFile.Init(contentPtr, content.size(), filePath, type);
+        metaFile.AddMetadata("guid", existingGuid);
     }
 
     std::string guid = metaFile.GetGuid();

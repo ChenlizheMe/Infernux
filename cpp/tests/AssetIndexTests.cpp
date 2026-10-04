@@ -144,7 +144,9 @@ void TestPortableMetadataPath()
     Require(document.at("metadata").at("file_path").at("value") == "Assets/Scripts/Player.py",
             "portable metadata retained the checkout's absolute path");
     Require(!document.at("metadata").contains("last_modified"), "portable metadata retained a local timestamp");
+    Require(!document.at("metadata").contains("content_hash"), "portable metadata retained a derived fingerprint");
     metadata.AddMetadata("last_modified", "different checkout timestamp");
+    metadata.AddMetadata("content_hash", "different local fingerprint");
     Require(document == metadata.SerializeDocumentPortable(infernux::FromFsPath(root)),
             "local observation changed portable metadata");
     infernux::InxResourceMeta child;

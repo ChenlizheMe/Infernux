@@ -206,8 +206,10 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         )
 
     def _ensure_project_requirements(self):
+        from Infernux.collaboration import configure_git_driver
         from Infernux.engine.project_requirements import ensure_project_requirements
 
+        configure_git_driver(self.project_path)
         ensure_project_requirements(self.project_path, auto_install=True)
 
     def _init_engine(self):

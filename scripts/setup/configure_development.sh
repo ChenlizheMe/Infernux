@@ -69,6 +69,7 @@ fi
 eval "$(conda shell.bash hook)"
 conda activate infernux
 python -c 'import sys; assert sys.version_info[:2] == (3, 13), sys.version'
+python python/Infernux/collaboration.py --install .
 
 echo "Infernux development environment is ready."
 echo "Next: cmake --preset linux-clang-release"

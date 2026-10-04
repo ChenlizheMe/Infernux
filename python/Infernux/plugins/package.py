@@ -522,6 +522,7 @@ def portable_meta_bytes(payload: bytes, destination_relative: str) -> bytes:
             fields = value.get("metadata")
             if isinstance(fields, dict):
                 fields.pop("last_modified", None)
+                fields.pop("content_hash", None)
                 entry = fields.get("file_path")
                 if isinstance(entry, dict) and entry.get("type") == "string":
                     old = str(entry["value"])

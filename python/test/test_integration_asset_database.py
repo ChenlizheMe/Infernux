@@ -312,7 +312,7 @@ def test_mesh_assignment_command_restores_complete_source(engine, scene, tmp_pat
         database.delete_asset(str(source))
 
 
-def test_audio_import_requires_complete_metadata(engine, tmp_path: Path):
+def test_audio_import_rejects_mismatched_metadata_resource_type(engine, tmp_path: Path):
     asset_db = engine.get_asset_database()
     source = tmp_path / "incomplete_audio.wav"
     source.write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
@@ -332,7 +332,7 @@ def test_audio_import_requires_complete_metadata(engine, tmp_path: Path):
     )
 
     try:
-        with pytest.raises(ValueError, match="current content_hash"):
+        with pytest.raises(RuntimeError, match="resource_type"):
             asset_db.import_asset(str(source))
         assert not asset_db.contains_path(str(source))
     finally:

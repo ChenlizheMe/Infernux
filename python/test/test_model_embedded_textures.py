@@ -240,6 +240,8 @@ def test_owned_texture_import_settings_publish_in_model_sidecar(imported_model, 
     assert after["metadata"]["metadata"]["artifact_height"]["value"] == 2
     stored = json.loads(Path(str(source) + ".meta").read_text(encoding="utf-8"))
     expected = copy.deepcopy(after)
+    expected["metadata"]["metadata"].pop("content_hash", None)
+    expected["metadata"]["metadata"].pop("last_modified", None)
     project_root = Path(database.assets_root).parent
     expected["metadata"]["metadata"]["file_path"]["value"] = (
         source.relative_to(project_root).as_posix() + "::subtex:" + after["guid"]

@@ -449,6 +449,10 @@ class Scene
     // Quick lookup by ID
     std::unordered_map<uint64_t, GameObject *> m_objectsById;
 
+    // Persist allocation progress even after the highest authored IDs are deleted.
+    mutable uint64_t m_nextDocumentObjectId = 1;
+    mutable uint64_t m_nextDocumentComponentId = 1;
+
     // GameObjects pending destruction (IDs)
     std::vector<uint64_t> m_pendingDestroy;
     std::unordered_set<uint64_t> m_pendingDestroySet;

@@ -6,6 +6,7 @@ import subprocess
 import shutil
 import zipfile
 import uuid
+from pathlib import Path
 
 from hub_utils import is_frozen, merge_child_env_utf8
 from project_paths import inspect_existing_project, new_project_target
@@ -53,22 +54,10 @@ def _write_asset_identity_meta(path: str, guid: str, resource_type: str) -> None
     The first AssetDatabase scan fills the derived metadata while preserving
     this GUID, so generated references are valid from frame zero.
     """
-    with open(path, "rb") as stream:
-        content = stream.read()
-
-    content_hash = 14695981039346656037
-    for byte in content:
-        content_hash ^= byte
-        content_hash = (content_hash * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-
     _write_json_document(
         path + ".meta",
         {
             "metadata": {
-                "content_hash": {
-                    "type": "string",
-                    "value": f"{content_hash:016x}",
-                },
                 "guid": {"type": "string", "value": guid},
                 "resource_type": {
                     "type": "enum infernux::ResourceType",
@@ -383,6 +372,19 @@ def _run_hidden(args: list[str], *, timeout: int) -> subprocess.CompletedProcess
         raise RuntimeError(
             f"Command failed (exit code {exc.returncode}).\n{' '.join(args)}\n{details}"
         ) from exc
+
+
+def configure_project_collaboration(project_dir: str, python_exe: str) -> None:
+    root = Path(project_dir).resolve()
+    if not any((parent / ".git").exists() for parent in (root, *root.parents)):
+        return
+    # Find the installed driver without importing the native engine in Hub.
+    _run_hidden([
+        python_exe, "-c",
+        "import importlib.util,os,runpy;spec=importlib.util.find_spec('Infernux');"
+        "runpy.run_path(os.path.join(os.path.dirname(spec.origin),'collaboration.py'),run_name='__main__')",
+        "--install", project_dir,
+    ], timeout=30)
 
 
 def _summarize_output(output: str) -> str:

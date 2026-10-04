@@ -158,7 +158,7 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
 void ValidateSceneDocument(const json &document)
 {
     static const std::unordered_set<std::string> allowed = {
-        "name", "isPlaying", "objects", "mainCameraComponentId", "environment",
+        "name", "isPlaying", "objects", "mainCameraComponentId", "environment", "nextObjectId", "nextComponentId",
     };
     RequireExactFields(document, allowed, "Scene");
     if (!document.contains("name") || !document["name"].is_string() || !document.contains("isPlaying") ||
@@ -172,6 +172,17 @@ void ValidateSceneDocument(const json &document)
     for (size_t index = 0; index < document["objects"].size(); ++index)
         ValidateObject(document["objects"][index], "Scene.objects[" + std::to_string(index) + "]", objectIds,
                        componentIds, componentTypes);
+
+    for (const auto &[key, identities] : {
+             std::pair<const char *, const std::unordered_set<uint64_t> &>{"nextObjectId", objectIds},
+             {"nextComponentId", componentIds}}) {
+        if (!document.contains(key))
+            continue;
+        const uint64_t next = RequirePositiveId(document, key, "Scene");
+        for (const uint64_t id : identities)
+            if (id >= next)
+                throw std::invalid_argument(std::string("Scene.") + key + " must exceed all document identities");
+    }
 
     if (document.contains("mainCameraComponentId")) {
         const uint64_t cameraId = RequirePositiveId(document, "mainCameraComponentId", "Scene");

@@ -94,12 +94,19 @@ bool ValidateSceneDocumentHeader(const nlohmann::json &document)
         return false;
     }
     static const std::unordered_set<std::string> allowedSceneFields = {
-        "name", "isPlaying", "objects", "mainCameraComponentId", "environment",
+        "name", "isPlaying", "objects", "mainCameraComponentId", "environment", "nextObjectId", "nextComponentId",
     };
     for (const auto &[key, value] : document.items()) {
         (void)value;
         if (allowedSceneFields.find(key) == allowedSceneFields.end()) {
             INXLOG_ERROR("Scene::Deserialize: scene document contains unknown field: ", key);
+            return false;
+        }
+    }
+    for (const char *key : {"nextObjectId", "nextComponentId"}) {
+        if (document.contains(key) && (!document[key].is_number_unsigned() ||
+                                      document[key].get<uint64_t>() == 0)) {
+            INXLOG_ERROR("Scene::Deserialize: invalid allocation watermark: ", key);
             return false;
         }
     }
@@ -128,6 +135,8 @@ struct SceneCommitToken::Impl
     bool isPlaying = false;
     bool hasStarted = false;
     uint64_t structureVersion = 0;
+    uint64_t nextDocumentObjectId = 1;
+    uint64_t nextDocumentComponentId = 1;
     SceneEnvironmentSettings environment;
     std::unordered_map<uint64_t, uint64_t> objectIdRemap;
     std::unordered_map<uint64_t, uint64_t> componentIdRemap;
@@ -164,6 +173,8 @@ SceneCommitToken::SceneCommitToken(Scene &scene) : m_impl(std::make_unique<Impl>
     state.isPlaying = scene.m_isPlaying;
     state.hasStarted = scene.m_hasStarted;
     state.structureVersion = scene.m_structureVersion;
+    state.nextDocumentObjectId = scene.m_nextDocumentObjectId;
+    state.nextDocumentComponentId = scene.m_nextDocumentComponentId;
     state.environment = scene.m_environment;
 
     const std::vector<GameObject *> objects = scene.GetAllObjects();
@@ -267,6 +278,8 @@ bool SceneCommitToken::Rollback()
         scene.m_isPlaying = state.isPlaying;
         scene.m_hasStarted = state.hasStarted;
         scene.m_structureVersion = state.structureVersion;
+        scene.m_nextDocumentObjectId = state.nextDocumentObjectId;
+        scene.m_nextDocumentComponentId = state.nextDocumentComponentId;
         scene.m_environment = state.environment;
         for (auto &root : scene.m_rootObjects)
             root->SetScene(&scene);
@@ -531,6 +544,14 @@ void Scene::SetRootObjectSiblingIndex(GameObject *gameObject, int newIndex)
 
 void Scene::UnregisterGameObject(uint64_t id)
 {
+    const auto entry = m_objectsById.find(id);
+    if (entry != m_objectsById.end()) {
+        m_nextDocumentObjectId = std::max(m_nextDocumentObjectId, id + 1);
+        GameObject *object = entry->second;
+        m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, object->GetTransform()->GetComponentID() + 1);
+        for (const auto &component : object->GetAllComponents())
+            m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, component->GetComponentID() + 1);
+    }
     m_objectsById.erase(id);
 }
 
@@ -1434,6 +1455,15 @@ nlohmann::json Scene::SerializeDocument() const
         objects.push_back(std::move(document));
     j["objects"] = objectsArray;
 
+    for (const auto &[id, object] : m_objectsById) {
+        m_nextDocumentObjectId = std::max(m_nextDocumentObjectId, id + 1);
+        m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, object->GetTransform()->GetComponentID() + 1);
+        for (const auto &component : object->GetAllComponents())
+            m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, component->GetComponentID() + 1);
+    }
+    j["nextObjectId"] = m_nextDocumentObjectId;
+    j["nextComponentId"] = m_nextDocumentComponentId;
+
     return j;
 }
 
@@ -1635,6 +1665,13 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
                 pythonComponentIds.push_back(componentId);
             }
         }
+        for (const auto &[key, identities] : {
+                 std::pair<const char *, const std::unordered_set<uint64_t> &>{"nextObjectId", objectIds},
+                 {"nextComponentId", componentIds}}) {
+            const uint64_t largest = identities.empty() ? 0 : *std::max_element(identities.begin(), identities.end());
+            if (j.contains(key) && j[key].get<uint64_t>() <= largest)
+                throw std::invalid_argument(std::string(key) + " must exceed all document identities");
+        }
         const auto profileIndexed = ProfileClock::now();
 
         bool requiresFreshComponentIds = false;
@@ -1780,6 +1817,14 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
         }
         for (const uint64_t objectId : objectIds)
             GameObject::EnsureNextID(objectId);
+        for (const uint64_t componentId : componentIds)
+            Component::EnsureNextComponentID(componentId);
+        // Legacy scenes have no watermarks. Their surviving IDs already reserve
+        // the allocator; all newly saved scenes additionally retain deleted IDs.
+        m_nextDocumentObjectId = std::max(m_nextDocumentObjectId, j.value("nextObjectId", uint64_t{1}));
+        m_nextDocumentComponentId = std::max(m_nextDocumentComponentId, j.value("nextComponentId", uint64_t{1}));
+        GameObject::EnsureNextID(m_nextDocumentObjectId - 1);
+        Component::EnsureNextComponentID(m_nextDocumentComponentId - 1);
         if (objectIdRemap)
             *objectIdRemap = std::move(committedObjectIdRemap);
         if (componentIdRemap)
