@@ -19,6 +19,17 @@ file(REMOVE_RECURSE "${_verify_root}")
 file(MAKE_DIRECTORY "${_verify_root}")
 file(ARCHIVE_EXTRACT INPUT "${_wheel}" DESTINATION "${_verify_root}")
 
+foreach(_public_file IN ITEMS
+    "infernux.py"
+    "infernux.pyi"
+    "infernux-stubs/__init__.pyi"
+    "infernux-stubs/py.typed"
+)
+    if(NOT EXISTS "${_verify_root}/${_public_file}")
+        message(FATAL_ERROR "Wheel is missing public Python API file: ${_public_file}")
+    endif()
+endforeach()
+
 file(GLOB_RECURSE _forbidden_files LIST_DIRECTORIES false
     "${_verify_root}/*.bak"
     "${_verify_root}/*.exp"
