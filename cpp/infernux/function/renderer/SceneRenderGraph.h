@@ -492,7 +492,8 @@ class SceneRenderGraph
 
     /// Latest background-compute publication consumed by this view's material
     /// or imported graph buffers. Callers add its compute->graphics frame wait.
-    [[nodiscard]] rhi::SubmissionTicket GetLatestComputeBufferWriteSubmission() const noexcept;
+    [[nodiscard]] rhi::SubmissionTicket
+    GetLatestComputeBufferWriteSubmission(rhi::PipelineStage &consumerStages) const noexcept;
 
     /// Classify an implicit material/UI sample against explicit same-graph
     /// writers. Sampling before a local producer or in its writing pass is

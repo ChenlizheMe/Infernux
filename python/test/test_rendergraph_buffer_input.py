@@ -1,5 +1,7 @@
 """Fullscreen graph storage-buffer input contract."""
 
+import weakref
+
 import pytest
 
 from Infernux.lib import GraphBufferAccessType, GraphCommandType
@@ -83,3 +85,28 @@ def test_imported_buffer_is_read_only_in_graph():
     with graph.add_copy_pass("TryCopy") as copy_pass:
         with pytest.raises(ValueError, match="copy destination"):
             copy_pass.copy_buffer(scratch, imported)
+
+
+def test_logical_import_does_not_keep_native_allocation_alive_after_owner_close():
+    class Native:
+        byte_size = 64
+
+    class Buffer:
+        device = "gpu"
+        dtype = "uint32"
+        closed = False
+        _byte_offset = 0
+        nbytes = 64
+
+    owner = Buffer()
+    owner._native = Native()
+    allocation = weakref.ref(owner._native)
+    graph = RenderGraph("ImportedLifetime")
+    handle = graph.import_buffer("values", owner)
+    assert handle.compute_buffer is owner._native
+
+    owner.closed = True
+    owner._native = None
+    assert allocation() is None, "Logical graph retains native storage beyond Buffer.close()"
+    with pytest.raises(ValueError, match="closed"):
+        _ = handle.compute_buffer

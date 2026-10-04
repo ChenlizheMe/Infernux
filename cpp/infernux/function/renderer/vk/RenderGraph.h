@@ -1003,6 +1003,10 @@ class RenderGraph
         return m_submissionPlan;
     }
 
+    /// Actual access stages of live passes for an imported buffer. The compiler
+    /// excludes culled passes and graph-only version dependencies.
+    [[nodiscard]] rhi::PipelineStage GetImportedBufferAccessStages(rhi::BufferHandle buffer) const noexcept;
+
     [[nodiscard]] const std::vector<QueueOwnershipTransferInfo> &GetQueueOwnershipTransfers() const noexcept
     {
         return m_queueOwnershipTransferInfos;
@@ -1175,6 +1179,7 @@ class RenderGraph
     std::vector<uint32_t> m_resourceVersions;
     std::vector<uint32_t> m_executionOrder;
     rhi::SubmissionPlan m_submissionPlan;
+    std::unordered_map<VkBuffer, rhi::PipelineStage> m_importedBufferAccessStages;
 
     struct QueueOwnershipTransfer
     {

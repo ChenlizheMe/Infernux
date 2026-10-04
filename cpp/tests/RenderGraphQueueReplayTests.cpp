@@ -310,7 +310,15 @@ static void CheckRendererParameterBuffer(vk::VkDeviceContext &context, vk::Vulka
                                  VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1, &barrier, 0, nullptr);
         };
     });
+    graph.AddPass("Unused storage read", [&](vk::PassBuilder &builder) {
+        builder.ReadStorageBuffer(residentParameters, rhi::PipelineStage::VertexShader);
+        return [](vk::RenderContext &) { assert(false && "Unused read must be culled"); };
+    });
     assert(graph.Compile());
+    assert(graph.GetImportedBufferAccessStages(parameters->GetBuffer()) ==
+           (rhi::PipelineStage::ComputeShader | rhi::PipelineStage::FragmentShader));
+    assert(graph.GetImportedBufferAccessStages(readback) == rhi::PipelineStage::Transfer);
+    assert(graph.GetImportedBufferAccessStages({}) == rhi::PipelineStage::None);
 
     const auto &graphPlan = graph.GetSubmissionPlan();
     assert(graphPlan.batches.size() >= 2);

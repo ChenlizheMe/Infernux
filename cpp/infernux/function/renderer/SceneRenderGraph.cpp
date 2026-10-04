@@ -2327,22 +2327,27 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
     }
 }
 
-rhi::SubmissionTicket SceneRenderGraph::GetLatestComputeBufferWriteSubmission() const noexcept
+rhi::SubmissionTicket
+SceneRenderGraph::GetLatestComputeBufferWriteSubmission(rhi::PipelineStage &consumerStages) const noexcept
 {
     rhi::SubmissionTicket latest{};
-    for (const auto &read : m_materialBufferReads) {
-        if (!read.buffer)
-            continue;
-        const auto ticket = read.buffer->GetLastWriteSubmission();
-        if (ticket.IsValid() && (!latest.IsValid() || ticket.serial > latest.serial))
+    consumerStages = rhi::PipelineStage::None;
+    const auto include = [&](const std::shared_ptr<rhi::ComputeBuffer> &buffer) {
+        if (!buffer || !m_renderGraph)
+            return;
+        const auto stages = m_renderGraph->GetImportedBufferAccessStages(buffer->GetBuffer());
+        const auto ticket = buffer->GetLastWriteSubmission();
+        if (!ticket.IsValid() || stages == rhi::PipelineStage::None)
+            return;
+        if (!latest.IsValid() || ticket.serial > latest.serial)
             latest = ticket;
+        consumerStages = consumerStages | stages;
+    };
+    for (const auto &read : m_materialBufferReads) {
+        include(read.buffer);
     }
     for (const auto &buffer : m_pythonGraphDesc.buffers) {
-        if (!buffer.computeBuffer)
-            continue;
-        const auto ticket = buffer.computeBuffer->GetLastWriteSubmission();
-        if (ticket.IsValid() && (!latest.IsValid() || ticket.serial > latest.serial))
-            latest = ticket;
+        include(buffer.computeBuffer);
     }
     return latest;
 }

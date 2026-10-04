@@ -948,6 +948,7 @@ void RenderGraph::Reset()
     m_resourceVersions.clear();
     m_executionOrder.clear();
     m_submissionPlan.Clear();
+    m_importedBufferAccessStages.clear();
     m_queueOwnershipTransfers.clear();
     m_queueOwnershipTransferInfos.clear();
     m_batchOutgoingOwnershipTransfers.clear();
@@ -975,6 +976,7 @@ void RenderGraph::Destroy()
     m_resourceVersions.clear();
     m_executionOrder.clear();
     m_submissionPlan.Clear();
+    m_importedBufferAccessStages.clear();
     m_queueOwnershipTransfers.clear();
     m_queueOwnershipTransferInfos.clear();
     m_batchOutgoingOwnershipTransfers.clear();
@@ -1931,6 +1933,13 @@ std::vector<PassCompileInfo> RenderGraph::GetPassCompileInfos() const
                          pass.submissionDomain, pass.view});
     }
     return infos;
+}
+
+rhi::PipelineStage RenderGraph::GetImportedBufferAccessStages(rhi::BufferHandle buffer) const noexcept
+{
+    const auto nativeBuffer = m_rhiDevice ? m_rhiDevice->Resolve(buffer) : VK_NULL_HANDLE;
+    const auto found = m_importedBufferAccessStages.find(nativeBuffer);
+    return found == m_importedBufferAccessStages.end() ? rhi::PipelineStage::None : found->second;
 }
 
 std::string RenderGraph::GetDebugString() const

@@ -112,8 +112,20 @@ class BufferHandle:
         self.name = name
         self.byte_size = byte_size
         self.usage = usage
-        self.compute_buffer = None
+        self._imported_buffer = None
         self.view_light_list = bool(view_light_list)
+
+    @property
+    def compute_buffer(self):
+        # Logical graphs can participate in Python reference cycles. Retain the
+        # Python owner, whose close() drops native storage deterministically;
+        # only a built native description borrows the allocation itself.
+        owner = self._imported_buffer
+        if owner is None:
+            return None
+        if owner.closed or owner._native is None:
+            raise ValueError(f"Imported buffer '{self.name}' is closed")
+        return owner._native
 
     def __repr__(self) -> str:
         return f"<BufferHandle '{self.name}' {self.byte_size} bytes>"
@@ -1256,7 +1268,7 @@ class RenderGraph:
         if buffer._byte_offset != 0 or buffer.nbytes != buffer._native.byte_size:
             raise ValueError("import_buffer requires the complete GPU allocation, not a buffer view")
         handle = BufferHandle(resource_name, buffer.nbytes, int(GraphBufferUsage.STORAGE))
-        handle.compute_buffer = buffer._native
+        handle._imported_buffer = buffer
         self._buffers.append(handle)
         return handle
 

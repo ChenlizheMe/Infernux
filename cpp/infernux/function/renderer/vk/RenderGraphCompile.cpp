@@ -382,12 +382,27 @@ bool RenderGraph::TopologicalSort()
 
 bool RenderGraph::CompileSubmissionPlan()
 {
+    m_importedBufferAccessStages.clear();
     std::vector<rhi::SubmissionWorkItem> workItems;
     workItems.reserve(m_executionOrder.size());
     for (const uint32_t passIndex : m_executionOrder) {
         if (passIndex >= m_passes.size() || m_passes[passIndex].culled)
             continue;
         const auto &pass = m_passes[passIndex];
+        const auto collectImportedBufferAccess = [&](const ResourceAccess &access) {
+            const auto &resource = m_resources[access.handle.id];
+            if (resource.type == ResourceType::Buffer && resource.isExternal && resource.rhiBuffer.IsValid() &&
+                access.access != rhi::Access::None) {
+                // Imported RHI handles borrow the same physical allocation under
+                // their own descriptor slot. Resolve aliases to the VkBuffer.
+                auto &stages = m_importedBufferAccessStages[resource.externalBuffer];
+                stages = stages | access.stages;
+            }
+        };
+        for (const auto &read : pass.reads)
+            collectImportedBufferAccess(read);
+        for (const auto &write : pass.writes)
+            collectImportedBufferAccess(write);
         rhi::PipelineStage waitStages = rhi::PipelineStage::None;
         for (const auto &read : pass.reads)
             waitStages = waitStages | read.stages;

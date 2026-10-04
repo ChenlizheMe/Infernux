@@ -1437,6 +1437,23 @@ if(INFERNUX_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
         )
     endforeach()
+    foreach(_buffer_check copy direct)
+        foreach(_buffer_completion pending completed)
+            set(_buffer_test "infernux.rendergraph_buffer_${_buffer_check}_${_buffer_completion}_gpu")
+            add_test(NAME ${_buffer_test}
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/python/Infernux/test/rendergraph_buffer_gpu_test.py
+                    --check ${_buffer_check} --completion ${_buffer_completion}
+            )
+            set_tests_properties(${_buffer_test} PROPERTIES
+                ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+                LABELS "requires_vulkan_device"
+                TIMEOUT 45
+                RUN_SERIAL TRUE
+                FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
+            )
+        endforeach()
+    endforeach()
     add_test(
         NAME infernux.mixed_deferred_coverage_gpu
         COMMAND ${Python3_EXECUTABLE}
