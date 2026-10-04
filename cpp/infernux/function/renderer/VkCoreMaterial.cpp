@@ -1480,17 +1480,6 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
         materialKey = material->GetName();
     }
 
-    MaterialRenderData *forwardRenderData = m_materialPipelineManager.GetRenderData(materialKey);
-    MaterialDescriptorSet *forwardMaterialDesc = forwardRenderData ? forwardRenderData->materialDescSet : nullptr;
-    if ((!forwardRenderData || !forwardRenderData->isValid || !forwardMaterialDesc || !forwardMaterialDesc->isValid) &&
-        RefreshMaterialPipeline(material, vertShaderName, fragShaderName)) {
-        // Shadow passes can execute before the first Forward draw after a
-        // scene switch. Publish the authoritative Forward material resources
-        // here so the linked Shadow variant never depends on draw order.
-        forwardRenderData = m_materialPipelineManager.GetRenderData(materialKey);
-        forwardMaterialDesc = forwardRenderData ? forwardRenderData->materialDescSet : nullptr;
-    }
-    const ShaderProgram *forwardProgram = forwardRenderData ? forwardRenderData->shaderProgram.get() : nullptr;
     const ShaderStagePair stagePair{vertShaderName, fragShaderName};
     const ShaderProgramArtifact *linkedArtifact = m_shaderCache.FindProgramArtifact(stagePair);
     // A shadow pass can be the first consumer of a material after a fresh
@@ -1512,6 +1501,18 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
                               material->GetName(), "'");
         return VK_NULL_HANDLE;
     }
+    // Resolve the linked artifact before preparing its reflected material
+    // resources. A newly selected stage pair has no cached Forward code until
+    // that publication; preparing descriptors earlier skips its first shadow
+    // draw even though the Shadow variant itself is subsequently available.
+    MaterialRenderData *forwardRenderData = m_materialPipelineManager.GetRenderData(materialKey);
+    MaterialDescriptorSet *forwardMaterialDesc = forwardRenderData ? forwardRenderData->materialDescSet : nullptr;
+    if ((!forwardRenderData || !forwardRenderData->isValid || !forwardMaterialDesc || !forwardMaterialDesc->isValid) &&
+        RefreshMaterialPipeline(material, vertShaderName, fragShaderName)) {
+        forwardRenderData = m_materialPipelineManager.GetRenderData(materialKey);
+        forwardMaterialDesc = forwardRenderData ? forwardRenderData->materialDescSet : nullptr;
+    }
+    const ShaderProgram *forwardProgram = forwardRenderData ? forwardRenderData->shaderProgram.get() : nullptr;
     ShaderProgramPublication linkedShadowPublication =
         m_shaderCache.MaterializeProgramVariant(stagePair, ShaderCompileTarget::Shadow);
     const ShaderProgram *linkedShadowProgram = linkedShadowPublication.get();
