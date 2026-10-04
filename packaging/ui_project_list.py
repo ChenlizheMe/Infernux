@@ -72,7 +72,7 @@ class _ProjectCard(AnimatedSurfaceFrame):
             unavailable_reason = ""
             if is_frozen() and version_manager is not None:
                 try:
-                    python_version = read_project_python_version(path, required=True)
+                    python_version = read_project_python_version(path)
                 except (OSError, RuntimeError, ValueError) as exc:
                     python_version = ""
                     unavailable_reason = str(exc)

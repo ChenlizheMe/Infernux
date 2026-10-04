@@ -26,6 +26,7 @@ from Infernux.engine.runtime_change_journal import (
 from Infernux.engine.project_context import get_project_root
 from Infernux.engine.project_view_settings import (
     load_project_view_settings,
+    project_view_settings_path,
     write_project_view_settings_section,
 )
 from Infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
@@ -194,7 +195,7 @@ class GameViewPanel(EditorPanel):
         root = get_project_root()
         if not root:
             return None
-        return os.path.join(root, "ProjectSettings", "GameView.ini")
+        return project_view_settings_path(root)
 
     def _load_resolution_settings(self):
         if self._settings_loaded:
@@ -204,10 +205,6 @@ class GameViewPanel(EditorPanel):
         path = self._settings_ini_path()
         if not path:
             return
-        if not os.path.isfile(path):
-            self._save_resolution_settings()
-            return
-
         try:
             cp = load_project_view_settings(path)
         except (OSError, configparser.Error) as _exc:

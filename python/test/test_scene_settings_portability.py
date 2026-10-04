@@ -94,7 +94,7 @@ def test_editor_navigation_does_not_modify_shared_project_settings(tmp_path, mon
     original = '{"lastOpenedSceneGuid": "legacy-scene"}\n'
     settings.write_text(original, encoding="utf-8")
     monkeypatch.setattr(scene_manager_module, "_effective_project_root", lambda: str(tmp_path))
-    assert scene_manager_module._load_editor_settings()["lastOpenedSceneGuid"] == "legacy-scene"
+    assert scene_manager_module._load_editor_settings() == {}
     scene_manager_module._save_editor_settings({"lastOpenedSceneGuid": "local-scene"})
     assert scene_manager_module._load_editor_settings()["lastOpenedSceneGuid"] == "local-scene"
     assert settings.read_text(encoding="utf-8") == original

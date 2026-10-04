@@ -148,6 +148,9 @@ def test_frozen_launch_preparation_does_not_cold_start_python_twice(
     tmp_path: Path,
     monkeypatch,
 ):
+    from project_python_runtime import write_project_python_version
+
+    write_project_python_version(tmp_path, "3.13")
     runtime_python = tmp_path / ".runtime" / "python313" / "python.exe"
     runtime_python.parent.mkdir(parents=True)
     runtime_python.write_bytes(b"")

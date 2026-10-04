@@ -21,10 +21,7 @@ from python_runtime import PythonRuntimeError, PythonRuntimeManager
 _NO_WINDOW: int = 0x08000000 if sys.platform == "win32" else 0
 
 def _project_python_version(project_dir: str) -> str:
-    version = read_project_python_version(project_dir, required=is_frozen())
-    if version:
-        return version
-    return f"{sys.version_info.major}.{sys.version_info.minor}"
+    return read_project_python_version(project_dir)
 
 
 def source_engine_version() -> str:

@@ -20,6 +20,12 @@ def _load_embed_runtime_manager(monkeypatch):
     return importlib.import_module("embed_runtime_manager")
 
 
+def _bind_python(project: Path, version: str) -> None:
+    from project_python_runtime import write_project_python_version
+
+    write_project_python_version(project, version)
+
+
 class _FakeVersionManager:
     def __init__(self, wheel_path: str) -> None:
         self._wheel_path = wheel_path
@@ -85,6 +91,7 @@ def test_vscode_workspace_uses_current_pyright_interpreter_settings(
     monkeypatch.setattr(project_model, "is_frozen", lambda: False)
     project_dir = tmp_path / "project"
 
+    _bind_python(project_dir, f"{project_model.sys.version_info.major}.{project_model.sys.version_info.minor}")
     project_model.ProjectModel._create_vscode_workspace(str(project_dir))
 
     settings = json.loads(
@@ -124,6 +131,7 @@ def test_frozen_project_runtime_installs_infernux_by_extracting_wheel(tmp_path, 
     wheel_path = tmp_path / "infernux-0.1.6-cp312-cp312-win_amd64.whl"
     _write_infernux_wheel(wheel_path)
     project_dir = tmp_path / "project"
+    _bind_python(project_dir, "3.12")
     runtime_dir = project_dir / ".runtime" / "python312"
     runtime_dir.mkdir(parents=True)
     project_python = Path(
@@ -161,6 +169,7 @@ def test_matching_frozen_project_runtime_skips_reinstall_when_native_import_vali
     wheel_path = tmp_path / "infernux-0.1.6-cp312-cp312-win_amd64.whl"
     wheel_path.write_bytes(b"wheel")
     project_dir = tmp_path / "project"
+    _bind_python(project_dir, "3.12")
     runtime_dir = project_dir / ".runtime" / "python312"
     runtime_dir.mkdir(parents=True)
     project_python = Path(
@@ -195,6 +204,7 @@ def test_frozen_project_runtime_direct_install_replaces_old_infernux_only(tmp_pa
     wheel_path = tmp_path / "infernux-0.1.6-cp312-cp312-win_amd64.whl"
     _write_infernux_wheel(wheel_path)
     project_dir = tmp_path / "project"
+    _bind_python(project_dir, "3.12")
     runtime_dir = project_dir / ".runtime" / "python312"
     runtime_dir.mkdir(parents=True)
     project_python = Path(

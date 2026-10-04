@@ -19,6 +19,7 @@ from Infernux.engine.interaction import ContinuousEditService, ViewCommandServic
 from Infernux.engine.project_context import get_project_root
 from Infernux.engine.project_view_settings import (
     load_project_view_settings,
+    project_view_settings_path,
     write_project_view_settings_section,
 )
 from Infernux.ui.enums import TextResizeMode
@@ -329,7 +330,7 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         root = get_project_root()
         if not root:
             return None
-        return os.path.join(root, "ProjectSettings", "GameView.ini")
+        return project_view_settings_path(root)
 
     def _load_view_settings(self):
         if self._settings_loaded:
@@ -339,10 +340,6 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         path = self._settings_ini_path()
         if not path:
             return
-        if not os.path.isfile(path):
-            self._save_view_settings()
-            return
-
         try:
             cp = load_project_view_settings(path)
         except (OSError, configparser.Error) as _exc:
@@ -350,7 +347,6 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
             return
 
         if "UIEditor" not in cp:
-            self._save_view_settings()
             return
 
         section = cp["UIEditor"]

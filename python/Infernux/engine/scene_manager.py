@@ -111,10 +111,6 @@ def _effective_project_root() -> Optional[str]:
 
 def _load_editor_settings() -> dict:
     path = _settings_path()
-    if path and not os.path.isfile(path):
-        # Read the old location without writing local navigation back to Git.
-        root = _effective_project_root()
-        path = os.path.join(root, "ProjectSettings", EDITOR_SETTINGS_FILE) if root else None
     if not path or not os.path.isfile(path):
         return {}
     try:

@@ -10,8 +10,13 @@ from Infernux.core.document_store import write_document_text
 from Infernux.engine.path_utils import resolved_path
 
 
+def project_view_settings_path(project_root: str) -> str:
+    """Keep each checkout's viewport preferences outside authored settings."""
+    return os.path.join(project_root, "Library", "GameView.ini")
+
+
 def load_project_view_settings(path: str) -> configparser.ConfigParser:
-    """Load one editor settings file without inventing compatibility state."""
+    """Read the current checkout's local viewport preferences."""
     parser = configparser.ConfigParser()
     if not path or not os.path.isfile(path):
         return parser
@@ -47,4 +52,4 @@ def write_project_view_settings_section(
     write_document_text(target, output.getvalue())
 
 
-__all__ = ["load_project_view_settings", "write_project_view_settings_section"]
+__all__ = ["project_view_settings_path", "load_project_view_settings", "write_project_view_settings_section"]

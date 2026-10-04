@@ -25,12 +25,13 @@ def test_project_python_binding_round_trips(tmp_path: Path) -> None:
     assert read_project_python_version(tmp_path) == "3.13"
 
 
-def test_private_python312_runtime_is_detected_without_rewriting_it(
+def test_private_runtime_cannot_supply_the_shared_python_binding(
     tmp_path: Path,
 ) -> None:
     (tmp_path / ".runtime" / "python312").mkdir(parents=True)
 
-    assert read_project_python_version(tmp_path) == "3.12"
+    with pytest.raises(RuntimeError, match="exact Python ABI"):
+        read_project_python_version(tmp_path)
     assert not (tmp_path / "ProjectSettings" / "PythonRuntime.json").exists()
 
 
@@ -38,7 +39,7 @@ def test_unbound_project_with_multiple_runtimes_is_rejected(tmp_path: Path) -> N
     (tmp_path / ".runtime" / "python312").mkdir(parents=True)
     (tmp_path / ".runtime" / "python313").mkdir(parents=True)
 
-    with pytest.raises(RuntimeError, match="multiple Python runtimes"):
+    with pytest.raises(RuntimeError, match="exact Python ABI"):
         read_project_python_version(tmp_path)
 
 
@@ -56,5 +57,13 @@ def test_explicit_binding_selects_one_of_multiple_runtime_directories(
 
 
 def test_missing_project_python_binding_has_actionable_error(tmp_path: Path) -> None:
-    with pytest.raises(RuntimeError, match="choose a Python runtime"):
+    with pytest.raises(RuntimeError, match="Restore ProjectSettings/PythonRuntime.json"):
+        read_project_python_version(tmp_path)
+
+
+def test_venv_config_cannot_supply_the_shared_python_binding(tmp_path):
+    config = tmp_path / ".venv" / "pyvenv.cfg"
+    config.parent.mkdir()
+    config.write_text("version = 3.13.5\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="exact Python ABI"):
         read_project_python_version(tmp_path)
