@@ -52,6 +52,27 @@ def test_transaction_rollback_does_not_overwrite_a_concurrent_registry_change(tm
     assert registry.load()["packages"] == [{"reference": "team/ours"}]
 
 
+def test_local_python_environment_cannot_replace_the_shared_resolved_version(tmp_path):
+    registry = PluginRegistry(str(tmp_path))
+    document = registry.load()
+    document["python_dependencies"] = [{
+        "name": "teamlib", "managed": True, "baseline_version": "0.9",
+        "installed_version": "1.5",
+        "owners": [{"reference": "@project", "requirements": ["teamlib>=1,<2"]}],
+    }]
+    registry.save(document)
+    shared = Path(registry.path).read_bytes()
+    lock = Path(registry.lock_path).read_bytes()
+    environment = json.loads(Path(registry.environment_path).read_bytes())
+    environment["dependencies"]["teamlib"]["installed_version"] = "1.8"
+    Path(registry.environment_path).write_text(json.dumps(environment), encoding="utf-8")
+    loaded = registry.load()
+    assert loaded["python_dependencies"][0]["installed_version"] == "1.5"
+    registry.save(loaded)
+    assert Path(registry.path).read_bytes() == shared
+    assert Path(registry.lock_path).read_bytes() == lock
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows delete-sharing contract")
 @pytest.mark.parametrize("attribute", ("path", "lock_path"))
 def test_registry_publication_survives_a_brief_windows_reader(tmp_path, attribute):

@@ -315,7 +315,7 @@ class InxPackage:
             _atomic_write(
                 manifest_destination + ".meta",
                 current_meta_bytes(
-                    str(preview.metadata["control_guid"]), manifest_payload
+                    str(preview.metadata["control_guid"])
                 ),
                 project,
             )
@@ -499,15 +499,14 @@ class InxPackage:
 
     @staticmethod
     def _asset_identity(reference: str, logical: str, source: str) -> tuple[str, bytes]:
-        content = Path(source).read_bytes()
         meta_path = source + ".meta"
         if os.path.isfile(meta_path):
             payload = Path(meta_path).read_bytes()
             guid = _guid_from_meta_bytes(payload)
             _validate_guid(guid, logical)
-            return guid, current_meta_bytes(guid, content, existing=payload)
+            return guid, current_meta_bytes(guid, existing=payload)
         guid = uuid.uuid5(_GUID_NAMESPACE, f"{reference}\0{logical}").hex
-        return guid, current_meta_bytes(guid, content)
+        return guid, current_meta_bytes(guid)
 
 
 def portable_meta_bytes(payload: bytes, destination_relative: str) -> bytes:
@@ -521,8 +520,14 @@ def portable_meta_bytes(payload: bytes, destination_relative: str) -> bytes:
         elif isinstance(value, dict):
             fields = value.get("metadata")
             if isinstance(fields, dict):
-                fields.pop("last_modified", None)
-                fields.pop("content_hash", None)
+                for key in (
+                    "last_modified", "content_hash", "file_size", "file_type",
+                    "file_extension", "line_count", "character_count", "encoding",
+                    "size_category", "binary_type", "language",
+                ):
+                    fields.pop(key, None)
+                if fields.get("resource_type", {}).get("value") != "Mesh":
+                    fields.pop("is_readable", None)
                 entry = fields.get("file_path")
                 if isinstance(entry, dict) and entry.get("type") == "string":
                     old = str(entry["value"])
@@ -538,7 +543,7 @@ def portable_meta_bytes(payload: bytes, destination_relative: str) -> bytes:
                 relocate(item)
 
     relocate(document)
-    return (json.dumps(document, indent=4, ensure_ascii=False) + "\n").encode("utf-8")
+    return (json.dumps(document, indent=4, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
 
 
 def validate_reference(value: str) -> str:
@@ -663,17 +668,8 @@ def _guid_from_meta_bytes(payload: bytes) -> str:
         return ""
 
 
-def _content_hash(payload: bytes) -> str:
-    value = 14695981039346656037
-    for byte in payload:
-        value ^= byte
-        value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-    return f"{value:016x}"
-
-
 def current_meta_bytes(
     guid: str,
-    content: bytes,
     *,
     existing: bytes | None = None,
 ) -> bytes:
@@ -691,11 +687,8 @@ def current_meta_bytes(
     metadata = document["metadata"]
     assert isinstance(metadata, dict)
     metadata["guid"] = {"type": "string", "value": guid}
-    metadata["content_hash"] = {
-        "type": "string",
-        "value": _content_hash(content),
-    }
-    return (json.dumps(document, ensure_ascii=False, indent=4) + "\n").encode("utf-8")
+    metadata.pop("content_hash", None)
+    return (json.dumps(document, ensure_ascii=False, indent=4, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
 
 
 def _atomic_write(path: str, payload: bytes, project_root: str) -> None:

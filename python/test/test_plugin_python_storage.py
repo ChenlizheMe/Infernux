@@ -11,7 +11,7 @@ import zipfile
 
 import pytest
 
-from Infernux.plugins.manager import PluginManager
+from Infernux.plugins.manager import PluginManager, _pip_requirement_targets
 
 
 @pytest.mark.parametrize("shared", [False, True])
@@ -96,6 +96,46 @@ def test_requirement_files_live_in_project_transaction(tmp_path, monkeypatch, fa
     else:
         manager._run_pip_requirement_file(["example==1", "other>=2\n"], executable=sys.executable)
     assert len(paths) == 1 and not paths[0].parent.exists()
+
+
+@pytest.mark.parametrize("spec", ["Infernux>=99", "Infernux @ https://example.invalid/engine.whl"])
+def test_plugin_requirements_cannot_replace_the_pinned_engine(spec):
+    with pytest.raises(ValueError, match="exact engine version"):
+        _pip_requirement_targets((spec,))
+
+
+@pytest.mark.parametrize("installer", ["project", "plugin"])
+def test_real_pip_rejects_transitive_engine_upgrades(tmp_path, monkeypatch, installer):
+    from Infernux.engine import project_requirements
+
+    # All packages are local and pip only resolves a dry run, never installing
+    # anything into the interpreter used for engine validation.
+    monkeypatch.setenv("PIP_CONFIG_FILE", os.devnull)
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    for name, version, dependency in [
+        ("infernux", "99.0.0", ""),
+        ("team_dependency", "1.0", "Requires-Dist: Infernux>=99\n"),
+    ]:
+        with zipfile.ZipFile(wheels / f"{name}-{version}-py3-none-any.whl", "w") as wheel:
+            info = f"{name}-{version}.dist-info"
+            wheel.writestr(f"{info}/METADATA", f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n{dependency}")
+            wheel.writestr(f"{info}/WHEEL", "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n")
+            wheel.writestr(f"{info}/RECORD", "")
+    project = tmp_path / "Project"
+    project.mkdir()
+    arguments = [
+        "--dry-run", "--ignore-installed", "--no-index", "--find-links", str(wheels),
+        "team_dependency==1.0",
+    ]
+    if installer == "plugin":
+        manager = PluginManager(str(project))
+        with pytest.raises(RuntimeError, match="ResolutionImpossible"):
+            manager._run_process([sys.executable, "-m", "pip", "install", *arguments])
+        assert list((project / "Cache/Plugins/.staging").iterdir()) == []
+    else:
+        assert not project_requirements._install_packages(arguments, project_path=str(project))
+        assert list((project / "Cache/Python").iterdir()) == []
 
 
 def test_two_projects_reuse_a_real_pip_download_offline(tmp_path, monkeypatch):

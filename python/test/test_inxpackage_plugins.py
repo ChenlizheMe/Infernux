@@ -30,6 +30,7 @@ from Infernux.plugins import (
     InxPackage,
     SharedPackageCache,
     PackageConflictError,
+    PackageUpdateConflict,
     PluginManager,
     PluginRegistry,
     localized_intro,
@@ -139,14 +140,6 @@ def _meta(guid: str) -> str:
     return json.dumps({"metadata": {"guid": {"type": "string", "value": guid}}})
 
 
-def _fnv1a64(payload: bytes) -> str:
-    value = 14695981039346656037
-    for byte in payload:
-        value ^= byte
-        value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-    return f"{value:016x}"
-
-
 def _source(
     path: Path, reference: str, *, version: str = "1.0.0", engine: str = ""
 ) -> Path:
@@ -194,10 +187,8 @@ def test_manifestless_folder_is_the_package_root_and_uses_output_name(tmp_path):
             str(package), preview.file_records[0]["meta_archive_path"]
         ).decode("utf-8")
     )
-    assert archived_meta["metadata"]["content_hash"] == {
-        "type": "string",
-        "value": _fnv1a64(asset.read_bytes()),
-    }
+    assert "content_hash" not in archived_meta["metadata"]
+    assert archived_meta["metadata"]["guid"]["value"] == guid
 
 
 def test_file_manager_can_reexport_an_installed_package_directory(tmp_path):
@@ -1059,6 +1050,10 @@ def test_resources_root_updates_an_installed_builtin_when_payload_changes(tmp_pa
     )
 
     fixture.write_text("RELEASE = 'second'\n", encoding="utf-8")
+    manifest_path = source / "inx_package.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["version"] = "1.0.1"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _export(source, package)
     states = install_bundled_packages(
         str(project), resources_root=str(resources), manager=manager
@@ -1077,6 +1072,7 @@ def test_resources_root_updates_an_installed_builtin_when_payload_changes(tmp_pa
     )
     manifest_path = source / "inx_package.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["version"] = "1.0.2"
     manifest["intro"] = "Updated built-in description"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _export(source, package)
@@ -1094,6 +1090,67 @@ def test_resources_root_updates_an_installed_builtin_when_payload_changes(tmp_pa
         ).read_text(encoding="utf-8")
     )
     assert installed_manifest["intro"] == "Updated built-in description"
+
+
+def test_startup_never_force_overwrites_an_edited_builtin_package(tmp_path):
+    source = _source(tmp_path / "source", "infernux/platform-fixture")
+    runtime = source / "runtime"
+    runtime.mkdir()
+    (runtime / "fixture.py").write_text("VALUE = 'engine'\n", encoding="utf-8")
+    resources = tmp_path / "resources"
+    resources.mkdir()
+    _export(source, resources / "infernux.platform-fixture.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project), runtime=False)
+    install_bundled_packages(str(project), resources_root=str(resources), manager=manager)
+    authored = project / "Packages/infernux/platform-fixture/runtime/fixture.py"
+    original_meta = Path(str(authored) + ".meta").read_bytes()
+    edited = b"VALUE = 'team edit'\n"
+    authored.write_bytes(edited)
+
+    with pytest.raises(PackageUpdateConflict):
+        install_bundled_packages(str(project), resources_root=str(resources), manager=manager)
+    assert authored.read_bytes() == edited
+    assert Path(str(authored) + ".meta").read_bytes() == original_meta
+
+
+def test_package_update_preserves_mesh_read_write_and_strips_legacy_statistics(tmp_path):
+    from Infernux.plugins.package import portable_meta_bytes
+
+    source = _source(tmp_path / "source", "vendor/mesh-settings")
+    mesh = source / "Ship.obj"
+    mesh.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n", encoding="utf-8")
+    metadata = {
+        "guid": {"type": "string", "value": "a" * 32},
+        "resource_type": {"type": "enum infernux::ResourceType", "value": "Mesh"},
+        "is_readable": {"type": "bool", "value": False},
+        "file_size": {"type": "size_t", "value": 42},
+        "character_count": {"type": "size_t", "value": 42},
+    }
+    Path(str(mesh) + ".meta").write_text(json.dumps({"metadata": metadata}), encoding="utf-8")
+    package = _export(source, tmp_path / "ship.inxpkg")
+    project = _project(tmp_path / "project")
+    manager = PluginManager(str(project), runtime=False)
+    manager.install_package(str(package), install_dependencies=False)
+    authored = project / "Assets/Plugins/Ship.obj.meta"
+    document = json.loads(authored.read_bytes())
+    assert "file_size" not in document["metadata"]
+    assert "character_count" not in document["metadata"]
+    document["metadata"]["is_readable"]["value"] = True
+    authored.write_text(json.dumps(document), encoding="utf-8")
+
+    manifest_path = source / "inx_package.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["version"] = "1.0.1"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    mesh.write_text(mesh.read_text(encoding="utf-8") + "# new package revision\n", encoding="utf-8")
+    _export(source, package)
+    manager.install_package(str(package), install_dependencies=False, update=True)
+    assert json.loads(authored.read_bytes())["metadata"]["is_readable"]["value"] is True
+
+    metadata["resource_type"]["value"] = "DefaultText"
+    plain = json.loads(portable_meta_bytes(json.dumps({"metadata": metadata}).encode("utf-8"), "Assets/Text.txt"))
+    assert "is_readable" not in plain["metadata"]
 
 
 def test_resources_root_package_ignores_an_older_shared_cache_entry(tmp_path):
@@ -2608,6 +2665,8 @@ def test_startup_restores_installed_plugin_requirements_in_new_environment(
     manager = PluginManager(str(project))
     environment: dict[str, str] = {}
     commands: list[list[str]] = []
+    restored_files = []
+    next_available_version = "1.5"
 
     def run(command, cwd=None):
         commands.append(list(command))
@@ -2625,12 +2684,17 @@ def test_startup_restores_installed_plugin_requirements_in_new_environment(
                 },
             )()
         if command[2:4] == ["pip", "install"]:
-            environment["shared-wheel"] = "1.5"
+            text = Path(command[-1]).read_text(encoding="utf-8")
+            restored_files.append(text)
+            environment["shared-wheel"] = "1.5" if "shared-wheel==1.5" in text else next_available_version
         return type("Result", (), {"stdout": "ok"})()
 
     monkeypatch.setattr(manager, "_project_python_executable", lambda: "project-python")
     monkeypatch.setattr(manager, "_run_process", run)
     manager.install_package(str(package))
+    shared_registry = Path(manager.registry.path).read_bytes()
+    shared_lock = Path(manager.registry.lock_path).read_bytes()
+    next_available_version = "1.8"
     environment.clear()
     commands.clear()
 
@@ -2638,6 +2702,9 @@ def test_startup_restores_installed_plugin_requirements_in_new_environment(
         "vendor/portable-python",
     )
     assert environment == {"shared-wheel": "1.5"}
+    assert "shared-wheel==1.5" in restored_files[-1]
+    assert Path(manager.registry.path).read_bytes() == shared_registry
+    assert Path(manager.registry.lock_path).read_bytes() == shared_lock
     assert sum(command[2:4] == ["pip", "install"] for command in commands) == 1
     ledger = manager.registry.load()["python_dependencies"]
     assert ledger[0]["owners"] == [
@@ -2655,6 +2722,10 @@ def test_startup_restores_installed_plugin_requirements_in_new_environment(
     commands.clear()
     assert manager._reconcile_python_requirements_for_startup() == ()
     assert not any(command[2:4] == ["pip", "install"] for command in commands)
+
+    environment["shared-wheel"] = "1.8"
+    assert manager._reconcile_python_requirements_for_startup() == ("vendor/portable-python",)
+    assert environment == {"shared-wheel": "1.5"}
 
 
 def test_install_reuses_satisfied_project_python_requirement_without_running_pip(

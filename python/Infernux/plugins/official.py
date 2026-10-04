@@ -389,7 +389,7 @@ def install_bundled_packages(
                         "builtin": True,
                     },
                     update=True,
-                    overwrite_modified=True,
+                    overwrite_modified=False,
                 )
             )
         return tuple(installed)

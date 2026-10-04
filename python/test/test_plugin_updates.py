@@ -372,7 +372,7 @@ def test_clone_restores_project_pip_requirements_without_another_users_baseline(
     monkeypatch.setattr(cloned_manager, "_python_environment_snapshot", lambda _exe: dict(environment))
 
     def install(requirements, *, executable):
-        assert tuple(requirements) == ("demo>=2",)
+        assert tuple(requirements) == ("demo>=2", "demo==2")
         environment["demo"] = "2"
 
     monkeypatch.setattr(cloned_manager, "_run_pip_requirement_file", install)

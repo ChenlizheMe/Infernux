@@ -53,7 +53,7 @@ def test_inherited_install_flag_does_not_block_a_new_checkout(tmp_path, monkeypa
     installed = []
     monkeypatch.setattr(requirements, "_has_requirement", lambda *_args: bool(installed))
     monkeypatch.setattr(requirements, "_ensure_pip", lambda: True)
-    monkeypatch.setattr(requirements, "_install_packages", lambda specs: installed.extend(specs) or True)
+    monkeypatch.setattr(requirements, "_install_packages", lambda specs, **_kwargs: installed.extend(specs) or True)
     before = path.read_bytes()
     assert requirements.ensure_project_requirements(str(tmp_path))
     assert installed == ["demo==2.0"]

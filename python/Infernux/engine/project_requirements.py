@@ -16,9 +16,13 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
+
+from Infernux.version import ENGINE_VERSION
 
 _log = logging.getLogger("Infernux.project_requirements")
 
@@ -111,19 +115,25 @@ def _has_requirement(spec: str, import_name: str) -> bool:
     return _has_module(import_name)
 
 
-def _install_packages(specs: list[str]) -> bool:
+def _install_packages(specs: list[str], *, project_path: str) -> bool:
     """pip-install a list of requirement specifiers."""
-    completed = _run_python(
-        [
-            "-m", "pip", "install",
-            "--disable-pip-version-check",
-            "--no-input",
-            "--prefer-binary",
-            "--upgrade",
-            *specs,
-        ],
-        timeout=1800,
-    )
+    cache = Path(project_path) / "Cache" / "Python"
+    cache.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="install-", dir=cache) as workspace:
+        constraint = Path(workspace) / "engine-constraint.txt"
+        constraint.write_text(f"Infernux=={ENGINE_VERSION}\n", encoding="utf-8", newline="\n")
+        completed = _run_python(
+            [
+                "-m", "pip", "install",
+                "--constraint", str(constraint),
+                "--disable-pip-version-check",
+                "--no-input",
+                "--prefer-binary",
+                "--upgrade",
+                *specs,
+            ],
+            timeout=1800,
+        )
     return completed.returncode == 0
 
 
@@ -175,7 +185,7 @@ def ensure_project_requirements(
         return False
 
     specs = [s for s, _ in missing]
-    if not _install_packages(specs):
+    if not _install_packages(specs, project_path=project_path):
         _log.warning("Project requirements check failed: pip install returned an error.")
         return False
 

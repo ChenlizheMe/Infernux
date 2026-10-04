@@ -604,7 +604,7 @@ class PluginManager:
                     transaction.write(str(control["absolute_path"]), control_payload)
                     transaction.write(
                         str(control["absolute_path"]) + ".meta",
-                        portable_meta_bytes(current_meta_bytes(str(control["guid"]), control_payload), str(control["path_hint"])),
+                        portable_meta_bytes(current_meta_bytes(str(control["guid"])), str(control["path_hint"])),
                     )
                 file_records = [
                     {
@@ -1202,6 +1202,12 @@ class PluginManager:
         if not all_requirements:
             return ()
 
+        active_names = {item["name"] for item in _pip_requirement_targets(all_requirements)}
+        for dependency in self.registry.load()["python_dependencies"]:
+            version = str(dependency.get("installed_version", "")).strip()
+            if version and dependency["name"] in active_names:
+                all_requirements.append(f"{dependency['name']}=={version}")
+
         try:
             executable = self._project_python_executable()
             before = self._python_environment_snapshot(executable)
@@ -1214,7 +1220,9 @@ class PluginManager:
             )
             if not missing:
                 return ()
-            self._run_pip_requirement_file(missing, executable=executable)
+            self._run_pip_requirement_file(
+                tuple(dict.fromkeys(all_requirements)), executable=executable
+            )
             after = self._python_environment_snapshot(executable)
             unresolved = tuple(
                 requirement
@@ -1243,10 +1251,11 @@ class PluginManager:
                 f"{exc}"
             ) from exc
 
+        restored_names = {item["name"] for item in _pip_requirement_targets(missing)}
         return tuple(
             reference
             for reference, requirements in requirements_by_plugin.items()
-            if any(requirement in missing for requirement in requirements)
+            if any(item["name"] in restored_names for item in _pip_requirement_targets(requirements))
         )
 
     def _install_pip_lines(
@@ -1991,15 +2000,18 @@ class PluginManager:
 
         def settings(payload: bytes) -> dict[str, object]:
             document = json.loads(payload)
+            keep_readable = document["metadata"].get("resource_type", {}).get("value") == "Mesh"
             # InxResourceMeta and the default file loaders regenerate these
             # observations on import. They are not authored importer settings.
             for key in (
                 "content_hash", "file_path", "last_modified", "resource_type",
-                "file_type", "file_extension", "file_size", "is_readable",
+                "file_type", "file_extension", "file_size",
                 "line_count", "character_count", "encoding", "binary_type",
-                "size_category",
+                "size_category", "language",
             ):
                 document["metadata"].pop(key, None)
+            if not keep_readable:
+                document["metadata"].pop("is_readable", None)
             return document
 
         def local_meta(path: str, guid: str) -> tuple[bytes | None, bool]:
@@ -2033,7 +2045,7 @@ class PluginManager:
             check_edit(item.destination, baseline_payload(guid), item.payload)
             existing_meta, modified_meta = local_meta(item.destination, guid)
             meta_payload = current_meta_bytes(
-                item.guid, item.payload,
+                item.guid,
                 existing=existing_meta if modified_meta else item.meta_payload,
             )
             old_destination = os.path.join(self.project_root, package_destination(
@@ -2461,6 +2473,12 @@ class PluginManager:
         with workspace_scope as workspace:
             env = None
             if is_pip:
+                if command[3:4] == ["install"]:
+                    constraint = Path(workspace) / "engine-constraint.txt"
+                    constraint.write_text(
+                        f"Infernux=={ENGINE_VERSION}\n", encoding="utf-8", newline="\n"
+                    )
+                    command = [*command[:4], "--constraint", str(constraint), *command[4:]]
                 env = dict(os.environ)
                 shared = env.get("INFERNUX_SHARED_DATA_ROOT", "").strip()
                 cache_root = (
@@ -2708,6 +2726,11 @@ def _pip_requirement_targets(
                     except Exception:
                         name = ""
         canonical = canonicalize_name(name) if name else ""
+        if canonical == "infernux":
+            raise ValueError(
+                "Plugin requirements cannot install the engine; use the exact "
+                "engine version pinned in .infernux-version"
+            )
         key = (canonical, requirement)
         if canonical and key not in seen:
             result.append({"name": canonical, "requirement": requirement})

@@ -90,7 +90,9 @@ class PluginRegistry:
             for dependency in value["python_dependencies"]:
                 state = states.get(dependency["name"])
                 if state is not None:
-                    dependency.update(state)
+                    # The shared installed_version pins the resolved package.
+                    # This checkout only supplies local rollback ownership.
+                    dependency.update({key: state[key] for key in ("managed", "baseline_version")})
         return _RegistrySnapshot(value, file_state)
 
     def save(self, value: Mapping[str, object]) -> None:
