@@ -39,8 +39,21 @@ class _AssetImportNotReady(RuntimeError):
     pass
 
 
-class _ShaderReloadRejected(RuntimeError):
-    """A terminal candidate failure already reported by the shader publisher."""
+class _CompiledAssetRejected(RuntimeError):
+    """A terminal source failure already reported by its runtime compiler."""
+
+
+def _reject_failed_compiled_asset(path, result) -> None:
+    from Infernux.core.asset_types import RENDER_EFFECT_EXTENSIONS, SHADER_EXTENSIONS
+    from Infernux.lib import AssetMutationErrorCode
+
+    lower = path.lower()
+    compiled_source = (
+        os.path.splitext(lower)[1] in SHADER_EXTENSIONS | RENDER_EFFECT_EXTENSIONS
+        or lower.endswith((".particlegraph", ".particle.py"))
+    )
+    if compiled_source and result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED:
+        raise _CompiledAssetRejected(result.error)
 
 
 class _AssetLocalWritePending(_AssetImportNotReady):
@@ -184,6 +197,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         )
         self._last_dependency_affected = ()
         self._stale_script_revisions = set()
+        self._rejected_compiled_assets: set[str] = set()
         # Every entry is owner-thread state.  A frontend worker can only add
         # immutable results to the collector; it can never mutate this map.
         self._script_transactions: dict[str, _ScriptPublicationTransaction] = {}
@@ -430,10 +444,10 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 self._dispatch_event(event)
             except _AssetLocalWritePending:
                 self._coordinator.defer(event)
-            except _ShaderReloadRejected:
-                # Recompiling identical invalid GLSL cannot make it valid.
+            except _CompiledAssetRejected:
+                # Recompiling identical invalid source cannot make it valid.
                 # A subsequent source save submits a new candidate normally.
-                pass
+                self._rejected_compiled_assets.add(path_key(event.destination or event.path))
             except _AssetImportNotReady as exc:
                 if not self._coordinator.retry(event):
                     Debug.log_error(f"Asset event exhausted retries: {event}: {exc}")
@@ -1187,8 +1201,11 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 suppress_watcher_echo=False,
             )
             if not result:
+                _reject_failed_compiled_asset(path, result)
                 detail = str(getattr(result, "error", "") or "unknown import error")
                 raise _AssetImportNotReady(f"import failed: {path}: {detail}")
+        except _CompiledAssetRejected:
+            raise
         except RuntimeError as exc:
             raise _AssetImportNotReady(str(exc)) from exc
         if path.lower().endswith(".py") and not _is_particle_script_path(path):
@@ -1211,11 +1228,13 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 suppress_watcher_echo=False,
             )
             if not published:
+                _reject_failed_compiled_asset(path, published)
                 detail = str(
                     getattr(published, "error", "") or "unknown reimport error"
                 )
                 raise _AssetImportNotReady(f"shader publish failed: {path}: {detail}")
             self._notify_shader_reloaded(path)
+        self._rejected_compiled_assets.discard(path_key(path))
 
     def _commit_modified(self, path: str) -> None:
         if not os.path.isfile(path):
@@ -1229,7 +1248,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         # its ticket. Acknowledge an exact committed fingerprint and defer an
         # incomplete write; neither path is an external edit.
         local_write_state = AssetManager.local_write_event_state(path)
-        if local_write_state == "ack":
+        if local_write_state == "ack" and path_key(path) not in self._rejected_compiled_assets:
             return
         if local_write_state == "pending":
             raise _AssetLocalWritePending(
@@ -1243,8 +1262,16 @@ class ResourceChangeHandler(FileSystemEventHandler):
             raise _AssetImportNotReady(
                 f"durable resource identity is not ready: {path}"
             )
-        if durable_change is False:
+        if local_write_state == "ack" and durable_change is not False:
+            # This echo still names the rejected candidate, rather than a
+            # return to the valid baseline. It cannot acknowledge publication.
             return
+        if durable_change is False:
+            # Returning to the last valid document still retires a rejected
+            # runtime candidate. Process this new save once without claiming
+            # a document content change or retrying the failed source.
+            if path_key(path) not in self._rejected_compiled_assets:
+                return
         if not documents.preflight_external_resource_change(path, guid=asset_guid):
             return
         script_change = path.lower().endswith(".py") and not _is_particle_script_path(path)
@@ -1257,16 +1284,10 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     suppress_watcher_echo=False,
                 )
                 if not result:
+                    _reject_failed_compiled_asset(path, result)
                     detail = str(
                         getattr(result, "error", "") or "unknown reimport error"
                     )
-                    from Infernux.lib import AssetMutationErrorCode
-
-                    if (
-                        path.lower().endswith((".vert", ".frag"))
-                        and result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED
-                    ):
-                        raise _ShaderReloadRejected(detail)
                     raise _AssetImportNotReady(
                         f"reimport failed: {path}: {detail}"
                     )
@@ -1277,6 +1298,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     suppress_watcher_echo=False,
                 )
                 if not result:
+                    _reject_failed_compiled_asset(path, result)
                     detail = str(
                         getattr(result, "error", "") or "unknown import error"
                     )
@@ -1321,6 +1343,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             files = SceneFileManager.instance()
             if files is not None:
                 files.sync_prefab_dependents(str(result.guid))
+        self._rejected_compiled_assets.discard(path_key(path))
 
     def _commit_deleted(self, path: str, *, guid_hint: str = "") -> None:
         from Infernux.core.assets import AssetManager
@@ -1358,6 +1381,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             guid_hint=guid_hint,
         ):
             raise RuntimeError(f"asset deletion failed: {path}")
+        self._rejected_compiled_assets.discard(path_key(path))
         if path.lower().endswith(".py") and not _is_particle_script_path(path):
             from Infernux.components.script_loader import (
                 clear_deleted_script_errors,
@@ -1404,15 +1428,21 @@ class ResourceChangeHandler(FileSystemEventHandler):
             origin="external",
         ):
             raise RuntimeError(f"asset move failed: {old_path} -> {new_path}")
+        if path_key(old_path) in self._rejected_compiled_assets:
+            self._rejected_compiled_assets.remove(path_key(old_path))
+            self._rejected_compiled_assets.add(path_key(new_path))
         if os.path.splitext(old_path)[1].lower() != os.path.splitext(new_path)[1].lower():
             # A real move preserves GUID identity, but changing the extension
             # changes the authoritative importer and resource metadata type.
-            if not AssetManager.reimport_asset(
+            result = AssetManager.reimport_asset(
                 new_path,
                 database=self._asset_database,
                 suppress_watcher_echo=False,
-            ):
+            )
+            if not result:
+                _reject_failed_compiled_asset(new_path, result)
                 raise _AssetImportNotReady(f"renamed asset reimport failed: {new_path}")
+            self._rejected_compiled_assets.discard(path_key(new_path))
         if new_path.lower().endswith(".py") and not _is_particle_script_path(new_path):
             if is_project_component_script(
                 new_path,
@@ -1444,13 +1474,16 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 manager.notify_script_catalog_changed(old_path, "deleted")
                 manager.notify_script_catalog_changed(new_path, "moved")
         elif new_path.lower().endswith((".vert", ".frag")):
-            if not AssetManager.reimport_asset(
+            result = AssetManager.reimport_asset(
                 new_path,
                 database=self._asset_database,
                 suppress_watcher_echo=False,
-            ):
+            )
+            if not result:
+                _reject_failed_compiled_asset(new_path, result)
                 raise RuntimeError(f"moved shader reimport failed: {new_path}")
             self._notify_shader_reloaded(new_path)
+            self._rejected_compiled_assets.discard(path_key(new_path))
 
     def _process_meta_missing_rebuild(self, owner_path: str):
         """Handle a deleted .meta sidecar (watchdog-driven, main thread).

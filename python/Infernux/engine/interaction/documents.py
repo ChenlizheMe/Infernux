@@ -1968,7 +1968,14 @@ class DocumentRegistry:
             guid=guid,
             deleted=deleted,
         )
-        if content_changed is False:
+        if content_changed is False and not any(
+            document.kind is not DocumentKind.SCENE
+            and document.state is DocumentState.CONFLICT
+            for document in affected
+        ):
+            # An asset compiler may have rejected the external candidate.
+            # Returning to the valid baseline still needs publication to
+            # retire that conflict; unchanged scene conflicts stay explicit.
             return False
         if content_changed is None:
             return False

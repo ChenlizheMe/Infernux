@@ -158,6 +158,25 @@ def test_clean_external_change_reloads_and_establishes_a_new_baseline(tmp_path):
     assert not document.is_dirty
 
 
+@pytest.mark.parametrize("kind,extension", [(DocumentKind.RENDER_EFFECT, ".effect"), (DocumentKind.PARTICLE_GRAPH, ".particlegraph")])
+def test_reverted_failed_asset_reimport_retires_document_conflict(tmp_path, kind, extension):
+    registry = DocumentRegistry()
+    path = tmp_path / ("Source" + extension)
+    path.write_text("baseline", encoding="utf-8")
+    document, controller = _document(registry, kind=kind)
+    registry.rekey(document.document_id, DocumentKey.asset(kind, "source-guid"), resource_path=str(path))
+    path.write_text("rejected source", encoding="utf-8")
+    assert registry.preflight_external_resource_change(str(path), guid="source-guid")
+    registry.fail_external_resource_change(str(path), guid="source-guid", message="source compile failed")
+    assert document.state is DocumentState.CONFLICT and not controller.reloaded
+    path.write_text("baseline", encoding="utf-8")
+    assert registry.durable_resource_content_changed(str(path), guid="source-guid") is False
+    assert registry.preflight_external_resource_change(str(path), guid="source-guid")
+    assert registry.publish_external_resource_change(str(path), guid="source-guid") == (document.document_id,)
+    assert document.state is DocumentState.READY and not document.is_dirty
+    assert controller.reloaded
+
+
 def test_external_asset_deletion_is_terminal_without_a_reload_conflict(tmp_path):
     registry = DocumentRegistry()
     path = tmp_path / "Smoke.particlegraph"

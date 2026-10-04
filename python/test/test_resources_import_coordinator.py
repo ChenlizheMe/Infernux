@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import threading
 import time
@@ -486,24 +487,31 @@ def test_modified_asset_failure_surfaces_runtime_compile_detail(monkeypatch, tmp
         handler._commit_modified(resolved)
 
 
-@pytest.mark.parametrize("extension", [".vert", ".frag"])
-def test_rejected_shader_waits_for_next_save_without_retrying(monkeypatch, tmp_path, extension):
+@pytest.mark.parametrize("extension", [".vert", ".frag", ".effect", ".effectgroup", ".particlegraph", ".particle.py"])
+@pytest.mark.parametrize("echo_kind", ["watcher", "local_write"])
+def test_rejected_compiled_asset_waits_for_next_save_without_retrying(monkeypatch, tmp_path, extension, echo_kind):
     from Infernux.lib import AssetMutationErrorCode
+    from Infernux.engine.interaction import DocumentRegistry
 
     database = _AssetDatabaseProbe()
     handler = ResourceChangeHandler(_EngineProbe(database))
     path = tmp_path / ("Surface" + extension)
-    path.write_text("invalid GLSL", encoding="utf-8")
-    database.guid_by_path[str(path)] = "shader-guid"
-    failure = _mutation("reimport", str(path), "shader-guid")
+    path.write_text("invalid source", encoding="utf-8")
+    database.guid_by_path[str(path)] = "source-guid"
+    failure = _mutation("reimport", str(path), "source-guid")
     failure.succeeded = False
     failure.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
-    failure.error = "shader compile failed"
+    failure.error = "source compile failed"
     attempts, notifications, errors = [], [], []
+    documents = DocumentRegistry.instance()
+    # Reverting to the last valid document has no durable content difference,
+    # but the failed candidate still needs a successful runtime publication.
+    monkeypatch.setattr(documents, "durable_resource_content_changed", lambda *_args, **_kwargs: path.read_text(encoding="utf-8") == "invalid source")
+    monkeypatch.setattr(documents, "preflight_external_resource_change", lambda *_args, **_kwargs: True)
 
     def reimport(_cls, asset_path, **_kwargs):
         attempts.append(asset_path)
-        return failure if len(attempts) == 1 else _mutation("reimport", asset_path, "shader-guid")
+        return failure if len(attempts) == 1 else _mutation("reimport", asset_path, "source-guid")
 
     monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(reimport))
     monkeypatch.setattr(handler, "_notify_shader_reloaded", notifications.append)
@@ -514,14 +522,84 @@ def test_rejected_shader_waits_for_next_save_without_retrying(monkeypatch, tmp_p
     assert handler.process_pending_reloads(force=True) == 0
     assert attempts == [str(path)]
     assert not notifications
-    assert not errors  # The shader publisher already owns this diagnostic.
+    assert not errors  # The runtime compiler already owns this diagnostic.
 
-    path.write_text("corrected GLSL", encoding="utf-8")
+    # A no-op echo cannot acknowledge a rejected runtime candidate.
+    if echo_kind == "watcher":
+        monkeypatch.setattr(AssetManager, "is_watcher_echo_suppressed", classmethod(lambda _cls, *_args: True))
+    else:
+        monkeypatch.setattr(AssetManager, "local_write_event_state", classmethod(lambda _cls, _path: "ack"))
+    handler.on_modified(_event(path))
+    assert handler.process_pending_reloads(force=True) == 1
+    assert attempts == [str(path)]
+    assert path_key(str(path)) in handler._rejected_compiled_assets
+    if echo_kind == "watcher":
+        monkeypatch.setattr(AssetManager, "is_watcher_echo_suppressed", classmethod(lambda _cls, *_args: False))
+
+    path.write_text("corrected source", encoding="utf-8")
     handler.on_modified(_event(path))
     assert handler.process_pending_reloads(force=True) == 1
     assert handler.pending_count == 0
     assert attempts == [str(path), str(path)]
-    assert notifications == [str(path)]
+    assert notifications == ([str(path)] if extension in (".vert", ".frag") else [])
+    assert not handler._rejected_compiled_assets
+
+
+@pytest.mark.parametrize("extension", [".effect", ".effectgroup", ".particlegraph", ".particle.py"])
+def test_new_compiled_asset_rejection_is_terminal(monkeypatch, tmp_path, extension):
+    from Infernux.lib import AssetMutationErrorCode
+
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    path = tmp_path / ("New" + extension)
+    path.write_text("invalid source", encoding="utf-8")
+    failure = _mutation("import", str(path), "created-guid")
+    failure.succeeded = False
+    failure.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+    failure.error = "source compile failed"
+    attempts, errors = [], []
+
+    def import_asset(_cls, asset_path, **_kwargs):
+        attempts.append(asset_path)
+        database.guid_by_path[asset_path] = "created-guid"
+        return failure
+
+    monkeypatch.setattr(AssetManager, "import_asset", classmethod(import_asset))
+    monkeypatch.setattr(Debug, "log_error", errors.append)
+    handler.on_created(_event(path))
+    assert handler.process_pending_reloads(force=True) == 1
+    assert handler.pending_count == 0
+    assert handler.process_pending_reloads(force=True) == 0
+    assert attempts == [str(path)]
+    assert not errors
+
+
+@pytest.mark.parametrize("extension", [".vert", ".frag"])
+def test_new_shader_runtime_rejection_is_terminal(monkeypatch, tmp_path, extension):
+    from Infernux.lib import AssetMutationErrorCode
+
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    path = tmp_path / ("New" + extension)
+    path.write_text("invalid GLSL", encoding="utf-8")
+    failure = _mutation("reimport", str(path), "created-guid")
+    failure.succeeded = False
+    failure.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+    failure.error = "shader compile failed"
+    attempts, notifications, errors = [], [], []
+    monkeypatch.setattr(AssetManager, "import_asset", classmethod(lambda _cls, asset_path, **kwargs: database.import_asset(asset_path)))
+    def reject(_cls, asset_path, **kwargs):
+        attempts.append(asset_path)
+        return failure
+
+    monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(reject))
+    monkeypatch.setattr(handler, "_notify_shader_reloaded", notifications.append)
+    monkeypatch.setattr(Debug, "log_error", errors.append)
+    handler.on_created(_event(path))
+    assert handler.process_pending_reloads(force=True) == 1
+    assert handler.pending_count == 0
+    assert attempts == [str(path)]
+    assert not notifications and not errors
 
 
 def test_move_query_may_run_on_watcher_but_mutation_waits_for_owner(monkeypatch, tmp_path):
@@ -550,6 +628,28 @@ def test_move_query_may_run_on_watcher_but_mutation_waits_for_owner(monkeypatch,
     # relocation; it must not also masquerade as a content-change event.
     assert [entry[0] for entry in asset_calls] == ["invalidate"]
     assert all(entry[-1] == threading.get_ident() for entry in asset_calls)
+
+
+def test_rejected_effect_relocation_retains_recovery_until_publication(monkeypatch, tmp_path):
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    asset_calls = []
+    _patch_asset_manager(monkeypatch, asset_calls)
+    old = tmp_path / "Old.effect"
+    new = tmp_path / "New.effect"
+    source = {"$schema": "infernux.render_effect", "feature_type": "infernux.post.bloom", "parameters": {"intensity": 0.5}, "dependencies": []}
+    new.write_text(json.dumps(source), encoding="utf-8")
+    database.guid_by_path[str(old)] = "stable-guid"
+    handler._rejected_compiled_assets.add(path_key(str(old)))
+    handler.on_moved(_event(old, destination=new))
+    assert handler.process_pending_reloads(force=True) == 1
+    assert database.guid_by_path[str(new)] == "stable-guid"
+    assert handler._rejected_compiled_assets == {path_key(str(new))}
+    source["parameters"]["intensity"] = 1.5
+    new.write_text(json.dumps(source), encoding="utf-8")
+    handler.on_modified(_event(new))
+    assert handler.process_pending_reloads(force=True) == 1
+    assert not handler._rejected_compiled_assets
 
 
 def test_document_store_atomic_replace_ignores_temp_events_and_reimports_target(monkeypatch, tmp_path):

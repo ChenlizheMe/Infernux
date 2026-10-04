@@ -948,17 +948,8 @@ class AssetManager:
 
         if has_shader_runtime:
             error = native.reload_shader_runtime(path, previous_shader_id)
-            Debug.clear_source_entries(path)
+            cls._publish_compile_diagnostic(path, error)
             if error:
-                from datetime import datetime
-                from Infernux.debug import DebugConsole, LogEntry, LogType
-
-                DebugConsole.instance().log(LogEntry(
-                    message=error,
-                    log_type=LogType.ERROR,
-                    timestamp=datetime.now(),
-                    source_file=path,
-                ))
                 from Infernux.lib import AssetMutationErrorCode
                 result.succeeded = False
                 result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
@@ -1002,6 +993,21 @@ class AssetManager:
             cls._submit_internal_script_change(path, catalog_event="modified")
         return result
 
+    @staticmethod
+    def _publish_compile_diagnostic(path: str, error: str = "") -> None:
+        """Replace this source's diagnostic after one compiler result."""
+        Debug.clear_source_entries(path)
+        if error:
+            from datetime import datetime
+            from Infernux.debug import DebugConsole, LogEntry, LogType
+
+            DebugConsole.instance().log(LogEntry(
+                message=error,
+                log_type=LogType.ERROR,
+                timestamp=datetime.now(),
+                source_file=path,
+            ))
+
     @classmethod
     def _compile_render_effect_runtime(cls, path: str, guid: str) -> str:
         """Compile and publish an effect artifact before notifying live users."""
@@ -1026,9 +1032,12 @@ class AssetManager:
                     file_path=path,
                     guid=guid,
                 )
+            cls._publish_compile_diagnostic(path)
             return ""
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            return f"render effect compile failed; keeping last-known-good: {exc}"
+            error = f"render effect compile failed; keeping last-known-good: {exc}"
+            cls._publish_compile_diagnostic(path, error)
+            return error
 
     @staticmethod
     def _is_particle_source(path: str) -> bool:
@@ -1066,9 +1075,12 @@ class AssetManager:
                 guid=guid,
                 runtime_artifact_path=runtime_artifact_path,
             )
+            cls._publish_compile_diagnostic(path)
             return ""
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            return f"particle compile failed; keeping last-known-good: {exc}"
+            error = f"particle compile failed; keeping last-known-good: {exc}"
+            cls._publish_compile_diagnostic(path, error)
+            return error
 
     @classmethod
     def _publish_asset_content_change(
@@ -2205,6 +2217,7 @@ class AssetManager:
                     path,
                     guid=guid,
                 )
+                cls._publish_compile_diagnostic(path)
                 if isinstance(document, RenderEffectAsset):
                     effect = RenderEffect(document, file_path=path, guid=guid)
                     effect._artifact_revision = artifact.revision
@@ -2227,6 +2240,7 @@ class AssetManager:
 
                 guid = cls._get_guid_from_path(path) or ""
                 ParticleArtifactRegistry.compile_path(path, guid=guid)
+                cls._publish_compile_diagnostic(path)
                 return ParticleGraphAsset.load(path)
             except (OSError, RuntimeError, TypeError, ValueError):
                 return None

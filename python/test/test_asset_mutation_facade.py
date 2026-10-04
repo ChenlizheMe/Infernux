@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib
+from types import SimpleNamespace
+
+import pytest
 
 from Infernux.core.assets import AssetManager
 from Infernux.lib import AssetMutationErrorCode, AssetMutationResult
@@ -324,6 +327,90 @@ def test_shader_runtime_failure_reports_committed_database_state(monkeypatch):
     )
     assert AssetManager.reimport_asset("old.vert", database=database)
     assert [entry.message for entry in console.get_entries()] == ["unrelated error"]
+
+
+@pytest.mark.parametrize("extension", [".effect", ".effectgroup", ".particlegraph", ".particle.py"])
+def test_compiled_asset_failure_has_source_diagnostic_until_corrected(monkeypatch, extension):
+    from Infernux.debug import Debug, DebugConsole, LogType
+    from Infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry
+    from Infernux.particle.artifact import ParticleArtifactRegistry
+
+    monkeypatch.setattr(DebugConsole, "_instance", None)
+    console = DebugConsole.instance()
+    order = []
+    database = _Database(order)
+    path = "New" + extension
+    database.get_runtime_artifact_path = lambda *_args: ""
+    _isolate_side_effects(monkeypatch, order)
+    monkeypatch.setattr(AssetManager, "_get_cached", classmethod(lambda _cls, _guid: None))
+    monkeypatch.setattr(AssetManager, "_prime_material_preview", classmethod(lambda _cls, _path: None))
+    registry, method = (
+        (RenderEffectArtifactRegistry, "compile_and_publish")
+        if extension in (".effect", ".effectgroup")
+        else (ParticleArtifactRegistry, "compile_path")
+    )
+
+    def fail(_cls, *_args, **_kwargs):
+        raise ValueError("missing effect-stage resource: missing_probe")
+
+    monkeypatch.setattr(registry, method, classmethod(fail))
+    result = AssetManager.import_asset(path, database=database)
+    assert not result and result.database_committed
+    assert result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+    entries = console.get_entries()
+    assert len(entries) == 1
+    assert entries[0].log_type is LogType.ERROR
+    assert entries[0].source_file == path
+    assert entries[0].message == result.error
+    assert "missing_probe" in result.error
+    assert "editor-created" not in order
+
+    # Another rejected save replaces the source diagnostic; unrelated errors
+    # survive the later successful publication.
+    Debug.log_error("unrelated error")
+    assert not AssetManager.reimport_asset(path, database=database)
+    assert len([entry for entry in console.get_entries() if entry.source_file == path]) == 1
+    monkeypatch.setattr(registry, method, classmethod(lambda _cls, *_args, **_kwargs: (SimpleNamespace(revision=1), None)))
+    assert AssetManager.reimport_asset(path, database=database)
+    assert [entry.message for entry in console.get_entries()] == ["unrelated error"]
+    assert "editor-modified" in order
+
+
+@pytest.mark.parametrize("extension", [".effect", ".effectgroup", ".particlegraph"])
+def test_successful_managed_load_retires_compile_diagnostic(monkeypatch, extension):
+    from Infernux.application import Application
+    from Infernux.debug import Debug, DebugConsole
+    from Infernux.renderstack.render_effect_asset import RenderEffectAsset, RenderEffectGroupAsset
+    from Infernux.renderstack.render_effect_compiler import RenderEffectArtifactRegistry
+    from Infernux.particle.artifact import ParticleArtifactRegistry
+    from Infernux.particle.asset import ParticleGraphAsset
+
+    monkeypatch.setattr(DebugConsole, "_instance", None)
+    path = "Corrected" + extension
+    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: False))
+    monkeypatch.setattr(AssetManager, "_get_cached", classmethod(lambda _cls, _guid: None))
+    monkeypatch.setattr(AssetManager, "_get_path_from_guid", classmethod(lambda _cls, _guid: path))
+    monkeypatch.setattr(AssetManager, "_get_guid_from_path", classmethod(lambda _cls, _path: "guid"))
+    AssetManager._publish_compile_diagnostic(path, "rejected source")
+    Debug.log_error("unrelated error")
+    if extension == ".particlegraph":
+        registry, method = ParticleArtifactRegistry, "compile_path"
+        result = None
+        monkeypatch.setattr(ParticleGraphAsset, "load", classmethod(lambda _cls, _path: SimpleNamespace(_guid="guid")))
+    else:
+        registry, method = RenderEffectArtifactRegistry, "compile_and_publish"
+        document = RenderEffectAsset("infernux.post.bloom") if extension == ".effect" else RenderEffectGroupAsset()
+        result = (SimpleNamespace(revision=1), document)
+
+    def reject(_cls, *_args, **_kwargs):
+        raise ValueError("rejected source")
+
+    monkeypatch.setattr(registry, method, classmethod(reject))
+    assert AssetManager.load_by_guid("guid") is None
+    assert len(DebugConsole.instance().get_entries()) == 2
+    monkeypatch.setattr(registry, method, classmethod(lambda _cls, *_args, **_kwargs: result))
+    assert AssetManager.load_by_guid("guid") is not None
+    assert [entry.message for entry in DebugConsole.instance().get_entries()] == ["unrelated error"]
 
 
 def test_internal_python_reimport_only_submits_collector_after_catalog_mutation(
