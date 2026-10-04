@@ -3153,6 +3153,9 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
 
         const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
         const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
+        InxShaderLoader::SetProjectShaderSearchPaths(
+            playerMode ? std::vector<std::string>{JoinPath({projectPath, "Library", "Artifacts"})}
+                       : std::vector<std::string>{assetsPath, JoinPath({projectPath, "Packages"})});
         const std::string runtimeAssetCatalog = JoinPath({projectPath, "Library", "RuntimeAssetRecords.json"});
         std::error_code runtimeCatalogError;
         const bool hasRuntimeCatalog =
@@ -3497,6 +3500,9 @@ void Infernux::InitHeadless(const std::string &projectPath, const std::string &b
     {
         const char *playerModeFlag = std::getenv("_INFERNUX_PLAYER_MODE");
         const bool playerMode = playerModeFlag != nullptr && playerModeFlag[0] == '1' && playerModeFlag[1] == '\0';
+        InxShaderLoader::SetProjectShaderSearchPaths(
+            playerMode ? std::vector<std::string>{JoinPath({projectPath, "Library", "Artifacts"})}
+                       : std::vector<std::string>{JoinPath({projectPath, "Assets"}), JoinPath({projectPath, "Packages"})});
         const std::string runtimeAssetCatalog = JoinPath({projectPath, "Library", "RuntimeAssetRecords.json"});
         std::error_code runtimeCatalogError;
         const bool hasRuntimeCatalog =

@@ -153,6 +153,7 @@ ShaderProgramArtifact LinkedShaderProgramArtifactCompilation::CreateRuntimeArtif
 
 // Static members
 std::vector<std::string> InxShaderLoader::s_additionalSearchPaths;
+std::vector<std::string> InxShaderLoader::s_projectSearchPaths;
 std::recursive_mutex InxShaderLoader::s_compilationMutex;
 std::unordered_map<std::string, std::string> InxShaderLoader::s_templateCache;
 std::unordered_map<std::string, ShaderDescriptor> InxShaderLoader::s_shadingModelCache;
@@ -508,16 +509,11 @@ void ValidateReflectedUIStage(const ShaderReflection &reflection, const ShaderPr
 void InxShaderLoader::InvalidateDirectoryCache(const std::string &dir)
 {
     const CompilationGuard guard;
-    if (dir.empty()) {
-        s_shaderIdMapCache.clear();
-        s_shadingModelCache.clear();
-    } else {
-        const std::string normalized = FromFsPath(ToFsPath(dir));
-        s_shaderIdMapCache.erase(normalized);
-        // Shading models may have been loaded from this directory — clear all
-        // since we cannot cheaply map model-name → source-dir.
-        s_shadingModelCache.clear();
-    }
+    // Every map includes shared roots. A nested edit can change the imports
+    // of a sibling material or the built-in DeferredLighting program.
+    (void)dir;
+    s_shaderIdMapCache.clear();
+    s_shadingModelCache.clear();
 }
 
 void InxShaderLoader::InvalidateTemplateCache()
@@ -536,7 +532,22 @@ void InxShaderLoader::AddShaderSearchPath(const std::string &dir)
             return;
     }
     s_additionalSearchPaths.push_back(normalizedDir);
-    INXLOG_INFO("Shader search path added: ", normalizedDir);
+    InvalidateDirectoryCache();
+    InvalidateTemplateCache();
+    INXLOG_DEBUG("Shader search path added: ", normalizedDir);
+}
+
+void InxShaderLoader::SetProjectShaderSearchPaths(const std::vector<std::string> &directories)
+{
+    const CompilationGuard guard;
+    s_projectSearchPaths.clear();
+    for (const auto &directory : directories) {
+        const auto normalized = ResolveFilesystemPath(directory);
+        if (!normalized.empty() && std::find(s_projectSearchPaths.begin(), s_projectSearchPaths.end(), normalized) ==
+                                       s_projectSearchPaths.end())
+            s_projectSearchPaths.push_back(normalized);
+    }
+    InvalidateDirectoryCache();
 }
 
 InxShaderLoader::InxShaderLoader(bool generateDebugInfo, bool stripDebugInfo, bool disableOptimizer, bool optimizeSize,
@@ -936,11 +947,6 @@ ShaderDescriptor
 InxShaderLoader::LoadShadingModel(const std::string &modelName,
                                   const std::unordered_map<std::string, std::string> &shaderIdMap) const
 {
-    // Check cache first
-    auto cacheIt = s_shadingModelCache.find(modelName);
-    if (cacheIt != s_shadingModelCache.end())
-        return cacheIt->second;
-
     // Use a namespaced key so shading models cannot collide with regular imports.
     auto mapIt = shaderIdMap.find("shadingmodel/" + modelName);
     if (mapIt == shaderIdMap.end()) {
@@ -951,6 +957,11 @@ InxShaderLoader::LoadShadingModel(const std::string &modelName,
     }
 
     const std::string &filePath = mapIt->second;
+    // A model name is scoped to the resolved source. Two local shader roots
+    // may declare the same name without sharing the same implementation.
+    const auto cacheIt = s_shadingModelCache.find(filePath);
+    if (cacheIt != s_shadingModelCache.end())
+        return cacheIt->second;
     std::ifstream file = OpenInputFile(filePath);
     if (!file.is_open()) {
         INXLOG_ERROR("Failed to open shading model file: ", filePath);
@@ -967,7 +978,7 @@ InxShaderLoader::LoadShadingModel(const std::string &modelName,
     ShaderDescriptor desc = ParseShaderSource(content.str(), filePath);
 
     // Cache the result
-    s_shadingModelCache[modelName] = desc;
+    s_shadingModelCache[filePath] = desc;
 
     return desc;
 }
@@ -2376,24 +2387,47 @@ std::unordered_map<std::string, std::string> InxShaderLoader::BuildShaderIdMap(c
         return cacheIt->second;
 
     std::unordered_map<std::string, std::string> idMap;
+    std::unordered_map<std::string, std::string> projectDeclarations;
+    const auto mergeRoot = [&](const auto &rootMap, bool overwrite, bool project) {
+        for (const auto &[id, path] : rootMap) {
+            const auto ext = FromFsPath(ToFsPath(path).extension());
+            if (project && (ext == ".glsl" || ext == ".shadingmodel")) {
+                const auto [existing, inserted] = projectDeclarations.emplace(id, path);
+                if (!inserted && existing->second != path)
+                    throw std::runtime_error("Duplicate project shader declaration '" + id + "': " + existing->second +
+                                             " and " + path);
+            }
+            if (overwrite || idMap.find(id) == idMap.end())
+                idMap[id] = path;
+        }
+    };
 
     // Helper lambda: recursively scan a directory and populate idMap
-    auto scanDir = [&](const std::string &scanPath, bool overwrite) {
+    auto scanDir = [&](const std::string &scanPath, bool overwrite, bool project = false) {
+        const auto rootKey = "root:" + ResolveFilesystemPath(scanPath);
+        auto rootCache = s_shaderIdMapCache.find(rootKey);
+        if (rootCache != s_shaderIdMapCache.end()) {
+            mergeRoot(rootCache->second, overwrite, project);
+            return;
+        }
+        std::unordered_map<std::string, std::string> rootMap;
         std::error_code ec;
+        std::vector<std::filesystem::path> files;
         for (const auto &entry : std::filesystem::recursive_directory_iterator(ToFsPath(scanPath), ec)) {
             if (!entry.is_regular_file())
                 continue;
-
-            auto ext = FromFsPath(entry.path().extension());
+            const auto ext = FromFsPath(entry.path().extension());
             if (ext != ".vert" && ext != ".frag" && ext != ".glsl" && ext != ".shadingmodel")
                 continue;
-
-            // Skip _templates directory
-            std::string pathStr = FromFsPath(entry.path());
-            if (pathStr.find("_templates") != std::string::npos)
+            if (FromFsPath(entry.path()).find("_templates") != std::string::npos)
                 continue;
-
-            std::ifstream file(entry.path());
+            files.push_back(entry.path());
+        }
+        std::sort(files.begin(), files.end());
+        for (const auto &filePath : files) {
+            const auto ext = FromFsPath(filePath.extension());
+            const auto pathStr = FromFsPath(filePath);
+            std::ifstream file(filePath);
             if (!file.is_open())
                 continue;
 
@@ -2410,10 +2444,16 @@ std::unordered_map<std::string, std::string> InxShaderLoader::BuildShaderIdMap(c
 
             // Namespace .shadingmodel entries to prevent collision with import resolution.
             const std::string mapKey = (ext == ".shadingmodel") ? ("shadingmodel/" + id) : id;
-            if (overwrite || idMap.find(mapKey) == idMap.end()) {
-                idMap[mapKey] = ResolveFilesystemPath(pathStr);
+            if (ext == ".glsl" || ext == ".shadingmodel") {
+                const auto existing = rootMap.find(mapKey);
+                if (existing != rootMap.end())
+                    throw std::runtime_error("Duplicate shader declaration '" + mapKey + "': " + existing->second +
+                                             " and " + pathStr);
             }
+            rootMap[mapKey] = ResolveFilesystemPath(pathStr);
         }
+        mergeRoot(rootMap, overwrite, project);
+        s_shaderIdMapCache[rootKey] = std::move(rootMap);
     };
 
     // First, scan additional search paths (engine built-in shaders) as fallback
@@ -2423,8 +2463,11 @@ std::unordered_map<std::string, std::string> InxShaderLoader::BuildShaderIdMap(c
         }
     }
 
-    // Then scan the shader's own directory — these entries take priority
+    // Local sources precede built-ins. The project's libraries/models must
+    // also be visible when the root program itself lives in the engine.
     scanDir(dir, true);
+    for (const auto &projectRoot : s_projectSearchPaths)
+        scanDir(projectRoot, true, true);
 
     // Cache the result for subsequent calls with the same directory
     s_shaderIdMapCache[dir] = idMap;

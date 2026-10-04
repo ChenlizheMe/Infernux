@@ -112,7 +112,7 @@ This example has a deliberately narrow lighting promise. `getMainLight()` evalua
 
 ## Placement, discovery, and diagnostics {#discovery-diagnostics}
 
-The loader recursively scans the dependent `.frag` file's parent directory and the built-in shader roots for `.vert`, `.frag`, `.glsl`, and `.shadingmodel` files; `_templates` directories are excluded. `Name` values are exact, case-sensitive IDs. Project declarations in the fragment's directory tree take precedence over built-in fallbacks. Avoid duplicate project IDs: recursive discovery does not issue a dedicated duplicate-name diagnostic, and a later discovered declaration can replace an earlier one.
+The loader recursively scans the project's `Assets` and `Packages` roots, the dependent `.frag` file's parent directory, and the built-in shader roots for `.vert`, `.frag`, `.glsl`, and `.shadingmodel` files; `_templates` directories are excluded. `Name` values are exact, case-sensitive IDs. Project declarations take precedence over built-ins and are also visible to the built-in Deferred lighting program. A Player discovers these declarations in its cooked `Library/Artifacts` tree. Duplicate project library or shading-model IDs are rejected with a diagnostic naming both files; keep those IDs unique across `Assets` and `Packages`.
 
 Runtime reload currently accepts `.vert` and `.frag` assets only. After editing `learn_band_math.glsl` or `learn_band.shadingmodel`, save, touch, or reimport `learn_band_surface.frag`; restarting the Editor also rebuilds discovery. This exact limitation means a dependency save can leave the previous GPU program visible until a dependent root stage is reloaded.
 
@@ -298,7 +298,7 @@ Learn Band --Imports--> Learn Band Math
 
 ## 放置、发现与诊断 {#discovery-diagnostics_1}
 
-加载器会递归扫描依赖 `.frag` 所在目录与内置 Shader 根目录，识别 `.vert`、`.frag`、`.glsl` 和 `.shadingmodel`，同时排除 `_templates` 目录。`Name` 是区分大小写的精确 ID。Fragment 目录树中的项目声明优先于内置回退。请避免项目内 ID 重复：递归发现过程没有专用的重名诊断，后发现的声明可能覆盖先发现的声明。
+加载器会递归扫描项目的 `Assets` 与 `Packages` 根目录、依赖 `.frag` 所在目录及内置 Shader 根目录，识别 `.vert`、`.frag`、`.glsl` 和 `.shadingmodel`，同时排除 `_templates` 目录。`Name` 是区分大小写的精确 ID。项目声明优先于内置声明，内置 Deferred 光照程序也能发现这些模型。Player 从打包后的 `Library/Artifacts` 目录发现同一份声明。项目函数库或光照模型的 ID 重复时，加载器会拒绝编译并报告两个文件的位置；请保证这些 ID 在 `Assets` 与 `Packages` 中唯一。
 
 运行时重载目前只接受 `.vert` 与 `.frag` 资产。修改 `learn_band_math.glsl` 或 `learn_band.shadingmodel` 后，请保存、触碰或重新导入 `learn_band_surface.frag`；重启 Editor 也会重建发现结果。受此限制，只保存依赖文件时，画面可能继续显示旧 GPU Program，直到依赖它的根阶段发生重载。
 

@@ -82,9 +82,13 @@ class InxShaderLoader
     /// Register an additional directory to scan for ShaderInfo import resolution.
     static void AddShaderSearchPath(const std::string &dir);
 
-    /// Invalidate cached shader-id maps and shading-model descriptors for a
-    /// directory so the next compile rescans the filesystem.
-    /// Pass an empty string to clear ALL cached directories.
+    /// Replace the active project's shader roots. Built-in programs (including
+    /// DeferredLighting) resolve the same project imports/models as materials.
+    /// Player passes its cooked artifact root instead of authoring Assets.
+    static void SetProjectShaderSearchPaths(const std::vector<std::string> &directories);
+
+    /// Invalidate shared shader-id maps and shading-model descriptors after
+    /// an edit. A directory event also affects programs in other roots.
     static void InvalidateDirectoryCache(const std::string &dir = "");
 
     /// Invalidate cached shader templates so edits under _templates/ are
@@ -241,6 +245,7 @@ class InxShaderLoader
 
     /// Additional directories registered via AddShaderSearchPath()
     static std::vector<std::string> s_additionalSearchPaths;
+    static std::vector<std::string> s_projectSearchPaths;
 
     /// Template file cache (static — shared across all loader instances)
     static std::unordered_map<std::string, std::string> s_templateCache;
