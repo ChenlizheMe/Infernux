@@ -147,6 +147,18 @@ def test_editor_namespace_reuses_authoritative_registries():
     assert inx.editor.ShortcutRouter is ShortcutRouter
 
 
+def test_public_editor_panel_api_reuses_lifecycle_and_translation_authorities():
+    from Infernux.engine.interaction import PanelInteractionDescriptor
+    from Infernux.engine.ui.editor_panel import EditorPanel
+    from Infernux.engine.ui.panel_registry import editor_panel
+    from Infernux.engine.i18n import t
+
+    assert inx.editor.EditorPanel is EditorPanel
+    assert inx.editor.editor_panel is editor_panel
+    assert inx.editor.PanelInteractionDescriptor is PanelInteractionDescriptor
+    assert inx.editor.translate is t
+
+
 def test_runtime_ui_public_import_does_not_load_editor_theme() -> None:
     repository = Path(__file__).parents[2]
     python_root = repository / "python"

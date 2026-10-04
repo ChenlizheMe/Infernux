@@ -6,6 +6,10 @@ from .engine.interaction.commands import (
     EditorCommand as EditorCommand,
     EditorCommandRegistry as EditorCommandRegistry,
 )
+from .engine.interaction import PanelInteractionDescriptor as PanelInteractionDescriptor
+from .engine.ui.editor_panel import EditorPanel as EditorPanel
+from .engine.ui.panel_registry import editor_panel as editor_panel
+from .engine.i18n import t as translate
 from .engine.interaction.shortcuts import (
     KeyChord as KeyChord,
     ShortcutBinding as ShortcutBinding,

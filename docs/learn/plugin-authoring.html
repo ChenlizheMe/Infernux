@@ -35,7 +35,7 @@
         <div data-page-language="en" class="learn-article-body"><p><span class="mini-tag">Plugins · Chapter 1</span></p>
 <h1 id="build-your-first-plugin">Build your first plugin</h1>
 <p>This chapter turns a component and a text file into a reusable <code>.inxpkg</code>. You
-need Infernux 0.4.0 to test it. Packaging the repository itself only needs Python:
+need Infernux 0.4.1 to test it. Packaging the repository itself only needs Python:
 the official packer uses the standard library, without importing the engine.</p>
 <div class="learn-article-toc"><strong>In this chapter</strong><a href="#layout">Choose a layout</a><a href="#component">Write a component</a><a href="#pages">Add documentation</a><a href="#panel-localization">Place and translate panels</a><a href="#package">Package and install</a><a href="#release">Publish and update</a></div>
 
@@ -189,24 +189,88 @@ and assets participate in normal refresh, including newly authored components.</
 <code>menu_path_keys</code> tuple has exactly one entry per level; an empty entry keeps that
 level literal. The renderer builds the path recursively, so one through five levels
 and deeper paths use the same contract.</p>
-<div class="highlight"><pre><span></span><code><span class="nd">@editor_panel</span><span class="p">(</span>
-    <span class="s2">"Live Diagnostics"</span><span class="p">,</span>
-    <span class="n">type_id</span><span class="o">=</span><span class="s2">"studio.example.live_diagnostics"</span><span class="p">,</span>
-    <span class="n">title_key</span><span class="o">=</span><span class="s2">"studio.example.panel_title"</span><span class="p">,</span>
-    <span class="n">menu_path</span><span class="o">=</span><span class="s2">"Extensions/Example/Tools/Diagnostics/Live"</span><span class="p">,</span>
-    <span class="n">menu_path_keys</span><span class="o">=</span><span class="p">(</span>
-        <span class="s2">"menu.extensions"</span><span class="p">,</span>
-        <span class="s2">"studio.example.menu_root"</span><span class="p">,</span>
-        <span class="s2">"studio.example.menu_tools"</span><span class="p">,</span>
-        <span class="s2">"studio.example.menu_diagnostics"</span><span class="p">,</span>
-        <span class="s2">"studio.example.menu_live"</span><span class="p">,</span>
-    <span class="p">),</span>
-    <span class="n">interaction</span><span class="o">=</span><span class="n">PanelInteractionDescriptor</span><span class="p">(),</span>
-<span class="p">)</span>
-<span class="k">class</span><span class="w"> </span><span class="nc">LiveDiagnostics</span><span class="p">(</span><span class="n">EditorPanel</span><span class="p">):</span>
-    <span class="o">...</span>
+<p>This optional Editor panel is runnable as written. Add these files; leave both <code>__init__.py</code> files empty.</p>
+<div class="highlight"><pre><span></span><code>package/editor/
+  translations.json
+  my_studio/
+    __init__.py
+    hello_plugin_editor/
+      __init__.py
+      panel.py
+      preload.py
 </code></pre></div>
 
+<p>Put this code in <code>editor/my_studio/hello_plugin_editor/panel.py</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+
+
+<span class="nd">@inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">editor_panel</span><span class="p">(</span>
+    <span class="s2">"Hello Plugin"</span><span class="p">,</span>
+    <span class="n">type_id</span><span class="o">=</span><span class="s2">"my_studio.hello_plugin.panel"</span><span class="p">,</span>
+    <span class="n">title_key</span><span class="o">=</span><span class="s2">"my_studio.hello_plugin.panel_title"</span><span class="p">,</span>
+    <span class="n">menu_path</span><span class="o">=</span><span class="s2">"Extensions/Hello Plugin/Tools/Diagnostics/Live"</span><span class="p">,</span>
+    <span class="n">menu_path_keys</span><span class="o">=</span><span class="p">(</span>
+        <span class="s2">"menu.extensions"</span><span class="p">,</span>
+        <span class="s2">"my_studio.hello_plugin.menu_root"</span><span class="p">,</span>
+        <span class="s2">"my_studio.hello_plugin.menu_tools"</span><span class="p">,</span>
+        <span class="s2">"my_studio.hello_plugin.menu_diagnostics"</span><span class="p">,</span>
+        <span class="s2">"my_studio.hello_plugin.menu_live"</span><span class="p">,</span>
+    <span class="p">),</span>
+    <span class="n">interaction</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">PanelInteractionDescriptor</span><span class="p">(),</span>
+<span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">HelloPluginPanel</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">EditorPanel</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="s2">"Hello Plugin"</span><span class="p">,</span> <span class="s2">"my_studio.hello_plugin.panel"</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_initial_size</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+        <span class="k">return</span> <span class="mf">420.0</span><span class="p">,</span> <span class="mf">240.0</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_render_content</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">ctx</span><span class="o">.</span><span class="n">text_wrapped</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">translate</span><span class="p">(</span><span class="s2">"my_studio.hello_plugin.panel_message"</span><span class="p">))</span>
+</code></pre></div>
+
+<p>Create <code>preload.py</code> beside it. Importing the panel during preload assigns its registration to the plugin lifecycle,
+so updating, disabling or closing the project removes it. Do not import this Editor module from a project component.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">importlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">import_module</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">HelloPluginEditorPreload</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxPreload</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">preload</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">PreloadContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">import_module</span><span class="p">(</span><span class="s2">"my_studio.hello_plugin_editor.panel"</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">unload</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">pass</span>
+</code></pre></div>
+
+<p>Put the catalog in <code>editor/translations.json</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"$schema"</span><span class="p">:</span><span class="w"> </span><span class="s2">"infernux.editor_translations"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"locales"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"en"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.panel_title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Hello Plugin"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.panel_message"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Hello from the plugin Editor panel!"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_root"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Hello Plugin"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_tools"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Tools"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_diagnostics"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Diagnostics"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_live"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Live"</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">    </span><span class="nt">"zh"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.panel_title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"你好插件"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.panel_message"</span><span class="p">:</span><span class="w"> </span><span class="s2">"来自插件 Editor 面板的问候！"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_root"</span><span class="p">:</span><span class="w"> </span><span class="s2">"你好插件"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_tools"</span><span class="p">:</span><span class="w"> </span><span class="s2">"工具"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_diagnostics"</span><span class="p">:</span><span class="w"> </span><span class="s2">"诊断"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_live"</span><span class="p">:</span><span class="w"> </span><span class="s2">"实时"</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>Repackage and install through <strong>Update Source</strong>. Open <strong>Extensions → Hello Plugin → Tools → Diagnostics → Live → Hello Plugin</strong>,
+switch the Editor language and verify that the menu, panel title and content change together. Disabling the plugin
+must remove its menu and panel; enabling it must register them once. None of these files enters the Player.</p>
 <p>Put plugin-owned Editor strings in the fixed file <code>editor/translations.json</code>.
 The file uses the <code>infernux.editor_translations</code> schema, includes every supported
 Editor locale, and declares the same namespaced key set in each locale. Infernux
@@ -247,6 +311,9 @@ and publish another matching release. Users explicitly choose a compatible
 release on <strong>Versions</strong>. <strong>Refresh catalog</strong> updates discovery only, not installed
 versions. Test updating an existing project as well as a fresh installation;
 local edits must not be silently overwritten.</p>
+<p>A published reference/version is immutable, including local package archives.
+Increase the version whenever its content changes. The shared cache retains the
+original archive as the baseline for checking local edits during updates.</p>
 <p>For a local <code>.inxpkg</code> update, enter the new path under <strong>Add plugin</strong> and choose
 <strong>Update Source</strong>. It updates the already installed reference and retains its
 GUIDs and selection. <strong>Install Source</strong> does not replace an existing package;
@@ -260,7 +327,7 @@ ship precompiled Players; installing one does not ask game authors to run CMake.
 Android additionally requires <strong>Android support</strong> installed through Hub.</p></div>
         <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">插件 · 第 1 章</span></p>
 <h1 id="_1">制作你的第一个插件</h1>
-<p>这一章把一个组件和一份文本资源做成可复用的 <code>.inxpkg</code>。测试需要 Infernux 0.4.0，
+<p>这一章把一个组件和一份文本资源做成可复用的 <code>.inxpkg</code>。测试需要 Infernux 0.4.1，
 但打包仓库本身只需要 Python：官方打包脚本仅使用标准库，不导入引擎。</p>
 <div class="learn-article-toc"><strong>本章内容</strong><a href="#zh-layout">选择目录结构</a><a href="#zh-component">编写组件</a><a href="#zh-pages">添加文档</a><a href="#zh-panel-localization">放置并翻译 Editor 面板</a><a href="#zh-package">打包与安装</a><a href="#zh-release">发布与更新</a></div>
 
@@ -393,6 +460,88 @@ Infernux 会检测新导入的原生 Python 扩展，在无法安全替换时要
 <p>用斜杠分隔的作者文本声明面板的完整菜单位置。平行的 <code>menu_path_keys</code> 元组必须为每一级
 提供一个条目；空字符串表示该级保持原文。渲染器递归建立菜单树，因此一至五级以及更深
 路径都使用同一套协议。</p>
+<p>这是一个可直接运行的可选 Editor 面板。新增以下文件；两个 <code>__init__.py</code> 留空。</p>
+<div class="highlight"><pre><span></span><code>package/editor/
+  translations.json
+  my_studio/
+    __init__.py
+    hello_plugin_editor/
+      __init__.py
+      panel.py
+      preload.py
+</code></pre></div>
+
+<p>将下面的代码放在 <code>editor/my_studio/hello_plugin_editor/panel.py</code>：</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+
+
+<span class="nd">@inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">editor_panel</span><span class="p">(</span>
+    <span class="s2">"Hello Plugin"</span><span class="p">,</span>
+    <span class="n">type_id</span><span class="o">=</span><span class="s2">"my_studio.hello_plugin.panel"</span><span class="p">,</span>
+    <span class="n">title_key</span><span class="o">=</span><span class="s2">"my_studio.hello_plugin.panel_title"</span><span class="p">,</span>
+    <span class="n">menu_path</span><span class="o">=</span><span class="s2">"Extensions/Hello Plugin/Tools/Diagnostics/Live"</span><span class="p">,</span>
+    <span class="n">menu_path_keys</span><span class="o">=</span><span class="p">(</span>
+        <span class="s2">"menu.extensions"</span><span class="p">,</span>
+        <span class="s2">"my_studio.hello_plugin.menu_root"</span><span class="p">,</span>
+        <span class="s2">"my_studio.hello_plugin.menu_tools"</span><span class="p">,</span>
+        <span class="s2">"my_studio.hello_plugin.menu_diagnostics"</span><span class="p">,</span>
+        <span class="s2">"my_studio.hello_plugin.menu_live"</span><span class="p">,</span>
+    <span class="p">),</span>
+    <span class="n">interaction</span><span class="o">=</span><span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">PanelInteractionDescriptor</span><span class="p">(),</span>
+<span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">HelloPluginPanel</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">EditorPanel</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="s2">"Hello Plugin"</span><span class="p">,</span> <span class="s2">"my_studio.hello_plugin.panel"</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">_initial_size</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+        <span class="k">return</span> <span class="mf">420.0</span><span class="p">,</span> <span class="mf">240.0</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">on_render_content</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">ctx</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">ctx</span><span class="o">.</span><span class="n">text_wrapped</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">editor</span><span class="o">.</span><span class="n">translate</span><span class="p">(</span><span class="s2">"my_studio.hello_plugin.panel_message"</span><span class="p">))</span>
+</code></pre></div>
+
+<p>再创建同目录的 <code>preload.py</code>。在 preload 中导入面板，引擎才能把注册归属到插件生命周期，
+在更新、禁用或关闭项目时移除它。不要在项目组件中导入这个 Editor 模块。</p>
+<div class="highlight"><pre><span></span><code><span class="kn">from</span><span class="w"> </span><span class="nn">importlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">import_module</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
+
+
+<span class="k">class</span><span class="w"> </span><span class="nc">HelloPluginEditorPreload</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">InxPreload</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">preload</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">context</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">PreloadContext</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">import_module</span><span class="p">(</span><span class="s2">"my_studio.hello_plugin_editor.panel"</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">unload</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">pass</span>
+</code></pre></div>
+
+<p>将词条放在 <code>editor/translations.json</code>：</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">"$schema"</span><span class="p">:</span><span class="w"> </span><span class="s2">"infernux.editor_translations"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"locales"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"en"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.panel_title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Hello Plugin"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.panel_message"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Hello from the plugin Editor panel!"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_root"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Hello Plugin"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_tools"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Tools"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_diagnostics"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Diagnostics"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_live"</span><span class="p">:</span><span class="w"> </span><span class="s2">"Live"</span>
+<span class="w">    </span><span class="p">},</span>
+<span class="w">    </span><span class="nt">"zh"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.panel_title"</span><span class="p">:</span><span class="w"> </span><span class="s2">"你好插件"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.panel_message"</span><span class="p">:</span><span class="w"> </span><span class="s2">"来自插件 Editor 面板的问候！"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_root"</span><span class="p">:</span><span class="w"> </span><span class="s2">"你好插件"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_tools"</span><span class="p">:</span><span class="w"> </span><span class="s2">"工具"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_diagnostics"</span><span class="p">:</span><span class="w"> </span><span class="s2">"诊断"</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">"my_studio.hello_plugin.menu_live"</span><span class="p">:</span><span class="w"> </span><span class="s2">"实时"</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+
+<p>重新打包并通过<strong>更新来源</strong>安装。打开<strong>扩展 → 你好插件 → 工具 → 诊断 → 实时 → 你好插件</strong>，
+切换编辑器语言，确认菜单、面板标题和内容同步改变。禁用插件后，菜单与面板都应移除；
+重新启用后只注册一次。这些文件不会进入 Player。</p>
 <p>插件自己的 Editor 词条固定放在 <code>editor/translations.json</code>。文件使用
 <code>infernux.editor_translations</code> schema，包含 Editor 支持的全部语言，并在每种语言中
 声明完全相同、带插件命名空间的键集合。Infernux 会在包 preload 前发布词条，并在热重载、
@@ -424,6 +573,8 @@ CMake/Gradle 配置和 <code>dist/</code> 都不会混进去。</p>
 <p>更新时保留 reference 和已有 GUID，增加版本号，再发布对应版本。用户在<strong>版本</strong>页显式选择
 兼容 Release；<strong>刷新官方列表</strong>只更新发现目录，不自动升级安装内容。除了全新安装，也要验证
 旧项目升级，本地修改不能被无声覆盖。</p>
+<p>已经发布的 reference/version 不可覆盖，本地包也一样。内容变化时必须增加版本号。
+共享缓存保留原始归档，更新时用它区分作者发布的变化和项目里的本地修改。</p>
 <p>更新本地 <code>.inxpkg</code> 时，在<strong>添加插件</strong>中输入新包的路径，再选择<strong>更新来源</strong>。它更新已安装的
 reference，保留 GUID 和原来的内容选择。<strong>安装来源</strong>不会替换已有包；更新遇到本地修改冲突
 也会直接拒绝，不会覆盖修改。</p>

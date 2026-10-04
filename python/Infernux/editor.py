@@ -39,7 +39,27 @@ __all__ = (
     "defer", "EditorHandleContext", "EditorHandleKind", "EditorHandleProvider",
     "EditorHandleRegistry", "EditorHandleSnapshot", "HandleRegistration",
     "register_handle_provider",
+    "EditorPanel", "editor_panel", "PanelInteractionDescriptor", "translate",
 )
+
+
+def __getattr__(name: str):
+    # Panel authoring stays lazy: runtime scripts importing the public API
+    # must not initialize the Editor UI or its theme.
+    from importlib import import_module
+
+    exports = {
+        "EditorPanel": (".engine.ui.editor_panel", "EditorPanel"),
+        "editor_panel": (".engine.ui.panel_registry", "editor_panel"),
+        "PanelInteractionDescriptor": (".engine.interaction", "PanelInteractionDescriptor"),
+        "translate": (".engine.i18n", "t"),
+    }
+    if name not in exports:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module, symbol = exports[name]
+    value = getattr(import_module(module, package=__package__), symbol)
+    globals()[name] = value
+    return value
 
 
 def _authoring_core():

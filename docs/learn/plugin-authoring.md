@@ -5,7 +5,7 @@
 # Build your first plugin
 
 This chapter turns a component and a text file into a reusable `.inxpkg`. You
-need Infernux 0.4.0 to test it. Packaging the repository itself only needs Python:
+need Infernux 0.4.1 to test it. Packaging the repository itself only needs Python:
 the official packer uses the standard library, without importing the engine.
 
 <div class="learn-article-toc"><strong>In this chapter</strong><a href="#layout">Choose a layout</a><a href="#component">Write a component</a><a href="#pages">Add documentation</a><a href="#panel-localization">Place and translate panels</a><a href="#package">Package and install</a><a href="#release">Publish and update</a></div>
@@ -159,24 +159,96 @@ Declare a panel's complete location with slash-separated authored labels. The pa
 level literal. The renderer builds the path recursively, so one through five levels
 and deeper paths use the same contract.
 
+This optional Editor panel is runnable as written. Add these files; leave both `__init__.py` files empty.
+
+```text
+package/editor/
+  translations.json
+  my_studio/
+    __init__.py
+    hello_plugin_editor/
+      __init__.py
+      panel.py
+      preload.py
+```
+
+Put this code in `editor/my_studio/hello_plugin_editor/panel.py`:
+
 ```python
-@editor_panel(
-    "Live Diagnostics",
-    type_id="studio.example.live_diagnostics",
-    title_key="studio.example.panel_title",
-    menu_path="Extensions/Example/Tools/Diagnostics/Live",
+import infernux as inx
+
+
+@inx.editor.editor_panel(
+    "Hello Plugin",
+    type_id="my_studio.hello_plugin.panel",
+    title_key="my_studio.hello_plugin.panel_title",
+    menu_path="Extensions/Hello Plugin/Tools/Diagnostics/Live",
     menu_path_keys=(
         "menu.extensions",
-        "studio.example.menu_root",
-        "studio.example.menu_tools",
-        "studio.example.menu_diagnostics",
-        "studio.example.menu_live",
+        "my_studio.hello_plugin.menu_root",
+        "my_studio.hello_plugin.menu_tools",
+        "my_studio.hello_plugin.menu_diagnostics",
+        "my_studio.hello_plugin.menu_live",
     ),
-    interaction=PanelInteractionDescriptor(),
+    interaction=inx.editor.PanelInteractionDescriptor(),
 )
-class LiveDiagnostics(EditorPanel):
-    ...
+class HelloPluginPanel(inx.editor.EditorPanel):
+    def __init__(self) -> None:
+        super().__init__("Hello Plugin", "my_studio.hello_plugin.panel")
+
+    def _initial_size(self) -> tuple[float, float]:
+        return 420.0, 240.0
+
+    def on_render_content(self, ctx) -> None:
+        ctx.text_wrapped(inx.editor.translate("my_studio.hello_plugin.panel_message"))
 ```
+
+Create `preload.py` beside it. Importing the panel during preload assigns its registration to the plugin lifecycle,
+so updating, disabling or closing the project removes it. Do not import this Editor module from a project component.
+
+```python
+from importlib import import_module
+
+import infernux as inx
+
+
+class HelloPluginEditorPreload(inx.InxPreload):
+    def preload(self, context: inx.PreloadContext) -> None:
+        import_module("my_studio.hello_plugin_editor.panel")
+
+    def unload(self) -> None:
+        pass
+```
+
+Put the catalog in `editor/translations.json`:
+
+```json
+{
+  "$schema": "infernux.editor_translations",
+  "locales": {
+    "en": {
+      "my_studio.hello_plugin.panel_title": "Hello Plugin",
+      "my_studio.hello_plugin.panel_message": "Hello from the plugin Editor panel!",
+      "my_studio.hello_plugin.menu_root": "Hello Plugin",
+      "my_studio.hello_plugin.menu_tools": "Tools",
+      "my_studio.hello_plugin.menu_diagnostics": "Diagnostics",
+      "my_studio.hello_plugin.menu_live": "Live"
+    },
+    "zh": {
+      "my_studio.hello_plugin.panel_title": "你好插件",
+      "my_studio.hello_plugin.panel_message": "来自插件 Editor 面板的问候！",
+      "my_studio.hello_plugin.menu_root": "你好插件",
+      "my_studio.hello_plugin.menu_tools": "工具",
+      "my_studio.hello_plugin.menu_diagnostics": "诊断",
+      "my_studio.hello_plugin.menu_live": "实时"
+    }
+  }
+}
+```
+
+Repackage and install through **Update Source**. Open **Extensions → Hello Plugin → Tools → Diagnostics → Live → Hello Plugin**,
+switch the Editor language and verify that the menu, panel title and content change together. Disabling the plugin
+must remove its menu and panel; enabling it must register them once. None of these files enters the Player.
 
 Put plugin-owned Editor strings in the fixed file `editor/translations.json`.
 The file uses the `infernux.editor_translations` schema, includes every supported
@@ -226,6 +298,10 @@ release on **Versions**. **Refresh catalog** updates discovery only, not install
 versions. Test updating an existing project as well as a fresh installation;
 local edits must not be silently overwritten.
 
+A published reference/version is immutable, including local package archives.
+Increase the version whenever its content changes. The shared cache retains the
+original archive as the baseline for checking local edits during updates.
+
 For a local `.inxpkg` update, enter the new path under **Add plugin** and choose
 **Update Source**. It updates the already installed reference and retains its
 GUIDs and selection. **Install Source** does not replace an existing package;
@@ -245,7 +321,7 @@ Android additionally requires **Android support** installed through Hub.
 
 # 制作你的第一个插件
 
-这一章把一个组件和一份文本资源做成可复用的 `.inxpkg`。测试需要 Infernux 0.4.0，
+这一章把一个组件和一份文本资源做成可复用的 `.inxpkg`。测试需要 Infernux 0.4.1，
 但打包仓库本身只需要 Python：官方打包脚本仅使用标准库，不导入引擎。
 
 <div class="learn-article-toc"><strong>本章内容</strong><a href="#zh-layout">选择目录结构</a><a href="#zh-component">编写组件</a><a href="#zh-pages">添加文档</a><a href="#zh-panel-localization">放置并翻译 Editor 面板</a><a href="#zh-package">打包与安装</a><a href="#zh-release">发布与更新</a></div>
@@ -378,6 +454,97 @@ Infernux 会检测新导入的原生 Python 扩展，在无法安全替换时要
 提供一个条目；空字符串表示该级保持原文。渲染器递归建立菜单树，因此一至五级以及更深
 路径都使用同一套协议。
 
+这是一个可直接运行的可选 Editor 面板。新增以下文件；两个 `__init__.py` 留空。
+
+```text
+package/editor/
+  translations.json
+  my_studio/
+    __init__.py
+    hello_plugin_editor/
+      __init__.py
+      panel.py
+      preload.py
+```
+
+将下面的代码放在 `editor/my_studio/hello_plugin_editor/panel.py`：
+
+```python
+import infernux as inx
+
+
+@inx.editor.editor_panel(
+    "Hello Plugin",
+    type_id="my_studio.hello_plugin.panel",
+    title_key="my_studio.hello_plugin.panel_title",
+    menu_path="Extensions/Hello Plugin/Tools/Diagnostics/Live",
+    menu_path_keys=(
+        "menu.extensions",
+        "my_studio.hello_plugin.menu_root",
+        "my_studio.hello_plugin.menu_tools",
+        "my_studio.hello_plugin.menu_diagnostics",
+        "my_studio.hello_plugin.menu_live",
+    ),
+    interaction=inx.editor.PanelInteractionDescriptor(),
+)
+class HelloPluginPanel(inx.editor.EditorPanel):
+    def __init__(self) -> None:
+        super().__init__("Hello Plugin", "my_studio.hello_plugin.panel")
+
+    def _initial_size(self) -> tuple[float, float]:
+        return 420.0, 240.0
+
+    def on_render_content(self, ctx) -> None:
+        ctx.text_wrapped(inx.editor.translate("my_studio.hello_plugin.panel_message"))
+```
+
+再创建同目录的 `preload.py`。在 preload 中导入面板，引擎才能把注册归属到插件生命周期，
+在更新、禁用或关闭项目时移除它。不要在项目组件中导入这个 Editor 模块。
+
+```python
+from importlib import import_module
+
+import infernux as inx
+
+
+class HelloPluginEditorPreload(inx.InxPreload):
+    def preload(self, context: inx.PreloadContext) -> None:
+        import_module("my_studio.hello_plugin_editor.panel")
+
+    def unload(self) -> None:
+        pass
+```
+
+将词条放在 `editor/translations.json`：
+
+```json
+{
+  "$schema": "infernux.editor_translations",
+  "locales": {
+    "en": {
+      "my_studio.hello_plugin.panel_title": "Hello Plugin",
+      "my_studio.hello_plugin.panel_message": "Hello from the plugin Editor panel!",
+      "my_studio.hello_plugin.menu_root": "Hello Plugin",
+      "my_studio.hello_plugin.menu_tools": "Tools",
+      "my_studio.hello_plugin.menu_diagnostics": "Diagnostics",
+      "my_studio.hello_plugin.menu_live": "Live"
+    },
+    "zh": {
+      "my_studio.hello_plugin.panel_title": "你好插件",
+      "my_studio.hello_plugin.panel_message": "来自插件 Editor 面板的问候！",
+      "my_studio.hello_plugin.menu_root": "你好插件",
+      "my_studio.hello_plugin.menu_tools": "工具",
+      "my_studio.hello_plugin.menu_diagnostics": "诊断",
+      "my_studio.hello_plugin.menu_live": "实时"
+    }
+  }
+}
+```
+
+重新打包并通过**更新来源**安装。打开**扩展 → 你好插件 → 工具 → 诊断 → 实时 → 你好插件**，
+切换编辑器语言，确认菜单、面板标题和内容同步改变。禁用插件后，菜单与面板都应移除；
+重新启用后只注册一次。这些文件不会进入 Player。
+
 插件自己的 Editor 词条固定放在 `editor/translations.json`。文件使用
 `infernux.editor_translations` schema，包含 Editor 支持的全部语言，并在每种语言中
 声明完全相同、带插件命名空间的键集合。Infernux 会在包 preload 前发布词条，并在热重载、
@@ -416,6 +583,9 @@ CMake/Gradle 配置和 `dist/` 都不会混进去。
 更新时保留 reference 和已有 GUID，增加版本号，再发布对应版本。用户在**版本**页显式选择
 兼容 Release；**刷新官方列表**只更新发现目录，不自动升级安装内容。除了全新安装，也要验证
 旧项目升级，本地修改不能被无声覆盖。
+
+已经发布的 reference/version 不可覆盖，本地包也一样。内容变化时必须增加版本号。
+共享缓存保留原始归档，更新时用它区分作者发布的变化和项目里的本地修改。
 
 更新本地 `.inxpkg` 时，在**添加插件**中输入新包的路径，再选择**更新来源**。它更新已安装的
 reference，保留 GUID 和原来的内容选择。**安装来源**不会替换已有包；更新遇到本地修改冲突

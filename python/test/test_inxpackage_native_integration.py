@@ -173,6 +173,10 @@ def test_native_inxpackage_installs_only_explicit_nested_requirement(tmp_path):
     (parent / "requirements.txt").write_text(
         "vendor/Child.inxpkg\n", encoding="utf-8"
     )
+    manifest = parent / "inx_package.json"
+    metadata = json.loads(manifest.read_text(encoding="utf-8"))
+    metadata["version"] = "2.0.0"
+    manifest.write_text(json.dumps(metadata), encoding="utf-8")
     required_package = tmp_path / "ParentRequired.inxpkg"
     InxPackage.export_source(str(parent), str(required_package))
     manager.install_package(str(required_package), install_dependencies=True)
