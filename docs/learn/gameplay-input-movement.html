@@ -12,10 +12,10 @@
     <title>Input, time, and movement · Infernux Learn</title>
     <link rel="icon" type="image/png" href="../assets/logo.png">
     <link rel="stylesheet" href="../css/fonts.css?v=2">
-    <link rel="stylesheet" href="../css/style.css?v=23">
+    <link rel="stylesheet" href="../css/style.css?v=24">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
-    <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=6">
+    <link rel="stylesheet" href="../css/mission.css?v=3">
+    <link rel="stylesheet" href="../css/learn.css?v=7">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -139,13 +139,13 @@
 <p>At 4 units per second, a <code>0.025</code> second frame moves <code>0.1</code> units. Four such frames still cover <code>0.4</code> units. Faster frames produce smaller individual steps and more of them, so distance over the same elapsed time stays consistent.</p>
 <p>The current lifecycle contract distinguishes two time values:</p>
 <ul>
-<li>The <code>delta_time</code> argument passed to <code>update()</code> and <code>late_update()</code> is the raw, unscaled frame delta from the engine.</li>
-<li><code>Time.delta_time</code> is the clamped, scaled delta and follows <code>Time.time_scale</code>.</li>
+<li>The <code>delta_time</code> argument passed to <code>update()</code> and <code>late_update()</code> is the clamped, scaled gameplay delta and follows <code>Time.time_scale</code>.</li>
+<li><code>Time.delta_time</code> exposes the scaled gameplay clock; <code>Time.unscaled_delta_time</code> exposes the clamped frame delta before scaling.</li>
 </ul>
-<p>The mover above uses the callback argument, so it continues to use unscaled frame time. For movement that should pause when <code>inx.Time.time_scale</code> becomes <code>0</code>, use <code>inx.Time.delta_time</code> for <code>frame_distance</code>:</p>
+<p>The mover above uses the callback argument, so it already pauses when <code>inx.Time.time_scale</code> becomes <code>0</code>. For movement that should continue independently of the game clock, use <code>inx.Time.unscaled_delta_time</code> for <code>frame_distance</code> inside <code>update()</code>:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
-<span class="n">frame_distance</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">speed</span> <span class="o">*</span> <span class="n">inx</span><span class="o">.</span><span class="n">Time</span><span class="o">.</span><span class="n">delta_time</span>
+<span class="n">frame_distance</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">speed</span> <span class="o">*</span> <span class="n">inx</span><span class="o">.</span><span class="n">Time</span><span class="o">.</span><span class="n">unscaled_delta_time</span>
 </code></pre></div>
 
 <p>Use one time source for one calculation. Multiplying by both values applies frame duration twice.</p>
@@ -164,7 +164,7 @@
 <p><strong>Movement changes with frame rate.</strong> Confirm that the displacement is multiplied by exactly one delta-time value. A fixed amount added in every <code>update()</code> is measured in units per frame.</p>
 <p><strong>Diagonal movement is too fast.</strong> Normalize the two input components when their squared length exceeds <code>1</code>, as the complete example does.</p>
 <p><strong>A child moves along unexpected axes.</strong> Decide whether the design needs world <code>position</code> or parent-relative <code>local_position</code>, then use that space consistently for both the read and write.</p>
-<p><strong><code>KeyCode.UpArrow</code> fails.</strong> Public constants use uppercase snake case, such as <code>KeyCode.UP_ARROW</code>, <code>KeyCode.LEFT_SHIFT</code>, and <code>KeyCode.SPACE</code>. Import them from <code>Infernux.input</code>.</p>
+<p><strong><code>KeyCode.UpArrow</code> fails.</strong> Public constants use uppercase snake case, such as <code>inx.input.KeyCode.UP_ARROW</code>, <code>inx.input.KeyCode.LEFT_SHIFT</code>, and <code>inx.input.KeyCode.SPACE</code>.</p>
 <h2 id="verify-input-movement">Verify the result</h2>
 <p>The chapter passes when all of these checks succeed:</p>
 <ol>
@@ -282,13 +282,13 @@
 <p>速度为每秒 4 个单位时，时长 <code>0.025</code> 秒的一帧移动 <code>0.1</code> 个单位。连续四帧仍会移动 <code>0.4</code> 个单位。帧越快，单步距离越短、步数越多，因此同样的经过时间会得到稳定距离。</p>
 <p>当前生命周期契约区分两种时间值：</p>
 <ul>
-<li>传给 <code>update()</code> 与 <code>late_update()</code> 的 <code>delta_time</code> 参数，是引擎提供的原始、未缩放帧间隔。</li>
-<li><code>Time.delta_time</code> 是经过上限约束和时间缩放的帧间隔，会跟随 <code>Time.time_scale</code>。</li>
+<li>传给 <code>update()</code> 与 <code>late_update()</code> 的 <code>delta_time</code> 参数，是经过上限约束和时间缩放的游戏帧间隔，会跟随 <code>Time.time_scale</code>。</li>
+<li><code>Time.delta_time</code> 提供缩放后的游戏时钟；<code>Time.unscaled_delta_time</code> 提供经过上限约束、尚未缩放的帧间隔。</li>
 </ul>
-<p>上面的移动组件使用回调参数，所以它采用未缩放帧时间。移动需要在 <code>inx.Time.time_scale</code> 变为 <code>0</code> 时暂停时，用 <code>inx.Time.delta_time</code> 计算 <code>frame_distance</code>：</p>
+<p>上面的移动组件使用回调参数，因此 <code>inx.Time.time_scale</code> 变为 <code>0</code> 时已经会暂停。移动需要独立于游戏时钟继续时，请在 <code>update()</code> 内用 <code>inx.Time.unscaled_delta_time</code> 计算 <code>frame_distance</code>：</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">infernux</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">inx</span>
 
-<span class="n">frame_distance</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">speed</span> <span class="o">*</span> <span class="n">inx</span><span class="o">.</span><span class="n">Time</span><span class="o">.</span><span class="n">delta_time</span>
+<span class="n">frame_distance</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">speed</span> <span class="o">*</span> <span class="n">inx</span><span class="o">.</span><span class="n">Time</span><span class="o">.</span><span class="n">unscaled_delta_time</span>
 </code></pre></div>
 
 <p>一次计算只选一种时间来源。同时乘上两个值会重复应用帧时长。</p>
@@ -307,7 +307,7 @@
 <p><strong>移动速度随帧率改变。</strong> 确认位移只乘了一次 delta time。每次 <code>update()</code> 都增加固定值时，单位会变成“每帧单位数”。</p>
 <p><strong>斜向移动太快。</strong> 两个输入分量的平方和大于 <code>1</code> 时进行归一化，完整示例已经包含这段处理。</p>
 <p><strong>子物体沿意外方向移动。</strong> 先决定使用世界空间 <code>position</code>，还是父级相对的 <code>local_position</code>，读取与写入必须使用同一空间。</p>
-<p><strong><code>KeyCode.UpArrow</code> 报错。</strong> 公共常量采用全大写蛇形命名，例如 <code>KeyCode.UP_ARROW</code>、<code>KeyCode.LEFT_SHIFT</code> 与 <code>KeyCode.SPACE</code>，并从 <code>Infernux.input</code> 导入。</p>
+<p><strong><code>KeyCode.UpArrow</code> 报错。</strong> 公共常量采用全大写蛇形命名，例如 <code>inx.input.KeyCode.UP_ARROW</code>、<code>inx.input.KeyCode.LEFT_SHIFT</code> 与 <code>inx.input.KeyCode.SPACE</code>。</p>
 <h2 id="verify-input-movement_1">验证结果</h2>
 <p>下面各项都满足时，本章练习通过：</p>
 <ol>
@@ -331,7 +331,7 @@
 <script src="../js/vendor/gsap.min.js?v=3.13.0"></script>
 <script src="../js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
 <script src="../js/main.js?v=16"></script>
-<script src="../js/motion.js?v=1"></script>
+<script src="../js/motion.js?v=2"></script>
     <script src="../js/docs-search.js?v=6"></script>
     <script src="../js/bilingual-page.js?v=1"></script>
 </body>

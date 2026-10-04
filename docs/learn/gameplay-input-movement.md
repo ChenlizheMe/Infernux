@@ -103,15 +103,15 @@ At 4 units per second, a `0.025` second frame moves `0.1` units. Four such frame
 
 The current lifecycle contract distinguishes two time values:
 
-- The `delta_time` argument passed to `update()` and `late_update()` is the raw, unscaled frame delta from the engine.
-- `Time.delta_time` is the clamped, scaled delta and follows `Time.time_scale`.
+- The `delta_time` argument passed to `update()` and `late_update()` is the clamped, scaled gameplay delta and follows `Time.time_scale`.
+- `Time.delta_time` exposes the scaled gameplay clock; `Time.unscaled_delta_time` exposes the clamped frame delta before scaling.
 
-The mover above uses the callback argument, so it continues to use unscaled frame time. For movement that should pause when `inx.Time.time_scale` becomes `0`, use `inx.Time.delta_time` for `frame_distance`:
+The mover above uses the callback argument, so it already pauses when `inx.Time.time_scale` becomes `0`. For movement that should continue independently of the game clock, use `inx.Time.unscaled_delta_time` for `frame_distance` inside `update()`:
 
 ```python
 import infernux as inx
 
-frame_distance = self.speed * inx.Time.delta_time
+frame_distance = self.speed * inx.Time.unscaled_delta_time
 ```
 
 Use one time source for one calculation. Multiplying by both values applies frame duration twice.
@@ -139,7 +139,7 @@ The tutorial writes a fresh `Vector3` back to `position`, making the complete st
 
 **A child moves along unexpected axes.** Decide whether the design needs world `position` or parent-relative `local_position`, then use that space consistently for both the read and write.
 
-**`KeyCode.UpArrow` fails.** Public constants use uppercase snake case, such as `KeyCode.UP_ARROW`, `KeyCode.LEFT_SHIFT`, and `KeyCode.SPACE`. Import them from `Infernux.input`.
+**`KeyCode.UpArrow` fails.** Public constants use uppercase snake case, such as `inx.input.KeyCode.UP_ARROW`, `inx.input.KeyCode.LEFT_SHIFT`, and `inx.input.KeyCode.SPACE`.
 
 ## Verify the result {#verify-input-movement}
 
@@ -258,15 +258,15 @@ class ClickProbe(inx.InxComponent):
 
 当前生命周期契约区分两种时间值：
 
-- 传给 `update()` 与 `late_update()` 的 `delta_time` 参数，是引擎提供的原始、未缩放帧间隔。
-- `Time.delta_time` 是经过上限约束和时间缩放的帧间隔，会跟随 `Time.time_scale`。
+- 传给 `update()` 与 `late_update()` 的 `delta_time` 参数，是经过上限约束和时间缩放的游戏帧间隔，会跟随 `Time.time_scale`。
+- `Time.delta_time` 提供缩放后的游戏时钟；`Time.unscaled_delta_time` 提供经过上限约束、尚未缩放的帧间隔。
 
-上面的移动组件使用回调参数，所以它采用未缩放帧时间。移动需要在 `inx.Time.time_scale` 变为 `0` 时暂停时，用 `inx.Time.delta_time` 计算 `frame_distance`：
+上面的移动组件使用回调参数，因此 `inx.Time.time_scale` 变为 `0` 时已经会暂停。移动需要独立于游戏时钟继续时，请在 `update()` 内用 `inx.Time.unscaled_delta_time` 计算 `frame_distance`：
 
 ```python
 import infernux as inx
 
-frame_distance = self.speed * inx.Time.delta_time
+frame_distance = self.speed * inx.Time.unscaled_delta_time
 ```
 
 一次计算只选一种时间来源。同时乘上两个值会重复应用帧时长。
@@ -294,7 +294,7 @@ frame_distance = self.speed * inx.Time.delta_time
 
 **子物体沿意外方向移动。** 先决定使用世界空间 `position`，还是父级相对的 `local_position`，读取与写入必须使用同一空间。
 
-**`KeyCode.UpArrow` 报错。** 公共常量采用全大写蛇形命名，例如 `KeyCode.UP_ARROW`、`KeyCode.LEFT_SHIFT` 与 `KeyCode.SPACE`，并从 `Infernux.input` 导入。
+**`KeyCode.UpArrow` 报错。** 公共常量采用全大写蛇形命名，例如 `inx.input.KeyCode.UP_ARROW`、`inx.input.KeyCode.LEFT_SHIFT` 与 `inx.input.KeyCode.SPACE`。
 
 ## 验证结果 {#verify-input-movement_1}
 
