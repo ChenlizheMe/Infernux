@@ -822,8 +822,8 @@ bool GameObject::RemoveComponent(Component *component)
     for (auto it = m_components.begin(); it != m_components.end(); ++it) {
         if (it->get() == component) {
             if (m_scene)
-                m_scene->m_nextDocumentComponentId = std::max(m_scene->m_nextDocumentComponentId,
-                                                             component->GetComponentID() + 1);
+                m_scene->m_nextDocumentComponentId =
+                    std::max(m_scene->m_nextDocumentComponentId, component->GetComponentID() + 1);
             (*it)->CallOnDestroy();
             m_components.erase(it);
             if (m_scene) {

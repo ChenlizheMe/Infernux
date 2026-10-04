@@ -173,9 +173,9 @@ void ValidateSceneDocument(const json &document)
         ValidateObject(document["objects"][index], "Scene.objects[" + std::to_string(index) + "]", objectIds,
                        componentIds, componentTypes);
 
-    for (const auto &[key, identities] : {
-             std::pair<const char *, const std::unordered_set<uint64_t> &>{"nextObjectId", objectIds},
-             {"nextComponentId", componentIds}}) {
+    for (const auto &[key, identities] :
+         {std::pair<const char *, const std::unordered_set<uint64_t> &>{"nextObjectId", objectIds},
+          {"nextComponentId", componentIds}}) {
         if (!document.contains(key))
             continue;
         const uint64_t next = RequirePositiveId(document, key, "Scene");

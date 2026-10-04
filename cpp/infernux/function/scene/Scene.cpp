@@ -104,8 +104,7 @@ bool ValidateSceneDocumentHeader(const nlohmann::json &document)
         }
     }
     for (const char *key : {"nextObjectId", "nextComponentId"}) {
-        if (document.contains(key) && (!document[key].is_number_unsigned() ||
-                                      document[key].get<uint64_t>() == 0)) {
+        if (document.contains(key) && (!document[key].is_number_unsigned() || document[key].get<uint64_t>() == 0)) {
             INXLOG_ERROR("Scene::Deserialize: invalid allocation watermark: ", key);
             return false;
         }
@@ -1665,9 +1664,9 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
                 pythonComponentIds.push_back(componentId);
             }
         }
-        for (const auto &[key, identities] : {
-                 std::pair<const char *, const std::unordered_set<uint64_t> &>{"nextObjectId", objectIds},
-                 {"nextComponentId", componentIds}}) {
+        for (const auto &[key, identities] :
+             {std::pair<const char *, const std::unordered_set<uint64_t> &>{"nextObjectId", objectIds},
+              {"nextComponentId", componentIds}}) {
             const uint64_t largest = identities.empty() ? 0 : *std::max_element(identities.begin(), identities.end());
             if (j.contains(key) && j[key].get<uint64_t>() <= largest)
                 throw std::invalid_argument(std::string(key) + " must exceed all document identities");
