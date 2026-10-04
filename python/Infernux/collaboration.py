@@ -5,6 +5,15 @@ package is deliberately unnecessary for a merge or for driver installation.
 """
 from __future__ import annotations
 
+import os
+import sys
+
+if __name__ == "__main__":
+    # A direct script launch puts Infernux/ first on sys.path. Its math package
+    # must never shadow the standard library used by this standalone driver.
+    script_directory = os.path.dirname(__file__)
+    sys.path[:] = [entry for entry in sys.path if entry != script_directory]
+
 import argparse
 import copy
 import difflib
@@ -16,7 +25,6 @@ import runpy
 from functools import cache
 import shlex
 import subprocess
-import sys
 from dataclasses import dataclass
 
 

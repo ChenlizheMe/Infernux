@@ -276,20 +276,27 @@ def _iter_document_nodes(nodes: list[Any]):
 
 class _DocumentIdAllocator:
     def __init__(self, document: dict[str, Any]):
-        highest = 0
+        highest_object = highest_component = 0
         for node in _iter_document_nodes(document.get("objects") or []):
-            highest = max(highest, int(node.get("id") or 0))
+            highest_object = max(highest_object, int(node.get("id") or 0))
             transform = node.get("transform")
             if isinstance(transform, dict):
-                highest = max(highest, int(transform.get("component_id") or 0))
+                highest_component = max(highest_component, int(transform.get("component_id") or 0))
             for component in node.get("components") or ():
                 if isinstance(component, dict):
-                    highest = max(highest, int(component.get("component_id") or 0))
-        self._next = highest + 1
+                    highest_component = max(highest_component, int(component.get("component_id") or 0))
+        self._document = document
+        self._next = {}
+        for key, highest in (("nextObjectId", highest_object), ("nextComponentId", highest_component)):
+            value = document.get(key, highest + 1)
+            if type(value) is not int or value <= highest:
+                raise ValueError(f"{key} must exceed all allocated document IDs")
+            self._next[key] = value
 
-    def take(self) -> int:
-        value = self._next
-        self._next += 1
+    def take(self, key: str) -> int:
+        value = self._next[key]
+        self._next[key] = value + 1
+        self._document[key] = value + 1
         return value
 
 
@@ -360,7 +367,7 @@ def _new_source_node_document(
     generate_colliders: bool,
 ) -> dict[str, Any]:
     position, rotation, scale = _matrix_trs(source.get("local_matrix"))
-    object_id = allocator.take()
+    object_id = allocator.take("nextObjectId")
     components: list[dict[str, Any]] = []
     node_group = int(source.get("node_group", -1))
     if node_group >= 0:
@@ -369,7 +376,7 @@ def _new_source_node_document(
             raise ValueError(f"model geometry node has no stable identity: {'/'.join(path)}")
         components.append(
             {
-                "component_id": allocator.take(),
+                "component_id": allocator.take("nextComponentId"),
                 "type_id": "native:infernux.MeshRenderer",
                 "enabled": bool(source.get("visible", True)),
                 "execution_order": 0,
@@ -391,7 +398,7 @@ def _new_source_node_document(
         if generate_colliders:
             components.append(
                 {
-                    "component_id": allocator.take(),
+                    "component_id": allocator.take("nextComponentId"),
                     "type_id": "native:infernux.MeshCollider",
                     "enabled": True,
                     "execution_order": 0,
@@ -411,7 +418,7 @@ def _new_source_node_document(
         "tag": "Untagged",
         "layer": 0,
         "transform": {
-            "component_id": allocator.take(),
+            "component_id": allocator.take("nextComponentId"),
             "type": "Transform",
             "enabled": True,
             "execution_order": 0,

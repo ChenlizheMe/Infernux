@@ -319,6 +319,10 @@ def test_cold_scene_commit_atomically_reconciles_added_source_nodes(
     upper = descendants(root)['Upper']
     upper.transform.local_position = Vector3(17, 18, 19)
     cold_document = scene.serialize_document()
+    object_watermark = cold_document["nextObjectId"] + 100_000
+    component_watermark = cold_document["nextComponentId"] + 200_000
+    cold_document["nextObjectId"] = object_watermark
+    cold_document["nextComponentId"] = component_watermark
 
     source_document = json.loads(source.read_text())
     source_document['nodes'][0]['children'].append(len(source_document['nodes']))
@@ -349,6 +353,10 @@ def test_cold_scene_commit_atomically_reconciles_added_source_nodes(
     assert added_renderer.model_subresource_id
     assert added_renderer.model_node_path == ['Assembly', 'Cold Added']
     assert restored['Cold Added'].get_component('MeshCollider') is not None
+    assert restored['Cold Added'].id >= object_watermark
+    assert added_renderer.component_id >= component_watermark
+    assert scene.serialize_document()["nextObjectId"] > restored['Cold Added'].id
+    assert scene.serialize_document()["nextComponentId"] > added_renderer.component_id
 
 
 def test_scale_factor_resizes_compound_model_about_instance_root(

@@ -14,6 +14,20 @@ ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "scripts" / "maintenance" / "audit_project_sync.py"
 
 
+def test_standalone_driver_does_not_import_sibling_packages(tmp_path):
+    package = tmp_path / "engine package"
+    package.mkdir()
+    script = package / "collaboration.py"
+    script.write_text((ROOT / "python/Infernux/collaboration.py").read_text(encoding="utf-8"),
+                      encoding="utf-8")
+    (package / "argparse.py").write_text("raise AssertionError('engine sibling shadows stdlib')",
+                                        encoding="utf-8")
+    result = subprocess.run([sys.executable, "-S", str(script), "--help"],
+                            cwd=tmp_path, capture_output=True, text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+    assert "--install" in result.stdout
+
+
 def _module():
     spec = importlib.util.spec_from_file_location("infernux_project_sync_audit", MODULE_PATH)
     assert spec is not None and spec.loader is not None
