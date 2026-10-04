@@ -237,16 +237,22 @@ def _wheel_target_relative_path(member_name: str) -> str:
 def _remove_installed_distribution(site_packages: str, distribution_name: str) -> None:
     normalized_package = distribution_name.replace("-", "_").lower()
     dist_info_prefix = distribution_name.replace("_", "-").lower() + "-"
+    # These entrances belonged to the former uppercase package/flat facade.
+    # An upgrade must leave only the wheel's real lowercase package and stubs.
+    retired_entrances = (
+        {"infernux.py", "infernux.pyi", "infernux-stubs"}
+        if normalized_package == "infernux" else set()
+    )
     names = os.listdir(site_packages)
 
     for name in names:
         lower_name = name.lower()
-        if lower_name == normalized_package or (
+        if lower_name == normalized_package or lower_name in retired_entrances or (
             lower_name.startswith(dist_info_prefix) and lower_name.endswith(".dist-info")
         ):
             path = os.path.join(site_packages, name)
             if os.path.isdir(path) and not os.path.islink(path):
-                _remove_tree(path)
+                shutil.rmtree(path)
             else:
                 os.remove(path)
 
@@ -595,7 +601,7 @@ class ProjectModel:
         if on_status:
             on_status("Checking the project runtime...")
         site_packages = ProjectModel._get_site_packages(project_dir)
-        distribution_present = _distribution_files_present(site_packages, "Infernux")
+        distribution_present = _distribution_files_present(site_packages, "infernux")
         marker_path = _project_wheel_marker(project_dir)
         expected_fingerprint = _wheel_install_fingerprint(wheel)
         installed_fingerprint = ""
@@ -618,7 +624,7 @@ class ProjectModel:
 
         if on_status:
             on_status("Installing Infernux engine files...")
-        _install_wheel_direct(wheel, site_packages, "Infernux")
+        _install_wheel_direct(wheel, site_packages, "infernux")
         if on_status:
             on_status("Validating project runtime...")
         ProjectModel.validate_python_runtime(project_python)

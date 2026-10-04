@@ -7,6 +7,47 @@ import pytest
 import model.project_model as project_model
 
 
+@pytest.mark.parametrize("distribution_name", ["Infernux", "infernux"])
+def test_lowercase_wheel_upgrade_removes_retired_package_and_typing_entrances(
+    tmp_path, distribution_name,
+):
+    site_packages = tmp_path / "site-packages"
+    legacy_package = site_packages / "Infernux"
+    legacy_package.mkdir(parents=True)
+    (legacy_package / "__init__.py").write_text("OLD", encoding="utf-8")
+    for name in ("infernux.py", "infernux.pyi"):
+        (site_packages / name).write_text("OLD", encoding="utf-8")
+    legacy_stubs = site_packages / "infernux-stubs"
+    legacy_stubs.mkdir()
+    (legacy_stubs / "__init__.pyi").write_text("OLD", encoding="utf-8")
+    legacy_metadata = site_packages / "infernux-0.4.0.dist-info"
+    legacy_metadata.mkdir()
+    (legacy_metadata / "METADATA").write_text("Name: Infernux", encoding="utf-8")
+    unrelated = site_packages / "numpy"
+    unrelated.mkdir()
+    (unrelated / "__init__.py").write_text("KEEP", encoding="utf-8")
+    wheel = tmp_path / "infernux-0.4.1-cp313-cp313-win_amd64.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("infernux/__init__.py", "NEW")
+        archive.writestr("infernux/__init__.pyi", "NEW_TYPES")
+        archive.writestr("infernux/py.typed", "")
+        archive.writestr("infernux/renderstack/__init__.py", "SUBMODULE")
+        archive.writestr("infernux-0.4.1.dist-info/METADATA", "Name: infernux")
+
+    project_model._install_wheel_direct(str(wheel), str(site_packages), distribution_name)
+
+    assert (site_packages / "infernux" / "__init__.py").read_text(encoding="utf-8") == "NEW"
+    assert (site_packages / "infernux" / "__init__.pyi").read_text(encoding="utf-8") == "NEW_TYPES"
+    assert (site_packages / "infernux" / "renderstack" / "__init__.py").is_file()
+    assert (site_packages / "infernux" / "py.typed").is_file()
+    assert not legacy_metadata.exists()
+    assert not legacy_stubs.exists()
+    assert not (site_packages / "infernux.py").exists()
+    assert not (site_packages / "infernux.pyi").exists()
+    assert "Infernux" not in {path.name for path in site_packages.iterdir()}
+    assert (unrelated / "__init__.py").read_text(encoding="utf-8") == "KEEP"
+
+
 @pytest.mark.parametrize("marker_state", ["missing", "stale", "current"])
 def test_project_uses_wheel_identity_not_only_distribution_version(tmp_path, monkeypatch, marker_state):
     project = tmp_path / "Project"
