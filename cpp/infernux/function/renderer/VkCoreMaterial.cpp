@@ -1518,7 +1518,7 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     const ShaderProgram *linkedShadowProgram = linkedShadowPublication.get();
     if (!linkedShadowProgram) {
         INXLOG_ERROR("EnsureMaterialShadowPipeline: failed to materialize linked Shadow variant '",
-                     linkedArtifact->key.ToString(), "'");
+                     linkedArtifact->key.stages.ToString(), "'");
         return VK_NULL_HANDLE;
     }
     material->SetPassDescriptorSet(ShaderCompileTarget::Shadow, VK_NULL_HANDLE);
@@ -1631,7 +1631,7 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     VkPipelineCache pipelineCache = m_materialPipelineManager.GetVkPipelineCache();
     if (vkCreateGraphicsPipelines(device, pipelineCache, 1, &pipelineInfo, nullptr, &shadowPipeline) != VK_SUCCESS) {
         INXLOG_WARN("Failed to create linked shadow pipeline for '", material->GetName(), "' (program='",
-                    linkedArtifact->key.ToString(), "')");
+                    linkedArtifact->key.stages.ToString(), "')");
         return VK_NULL_HANDLE;
     }
 

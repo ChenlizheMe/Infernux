@@ -939,13 +939,11 @@ Infernux::Infernux(std::string dllPath, RuntimeMode mode) : m_runtimeMode(mode),
             }
             const LinkedShaderProgramPreparation prepared = EnsureLinkedShaderProgramArtifact(material);
             if (prepared.usesLinkedArtifact && !prepared.success) {
-                const std::string materialKey = material ? material->GetMaterialKey() : std::string("<null>");
                 const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
                 auto &entry = m_linkedShaderProgramCache.at(stages);
                 if (!entry.failureReported) {
                     entry.failureReported = true;
-                    INXLOG_ERROR("Material shader rebuild rejected for '", materialKey, "' (", stages.ToString(),
-                                 "): ", prepared.error,
+                    INXLOG_ERROR("Material shader combination '", stages.ToString(), "' rejected: ", prepared.error,
                                  ". The previous valid GPU pipeline remains active; this failure will not be retried "
                                  "until the shader inputs change.");
                 }
