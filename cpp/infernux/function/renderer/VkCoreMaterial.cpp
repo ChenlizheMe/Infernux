@@ -758,8 +758,8 @@ void InxVkCoreModular::InitializeMaterialSystem()
             }
         } else {
             INXLOG_DEBUG("InitializeMaterialSystem: error shader SPIR-V not yet in cache "
-                        "(vert='",
-                        errVertId, "', frag='", errFragId, "'), will be built lazily on first use");
+                         "(vert='",
+                         errVertId, "', frag='", errFragId, "'), will be built lazily on first use");
         }
     }
 
