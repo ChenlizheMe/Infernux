@@ -17,8 +17,10 @@ Usage:
 
 import traceback
 import os
+from collections import deque
 from datetime import datetime
 from enum import Enum, auto
+from threading import RLock
 from typing import Any, Optional, List, Callable
 from dataclasses import dataclass, field
 
@@ -106,6 +108,8 @@ class DebugConsole:
         self._max_entries: int = 1000
         self._listener_registry = ReloadableCallbackRegistry()
         self._native_console = None  # C++ ConsolePanel (set by bootstrap)
+        self._native_bridge_lock = RLock()
+        self._pending_native_entries = deque()
 
         # Counters for quick filtering
         self._log_count: int = 0
@@ -129,8 +133,21 @@ class DebugConsole:
         self._listener_registry.remove_listener(callback)
 
     def set_native_console(self, native_console):
-        """Attach the C++ ConsolePanel so Python Debug.log() messages are forwarded."""
-        self._native_console = native_console
+        """Attach the C++ ConsolePanel and publish retained early diagnostics once."""
+        with self._native_bridge_lock:
+            self._native_console = native_console
+            if native_console is not None:
+                while self._pending_native_entries:
+                    self._forward_native_entry(self._pending_native_entries[0])
+                    self._pending_native_entries.popleft()
+
+    def _forward_native_entry(self, entry: LogEntry):
+        level = self._get_level_map().get(entry.log_type)
+        if level is not None:
+            self._native_console.log_from_python(
+                level, entry.message, entry.stack_trace or "",
+                entry.source_file or "", entry.source_line,
+            )
 
     @staticmethod
     def _write_internal_entry(entry: LogEntry):
@@ -170,28 +187,24 @@ class DebugConsole:
             self._write_internal_entry(entry)
             return
 
-        # Trim old entries if needed
-        if len(self._entries) >= self._max_entries:
-            removed = self._entries.pop(0)
-            self._update_counters(removed.log_type, -1)
-        
-        self._entries.append(entry)
-        self._update_counters(entry.log_type, 1)
+        # Retention and native publication share one order, including worker
+        # logs emitted while the Editor is attaching its Console panel.
+        with self._native_bridge_lock:
+            if len(self._entries) >= self._max_entries:
+                removed = self._entries.pop(0)
+                self._update_counters(removed.log_type, -1)
+                if self._pending_native_entries and self._pending_native_entries[0] is removed:
+                    self._pending_native_entries.popleft()
+
+            self._entries.append(entry)
+            self._update_counters(entry.log_type, 1)
+            if self._native_console is None:
+                self._pending_native_entries.append(entry)
+            else:
+                self._forward_native_entry(entry)
         
         # Notify listeners
         self._listener_registry.invoke(entry, propagate_exceptions=True)
-        
-        # Forward to C++ ConsolePanel if attached
-        if self._native_console is not None:
-            level_map = self._get_level_map()
-            level = level_map.get(entry.log_type)
-            if level is not None:
-                self._native_console.log_from_python(
-                    level, entry.message,
-                    entry.stack_trace or "",
-                    entry.source_file or "",
-                    entry.source_line,
-                )
         
         # Also print to stdout/stderr for development
         self._print_entry(entry)
@@ -240,12 +253,14 @@ class DebugConsole:
     
     def clear(self):
         """Clear all log entries."""
-        self._entries.clear()
-        self._log_count = 0
-        self._warning_count = 0
-        self._error_count = 0
-        if self._native_console is not None:
-            self._native_console.clear()
+        with self._native_bridge_lock:
+            self._entries.clear()
+            self._pending_native_entries.clear()
+            self._log_count = 0
+            self._warning_count = 0
+            self._error_count = 0
+            if self._native_console is not None:
+                self._native_console.clear()
 
     @staticmethod
     def _source_key(source_file: str) -> str:
@@ -265,6 +280,10 @@ class DebugConsole:
         corrected script loses only its stale errors while unrelated Console
         history remains intact.
         """
+        with self._native_bridge_lock:
+            return self._remove_source_entries(source_file)
+
+    def _remove_source_entries(self, source_file: str) -> int:
         source_key = self._source_key(source_file)
         if not source_key:
             return 0
@@ -276,6 +295,10 @@ class DebugConsole:
         removed = len(self._entries) - len(retained)
         if removed:
             self._entries = retained
+            self._pending_native_entries = deque(
+                entry for entry in self._pending_native_entries
+                if self._source_key(entry.source_file) != source_key
+            )
             self._log_count = 0
             self._warning_count = 0
             self._error_count = 0
