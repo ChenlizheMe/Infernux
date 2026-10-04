@@ -176,7 +176,7 @@ Keep the declaration in sync with `setup_passes()`. Declaring `modifies = {"colo
 
 `creates` is also declarative. The implementation must create the graph resource and call `bus.set("semantic_name", handle)`. A later effect can consume it in the same stage; a later stage receives it only when that pipeline stage includes the semantic in `inputs`. The current `ResourceBus.set()` replaces an existing handle with the same semantic name, so two successful effects that publish one name are resolved by Slot/Group order and the later publisher wins. There is no automatic duplicate-`creates` diagnostic. Use separate semantic names when both products must survive.
 
-Route-policy conflicts are rejected separately. For example, an `ADDITIVE_EXTRACT` effect cannot share one route with a color-replacement policy, and `CUSTOM_FEATURE` cannot mix with built-in policies. The graph-build diagnostic lists the affected stage IDs and the policy incompatibility.
+Additive and color-replacement effects can share one route. Their policies merge into `ORDERED_COMPOSITE`: the complete chain executes in Slot/Group order, then the result is partitioned into geometry-bound color and overflow before returning to its parent. Bloom and Edge Detection can therefore remain at the same mount point; swapping their order changes which image each effect processes. `CUSTOM_FEATURE` is reserved for specialized composition and cannot mix with built-in policies; the built-in pipeline compiler does not implement a custom route composer.
 
 Failure recovery has three concrete boundaries:
 
@@ -227,7 +227,8 @@ Route policy controls how a route- or layer-scoped image is returned to its pare
 | `MASK_AND_MODIFY` | Change selected existing pixels without a wider silhouette |
 | `ISOLATE_AND_COMPOSITE` | Process an isolated image, then composite it back |
 | `ADDITIVE_EXTRACT` | Return additive energy such as bloom |
-| `CUSTOM_FEATURE` | Let specialized feature code own composition |
+| `ORDERED_COMPOSITE` | Automatically selected for mixed additive/replacement chains; preserve Slot/Group order, geometry coverage, and overflow |
+| `CUSTOM_FEATURE` | Reserved for specialized route composers; not implemented by the built-in pipeline compiler |
 
 At runtime, `RenderEffect` provides typed getters and setters for floats, integers, booleans, vectors, and colors. Loaded assets are shared. `clone()` creates an isolated runtime-only copy with no source path or GUID, so edits to the clone do not save over the project asset.
 
@@ -413,7 +414,7 @@ Assets/
 
 `creates` 同样只负责声明。实现代码必须创建图资源，并调用 `bus.set("semantic_name", handle)`。同一 Stage 中的后续 Effect 可以消费它；后续 Stage 只有在管线把该语义列入 `inputs` 时才能收到它。当前 `ResourceBus.set()` 会替换同名语义的已有 Handle，所以两个成功 Effect 发布同一名称时，结果由 Slot/Group 顺序决定，后发布者生效。系统目前没有重复 `creates` 的自动诊断；需要同时保留两份产物时，请使用不同语义名称。
 
-Route Policy 冲突走另一条校验路径。例如，`ADDITIVE_EXTRACT` 无法与颜色替换 Policy 共用同一 Route，`CUSTOM_FEATURE` 也无法与内置 Policy 混用。图构建诊断会列出相关 Stage ID 与 Policy 不兼容原因。
+发光与颜色替换效果可以共用同一 Route，其 Policy 会合并为 `ORDERED_COMPOSITE`：完整效果链按 Slot/Group 顺序执行，再将结果分成物体覆盖区域内的颜色与区域外的效果像素，合回父级。Bloom 与 Edge Detection 可以保持在同一挂点；交换顺序会改变各自处理的输入图像。`CUSTOM_FEATURE` 预留给专用合成逻辑，不能与内置 Policy 混用；内置管线编译器目前没有实现自定义 Route 合成器。
 
 失败恢复有三个明确边界：
 
@@ -464,7 +465,8 @@ Route Policy 决定 Route 或 Layer 局部图像怎样返回父级合成：
 | `MASK_AND_MODIFY` | 修改已选像素，不扩张轮廓 |
 | `ISOLATE_AND_COMPOSITE` | 处理隔离图像，再合回父级 |
 | `ADDITIVE_EXTRACT` | 返回 Bloom 等加法能量 |
-| `CUSTOM_FEATURE` | 由专用 Feature 负责合成 |
+| `ORDERED_COMPOSITE` | 发光与颜色替换混用时自动选用；保留 Slot/Group 顺序、物体覆盖区域与外溢效果 |
+| `CUSTOM_FEATURE` | 预留给专用 Route 合成器；内置管线编译器尚未实现 |
 
 运行时的 `RenderEffect` 提供 Float、Int、Bool、向量和颜色的类型化 Getter/Setter。加载的资产默认共享。`clone()` 会生成没有源路径和 GUID 的纯运行时副本，修改它不会覆盖项目资产。
 

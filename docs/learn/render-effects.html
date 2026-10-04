@@ -198,7 +198,7 @@
 <p>RenderStack collects <code>requires ∪ modifies</code> from all enabled slots before the pipeline is built. This lets the pipeline produce optional geometry buffers such as normals, motion, or the read-only camera-local <code>light_list</code> only when an effect asks for them. At the mount point, the <code>EffectStage</code> contract decides which handles enter the local bus. An effect that needs depth, motion, or <code>light_list</code> must bind and check those stage-local handles; an unavailable handle produces a stage-and-slot compile diagnostic in the built-in implementations. <code>light_list</code> is a native per-frame view resource, not a writable/imported project buffer.</p>
 <p>Keep the declaration in sync with <code>setup_passes()</code>. Declaring <code>modifies = {"color"}</code> does not write color by itself; the implementation must publish the replacement handle to the bus.</p>
 <p><code>creates</code> is also declarative. The implementation must create the graph resource and call <code>bus.set("semantic_name", handle)</code>. A later effect can consume it in the same stage; a later stage receives it only when that pipeline stage includes the semantic in <code>inputs</code>. The current <code>ResourceBus.set()</code> replaces an existing handle with the same semantic name, so two successful effects that publish one name are resolved by Slot/Group order and the later publisher wins. There is no automatic duplicate-<code>creates</code> diagnostic. Use separate semantic names when both products must survive.</p>
-<p>Route-policy conflicts are rejected separately. For example, an <code>ADDITIVE_EXTRACT</code> effect cannot share one route with a color-replacement policy, and <code>CUSTOM_FEATURE</code> cannot mix with built-in policies. The graph-build diagnostic lists the affected stage IDs and the policy incompatibility.</p>
+<p>Additive and color-replacement effects can share one route. Their policies merge into <code>ORDERED_COMPOSITE</code>: the complete chain executes in Slot/Group order, then the result is partitioned into geometry-bound color and overflow before returning to its parent. Bloom and Edge Detection can therefore remain at the same mount point; swapping their order changes which image each effect processes. <code>CUSTOM_FEATURE</code> is reserved for specialized composition and cannot mix with built-in policies; the built-in pipeline compiler does not implement a custom route composer.</p>
 <p>Failure recovery has three concrete boundaries:</p>
 <ol>
 <li>Feature registration is replaceable only by the same source identity. A second source registering <code>game.post.edge_fade</code> raises <code>already registered</code>; the first registration remains active.</li>
@@ -260,8 +260,12 @@
 <td>Return additive energy such as bloom</td>
 </tr>
 <tr>
+<td><code>ORDERED_COMPOSITE</code></td>
+<td>Automatically selected for mixed additive/replacement chains; preserve Slot/Group order, geometry coverage, and overflow</td>
+</tr>
+<tr>
 <td><code>CUSTOM_FEATURE</code></td>
-<td>Let specialized feature code own composition</td>
+<td>Reserved for specialized route composers; not implemented by the built-in pipeline compiler</td>
 </tr>
 </tbody>
 </table>
@@ -434,7 +438,7 @@
 <p>构建管线前，RenderStack 会收集所有启用 Slot 的 <code>requires ∪ modifies</code>。这样法线、Motion 等可选几何 Buffer 只会在有 Effect 需要时生成。到了挂载点，<code>EffectStage</code> 契约决定局部 Bus 能拿到哪些 Handle。需要深度或 Motion 的 Effect 应绑定并检查这些阶段局部资源；内置实现发现资源缺失时，会生成带 Stage 与 Slot 的编译诊断。</p>
 <p>声明必须和 <code>setup_passes()</code> 一致。写下 <code>modifies = {"color"}</code> 不会自动修改颜色，Feature 仍要把替换后的 Handle 发布回 Bus。</p>
 <p><code>creates</code> 同样只负责声明。实现代码必须创建图资源，并调用 <code>bus.set("semantic_name", handle)</code>。同一 Stage 中的后续 Effect 可以消费它；后续 Stage 只有在管线把该语义列入 <code>inputs</code> 时才能收到它。当前 <code>ResourceBus.set()</code> 会替换同名语义的已有 Handle，所以两个成功 Effect 发布同一名称时，结果由 Slot/Group 顺序决定，后发布者生效。系统目前没有重复 <code>creates</code> 的自动诊断；需要同时保留两份产物时，请使用不同语义名称。</p>
-<p>Route Policy 冲突走另一条校验路径。例如，<code>ADDITIVE_EXTRACT</code> 无法与颜色替换 Policy 共用同一 Route，<code>CUSTOM_FEATURE</code> 也无法与内置 Policy 混用。图构建诊断会列出相关 Stage ID 与 Policy 不兼容原因。</p>
+<p>发光与颜色替换效果可以共用同一 Route，其 Policy 会合并为 <code>ORDERED_COMPOSITE</code>：完整效果链按 Slot/Group 顺序执行，再将结果分成物体覆盖区域内的颜色与区域外的效果像素，合回父级。Bloom 与 Edge Detection 可以保持在同一挂点；交换顺序会改变各自处理的输入图像。<code>CUSTOM_FEATURE</code> 预留给专用合成逻辑，不能与内置 Policy 混用；内置管线编译器目前没有实现自定义 Route 合成器。</p>
 <p>失败恢复有三个明确边界：</p>
 <ol>
 <li>Feature 注册只允许相同 Source 身份更新。另一份 Source 注册 <code>game.post.edge_fade</code> 时会抛出 <code>already registered</code>，首次注册项继续生效。</li>
@@ -496,8 +500,12 @@
 <td>返回 Bloom 等加法能量</td>
 </tr>
 <tr>
+<td><code>ORDERED_COMPOSITE</code></td>
+<td>发光与颜色替换混用时自动选用；保留 Slot/Group 顺序、物体覆盖区域与外溢效果</td>
+</tr>
+<tr>
 <td><code>CUSTOM_FEATURE</code></td>
-<td>由专用 Feature 负责合成</td>
+<td>预留给专用 Route 合成器；内置管线编译器尚未实现</td>
 </tr>
 </tbody>
 </table>
