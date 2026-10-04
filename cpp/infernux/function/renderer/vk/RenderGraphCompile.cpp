@@ -1324,7 +1324,10 @@ void RenderGraph::PrecomputeExecuteData()
                                                    : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
             attachment.loadOp =
                 writableDepth && pass.clearDepthEnabled ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
-            attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            // STORE is a depth write even with a read-only depth layout.
+            // NONE preserves the contents without a store access, matching
+            // ReadDepth's read-only contract and subsequent barriers.
+            attachment.storeOp = writableDepth ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_NONE;
             attachment.clearValue.depthStencil = pass.clearDepth;
         }
 

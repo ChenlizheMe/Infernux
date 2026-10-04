@@ -970,6 +970,12 @@ bool InxVkCoreModular::EnsureGuiRenderGraph(uint32_t imageIndex)
         guiGraph.SetBackbuffer(swapchainImage, swapchainView, format, extent.width, extent.height,
                                VK_SAMPLE_COUNT_1_BIT, rhi::TextureLayout::Undefined);
 
+    // Discarding the previous pixels does not discard the WSI acquire
+    // dependency. Chain the first layout transition to imageAvailable's
+    // COLOR_ATTACHMENT_OUTPUT wait, instead of allowing it at TOP_OF_PIPE.
+    guiGraph.SetResourceInitialState(backbuffer, rhi::TextureLayout::Undefined, rhi::Access::None,
+                                    rhi::PipelineStage::ColorOutput);
+
     guiGraph.AddPass("GUI", [this, &backbuffer, extent](vk::PassBuilder &builder) {
         backbuffer = builder.WriteColor(backbuffer, 0);
         builder.SetRenderArea(extent.width, extent.height);

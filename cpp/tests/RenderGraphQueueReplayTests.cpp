@@ -480,6 +480,25 @@ static void CheckReplay(vk::VkDeviceContext &context, vk::VulkanQueueManager &qu
             };
         });
         if (kind == ResourceKind::Depth) {
+            // Exercise actual attachment LOAD/STORE accesses, not just a
+            // transfer clear. A read-only attachment must not secretly store
+            // depth before the next pass's read -> write/layout dependency.
+            graph.AddPass("DepthLoad", [&](vk::PassBuilder &builder) {
+                image = builder.WriteDepth(image);
+                builder.SetRenderArea(8, 4);
+                return [](vk::RenderContext &) {};
+            });
+            graph.AddPass("DepthReadOnly", [&](vk::PassBuilder &builder) {
+                builder.ReadDepth(image);
+                builder.SetRenderArea(8, 4);
+                builder.SetSideEffect();
+                return [](vk::RenderContext &) {};
+            });
+            graph.AddPass("DepthLoadAgain", [&](vk::PassBuilder &builder) {
+                image = builder.WriteDepth(image);
+                builder.SetRenderArea(8, 4);
+                return [](vk::RenderContext &) {};
+            });
             // Depth clear/copy requires Graphics without optional maintenance
             // features. Sample it with a real compute shader to exercise the
             // Graphics -> Compute -> next-frame Graphics ownership cycle.

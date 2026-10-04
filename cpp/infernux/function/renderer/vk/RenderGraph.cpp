@@ -432,7 +432,9 @@ ResourceHandle PassBuilder::WriteColor(ResourceHandle handle, uint32_t attachmen
     access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::ColorOutput;
     access.stages = rhi::PipelineStage::ColorOutput;
-    access.access = rhi::Access::ColorWrite;
+    // LOAD and blending read the attachment even though this pass publishes
+    // a new resource version. Include both sides of that attachment access.
+    access.access = rhi::Access::ColorRead | rhi::Access::ColorWrite;
     access.layout = rhi::TextureLayout::ColorAttachment;
 
     pass.writes.push_back(access);
@@ -465,7 +467,8 @@ ResourceHandle PassBuilder::WriteDepth(ResourceHandle handle)
     access.handle = newHandle;
     access.usage = ResourceUsage::Write | ResourceUsage::DepthOutput;
     access.stages = rhi::PipelineStage::EarlyDepth | rhi::PipelineStage::LateDepth;
-    access.access = rhi::Access::DepthWrite;
+    // Depth testing and LOAD read the existing depth value before writing.
+    access.access = rhi::Access::DepthRead | rhi::Access::DepthWrite;
     access.layout = rhi::TextureLayout::DepthStencilAttachment;
 
     pass.writes.push_back(access);
