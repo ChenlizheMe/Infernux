@@ -194,7 +194,7 @@ class InxShaderLoader
 
     /// Compile GLSL source to SPIR-V. Returns false on failure (sets s_lastCompileError).
     bool CompileGLSL(const std::string &glslSource, EShLanguage shaderType, const std::string &filePath,
-                     std::vector<char> &outSpirv);
+                     std::vector<char> &outSpirv, bool reportDiagnostics = true);
 
     [[nodiscard]] LinkedShaderProgramCompilation
     CompileLinkedProgramVariant(const std::string &vertexSource, const std::string &vertexPath,

@@ -2113,13 +2113,16 @@ InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, co
     compilation.usesBindlessTextureABI = bindlessTextureABI;
 
     s_lastCompileError.clear();
-    if (!CompileGLSL(compilation.generatedVertexSource, EShLangVertex, vertexPath, compilation.vertexSpirv)) {
+    // Linked candidates return structured diagnostics to their publication
+    // owner; logging each target here duplicates one failed source edit.
+    if (!CompileGLSL(compilation.generatedVertexSource, EShLangVertex, vertexPath, compilation.vertexSpirv, false)) {
         compilation.errors.push_back(s_lastCompileError.empty() ? "linked vertex compilation failed"
                                                                 : s_lastCompileError);
         return compilation;
     }
     s_lastCompileError.clear();
-    if (!CompileGLSL(compilation.generatedFragmentSource, EShLangFragment, fragmentPath, compilation.fragmentSpirv)) {
+    if (!CompileGLSL(compilation.generatedFragmentSource, EShLangFragment, fragmentPath, compilation.fragmentSpirv,
+                     false)) {
         compilation.errors.push_back(s_lastCompileError.empty() ? "linked fragment compilation failed"
                                                                 : s_lastCompileError);
         return compilation;
@@ -2168,7 +2171,7 @@ std::string InxShaderLoader::TrimShaderSource(const std::string &source)
 }
 
 bool InxShaderLoader::CompileGLSL(const std::string &glslSource, EShLanguage shaderType, const std::string &filePath,
-                                  std::vector<char> &outSpirv)
+                                  std::vector<char> &outSpirv, bool reportDiagnostics)
 {
     std::string trimmed = TrimShaderSource(glslSource);
 
@@ -2190,9 +2193,9 @@ bool InxShaderLoader::CompileGLSL(const std::string &glslSource, EShLanguage sha
     EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
     if (!shader.parse(&m_builtInResources, 100, false, messages)) {
         s_lastCompileError = std::string("Shader parse failed:\n") + shader.getInfoLog();
-        INXLOG_ERROR("Shader parse failed:\n", shader.getInfoLog());
-        INXLOG_ERROR("Shader content:\n", trimmed);
-        INXLOG_ERROR("Shader file path: ", filePath);
+        if (reportDiagnostics) {
+            INXLOG_ERROR("Shader parse failed for '", filePath, "':\n", shader.getInfoLog());
+        }
         return false;
     }
 
@@ -2200,7 +2203,9 @@ bool InxShaderLoader::CompileGLSL(const std::string &glslSource, EShLanguage sha
     program.addShader(&shader);
     if (!program.link(messages)) {
         s_lastCompileError = std::string("Shader link failed:\n") + program.getInfoLog();
-        INXLOG_ERROR("Shader link failed for '", filePath, "':\n", program.getInfoLog());
+        if (reportDiagnostics) {
+            INXLOG_ERROR("Shader link failed for '", filePath, "':\n", program.getInfoLog());
+        }
         return false;
     }
 

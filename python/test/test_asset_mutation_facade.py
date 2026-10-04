@@ -290,6 +290,10 @@ def test_shader_import_invalidates_authoring_cache_without_runtime(monkeypatch):
 
 
 def test_shader_runtime_failure_reports_committed_database_state(monkeypatch):
+    from Infernux.debug import Debug, DebugConsole, LogType
+
+    monkeypatch.setattr(DebugConsole, "_instance", None)
+    console = DebugConsole.instance()
     order = []
     database = _Database(order)
     database.paths = {"old.vert": "guid"}
@@ -307,6 +311,19 @@ def test_shader_runtime_failure_reports_committed_database_state(monkeypatch):
     assert result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED
     assert result.error == "shader compile failed"
     assert order == ["db-reimport", "shader-runtime"]
+    entries = console.get_entries()
+    assert len(entries) == 1
+    assert entries[0].log_type is LogType.ERROR
+    assert entries[0].source_file == "old.vert"
+    assert entries[0].message == "shader compile failed"
+
+    # Corrected source retires its diagnostic only after runtime publication.
+    Debug.log_error("unrelated error")
+    monkeypatch.setattr(
+        AssetManager, "_native_engine", classmethod(lambda _cls: _NativeEngine(order)),
+    )
+    assert AssetManager.reimport_asset("old.vert", database=database)
+    assert [entry.message for entry in console.get_entries()] == ["unrelated error"]
 
 
 def test_internal_python_reimport_only_submits_collector_after_catalog_mutation(

@@ -881,6 +881,7 @@ bool Infernux::TryCommitLinkedShaderPrograms(const std::shared_ptr<LinkedShaderP
             auto &entry = m_linkedShaderProgramCache[work.stages];
             entry.failedSourceStamp = work.sourceStamp;
             entry.lastError = work.error;
+            entry.failureReported = true;
             INXLOG_ERROR("Linked shader prewarm rejected '", work.stages.ToString(), "': ", work.error);
             continue;
         }
@@ -893,6 +894,7 @@ bool Infernux::TryCommitLinkedShaderPrograms(const std::shared_ptr<LinkedShaderP
             auto &entry = m_linkedShaderProgramCache[work.stages];
             entry.failedSourceStamp = work.sourceStamp;
             entry.lastError = "Renderer rejected the prewarmed linked shader program artifact";
+            entry.failureReported = true;
             INXLOG_ERROR("Linked shader prewarm publication failed for '", work.stages.ToString(), "'");
             continue;
         }
@@ -937,14 +939,12 @@ Infernux::Infernux(std::string dllPath, RuntimeMode mode) : m_runtimeMode(mode),
             }
             const LinkedShaderProgramPreparation prepared = EnsureLinkedShaderProgramArtifact(material);
             if (prepared.usesLinkedArtifact && !prepared.success) {
-                static std::unordered_set<std::string> reportedFailures;
                 const std::string materialKey = material ? material->GetMaterialKey() : std::string("<null>");
-                const std::string stages = material
-                                               ? material->GetVertShaderName() + "|" + material->GetFragShaderName()
-                                               : std::string("<unknown>");
-                const std::string failureKey = materialKey + "|" + stages + "|" + prepared.error;
-                if (reportedFailures.insert(failureKey).second) {
-                    INXLOG_ERROR("Material shader rebuild rejected for '", materialKey, "' (", stages,
+                const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
+                auto &entry = m_linkedShaderProgramCache.at(stages);
+                if (!entry.failureReported) {
+                    entry.failureReported = true;
+                    INXLOG_ERROR("Material shader rebuild rejected for '", materialKey, "' (", stages.ToString(),
                                  "): ", prepared.error,
                                  ". The previous valid GPU pipeline remains active; this failure will not be retried "
                                  "until the shader inputs change.");
@@ -3987,6 +3987,7 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
         auto &entry = m_linkedShaderProgramCache[stages];
         entry.failedSourceStamp = sourceStamp;
         entry.lastError = error;
+        entry.failureReported = false;
     };
 
     InxShaderLoader compiler(true, false, false, false, false, true, false, false, false, false);
@@ -4343,8 +4344,14 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
             }
             const LinkedShaderProgramPreparation prepared =
                 material ? EnsureLinkedShaderProgramArtifact(material) : EnsureLinkedShaderProgramArtifact(stages);
-            if (!prepared.success && firstError.empty())
-                firstError = prepared.error;
+            if (!prepared.success) {
+                // The reload caller owns the returned source diagnostic.
+                // Material/preview draws consume this same failed revision
+                // without reporting it again for every referencing material.
+                m_linkedShaderProgramCache.at(stages).failureReported = true;
+                if (firstError.empty())
+                    firstError = prepared.error;
+            }
         };
         for (const auto &stages : affectedPairs) {
             preparePair(stages);
@@ -4365,8 +4372,8 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
         }
 
         if (!firstError.empty()) {
-            INXLOG_ERROR("Infernux::ReloadShaderRuntime: linked program compile failed; keeping last-known-good: ",
-                         firstError);
+            // The asset publication owner reports the returned diagnostic
+            // against the authored source, once for this candidate.
             return firstError;
         }
         // INXLOG_INFO("Infernux::ReloadShaderRuntime: published ShaderInfo program revisions for '", changedShaderId,

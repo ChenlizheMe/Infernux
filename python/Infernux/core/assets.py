@@ -948,8 +948,17 @@ class AssetManager:
 
         if has_shader_runtime:
             error = native.reload_shader_runtime(path, previous_shader_id)
+            Debug.clear_source_entries(path)
             if error:
-                Debug.log_error(error)
+                from datetime import datetime
+                from Infernux.debug import DebugConsole, LogEntry, LogType
+
+                DebugConsole.instance().log(LogEntry(
+                    message=error,
+                    log_type=LogType.ERROR,
+                    timestamp=datetime.now(),
+                    source_file=path,
+                ))
                 from Infernux.lib import AssetMutationErrorCode
                 result.succeeded = False
                 result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED

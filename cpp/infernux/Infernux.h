@@ -439,6 +439,7 @@ class Infernux
         ShaderProgramKey programKey;
         uint64_t failedSourceStamp = 0;
         std::string lastError;
+        bool failureReported = false;
     };
 
     [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages);

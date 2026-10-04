@@ -486,6 +486,44 @@ def test_modified_asset_failure_surfaces_runtime_compile_detail(monkeypatch, tmp
         handler._commit_modified(resolved)
 
 
+@pytest.mark.parametrize("extension", [".vert", ".frag"])
+def test_rejected_shader_waits_for_next_save_without_retrying(monkeypatch, tmp_path, extension):
+    from Infernux.lib import AssetMutationErrorCode
+
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    path = tmp_path / ("Surface" + extension)
+    path.write_text("invalid GLSL", encoding="utf-8")
+    database.guid_by_path[str(path)] = "shader-guid"
+    failure = _mutation("reimport", str(path), "shader-guid")
+    failure.succeeded = False
+    failure.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+    failure.error = "shader compile failed"
+    attempts, notifications, errors = [], [], []
+
+    def reimport(_cls, asset_path, **_kwargs):
+        attempts.append(asset_path)
+        return failure if len(attempts) == 1 else _mutation("reimport", asset_path, "shader-guid")
+
+    monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(reimport))
+    monkeypatch.setattr(handler, "_notify_shader_reloaded", notifications.append)
+    monkeypatch.setattr(Debug, "log_error", errors.append)
+    handler.on_modified(_event(path))
+    assert handler.process_pending_reloads(force=True) == 1
+    assert handler.pending_count == 0
+    assert handler.process_pending_reloads(force=True) == 0
+    assert attempts == [str(path)]
+    assert not notifications
+    assert not errors  # The shader publisher already owns this diagnostic.
+
+    path.write_text("corrected GLSL", encoding="utf-8")
+    handler.on_modified(_event(path))
+    assert handler.process_pending_reloads(force=True) == 1
+    assert handler.pending_count == 0
+    assert attempts == [str(path), str(path)]
+    assert notifications == [str(path)]
+
+
 def test_move_query_may_run_on_watcher_but_mutation_waits_for_owner(monkeypatch, tmp_path):
     database = _AssetDatabaseProbe()
     handler = ResourceChangeHandler(_EngineProbe(database))

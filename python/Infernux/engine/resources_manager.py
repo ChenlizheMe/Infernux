@@ -39,6 +39,10 @@ class _AssetImportNotReady(RuntimeError):
     pass
 
 
+class _ShaderReloadRejected(RuntimeError):
+    """A terminal candidate failure already reported by the shader publisher."""
+
+
 class _AssetLocalWritePending(_AssetImportNotReady):
     """A watcher echo is waiting for an editor-owned persistence ticket."""
 
@@ -426,6 +430,10 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 self._dispatch_event(event)
             except _AssetLocalWritePending:
                 self._coordinator.defer(event)
+            except _ShaderReloadRejected:
+                # Recompiling identical invalid GLSL cannot make it valid.
+                # A subsequent source save submits a new candidate normally.
+                pass
             except _AssetImportNotReady as exc:
                 if not self._coordinator.retry(event):
                     Debug.log_error(f"Asset event exhausted retries: {event}: {exc}")
@@ -1252,6 +1260,13 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     detail = str(
                         getattr(result, "error", "") or "unknown reimport error"
                     )
+                    from Infernux.lib import AssetMutationErrorCode
+
+                    if (
+                        path.lower().endswith((".vert", ".frag"))
+                        and result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+                    ):
+                        raise _ShaderReloadRejected(detail)
                     raise _AssetImportNotReady(
                         f"reimport failed: {path}: {detail}"
                     )
