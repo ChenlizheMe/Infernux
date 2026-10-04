@@ -6,10 +6,10 @@ import json
 import os
 from typing import Any
 
-from Infernux.engine.path_utils import is_path_within, path_key, resolved_path
+from Infernux.engine.path_utils import VERSION_CONTROL_DIRECTORIES, is_path_within, path_key, resolved_path
 
 
-_SKIPPED_DIRECTORIES = frozenset({".git", "__pycache__", ".venv", "venv"})
+_SKIPPED_DIRECTORIES = VERSION_CONTROL_DIRECTORIES | {"__pycache__", ".venv", "venv"}
 
 
 def project_guid_paths(

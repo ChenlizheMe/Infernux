@@ -64,6 +64,23 @@ def test_fixture_project_has_a_portable_sync_contract():
     assert report.package_count == 6
 
 
+def test_audit_does_not_require_asset_sidecars_for_vcs_control_files(tmp_path):
+    project = _project(tmp_path)
+    _write_asset(project, "Assets/Vendor/Notes.txt", "1" * 32)
+    for relative in (
+        "Assets/Vendor/.git/HEAD", "Assets/Vendor/.git/objects/source.py",
+        "Assets/Vendor/.hg/state", "Assets/Vendor/.svn/state",
+        "Assets/Vendor/.gitignore", "Assets/Vendor/.gitattributes",
+        "Assets/Vendor/.gitmodules", "Assets/Vendor/.gitkeep", "Assets/Worktree/.git",
+    ):
+        path = project / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("version control state\n", encoding="utf-8")
+    report = _module().audit_project(project)
+    assert report.ok, report.errors
+    assert report.asset_count == report.guid_count == 1
+
+
 def test_absolute_metadata_path_is_rejected(tmp_path: Path):
     project = _project(tmp_path)
     _write_asset(project, "Assets/Scenes/Main.scene", "0123456789abcdef0123456789abcdef", absolute_hint="C:/work/Main.scene")

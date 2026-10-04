@@ -10,7 +10,9 @@ from watchdog.observers import Observer
 
 from Infernux.lib import Infernux
 from Infernux.engine.path_utils import (
+    VERSION_CONTROL_DIRECTORIES,
     is_path_within,
+    is_version_control_path,
     path_key,
     portable_path,
     resolved_path,
@@ -286,14 +288,15 @@ class ResourceChangeHandler(FileSystemEventHandler):
         """Ignore meta/temp/cache files to avoid GUID churn and noisy events."""
         lower = portable_path(file_path).lower()
         if (
-            lower.endswith(".meta")
+            is_version_control_path(file_path)
+            or lower.endswith(".meta")
             or lower.endswith(".meta.tmp")
             or lower.endswith(".tmp")
             or _is_blender_backup_path(file_path)
             or is_document_store_temporary_path(file_path)
         ):
             return True
-        if "/__pycache__/" in lower or lower.endswith(".pyc"):
+        if "/__pycache__/" in lower or lower.endswith((".pyc", ".pyo")):
             return True
         basename = lower.rsplit("/", 1)[-1]
         if basename == "imgui.ini":
@@ -1892,7 +1895,7 @@ class ResourcesManager:
             for root, dirs, files in os.walk(script_root):
                 if self._stop_event.is_set():
                     return
-                dirs[:] = [d for d in dirs if d != '__pycache__']
+                dirs[:] = [d for d in dirs if d.casefold() not in VERSION_CONTROL_DIRECTORIES | {"__pycache__"}]
                 for fname in files:
                     if not fname.endswith('.py') or _is_particle_script_path(fname):
                         continue

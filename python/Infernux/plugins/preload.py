@@ -17,6 +17,7 @@ from typing import Any, Iterable, Iterator, Mapping
 
 from Infernux.debug import Debug
 from Infernux.engine.path_utils import (
+    VERSION_CONTROL_DIRECTORIES,
     is_path_within,
     lexical_path_key,
     path_key,
@@ -32,9 +33,9 @@ from .project_index import project_guid_paths
 
 _SCRIPT_NAMESPACE = uuid.UUID("90c16393-d740-4fa3-a45f-8003e2459753")
 _TYPE_NAMESPACE = uuid.UUID("11a563a9-a178-45b4-b5bc-93c50b8da675")
-_SKIPPED_DIRECTORIES = frozenset(
-    {".git", "__pycache__", ".venv", "venv", "build", "dist", ".runtime"}
-)
+_SKIPPED_DIRECTORIES = VERSION_CONTROL_DIRECTORIES | {
+    "__pycache__", ".venv", "venv", "build", "dist", ".runtime",
+}
 
 
 @dataclass(frozen=True, slots=True)

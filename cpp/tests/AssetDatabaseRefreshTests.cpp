@@ -16,6 +16,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -202,7 +203,7 @@ void TestScriptReimportRefreshesContentHashAndPreservesGuid()
             std::ifstream stream(path);
             return nlohmann::json::parse(stream);
         };
-        const auto sharedMetadata = readMetadata(script.string() + ".meta");
+        const auto sharedMetadata = readMetadata(infernux::ToFsPath(infernux::FromFsPath(script) + ".meta"));
         Require(sharedMetadata.at("metadata").at("file_path").at("value") == "Assets/Scripts/Gameplay.py",
                 "reimport persisted an absolute path");
 
@@ -218,7 +219,7 @@ void TestScriptReimportRefreshesContentHashAndPreservesGuid()
         const auto clonedScript = clone / "Assets" / "Scripts" / "Gameplay.py";
         Require(registry.GetAssetDatabase()->GetGuidFromPath(infernux::FromFsPath(clonedScript)) == originalGuid,
                 "clone changed the shared asset GUID");
-        Require(readMetadata(clonedScript.string() + ".meta") == sharedMetadata,
+        Require(readMetadata(infernux::ToFsPath(infernux::FromFsPath(clonedScript) + ".meta")) == sharedMetadata,
                 "opening a clone changed its shared sidecar");
         registry.Shutdown();
         infernux::JobSystem::Shutdown();
@@ -318,7 +319,7 @@ void TestProjectPackagesScanRootSharesTheGuidCatalog()
         Require(assetGuid != packageGuid, "Assets and Packages scripts received the same GUID");
         Require(assetDatabase->GetPathFromGuid(packageGuid) == infernux::FromFsPath(packageScript),
                 "Packages GUID did not resolve to its current path");
-        Require(std::filesystem::is_regular_file(packageScript.string() + ".meta"),
+        Require(std::filesystem::is_regular_file(infernux::ToFsPath(infernux::FromFsPath(packageScript) + ".meta")),
                 "Packages scan root did not persist stable GUID metadata");
 
         registry.Shutdown();
@@ -742,9 +743,66 @@ void TestBlenderNumberedBackupsAreNotAssets()
                 "ordinary source asset was not scanned");
         Require(assetDatabase->GetGuidFromPath(infernux::FromFsPath(backup)).empty(),
                 "Blender numbered backup entered the asset catalog");
-        Require(!std::filesystem::exists(backup.string() + ".meta"),
+        Require(!std::filesystem::exists(infernux::ToFsPath(infernux::FromFsPath(backup) + ".meta")),
                 "Blender numbered backup received a metadata sidecar");
 
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
+void TestVersionControlFilesAreNotAssets()
+{
+    const auto root = std::filesystem::temp_directory_path() / "infernux-vcs-control-scan";
+    std::filesystem::remove_all(root);
+    const auto source = root / "Assets" / "Vendor" / "Notes.txt";
+    WriteText(source, "authored source\n");
+    const std::vector<std::filesystem::path> controls = {
+        root / "Assets" / "Vendor" / ".git" / "HEAD",
+        root / "Assets" / "Vendor" / ".git" / "objects" / "Source.py",
+        root / "Assets" / "Vendor" / ".hg" / "state.txt",
+        root / "Assets" / "Vendor" / ".svn" / "state.txt",
+        root / "Assets" / "Vendor" / ".gitignore",
+        root / "Assets" / "Vendor" / ".gitattributes",
+        root / "Assets" / "Vendor" / ".gitmodules",
+        root / "Assets" / "Vendor" / ".gitkeep",
+        root / "Assets" / "Worktree" / ".git",
+    };
+    for (const auto &control : controls)
+        WriteText(control, "version control state\n");
+
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::DefaultText,
+                                std::make_unique<infernux::InxDefaultTextLoader>(infernux::ResourceType::DefaultText));
+        registry.PopulateAssetDatabaseLoaders();
+        auto *assetDatabase = registry.GetAssetDatabase();
+        assetDatabase->Refresh();
+        Require(!assetDatabase->GetGuidFromPath(infernux::FromFsPath(source)).empty(),
+                "VCS filtering excluded an ordinary vendor asset");
+        for (const auto &control : controls) {
+            const std::string path = infernux::FromFsPath(control);
+            Require(assetDatabase->GetGuidFromPath(path).empty(), "VCS control file entered the asset catalog");
+            Require(!std::filesystem::exists(infernux::ToFsPath(path + ".meta")),
+                    "VCS control file received a metadata sidecar");
+            const auto imported = assetDatabase->ImportAsset(path);
+            const auto reimported = assetDatabase->ReimportAsset(path);
+            Require(!imported && imported.errorCode == infernux::AssetMutationErrorCode::UnsupportedType,
+                    "explicit import accepted a VCS control file");
+            Require(!reimported && reimported.errorCode == infernux::AssetMutationErrorCode::UnsupportedType,
+                    "explicit reimport accepted a VCS control file");
+        }
         registry.Shutdown();
         infernux::JobSystem::Shutdown();
     } catch (...) {
@@ -775,6 +833,7 @@ int main()
         TestCookedModelTexturesKeepArtifactPaths();
         TestMoveRequiresRegisteredGuidIdentity();
         TestBlenderNumberedBackupsAreNotAssets();
+        TestVersionControlFilesAreNotAssets();
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "Asset database refresh test failed: " << error.what() << '\n';

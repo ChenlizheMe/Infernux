@@ -32,6 +32,11 @@ def test_git_clone_preserves_authored_assets_without_private_runtime(tmp_path, m
     package.parent.mkdir(parents=True)
     package.write_text("authored package\n", encoding="utf-8")
     project_model._write_asset_identity_meta(str(package), "1" * 32, "DefaultText", project_root=str(source))
+    for relative in (
+        "Assets/Settings/.gitattributes", "Assets/Settings/.gitmodules",
+        "Assets/Settings/.gitkeep", "Packages/shared/.gitignore",
+    ):
+        (source / relative).write_text("# shared Git control file\n", encoding="utf-8")
     for relative in ("Library/cache.bin", ".runtime/python313/python.exe", "Packages/.cache/download.inxpkg"):
         path = source / relative
         path.parent.mkdir(parents=True, exist_ok=True)

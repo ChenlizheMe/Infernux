@@ -3,6 +3,7 @@
 *.sh text eol=lf
 .githooks/* text eol=lf
 *.py text eol=lf
+*.pyi text eol=lf
 *.json text eol=lf merge=text
 *.yml text eol=lf
 *.yaml text eol=lf

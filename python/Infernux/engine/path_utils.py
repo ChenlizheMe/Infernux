@@ -13,6 +13,15 @@ from typing import TypeAlias
 
 PathLike: TypeAlias = str | os.PathLike[str]
 
+VERSION_CONTROL_DIRECTORIES = frozenset({".git", ".hg", ".svn"})
+_VERSION_CONTROL_FILES = frozenset({".gitignore", ".gitattributes", ".gitmodules", ".gitkeep"})
+
+
+def is_version_control_path(path: PathLike) -> bool:
+    """Keep VCS internals and control files outside the asset import workflow."""
+    parts = portable_path(path).casefold().split("/")
+    return bool(VERSION_CONTROL_DIRECTORIES.intersection(parts)) or parts[-1] in _VERSION_CONTROL_FILES
+
 
 def lexical_path(path: PathLike) -> str:
     """Return an absolute normalized path without consulting the filesystem."""

@@ -1153,14 +1153,19 @@ AssetDatabase::AssetScanArtifact AssetDatabase::BuildScanArtifact(const AssetSca
             continue;
         }
 
-        for (const auto &entry : std::filesystem::recursive_directory_iterator(rootPath)) {
+        for (auto iterator = std::filesystem::recursive_directory_iterator(rootPath);
+             iterator != std::filesystem::recursive_directory_iterator(); ++iterator) {
+            const auto &entry = *iterator;
+            const std::filesystem::path filePath = entry.path();
+            if (IsIgnoredImportPath(filePath)) {
+                if (entry.is_directory())
+                    iterator.disable_recursion_pending();
+                continue;
+            }
             std::error_code typeError;
             if (!entry.is_regular_file(typeError) || typeError)
                 continue;
 
-            const std::filesystem::path filePath = entry.path();
-            if (IsIgnoredImportPath(filePath))
-                continue;
             const std::string path = FromFsPath(filePath);
             if (filePath.extension() == ".tmp") {
                 if (!scanRoot.readOnly)
@@ -2246,7 +2251,7 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
 
     if (IsIgnoredImportPath(fsPath)) {
         result.errorCode = AssetMutationErrorCode::UnsupportedType;
-        result.error = "Python bytecode and cache paths are not importable assets";
+        result.error = "version control files, bytecode and cache paths are not importable assets";
         return result;
     }
 
@@ -2351,7 +2356,7 @@ bool AssetDatabase::PrepareReimportInput(const std::string &path, WorkerMetadata
     const std::filesystem::path fsPath = ToFsPath(path);
     if (IsIgnoredImportPath(fsPath)) {
         result.errorCode = AssetMutationErrorCode::UnsupportedType;
-        result.error = "Python bytecode and cache paths are not importable assets";
+        result.error = "version control files, bytecode and cache paths are not importable assets";
         return false;
     }
     if (!std::filesystem::is_regular_file(fsPath) || IsMetaFile(fsPath) || result.resourceType == ResourceType::Meta) {
@@ -2891,7 +2896,8 @@ bool AssetDatabase::IsIgnoredImportPath(const std::filesystem::path &path)
         return value;
     };
     for (const auto &component : path) {
-        if (lowercase(FromFsPath(component)) == "__pycache__")
+        const std::string name = lowercase(FromFsPath(component));
+        if (name == "__pycache__" || name == ".git" || name == ".hg" || name == ".svn")
             return true;
     }
 
@@ -2899,11 +2905,14 @@ bool AssetDatabase::IsIgnoredImportPath(const std::filesystem::path &path)
     if (extension == ".pyc" || extension == ".pyo")
         return true;
 
+    const std::string filename = lowercase(FromFsPath(path.filename()));
+    if (filename == ".gitignore" || filename == ".gitattributes" || filename == ".gitmodules" || filename == ".gitkeep")
+        return true;
+
     // Blender's normal save flow keeps numbered copies beside the source
     // (Model.blend1, Model.blend2, ...). They are file-history generations,
     // not importable assets. Registering one can move the live model GUID to
     // the backup when Blender atomically replaces Model.blend.
-    const std::string filename = lowercase(FromFsPath(path.filename()));
     const size_t marker = filename.rfind(".blend");
     if (marker != std::string::npos && marker + 6 < filename.size() &&
         std::all_of(filename.begin() + static_cast<std::ptrdiff_t>(marker + 6), filename.end(),

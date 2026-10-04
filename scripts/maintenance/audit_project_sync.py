@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import subprocess
@@ -72,8 +73,8 @@ BINARY_SUFFIXES = {
     ".ttf", ".otf", ".woff", ".woff2", ".hdr", ".exr", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".zip",
 }
 
-SKIP_META_NAMES = {".gitignore", ".gitattributes"}
-SKIP_DIRECTORIES = {"__pycache__", ".staging", ".cache", ".pytest_cache"}
+SKIP_META_NAMES = {".git", ".gitignore", ".gitattributes", ".gitmodules", ".gitkeep"}
+SKIP_DIRECTORIES = {".git", ".hg", ".svn", "__pycache__", ".staging", ".cache", ".pytest_cache"}
 PATH_KEYS = {"file_path", "path", "path_hint", "scene_path", "asset_path"}
 _WINDOWS_RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL",
@@ -174,6 +175,13 @@ def _walk_absolute_strings(value: Any, location: str, report: AuditReport, *, pa
             _walk_absolute_strings(child, f"{location}[{index}]", report)
 
 
+def _walk_asset_root(root: Path):
+    for current, directories, files in os.walk(root, followlinks=False):
+        directories[:] = sorted(name for name in directories if name.casefold() not in SKIP_DIRECTORIES)
+        for name in sorted((*directories, *files)):
+            yield Path(current) / name
+
+
 def _audit_asset_roots(project: Path, report: AuditReport) -> dict[str, str]:
     guids: dict[str, str] = {}
     paths: dict[str, str] = {}
@@ -183,14 +191,11 @@ def _audit_asset_roots(project: Path, report: AuditReport) -> dict[str, str]:
             if root_name == "Assets":
                 report.errors.append(f"{root_name}/ is required")
             continue
-        for path in sorted(root.rglob("*")):
-            relative_parts = path.relative_to(root).parts
-            if any(part in SKIP_DIRECTORIES for part in relative_parts):
-                continue
+        for path in _walk_asset_root(root):
             if path.is_symlink():
                 report.errors.append(f"{_relative(project, path)}: symlink assets are not portable")
                 continue
-            if path.name in SKIP_META_NAMES:
+            if path.name.casefold() in SKIP_META_NAMES:
                 continue
             relative = _relative(project, path)
             _audit_portable_path(relative, report)

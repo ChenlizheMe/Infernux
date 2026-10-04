@@ -172,6 +172,25 @@ def test_python_bytecode_and_cache_sidecars_never_enter_import_queue(tmp_path):
     assert database.mutations == []
 
 
+@pytest.mark.parametrize("relative", [
+    ".git/HEAD", ".git/objects/source.py", ".git", ".hg/state.py", ".svn/source.py",
+    ".gitignore", ".gitattributes", ".gitmodules", ".gitkeep", ".GIT/HEAD",
+])
+def test_vcs_control_files_never_enter_asset_or_script_import_queues(tmp_path, relative):
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    path = tmp_path / "Assets/Vendor" / relative
+    path.parent.mkdir(parents=True)
+    path.write_text("version control state\n", encoding="utf-8")
+    handler.on_created(_event(path))
+    handler.on_modified(_event(path))
+    handler.on_deleted(_event(path))
+    assert handler.pending_count == 0
+    assert handler.process_pending_reloads(force=True) == 0
+    assert database.queries == []
+    assert database.mutations == []
+
+
 def test_script_submission_wakes_the_frontend_worker(tmp_path):
     database = _AssetDatabaseProbe()
     wakes = []
