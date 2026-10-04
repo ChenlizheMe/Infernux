@@ -453,6 +453,31 @@ def _operations(tmp_path):
     return values, host
 
 
+def test_pointer_click_publishes_one_native_gesture_batch(tmp_path, monkeypatch):
+    from infernux_mcp import input_operations
+
+    operations, host = _operations(tmp_path)
+    original = input_operations.on_editor
+    published = []
+
+    def record_batch(name, callback):
+        before = len(host.events)
+        result = original(name, callback)
+        if len(host.events) > before:
+            published.append(host.events[before:])
+        return result
+
+    monkeypatch.setattr(input_operations, "on_editor", record_batch)
+    try:
+        result = operations["infernux.input.pointer.click"](40.0, 80.0)
+        assert result["delivered"] is True
+        assert len(published) == 1
+        assert [kind for kind, _ in published[0]] == ["pointer_move", "pointer_button", "pointer_button"]
+        assert [arguments["pressed"] for _, arguments in published[0][1:]] == [True, False]
+    finally:
+        EditorAutomationHost.set_provider(None)
+
+
 def test_input_semantic_ui_console_and_docs_are_schema_operations(tmp_path):
     operations, host = _operations(tmp_path)
     try:
