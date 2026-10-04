@@ -18,11 +18,9 @@ import subprocess
 import sys
 
 from packaging.requirements import Requirement
-
-from Infernux.engine.path_utils import resolved_path
+from packaging.utils import canonicalize_name
 
 _log = logging.getLogger("Infernux.project_requirements")
-_CHECK_ENV = "_INFERNUX_PROJECT_REQS_CHECKED"
 
 # Packages whose importable name differs from the pip name.
 _IMPORT_NAME_MAP: dict[str, str] = {
@@ -32,17 +30,6 @@ _IMPORT_NAME_MAP: dict[str, str] = {
     "scikit-learn": "sklearn",
     "ordered-set": "ordered_set",
 }
-
-
-def _bundled_requirements_path() -> str:
-    """Return the path to the default requirements.txt shipped inside the engine wheel."""
-    # Resolve relative to this file's package location to avoid triggering
-    # the full Infernux import chain (which needs the native C++ module).
-    _engine_dir = os.path.dirname(resolved_path(__file__))
-    _infernux_dir = os.path.dirname(_engine_dir)
-    return os.path.join(
-        _infernux_dir, "resources", "project_templates", "requirements.txt"
-    )
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -79,7 +66,7 @@ def _ensure_pip() -> bool:
 
 def _pip_name_to_import(pip_name: str) -> str:
     """Best-effort conversion of a pip package name to an importable module."""
-    key = pip_name.lower()
+    key = canonicalize_name(pip_name)
     if key in _IMPORT_NAME_MAP:
         return _IMPORT_NAME_MAP[key]
     # Common convention: dashes → underscores
@@ -89,7 +76,7 @@ def _pip_name_to_import(pip_name: str) -> str:
 def _parse_requirements(path: str) -> list[tuple[str, str]]:
     """Return ``[(pip_spec, import_name), ...]`` from a requirements file."""
     entries: list[tuple[str, str]] = []
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
+    with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):
@@ -98,6 +85,11 @@ def _parse_requirements(path: str) -> list[tuple[str, str]]:
                 raise ValueError("Project requirements must contain PEP 508 requirements, not pip options")
             spec = line.split(" #", 1)[0].strip()
             requirement = Requirement(spec)
+            if canonicalize_name(requirement.name) == "infernux":
+                raise ValueError(
+                    "Infernux is supplied by the exact engine version pinned in "
+                    ".infernux-version; project requirements cannot install the engine"
+                )
             if requirement.marker is None or requirement.marker.evaluate():
                 entries.append((spec, _pip_name_to_import(requirement.name)))
     return entries
@@ -150,19 +142,12 @@ def ensure_project_requirements(
     """Check (and optionally install) packages listed in ProjectSettings/requirements.txt.
 
     Returns ``True`` when all active requirements are satisfied after the check.
-    The check runs at most once per process (guarded by an env-var flag).
+    Authored requirements must already exist; startup never seeds shared files.
     """
     req_file = requirements_path(project_path)
     if not os.path.isfile(req_file):
-        # Copy the default requirements from the engine resources
-        bundled = _bundled_requirements_path()
-        if os.path.isfile(bundled):
-            import shutil
-            os.makedirs(os.path.dirname(req_file), exist_ok=True)
-            shutil.copy2(bundled, req_file)
-            _log.info("Copied default requirements to %s", req_file)
-        else:
-            return True  # no bundled file either — nothing to check
+        _log.error("Project requirements file is missing; restore it from the project checkout: %s", req_file)
+        return False
 
     entries = _parse_requirements(req_file)
     if not entries:
@@ -182,11 +167,6 @@ def ensure_project_requirements(
     if not auto_install:
         _log.warning("Project requirements check: missing packages: %s", names)
         return False
-
-    # Only attempt auto-install once per process
-    if os.environ.get(_CHECK_ENV) == "1":
-        return False
-    os.environ[_CHECK_ENV] = "1"
 
     _log.info("Auto-installing missing project requirements: %s", names)
 

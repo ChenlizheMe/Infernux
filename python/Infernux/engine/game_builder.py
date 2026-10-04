@@ -2803,12 +2803,12 @@ finally:
     # purpose — never add them via --include-package even if a user
     # script imports them.
     _BUILTIN_MODULES = frozenset({
-        # Standard library (always available in the Nuitka bundle)
+        # Standard library supplied by the precompiled Player.
         *sys.stdlib_module_names,
         # Both public names belong to the precompiled engine, not user packages.
         "Infernux", "infernux",
-        # Editor-only / build-only packages owned by the engine itself.
-        "watchdog", "PIL", "cv2", "imageio", "psd_tools",
+        # Build tools have no Player role. Third-party libraries used by project
+        # scripts must still be staged, even when the Editor also depends on them.
         "tkinter", "unittest", "test", "pip", "setuptools",
         "distutils", "ensurepip",
     })

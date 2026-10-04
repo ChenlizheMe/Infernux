@@ -1,47 +1,16 @@
 """BuildDependencyMixin — extracted from GameBuilder."""
 from __future__ import annotations
 
-"""
-GameBuilder — packages a standalone native game from an Infernux project.
-
-Uses **Nuitka** to compile the Python entry script into a native EXE.
-All engine code, dependencies, and the CPython runtime are bundled into
-a self-contained directory.  User scripts (.py in Assets/) are compiled
-to .pyc with ``py_compile`` for source protection.
-
-Output layout::
-
-    <OutputDir>/
-        <GameName>.exe          ← Nuitka-compiled native executable
-        python313.dll           ← CPython runtime (required by Nuitka)
-        SDL3.dll, imgui.dll … ← engine native DLLs (also in Infernux/lib/)
-        Infernux/              ← engine package
-            lib/
-                _Infernux.*.pyd ← pybind11 extension module
-                SDL3.dll …       ← DLLs (for os.add_dll_directory)
-        Data/
-            Assets/             ← game scenes, scripts(.pyc), textures, models
-            ProjectSettings/    ← build & tag-layer settings
-            materials/
-            Splash/             ← splash images + .infsplash video data
-            BuildManifest.json  ← display mode, window size, splash config
-"""
-
-
-import json
 import os
-import py_compile
 import re
-import shutil
-import struct
-import subprocess
-import sys
-import threading
-from typing import Callable, Dict, List, Optional
+from typing import List
 
 import Infernux._jit_kernels as _jit_kernels
-from Infernux.engine.i18n import t
-from Infernux.engine.nuitka_builder import NuitkaBuilder
+from Infernux.engine.project_requirements import (
+    _has_requirement,
+    _parse_requirements,
+    requirements_path,
+)
 
 
 class BuildDependencyMixin:
@@ -70,37 +39,12 @@ class BuildDependencyMixin:
             "llvmlite",
         }
 
-    def _write_filtered_game_requirements(self, req_path: str) -> str:
-        with open(req_path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-
-        filtered = [
-            line for line in lines
-            if not self._is_game_build_excluded_requirement(line)
-        ]
-        if len(filtered) == len(lines):
-            return req_path
-
-        temp_dir = os.path.join(self.output_dir, "_build_temp")
-        os.makedirs(temp_dir, exist_ok=True)
-        filtered_path = os.path.join(temp_dir, "requirements.game.txt")
-        with open(filtered_path, "w", encoding="utf-8", newline="\n") as f:
-            f.writelines(filtered)
-        return filtered_path
-
-    def _project_requirement_files(self) -> List[str]:
-        req_path = os.path.join(self.project_path, "requirements.txt")
-        if os.path.isfile(req_path):
-            return [self._write_filtered_game_requirements(req_path)]
-        return []
-
     def _collect_user_dependencies(self) -> List[str]:
         """Scan user scripts for third-party imports and return package names.
 
         Detection sources (in order of priority):
-        1. ``requirements.txt`` in the project root — explicit user list.
-           Lines starting with ``#`` or empty lines are ignored.
-           Version specifiers are stripped (``torch>=2.0`` → ``torch``).
+        1. ``ProjectSettings/requirements.txt`` — the same active PEP 508
+           requirements checked by the editor, including versions and markers.
         2. AST-based import scanning of all ``.py`` files under ``Assets/``.
            Only top-level package names are collected (``import a.b`` → ``a``).
 
@@ -109,24 +53,25 @@ class BuildDependencyMixin:
         """
         import ast
         import importlib.util
-        import re
 
         found: set[str] = set()
         uses_infernux_jit = False
         direct_parallel_runtime_imports: set[str] = set()
 
-        # --- Source 1: project requirements.txt -------------------------
-        req_path = os.path.join(self.project_path, "requirements.txt")
+        # --- Source 1: shared project requirements ----------------------
+        req_path = requirements_path(self.project_path)
         if os.path.isfile(req_path):
-            with open(req_path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith("#") or line.startswith("-"):
-                        continue
-                    # Strip version specifiers: "torch>=2.0" → "torch"
-                    pkg = re.split(r"[><=!;\[]", line, maxsplit=1)[0].strip()
-                    if pkg:
-                        found.add(pkg)
+            entries = [
+                (spec, module) for spec, module in _parse_requirements(req_path)
+                if not self._is_game_build_excluded_requirement(spec)
+            ]
+            unresolved = [spec for spec, module in entries if not _has_requirement(spec, module)]
+            if unresolved:
+                raise RuntimeError(
+                    "Player build dependencies do not satisfy project requirements: "
+                    + ", ".join(unresolved)
+                )
+            found.update(module for _spec, module in entries)
 
         # --- Source 2: AST import scanning ------------------------------
         assets_dir = os.path.join(self.project_path, "Assets")

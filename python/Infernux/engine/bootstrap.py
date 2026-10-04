@@ -208,7 +208,12 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
     def _ensure_project_requirements(self):
         from Infernux.engine.project_requirements import ensure_project_requirements
 
-        ensure_project_requirements(self.project_path, auto_install=True)
+        if not ensure_project_requirements(self.project_path, auto_install=True):
+            raise RuntimeError(
+                "Project Python requirements could not be satisfied. Restore "
+                "ProjectSettings/requirements.txt and install its dependencies "
+                "before opening the project."
+            )
 
     def _init_engine(self):
         self.engine = Engine(self.engine_log_level)

@@ -7297,7 +7297,7 @@ class TestGameBuilderDependencyCollection:
 
     def test_collect_user_dependencies_allows_mcp_named_user_requirements(self, tmp_path, monkeypatch):
         project_root = _make_project(tmp_path)
-        (project_root / "requirements.txt").write_text(
+        (project_root / "ProjectSettings" / "requirements.txt").write_text(
             "mcp>=1.24,<2\nfastmcp\n",
             encoding="utf-8",
         )
@@ -7307,6 +7307,7 @@ class TestGameBuilderDependencyCollection:
             return object() if name in {"mcp", "fastmcp"} else None
 
         monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+        monkeypatch.setattr("Infernux.engine._build_dependencies._has_requirement", lambda *_args: True)
 
         assert builder._collect_user_dependencies() == ["fastmcp", "mcp"]
 
@@ -7322,30 +7323,39 @@ class TestGameBuilderDependencyCollection:
 
         assert builder._collect_user_dependencies() == ["fastmcp", "mcp"]
 
-    def test_project_requirement_files_keeps_user_packages_and_filters_disabled_jit(self, tmp_path):
+    def test_project_requirements_use_shared_path_markers_and_import_names(self, tmp_path, monkeypatch):
         project_root = _make_project(tmp_path)
-        req_path = project_root / "requirements.txt"
+        req_path = project_root / "ProjectSettings" / "requirements.txt"
         req_path.write_text(
             "# keep comments\n"
-            "mcp>=1.24,<2\n"
+            "Pillow>=10\n"
             "numba>=0.61\n"
             "llvmlite>=0.44\n"
-            "requests>=2\n"
-            "fastmcp\n",
+            'skipped==1; python_version < "2.0"\n',
             encoding="utf-8",
         )
+        # The obsolete root file must not change the authored dependency set.
+        (project_root / "requirements.txt").write_text("old_missing_package==1\n", encoding="utf-8")
         builder = GameBuilder(str(project_root), str(tmp_path / "build_output"), game_name="TestGame")
+        before = req_path.read_bytes()
+        checked = []
+        monkeypatch.setattr(
+            "Infernux.engine._build_dependencies._has_requirement",
+            lambda spec, module: checked.append((spec, module)) or True,
+        )
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "PIL" else None)
+        assert builder._collect_user_dependencies() == ["PIL"]
+        assert checked == [("Pillow>=10", "PIL")]
+        assert req_path.read_bytes() == before
 
-        filtered_files = builder._project_requirement_files()
-
-        assert len(filtered_files) == 1
-        filtered_text = open(filtered_files[0], "r", encoding="utf-8").read()
-        assert "requests>=2" in filtered_text
-        assert "mcp>=1.24,<2" in filtered_text.lower()
-        assert "fastmcp" in filtered_text.lower()
-        assert "numba" not in filtered_text.lower()
-        assert "llvmlite" not in filtered_text.lower()
-        assert "mcp>=1.24,<2" in req_path.read_text(encoding="utf-8")
+    def test_project_build_rejects_an_importable_dependency_with_wrong_version(self, tmp_path, monkeypatch):
+        project_root = _make_project(tmp_path)
+        (project_root / "ProjectSettings" / "requirements.txt").write_text("demo==2.0\n", encoding="utf-8")
+        builder = GameBuilder(str(project_root), str(tmp_path / "build_output"), game_name="TestGame")
+        monkeypatch.setattr("Infernux.engine._build_dependencies._has_requirement", lambda *_args: False)
+        monkeypatch.setattr(importlib.util, "find_spec", lambda _name: object())
+        with pytest.raises(RuntimeError, match="do not satisfy project requirements: demo==2.0"):
+            builder._collect_user_dependencies()
 
     def test_filter_shipped_requirements_keeps_user_packages_and_removes_disabled_jit(self, tmp_path):
         data_dir = tmp_path / "build_output" / "Data"
