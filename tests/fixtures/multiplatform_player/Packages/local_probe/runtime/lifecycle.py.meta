@@ -1,12 +1,16 @@
 {
-  "metadata": {
-    "guid": {
-      "type": "string",
-      "value": "04000000000000000000000000000021"
-    },
-    "content_hash": {
-      "type": "string",
-      "value": "26776b54fb4e6ea1"
+    "metadata": {
+        "file_path": {
+            "type": "string",
+            "value": "Packages/local_probe/runtime/lifecycle.py"
+        },
+        "guid": {
+            "type": "string",
+            "value": "04000000000000000000000000000021"
+        },
+        "resource_type": {
+            "type": "enum infernux::ResourceType",
+            "value": "Script"
+        }
     }
-  }
 }

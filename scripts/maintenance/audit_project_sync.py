@@ -35,6 +35,11 @@ REQUIRED_IGNORE = (
     "/Export/",
     "/Exports/",
     "/ProjectSettings/.infernux-engine-lock.json",
+    "/Packages/.staging/",
+    "/Packages/.cache/",
+    "/.infernux-backups/",
+    "/.infernux-runtime-rollback-*/",
+    "/pyrightconfig.json",
     "*.meta.tmp",
 )
 
@@ -56,6 +61,13 @@ STRUCTURED_SUFFIXES = {
     ".effect",
     ".effectgroup",
     ".particlegraph",
+    ".physicmaterial", ".rendertexture", ".inxdata", ".animclip2d", ".animclip3d",
+    ".animfsm", ".timelinefsm", ".animtimeline",
+}
+BINARY_SUFFIXES = {
+    ".png", ".jpg", ".jpeg", ".tga", ".dds", ".ktx", ".ktx2", ".fbx", ".glb", ".blend",
+    ".wav", ".mp3", ".ogg", ".flac", ".inxpkg", ".dll", ".pyd", ".so", ".dylib",
+    ".ttf", ".otf", ".woff", ".woff2", ".hdr", ".exr", ".bmp", ".gif", ".webp", ".tif", ".tiff", ".zip",
 }
 
 SKIP_META_NAMES = {".gitignore", ".gitattributes"}
@@ -104,9 +116,20 @@ def _has_attribute(lines: Iterable[str], pattern: str, tokens: tuple[str, ...]) 
 
 
 def _json(path: Path, report: AuditReport) -> Any | None:
+    def object_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate field {key!r}")
+            result[key] = value
+        return result
+
+    def invalid_constant(value):
+        raise ValueError(f"non-finite JSON number {value}")
+
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=object_fields, parse_constant=invalid_constant)
+    except (OSError, UnicodeError, ValueError) as exc:
         report.errors.append(f"{path}: invalid JSON: {exc}")
         return None
 
@@ -152,13 +175,15 @@ def _audit_asset_roots(project: Path, report: AuditReport) -> dict[str, str]:
             if path.is_symlink():
                 report.errors.append(f"{_relative(project, path)}: symlink assets are not portable")
                 continue
-            if not path.is_file() or path.name in SKIP_META_NAMES:
+            if path.name in SKIP_META_NAMES:
                 continue
             relative = _relative(project, path)
             key = relative.casefold()
             if key in paths:
                 report.errors.append(f"{relative}: case-only path collision with {paths[key]}")
             paths[key] = relative
+            if not path.is_file():
+                continue
             if path.suffix.casefold() == ".meta":
                 if not Path(str(path)[:-5]).is_file():
                     report.errors.append(f"{relative}: orphan .meta sidecar")
@@ -177,6 +202,8 @@ def _audit_asset_roots(project: Path, report: AuditReport) -> dict[str, str]:
                 continue
             document = _json(meta_path, report)
             _audit_metadata_paths(document, _relative(project, meta_path), report)
+            if not isinstance(_metadata_value(document, "resource_type"), str):
+                report.errors.append(f"{_relative(project, meta_path)}: missing resource_type required by the current importer")
             guid = _metadata_value(document, "guid")
             if not isinstance(guid, str) or not GUID_RE.fullmatch(guid):
                 report.errors.append(f"{_relative(project, meta_path)}: invalid canonical GUID")
@@ -321,6 +348,18 @@ def audit_project(project_root: str | Path, *, require_tracked: bool = False) ->
             )
 
     guids = _audit_asset_roots(project, report)
+    pin = project / ".infernux-version"
+    versions = _read_lines(pin, report) if pin.is_file() else []
+    versions = [line.strip() for line in versions if line.strip() and not line.lstrip().startswith("#")]
+    if len(versions) != 1:
+        report.errors.append(".infernux-version must declare exactly one engine version; upgrades are not supported")
+    binding = project / "ProjectSettings" / "PythonRuntime.json"
+    runtime = _json(binding, report) if binding.is_file() else None
+    if (not isinstance(runtime, dict) or set(runtime) != {"pythonVersion"} or
+        not isinstance(runtime.get("pythonVersion"), str) or not re.fullmatch(r"3\.\d+", runtime["pythonVersion"])):
+        report.errors.append("ProjectSettings/PythonRuntime.json must declare the shared Python ABI")
+    if not (project / "ProjectSettings" / "requirements.txt").is_file():
+        report.errors.append("ProjectSettings/requirements.txt is required as authored project input")
     for path in sorted((project / "ProjectSettings").glob("*.json")):
         if path.name.startswith(".") or path.name == "InxPlugins.json":
             continue
@@ -339,13 +378,73 @@ def _audit_git_index(project: Path, guids: dict[str, str], report: AuditReport) 
     if completed.returncode:
         report.errors.append("--tracked requires a Git checkout")
         return
-    tracked = set(completed.stdout.decode("utf-8").split("\0"))
-    for path in [*guids.values(), *(path + ".meta" for path in guids.values()), ".gitignore", ".gitattributes"]:
+    tracked = set(filter(None, completed.stdout.decode("utf-8").split("\0")))
+    inputs = {
+        *guids.values(), *(path + ".meta" for path in guids.values()),
+        ".gitignore", ".gitattributes", ".infernux-version",
+        "ProjectSettings/PythonRuntime.json", "ProjectSettings/requirements.txt",
+        *(_relative(project, path) for path in (project / "ProjectSettings").glob("*.json")
+          if not path.name.startswith(".")),
+        *(_relative(project, path) for path in project.glob("*.ini")),
+    }
+    for path in sorted(inputs):
         if path not in tracked:
             report.errors.append(f"{path}: not tracked in Git")
-    for path in tracked:
-        if path.split("/", 1)[0] in {"Library", "Temp", "Logs", "Cache", ".runtime", ".venv", "Build", "Builds", "Dist", "Export", "Exports"}:
-            report.errors.append(f"{path}: generated state is tracked in Git")
+    ignored = subprocess.run(
+        ["git", "-C", str(project), "ls-files", "-ci", "--exclude-standard", "-z"],
+        capture_output=True, check=True,
+    )
+    for path in filter(None, ignored.stdout.decode("utf-8").split("\0")):
+        report.errors.append(f"{path}: ignored/generated state is tracked in Git")
+    unmerged = subprocess.run(
+        ["git", "-C", str(project), "diff", "--name-only", "--diff-filter=U", "-z"],
+        capture_output=True, check=True,
+    )
+    for path in filter(None, unmerged.stdout.decode("utf-8").split("\0")):
+        report.errors.append(f"{path}: unresolved Git merge; resolve it with Git before opening")
+
+    # Read Git's effective rules, including nested rules and later overrides.
+    # Merely finding an expected line in .gitignore/.gitattributes is insufficient.
+    generated = {
+        "Library/probe.bin", "Temp/probe.bin", "Logs/probe.log", "Cache/probe.bin",
+        ".runtime/probe.bin", ".venv/probe.bin", "Build/probe.bin", "Builds/probe.bin",
+        "Dist/probe.bin", "Export/probe.bin", "Exports/probe.bin",
+        "Packages/.cache/probe.bin", "Packages/.staging/probe.bin",
+        ".infernux-backups/probe.zip", ".infernux-runtime-rollback-probe/probe.bin",
+        ".vscode/settings.json", "pyrightconfig.json", "ProjectSettings/.infernux-engine-lock.json",
+    }
+    probes = sorted(generated | inputs)
+    ignored_probes = subprocess.run(
+        ["git", "-C", str(project), "check-ignore", "--no-index", "-z", "--stdin"],
+        input=("\0".join(probes) + "\0").encode("utf-8"), capture_output=True,
+    )
+    if ignored_probes.returncode not in {0, 1}:
+        report.errors.append("cannot evaluate Git ignore rules")
+        return
+    effective_ignored = set(ignored_probes.stdout.decode("utf-8").split("\0"))
+    for path in sorted(inputs & effective_ignored):
+        report.errors.append(f"{path}: authored project input is ignored by Git")
+    for path in sorted(generated - effective_ignored):
+        report.errors.append(f"{path}: generated state is not effectively ignored by Git")
+
+    documents = {path for path in inputs if Path(path).suffix.casefold() in STRUCTURED_SUFFIXES | {".meta", ".json"}}
+    documents.add("Assets/probe.physicMaterial")
+    binary = {path for path in inputs if Path(path).suffix.casefold() in BINARY_SUFFIXES}
+    attributes = subprocess.run(
+        ["git", "-C", str(project), "check-attr", "-z", "--stdin", "text", "eol", "merge"],
+        input=("\0".join(sorted(documents | binary)) + "\0").encode("utf-8"), capture_output=True, check=True,
+    )
+    fields = attributes.stdout.decode("utf-8").split("\0")[:-1]
+    rules: dict[str, dict[str, str]] = {}
+    for offset in range(0, len(fields), 3):
+        path, attribute, value = fields[offset:offset + 3]
+        rules.setdefault(path, {})[attribute] = value
+    for path in sorted(documents):
+        if rules.get(path) != {"text": "set", "eol": "lf", "merge": "text"}:
+            report.errors.append(f"{path}: effective Git attributes must be text eol=lf merge=text")
+    for path in sorted(binary):
+        if rules.get(path, {}).get("text") != "unset":
+            report.errors.append(f"{path}: binary asset must disable Git text conversion")
 
 
 def main(argv: list[str] | None = None) -> int:

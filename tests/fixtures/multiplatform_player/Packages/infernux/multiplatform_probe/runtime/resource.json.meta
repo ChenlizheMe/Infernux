@@ -1,12 +1,16 @@
 {
-  "metadata": {
-    "guid": {
-      "type": "string",
-      "value": "04000000000000000000000000000013"
-    },
-    "content_hash": {
-      "type": "string",
-      "value": "33b5852af0f44ec7"
+    "metadata": {
+        "file_path": {
+            "type": "string",
+            "value": "Packages/infernux/multiplatform_probe/runtime/resource.json"
+        },
+        "guid": {
+            "type": "string",
+            "value": "04000000000000000000000000000013"
+        },
+        "resource_type": {
+            "type": "enum infernux::ResourceType",
+            "value": "DefaultText"
+        }
     }
-  }
 }

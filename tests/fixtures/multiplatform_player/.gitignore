@@ -23,6 +23,10 @@
 
 # Per-machine engine state and process locks
 /ProjectSettings/.infernux-engine-lock.json
+/.infernux-backups/
+/.infernux-runtime-rollback-*/
+/pyrightconfig.json
+/ProjectSettings/requirements.txt.migrate-*
 
 # Python caches and compiled scripts
 __pycache__/

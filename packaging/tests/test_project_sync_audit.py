@@ -25,6 +25,9 @@ def _project(tmp_path: Path) -> Path:
     project = tmp_path / "Project"
     (project / "Assets").mkdir(parents=True)
     (project / "ProjectSettings").mkdir()
+    (project / ".infernux-version").write_text("0.4.1\n", encoding="utf-8")
+    (project / "ProjectSettings" / "PythonRuntime.json").write_text('{"pythonVersion": "3.13"}\n', encoding="utf-8")
+    (project / "ProjectSettings" / "requirements.txt").write_text("# Project dependencies\n", encoding="utf-8")
     (project / ".gitignore").write_text(
         (ROOT / "python" / "Infernux" / "resources" / "project_templates" / "project.gitignore.txt")
         .read_text(encoding="utf-8"),
@@ -45,7 +48,7 @@ def _write_asset(project: Path, relative: str, guid: str, *, absolute_hint: str 
     payload = {
         "metadata": {
             "guid": {"type": "string", "value": guid},
-            "content_hash": {"type": "string", "value": "0000000000000000"},
+            "resource_type": {"type": "enum infernux::ResourceType", "value": "DefaultText"},
         }
     }
     if absolute_hint:
@@ -88,6 +91,50 @@ def test_orphan_sidecar_and_unresolved_lfs_payload_are_rejected(tmp_path: Path):
     report = _module().audit_project(project)
     assert any("orphan .meta" in error for error in report.errors)
     assert any("Git LFS payload" in error for error in report.errors)
+
+
+def _tracked_project(tmp_path):
+    project = _project(tmp_path)
+    _write_asset(project, "Assets/Main.scene", "1" * 32)
+    subprocess.run(["git", "-C", str(project), "init", "-q"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(project), "add", "."], check=True, capture_output=True)
+    assert _module().audit_project(project, require_tracked=True).ok
+    return project
+
+
+def test_effective_ignore_override_cannot_hide_source_sidecars(tmp_path):
+    project = _tracked_project(tmp_path)
+    (project / "Assets" / ".gitignore").write_text("*.meta\n", encoding="utf-8")
+    report = _module().audit_project(project, require_tracked=True)
+    assert any("authored project input is ignored" in error for error in report.errors)
+
+
+def test_effective_attributes_reject_nested_binary_scene_rule(tmp_path):
+    project = _tracked_project(tmp_path)
+    (project / "Assets" / ".gitattributes").write_text("*.scene binary\n", encoding="utf-8")
+    report = _module().audit_project(project, require_tracked=True)
+    assert any("Main.scene: effective Git attributes" in error for error in report.errors)
+
+
+def test_force_added_generated_state_is_rejected(tmp_path):
+    project = _tracked_project(tmp_path)
+    backup = project / ".infernux-backups" / "old-project.zip"
+    backup.parent.mkdir()
+    backup.write_bytes(b"private")
+    subprocess.run(["git", "-C", str(project), "add", "-f", ".infernux-backups"], check=True, capture_output=True)
+    report = _module().audit_project(project, require_tracked=True)
+    assert any("old-project.zip: ignored/generated state" in error for error in report.errors)
+
+
+@pytest.mark.parametrize("suffix", [".animclip3d", ".animclip2d", ".timelinefsm", ".inxdata", ".rendertexture", ".physicMaterial"])
+def test_audit_rejects_stale_structured_documents_and_absolute_paths(tmp_path, suffix):
+    project = _project(tmp_path)
+    _write_asset(project, "Assets/Invalid" + suffix, "1" * 32)
+    path = project / ("Assets/Invalid" + suffix)
+    path.write_text('{"path_hint": "C:/author/machine"}\n', encoding="utf-8")
+    assert any("machine-local absolute path" in error for error in _module().audit_project(project).errors)
+    path.write_text('{"name": "first", "name": "second"}\n', encoding="utf-8")
+    assert any("duplicate field" in error for error in _module().audit_project(project).errors)
 
 
 @pytest.mark.parametrize("suffix", [".scene", ".prefab", ".mat", ".meta", ".effect", ".json"])
