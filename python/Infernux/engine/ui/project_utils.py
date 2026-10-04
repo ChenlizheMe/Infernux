@@ -151,6 +151,9 @@ def open_in_vscode(file_path: str, line: int = 0, project_root: str = "") -> boo
     if project_root:
         project_root = resolved_path(project_root)
         if os.path.isdir(project_root):
+            from Infernux.engine.ide_workspace import synchronize_vscode_workspace
+
+            synchronize_vscode_workspace(project_root)
             cmd.append(project_root)
     cmd.extend(['--goto', target])
 

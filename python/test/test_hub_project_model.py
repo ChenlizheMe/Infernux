@@ -104,9 +104,27 @@ def test_vscode_workspace_uses_current_pyright_interpreter_settings(
         project_model.ProjectModel._vscode_python_path(str(project_dir))
     )
     assert "python.pythonPath" not in settings
-    assert pyright["venvPath"] == "."
-    assert pyright["venv"] == ".venv"
+    assert settings["python.defaultInterpreterPath"] == project_model.sys.executable.replace("\\", "/")
+    assert settings["python.analysis.extraPaths"] == [
+        project_model.sysconfig.get_path("purelib").replace("\\", "/")
+    ]
+    assert "venvPath" not in pyright
+    assert "venv" not in pyright
     assert "pythonPath" not in pyright
+
+
+def test_frozen_vscode_workspace_keeps_private_runtime_paths_portable(tmp_path, monkeypatch):
+    project_model = _load_project_model(monkeypatch)
+    monkeypatch.setattr(project_model, "is_frozen", lambda: True)
+    project_dir = tmp_path / "project"
+    _bind_python(project_dir, "3.13")
+    project_model.ProjectModel._create_vscode_workspace(str(project_dir))
+    settings = json.loads((project_dir / ".vscode/settings.json").read_text())
+    pyright = json.loads((project_dir / "pyrightconfig.json").read_text())
+    assert settings["python.defaultInterpreterPath"].startswith("${workspaceFolder}/.runtime/")
+    assert settings["python.analysis.extraPaths"][0].startswith(".runtime/")
+    assert pyright["extraPaths"] == settings["python.analysis.extraPaths"]
+    assert "venv" not in pyright
 
 
 def _write_infernux_wheel(path: Path, version: str = "0.1.6") -> None:

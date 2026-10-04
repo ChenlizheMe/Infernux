@@ -6,6 +6,7 @@ import shutil
 import zipfile
 import uuid
 import runpy
+import sysconfig
 
 from hub_utils import is_frozen, merge_child_env_utf8
 from project_paths import inspect_existing_project, new_project_target
@@ -675,8 +676,9 @@ class ProjectModel:
         os.makedirs(vscode_dir, exist_ok=True)
 
         # ── settings.json ───────────────────────────────────────────────
-        site_packages = os.path.relpath(
-            ProjectModel._get_site_packages(project_dir), project_dir
+        site_packages = (
+            os.path.relpath(ProjectModel._get_site_packages(project_dir), project_dir)
+            if is_frozen() else sysconfig.get_path("purelib")
         ).replace("\\", "/")
         vscode_python = ProjectModel._vscode_python_path(project_dir)
         settings = {
@@ -716,29 +718,17 @@ class ProjectModel:
             json.dump(extensions, f, indent=4, ensure_ascii=False)
 
         # ── pyrightconfig.json (at project root) ────────────────────────
-        # In frozen mode, point Pyright directly at the project runtime Python;
-        # in dev mode, use the classic venvPath/venv convention.
+        # Search the same environment that launches the editor. A source Hub
+        # uses its own interpreter, rather than an assumed project .venv.
         python_version = _project_python_version(project_dir)
-        if is_frozen():
-            pyright_config = {
-                "pythonVersion": python_version,
-                "typeCheckingMode": "basic",
-                "reportMissingModuleSource": False,
-                "reportWildcardImportFromLibrary": False,
-                "extraPaths": [site_packages],
-                "include": ["Assets"],
-            }
-        else:
-            pyright_config = {
-                "venvPath": ".",
-                "venv": ".venv",
-                "pythonVersion": python_version,
-                "typeCheckingMode": "basic",
-                "reportMissingModuleSource": False,
-                "reportWildcardImportFromLibrary": False,
-                "extraPaths": [site_packages],
-                "include": ["Assets"],
-            }
+        pyright_config = {
+            "pythonVersion": python_version,
+            "typeCheckingMode": "basic",
+            "reportMissingModuleSource": False,
+            "reportWildcardImportFromLibrary": False,
+            "extraPaths": [site_packages],
+            "include": ["Assets"],
+        }
         pyright_path = os.path.join(project_dir, "pyrightconfig.json")
         with open(pyright_path, "w", encoding="utf-8") as f:
             json.dump(pyright_config, f, indent=4, ensure_ascii=False)
@@ -749,6 +739,4 @@ class ProjectModel:
         if is_frozen():
             relative = os.path.relpath(ProjectModel._get_project_python(project_dir), project_dir)
             return "${workspaceFolder}/" + relative.replace("\\", "/")
-        if sys.platform == "win32":
-            return "${workspaceFolder}/.venv/Scripts/python.exe"
-        return "${workspaceFolder}/.venv/bin/python"
+        return sys.executable.replace("\\", "/")

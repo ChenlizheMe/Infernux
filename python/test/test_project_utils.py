@@ -1,4 +1,7 @@
 import platform
+import json
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -86,6 +89,53 @@ def test_vscode_launch_failure_is_not_hidden(tmp_path, monkeypatch):
 
     with pytest.raises(OSError, match="launch failed"):
         project_utils.open_in_vscode(str(script))
+
+
+def test_vscode_open_repairs_stale_runtime_before_launch_and_keeps_preferences(tmp_path, monkeypatch):
+    script = tmp_path / "Assets" / "player.py"
+    script.parent.mkdir()
+    script.write_text("import infernux as inx\n", encoding="utf-8")
+    vscode = tmp_path / ".vscode"
+    vscode.mkdir()
+    (vscode / "settings.json").write_text(json.dumps({
+        "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+        "python.analysis.extraPaths": [str(tmp_path / ".venv/Lib/site-packages"), "Libraries"],
+        "editor.fontSize": 18,
+    }))
+    (tmp_path / "pyrightconfig.json").write_text(json.dumps({
+        "venvPath": ".", "venv": ".venv", "extraPaths": [".venv/Lib/site-packages"],
+        "exclude": ["Assets/Generated"],
+    }))
+    monkeypatch.setattr(project_utils, "_find_vscode_executable", lambda: "code.exe")
+    launches = []
+
+    def launch(arguments, **_kwargs):
+        settings = json.loads((vscode / "settings.json").read_text())
+        assert settings["python.defaultInterpreterPath"] == sys.executable.replace("\\", "/")
+        assert settings["editor.fontSize"] == 18
+        assert settings["python.analysis.extraPaths"][1:] == ["Libraries"]
+        import importlib.util
+        assert settings["python.analysis.extraPaths"][0] == str(
+            Path(importlib.util.find_spec("infernux").origin).resolve().parent
+        ).replace("\\", "/")
+        pyright = json.loads((tmp_path / "pyrightconfig.json").read_text())
+        assert "venv" not in pyright and "venvPath" not in pyright
+        assert pyright["exclude"] == ["Assets/Generated"]
+        launches.append(arguments)
+
+    monkeypatch.setattr("subprocess.Popen", launch)
+    assert project_utils.open_in_vscode(str(script), line=12, project_root=str(tmp_path))
+    assert launches[0][-2:] == ["--goto", f"{script}:12"]
+
+
+def test_vscode_sync_does_not_rewrite_unchanged_settings(tmp_path):
+    from Infernux.engine.ide_workspace import synchronize_vscode_workspace
+
+    synchronize_vscode_workspace(str(tmp_path))
+    paths = [tmp_path / ".vscode/settings.json", tmp_path / "pyrightconfig.json"]
+    timestamps = [path.stat().st_mtime_ns for path in paths]
+    synchronize_vscode_workspace(str(tmp_path))
+    assert [path.stat().st_mtime_ns for path in paths] == timestamps
 
 
 def test_pycharm_project_files_require_project_runtime(tmp_path):
