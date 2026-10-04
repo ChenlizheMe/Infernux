@@ -306,6 +306,7 @@ class SerializedFieldDescriptor:
     
     def __init__(self, metadata: FieldMetadata):
         self.metadata = metadata
+        self._explicit_type_options: frozenset[str] = frozenset()
         self._values: Dict[int, Any] = {}  # instance id -> value
         self._weak_refs: Dict[int, weakref.ref] = {}  # instance id -> weak ref
         # Replacing a stale weakref can synchronously invoke its callback while
@@ -1714,7 +1715,21 @@ def serialized_field(
         field_id=field_id,
     )
     
-    return SerializedFieldDescriptor(metadata)
+    # Keep authored type choices separate from value inference. At class
+    # declaration, an annotation supplies the contract unless a corresponding
+    # type option was explicitly provided by the caller.
+    explicit_type_options = frozenset(
+        name for name, value in (
+            ("field_type", field_type), ("element_type", element_type),
+            ("element_class", element_class), ("serializable_class", serializable_class),
+            ("component_type", component_type), ("asset_type", asset_type),
+        ) if value is not None
+    )
+    if component_type or asset_type:
+        explicit_type_options |= {"field_type"}
+    descriptor = SerializedFieldDescriptor(metadata)
+    descriptor._explicit_type_options = explicit_type_options
+    return descriptor
 
 
 def validate_serialized_field_document(
@@ -1822,20 +1837,27 @@ def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
         if isinstance(attr, SerializedFieldDescriptor):
             if ann is not None:
                 _base, markers = _unwrap_annotation(ann)
-                # A null default cannot identify a reference kind. Resolve
-                # that declaration from its annotation before compiling the
-                # immutable schema, while retaining explicit Inspector options.
-                if attr.metadata.field_type == FieldType.UNKNOWN:
-                    inferred = resolve_annotation(_base)
-                    if inferred is not None:
+                # Default values cannot identify empty-list element types and
+                # need not have the same numeric kind as the annotation. Bind
+                # the complete annotated contract before schema compilation;
+                # presentation and explicitly authored type options stay intact.
+                inferred = resolve_annotation(_base)
+                if inferred is not None:
+                    explicit = attr._explicit_type_options
+                    if "field_type" not in explicit:
+                        attr.metadata.field_type = inferred.field_type
+                    if attr.metadata.field_type == inferred.field_type:
                         for semantic_name in (
-                            'field_type', 'enum_type', 'element_type',
+                            'enum_type', 'element_type',
                             'element_class', 'serializable_class',
                             'component_type', 'asset_type', 'python_type',
                         ):
-                            setattr(attr.metadata, semantic_name, getattr(inferred, semantic_name))
+                            if semantic_name not in explicit:
+                                setattr(attr.metadata, semantic_name, getattr(inferred, semantic_name))
                         if attr.metadata.default is None:
                             attr.metadata.default = inferred.default
+                        else:
+                            attr.metadata.default = _coerce_default(attr.metadata, attr.metadata.default)
                 if markers and _apply_markers(attr.metadata, markers) is None:
                     # NonSerialized marker wins: drop the field entirely.
                     delattr(cls, attr_name)

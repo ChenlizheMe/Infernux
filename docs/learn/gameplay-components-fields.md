@@ -71,6 +71,8 @@ The expected log is `Reporter -> Target; speed=6.0`. The exact numeric formattin
 
 Supported public annotations include `int`, `float`, `bool`, `str`, vectors, enums, known asset references, `GameObject`, component subclasses, lists of supported types, and serializable objects. A supported public class attribute is collected as a serialized field. Use `serialized_field(...)` to declare authored fields and their Inspector metadata explicitly.
 
+The annotation also supplies the type of a `serialized_field` declaration: `numbers: list[int] = inx.serialized_field(default=[])` declares integer elements even when the default list is empty, and `speed: float = inx.serialized_field(default=1)` has a float default of `1.0`. Explicit type arguments such as `field_type` or `element_type` take precedence over the corresponding annotation information.
+
 The `range`, `header`, and `tooltip` arguments to `serialized_field()` supply a slider, section label, and hover help. The same numeric bounds apply to Inspector edits, deserialization, and script assignment. The scene stores the edited value, so changing the class default later does not overwrite an already-authored scene value.
 
 Use private `_name` attributes for transient state. Use `serialized_field(..., hidden=True)` when data must be saved but omitted from the Inspector. Regular mutable runtime caches should be rebuilt in lifecycle callbacks and kept out of serialized fields.
@@ -192,6 +194,8 @@ class TargetReporter(inx.InxComponent):
 ## 序列化字段 {#fields_1}
 
 公开注解支持 `int`、`float`、`bool`、`str`、向量、枚举、已知资产引用、`GameObject`、组件子类、受支持类型的列表和可序列化对象。带受支持类型的公开类属性会被收集为序列化字段。需要用关键字集中表达元数据时，可以显式使用 `serialized_field(...)`。
+
+注解同样为 `serialized_field` 声明提供类型：`numbers: list[int] = inx.serialized_field(default=[])` 即使默认列表为空，也会声明整数元素；`speed: float = inx.serialized_field(default=1)` 的默认值是浮点数 `1.0`。显式传入的 `field_type`、`element_type` 等类型参数优先于注解中的对应信息。
 
 `serialized_field()` 的 `range`、`header` 和 `tooltip` 参数分别提供滑块、分区标题和悬停提示。相同的数值边界会用于 Inspector 编辑、反序列化和脚本赋值。场景会保存编辑后的值；以后修改类默认值，不会覆盖场景里已经写入的值。
 

@@ -14,9 +14,10 @@ Access timing data from anywhere in gameplay scripts without instantiation::
                 debug.log(f"Play time: {Time.time:.1f}s")
 
 Note:
-    The ``dt`` parameter passed to ``update()`` / ``fixed_update()`` is the
-    **raw** (unscaled) delta coming from C++.  ``Time.delta_time`` is the
-    *scaled* delta (raw × ``Time.time_scale``), matching Unity's behaviour.
+    ``update()`` and ``late_update()`` receive the scaled simulation delta,
+    matching ``Time.delta_time``. ``fixed_update()`` receives the fixed
+    simulation step, matching ``Time.fixed_delta_time``. Use
+    ``Time.unscaled_delta_time`` for frame-driven work independent of time scale.
 """
 
 from __future__ import annotations
