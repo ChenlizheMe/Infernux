@@ -80,6 +80,37 @@ def test_render_effect_feature_is_allowed_only_as_a_declaration_decorator():
     assert len(eager.runtime_guard_required) == 1
 
 
+@pytest.mark.parametrize("imports, decorator", [
+    ("import infernux as inx", "inx.renderstack.geometry_buffer"),
+    ("import Infernux as inx", "inx.renderstack.geometry_buffer"),
+    ("from Infernux import renderstack as rendering", "rendering.geometry_buffer"),
+    ("import Infernux.renderstack as rendering", "rendering.geometry_buffer"),
+    ("from Infernux.renderstack import geometry_buffer as provider", "provider"),
+    ("from Infernux.renderstack.geometry_buffers import geometry_buffer", "geometry_buffer"),
+])
+def test_geometry_buffer_provider_is_a_controlled_declaration(imports, decorator):
+    report = _report(
+        f"{imports}\nclass Pipeline:\n"
+        f"    @{decorator}('preview_color', dependencies={{'depth'}})\n"
+        "    def provide(self, context):\n"
+        "        return context.graph.create_texture('preview_color')\n"
+    )
+    assert report.blocked == report.runtime_guard_required == ()
+
+
+@pytest.mark.parametrize("source", [
+    "import infernux as inx\nfactory = inx.renderstack.geometry_buffer('preview_color')\n",
+    "import unrelated as inx\nclass Pipeline:\n"
+    "    @inx.renderstack.geometry_buffer('preview_color')\n"
+    "    def provide(self, context): pass\n",
+    "import infernux as inx\nclass Pipeline:\n"
+    "    @inx.renderstack.geometry_buffer(read_semantic())\n"
+    "    def provide(self, context): pass\n",
+])
+def test_geometry_buffer_declaration_does_not_allow_uncontrolled_work(source):
+    assert _report(source).is_rejected
+
+
 def test_lowercase_public_namespace_supports_declaration_only_component_scripts():
     report = _report(
         """

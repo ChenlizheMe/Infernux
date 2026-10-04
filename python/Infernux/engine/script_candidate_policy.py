@@ -423,6 +423,7 @@ class _PolicyVisitor(ast.NodeVisitor):
 
         ``Infernux.jit.compile`` creates a lazy dispatcher when the function is
         declared, while ``render_effect_feature`` publishes class metadata.
+        ``geometry_buffer`` annotates a provider method without running it.
         Field marker constructors likewise only create class metadata. Keep
         these capabilities scoped to declarations so equivalent module-level
         calls cannot borrow the same permission.
@@ -434,6 +435,11 @@ class _PolicyVisitor(ast.NodeVisitor):
             ("Infernux.jit", "compile"),
             ("Infernux.renderstack", "render_effect_feature"),
             ("infernux", "renderstack", "render_effect_feature"),
+            ("Infernux.renderstack", "geometry_buffer"),
+            ("Infernux.renderstack.geometry_buffers", "geometry_buffer"),
+            ("infernux.renderstack", "geometry_buffer"),
+            ("Infernux", "renderstack", "geometry_buffer"),
+            ("infernux", "renderstack", "geometry_buffer"),
         }
         component_decorators = {
             "require_component",
@@ -463,7 +469,7 @@ class _PolicyVisitor(ast.NodeVisitor):
             }:
                 return True
             # ``from Infernux import *`` intentionally has no member table.
-            return node.func.id in {"render_effect_feature", *component_decorators}
+            return node.func.id in {"render_effect_feature", "geometry_buffer", *component_decorators}
         path = self._imported_path(node.func)
         if not path:
             return False
