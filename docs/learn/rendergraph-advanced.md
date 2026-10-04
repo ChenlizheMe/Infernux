@@ -233,9 +233,9 @@ after = self.write_buffer(
 
 Lazy geometry providers may add a missing semantic to the result that owns them. Once a write derives a new result, earlier semantic bindings stay intact.
 
-`publish_pass_result()` accepts only semantic names mapped to graph `TextureHandle` objects, and every `source` must be unique in that graph build. `PassResult.sample()` returns the logical handle; `snapshot` returns a read-only copy of the current semantic mapping. Result publication does not allocate, copy, or mutate a GPU image. A pass declaration must still write the texture, and a downstream pass must declare its read.
+`publish_pass_result()` maps semantic names to `TextureHandle` or GPU `BufferHandle` objects owned by that graph; for example, `color` is a texture and `light_list` is a buffer. Every `source` must be unique in that graph build. `PassResult.sample()` returns the logical handle; `snapshot` returns a read-only copy of the current semantic mapping. Result publication does not allocate, copy, or mutate a GPU resource. A pass declaration must still produce the resource, and a downstream pass must declare its read using the matching texture or buffer API.
 
-Texture and GPU Buffer handles are lightweight logical-name records owned by one builder run. Do not retain them on the pipeline instance, reuse them after a rebuild, or pass them into another graph. The Python handle type does not carry a graph ID, so a same-name cross-graph mistake can evade early identity checks. The resulting `RenderGraphDescription` contains names and resource descriptions; the native per-camera graph creates the actual resources.
+Texture and GPU Buffer handles are lightweight logical-name records owned by one builder run. Do not retain them on the pipeline instance, reuse them after a rebuild, or pass them into another graph. Equal names do not prove ownership: the graph checks the identity of each handle when publishing results, binding pass resources, or selecting an output, and rejects foreign handles even when their names match. Deriving a result also requires a parent from the same graph. The resulting `RenderGraphDescription` contains names and resource descriptions; the native per-camera graph creates the actual resources.
 
 All camera targets in one graph alias the camera's physical color target. Declaring more than one emits a warning. A persistent `inx.RenderTexture` has separate ownership: assign it to `Camera.target_texture`, `UIImage.texture`, or a material texture binding, and use `graph.import_texture()` for explicit graph access. Rebuilding a graph does not destroy the resource. These runtime references do not fabricate asset GUIDs or become saved texture assets.
 
@@ -726,9 +726,9 @@ after = self.write_buffer(
 
 惰性 Geometry Provider 可以把缺失的 Semantic 加入拥有它的 Result。一次写入派生出新 Result 后，早期 Result 的语义绑定仍保持原值。
 
-`publish_pass_result()` 只接受由 Semantic 名称映射到 Graph `TextureHandle` 的数据，同一次 Graph 构建中的 `source` 必须唯一。`PassResult.sample()` 返回逻辑 Handle；`snapshot` 返回当前 Semantic 映射的只读副本。发布 Result 不会分配、复制或修改 GPU Image。仍需由 Pass 声明写入纹理，并由下游 Pass 声明读取。
+`publish_pass_result()` 将 Semantic 名称映射到属于同一 Graph 的 `TextureHandle` 或 GPU `BufferHandle`；例如 `color` 是纹理，`light_list` 是 Buffer。同一次 Graph 构建中的 `source` 必须唯一。`PassResult.sample()` 返回逻辑 Handle；`snapshot` 返回当前 Semantic 映射的只读副本。发布 Result 不会分配、复制或修改 GPU 资源。仍需由 Pass 声明生成资源，并由下游 Pass 使用对应的纹理或 Buffer API 声明读取。
 
-Texture Handle 与 GPU Buffer Handle 是一次 Builder 运行所拥有的轻量逻辑名称记录。不要把它们保存在 Pipeline 实例上，不要在重建后继续使用，也不要传给另一个 Graph。Python Handle 类型不携带 Graph ID，因此同名的跨 Graph 错误可能绕过早期身份检查。最终的 `RenderGraphDescription` 保存名称与资源描述，实际资源由每相机 Native Graph 创建。
+Texture Handle 与 GPU Buffer Handle 是一次 Builder 运行所拥有的轻量逻辑名称记录。不要把它们保存在 Pipeline 实例上，不要在重建后继续使用，也不要传给另一个 Graph。同名不代表所有权相同：Graph 在发布 Result、绑定 Pass 资源和指定输出时检查 Handle 的对象身份，即使名称相同也会拒绝其它 Graph 的 Handle。派生 Result 同样要求 Parent 属于当前 Graph。最终的 `RenderGraphDescription` 保存名称与资源描述，实际资源由每相机 Native Graph 创建。
 
 同一个 Graph 中的所有 Camera Target 都指向相机的物理颜色输出，声明多张时会产生警告。持久的 `inx.RenderTexture` 则拥有独立的资源生命周期：可以赋给 `Camera.target_texture`、`UIImage.texture` 或材质纹理参数，也可以通过 `graph.import_texture()` 显式接入渲染图。重建图不会销毁该资源。这些运行时引用不生成资产 GUID，也不会自动保存成纹理资产。
 
