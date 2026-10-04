@@ -219,8 +219,15 @@ jobs:
                   document = json.loads(path.read_text(encoding="utf-8"))
                   if document.get("version") != hub_version:
                       raise SystemExit(f"Manifest version mismatch: {name}")
+          with zipfile.ZipFile(root / windows_wheel) as archive:
+              Path("dist/official-plugin-upload-catalog.json").write_bytes(
+                  archive.read("infernux/resources/official_packages/official-registry.json")
+              )
           print("Validated", len(expected), "desktop release assets")
           PY
+
+      - name: Verify Cloudflare destinations against the actual wheel plugin catalog
+        run: node scripts/release/test-r2-upload-worker.mjs dist/official-plugin-upload-catalog.json
 
       - name: Create the release when needed
         id: github_release
