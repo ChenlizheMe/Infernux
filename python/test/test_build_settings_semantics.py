@@ -11,6 +11,28 @@ from Infernux.engine.build import BuildTarget, PlatformCapabilities
 from Infernux.engine.ui.build_settings_panel import BuildSettingsPanel
 
 
+def test_shared_build_output_stays_relative_when_the_project_moves(monkeypatch, tmp_path):
+    from Infernux.engine.build import BuildRequest
+    from Infernux.engine.build_settings import normalize_build_settings
+
+    original = tmp_path / "AuthorProject"
+    cloned = tmp_path / "ClonedProject"
+    elsewhere = tmp_path / "UnrelatedWorkingDirectory"
+    for path in (original, cloned, elsewhere):
+        path.mkdir()
+    settings = normalize_build_settings(
+        {"output_dir": str(original / "Builds" / "Windows")}, project_path=str(original),
+    )
+    assert settings["output_dir"] == "Builds/Windows"
+    monkeypatch.chdir(elsewhere)
+    request = BuildRequest(str(cloned), "windows-x64", settings["output_dir"])
+    assert request.output_dir == str(cloned / "Builds" / "Windows")
+    external = normalize_build_settings(
+        {"output_dir": str(tmp_path / "SharedBuild")}, project_path=str(original),
+    )
+    assert external["output_dir"] == "../SharedBuild"
+
+
 @pytest.mark.parametrize("field", ["scenes", "scene_paths", "icon_path", "scene_gudis"])
 def test_build_rejects_unknown_settings_without_rewriting_the_shared_document(tmp_path, field):
     import json

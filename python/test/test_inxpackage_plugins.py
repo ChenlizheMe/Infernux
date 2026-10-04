@@ -611,7 +611,7 @@ def test_repository_export_archives_only_pythonic_package_tree_and_any_payload(t
     try:
         page_guid = "0123456789abcdef0123456789abcdef"
         set_runtime_asset_query(
-            lambda path: (page_guid,)
+            lambda path, *, exact=False: (page_guid,)
             if path == "Assets/Plugins/web/index.html"
             else ()
         )

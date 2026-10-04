@@ -1084,7 +1084,7 @@ class EditorAutomationHost:
             required_platform_plugin,
         )
         from Infernux.engine.interaction import normalize_build_settings
-        from Infernux.engine.path_utils import resolved_path
+        from Infernux.engine.path_utils import resolve_project_path, resolved_path
         from Infernux.engine.player_build_preflight import (
             publish_player_asset_catalog_for_host,
         )
@@ -1102,12 +1102,15 @@ class EditorAutomationHost:
         if not isinstance(settings, dict):
             raise OperationError("player.build_settings", "Build Settings must be an object.")
         try:
-            settings = normalize_build_settings(settings)
+            settings = normalize_build_settings(settings, project_path=root)
         except (TypeError, ValueError) as exc:
             raise OperationError("player.build_settings", str(exc)) from exc
 
         raw_output = str(output_dir or settings.get("output_dir", "") or "").strip()
-        final_output = resolved_path(raw_output) if raw_output else ""
+        try:
+            final_output = resolve_project_path(raw_output, root)
+        except ValueError as exc:
+            raise OperationError("player.build_settings", str(exc)) from exc
         final_name = str(game_name or settings.get("game_name", "") or "").strip() or os.path.basename(root)
         if not final_output:
             raise OperationError(
@@ -1192,6 +1195,7 @@ class EditorAutomationHost:
             }
         )
         settings["platform_options"][final_target] = dict(target_options)
+        settings = normalize_build_settings(settings, project_path=root)
         progress: list[dict[str, object]] = []
         phase_counts: dict[str, int] = {}
         omitted_verbose = 0

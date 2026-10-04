@@ -77,8 +77,9 @@ def _project(tmp_path: Path) -> Path:
     return project
 
 
+@pytest.mark.parametrize("output_dir", ["", r"Builds\Fixture"])
 def test_host_build_routes_registered_target_and_returns_structured_result(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, output_dir,
 ):
     registration = exporter_registry.register("test:host-build", _FixtureExporter())
     monkeypatch.setattr(
@@ -86,10 +87,14 @@ def test_host_build_routes_registered_target_and_returns_structured_result(
         lambda _root: {"entries": [{"guid": "a" * 32}]},
     )
     project = _project(tmp_path)
+    elsewhere = tmp_path / "UnrelatedWorkingDirectory"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
     try:
         result = EditorAutomationHost().build_player(
             str(project),
             target="fixture-x64",
+            output_dir=output_dir,
             persist_settings=True,
         )
     finally:
@@ -106,6 +111,8 @@ def test_host_build_routes_registered_target_and_returns_structured_result(
         )
     )
     assert persisted["build_target"] == "fixture-x64"
+    assert persisted["output_dir"] == ("Builds/Fixture" if output_dir else "../Build")
+    assert Path(result["artifacts"][0]["path"]).is_file()
     assert "enable_jit" not in persisted
 
 

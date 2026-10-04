@@ -60,6 +60,7 @@ from Infernux.engine.path_utils import (
     path_fingerprint,
     portable_path,
     relative_path,
+    resolve_project_path,
     resolved_path,
     same_path,
 )
@@ -397,7 +398,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     ):
         self.project_path = resolved_path(project_path)
         self.project_name = game_name.strip() if game_name.strip() else os.path.basename(self.project_path)
-        self.output_dir = resolved_path(output_dir)
+        self.output_dir = resolve_project_path(output_dir, self.project_path)
         self.icon_guid = str(icon_guid).strip()
         self._built_icon_path = ""
         self.display_mode = display_mode
@@ -4501,7 +4502,6 @@ finally:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return
 
-        project_root = resolved_path(self.project_path)
         changed = False
 
         # Prefab history is editor-only, not a runtime dependency or payload.
@@ -4546,20 +4546,10 @@ finally:
                 if portable != value:
                     changed = True
                 return portable
-            if not os.path.isabs(value):
-                return value
-            try:
-                absolute = resolved_path(value)
-            except (OSError, ValueError):
-                return value
-            if not is_path_within(absolute, project_root, allow_root=True):
-                return value
-            try:
-                rewritten_path = portable_path(relative_path(absolute, project_root))
-            except ValueError:
-                return value
-            changed = True
-            return rewritten_path
+            # User string fields are payload, not engine resource references.
+            # Managed references have already been authored as GUIDs. Rewriting
+            # arbitrary strings changes gameplay between Editor and Player.
+            return value
 
         rewritten = rewrite(document)
         if (

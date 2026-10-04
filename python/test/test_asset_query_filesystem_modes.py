@@ -68,6 +68,33 @@ def test_editor_managed_load_rejects_absolute_paths_even_below_assets(
         AssetManager.load(str(material))
 
 
+@pytest.mark.parametrize("player", [False, True])
+@pytest.mark.parametrize("path", ["Assets//Config.json", "Assets/./Config.json", "Assets/Nested/../Config.json", "C:/Author/Assets/Config.json", "C:Assets/Config.json"])
+def test_managed_load_and_file_resolution_reject_the_same_invalid_paths(
+    monkeypatch, tmp_path, player, path,
+):
+    from Infernux.engine import project_context
+
+    _editor(monkeypatch, tmp_path)
+    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: player))
+    monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: not player))
+    monkeypatch.setattr(AssetManager, "_asset_database", _Database({}))
+    monkeypatch.setattr(project_context, "_runtime_asset_query", lambda _path, *, exact=False: ("wrong-guid",) if player else ())
+    monkeypatch.setattr(project_context, "_runtime_asset_resolver", lambda _guid: str(tmp_path / "wrong.json") if player else None)
+    with pytest.raises(ValueError):
+        AssetManager.load(path)
+    assert project_context.resolve_asset_path(path) is None
+
+
+def test_editor_managed_load_normalizes_the_assets_root_spelling(monkeypatch, tmp_path):
+    material = tmp_path / "Assets" / "Materials" / "Gold.mat"
+    material.parent.mkdir(parents=True)
+    material.write_text("{}", encoding="utf-8")
+    _editor(monkeypatch, tmp_path)
+    monkeypatch.setattr(AssetManager, "_asset_database", _Database({"material-guid": str(material)}))
+    assert AssetManager._managed_guid(r"assets\Materials\Gold.mat") == "material-guid"
+
+
 @pytest.mark.parametrize(
     "query",
     [
@@ -210,7 +237,7 @@ def test_managed_find_returns_guid_identity_and_player_uses_frozen_path_query(
     monkeypatch.setattr(
         project_context,
         "_runtime_asset_query",
-        lambda pattern: ("material-guid",)
+        lambda pattern, *, exact=False: ("material-guid",)
         if pattern in {
             "Assets/Materials/*.mat",
             "Assets/Materials/Gold.mat",
@@ -318,7 +345,7 @@ def test_player_load_resolves_path_to_guid_without_asset_database(
     monkeypatch.setattr(
         project_context,
         "_runtime_asset_query",
-        lambda path: ("material-guid",)
+        lambda path, *, exact=False: ("material-guid",)
         if path == "Assets/Materials/Gold.mat" else (),
     )
     monkeypatch.setattr(

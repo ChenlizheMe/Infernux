@@ -764,7 +764,7 @@ class PlayerRuntimeAssetCatalog:
     def artifact_ids_for_guid(self, guid: str) -> tuple[str, ...]:
         return self._artifact_ids_by_guid.get(str(guid), ())
 
-    def query_asset_guids(self, pattern: str) -> tuple[str, ...]:
+    def query_asset_guids(self, pattern: str, *, exact: bool = False) -> tuple[str, ...]:
         """Map one authored Assets path/glob to frozen GUID identities."""
         raw = str(pattern).strip()
         if raw in self._primary_paths_by_guid:
@@ -787,6 +787,9 @@ class PlayerRuntimeAssetCatalog:
         ):
             raise ValueError("Player asset queries must be Assets-relative")
         folded = normalized.casefold()
+        if exact:
+            guid = self._asset_guids_by_path.get(folded)
+            return (guid,) if guid is not None else ()
         has_magic = any(char in normalized for char in "*?[")
         if not has_magic:
             guid = self._asset_guids_by_path.get(folded)

@@ -2,7 +2,7 @@ from typing import Any, Callable, Optional
 
 BUILD_SETTINGS_DEFAULTS: dict[str, Any]
 
-def normalize_build_settings(value: Any) -> dict[str, Any]: ...
+def normalize_build_settings(value: Any, *, project_path: Optional[str] = ...) -> dict[str, Any]: ...
 
 class ProjectSettingsDocumentController:
     project_path: str

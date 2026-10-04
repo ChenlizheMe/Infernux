@@ -12,6 +12,7 @@ from typing import Callable, Mapping, Sequence
 
 from Infernux.engine.build_cancellation import BuildCancelled
 from Infernux.engine.build_target import BuildTargetId
+from Infernux.engine.path_utils import resolve_project_path, resolved_path
 
 
 _OPTION_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -271,6 +272,8 @@ class BuildRequest:
             raise ValueError("BuildRequest.project_root is required")
         if not output_dir:
             raise ValueError("BuildRequest.output_dir is required")
+        project_root = resolved_path(project_root)
+        output_dir = resolve_project_path(output_dir, project_root)
         object.__setattr__(self, "project_root", project_root)
         object.__setattr__(self, "output_dir", output_dir)
         object.__setattr__(self, "target", BuildTargetId(self.target))

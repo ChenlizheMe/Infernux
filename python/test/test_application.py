@@ -281,7 +281,7 @@ def test_temporary_project_context_restores_player_asset_resolver(tmp_path):
     authoring = tmp_path / "authoring"
     set_project_root(str(project))
     set_runtime_asset_query(
-        lambda path: ("message-guid",) if path == "Assets/message.txt" else ()
+        lambda path, *, exact=False: ("message-guid",) if path == "Assets/message.txt" else ()
     )
     set_runtime_asset_resolver(lambda guid: "cooked:" + guid)
     try:

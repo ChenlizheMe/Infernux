@@ -1,5 +1,8 @@
 #include <platform/filesystem/InxPath.h>
 
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <cassert>
 #include <chrono>
 #include <filesystem>
@@ -44,6 +47,29 @@ int main()
     assert(relative == "Assets/Materials/test.mat");
     assert(!TryNormalizePortableRelativePath("../outside.txt", relative));
     assert(!TryNormalizePortableRelativePath(FromFsPath(root), relative));
+    assert(!TryNormalizePortableRelativePath("C:/Author/Assets/test.mat", relative));
+    assert(!TryNormalizePortableRelativePath("C:Assets/test.mat", relative));
+    assert(!TryNormalizePortableRelativePath("\\\\server\\share\\Assets\\test.mat", relative));
+    assert(TryNormalizePortableRelativePath("Assets\\Textures\\..\\Materials\\test.mat", relative));
+    assert(relative == "Assets/Materials/test.mat");
+
+#ifdef INX_PLATFORM_WINDOWS
+    std::string alternateRoot = rootString;
+    std::transform(alternateRoot.begin(), alternateRoot.end(), alternateRoot.begin(),
+                   [](char ch) { return ch >= 'a' && ch <= 'z' ? static_cast<char>(ch - 'a' + 'A') : ch; });
+    assert(TryMakeRelativeFilesystemPath(fileString, alternateRoot, relative));
+    assert(relative == NormalizePortablePath(FromFsPath(ToFsPath("Unicode-路径") / "nested" / "asset.txt")));
+    assert(TryMakeRelativeFilesystemPath(fileString, alternateRoot, relative, true));
+
+    std::wstring shortRoot(32768, L'\0');
+    const auto written =
+        GetShortPathNameW(root.native().c_str(), shortRoot.data(), static_cast<DWORD>(shortRoot.size()));
+    if (written > 0 && written < shortRoot.size()) {
+        shortRoot.resize(written);
+        assert(TryMakeRelativeFilesystemPath(fileString, FromFsPath(std::filesystem::path(shortRoot)), relative));
+        assert(relative == NormalizePortablePath(FromFsPath(ToFsPath("Unicode-路径") / "nested" / "asset.txt")));
+    }
+#endif
 
     const auto missing = nested / "deleted.txt";
     const std::string missingKey = LexicalFilesystemPathKey(FromFsPath(missing));

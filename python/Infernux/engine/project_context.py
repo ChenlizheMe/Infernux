@@ -20,7 +20,7 @@ class _RuntimePackageResolver(Protocol):
     def __call__(self, path: str, /, *, allow_directory: bool = False) -> Optional[str]: ...
 
 class _RuntimeAssetQuery(Protocol):
-    def __call__(self, pattern: str, /) -> tuple[str, ...]: ...
+    def __call__(self, pattern: str, /, *, exact: bool = False) -> tuple[str, ...]: ...
 
 class _RuntimeAssetExtensionResolver(Protocol):
     def __call__(self, guid: str, /) -> str: ...
@@ -84,11 +84,11 @@ def set_runtime_asset_extension_resolver(
     _runtime_asset_extension_resolver = resolver
 
 
-def query_runtime_asset_guids(pattern: str) -> tuple[str, ...]:
+def query_runtime_asset_guids(pattern: str, *, exact: bool = False) -> tuple[str, ...]:
     """Query Player asset identities without scanning its filesystem."""
     if _runtime_asset_query is None:
         raise RuntimeError("Player runtime asset query is not configured")
-    return tuple(_runtime_asset_query(str(pattern)))
+    return tuple(_runtime_asset_query(str(pattern), exact=exact))
 
 
 def runtime_asset_extension(guid: str) -> str:
@@ -116,7 +116,10 @@ def resolve_asset_path(
     raw = os.fspath(path)
     if not raw:
         return None
+    from Infernux.core.assets import AssetManager
+
     try:
+        AssetManager._validate_author_asset_pattern(raw)
         authored_path = portable_relative_path(raw)
     except ValueError:
         return None
@@ -131,15 +134,13 @@ def resolve_asset_path(
     ):
         if allow_directory:
             return None
-        guids = query_runtime_asset_guids(authored_path)
+        guids = query_runtime_asset_guids(authored_path, exact=True)
         if len(guids) > 1:
             raise RuntimeError(f"Player asset path is ambiguous: {raw}")
         return resolve_runtime_asset_guid(guids[0]) if guids else None
     if Application.is_editor():
         if allow_directory:
             return None
-        from Infernux.core.assets import AssetManager
-
         guid = AssetManager._managed_guid(authored_path)
         resolved = AssetManager._get_path_from_guid(guid) if guid else ""
         return resolved if resolved and os.path.isfile(resolved) else None

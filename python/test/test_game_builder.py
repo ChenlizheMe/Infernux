@@ -325,6 +325,99 @@ def _make_builder(tmp_path, output_dir):
     return GameBuilder(str(project_root), str(output_dir), game_name="TestGame")
 
 
+def test_builder_resolves_relative_output_against_project_after_cwd_changes(monkeypatch, tmp_path):
+    project = _make_project(tmp_path)
+    elsewhere = tmp_path / "Elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    builder = GameBuilder(str(project), r"Builds\Windows")
+    assert builder.output_dir == str(project / "Builds" / "Windows")
+
+
+def test_player_document_cook_preserves_ordinary_string_fields(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "Output")
+    document_path = tmp_path / "UserData.json"
+    document = {"message": str(Path(builder.project_path) / "Assets" / "Config.json")}
+    original = json.dumps(document).encode("utf-8")
+    document_path.write_bytes(original)
+    builder._rewrite_player_document_paths(str(document_path), ".json")
+    assert document_path.read_bytes() == original
+
+
+def test_relative_file_import_keeps_guid_after_cook_pack_and_project_move(monkeypatch, tmp_path):
+    from Infernux.application import Application
+    from Infernux.core.assets import AssetManager
+    from Infernux.engine import project_context
+    from Infernux.engine.path_utils import same_path
+    from Infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+
+    builder = _make_builder(tmp_path, tmp_path / "Output")
+    project = Path(builder.project_path)
+    source = project / "Assets" / "Data" / "配置.json"
+    source.parent.mkdir(parents=True)
+    source.write_text('{"weapon":"bow","damage":42}', encoding="utf-8")
+    guid = "0123456789abcdef0123456789abcdef"
+    authored = "Assets/Data/配置.json"
+    database = SimpleNamespace(
+        get_all_guids=lambda: [guid],
+        get_guid_from_path=lambda path: guid if same_path(path, source) else "",
+        get_path_from_guid=lambda identity: str(source) if identity == guid else "",
+    )
+    monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: True))
+    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: False))
+    monkeypatch.setattr(Application, "data_path", staticmethod(lambda: str(project)))
+    monkeypatch.setattr(AssetManager, "_asset_database", database)
+    before = AssetManager.find_assets(authored)
+    original = before[0].read_text()
+    assert before[0]._guid == guid
+    assert AssetManager.load("Assets/Data") is None
+
+    builder._cooked_asset_entries = {
+        guid: _asset_index_entry(project, source, guid, "", "DefaultText"),
+    }
+    builder._runtime_artifact_bindings = {}
+    builder._runtime_artifact_source_paths = set()
+    final = tmp_path / "CookedBuild"
+    data_root = final / "Data"
+    builder._stage_library_runtime_documents(str(data_root))
+    builder._write_runtime_asset_records(str(final))
+    records = json.loads((data_root / "Library/RuntimeAssetRecords.json").read_text(encoding="utf-8"))
+    entries = []
+    packed = []
+    for runtime_path, binding in builder._runtime_asset_identity_bindings.items():
+        payload = data_root / runtime_path
+        entries.append({
+            "package": "Content.inxpkg", "runtime_path": runtime_path,
+            "bytes": payload.stat().st_size, "payload": payload.read_bytes(),
+            "asset_binding": binding,
+        })
+        packed.append((runtime_path, payload))
+    catalog_document = build_catalog(entries, player_host={"executable": "Game"}, package_records=[])
+    assert records["entries"][0]["runtime_path"] == authored
+    assert str(project) not in json.dumps(records, ensure_ascii=False)
+    archive = tmp_path / "Content.inxpkg"
+    write_pack(packed, archive)
+
+    relocated = tmp_path / "NewDevice" / "PlayerData"
+    extract_pack(archive, relocated)
+    project.rename(tmp_path / "MovedAuthorProject")
+    assert not source.exists()
+    runtime = PlayerRuntimeAssetCatalog.from_documents(str(relocated), catalog_document, records)
+    monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: False))
+    monkeypatch.setattr(Application, "is_player", staticmethod(lambda: True))
+    monkeypatch.setattr(project_context, "_runtime_asset_query", runtime.query_asset_guids)
+    monkeypatch.setattr(project_context, "_runtime_asset_resolver", runtime.resolve_guid)
+    monkeypatch.setattr(AssetManager, "_asset_database", None)
+    after = AssetManager.find_assets(authored)
+    assert after[0]._guid == guid
+    assert after[0].read_text() == original
+    assert project_context.resolve_asset_path(authored) == runtime.resolve_guid(guid)
+    assert AssetManager.find_assets(r"Assets\Data\配置.json")[0].read_text() == original
+    assert AssetManager.load("Assets/Data") is None
+    assert project_context.resolve_asset_path("Assets/Data") is None
+    assert AssetManager.load("Assets/Data/*.json") is None
+
+
 def _read_runtime_catalog(data_root: Path, builder: GameBuilder) -> dict:
     return json.loads(
         read_entry(

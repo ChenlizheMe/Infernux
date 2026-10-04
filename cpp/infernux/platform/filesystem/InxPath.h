@@ -167,7 +167,13 @@ inline bool TryNormalizePortableRelativePath(const std::string &path, std::strin
     if (path.empty())
         return false;
 
-    const auto relative = ToFsPath(NormalizePortablePath(path)).lexically_normal();
+    const auto portable = NormalizePortablePath(path);
+    // Portable asset paths must reject Windows roots on every build host.
+    const bool drive = portable.size() >= 2 && portable[1] == ':' &&
+                       ((portable[0] >= 'A' && portable[0] <= 'Z') || (portable[0] >= 'a' && portable[0] <= 'z'));
+    if (portable.front() == '/' || drive)
+        return false;
+    const auto relative = ToFsPath(portable).lexically_normal();
     if (relative.empty() || relative.is_absolute())
         return false;
     if (relative == ".") {
@@ -252,22 +258,28 @@ inline bool TryMakeRelativeFilesystemPath(const std::string &path, const std::st
                                           bool allowRoot = false)
 {
     relative.clear();
-    if (!IsFilesystemPathWithin(path, root, allowRoot))
+    if (path.empty() || root.empty())
         return false;
 
     const auto candidate = ToFsPath(ResolveFilesystemPath(path));
     const auto parent = ToFsPath(ResolveFilesystemPath(root));
-    auto result = candidate.lexically_relative(parent).lexically_normal();
-    if (result.empty() || result.is_absolute())
-        return false;
-    if (result == ".") {
+    auto candidatePart = candidate.begin();
+    for (auto rootPart = parent.begin(); rootPart != parent.end(); ++rootPart, ++candidatePart) {
+        if (candidatePart == candidate.end() ||
+            FoldFilesystemPathCase(FromFsPath(*candidatePart)) != FoldFilesystemPathCase(FromFsPath(*rootPart)))
+            return false;
+    }
+    if (candidatePart == candidate.end()) {
         if (!allowRoot)
             return false;
         relative = ".";
         return true;
     }
-    if (*result.begin() == "..")
-        return false;
+    // The prefix comparison follows host case rules; constructing the suffix
+    // preserves the asset's spelling even when the root uses another case.
+    std::filesystem::path result;
+    for (; candidatePart != candidate.end(); ++candidatePart)
+        result /= *candidatePart;
     return TryNormalizePortableRelativePath(FromFsPath(result), relative, allowRoot);
 }
 

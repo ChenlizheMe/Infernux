@@ -113,7 +113,7 @@ class ProjectSettingsDocumentController:
             raise ValueError(
                 "project settings must contain build, tag_layers, and physics sections"
             )
-        build = normalize_build_settings(value["build"])
+        build = normalize_build_settings(value["build"], project_path=self.project_path)
         tag_layers = _json_copy(value["tag_layers"])
         if not isinstance(tag_layers, dict):
             raise TypeError("tag/layer settings must be a JSON object")

@@ -269,7 +269,7 @@ class BuildSettingsPanel(EditorPanel):
         data = (
             self._settings_controller.section("build")
             if self._settings_controller is not None
-            else normalize_build_settings(load_build_settings())
+            else normalize_build_settings(load_build_settings(), project_path=get_project_root())
         )
         self._apply_build_settings(data)
 
@@ -298,7 +298,7 @@ class BuildSettingsPanel(EditorPanel):
             "debug_mode": self._debug_mode,
             "lto": self._lto,
             "splash_items": self._splash_items,
-        })
+        }, project_path=get_project_root())
 
     def _save(self):
         controller = self._settings_controller

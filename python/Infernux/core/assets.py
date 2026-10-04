@@ -533,20 +533,21 @@ class AssetManager:
     @staticmethod
     def _author_asset_path(path: str) -> str:
         from Infernux.application import Application
-        from Infernux.engine.path_utils import is_path_within, portable_path, relative_path, resolved_path
+        from Infernux.engine.path_utils import portable_relative_path, relative_path
 
         project_root = Application.data_path()
-        if project_root and os.path.isabs(path):
-            assets_root = resolved_path(os.path.join(project_root, "Assets"))
-            candidate = resolved_path(path)
-            if is_path_within(candidate, assets_root, allow_root=False):
-                return "Assets/" + portable_path(relative_path(candidate, assets_root))
+        if os.path.isabs(path):
+            if not project_root:
+                return ""
+            try:
+                return "Assets/" + relative_path(path, os.path.join(project_root, "Assets"))
+            except ValueError:
+                return ""
+        try:
+            portable = portable_relative_path(path)
+        except ValueError:
             return ""
-        portable = portable_path(path)
-        if not os.path.isabs(path):
-            return portable if portable.casefold().startswith("assets/") else ""
-        marker = portable.casefold().find("/assets/")
-        return portable[marker + 1 :] if marker >= 0 else portable
+        return "Assets/" + portable[len("assets/"):] if portable.casefold().startswith("assets/") else ""
 
     @classmethod
     def _managed_guid(cls, value: str) -> str:
@@ -554,6 +555,10 @@ class AssetManager:
         token = str(value or "").strip()
         if not token:
             return ""
+        is_asset_path = cls._looks_like_asset_path(token)
+        if is_asset_path:
+            cls._validate_author_asset_pattern(token)
+            token = "Assets" + token.replace("\\", "/")[len("assets"):]
         from Infernux.application import Application
 
         if Application.is_player():
@@ -562,18 +567,17 @@ class AssetManager:
                 resolve_runtime_asset_guid,
             )
 
-            if not cls._looks_like_asset_path(token):
+            if not is_asset_path:
                 return token if resolve_runtime_asset_guid(token) else ""
-            guids = query_runtime_asset_guids(token)
+            guids = query_runtime_asset_guids(token, exact=True)
             if len(guids) > 1:
                 raise RuntimeError(f"Player asset path is ambiguous: {token}")
             return guids[0] if guids else ""
 
         database = cls.require_asset_database()
-        if not cls._looks_like_asset_path(token):
+        if not is_asset_path:
             return token if database.get_path_from_guid(token) else ""
 
-        cls._validate_author_asset_pattern(token)
         project_root = Application.data_path()
         if not project_root:
             return ""

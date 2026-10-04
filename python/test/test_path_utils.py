@@ -13,7 +13,9 @@ from Infernux.engine.path_utils import (
     path_fingerprint,
     path_key,
     portable_path,
+    portable_relative_path,
     relative_path,
+    resolve_project_path,
     resolved_path,
     safe_path,
     same_path,
@@ -98,6 +100,30 @@ def test_relative_path_rejects_lexical_parent_escape(tmp_path: Path):
     root.mkdir()
     with pytest.raises(ValueError):
         relative_path(root / "Assets" / ".." / ".." / "outside.txt", root, resolve=False)
+
+
+@pytest.mark.parametrize("path", ["C:/Author/Assets/a.txt", "C:Assets/a.txt", r"\\server\share\a.txt", "/home/author/a.txt"])
+def test_portable_paths_reject_foreign_host_roots(path):
+    with pytest.raises(ValueError, match="must be relative"):
+        portable_relative_path(path)
+
+
+def test_portable_paths_normalize_identically_on_all_hosts():
+    assert portable_relative_path(r"Assets\Textures\..\Materials\Test.mat") == "Assets/Materials/Test.mat"
+    assert portable_relative_path("Assets/./Materials/Test.mat") == "Assets/Materials/Test.mat"
+    with pytest.raises(ValueError, match="escapes"):
+        portable_relative_path(r"Assets\..\..\outside.txt")
+
+
+def test_project_io_paths_are_independent_of_working_directory(monkeypatch, tmp_path):
+    project = tmp_path / "Project"
+    elsewhere = tmp_path / "Elsewhere"
+    project.mkdir()
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert resolve_project_path(r"Builds\Windows", project) == str(project / "Builds" / "Windows")
+    assert resolve_project_path("../SharedBuild", project) == str(tmp_path / "SharedBuild")
+    assert relative_path(tmp_path / "SharedBuild", project, allow_outside=True) == "../SharedBuild"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows short-path identity regression")

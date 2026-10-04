@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import posixpath
+from pathlib import PureWindowsPath
 from typing import TypeAlias
 
 PathLike: TypeAlias = str | os.PathLike[str]
@@ -41,6 +43,20 @@ def resolved_path(path: PathLike) -> str:
     # GetLongPathNameW made this identity primitive perform another filesystem
     # query on every call, which is especially costly during plugin discovery.
     return os.path.normpath(os.path.realpath(lexical))
+
+
+def resolve_project_path(path: PathLike, root: PathLike) -> str:
+    """Resolve an I/O path against its explicit project, independent of cwd."""
+    if not root:
+        raise ValueError("A project path requires an explicit project root")
+    if not path:
+        return ""
+    portable = os.fspath(path).replace("\\", "/")
+    if os.path.isabs(portable):
+        return resolved_path(portable)
+    if PureWindowsPath(portable).anchor:
+        raise ValueError(f"Path is not valid on this host: {path!r}")
+    return resolved_path(os.path.join(resolved_path(root), *portable.split("/")))
 
 
 def path_key(path: PathLike) -> str:
@@ -118,19 +134,19 @@ def relative_path(
     *,
     resolve: bool = True,
     allow_root: bool = False,
+    allow_outside: bool = False,
 ) -> str:
-    """Return a portable relative path, rejecting paths outside *root*."""
+    """Return a portable relative path; external output paths require opt-in."""
     normalize = resolved_path if resolve else lexical_path
-    key = path_key if resolve else lexical_path_key
     candidate = normalize(path)
     parent = normalize(root)
-    candidate_key = key(candidate)
-    parent_key = key(parent)
+    candidate_key = os.path.normcase(candidate)
+    parent_key = os.path.normcase(parent)
     try:
         inside = os.path.commonpath((candidate_key, parent_key)) == parent_key
     except ValueError:
         inside = False
-    if not inside or (not allow_root and candidate_key == parent_key):
+    if (not inside and not allow_outside) or (not allow_root and candidate_key == parent_key):
         raise ValueError(f"Path is outside root: {candidate!r} is not under {parent!r}")
     relative = os.path.relpath(candidate, parent)
     if relative == "." and not allow_root:
@@ -147,9 +163,10 @@ def portable_path(path: PathLike) -> str:
 
 def portable_relative_path(path: PathLike, *, allow_root: bool = False) -> str:
     """Normalize and validate an engine-owned portable relative path."""
-    normalized = portable_path(path)
-    if not normalized or os.path.isabs(normalized):
+    portable = os.fspath(path).replace("\\", "/") if path else ""
+    if not portable or portable.startswith("/") or PureWindowsPath(portable).anchor:
         raise ValueError(f"Path must be relative: {path!r}")
+    normalized = posixpath.normpath(portable)
     parts = tuple(part for part in normalized.split("/") if part not in {"", "."})
     if any(part == ".." for part in parts):
         raise ValueError(f"Path escapes its logical root: {path!r}")

@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from Infernux.engine.project_context import get_project_root
 from Infernux.engine.build_target import BuildTargetId
+from Infernux.engine.path_utils import relative_path, resolve_project_path
 
 
 BUILD_SETTINGS_FILE = "BuildSettings.json"
@@ -34,7 +35,7 @@ def _json_copy(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False, allow_nan=False))
 
 
-def normalize_build_settings(value: Any) -> dict[str, Any]:
+def normalize_build_settings(value: Any, *, project_path: Optional[str] = None) -> dict[str, Any]:
     """Validate the current BuildSettings schema.
 
     This function intentionally has no Editor/document imports: scene loading
@@ -77,6 +78,16 @@ def normalize_build_settings(value: Any) -> dict[str, Any]:
     for field in ("build_target", "game_name", "output_dir", "icon_guid"):
         if not isinstance(result[field], str):
             raise TypeError(f"build settings {field} must be a string")
+    if project_path and result["output_dir"]:
+        output = resolve_project_path(result["output_dir"], project_path)
+        try:
+            result["output_dir"] = relative_path(
+                output, project_path, allow_root=True, allow_outside=True,
+            )
+        except ValueError:
+            # A user-selected build destination on another Windows drive has
+            # no relative representation. It is an explicit external I/O path.
+            result["output_dir"] = output
     if result["build_target"]:
         BuildTargetId(result["build_target"])
     platform_options = result["platform_options"]
