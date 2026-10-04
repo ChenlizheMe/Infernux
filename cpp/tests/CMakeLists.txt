@@ -1422,6 +1422,18 @@ if(INFERNUX_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/python/Infernux/test/material_first_shadow_gpu_test.py
     )
+    add_test(
+        NAME infernux.mixed_deferred_coverage_gpu
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/python/Infernux/test/mixed_deferred_coverage_gpu_test.py
+    )
+    set_tests_properties(infernux.mixed_deferred_coverage_gpu PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+        LABELS "requires_vulkan_device"
+        TIMEOUT 45
+        RUN_SERIAL TRUE
+        FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
+    )
     set_tests_properties(infernux.material_first_shadow_gpu PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
         LABELS "requires_vulkan_device"

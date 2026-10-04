@@ -51,11 +51,18 @@ void main() {
         return;
     }
 
+    // Scene depth is shared across routes. Only this route's GBuffer record
+    // authorizes deferred shading; model ID zero is cleared/uncovered space.
+    uvec2 objectData = texture(_GObject, inUV).rg;
+    if (objectData.y == 0u) {
+        outColor = vec4(0.0);
+        return;
+    }
+
     vec4 base = texture(_GAlbedo, inUV);
     vec4 normalData = texture(_GNormal, inUV);
     vec4 materialData = texture(_GMaterial, inUV);
     vec4 emissionData = texture(_GEmission, inUV);
-    uvec2 objectData = texture(_GObject, inUV).rg;
     _inx_ObjectLayerMask = objectData.x;
 
     vec3 worldPos = reconstructWorldPosition(inUV, depth);
