@@ -5,6 +5,7 @@ from typing import Callable, List, Optional, Tuple, Type, TypeVar
 _SerializedValue = TypeVar("_SerializedValue")
 
 # Engine
+from Infernux.lib import AudioEngine as AudioEngine
 from Infernux.engine import release_engine as release_engine
 from Infernux.engine import run_headless as run_headless
 from Infernux.engine import Engine as Engine

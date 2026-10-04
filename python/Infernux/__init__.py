@@ -18,6 +18,7 @@ from Infernux.components import *
 from Infernux import core
 from Infernux.core import *
 from Infernux.lib import (
+    AudioEngine,
     Component,
     GameObject,
     LineAlignment,
@@ -171,6 +172,7 @@ __all__ = [
     "SliderJoint",
     "AudioSource",
     "AudioListener",
+    "AudioEngine",
     "SpriteRenderer",
     "SpiritAnimator",
     "SkeletalAnimator",

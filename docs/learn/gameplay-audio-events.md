@@ -53,8 +53,8 @@ class GameplayAudio(inx.InxComponent):
             inx.Debug.log_error("GameplayAudio requires an AudioSource.", self)
             return
 
-        self._music_clip = inx.AudioClip.load("Assets/Audio/music_loop.wav")
-        self._hit_clip = inx.AudioClip.load("Assets/Audio/hit.wav")
+        self._music_clip = inx.AudioClip.load(inx.Application.asset_path("Assets/Audio/music_loop.wav"))
+        self._hit_clip = inx.AudioClip.load(inx.Application.asset_path("Assets/Audio/hit.wav"))
         if self._music_clip is None or self._hit_clip is None:
             inx.Debug.log_error("Could not load the gameplay WAV files.", self)
             return
@@ -88,7 +88,7 @@ class GameplayAudio(inx.InxComponent):
             self._hit_clip.unload()
 ```
 
-`AudioClip.load()` returns an `AudioClip` or `None`. Keep the wrapper referenced while its track or one-shot may still use the native clip. The cleanup stops all persistent tracks and one-shots before unloading the clips.
+`Application.asset_path()` resolves the authored path through the active project's GUID catalog in Editor and the frozen cooked catalog in Player. Resolve this path before passing it to `AudioClip.load()`, which accepts a physical file path and returns an `AudioClip` or `None`. This avoids depending on the process working directory. Keep the wrapper referenced while its track or one-shot may still use the native clip. The cleanup stops all persistent tracks and one-shots before unloading the clips.
 
 This example explicitly uses 2D audio (`spatial_blend = 0`), normal pitch and an unmuted source, so the Probe moving away from the Camera does not silence the lesson. With track volume `0.35` and source volume `0.8`, the music gain is `0.28` before bus gain; one-shot gain is `0.72` before bus gain. Keep the Master and selected output bus unmuted at gain `1` for the first check.
 
@@ -151,13 +151,13 @@ Use `set_track_clip_by_guid()` for authored asset references when the AssetRegis
 
 ### Group volume and audio time
 
-Set `source.output_bus` to `Music`, `SFX`, `Ambience`, or `UI`; `Master` affects all of them. Use `AudioEngine.instance()` from `Infernux.lib` to call `fade_bus_volume("Music", 0.0, 1.0)`. The fade follows the audio device, even when game frames stall. `pause_all()` freezes that clock; muting a bus leaves its playback and fade running. A direct `set_bus_volume()` cancels its current fade, and `cancel_bus_fade()` holds the current level.
+Set `source.output_bus` to `Music`, `SFX`, `Ambience`, or `UI`; `Master` affects all of them. Get the shared audio engine with `audio = inx.AudioEngine.instance()` inside a lifecycle or event method, then call `audio.fade_bus_volume("Music", 0.0, 1.0)`. The fade follows the audio device, even when game frames stall. `pause_all()` freezes that clock; muting a bus leaves its playback and fade running. A direct `set_bus_volume()` cancels its current fade, and `cancel_bus_fade()` holds the current level.
 
 `output_time` reports mixed audio seconds, not the hardware playhead. `output_peak` reports the latest mixed block's peak. `saturated_sample_count` counts output samples at full scale after SDL mixing: it warns about saturation but cannot reconstruct peaks already clipped by SDL. `device_driver` and `device_name` identify the selected SDL output while the engine is initialized; `sample_rate` and `channel_count` report its format. `underrun_count` counts streaming callback requests that emitted silence while decoded frames were unavailable. It resets with each device session and does not measure operating-system or DAC underruns. These readings are runtime diagnostics, not scene properties or a compressor/limiter.
 
 ### Voice limits and priority
 
-`AudioEngine.instance().max_real_voices` limits the voices actually mixed by the device (default `64`, positive integer). Excess voices and inaudible sources become virtual: their playback position continues on the audio clock, but they do not produce samples. When capacity becomes available they resume at the current position, not the beginning. `pause()` freezes a track; virtualization does not.
+`inx.AudioEngine.instance().max_real_voices` limits the voices actually mixed by the device (default `64`, positive integer). Excess voices and inaudible sources become virtual: their playback position continues on the audio clock, but they do not produce samples. When capacity becomes available they resume at the current position, not the beginning. `pause()` freezes a track; virtualization does not.
 
 Set `source.priority` from `0` (highest) to `255` (lowest); the default is `128`. The scheduler first compares priority, then effective volume including distance and bus gain, then start order for stable ties. For example, give UI confirmations a lower number than ambient loops. Inspect `real_voice_count`, `virtual_voice_count`, and `source.is_track_virtual(index)` during Play. Arbitration runs on the engine update; virtual time and bus fades keep advancing between updates. A physical voice limit is not a total memory limit: clips and logical voice handles still occupy memory.
 
@@ -217,7 +217,7 @@ Infernux 的 `AudioSource` 是多轨组件，没有单一的 `clip` 属性。先
 
 以下步骤沿用第 5 章的碰撞场景。
 
-1. 把 `music_loop.wav` 和 `hit.wav` 放入 `Assets/Audio`。WAV、OGG/Vorbis、MP3 和 FLAC 均支持常驻和流式播放。长音乐可在选中资产后，将 **加载方式** 改为 **流式播放**，再点击 **应用**；引擎会分段预读和解码，不会把整首音乐的 PCM 常驻内存。短音效保持 **加载时解压** 即可。点击 **还原** 可以撤销尚未应用的导入设置。
+1. 把 `music_loop.wav` 和 `hit.wav` 放入 `Assets/Audio`。WAV、OGG/Vorbis、MP3 和 FLAC 均支持常驻和流式播放。长音乐可在选中资产后，将 **加载方式** 改为 **流式播放**，再点击 **Apply（应用）**；引擎会分段预读和解码，不会把整首音乐的 PCM 常驻内存。短音效保持 **加载时解压** 即可。点击 **Revert（还原）** 可以撤销尚未应用的导入设置。
 2. 选择主摄像机，添加 **AudioListener** 组件。场景中保留一个启用的监听器。
 3. 选择第 5 章的 `Probe`，添加 **AudioSource** 组件。**Track Count** 保持 `1`，脚本会设置轨道 0。关闭 **Play On Awake**，脚本会在音频加载完成后启动播放。
 4. 保留 Probe 的 Collider 与 Rigidbody，并给障碍物保留 Collider。`on_collision_enter()` 需要有效的碰撞组合。
@@ -243,8 +243,8 @@ class GameplayAudio(inx.InxComponent):
             inx.Debug.log_error("GameplayAudio requires an AudioSource.", self)
             return
 
-        self._music_clip = inx.AudioClip.load("Assets/Audio/music_loop.wav")
-        self._hit_clip = inx.AudioClip.load("Assets/Audio/hit.wav")
+        self._music_clip = inx.AudioClip.load(inx.Application.asset_path("Assets/Audio/music_loop.wav"))
+        self._hit_clip = inx.AudioClip.load(inx.Application.asset_path("Assets/Audio/hit.wav"))
         if self._music_clip is None or self._hit_clip is None:
             inx.Debug.log_error("Could not load the gameplay WAV files.", self)
             return
@@ -278,7 +278,7 @@ class GameplayAudio(inx.InxComponent):
             self._hit_clip.unload()
 ```
 
-`AudioClip.load()` 返回 `AudioClip` 或 `None`。轨道或一次性音效仍可能使用原生音频时，需要保留 Python 封装引用。清理阶段先停止全部持续轨道和一次性音效，再卸载音频。
+`Application.asset_path()` 在编辑器中通过当前项目的 GUID 目录解析编写路径，在 Player 中则使用冻结的烘焙目录。先解析该路径，再传给接受物理文件路径的 `AudioClip.load()`；后者返回 `AudioClip` 或 `None`。这样加载不会依赖进程的工作目录。轨道或一次性音效仍可能使用原生音频时，需要保留 Python 封装引用。清理阶段先停止全部持续轨道和一次性音效，再卸载音频。
 
 轨道 0 承载持续音乐。命中音效不会替换轨道 0，多次碰撞进入可通过一次性声部池重叠播放。`loop` 作用于音源的持续轨道；瞬时反应适合使用一次性播放。
 
@@ -341,13 +341,13 @@ AssetRegistry/AssetDatabase 已初始化时，可用 `set_track_clip_by_guid()` 
 
 ### 分组音量与音频时间
 
-把 `source.output_bus` 设为 `Music`、`SFX`、`Ambience` 或 `UI`，`Master` 则控制全部分组。从 `Infernux.lib` 获取 `AudioEngine.instance()` 后，可以调用 `fade_bus_volume("Music", 0.0, 1.0)`，让音乐在一秒内淡出。过渡由音频设备推进，游戏卡顿不会使它停止；`pause_all()` 会冻结音频时钟，分组静音则不会暂停播放或过渡。直接设置 `set_bus_volume()` 会取消原有过渡，`cancel_bus_fade()` 会保持当前音量。
+把 `source.output_bus` 设为 `Music`、`SFX`、`Ambience` 或 `UI`，`Master` 则控制全部分组。在生命周期或事件方法内用 `audio = inx.AudioEngine.instance()` 获取共享音频引擎，再调用 `audio.fade_bus_volume("Music", 0.0, 1.0)`，让音乐在一秒内淡出。过渡由音频设备推进，游戏卡顿不会使它停止；`pause_all()` 会冻结音频时钟，分组静音则不会暂停播放或过渡。直接设置 `set_bus_volume()` 会取消原有过渡，`cancel_bus_fade()` 会保持当前音量。
 
 `output_time` 是已经混音的秒数，不是声卡的实际播放位置。`output_peak` 是最近输出块的峰值，`saturated_sample_count` 是 SDL 混音后达到满幅的样本总数，可用来发现音量过高，但无法还原已被 SDL 截掉的峰值。`device_driver`、`device_name` 标识当前 SDL 输出后端与设备，`sample_rate`、`channel_count` 给出输出格式。`underrun_count` 统计流式解码帧未及时就绪而在回调中填充静音的请求次数；每次设备会话重新计数，不代表操作系统或 DAC 层的所有欠载。这些都是运行时观测数据，不写入场景，也不是压缩器或限幅器。
 
 ### 声部限额与优先级
 
-`AudioEngine.instance().max_real_voices` 控制设备实际参与混音的声部数量，默认 `64`，必须为正整数。超过限额或不可听的声音转为虚拟播放：不生成音频样本，但播放位置仍按音频时钟推进。有空位后从当前进度恢复，不从头播放。`pause()` 会冻结轨道，虚拟播放则不会。
+`inx.AudioEngine.instance().max_real_voices` 控制设备实际参与混音的声部数量，默认 `64`，必须为正整数。超过限额或不可听的声音转为虚拟播放：不生成音频样本，但播放位置仍按音频时钟推进。有空位后从当前进度恢复，不从头播放。`pause()` 会冻结轨道，虚拟播放则不会。
 
 `source.priority` 的范围是 `0`（最高）到 `255`（最低），默认为 `128`。调度先比较优先级，再比较包含距离和分组增益的有效音量，完全相同时优先保留先开始的声音。例如，可以让 UI 确认声的数值小于环境循环声。Play 时可查看 `real_voice_count`、`virtual_voice_count` 和 `source.is_track_virtual(index)`。名额分配在引擎更新时执行，虚拟播放进度和分组淡入淡出不依赖逐帧调用。实际混音限额不是总内存限额，音频资产和逻辑声部句柄仍占用内存。
 

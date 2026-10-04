@@ -12,10 +12,10 @@
     <title>Audio and gameplay signals · Infernux Learn</title>
     <link rel="icon" type="image/png" href="../assets/logo.png">
     <link rel="stylesheet" href="../css/fonts.css?v=2">
-    <link rel="stylesheet" href="../css/style.css?v=23">
+    <link rel="stylesheet" href="../css/style.css?v=24">
     <link rel="stylesheet" href="../css/docs-search.css?v=3">
-    <link rel="stylesheet" href="../css/mission.css?v=2">
-    <link rel="stylesheet" href="../css/learn.css?v=6">
+    <link rel="stylesheet" href="../css/mission.css?v=3">
+    <link rel="stylesheet" href="../css/learn.css?v=7">
     <link rel="stylesheet" href="../css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -73,8 +73,8 @@
             <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"GameplayAudio requires an AudioSource."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
             <span class="k">return</span>
 
-        <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/music_loop.wav"</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/hit.wav"</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">Application</span><span class="o">.</span><span class="n">asset_path</span><span class="p">(</span><span class="s2">"Assets/Audio/music_loop.wav"</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">Application</span><span class="o">.</span><span class="n">asset_path</span><span class="p">(</span><span class="s2">"Assets/Audio/hit.wav"</span><span class="p">))</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Could not load the gameplay WAV files."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
             <span class="k">return</span>
@@ -108,7 +108,7 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span><span class="o">.</span><span class="n">unload</span><span class="p">()</span>
 </code></pre></div>
 
-<p><code>AudioClip.load()</code> returns an <code>AudioClip</code> or <code>None</code>. Keep the wrapper referenced while its track or one-shot may still use the native clip. The cleanup stops all persistent tracks and one-shots before unloading the clips.</p>
+<p><code>Application.asset_path()</code> resolves the authored path through the active project's GUID catalog in Editor and the frozen cooked catalog in Player. Resolve this path before passing it to <code>AudioClip.load()</code>, which accepts a physical file path and returns an <code>AudioClip</code> or <code>None</code>. This avoids depending on the process working directory. Keep the wrapper referenced while its track or one-shot may still use the native clip. The cleanup stops all persistent tracks and one-shots before unloading the clips.</p>
 <p>This example explicitly uses 2D audio (<code>spatial_blend = 0</code>), normal pitch and an unmuted source, so the Probe moving away from the Camera does not silence the lesson. With track volume <code>0.35</code> and source volume <code>0.8</code>, the music gain is <code>0.28</code> before bus gain; one-shot gain is <code>0.72</code> before bus gain. Keep the Master and selected output bus unmuted at gain <code>1</code> for the first check.</p>
 <p>Track 0 carries long-lived music. The hit sound does not replace track 0, and repeated collision entries can overlap through the one-shot pool. <code>loop</code> applies to the source's persistent tracks; use one-shots for transient reactions.</p>
 <h2 id="one-shot-signals">Send one reaction per signal</h2>
@@ -245,10 +245,10 @@
 </table>
 <p>Use <code>set_track_clip_by_guid()</code> for authored asset references when the AssetRegistry/AssetDatabase is initialized. For a direct runtime load, use <code>AudioClip.load(path)</code> followed by <code>set_track_clip()</code> as in the example.</p>
 <h3 id="group-volume-and-audio-time">Group volume and audio time</h3>
-<p>Set <code>source.output_bus</code> to <code>Music</code>, <code>SFX</code>, <code>Ambience</code>, or <code>UI</code>; <code>Master</code> affects all of them. Use <code>AudioEngine.instance()</code> from <code>Infernux.lib</code> to call <code>fade_bus_volume("Music", 0.0, 1.0)</code>. The fade follows the audio device, even when game frames stall. <code>pause_all()</code> freezes that clock; muting a bus leaves its playback and fade running. A direct <code>set_bus_volume()</code> cancels its current fade, and <code>cancel_bus_fade()</code> holds the current level.</p>
+<p>Set <code>source.output_bus</code> to <code>Music</code>, <code>SFX</code>, <code>Ambience</code>, or <code>UI</code>; <code>Master</code> affects all of them. Get the shared audio engine with <code>audio = inx.AudioEngine.instance()</code> inside a lifecycle or event method, then call <code>audio.fade_bus_volume("Music", 0.0, 1.0)</code>. The fade follows the audio device, even when game frames stall. <code>pause_all()</code> freezes that clock; muting a bus leaves its playback and fade running. A direct <code>set_bus_volume()</code> cancels its current fade, and <code>cancel_bus_fade()</code> holds the current level.</p>
 <p><code>output_time</code> reports mixed audio seconds, not the hardware playhead. <code>output_peak</code> reports the latest mixed block's peak. <code>saturated_sample_count</code> counts output samples at full scale after SDL mixing: it warns about saturation but cannot reconstruct peaks already clipped by SDL. <code>device_driver</code> and <code>device_name</code> identify the selected SDL output while the engine is initialized; <code>sample_rate</code> and <code>channel_count</code> report its format. <code>underrun_count</code> counts streaming callback requests that emitted silence while decoded frames were unavailable. It resets with each device session and does not measure operating-system or DAC underruns. These readings are runtime diagnostics, not scene properties or a compressor/limiter.</p>
 <h3 id="voice-limits-and-priority">Voice limits and priority</h3>
-<p><code>AudioEngine.instance().max_real_voices</code> limits the voices actually mixed by the device (default <code>64</code>, positive integer). Excess voices and inaudible sources become virtual: their playback position continues on the audio clock, but they do not produce samples. When capacity becomes available they resume at the current position, not the beginning. <code>pause()</code> freezes a track; virtualization does not.</p>
+<p><code>inx.AudioEngine.instance().max_real_voices</code> limits the voices actually mixed by the device (default <code>64</code>, positive integer). Excess voices and inaudible sources become virtual: their playback position continues on the audio clock, but they do not produce samples. When capacity becomes available they resume at the current position, not the beginning. <code>pause()</code> freezes a track; virtualization does not.</p>
 <p>Set <code>source.priority</code> from <code>0</code> (highest) to <code>255</code> (lowest); the default is <code>128</code>. The scheduler first compares priority, then effective volume including distance and bus gain, then start order for stable ties. For example, give UI confirmations a lower number than ambient loops. Inspect <code>real_voice_count</code>, <code>virtual_voice_count</code>, and <code>source.is_track_virtual(index)</code> during Play. Arbitration runs on the engine update; virtual time and bus fades keep advancing between updates. A physical voice limit is not a total memory limit: clips and logical voice handles still occupy memory.</p>
 <p>A full one-shot pool rejects an incoming sound if its <code>volume_scale</code> is lower than every occupied slot. Otherwise it replaces the quietest slot, choosing the oldest on a tie. <code>source.rejected_one_shot_count</code> reports rejected requests without flooding the Console. This local pool policy is separate from the engine-wide priority scheduler. Size the pool for the intended gameplay concurrency instead of making it unbounded.</p>
 <h2 id="verify">Verify the result</h2>
@@ -291,7 +291,7 @@
 <h2 id="zh-editor-setup">准备场景</h2>
 <p>以下步骤沿用第 5 章的碰撞场景。</p>
 <ol>
-<li>把 <code>music_loop.wav</code> 和 <code>hit.wav</code> 放入 <code>Assets/Audio</code>。WAV、OGG/Vorbis、MP3 和 FLAC 均支持常驻和流式播放。长音乐可在选中资产后，将 <strong>加载方式</strong> 改为 <strong>流式播放</strong>，再点击 <strong>应用</strong>；引擎会分段预读和解码，不会把整首音乐的 PCM 常驻内存。短音效保持 <strong>加载时解压</strong> 即可。点击 <strong>还原</strong> 可以撤销尚未应用的导入设置。</li>
+<li>把 <code>music_loop.wav</code> 和 <code>hit.wav</code> 放入 <code>Assets/Audio</code>。WAV、OGG/Vorbis、MP3 和 FLAC 均支持常驻和流式播放。长音乐可在选中资产后，将 <strong>加载方式</strong> 改为 <strong>流式播放</strong>，再点击 <strong>Apply（应用）</strong>；引擎会分段预读和解码，不会把整首音乐的 PCM 常驻内存。短音效保持 <strong>加载时解压</strong> 即可。点击 <strong>Revert（还原）</strong> 可以撤销尚未应用的导入设置。</li>
 <li>选择主摄像机，添加 <strong>AudioListener</strong> 组件。场景中保留一个启用的监听器。</li>
 <li>选择第 5 章的 <code>Probe</code>，添加 <strong>AudioSource</strong> 组件。<strong>Track Count</strong> 保持 <code>1</code>，脚本会设置轨道 0。关闭 <strong>Play On Awake</strong>，脚本会在音频加载完成后启动播放。</li>
 <li>保留 Probe 的 Collider 与 Rigidbody，并给障碍物保留 Collider。<code>on_collision_enter()</code> 需要有效的碰撞组合。</li>
@@ -314,8 +314,8 @@
             <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"GameplayAudio requires an AudioSource."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
             <span class="k">return</span>
 
-        <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/music_loop.wav"</span><span class="p">)</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"Assets/Audio/hit.wav"</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">Application</span><span class="o">.</span><span class="n">asset_path</span><span class="p">(</span><span class="s2">"Assets/Audio/music_loop.wav"</span><span class="p">))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">AudioClip</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">inx</span><span class="o">.</span><span class="n">Application</span><span class="o">.</span><span class="n">asset_path</span><span class="p">(</span><span class="s2">"Assets/Audio/hit.wav"</span><span class="p">))</span>
         <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_music_clip</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log_error</span><span class="p">(</span><span class="s2">"Could not load the gameplay WAV files."</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
             <span class="k">return</span>
@@ -349,7 +349,7 @@
             <span class="bp">self</span><span class="o">.</span><span class="n">_hit_clip</span><span class="o">.</span><span class="n">unload</span><span class="p">()</span>
 </code></pre></div>
 
-<p><code>AudioClip.load()</code> 返回 <code>AudioClip</code> 或 <code>None</code>。轨道或一次性音效仍可能使用原生音频时，需要保留 Python 封装引用。清理阶段先停止全部持续轨道和一次性音效，再卸载音频。</p>
+<p><code>Application.asset_path()</code> 在编辑器中通过当前项目的 GUID 目录解析编写路径，在 Player 中则使用冻结的烘焙目录。先解析该路径，再传给接受物理文件路径的 <code>AudioClip.load()</code>；后者返回 <code>AudioClip</code> 或 <code>None</code>。这样加载不会依赖进程的工作目录。轨道或一次性音效仍可能使用原生音频时，需要保留 Python 封装引用。清理阶段先停止全部持续轨道和一次性音效，再卸载音频。</p>
 <p>轨道 0 承载持续音乐。命中音效不会替换轨道 0，多次碰撞进入可通过一次性声部池重叠播放。<code>loop</code> 作用于音源的持续轨道；瞬时反应适合使用一次性播放。</p>
 <p>本例显式使用 2D 音频（<code>spatial_blend = 0</code>）、正常音高且不静音，避免 Probe 远离相机后因距离衰减而听不见。轨道音量 <code>0.35</code> 与源音量 <code>0.8</code> 相乘后，音乐增益为 <code>0.28</code>；一次性音效增益为 <code>0.72</code>，之后还会乘以总线增益。首次验证时，Master 与所选输出总线均保持不静音、增益 <code>1</code>。</p>
 <h2 id="zh-one-shot-signals">每个信号只发送一次反应</h2>
@@ -486,10 +486,10 @@
 </table>
 <p>AssetRegistry/AssetDatabase 已初始化时，可用 <code>set_track_clip_by_guid()</code> 处理已编辑资源引用。运行时按路径直接加载时，使用示例中的 <code>AudioClip.load(path)</code> 和 <code>set_track_clip()</code>。</p>
 <h3 id="_2">分组音量与音频时间</h3>
-<p>把 <code>source.output_bus</code> 设为 <code>Music</code>、<code>SFX</code>、<code>Ambience</code> 或 <code>UI</code>，<code>Master</code> 则控制全部分组。从 <code>Infernux.lib</code> 获取 <code>AudioEngine.instance()</code> 后，可以调用 <code>fade_bus_volume("Music", 0.0, 1.0)</code>，让音乐在一秒内淡出。过渡由音频设备推进，游戏卡顿不会使它停止；<code>pause_all()</code> 会冻结音频时钟，分组静音则不会暂停播放或过渡。直接设置 <code>set_bus_volume()</code> 会取消原有过渡，<code>cancel_bus_fade()</code> 会保持当前音量。</p>
+<p>把 <code>source.output_bus</code> 设为 <code>Music</code>、<code>SFX</code>、<code>Ambience</code> 或 <code>UI</code>，<code>Master</code> 则控制全部分组。在生命周期或事件方法内用 <code>audio = inx.AudioEngine.instance()</code> 获取共享音频引擎，再调用 <code>audio.fade_bus_volume("Music", 0.0, 1.0)</code>，让音乐在一秒内淡出。过渡由音频设备推进，游戏卡顿不会使它停止；<code>pause_all()</code> 会冻结音频时钟，分组静音则不会暂停播放或过渡。直接设置 <code>set_bus_volume()</code> 会取消原有过渡，<code>cancel_bus_fade()</code> 会保持当前音量。</p>
 <p><code>output_time</code> 是已经混音的秒数，不是声卡的实际播放位置。<code>output_peak</code> 是最近输出块的峰值，<code>saturated_sample_count</code> 是 SDL 混音后达到满幅的样本总数，可用来发现音量过高，但无法还原已被 SDL 截掉的峰值。<code>device_driver</code>、<code>device_name</code> 标识当前 SDL 输出后端与设备，<code>sample_rate</code>、<code>channel_count</code> 给出输出格式。<code>underrun_count</code> 统计流式解码帧未及时就绪而在回调中填充静音的请求次数；每次设备会话重新计数，不代表操作系统或 DAC 层的所有欠载。这些都是运行时观测数据，不写入场景，也不是压缩器或限幅器。</p>
 <h3 id="_3">声部限额与优先级</h3>
-<p><code>AudioEngine.instance().max_real_voices</code> 控制设备实际参与混音的声部数量，默认 <code>64</code>，必须为正整数。超过限额或不可听的声音转为虚拟播放：不生成音频样本，但播放位置仍按音频时钟推进。有空位后从当前进度恢复，不从头播放。<code>pause()</code> 会冻结轨道，虚拟播放则不会。</p>
+<p><code>inx.AudioEngine.instance().max_real_voices</code> 控制设备实际参与混音的声部数量，默认 <code>64</code>，必须为正整数。超过限额或不可听的声音转为虚拟播放：不生成音频样本，但播放位置仍按音频时钟推进。有空位后从当前进度恢复，不从头播放。<code>pause()</code> 会冻结轨道，虚拟播放则不会。</p>
 <p><code>source.priority</code> 的范围是 <code>0</code>（最高）到 <code>255</code>（最低），默认为 <code>128</code>。调度先比较优先级，再比较包含距离和分组增益的有效音量，完全相同时优先保留先开始的声音。例如，可以让 UI 确认声的数值小于环境循环声。Play 时可查看 <code>real_voice_count</code>、<code>virtual_voice_count</code> 和 <code>source.is_track_virtual(index)</code>。名额分配在引擎更新时执行，虚拟播放进度和分组淡入淡出不依赖逐帧调用。实际混音限额不是总内存限额，音频资产和逻辑声部句柄仍占用内存。</p>
 <p>一次性声部池满时，若新音效的 <code>volume_scale</code> 比所有在用声部都小，就拒绝这次播放；否则替换其中最轻的音效，音量相同时替换最早开始的。<code>source.rejected_one_shot_count</code> 可查看拒绝次数，不会反复刷 Console。这是单个音源内部的策略，与引擎全局的优先级调度不同。池大小应对应游戏实际并发需求，不宜无限增大。</p>
 <h2 id="zh-verify">验证结果</h2>
@@ -527,7 +527,7 @@
 <script src="../js/vendor/gsap.min.js?v=3.13.0"></script>
 <script src="../js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
 <script src="../js/main.js?v=16"></script>
-<script src="../js/motion.js?v=1"></script>
+<script src="../js/motion.js?v=2"></script>
     <script src="../js/docs-search.js?v=6"></script>
     <script src="../js/bilingual-page.js?v=1"></script>
 </body>

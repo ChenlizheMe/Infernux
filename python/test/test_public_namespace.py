@@ -72,6 +72,14 @@ def test_lowercase_namespace_exposes_gameplay_api() -> None:
     assert inx.GameObject is Infernux.GameObject
 
 
+def test_lowercase_namespace_exposes_audio_device_bus_and_voice_control() -> None:
+    from Infernux.lib import AudioEngine
+
+    assert inx.AudioEngine is AudioEngine
+    assert callable(inx.AudioEngine.instance().fade_bus_volume)
+    assert callable(inx.AudioEngine.instance().cancel_bus_fade)
+
+
 def test_resource_type_members_do_not_pollute_native_module_namespace() -> None:
     import Infernux.lib as native
 
