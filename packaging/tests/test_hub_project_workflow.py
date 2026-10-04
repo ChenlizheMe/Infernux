@@ -15,7 +15,6 @@ from model.project_model import ProjectModel
 from hub_utils import HubLaunchContext
 from viewmodel.control_pane_viewmodel import ControlPaneViewModel
 from project_paths import ProjectPathError, inspect_existing_project, validate_project_name
-from project_migration import ProjectMigrationService
 from i18n import configure_language, resolve_language, tr
 
 
@@ -199,13 +198,14 @@ def test_project_name_rejects_path_and_windows_reserved_values(name: str):
         validate_project_name(name)
 
 
-def test_inspect_existing_project_reads_name_and_version_without_modifying(tmp_path: Path):
-    project = _make_project(tmp_path / "folder-name", name="Display Name", version="0.2.1")
+@pytest.mark.parametrize("name", ["Display Name", "100% Demo"])
+def test_inspect_existing_project_reads_name_and_version_without_modifying(tmp_path: Path, name):
+    project = _make_project(tmp_path / "folder-name", name=name, version="0.2.1")
     before = sorted(item.relative_to(project) for item in project.rglob("*"))
 
     info = inspect_existing_project(str(project))
 
-    assert info.name == "Display Name"
+    assert info.name == name
     assert info.engine_version == "0.2.1"
     assert Path(info.path) == project.resolve()
     assert sorted(item.relative_to(project) for item in project.rglob("*")) == before
@@ -216,6 +216,19 @@ def test_inspect_existing_project_requires_core_directories(tmp_path: Path):
     invalid.mkdir()
     with pytest.raises(ProjectPathError, match="Missing"):
         inspect_existing_project(str(invalid))
+
+
+def test_inspect_existing_project_does_not_accept_multiple_version_pins(tmp_path):
+    project = _make_project(tmp_path / "Ambiguous", version="0.4.1\n0.3.9")
+    assert inspect_existing_project(str(project)).engine_version == ""
+
+
+def test_source_project_creation_rejects_another_engine_before_creating_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(project_model_module, "is_frozen", lambda: False)
+    model = ProjectModel(None, runtime_manager=object())
+    with pytest.raises(RuntimeError, match="exact same engine version"):
+        model.init_project_folder("WrongVersion", str(tmp_path), "9.9.9")
+    assert not list(tmp_path.iterdir())
 
 
 def test_database_allows_same_name_but_deduplicates_canonical_path(tmp_path: Path):
@@ -300,7 +313,7 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     )
     monkeypatch.setattr(model, "_create_vscode_workspace", lambda project: (Path(project) / ".vscode").mkdir())
 
-    result = model.init_project_folder("SafeProject", str(tmp_path), "0.2.1")
+    result = model.init_project_folder("SafeProject", str(tmp_path), "0.4.1")
 
     assert Path(result) == (tmp_path / "SafeProject").resolve()
     assert runtime_locations == [Path(result)]
@@ -317,21 +330,21 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     assert "*.meta text eol=lf" in gitattributes
     assert "*.fbx binary" in gitattributes
     assert not (Path(result) / "Assets" / "README.md").exists()
-    assert (Path(result) / "Assets" / "Scenes" / "Start.scene").is_file()
-    assert (Path(result) / "Assets" / "Rendering" / "Bloom.effect").is_file()
-    assert (Path(result) / "Assets" / "Rendering" / "ACES Tone Mapping.effect").is_file()
-    assert (Path(result) / "Assets" / "Rendering" / "Default Post Processing.effectgroup").is_file()
+    assert (Path(result) / "Assets" / "Scenes" / "SampleScene.scene").is_file()
+    assert (Path(result) / "Assets" / "Settings" / "Bloom.effect").is_file()
+    assert (Path(result) / "Assets" / "Settings" / "ACES Tone Mapping.effect").is_file()
+    assert (Path(result) / "Assets" / "Settings" / "Default Post Processing.effectgroup").is_file()
     bloom = json.loads(
-        (Path(result) / "Assets" / "Rendering" / "Bloom.effect.meta").read_text(encoding="utf-8")
+        (Path(result) / "Assets" / "Settings" / "Bloom.effect.meta").read_text(encoding="utf-8")
     )
     tone_mapping = json.loads(
-        (Path(result) / "Assets" / "Rendering" / "ACES Tone Mapping.effect.meta").read_text(encoding="utf-8")
+        (Path(result) / "Assets" / "Settings" / "ACES Tone Mapping.effect.meta").read_text(encoding="utf-8")
     )
     effect_group_meta = json.loads(
         (
             Path(result)
             / "Assets"
-            / "Rendering"
+            / "Settings"
             / "Default Post Processing.effectgroup.meta"
         ).read_text(encoding="utf-8")
     )
@@ -346,7 +359,7 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
         (
             Path(result)
             / "Assets"
-            / "Rendering"
+            / "Settings"
             / "Default Post Processing.effectgroup"
         ).read_text(encoding="utf-8")
     )
@@ -357,19 +370,16 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     build_settings = json.loads(
         (Path(result) / "ProjectSettings" / "BuildSettings.json").read_text(encoding="utf-8")
     )
-    scene_path = Path(result) / "Assets" / "Scenes" / "Start.scene"
+    scene_path = Path(result) / "Assets" / "Scenes" / "SampleScene.scene"
     scene_meta = json.loads(
         scene_path.with_suffix(".scene.meta").read_text(encoding="utf-8")
     )
     scene_guid = scene_meta["metadata"]["guid"]["value"]
     assert scene_meta["metadata"]["resource_type"]["value"] == "DefaultText"
     assert build_settings["scene_guids"] == [scene_guid]
-    editor_settings = json.loads(
-        (Path(result) / "ProjectSettings" / "EditorSettings.json").read_text(encoding="utf-8")
-    )
-    assert editor_settings == {"lastOpenedSceneGuid": scene_guid}
+    assert not (Path(result) / "ProjectSettings" / "EditorSettings.json").exists()
     scene = json.loads(
-        (Path(result) / "Assets" / "Scenes" / "Start.scene").read_text(encoding="utf-8")
+        (Path(result) / "Assets" / "Scenes" / "SampleScene.scene").read_text(encoding="utf-8")
     )
     assert scene["mainCameraComponentId"] == 2
     assert [item["name"] for item in scene["objects"]] == [
@@ -464,92 +474,13 @@ def test_new_project_failure_removes_only_staging(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(model, "_install_infernux_in_runtime", fail_install)
 
     with pytest.raises(RuntimeError, match="expected install failure"):
-        model.init_project_folder("FailedProject", str(tmp_path), "0.2.1")
+        model.init_project_folder("FailedProject", str(tmp_path), "0.4.1")
 
     assert unrelated.is_dir()
     assert not (tmp_path / "FailedProject").exists()
     assert not list(tmp_path.glob(".infernux-create-*"))
 
 
-class _MigrationVersionManager:
-    def is_installed(self, version):
-        return version == "0.3.0"
-
-    @staticmethod
-    def python_version_for_engine(_version):
-        return "3.13"
-
-    @staticmethod
-    def write_project_version(project, version):
-        (Path(project) / ".infernux-version").write_text(version + "\n", encoding="utf-8")
-
-
-class _MigrationProjectModel:
-    def __init__(self, *, fail_install=False):
-        self.fail_install = fail_install
-
-    def _create_project_runtime(self, project, on_status=None):
-        (Path(project) / ".venv").mkdir()
-
-    def _install_infernux_in_runtime(self, project, version, on_status=None):
-        if self.fail_install:
-            raise RuntimeError("migration install failed")
-        (Path(project) / ".venv" / "engine.txt").write_text(version, encoding="utf-8")
-
-    @staticmethod
-    def validate_project_runtime(project):
-        assert (Path(project) / ".venv" / "engine.txt").is_file()
-
-    @staticmethod
-    def _copy_bundled_requirements(destination, version):
-        Path(destination).write_text(f"Infernux=={version}\n", encoding="utf-8")
-
-    @staticmethod
-    def _create_vscode_workspace(project):
-        (Path(project) / ".vscode").mkdir(exist_ok=True)
-
-
-def test_project_migration_backs_up_and_replaces_runtime(tmp_path: Path):
-    project = _make_project(tmp_path / "Migrating", version="0.2.0")
-    (project / "Assets" / "scene.inx").write_text("scene", encoding="utf-8")
-    (project / "ProjectSettings" / "requirements.txt").write_text("old", encoding="utf-8")
-    (project / ".venv").mkdir()
-    (project / ".venv" / "old.txt").write_text("old runtime", encoding="utf-8")
-    service = ProjectMigrationService(_MigrationProjectModel(), _MigrationVersionManager())
-
-    result = service.migrate(str(project), "0.3.0")
-
-    assert result.source_version == "0.2.0"
-    assert (project / ".infernux-version").read_text(encoding="utf-8").strip() == "0.3.0"
-    assert (project / ".venv" / "engine.txt").read_text(encoding="utf-8") == "0.3.0"
-    assert json.loads(
-        (project / "ProjectSettings" / "PythonRuntime.json").read_text(
-            encoding="utf-8"
-        )
-    )["pythonVersion"] == "3.13"
-    assert not (project / ".venv" / "old.txt").exists()
-    with zipfile.ZipFile(result.backup_path) as archive:
-        assert "Assets/scene.inx" in archive.namelist()
-        assert "ProjectSettings/requirements.txt" in archive.namelist()
-
-
-def test_project_migration_restores_runtime_and_metadata_on_failure(tmp_path: Path):
-    project = _make_project(tmp_path / "Rollback", version="0.2.0")
-    requirements = project / "ProjectSettings" / "requirements.txt"
-    requirements.write_text("old requirements", encoding="utf-8")
-    (project / ".venv").mkdir()
-    (project / ".venv" / "old.txt").write_text("old runtime", encoding="utf-8")
-    service = ProjectMigrationService(
-        _MigrationProjectModel(fail_install=True), _MigrationVersionManager(),
-    )
-
-    with pytest.raises(RuntimeError, match="migration install failed"):
-        service.migrate(str(project), "0.3.0")
-
-    assert (project / ".venv" / "old.txt").read_text(encoding="utf-8") == "old runtime"
-    assert "0.2.0" in (project / ".infernux-version").read_text(encoding="utf-8")
-    assert requirements.read_text(encoding="utf-8") == "old requirements"
-    assert list((project / ".infernux-backups").glob("*.zip"))
 
 
 def test_language_resolution_uses_windows_style_zh_prefix():

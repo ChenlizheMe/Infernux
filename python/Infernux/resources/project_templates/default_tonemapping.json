@@ -1,0 +1,9 @@
+{
+  "$schema": "infernux.render_effect",
+  "dependencies": [],
+  "feature_type": "infernux.post.tonemapping",
+  "parameters": {
+    "exposure": 1.0,
+    "mode": 2
+  }
+}

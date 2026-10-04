@@ -11,7 +11,7 @@ from Infernux.core.assets import AssetManager
 from Infernux.engine.bootstrap_inspector._materials import _rebuild_material_entries
 from Infernux.engine.ui.asset_details_renderer import _load_material
 from Infernux.engine.ui.inspector_material import _get_inline_material_extra
-from Infernux.engine.ui.project_file_ops import MATERIAL_TEMPLATE
+from Infernux.engine.ui.project_file_ops import _new_material_document
 from Infernux.lib import AssetRegistry
 
 
@@ -27,7 +27,7 @@ def test_asset_edits_reach_assigned_cube_and_cached_inline_inspector(engine, sce
     monkeypatch.setattr(AssetManager, "_asset_database", database)
     path = Path(database.assets_root) / tmp_path.name / "FirstCube.mat"
     path.parent.mkdir(parents=True)
-    document = json.loads(MATERIAL_TEMPLATE.format(material_name="FirstCube"))
+    document = _new_material_document("FirstCube")
     document["properties"]["baseColor"]["type"] = color_type
     path.write_text(json.dumps(document), encoding="utf-8")
     imported = AssetManager.import_asset(str(path), database=database)

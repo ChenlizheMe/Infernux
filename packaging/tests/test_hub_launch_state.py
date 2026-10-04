@@ -177,8 +177,13 @@ def test_frozen_launch_preparation_does_not_cold_start_python_twice(
         ),
     )
 
+    calls = []
+    model = SimpleNamespace(
+        _install_infernux_in_runtime=lambda project, version, **kw: calls.append((project, version, kw["validate_current"])),
+        _create_vscode_workspace=lambda project: calls.append(("workspace", project)),
+    )
     worker = LaunchPreparationWorker(
-        object(), VersionManager(), str(tmp_path), HubLaunchContext.INSTALLED
+        model, VersionManager(), str(tmp_path), HubLaunchContext.INSTALLED
     )
     finished = []
     errors = []
@@ -189,6 +194,7 @@ def test_frozen_launch_preparation_does_not_cold_start_python_twice(
 
     assert errors == []
     assert finished == [str(runtime_python)]
+    assert calls == [(str(tmp_path), "0.3.7", False), ("workspace", str(tmp_path))]
 
 
 def test_frozen_launch_preparation_rebuilds_missing_project_runtime(
@@ -205,6 +211,9 @@ def test_frozen_launch_preparation_rebuilds_missing_project_runtime(
 
     class Model:
         runtime_manager = RuntimeManager()
+
+        def _create_vscode_workspace(self, project):
+            calls.append(("workspace", project))
 
         def _create_project_runtime(self, project, *, on_status=None, replace_existing=False):
             calls.append(("create", project, replace_existing))
@@ -256,6 +265,7 @@ def test_frozen_launch_preparation_rebuilds_missing_project_runtime(
     assert calls == [
         ("create", str(tmp_path), True),
         ("install", str(tmp_path), "0.4.1", False),
+        ("workspace", str(tmp_path)),
     ]
 
 
@@ -330,7 +340,7 @@ def test_source_launch_preparation_uses_current_python_without_catalog_gate(
     class VersionManager:
         @staticmethod
         def read_project_version(_path):
-            return "9.9.9"
+            return control_pane_viewmodel.source_engine_version()
 
         @staticmethod
         def is_installed(*_args):

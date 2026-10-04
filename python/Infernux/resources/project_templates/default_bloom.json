@@ -1,0 +1,18 @@
+{
+  "$schema": "infernux.render_effect",
+  "dependencies": [],
+  "feature_type": "infernux.post.bloom",
+  "parameters": {
+    "clamp": 65472.0,
+    "intensity": 0.8,
+    "max_iterations": 5,
+    "scatter": 0.7,
+    "threshold": 1.0,
+    "tint": [
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ]
+  }
+}

@@ -77,7 +77,7 @@ def new_project_target(parent: str, name: str) -> tuple[str, str]:
 def _read_project_name(project_path: str) -> str:
     candidates = sorted(Path(project_path).glob("*.ini"))
     for candidate in candidates:
-        parser = configparser.ConfigParser()
+        parser = configparser.ConfigParser(interpolation=None)
         try:
             parser.read(candidate, encoding="utf-8")
             value = parser.get("Project", "name", fallback="").strip()
@@ -92,10 +92,8 @@ def _read_engine_version(project_path: str) -> str:
     version_path = os.path.join(project_path, ".infernux-version")
     try:
         with open(version_path, "r", encoding="utf-8") as stream:
-            for line in stream:
-                value = line.strip()
-                if value and not value.startswith("#"):
-                    return value
+            versions = [line.strip() for line in stream if line.strip() and not line.lstrip().startswith("#")]
+            return versions[0] if len(versions) == 1 else ""
     except OSError:
         pass
     return ""

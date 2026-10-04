@@ -1,12 +1,11 @@
 import os
 from PySide6.QtWidgets import (
-    QMessageBox, QDialog, QVBoxLayout, QLabel, QProgressBar, QFileDialog, QInputDialog
+    QMessageBox, QDialog, QVBoxLayout, QLabel, QProgressBar, QFileDialog
 )
 from PySide6.QtCore import QThread, Signal, QObject, QTimer, Qt
-from model.project_model import ProjectModel
+from model.project_model import ProjectModel, source_engine_version
 from hub_utils import HubLaunchContext, is_project_open
 from project_paths import ProjectPathError
-from project_migration import ProjectMigrationService
 from i18n import tr
 import random
 
@@ -81,28 +80,6 @@ class InitProjectWorker(QObject):
         self.finished.emit()
 
 
-class MigrationWorker(QObject):
-    progress = Signal(str)
-    finished = Signal(object)
-    error = Signal(str)
-
-    def __init__(self, service, project_path: str, target_version: str):
-        super().__init__()
-        self.service = service
-        self.project_path = project_path
-        self.target_version = target_version
-
-    def run(self):
-        try:
-            result = self.service.migrate(
-                self.project_path,
-                self.target_version,
-                on_status=self.progress.emit,
-            )
-        except Exception as exc:
-            self.error.emit(str(exc))
-            return
-        self.finished.emit(result)
 
 
 class LaunchPreparationWorker(QObject):
@@ -181,23 +158,35 @@ class LaunchPreparationWorker(QObject):
                         on_status=status,
                         replace_existing=True,
                     )
-                    self.model._install_infernux_in_runtime(
-                        project_path,
-                        pinned_version,
-                        on_status=status,
-                        validate_current=False,
-                    )
                     python_exe = ProjectModel._get_project_python(project_path)
                     if not os.path.isfile(python_exe):
                         raise RuntimeError(
                             "Project Python runtime could not be rebuilt at:\n"
                             f"{os.path.dirname(python_exe)}"
                         )
+                # The private runtime must contain exactly the pinned engine.
+                # Publish it from the local installation; its receipt skips an
+                # unchanged runtime. Project version migration is not supported.
+                self.model._install_infernux_in_runtime(
+                    project_path,
+                    pinned_version,
+                    on_status=lambda message: self.progress.emit(message, 9),
+                    validate_current=False,
+                )
+                self.model._create_vscode_workspace(project_path)
                 # Starting the editor is the authoritative native import check.
                 # A separate smoke-test process here used to double cold-start
                 # Python before the splash screen could even become responsive.
             else:
                 import sys
+
+                current_version = source_engine_version()
+                if pinned_version != current_version:
+                    raise RuntimeError(
+                        f"Project requires Infernux {pinned_version or 'an explicit version pin'}; "
+                        f"the source engine is {current_version}. "
+                        "Use the exact required engine version. Engine upgrades are not supported."
+                    )
 
                 # A source-launched Hub is a development/test frontend for the
                 # Python environment that started it.  Infernux is therefore
@@ -394,86 +383,6 @@ class ControlPaneViewModel:
         self.project_list.refresh()
         self.project_list.select_project(relocated.project_id)
 
-    def migrate_project(self, parent):
-        record = self.project_list.get_selected_record()
-        if record is None:
-            QMessageBox.warning(parent, tr("No Selection"), tr("Please select a project to migrate."))
-            return
-        if not os.path.isdir(record.path):
-            QMessageBox.warning(parent, tr("Project Path Missing"), record.path)
-            return
-
-        current = self.version_manager.read_project_version(record.path) or ""
-        versions = [version for version in self.version_manager.installed_versions() if version != current]
-        if not versions:
-            QMessageBox.information(
-                parent,
-                tr("No Other Version"),
-                tr("Install another engine version before migrating this project."),
-            )
-            return
-
-        target, accepted = QInputDialog.getItem(
-            parent,
-            tr("Migrate Project"),
-            tr("Select target engine version:"),
-            versions,
-            0,
-            False,
-        )
-        if not accepted or not target:
-            return
-
-        confirmation = QMessageBox.question(
-            parent,
-            tr("Confirm Project Migration"),
-            f"{record.name}: {current or '(unversioned)'} → {target}\n\n"
-            + tr("A backup of Assets and ProjectSettings will be created before the runtime and version pin are changed."),
-        )
-        if confirmation != QMessageBox.Yes:
-            return
-
-        progress = CustomProgressDialog(parent, tr("Migrate Project"))
-        progress.show()
-        service = ProjectMigrationService(self.model, self.version_manager)
-        self._migration_error = ""
-        self._migration_result = None
-        self._migration_thread = QThread()
-        self._migration_worker = MigrationWorker(service, record.path, target)
-        self._migration_worker.moveToThread(self._migration_thread)
-
-        def store_result(result):
-            self._migration_result = result
-
-        def store_error(message):
-            self._migration_error = message
-
-        def cleanup():
-            progress.accept()
-            if self._migration_error:
-                QMessageBox.critical(parent, tr("Project Migration Failed"), self._migration_error)
-            elif self._migration_result is not None:
-                QMessageBox.information(
-                    parent,
-                    tr("Project Migration Complete"),
-                    tr("Backup created at:\n{path}", path=self._migration_result.backup_path),
-                )
-            self.project_list.refresh()
-            self.project_list.select_project(record.project_id)
-            self._migration_worker.deleteLater()
-            self._migration_thread.deleteLater()
-
-        self._migration_timer = QTimer()
-        self._migration_timer.setSingleShot(True)
-        self._migration_timer.timeout.connect(cleanup)
-        self._migration_thread.started.connect(self._migration_worker.run)
-        self._migration_worker.progress.connect(progress.set_status)
-        self._migration_worker.finished.connect(store_result)
-        self._migration_worker.finished.connect(self._migration_thread.quit)
-        self._migration_worker.error.connect(store_error)
-        self._migration_worker.error.connect(self._migration_thread.quit)
-        self._migration_thread.finished.connect(self._migration_timer.start)
-        self._migration_thread.start()
 
     def create_project(self, parent):
         from view.new_project_view import NewProjectView

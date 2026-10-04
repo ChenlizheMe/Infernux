@@ -1,0 +1,23 @@
+{
+  "$schema": "infernux.render_effect_group",
+  "entries": [
+    {
+      "asset": {
+        "guid": "@BLOOM_GUID@",
+        "path_hint": "Assets/Settings/Bloom.effect"
+      },
+      "enabled": true,
+      "entry_id": "bloom",
+      "overrides": {}
+    },
+    {
+      "asset": {
+        "guid": "@TONEMAPPING_GUID@",
+        "path_hint": "Assets/Settings/ACES Tone Mapping.effect"
+      },
+      "enabled": true,
+      "entry_id": "tonemapping",
+      "overrides": {}
+    }
+  ]
+}

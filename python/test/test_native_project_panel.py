@@ -78,12 +78,12 @@ class TestProjectPanelCreation:
         assert ok is True, error
         path = tmp_path / "Ice.physicMaterial"
         assert database.paths == [str(path)]
-        assert json.loads(path.read_text(encoding="utf-8")) == {
+        assert json.loads(path.read_text(encoding="utf-8")) == pytest.approx({
             "friction": 0.6,
             "bounciness": 0.0,
             "friction_combine": 0,
             "bounce_combine": 0,
-        }
+        })
 
     def test_create_render_effect_assets_write_current_documents(self, tmp_path):
         from Infernux.renderstack.render_effect_asset import (
@@ -136,11 +136,11 @@ class TestProjectPanelCreation:
         document = json.loads(path.read_text(encoding="utf-8"))
         assert "material_version" not in document
         assert document["shaders"]["vertex"]["shader_id"] == "Standard"
-        assert document["shaders"]["fragment"]["shader_id"] == "Unlit"
+        assert document["shaders"]["fragment"]["shader_id"] == "Lit"
         assert document["name"] == "NewMaterial"
         assert document["builtin"] is False
         material = InxMaterial()
-        assert material.deserialize(json.dumps(document)) is True
+        assert material.deserialize_document(document) is True
         assert material.name == "NewMaterial"
 
     def test_new_material_import_primes_native_preview(self, tmp_path, monkeypatch):

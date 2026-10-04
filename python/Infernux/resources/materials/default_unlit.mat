@@ -38,7 +38,7 @@
   },
   "properties": {
     "baseColor": {
-      "type": 3,
+      "type": 7,
       "value": [1.0, 1.0, 1.0, 1.0]
     }
   }

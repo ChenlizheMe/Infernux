@@ -177,9 +177,18 @@ void MakeMetadataPortable(nlohmann::json &document, const std::string &projectRo
         return;
     auto fields = document.find("metadata");
     if (fields != document.end() && fields->is_object()) {
-        // This is a local observation, not an authored importer setting.
-        fields->erase("last_modified");
-        fields->erase("content_hash");
+        // Source observations belong to the local import index. Persisting
+        // them makes unrelated scene/script edits collide in their sidecars.
+        // Keep the complete in-memory document for inspectors and the index.
+        for (const auto *key :
+             {"last_modified", "content_hash", "file_size", "file_type", "file_extension", "line_count",
+              "character_count", "encoding", "size_category", "binary_type", "language"})
+            fields->erase(key);
+        // Default loaders report readability as an observation. Models use
+        // the same name for their authored CPU Read/Write import setting.
+        const auto resourceType = fields->find("resource_type");
+        if (resourceType != fields->end() && resourceType->at("value") != "Mesh")
+            fields->erase("is_readable");
         for (const auto *key : {"file_path"}) {
             auto entry = fields->find(key);
             if (entry != fields->end() && entry->at("type") == "string") {

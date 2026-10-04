@@ -7,13 +7,12 @@ from Infernux.core.material import Material
 
 
 def test_new_material_template_uses_native_color_semantics():
-    import json
-    from Infernux.engine.ui.project_file_ops import MATERIAL_TEMPLATE
+    from Infernux.engine.ui.project_file_ops import _new_material_document
 
     native = native_lib.InxMaterial('Authored', 'Unlit')
     native.set_color('baseColor', (1., .55, .12, 1.))
     expected = native.serialize_document()['properties']['baseColor']['type']
-    document = json.loads(MATERIAL_TEMPLATE.format(material_name='Created'))
+    document = _new_material_document('Created')
     assert "path_hint" not in document["shaders"]["vertex"]
     assert "path_hint" not in document["shaders"]["fragment"]
     assert document['properties']['baseColor']['type'] == expected

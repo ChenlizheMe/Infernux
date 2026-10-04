@@ -18,8 +18,6 @@ from Infernux.core.data_asset import DataAsset
 SCRIPT_TEMPLATE: str
 VERTEX_SHADER_TEMPLATE: str
 FRAGMENT_SHADER_TEMPLATE: str
-SCENE_TEMPLATE: str
-MATERIAL_TEMPLATE: str
 
 
 # ── Public API ──────────────────────────────────────────────────────

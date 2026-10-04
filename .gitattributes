@@ -3,9 +3,18 @@
 *.sh text eol=lf
 .githooks/* text eol=lf
 *.py text eol=lf
-*.json text eol=lf
+*.json text eol=lf merge=text
 *.yml text eol=lf
 *.yaml text eol=lf
+*.txt text eol=lf
+*.ini text eol=lf
+*.vert text eol=lf
+*.frag text eol=lf
+*.glsl text eol=lf
+*.shadingmodel text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+.infernux-version text eol=lf
 *.scene text eol=lf merge=text
 *.prefab text eol=lf merge=text
 *.mat text eol=lf merge=text
@@ -13,6 +22,7 @@
 *.effectgroup text eol=lf merge=text
 *.particlegraph text eol=lf merge=text
 *.physicmaterial text eol=lf merge=text
+*.physicMaterial text eol=lf merge=text
 *.rendertexture text eol=lf merge=text
 *.inxdata text eol=lf merge=text
 *.animclip2d text eol=lf merge=text
@@ -40,3 +50,21 @@
 *.ogg binary
 *.flac binary
 *.inxpkg binary
+*.dll binary
+*.pyd binary
+*.so binary
+*.dylib binary
+*.a binary
+*.lib binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.hdr binary
+*.exr binary
+*.bmp binary
+*.gif binary
+*.webp binary
+*.tif binary
+*.tiff binary
+*.zip binary

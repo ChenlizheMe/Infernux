@@ -73,6 +73,7 @@ Infernux = [
     "resources/schemas/*.json",
     "resources/shaders/**/*",
     "resources/project_templates/*.txt",
+    "resources/project_templates/*.json",
     "resources/*.inxpkg",
     "resources/official_packages/*.json",
 ]

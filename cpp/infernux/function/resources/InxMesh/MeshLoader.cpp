@@ -1060,7 +1060,9 @@ void MeshLoader::CreateMeta(const char *content, size_t contentSize, const std::
 
     metaData.AddMetadata("file_type", std::string("mesh"));
     metaData.AddMetadata("file_extension", extension);
-    metaData.AddMetadata("is_readable", false);
+    // Read/Write is authored by MeshImportSettings, whose defaults are applied
+    // only for a new asset. Source observations must not overwrite that setting
+    // when metadata is rebuilt after an edit or on a fresh checkout.
 
     metaData.AddMetadata("file_size", contentSize);
 }

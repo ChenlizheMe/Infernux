@@ -79,14 +79,14 @@ def _get_scene_root_objects(scene):
 
 
 # ---------------------------------------------------------------------------
-# Editor settings helpers (ProjectSettings/EditorSettings.json)
+# Local editor navigation and camera state (Library/EditorSettings.json)
 # ---------------------------------------------------------------------------
 
 def _settings_path() -> Optional[str]:
     root = _effective_project_root()
     if not root:
         return None
-    return os.path.join(root, "ProjectSettings", EDITOR_SETTINGS_FILE)
+    return os.path.join(root, "Library", EDITOR_SETTINGS_FILE)
 
 
 def _effective_project_root() -> Optional[str]:
@@ -111,6 +111,10 @@ def _effective_project_root() -> Optional[str]:
 
 def _load_editor_settings() -> dict:
     path = _settings_path()
+    if path and not os.path.isfile(path):
+        # Read the old location without writing local navigation back to Git.
+        root = _effective_project_root()
+        path = os.path.join(root, "ProjectSettings", EDITOR_SETTINGS_FILE) if root else None
     if not path or not os.path.isfile(path):
         return {}
     try:
@@ -1364,6 +1368,20 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 self._remember_last_scene(last_scene)
                 return
             Debug.log_warning(f"Last scene file missing or invalid: {last_scene}")
+
+        # A new checkout has no local navigation state. Its authored build
+        # scene order supplies the deterministic initial scene.
+        root = _effective_project_root()
+        if root and os.path.isfile(os.path.join(root, "ProjectSettings", "BuildSettings.json")):
+            from .build_settings import load_build_settings_for_build
+
+            guids = load_build_settings_for_build(root)["scene_guids"]
+            if guids:
+                path = self._scene_path_for_guid(guids[0])
+                if not path or not self._do_open_scene(path, record_navigation=False):
+                    raise RuntimeError(f"Cannot open the project's initial scene GUID {guids[0]}")
+                self._remember_last_scene(path)
+                return
 
         # Fallback to default (immediate — no rendering loop yet)
         self._do_new_scene()

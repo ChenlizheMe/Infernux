@@ -6,6 +6,8 @@ depend on ``ProjectPanel`` internals.
 """
 
 import os
+import json
+import keyword
 import re
 import shutil
 import time
@@ -24,18 +26,16 @@ from Infernux.engine.path_utils import (
 # Templates
 # ---------------------------------------------------------------------------
 
-SCRIPT_TEMPLATE = '''
-import infernux as inx
+SCRIPT_TEMPLATE = '''import infernux as inx
 
 
 class {class_name}(inx.InxComponent):
-    # Public fields (automatically serialized and shown in Inspector)
-    # speed = 5.0       # float (use .0 for decimals)
-    
-    def start(self):
+    # speed: float = inx.serialized_field(default=5.0)
+
+    def start(self) -> None:
         """Called before first update, after all awake() calls."""
-    
-    def update(self, delta_time: float):
+
+    def update(self, delta_time: float) -> None:
         """Called every frame."""
 '''
 
@@ -67,119 +67,33 @@ void surface(out SurfaceData s) {{
 }}
 '''
 
-SCENE_TEMPLATE = '''{{
-  "name": "{scene_name}",
-  "isPlaying": false,
-  "objects": []
-}}
-'''
-MATERIAL_TEMPLATE = '''{{
-  "name": "{material_name}",
-  "builtin": false,
-  "shaders": {{
-    "vertex": {{
-      "guid": "",
-      "shader_id": "Standard"
-    }},
-    "fragment": {{
-      "guid": "",
-      "shader_id": "Unlit"
-    }}
-  }},
-  "renderState": {{
-    "cullMode": 1,
-    "frontFace": 1,
-    "polygonMode": 0,
-    "lineWidth": 1.0,
-    "depthBiasEnable": false,
-    "depthBiasConstantFactor": 0.0,
-    "depthBiasSlopeFactor": 0.0,
-    "depthBiasClamp": 0.0,
-    "topology": 3,
-    "depthTestEnable": true,
-    "depthWriteEnable": true,
-    "depthCompareOp": 1,
-    "blendEnable": false,
-    "srcColorBlendFactor": 6,
-    "dstColorBlendFactor": 7,
-    "colorBlendOp": 0,
-    "srcAlphaBlendFactor": 0,
-    "dstAlphaBlendFactor": 1,
-    "alphaBlendOp": 0,
-    "alphaClipEnabled": false,
-    "alphaClipThreshold": 0.5,
-    "renderQueue": 2000,
-    "stencilTestEnable": false
-  }},
-  "properties": {{
-    "baseColor": {{
-      "type": 7,
-      "value": [1.0, 1.0, 1.0, 1.0]
-    }}
-  }}
-}}
-'''
-
-PHYSIC_MATERIAL_TEMPLATE = '''{
-  "friction": 0.6,
-  "bounciness": 0.0,
-  "friction_combine": 0,
-  "bounce_combine": 0
-}
-'''
-
-ANIMCLIP_TEMPLATE = '''{
-  "name": "{clip_name}",
-  "authoring_texture_guid": "",
-  "frames": [],
-  "fps": 12.0,
-  "loop": true,
-  "events": []
-}
-'''
-
-ANIMCLIP3D_TEMPLATE = '''{
-  "name": "{clip_name}",
-  "source_model_guid": "",
-  "take_name": "",
-  "bind_pose_bone_names": [],
-  "duration_hint": 0.0,
-  "events": []
-}
-'''
-
-ANIMFSM_TEMPLATE = '''{
-  "name": "{fsm_name}",
-  "default_state": "",
-  "mode": "2d",
-  "states": [],
-  "parameters": [],
-  "entry_position": [-100.0, 50.0]
-}
-'''
-
-ANIMTIMELINE_TEMPLATE = '''{
-  "name": "{timeline_name}",
-  "duration": 2.0,
-  "apply_mode": "additive",
-  "keyframes": []
-}
-'''
-
-TIMELINEFSM_TEMPLATE = '''{
-  "name": "{fsm_name}",
-  "default_state": "",
-  "mode": "timeline",
-  "states": [],
-  "parameters": [],
-  "entry_position": [-100.0, 50.0]
-}
-'''
-
-
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
+
+def _document_text(document: dict) -> str:
+    return json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n"
+
+
+def _new_material_document(name: str) -> dict:
+    from Infernux.lib import InxMaterial
+
+    document = InxMaterial.create_default_lit().serialize_document()
+    document["name"] = name
+    document["builtin"] = False
+    return document
+
+
+def _asset_name_error(name: str) -> str:
+    """Keep authored filenames portable between Windows and Unix checkouts."""
+    if not name or name.startswith(".") or re.search(r'[<>:"/\\|?*\x00-\x1f]', name):
+        return "Asset name must be a single portable filename"
+    if name.endswith((" ", ".")):
+        return "Asset name cannot end with a space or period"
+    stem = name.split(".", 1)[0].upper()
+    if stem in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
+        return "Asset name is reserved on Windows"
+    return ""
 
 def get_unique_name(current_path: str, base_name: str, extension: str = "") -> str:
     """Return a *base_name* that doesn't clash with existing entries in *current_path*.
@@ -639,7 +553,10 @@ def _write_new_text_asset(path: str, content: str) -> tuple[bool, str]:
 def _import_new_asset(path: str, asset_database) -> str:
     from Infernux.core.assets import AssetManager
 
-    return AssetManager.import_asset(path, database=asset_database).guid
+    result = AssetManager.import_asset(path, database=asset_database)
+    if not result or not result.guid:
+        raise RuntimeError(result.error or f"AssetDatabase failed to import '{path}'")
+    return result.guid
 
 def create_folder(current_path: str, folder_name: str):
     """Create a folder and return ``(True, "")`` or ``(False, error_msg)``."""
@@ -647,6 +564,8 @@ def create_folder(current_path: str, folder_name: str):
         return False, "Invalid folder name"
 
     folder_name = folder_name.strip()
+    if error := _asset_name_error(folder_name):
+        return False, error
     if not folder_name:
         return False, "Folder name cannot be empty"
 
@@ -674,7 +593,7 @@ def create_script(current_path: str, script_name: str, asset_database=None):
     if class_name.endswith('.py'):
         class_name = class_name[:-3]
 
-    if not class_name.isidentifier():
+    if not class_name.isidentifier() or keyword.iskeyword(class_name) or _asset_name_error(class_name):
         return False, "Invalid script name (must be valid Python identifier)"
 
     if not script_name.endswith('.py'):
@@ -705,6 +624,8 @@ def create_shader(current_path: str, shader_name: str, shader_type: str,
         return False, "Invalid shader name"
 
     shader_name = shader_name.strip()
+    if error := _asset_name_error(shader_name):
+        return False, error
     if not shader_name:
         return False, "Shader name cannot be empty"
 
@@ -755,6 +676,8 @@ def create_scene(current_path: str, scene_name: str, asset_database=None):
         return False, "Invalid scene name"
 
     scene_name = scene_name.strip()
+    if error := _asset_name_error(scene_name):
+        return False, error
     if not scene_name:
         return False, "Scene name cannot be empty"
 
@@ -767,7 +690,10 @@ def create_scene(current_path: str, scene_name: str, asset_database=None):
     if os.path.exists(file_path):
         return False, f"'{file_name}' already exists"
 
-    content = SCENE_TEMPLATE.format(scene_name=scene_name)
+    content = _document_text({
+        "name": scene_name, "isPlaying": False, "objects": [],
+        "nextObjectId": 1, "nextComponentId": 1,
+    })
     written, error = _write_new_text_asset(file_path, content)
     if not written:
         return False, error
@@ -787,6 +713,8 @@ def create_material(current_path: str, material_name: str, asset_database=None):
         return False, "Invalid material name"
 
     material_name = material_name.strip()
+    if error := _asset_name_error(material_name):
+        return False, error
     if not material_name:
         return False, "Material name cannot be empty"
 
@@ -799,7 +727,7 @@ def create_material(current_path: str, material_name: str, asset_database=None):
     if os.path.exists(file_path):
         return False, f"'{file_name}' already exists"
 
-    content = MATERIAL_TEMPLATE.format(material_name=material_name)
+    content = _document_text(_new_material_document(material_name))
     written, error = _write_new_text_asset(file_path, content)
     if not written:
         return False, error
@@ -823,6 +751,8 @@ def create_physic_material(current_path: str, material_name: str, asset_database
     if not current_path or not material_name:
         return False, "Invalid PhysicMaterial name"
     material_name = material_name.strip()
+    if error := _asset_name_error(material_name):
+        return False, error
     if not material_name:
         return False, "PhysicMaterial name cannot be empty"
     extension = ".physicMaterial"
@@ -833,13 +763,16 @@ def create_physic_material(current_path: str, material_name: str, asset_database
     if os.path.exists(file_path):
         return False, f"'{file_name}' already exists"
 
-    written, error = _write_new_text_asset(file_path, PHYSIC_MATERIAL_TEMPLATE)
+    from Infernux.core.physic_material import PhysicMaterial
+
+    written, error = _write_new_text_asset(file_path, _document_text(PhysicMaterial().serialize_document()))
     if not written:
         return False, error
     if asset_database:
-        guid = _import_new_asset(file_path, asset_database)
-        if not guid:
-            return False, f"AssetDatabase failed to import '{file_name}'"
+        try:
+            _import_new_asset(file_path, asset_database)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return False, str(exc)
     return True, ""
 
 
@@ -851,6 +784,8 @@ def create_render_texture(current_path: str, asset_name: str, asset_database=Non
         return False, "RenderTexture name cannot be empty"
     extension = ".rendertexture"
     name = asset_name.strip()
+    if error := _asset_name_error(name):
+        return False, error
     if name.casefold().endswith(extension):
         name = name[:-len(extension)]
     if not name:
@@ -862,12 +797,15 @@ def create_render_texture(current_path: str, asset_name: str, asset_database=Non
     # Project assets are ready for Camera assignment; compute-only targets may
     # explicitly disable depth in the Inspector. Low-level defaults stay color-only.
     description.depth_format = _Infernux.PixelFormat.D32_SFLOAT
-    content = _Infernux._render_texture_description_to_json(description)
+    content = _document_text(json.loads(_Infernux._render_texture_description_to_json(description)))
     written, error = _write_new_text_asset(path, content)
     if not written:
         return False, error
-    if asset_database is not None and not _import_new_asset(path, asset_database):
-        return False, f"AssetDatabase failed to import '{name + extension}'"
+    if asset_database is not None:
+        try:
+            _import_new_asset(path, asset_database)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return False, str(exc)
     return True, ""
 
 
@@ -876,6 +814,8 @@ def create_data_asset(current_path: str, asset_name: str, type_id: str, asset_da
     if not current_path or not asset_name:
         return False, "Invalid DataAsset name"
     asset_name = asset_name.strip()
+    if error := _asset_name_error(asset_name):
+        return False, error
     if not asset_name:
         return False, "DataAsset name cannot be empty"
     if asset_name.lower().endswith(".inxdata"):
@@ -926,6 +866,8 @@ def create_prefab_from_gameobject(game_object, current_path: str,
     )
 
     prefab_name = get_unique_name(current_path, game_object.name, PREFAB_EXTENSION)
+    if error := _asset_name_error(prefab_name):
+        return False, error
     file_path = os.path.join(current_path, prefab_name + PREFAB_EXTENSION)
 
     if save_prefab(game_object, file_path, asset_database=asset_database,
@@ -942,6 +884,8 @@ def create_animclip(current_path: str, clip_name: str, asset_database=None):
         return False, "Invalid animation clip name"
 
     clip_name = clip_name.strip()
+    if error := _asset_name_error(clip_name):
+        return False, error
     if not clip_name:
         return False, "Animation clip name cannot be empty"
 
@@ -954,7 +898,9 @@ def create_animclip(current_path: str, clip_name: str, asset_database=None):
     if os.path.exists(file_path):
         return False, f"'{file_name}' already exists"
 
-    content = ANIMCLIP_TEMPLATE.format(clip_name=clip_name)
+    from Infernux.core.animation_clip import AnimationClip
+
+    content = _document_text(AnimationClip(name=clip_name).to_dict())
     written, error = _write_new_text_asset(file_path, content)
     if not written:
         return False, error
@@ -974,6 +920,8 @@ def create_animclip3d(current_path: str, clip_name: str, asset_database=None):
         return False, "Invalid 3D animation clip name"
 
     clip_name = clip_name.strip()
+    if error := _asset_name_error(clip_name):
+        return False, error
     if not clip_name:
         return False, "3D animation clip name cannot be empty"
 
@@ -986,7 +934,9 @@ def create_animclip3d(current_path: str, clip_name: str, asset_database=None):
     if os.path.exists(file_path):
         return False, f"'{file_name}' already exists"
 
-    content = ANIMCLIP3D_TEMPLATE.format(clip_name=clip_name)
+    from Infernux.core.animation_clip3d import AnimationClip3D
+
+    content = _document_text(AnimationClip3D(name=clip_name).to_dict())
     written, error = _write_new_text_asset(file_path, content)
     if not written:
         return False, error
@@ -1006,6 +956,8 @@ def create_animfsm(current_path: str, fsm_name: str, asset_database=None):
         return False, "Invalid state machine name"
 
     fsm_name = fsm_name.strip()
+    if error := _asset_name_error(fsm_name):
+        return False, error
     if not fsm_name:
         return False, "State machine name cannot be empty"
 
@@ -1018,7 +970,9 @@ def create_animfsm(current_path: str, fsm_name: str, asset_database=None):
     if os.path.exists(file_path):
         return False, f"'{file_name}' already exists"
 
-    content = ANIMFSM_TEMPLATE.format(fsm_name=fsm_name)
+    from Infernux.core.anim_state_machine import AnimStateMachine
+
+    content = _document_text(AnimStateMachine(name=fsm_name).to_dict())
     written, error = _write_new_text_asset(file_path, content)
     if not written:
         return False, error
@@ -1038,6 +992,8 @@ def create_particlegraph(current_path: str, graph_name: str, asset_database=None
         return False, "Invalid Particle Graph name"
 
     graph_name = graph_name.strip()
+    if error := _asset_name_error(graph_name):
+        return False, error
     if not graph_name:
         return False, "Particle Graph name cannot be empty"
     if graph_name.lower().endswith(".particlegraph"):
@@ -1073,6 +1029,8 @@ def create_render_effect(
     if not current_path or not effect_name:
         return False, "Invalid Render Effect name"
     effect_name = effect_name.strip()
+    if error := _asset_name_error(effect_name):
+        return False, error
     if not effect_name:
         return False, "Render Effect name cannot be empty"
     if effect_name.lower().endswith(".effect"):
@@ -1110,6 +1068,8 @@ def create_render_effect_group(current_path: str, group_name: str, asset_databas
     if not current_path or not group_name:
         return False, "Invalid Render Effect Group name"
     group_name = group_name.strip()
+    if error := _asset_name_error(group_name):
+        return False, error
     if not group_name:
         return False, "Render Effect Group name cannot be empty"
     if group_name.lower().endswith(".effectgroup"):
@@ -1142,6 +1102,8 @@ def create_animtimeline(current_path: str, timeline_name: str, asset_database=No
         return False, "Invalid timeline name"
 
     timeline_name = timeline_name.strip()
+    if error := _asset_name_error(timeline_name):
+        return False, error
     if not timeline_name:
         return False, "Timeline name cannot be empty"
 
@@ -1154,7 +1116,9 @@ def create_animtimeline(current_path: str, timeline_name: str, asset_database=No
     if os.path.exists(file_path):
         return False, f"'{file_name}' already exists"
 
-    content = ANIMTIMELINE_TEMPLATE.format(timeline_name=timeline_name)
+    from Infernux.core.animation_timeline import AnimationTimeline
+
+    content = _document_text(AnimationTimeline(name=timeline_name).to_dict())
     written, error = _write_new_text_asset(file_path, content)
     if not written:
         return False, error
@@ -1174,6 +1138,8 @@ def create_timelinefsm(current_path: str, fsm_name: str, asset_database=None):
         return False, "Invalid timeline FSM name"
 
     fsm_name = fsm_name.strip()
+    if error := _asset_name_error(fsm_name):
+        return False, error
     if not fsm_name:
         return False, "Timeline FSM name cannot be empty"
 
@@ -1186,7 +1152,9 @@ def create_timelinefsm(current_path: str, fsm_name: str, asset_database=None):
     if os.path.exists(file_path):
         return False, f"'{file_name}' already exists"
 
-    content = TIMELINEFSM_TEMPLATE.format(fsm_name=fsm_name)
+    from Infernux.core.anim_state_machine import AnimStateMachine
+
+    content = _document_text(AnimStateMachine(name=fsm_name, mode="timeline").to_dict())
     written, error = _write_new_text_asset(file_path, content)
     if not written:
         return False, error

@@ -131,7 +131,6 @@ class GameEngineLauncher(QMainWindow):
         )
         self.viewmodel = viewmodel
         self.project_list.remove_requested.connect(self._remove_project_from_card)
-        self.project_list.migrate_requested.connect(self._migrate_project_from_card)
         # Engine and Python installs change which project cards are launchable.
         # Rebuild the cards after the queue completes so a blocked project
         # becomes selectable as soon as its matching local version is ready.
@@ -324,10 +323,6 @@ class GameEngineLauncher(QMainWindow):
     def _remove_project_from_card(self, project_id: str):
         self.project_list.select_project(project_id)
         self.viewmodel.remove_project(self)
-
-    def _migrate_project_from_card(self, project_id: str):
-        self.project_list.select_project(project_id)
-        self.viewmodel.migrate_project(self)
 
     def _on_language_changed(self, _mode: str):
         """Rebuild visible widgets in the new language without restarting the process."""

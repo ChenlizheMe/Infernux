@@ -33,7 +33,6 @@ class _FakeVersionManager:
 def test_hub_generated_assets_are_readable_by_native_asset_database(engine, scene, monkeypatch):
     from Infernux.lib import ResourceMeta, ResourceType
     from Infernux.engine.build_settings import load_build_settings_for_build
-    from Infernux.engine.scene_manager import LAST_OPENED_SCENE_GUID_KEY
     from Infernux.engine.component_restore import deserialize_scene_document_transactionally
     from Infernux.renderstack.render_stack import RenderStack
     from Infernux.renderstack.render_effect_asset import parse_render_effect_document
@@ -61,12 +60,9 @@ def test_hub_generated_assets_are_readable_by_native_asset_database(engine, scen
             assert database.get_guid_from_path(str(asset)) == guid
             assert database.get_meta_by_guid(guid).get_resource_type() == database.get_resource_type(str(asset))
         settings = load_build_settings_for_build(str(project))
-        scene_path = project / "Assets" / "Scenes" / "Start.scene"
+        scene_path = project / "Assets" / "Scenes" / "SampleScene.scene"
         assert settings["scene_guids"] == [identities[scene_path]]
-        editor_settings = json.loads(
-            (project / "ProjectSettings" / "EditorSettings.json").read_text(encoding="utf-8")
-        )
-        assert editor_settings == {LAST_OPENED_SCENE_GUID_KEY: identities[scene_path]}
+        assert not (project / "ProjectSettings" / "EditorSettings.json").exists()
         document = json.loads(scene_path.read_text(encoding="utf-8"))
         assert deserialize_scene_document_transactionally(scene, document, database)
         assert scene.find("Main Camera").get_component("Camera") is not None
@@ -74,7 +70,7 @@ def test_hub_generated_assets_are_readable_by_native_asset_database(engine, scen
         stack = scene.find("RenderStack").get_py_component(RenderStack)
         assert stack is not None
         assert len(stack.effect_slots) == 1
-        effect_group = project / "Assets" / "Rendering" / "Default Post Processing.effectgroup"
+        effect_group = project / "Assets" / "Settings" / "Default Post Processing.effectgroup"
         assert stack.effect_slots[0].effect_ref.guid == identities[effect_group]
         # A second scan must retain seeded GUIDs and accept native-written metadata.
         database.refresh()

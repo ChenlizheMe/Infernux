@@ -122,10 +122,13 @@ def test_sigint_finishes_current_frame_before_cleanup():
 
 
 @pytest.mark.parametrize("phase", ["startup", "loop", "normal"])
-def test_editor_entry_point_cleans_up_before_releasing_project_lock(monkeypatch, phase):
+def test_editor_entry_point_cleans_up_before_releasing_project_lock(monkeypatch, phase, tmp_path):
     import Infernux.engine as entry
     from Infernux.engine import bootstrap as bootstrap_module
     from Infernux.engine import library_sync
+    from Infernux.version import ENGINE_VERSION
+
+    (tmp_path / ".infernux-version").write_text(ENGINE_VERSION + "\n", encoding="utf-8")
 
     calls = []
 
@@ -155,9 +158,9 @@ def test_editor_entry_point_cleans_up_before_releasing_project_lock(monkeypatch,
     # bypass interpreter teardown (and pending output) with os._exit.
     monkeypatch.setattr(entry.os, "_exit", lambda *_: pytest.fail("forced process exit"))
     if phase == "normal":
-        entry.release_engine("project")
+        entry.release_engine(str(tmp_path))
     else:
         with pytest.raises(KeyboardInterrupt):
-            entry.release_engine("project")
+            entry.release_engine(str(tmp_path))
     assert calls == ["cleanup", "unlock"]
 

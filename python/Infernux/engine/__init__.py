@@ -186,6 +186,9 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
 
     Delegates to :class:`EditorBootstrap` for structured initialization.
     """
+    from .project_version import validate_project_engine_version
+
+    validate_project_engine_version(project_path)
     from .bootstrap import EditorBootstrap, _signal_progress
 
     from .library_sync import sync_resources

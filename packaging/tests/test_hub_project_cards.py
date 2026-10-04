@@ -3,12 +3,12 @@ from types import SimpleNamespace
 from PySide6.QtWidgets import QApplication, QLabel, QScrollArea
 
 from i18n import tr
-from launcher import GameEngineLauncher
+from viewmodel.control_pane_viewmodel import ControlPaneViewModel
 from ui_project_list import ProjectListPane
 import ui_project_list as ui_project_list_module
 
 
-def test_project_menu_migrates_the_clicked_project_not_previous_selection(tmp_path):
+def test_project_menu_does_not_offer_engine_version_migration(tmp_path):
     app = QApplication.instance() or QApplication([])
     records = [
         SimpleNamespace(project_id=str(index), name=f"Project {index}",
@@ -17,18 +17,10 @@ def test_project_menu_migrates_the_clicked_project_not_previous_selection(tmp_pa
     ]
     pane = ProjectListPane(SimpleNamespace(all_projects=lambda: records))
     pane.select_project("0")
-    requests = []
-    window = SimpleNamespace(
-        project_list=pane,
-        viewmodel=SimpleNamespace(
-            migrate_project=lambda parent: requests.append((pane.get_selected_project_id(), parent)),
-        ),
-    )
-    pane.migrate_requested.connect(lambda project_id: GameEngineLauncher._migrate_project_from_card(window, project_id))
     actions = pane.project_cards["1"]._actions_menu.actions()
-    migration = next(action for action in actions if action.text() == tr("Migrate Project"))
-    migration.trigger()
-    assert requests == [("1", window)]
+    assert all(action.text() != tr("Migrate Project") for action in actions)
+    assert not hasattr(ControlPaneViewModel, "migrate_project")
+    assert not hasattr(pane, "migrate_requested")
     pane.close()
 
 

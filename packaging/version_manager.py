@@ -418,10 +418,10 @@ class VersionManager:
         """
         vf = os.path.join(project_dir, ".infernux-version")
         if os.path.isfile(vf):
-            for line in open(vf, encoding="utf-8"):
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    return line
+            with open(vf, encoding="utf-8") as stream:
+                versions = [line.strip() for line in stream
+                            if line.strip() and not line.lstrip().startswith("#")]
+            return versions[0] if len(versions) == 1 else None
         return None
 
     @staticmethod
