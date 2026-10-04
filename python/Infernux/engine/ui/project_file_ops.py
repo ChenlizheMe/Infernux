@@ -544,7 +544,11 @@ def copy_path_as_new_asset(source: str, destination: str, asset_database=None):
 def _write_new_text_asset(path: str, content: str) -> tuple[bool, str]:
     try:
         from Infernux.core.document_store import write_document_text
-        write_document_text(path, content)
+        from Infernux.lib import DocumentFileState
+
+        # A checkout or another editor operation may create the file after the
+        # UI's existence check. Publish only while the target is still absent.
+        write_document_text(path, content, expected_file_state=DocumentFileState())
         return True, ""
     except (OSError, RuntimeError) as exc:
         return False, str(exc)
@@ -1235,10 +1239,8 @@ def rename_destination(old_path: str, new_name: str) -> str:
     """Return the canonical destination used by an editor rename intent."""
     if not old_path or not new_name:
         return ""
-    safe_name = "".join(
-        c for c in new_name if c.isalnum() or c in "._- "
-    ).strip()
-    if not safe_name:
+    safe_name = new_name.strip()
+    if _asset_name_error(safe_name):
         return ""
     if os.path.isfile(old_path):
         _, extension = os.path.splitext(old_path)

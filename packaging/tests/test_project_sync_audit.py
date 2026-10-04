@@ -126,6 +126,38 @@ def test_force_added_generated_state_is_rejected(tmp_path):
     assert any("old-project.zip: ignored/generated state" in error for error in report.errors)
 
 
+def test_missing_tracked_asset_and_sidecar_are_not_mistaken_for_a_complete_clone(tmp_path):
+    project = _tracked_project(tmp_path)
+    (project / "Assets/Main.scene").unlink()
+    (project / "Assets/Main.scene.meta").unlink()
+    report = _module().audit_project(project, require_tracked=True)
+    assert any("Main.scene: tracked project input is missing" in error for error in report.errors)
+    assert any("Main.scene.meta: tracked project input is missing" in error for error in report.errors)
+
+
+def test_case_only_index_collision_is_detected_even_on_windows(tmp_path):
+    project = _tracked_project(tmp_path)
+    blob = subprocess.run(["git", "-C", str(project), "hash-object", "Assets/Main.scene"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+    subprocess.run(["git", "-C", str(project), "update-index", "--add", "--cacheinfo",
+                    f"100644,{blob},Assets/main.scene"], check=True, capture_output=True)
+    report = _module().audit_project(project, require_tracked=True)
+    assert any("case-only Git index collision" in error for error in report.errors)
+
+
+def test_legacy_view_preferences_are_private_and_audit_is_read_only(tmp_path):
+    project = _tracked_project(tmp_path)
+    legacy = project / "ProjectSettings/EditorSettings.json"
+    legacy.write_text('{"last_scene_path": "C:/old/workstation/Main.scene"}\n', encoding="utf-8")
+    before = legacy.read_bytes()
+    report = _module().audit_project(project, require_tracked=True)
+    assert report.ok, report.errors
+    assert legacy.read_bytes() == before
+    subprocess.run(["git", "-C", str(project), "add", "-f", str(legacy)], check=True, capture_output=True)
+    assert any("EditorSettings.json: ignored/generated state" in error
+               for error in _module().audit_project(project, require_tracked=True).errors)
+
+
 @pytest.mark.parametrize("suffix", [".animclip3d", ".animclip2d", ".timelinefsm", ".inxdata", ".rendertexture", ".physicMaterial"])
 def test_audit_rejects_stale_structured_documents_and_absolute_paths(tmp_path, suffix):
     project = _project(tmp_path)

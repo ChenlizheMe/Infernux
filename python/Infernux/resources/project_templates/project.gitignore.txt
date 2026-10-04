@@ -23,6 +23,9 @@
 
 # Per-machine engine state and process locks
 /ProjectSettings/.infernux-engine-lock.json
+# Obsolete editor preferences are private and no longer read by the engine.
+/ProjectSettings/EditorSettings.json
+/ProjectSettings/GameView.ini
 /.infernux-backups/
 /.infernux-runtime-rollback-*/
 /pyrightconfig.json

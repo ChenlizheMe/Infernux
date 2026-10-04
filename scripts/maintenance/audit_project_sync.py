@@ -35,6 +35,8 @@ REQUIRED_IGNORE = (
     "/Export/",
     "/Exports/",
     "/ProjectSettings/.infernux-engine-lock.json",
+    "/ProjectSettings/EditorSettings.json",
+    "/ProjectSettings/GameView.ini",
     "/Packages/.staging/",
     "/Packages/.cache/",
     "/.infernux-backups/",
@@ -73,6 +75,19 @@ BINARY_SUFFIXES = {
 SKIP_META_NAMES = {".gitignore", ".gitattributes"}
 SKIP_DIRECTORIES = {"__pycache__", ".staging", ".cache", ".pytest_cache"}
 PATH_KEYS = {"file_path", "path", "path_hint", "scene_path", "asset_path"}
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
+def _audit_portable_path(relative: str, report: AuditReport) -> None:
+    for part in relative.split("/"):
+        if (re.search(r'[<>:"\\|?*\x00-\x1f]', part) or part.endswith((" ", ".")) or
+            part.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES):
+            report.errors.append(f"{relative}: filename is not portable between Windows and Unix")
+            return
 
 
 @dataclass
@@ -178,6 +193,7 @@ def _audit_asset_roots(project: Path, report: AuditReport) -> dict[str, str]:
             if path.name in SKIP_META_NAMES:
                 continue
             relative = _relative(project, path)
+            _audit_portable_path(relative, report)
             key = relative.casefold()
             if key in paths:
                 report.errors.append(f"{relative}: case-only path collision with {paths[key]}")
@@ -361,7 +377,7 @@ def audit_project(project_root: str | Path, *, require_tracked: bool = False) ->
     if not (project / "ProjectSettings" / "requirements.txt").is_file():
         report.errors.append("ProjectSettings/requirements.txt is required as authored project input")
     for path in sorted((project / "ProjectSettings").glob("*.json")):
-        if path.name.startswith(".") or path.name == "InxPlugins.json":
+        if path.name.startswith(".") or path.name in {"InxPlugins.json", "EditorSettings.json"}:
             continue
         document = _json(path, report)
         _walk_absolute_strings(document, _relative(project, path), report)
@@ -379,12 +395,25 @@ def _audit_git_index(project: Path, guids: dict[str, str], report: AuditReport) 
         report.errors.append("--tracked requires a Git checkout")
         return
     tracked = set(filter(None, completed.stdout.decode("utf-8").split("\0")))
+    authored_tracked = {
+        path for path in tracked
+        if path.startswith(("Assets/", "Packages/", "ProjectSettings/"))
+    }
+    portable_paths: dict[str, str] = {}
+    for path in sorted(authored_tracked):
+        _audit_portable_path(path, report)
+        key = path.casefold()
+        if key in portable_paths:
+            report.errors.append(f"{path}: case-only Git index collision with {portable_paths[key]}")
+        portable_paths[key] = path
+        if not (project / path).is_file():
+            report.errors.append(f"{path}: tracked project input is missing from the working tree")
     inputs = {
         *guids.values(), *(path + ".meta" for path in guids.values()),
         ".gitignore", ".gitattributes", ".infernux-version",
         "ProjectSettings/PythonRuntime.json", "ProjectSettings/requirements.txt",
         *(_relative(project, path) for path in (project / "ProjectSettings").glob("*.json")
-          if not path.name.startswith(".")),
+          if not path.name.startswith(".") and path.name != "EditorSettings.json"),
         *(_relative(project, path) for path in project.glob("*.ini")),
     }
     for path in sorted(inputs):
@@ -412,6 +441,7 @@ def _audit_git_index(project: Path, guids: dict[str, str], report: AuditReport) 
         "Packages/.cache/probe.bin", "Packages/.staging/probe.bin",
         ".infernux-backups/probe.zip", ".infernux-runtime-rollback-probe/probe.bin",
         ".vscode/settings.json", "pyrightconfig.json", "ProjectSettings/.infernux-engine-lock.json",
+        "ProjectSettings/EditorSettings.json", "ProjectSettings/GameView.ini",
     }
     probes = sorted(generated | inputs)
     ignored_probes = subprocess.run(

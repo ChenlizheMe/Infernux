@@ -165,3 +165,28 @@ def test_asset_creation_reports_failed_import_instead_of_success(tmp_path, monke
                         SimpleNamespace(guid="", error="Importer rejected document"))
     success, error = creator(str(tmp_path), "Rejected", object())
     assert not success and error == "Importer rejected document"
+
+
+@pytest.mark.parametrize("name", ["CON", "NUL.txt", "../Escape", "sub\\Escape", "bad:name", "Hidden."])
+def test_rename_rejects_nonportable_names_without_changing_the_source(tmp_path, name):
+    source = tmp_path / "Original.txt"
+    source.write_bytes(b"authored contents")
+    assert ops.rename_destination(str(source), name) == ""
+    assert ops.do_rename(str(source), name) is None
+    assert source.read_bytes() == b"authored contents"
+    assert list(tmp_path.iterdir()) == [source]
+
+
+def test_rename_preserves_valid_filename_punctuation(tmp_path):
+    source = tmp_path / "Original.mat"
+    source.write_bytes(b"authored contents")
+    assert ops.rename_destination(str(source), "船体 (红色) {01}") == str(tmp_path / "船体 (红色) {01}.mat")
+
+
+def test_creation_does_not_overwrite_a_file_published_after_the_ui_check(tmp_path):
+    source = tmp_path / "Shared.scene"
+    external = b'{"name":"Other author"}\n'
+    source.write_bytes(external)
+    success, error = ops._write_new_text_asset(str(source), '{"name":"New scene"}\n')
+    assert not success and "changed outside" in error
+    assert source.read_bytes() == external
