@@ -475,6 +475,41 @@ def test_broken_initial_topology_probe_raises_without_fabricating_a_model(monkey
     assert "No valid Inspector topology has been published" in stack.effect_compile_errors[-1]
 
 
+@pytest.mark.parametrize("has_previous_probe", [False, True])
+def test_unavailable_pipeline_remains_editable_without_instantiating_a_replacement(has_previous_probe):
+    stack = RenderStack()
+    if has_previous_probe:
+        build_renderstack_inspector_model(stack)
+    stack.set_pipeline("Missing Tutorial Pipeline")
+
+    model = build_renderstack_inspector_model(stack)
+    controls = model.sections[0].controls
+    choice = next(control for control in controls if isinstance(control, InspectorChoice))
+    parameters = next(control for control in controls if isinstance(control, InspectorSerializedTarget))
+    error = next(control for control in controls if isinstance(control, InspectorMessages))
+    assert choice.options()[choice.current_index()] == "Missing Tutorial Pipeline"
+    assert parameters.target() is None
+    assert "unavailable" in " ".join(error.messages())
+    assert stack.pipeline_class_name == "Missing Tutorial Pipeline"
+    assert stack._pipeline is None
+
+    choice.on_change(choice.options().index(DefaultForwardPipeline.name))
+    repaired = build_renderstack_inspector_model(stack)
+    repaired_parameters = next(control for control in repaired.sections[0].controls if isinstance(control, InspectorSerializedTarget))
+    assert isinstance(repaired_parameters.target(), DefaultForwardPipeline)
+    assert stack._topology_probe_error == ""
+
+
+def test_initial_topology_error_is_visible_in_inspector_without_fabricating_stages(monkeypatch):
+    stack = RenderStack()
+    monkeypatch.setattr(stack.pipeline, "define_topology", lambda _graph: (_ for _ in ()).throw(ValueError("bad initial topology")))
+    model = build_renderstack_inspector_model(stack)
+    assert not any(isinstance(control, InspectorList) for control in _topology_controls(model))
+    error = next(control for control in model.sections[0].controls if isinstance(control, InspectorMessages))
+    assert "bad initial topology" in " ".join(error.messages())
+    assert stack._last_valid_topology_probe is None
+
+
 def test_rejected_graph_rebuild_keeps_rendering_the_last_valid_graph(monkeypatch):
     stack = RenderStack()
     previous_graph = object()

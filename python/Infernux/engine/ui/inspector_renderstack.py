@@ -27,7 +27,13 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
     from Infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
 
     default_pipeline_name = DefaultForwardPipeline.name
-    topology = stack._build_full_topology_probe()
+    try:
+        topology = stack._build_full_topology_probe()
+    except Exception:
+        # The probe owns validation and its visible diagnostic. A component
+        # with no accepted topology still needs a picker so the author can
+        # repair it; do not fabricate a graph or instantiate it again below.
+        topology = None
     catalog_signature = tuple(getattr(stack, "_pipeline_catalog_signature", ()))
     if not catalog_signature:
         catalog_signature = tuple(sorted(stack.discover_pipelines()))
@@ -35,13 +41,17 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
     pipeline_names = (default_pipeline_name,) + tuple(
         name for name in catalog_signature if name != default_pipeline_name
     )
+    if stack.pipeline_class_name not in pipeline_names:
+        pipeline_names = (stack.pipeline_class_name,) + pipeline_names
+    pipeline = stack._pipeline
     stage_signature = tuple(
         (stage.stable_id, stage.display_name, stage.scope.value)
-        for stage in topology.effect_stages
+        for stage in (topology.effect_stages if topology is not None else ())
     )
     cache_key = (
-        type(stack.pipeline).__module__,
-        type(stack.pipeline).__qualname__,
+        stack.pipeline_class_name,
+        id(pipeline),
+        stack._topology_probe_error,
         stage_signature,
         pipeline_names,
     )
@@ -88,8 +98,8 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
         )
 
     topology_controls = []
-    stage_by_id = {stage.stable_id: stage for stage in topology.effect_stages}
-    for kind, label in topology.topology_sequence:
+    stage_by_id = {stage.stable_id: stage for stage in (topology.effect_stages if topology is not None else ())}
+    for kind, label in (topology.topology_sequence if topology is not None else ()):
         if kind != "effect_stage":
             # Passes, layers, composites and injection points are compiler
             # topology. RenderStack authors operate only on named mount points.
@@ -196,10 +206,16 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
                     ),
                     InspectorSerializedTarget(
                         key="pipeline_parameters",
-                        target=lambda: stack.pipeline,
+                        target=lambda: stack._pipeline,
                         owner=stack,
                         title=t("renderstack.pipeline_settings"),
                         on_change=pipeline_parameter_changed,
+                    ),
+                    InspectorMessages(
+                        key="pipeline_error",
+                        title=t("renderstack.pipeline"),
+                        messages=lambda: (stack._topology_probe_error,) if stack._topology_probe_error else (),
+                        warning=True,
                     ),
                 ),
             ),
