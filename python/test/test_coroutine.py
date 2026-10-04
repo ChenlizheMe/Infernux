@@ -44,6 +44,16 @@ class TestWaitForSeconds:
 
 
 class TestWaitForSecondsRealtime:
+    def test_system_clock_adjustments_do_not_change_wait_duration(self, monkeypatch):
+        clocks = {"system": 1000.0, "monotonic": 20.0}
+        monkeypatch.setattr(stdlib_time, "time", lambda: clocks["system"])
+        monkeypatch.setattr(stdlib_time, "monotonic", lambda: clocks["monotonic"])
+        wait = WaitForSecondsRealtime(0.25)
+        clocks.update(system=2000.0, monotonic=20.1)
+        assert not wait._is_ready()
+        clocks.update(system=500.0, monotonic=20.3)
+        assert wait._is_ready()
+
     def test_ready_after_duration(self):
         w = WaitForSecondsRealtime(0.0)  # 0 seconds = immediate
         assert w._is_ready() is True

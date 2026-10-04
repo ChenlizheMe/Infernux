@@ -86,7 +86,7 @@
         <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"3. two more update frames passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
         <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"4. 0.5 unscaled seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"4. 0.5 scaled seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
         <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSecondsRealtime</span><span class="p">(</span><span class="mf">0.25</span><span class="p">)</span>
         <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"5. 0.25 real seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
@@ -164,7 +164,7 @@
 </tr>
 <tr>
 <td><code>inx.WaitForSecondsRealtime(seconds)</code></td>
-<td>Resume on the first update check at or after its wall-clock target.</td>
+<td>Resume on the first update check at or after its monotonic-clock target.</td>
 <td><code>update</code></td>
 </tr>
 <tr>
@@ -194,12 +194,12 @@
 </tr>
 <tr>
 <td>any unsupported value</td>
-<td>Current runtime treats it like a one-update-frame wait.</td>
+<td>Raises <code>TypeError</code> at the next update check, stops the coroutine, and closes its generator.</td>
 <td><code>update</code></td>
 </tr>
 </tbody>
 </table>
-<p><code>WaitForSeconds</code> accumulates the frame delta handed to the coroutine scheduler. The scheduler forwards the same raw, unscaled delta that <code>update()</code> receives, so <code>Time.time_scale</code> does not slow this wait. <code>WaitForSecondsRealtime</code> uses wall-clock time, though it can only resume when an update check occurs. Construct realtime waits immediately before yielding them because their target time is set in the constructor.</p>
+<p><code>WaitForSeconds</code> accumulates the scaled game delta handed to the coroutine scheduler, the same delta that <code>update()</code> receives. <code>Time.time_scale</code> changes its speed, and zero pauses this wait. <code>WaitForSecondsRealtime</code> uses monotonic elapsed time, unaffected by the game time scale or system-clock corrections, though it can only resume when an update check occurs. Construct realtime waits immediately before yielding them because their target time is set in the constructor.</p>
 <p><code>WaitForEndOfFrame</code> means the coroutine scheduler's late-update phase. It does not promise that rendering, presentation, or a screenshot has completed.</p>
 <p>Zero or negative values are accepted by the two seconds-based instructions and become ready at the next update check. Frame-based instructions reject values below 1. For clear intent, use <code>yield None</code> when you want one frame.</p>
 <p>Wait instructions carry mutable elapsed, target, or remaining state. Create a fresh <code>WaitForSeconds</code>, <code>WaitForSecondsRealtime</code>, <code>WaitForFrames</code>, or <code>WaitForEndOfFrame</code> for each wait instead of caching one instance across coroutines.</p>
@@ -232,7 +232,7 @@
 <span class="k">yield</span> <span class="n">child</span>
 </code></pre></div>
 
-<p>Yielding <code>self.child_sequence()</code> directly produces an unsupported generator value. The current fallback waits one update frame and never schedules that generator. Always use <code>start_coroutine()</code> when the child needs independent scheduling and a handle.</p>
+<p>Yielding <code>self.child_sequence()</code> directly produces an unsupported generator value. The next update check raises <code>TypeError</code>, stops the parent, and never schedules that generator. Always use <code>start_coroutine()</code> when the child needs independent scheduling and a handle.</p>
 <p>Stopping a generator marks its handle finished and calls <code>close()</code>. Put essential generator-local cleanup in <code>finally</code>:</p>
 <div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">temporary_state</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">True</span>
@@ -242,7 +242,7 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">False</span>
 </code></pre></div>
 
-<p>The public handle also exposes <code>creation_epoch</code>, <code>creation_epoch_id</code>, and <code>is_legacy</code> for runtime-reload diagnostics. Gameplay flow normally needs only <code>is_finished</code>.</p>
+<p>The public handle also exposes <code>creation_epoch</code>, <code>creation_epoch_id</code>, and <code>is_stale_epoch</code> for runtime-reload diagnostics. Gameplay flow normally needs only <code>is_finished</code>.</p>
 <p>Stopping only the parent does not automatically stop helper coroutines that were started separately. Use <code>stop_all_coroutines()</code> when the whole component-owned sequence should end together, or retain and stop each helper handle explicitly.</p>
 <h2 id="lifetime">Component lifetime rules</h2>
 <ul>
@@ -256,7 +256,7 @@
 <h2 id="verify">Verify the result</h2>
 <ol>
 <li>Enter Play mode and watch Console. Message 1 should appear immediately during <code>start()</code>; messages 2–10 should remain in numeric order.</li>
-<li>Confirm that messages 2 and 3 are separated by update frames, then observe the unscaled frame-time and real-time delays.</li>
+<li>Confirm that messages 2 and 3 are separated by update frames, then observe the scaled game-time and real-time delays.</li>
 <li>Message 6 should follow a fixed-update pass. Message 7 should appear after two late-update passes.</li>
 <li>The gate and busy helpers should allow messages 8 and 9 to appear without input.</li>
 <li><code>child started immediately</code> should appear before its delay, followed by <code>child completed</code>, then parent message 10 on a later update check.</li>
@@ -268,7 +268,7 @@
 <li><strong>Passing the method instead of its generator</strong>: call <code>self.start_coroutine(self.run_sequence())</code>, including the final parentheses.</li>
 <li><strong>Using <code>time.sleep()</code></strong>: it blocks the thread and freezes other engine work. Yield <code>inx.WaitForSecondsRealtime()</code> for a wall-clock delay.</li>
 <li><strong>Expecting an exact timestamp</strong>: waits resume on scheduler checks, so a duration is a minimum and can overshoot by part of a frame.</li>
-<li><strong>Expecting <code>WaitForSeconds</code> to respect pause</strong>: the current scheduler feeds the raw update delta, so <code>time_scale</code> does not change this wait. Use realtime waiting for wall-clock delays, and accumulate <code>Time.delta_time</code> manually when a sequence must follow the game clock.</li>
+<li><strong>Expecting <code>WaitForSeconds</code> to continue during a game-clock pause</strong>: <code>time_scale = 0</code> pauses this wait. Use <code>WaitForSecondsRealtime</code> when a sequence must continue independently of the game clock. Pausing the Editor itself suspends update checks for both waits.</li>
 <li><strong>Treating <code>WaitForEndOfFrame</code> as post-render capture</strong>: it maps to late update in the current scheduler.</li>
 <li><strong>Reusing one wait instance</strong>: elapsed and remaining fields belong to that object. Construct a new instruction at each <code>yield</code>.</li>
 <li><strong>Yielding a generator directly</strong>: start it first and yield its <code>Coroutine</code> handle.</li>
@@ -332,7 +332,7 @@
         <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"3. two more update frames passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
         <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSeconds</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
-        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"4. 0.5 unscaled seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
+        <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"4. 0.5 scaled seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 
         <span class="k">yield</span> <span class="n">inx</span><span class="o">.</span><span class="n">WaitForSecondsRealtime</span><span class="p">(</span><span class="mf">0.25</span><span class="p">)</span>
         <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"5. 0.25 real seconds passed"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
@@ -410,7 +410,7 @@
 </tr>
 <tr>
 <td><code>inx.WaitForSecondsRealtime(seconds)</code></td>
-<td>墙钟时间达到目标后，在首次更新检查时恢复。</td>
+<td>单调时钟达到目标后，在首次更新检查时恢复。</td>
 <td><code>update</code></td>
 </tr>
 <tr>
@@ -440,12 +440,12 @@
 </tr>
 <tr>
 <td>任意不支持的值</td>
-<td>当前运行时把它当作等待一个更新帧。</td>
+<td>下一次更新检查时报 <code>TypeError</code>，停止协程并关闭它的生成器。</td>
 <td><code>update</code></td>
 </tr>
 </tbody>
 </table>
-<p><code>WaitForSeconds</code> 累加协程调度器收到的帧间隔。调度器把 <code>update()</code> 收到的同一份原始未缩放 delta 转给协程，因此 <code>Time.time_scale</code> 不会减慢这个等待。<code>WaitForSecondsRealtime</code> 使用墙钟时间，但仍需等到更新检查才能恢复。实时等待的目标时间在构造函数中确定，因此应在 <code>yield</code> 前即时创建。</p>
+<p><code>WaitForSeconds</code> 累加协程调度器收到的缩放后游戏 delta，与 <code>update()</code> 收到的 delta 相同。<code>Time.time_scale</code> 会改变等待速度，设为零时暂停该等待。<code>WaitForSecondsRealtime</code> 使用单调时钟计算实际经过的时间，不受游戏时间缩放或系统校时影响，但仍需等到更新检查才能恢复。实时等待的目标时间在构造函数中确定，因此应在 <code>yield</code> 前即时创建。</p>
 <p><code>WaitForEndOfFrame</code> 对应当前协程调度器的 <code>late_update</code> 阶段，不承诺渲染、画面呈现或截图已经完成。</p>
 <p>两种秒数等待允许 0 和负数，并会在下一次更新检查时就绪。帧数等待会拒绝小于 1 的值。需要明确等待一帧时，使用 <code>yield None</code>。</p>
 <p>等待指令会保存累计时间、目标时间或剩余次数。每次等待都应创建新的 <code>WaitForSeconds</code>、<code>WaitForSecondsRealtime</code>、<code>WaitForFrames</code> 或 <code>WaitForEndOfFrame</code>，避免跨协程缓存同一实例。</p>
@@ -478,7 +478,7 @@
 <span class="k">yield</span> <span class="n">child</span>
 </code></pre></div>
 
-<p>直接 <code>yield self.child_sequence()</code> 会产生调度器不支持的生成器值。当前回退行为只等待一个更新帧，该生成器不会被调度。需要独立调度和句柄时，必须调用 <code>start_coroutine()</code>。</p>
+<p>直接 <code>yield self.child_sequence()</code> 会产生调度器不支持的生成器值。下一次更新检查会报 <code>TypeError</code> 并停止父流程，该生成器不会被调度。需要独立调度和句柄时，必须调用 <code>start_coroutine()</code>。</p>
 <p>停止操作会把句柄标记为完成，并调用生成器的 <code>close()</code>。生成器内部的重要清理可放在 <code>finally</code> 中：</p>
 <div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">temporary_state</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">True</span>
@@ -488,7 +488,7 @@
         <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">False</span>
 </code></pre></div>
 
-<p>公开句柄还提供 <code>creation_epoch</code>、<code>creation_epoch_id</code> 与 <code>is_legacy</code>，供运行时重载诊断使用。一般游戏流程只需检查 <code>is_finished</code>。</p>
+<p>公开句柄还提供 <code>creation_epoch</code>、<code>creation_epoch_id</code> 与 <code>is_stale_epoch</code>，供运行时重载诊断使用。一般游戏流程只需检查 <code>is_finished</code>。</p>
 <p>只停止父流程不会自动停止那些单独启动的辅助协程。整个组件流程需要一起结束时，可调用 <code>stop_all_coroutines()</code>；也可以保存每个辅助句柄并逐一停止。</p>
 <h2 id="zh-lifetime">组件生命周期规则</h2>
 <ul>
@@ -502,7 +502,7 @@
 <h2 id="zh-verify">验证结果</h2>
 <ol>
 <li>进入 Play 模式并观察 Console。消息 1 应在 <code>start()</code> 内立即出现，消息 2 到 10 应保持数字顺序。</li>
-<li>确认消息 2 与消息 3 之间隔着更新帧，再观察未缩放帧时间与真实时间延时。</li>
+<li>确认消息 2 与消息 3 之间隔着更新帧，再观察缩放后的游戏时间与真实时间延时。</li>
 <li>消息 6 应出现在一次固定更新之后。消息 7 应在两次后期更新之后出现。</li>
 <li>gate 与 busy 辅助流程应在没有输入的情况下让消息 8 和 9 出现。</li>
 <li><code>child started immediately</code> 应先出现，延时后出现 <code>child completed</code>，父流程消息 10 再于后续更新检查中出现。</li>
@@ -514,7 +514,7 @@
 <li><strong>传入方法本身</strong>：应写成 <code>self.start_coroutine(self.run_sequence())</code>，末尾括号不能省略。</li>
 <li><strong>使用 <code>time.sleep()</code></strong>：它会阻塞线程并冻结其他引擎工作。墙钟延时请 <code>yield inx.WaitForSecondsRealtime()</code>。</li>
 <li><strong>期待精确时间点</strong>：等待只能在调度检查时恢复，所以指定时长是下限，可能多出一小段帧时间。</li>
-<li><strong>期待 <code>WaitForSeconds</code> 响应暂停</strong>：当前调度器传入的是原始更新 delta，<code>time_scale</code> 不会改变这个等待。墙钟延时用实时等待；流程必须跟随游戏时钟时，请自行累计 <code>Time.delta_time</code>。</li>
+<li><strong>期待 <code>WaitForSeconds</code> 在游戏时钟暂停时继续</strong>：<code>time_scale = 0</code> 会暂停该等待。需要独立于游戏时钟继续时，请用 <code>WaitForSecondsRealtime</code>。编辑器自身暂停时，两种等待的更新检查都会停止。</li>
 <li><strong>把 <code>WaitForEndOfFrame</code> 当成渲染后截图点</strong>：当前调度器把它映射到后期更新。</li>
 <li><strong>复用同一个等待实例</strong>：累计值和剩余次数保存在对象中。每个 <code>yield</code> 都应构造新指令。</li>
 <li><strong>直接 <code>yield</code> 生成器</strong>：先启动生成器，再 <code>yield</code> 它的 <code>Coroutine</code> 句柄。</li>

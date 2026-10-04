@@ -21,8 +21,8 @@ Yield instructions
 
 ==========================  ====================================================
 ``yield None``              Wait one **update** frame (same as bare ``yield``).
-``yield WaitForSeconds(n)`` Wait *n* seconds of accumulated **unscaled** frame time.
-``yield WaitForSecondsRealtime(n)``  Wait *n* seconds of wall-clock time.
+``yield WaitForSeconds(n)`` Wait *n* seconds of accumulated **scaled** game time.
+``yield WaitForSecondsRealtime(n)``  Wait *n* seconds of monotonic elapsed time.
 ``yield WaitForEndOfFrame(n)``       Resume after *n* frame-end phases (default 1).
 ``yield WaitForFrames(n)``           Resume after *n* ``update`` frames.
 ``yield WaitForFixedUpdate()``       Resume at the next ``fixed_update()`` step.
@@ -44,10 +44,10 @@ from typing import Any, Callable, Generator, Optional
 # ======================================================================
 
 class WaitForSeconds:
-    """Suspend for *seconds* of accumulated unscaled frame time.
+    """Suspend for *seconds* of accumulated scaled game time.
 
-    The component scheduler supplies the same raw delta as ``update()``;
-    ``Time.time_scale`` does not alter this wait.
+    The component scheduler supplies the same scaled delta as ``update()``;
+    ``Time.time_scale`` changes the wait speed, and zero pauses it.
     """
     __slots__ = ("duration", "_elapsed")
 
@@ -65,15 +65,15 @@ class WaitForSeconds:
 
 
 class WaitForSecondsRealtime:
-    """Suspend the coroutine for *seconds* of **wall-clock** time."""
+    """Suspend for real elapsed seconds, independent of system-clock changes."""
     __slots__ = ("duration", "_target_time")
 
     def __init__(self, seconds: float):
         self.duration: float = float(seconds)
-        self._target_time: float = _time.time() + self.duration
+        self._target_time: float = _time.monotonic() + self.duration
 
     def _is_ready(self) -> bool:
-        return _time.time() >= self._target_time
+        return _time.monotonic() >= self._target_time
 
     def __repr__(self) -> str:
         return f"WaitForSecondsRealtime({self.duration})"
