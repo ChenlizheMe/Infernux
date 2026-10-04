@@ -527,7 +527,7 @@ def test_model_material_remap_follows_source_not_slot_and_preserves_overrides(im
     np.testing.assert_allclose(color(restored, 0), [0, 1, 0, 1])
 
 
-@pytest.mark.parametrize("failure", ["missing_source", "ambiguous_source", "missing_guid", "wrong_type"])
+@pytest.mark.parametrize("failure", ["missing_source", "ambiguous_source", "missing_guid", "wrong_type", "self_dependency"])
 def test_invalid_model_remap_does_not_publish_settings_or_geometry(imported_model, failure):
     from Infernux.core.asset_types import read_mesh_import_settings
     from Infernux.lib import AssetRegistry
@@ -543,14 +543,28 @@ def test_invalid_model_remap_does_not_publish_settings_or_geometry(imported_mode
     original_generation = mesh.generation
     settings = read_mesh_import_settings(str(source))
     key = "material/Missing" if failure == "missing_source" else "material/Green"
-    guid = ("0" * 32 if failure == "missing_guid" else mesh.guid if failure == "wrong_type" else imported.guid)
+    guid = "0" * 32 if failure == "missing_guid" else imported.guid
+    if failure == "wrong_type":
+        # A separate Mesh tests the type check without also forming a cycle.
+        other_model = source.with_name("NotAMaterial.gltf")
+        other_model.write_bytes(source.read_bytes())
+        wrong_type = AssetManager.import_asset(str(other_model), database=database)
+        assert wrong_type, wrong_type.error
+        guid = wrong_type.guid
+    elif failure == "self_dependency":
+        guid = mesh.guid
     settings.material_remaps[key] = guid
     if failure == "ambiguous_source":
         document["materials"][0]["name"] = "Green"
         source.write_text(json.dumps(document), encoding="utf-8")
     result = AssetManager.reimport_asset(str(source), import_settings=settings.to_dict())
     assert not result
-    assert ("missing or ambiguous" if failure.endswith("source") else "registered Material") in result.error
+    expected_error = (
+        "missing or ambiguous" if failure.endswith("source")
+        else "self-dependency" if failure == "self_dependency"
+        else "registered Material"
+    )
+    assert expected_error in result.error
     assert Path(str(source) + ".meta").read_bytes() == original_meta
     assert renderer.serialize_document() == original_scene
     assert mesh.generation == original_generation

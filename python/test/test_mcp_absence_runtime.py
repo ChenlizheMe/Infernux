@@ -28,6 +28,11 @@ def _prepare_project(project: Path) -> None:
         "MCP is optional", encoding="utf-8"
     )
     (project / "ProjectSettings").mkdir()
+    shutil.copyfile(
+        Path(__file__).parents[2]
+        / "python/Infernux/resources/project_templates/requirements.txt",
+        project / "ProjectSettings/requirements.txt",
+    )
     (project / "ProjectSettings/BuildSettings.json").write_text(
         json.dumps({"scene_guids": []}), encoding="utf-8"
     )
