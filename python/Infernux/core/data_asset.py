@@ -191,7 +191,7 @@ class DataAsset(SerializableObject):
         value._bind_asset(resolved, guid)
         return value
 
-    def save_to(self, path: str, *, database: Any = None) -> str:
+    def save_to(self, path: str, *, database: Any = None, expected_file_state=None) -> str:
         from Infernux.application import Application
         from Infernux.core.assets import AssetManager
         from Infernux.core.document_store import write_document_text
@@ -208,7 +208,7 @@ class DataAsset(SerializableObject):
         content = json.dumps(
             self.serialize_document(), ensure_ascii=False, indent=2
         ) + "\n"
-        write_document_text(resolved, content)
+        write_document_text(resolved, content, expected_file_state=expected_file_state)
 
         guid = str(database.get_guid_from_path(resolved) or "")
         result = (

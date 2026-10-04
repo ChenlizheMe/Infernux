@@ -604,7 +604,8 @@ def _capture_nested_instances(root):
     return captured
 
 
-def save_prefab_document(prefab_data: dict, file_path: str, asset_database=None) -> bool:
+def save_prefab_document(prefab_data: dict, file_path: str, asset_database=None,
+                         *, expected_file_state=None) -> bool:
     """Durably publish an already captured strict prefab document."""
     if not file_path.lower().endswith(PREFAB_EXTENSION):
         file_path += PREFAB_EXTENSION
@@ -617,11 +618,11 @@ def save_prefab_document(prefab_data: dict, file_path: str, asset_database=None)
 
     try:
         os.makedirs(os.path.dirname(resolved_path(file_path)), exist_ok=True)
-        from Infernux.core.document_store import DocumentStore
+        from Infernux.core.document_store import write_document_text
         payload = {**prefab_data, "next_local_id": _prefab_next_local_id(prefab_data),
                    "next_component_id": _prefab_next_component_id(prefab_data)}
         content = json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
-        DocumentStore.instance().write_and_wait(file_path, content)
+        write_document_text(file_path, content, expected_file_state=expected_file_state)
     except (OSError, RuntimeError) as exc:
         Debug.log_error(f"Failed to write prefab file: {exc}")
         return False
@@ -645,12 +646,14 @@ def save_prefab_document(prefab_data: dict, file_path: str, asset_database=None)
 
 
 def save_prefab(game_object, file_path: str, asset_database=None,
-               source_canvas_name: str = "", root_document_template: dict = None) -> bool:
+               source_canvas_name: str = "", root_document_template: dict = None,
+               *, expected_file_state=None) -> bool:
     """Serialize and durably publish a GameObject hierarchy as a prefab."""
     if not file_path.lower().endswith(PREFAB_EXTENSION):
         file_path += PREFAB_EXTENSION
     try:
-        previous = _read_prefab_document(file_path) if os.path.isfile(file_path) else None
+        existing_save = expected_file_state is None or expected_file_state.exists
+        previous = _read_prefab_document(file_path) if existing_save and os.path.isfile(file_path) else None
         prefab_data = serialize_prefab_document(
             game_object,
             source_canvas_name=source_canvas_name,
@@ -664,7 +667,9 @@ def save_prefab(game_object, file_path: str, asset_database=None,
     except Exception as exc:
         Debug.log_error(f"Failed to serialize GameObject for prefab: {exc}")
         return False
-    return save_prefab_document(prefab_data, file_path, asset_database)
+    return save_prefab_document(
+        prefab_data, file_path, asset_database, expected_file_state=expected_file_state,
+    )
 
 
 def instantiate_prefab(file_path: str = None, guid: str = None,

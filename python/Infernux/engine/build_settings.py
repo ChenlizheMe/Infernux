@@ -35,18 +35,18 @@ def _json_copy(value: Any) -> Any:
 
 
 def normalize_build_settings(value: Any) -> dict[str, Any]:
-    """Validate and project the current BuildSettings schema.
+    """Validate the current BuildSettings schema.
 
     This function intentionally has no Editor/document imports: scene loading
     and Player bootstrap use it from the runtime package directly.
     """
     if not isinstance(value, dict):
         raise TypeError("build settings must be a JSON object")
-    value = copy.deepcopy(value)
+    unknown = value.keys() - BUILD_SETTINGS_DEFAULTS.keys()
+    if unknown:
+        raise ValueError(f"build settings contain unknown fields: {sorted(unknown)}")
     result = copy.deepcopy(BUILD_SETTINGS_DEFAULTS)
-    result.update(copy.deepcopy({
-        key: item for key, item in value.items() if key in BUILD_SETTINGS_DEFAULTS
-    }))
+    result.update(copy.deepcopy(value))
     if not isinstance(result["scene_guids"], list) or not all(
         isinstance(item, str) and item for item in result["scene_guids"]
     ):

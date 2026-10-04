@@ -847,7 +847,10 @@ def create_data_asset(current_path: str, asset_name: str, type_id: str, asset_da
         # Preloads can retain a value from before a script type publication.
         # Materialize its document with the current authoritative schema.
         initial = asset_type() if value is None else asset_type.from_document(value.serialize_document())
-        initial.save_to(file_path, database=asset_database)
+        from Infernux.lib import DocumentFileState
+        initial.save_to(
+            file_path, database=asset_database, expected_file_state=DocumentFileState(),
+        )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return False, str(exc)
     return True, ""
@@ -874,8 +877,9 @@ def create_prefab_from_gameobject(game_object, current_path: str,
         return False, error
     file_path = os.path.join(current_path, prefab_name + PREFAB_EXTENSION)
 
+    from Infernux.lib import DocumentFileState
     if save_prefab(game_object, file_path, asset_database=asset_database,
-                   source_canvas_name=source_canvas_name):
+                   source_canvas_name=source_canvas_name, expected_file_state=DocumentFileState()):
         if not _link_created_prefab_source(game_object, file_path, asset_database):
             return False, "Prefab asset was saved, but its source hierarchy could not be linked"
         return True, file_path
@@ -1011,7 +1015,8 @@ def create_particlegraph(current_path: str, graph_name: str, asset_database=None
     from Infernux.particle.asset import ParticleGraphAsset
 
     try:
-        ParticleGraphAsset(name=graph_name).save(file_path)
+        from Infernux.lib import DocumentFileState
+        ParticleGraphAsset(name=graph_name).save(file_path, expected_file_state=DocumentFileState())
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return False, str(exc)
 

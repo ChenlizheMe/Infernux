@@ -11,6 +11,20 @@ from Infernux.engine.build import BuildTarget, PlatformCapabilities
 from Infernux.engine.ui.build_settings_panel import BuildSettingsPanel
 
 
+@pytest.mark.parametrize("field", ["scenes", "scene_paths", "icon_path", "scene_gudis"])
+def test_build_rejects_unknown_settings_without_rewriting_the_shared_document(tmp_path, field):
+    import json
+    from Infernux.engine.build_settings import load_build_settings_for_build
+
+    path = tmp_path / "ProjectSettings/BuildSettings.json"
+    path.parent.mkdir()
+    original = (json.dumps({field: []}) + "\n").encode()
+    path.write_bytes(original)
+    with pytest.raises(ValueError, match=f"unknown fields.*{field}"):
+        load_build_settings_for_build(str(tmp_path))
+    assert path.read_bytes() == original
+
+
 def _host_build_target() -> BuildTarget:
     platform_name = "windows" if sys.platform == "win32" else "linux"
     return BuildTarget(

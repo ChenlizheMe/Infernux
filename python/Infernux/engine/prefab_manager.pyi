@@ -13,12 +13,23 @@ from __future__ import annotations
 from typing import Any, Optional
 
 
+def save_prefab_document(
+    prefab_data: dict,
+    file_path: str,
+    asset_database: Any = None,
+    *,
+    expected_file_state: Any = None,
+) -> bool: ...
+
+
 def save_prefab(
     game_object: Any,
     file_path: str,
     asset_database: Any = None,
     source_canvas_name: str = "",
     root_document_template: Optional[dict] = None,
+    *,
+    expected_file_state: Any = None,
 ) -> bool:
     """Serialize *game_object* and its children as a prefab file.
 

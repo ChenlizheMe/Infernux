@@ -1317,12 +1317,12 @@ class ParticleGraphAsset:
     def canonical_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
-    def save(self, path: str) -> None:
+    def save(self, path: str, *, expected_file_state=None) -> None:
         if not path:
             raise ParticleGraphSchemaError("particle graph save path cannot be empty")
         from .artifact import ParticleArtifactRegistry
 
-        ParticleArtifactRegistry.save_graph_asset(self, path)
+        ParticleArtifactRegistry.save_graph_asset(self, path, expected_file_state=expected_file_state)
 
     def semantic_hash(self) -> str:
         value = self.to_dict()

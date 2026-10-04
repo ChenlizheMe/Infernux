@@ -190,3 +190,100 @@ def test_creation_does_not_overwrite_a_file_published_after_the_ui_check(tmp_pat
     success, error = ops._write_new_text_asset(str(source), '{"name":"New scene"}\n')
     assert not success and "changed outside" in error
     assert source.read_bytes() == external
+
+
+@pytest.mark.parametrize("kind,extension", [
+    ("data", ".inxdata"), ("particle", ".particlegraph"), ("prefab", ".prefab"),
+])
+def test_typed_creation_preserves_an_asset_arriving_during_save(
+    asset_directory, scene, monkeypatch, kind, extension,
+):
+    from Infernux.core import DataAsset
+    from Infernux.core import document_store
+    from Infernux.particle.artifact import ParticleArtifactRegistry
+
+    class SharedCreationData(DataAsset):
+        __serialized_type_id__ = "tests.creation.shared_data"
+        health: int = 100
+
+    database, directory = asset_directory
+    path = directory / ("Shared" + extension)
+    sidecar = path.with_name(path.name + ".meta")
+    external = b'{"authored":"another author"}\n'
+    external_meta = b'{"authored":"their identity"}\n'
+    original_write = document_store.write_document_text
+    attempts = []
+
+    def concurrent_write(target, content, **options):
+        assert Path(target) == path
+        path.write_bytes(external)
+        sidecar.write_bytes(external_meta)
+        attempts.append(target)
+        return original_write(target, content, **options)
+
+    monkeypatch.setattr(document_store, "write_document_text", concurrent_write)
+    if kind == "data":
+        success, error = ops.create_data_asset(
+            str(directory), "Shared", SharedCreationData.__serialized_type_id__, database,
+        )
+    elif kind == "particle":
+        success, error = ops.create_particlegraph(str(directory), "Shared", database)
+    else:
+        game_object = scene.create_game_object("Shared")
+        success, error = ops.create_prefab_from_gameobject(game_object, str(directory), database)
+        assert not game_object.is_prefab_instance
+
+    assert attempts, error
+    assert not success
+    assert path.read_bytes() == external
+    assert sidecar.read_bytes() == external_meta
+    assert not database.get_guid_from_path(str(path))
+    if kind == "particle":
+        assert ParticleArtifactRegistry.get(str(path)) is None
+
+
+@pytest.mark.parametrize("kind,extension", [
+    ("data", ".inxdata"), ("particle", ".particlegraph"), ("prefab", ".prefab"),
+])
+def test_created_typed_asset_is_current_and_preserves_shared_identity(
+    asset_directory, scene, kind, extension,
+):
+    from Infernux.core import DataAsset
+    from Infernux.particle.asset import ParticleGraphAsset
+    from Infernux.engine.prefab_manager import _read_prefab_document
+
+    class CurrentCreationData(DataAsset):
+        __serialized_type_id__ = "tests.creation.current_data"
+        health: int = 100
+
+    database, directory = asset_directory
+    path = directory / ("新资产" + extension)
+    if kind == "data":
+        success, error = ops.create_data_asset(
+            str(directory), "新资产", CurrentCreationData.__serialized_type_id__, database,
+        )
+    elif kind == "particle":
+        success, error = ops.create_particlegraph(str(directory), "新资产", database)
+    else:
+        game_object = scene.create_game_object("新资产")
+        success, error = ops.create_prefab_from_gameobject(game_object, str(directory), database)
+        assert game_object.is_prefab_instance
+    assert success, error
+
+    original = path.read_bytes()
+    document = json.loads(original)
+    if kind == "data":
+        assert DataAsset.from_document(document).serialize_document() == document
+    elif kind == "particle":
+        assert ParticleGraphAsset.from_dict(document).to_dict() == document
+    else:
+        assert _read_prefab_document(str(path)) == document
+    assert b"\r" not in original and original.endswith(b"\n")
+    guid = database.get_guid_from_path(str(path))
+    assert len(guid) == 32
+    meta_path = path.with_name(path.name + ".meta")
+    metadata = meta_path.read_bytes()
+    database.refresh()
+    assert database.get_guid_from_path(str(path)) == guid
+    assert path.read_bytes() == original
+    assert meta_path.read_bytes() == metadata

@@ -472,13 +472,16 @@ class ParticleArtifactRegistry:
         path: str,
         *,
         guid: str = "",
+        expected_file_state=None,
     ) -> ParticleArtifact:
         """Compile, atomically save, and publish one exact graph snapshot."""
         prepared = cls.prepare_graph_asset(asset, path, guid=guid)
         from Infernux.core.document_store import write_document_text
 
         os.makedirs(os.path.dirname(prepared.source_path), exist_ok=True)
-        write_document_text(prepared.source_path, prepared.source_text)
+        write_document_text(
+            prepared.source_path, prepared.source_text, expected_file_state=expected_file_state,
+        )
         return cls.publish_prepared_graph(prepared)
 
     @classmethod
