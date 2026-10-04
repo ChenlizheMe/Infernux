@@ -974,7 +974,7 @@ bool InxVkCoreModular::EnsureGuiRenderGraph(uint32_t imageIndex)
     // dependency. Chain the first layout transition to imageAvailable's
     // COLOR_ATTACHMENT_OUTPUT wait, instead of allowing it at TOP_OF_PIPE.
     guiGraph.SetResourceInitialState(backbuffer, rhi::TextureLayout::Undefined, rhi::Access::None,
-                                    rhi::PipelineStage::ColorOutput);
+                                     rhi::PipelineStage::ColorOutput);
 
     guiGraph.AddPass("GUI", [this, &backbuffer, extent](vk::PassBuilder &builder) {
         backbuffer = builder.WriteColor(backbuffer, 0);
