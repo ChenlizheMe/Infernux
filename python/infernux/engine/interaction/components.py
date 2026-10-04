@@ -129,12 +129,15 @@ class ComponentCommandService:
             )
 
             ensure_engine_component_catalog_loaded()
-            component_class = get_type(type_name)
-            if component_class is not None and not bool(
+            # An explicitly selected script is the attachment authority. A
+            # short name may belong to another asset (or a native component),
+            # and must not decide whether this GUID can be instantiated.
+            requested_guid = str(script_guid or "").strip()
+            component_class = None if requested_guid else get_type(type_name)
+            if requested_guid or (component_class is not None and not bool(
                 getattr(component_class, "_cpp_type_name", "")
-            ):
-                registration = get_type_registration(type_name)
-                requested_guid = str(script_guid or "").strip()
+            )):
+                registration = None if requested_guid else get_type_registration(type_name)
                 script_path = str(
                     getattr(registration, "script_path", "") or ""
                 ).strip()
@@ -160,12 +163,6 @@ class ComponentCommandService:
                         if not resolved:
                             raise ValueError(
                                 f"component script GUID was not found: {requested_guid}"
-                            )
-                        from infernux.engine.path_utils import same_path
-
-                        if script_path and not same_path(resolved, script_path):
-                            raise ValueError(
-                                f"component type '{type_name}' is not owned by script GUID {requested_guid}"
                             )
                         script_path = resolved
                     else:

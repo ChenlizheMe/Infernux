@@ -143,6 +143,65 @@ def test_project_component_add_binds_asset_database_guid(monkeypatch, tmp_path, 
     assert calls["asset_database"] is core.project_assets.asset_database
 
 
+@pytest.mark.parametrize("name_collision", ["project", "native", "missing"])
+def test_explicit_script_guid_owns_attachment_before_short_name_lookup(monkeypatch, tmp_path, name_collision):
+    from types import SimpleNamespace
+    import infernux.components.registry as registry
+    import infernux.components.script_loader as loader
+    import infernux.engine.interaction as interaction
+
+    requested_path = str(tmp_path / "Requested.py")
+    requested_guid = "b" * 32
+    unrelated_path = str(tmp_path / "Other.py")
+    class Requested:
+        pass
+    class Other:
+        _cpp_type_name = "SharedController" if name_collision == "native" else ""
+    requested = Requested()
+    database = SimpleNamespace(get_path_from_guid=lambda guid: requested_path if guid == requested_guid else "")
+    core = SimpleNamespace(project_assets=SimpleNamespace(asset_database=database))
+    calls = []
+    monkeypatch.setattr(registry, "ensure_engine_component_catalog_loaded", lambda: None)
+    monkeypatch.setattr(registry, "get_type", lambda _name: None if name_collision == "missing" else Other)
+    monkeypatch.setattr(registry, "get_type_registration", lambda _name: SimpleNamespace(project_script=True,script_path=unrelated_path))
+    monkeypatch.setattr(registry, "get_python_attachment_blockers", lambda *_args: ())
+    monkeypatch.setattr(interaction.EditorInteractionCore, "instance", lambda: core)
+    monkeypatch.setattr(loader, "get_script_error_by_path", lambda _path: None)
+    def load(path, **arguments):
+        calls.append((path, arguments))
+        return requested
+    monkeypatch.setattr(loader, "load_and_create_component", load)
+    owner = SimpleNamespace(get_add_component_blockers=lambda _name: ())
+    result = interaction.ComponentCommandService._resolve_add_target(
+        owner, "SharedController", None, script_guid=requested_guid,
+    )
+    assert result is requested
+    assert calls == [(requested_path, {"asset_database":database,"type_name":"SharedController","script_guid":requested_guid})]
+
+
+@pytest.mark.parametrize("failure", ["missing-guid", "rejected-source", "missing-class"])
+def test_explicit_script_guid_failure_does_not_attach_same_named_component(monkeypatch, failure):
+    from types import SimpleNamespace
+    import infernux.components.registry as registry
+    import infernux.components.script_loader as loader
+    import infernux.engine.interaction as interaction
+
+    class Other:
+        _cpp_type_name = ""
+    owner = SimpleNamespace(get_add_component_blockers=lambda _name: pytest.fail("must reject before native attachment"))
+    database = SimpleNamespace(get_path_from_guid=lambda _guid: "" if failure == "missing-guid" else "requested.py")
+    core = SimpleNamespace(project_assets=SimpleNamespace(asset_database=database))
+    monkeypatch.setattr(registry, "ensure_engine_component_catalog_loaded", lambda: None)
+    monkeypatch.setattr(registry, "get_type", lambda _name: Other)
+    monkeypatch.setattr(registry, "get_type_registration", lambda _name: SimpleNamespace(project_script=True,script_path="other.py"))
+    monkeypatch.setattr(interaction.EditorInteractionCore, "instance", lambda: core)
+    monkeypatch.setattr(loader, "get_script_error_by_path", lambda _path: "invalid candidate" if failure == "rejected-source" else None)
+    monkeypatch.setattr(loader, "load_and_create_component", lambda *_args,**_kwargs: None)
+    message = {"missing-guid":"GUID was not found","rejected-source":"current revision failed","missing-class":"was not found in"}[failure]
+    with pytest.raises(ValueError, match=message):
+        interaction.ComponentCommandService._resolve_add_target(owner,"SharedController",None,script_guid="b"*32)
+
+
 def test_component_document_edit_is_atomic_and_replayable():
     from infernux.engine.interaction import ComponentCommandService
     from infernux.engine.undo import UndoManager

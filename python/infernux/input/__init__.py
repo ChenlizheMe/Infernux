@@ -16,7 +16,7 @@ Example::
     from infernux.input import Input, KeyCode
 
     class PlayerController(InxComponent):
-        def update(self):
+        def update(self, delta_time: float) -> None:
             if Input.get_key("w"):
                 # move forward
                 ...
