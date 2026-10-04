@@ -1417,6 +1417,25 @@ if(INFERNUX_BUILD_TESTS)
         SKIP_RETURN_CODE 77
     )
 
+    foreach(_queue_case live asset)
+        set(_queue_arguments)
+        if(_queue_case STREQUAL "asset")
+            set(_queue_arguments --asset)
+        endif()
+        add_test(
+            NAME infernux.material_queue_${_queue_case}_gpu
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/python/Infernux/test/material_queue_gpu_test.py ${_queue_arguments}
+        )
+        set_tests_properties(infernux.material_queue_${_queue_case}_gpu PROPERTIES
+            ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+            LABELS "requires_vulkan_device"
+            TIMEOUT 30
+            RUN_SERIAL TRUE
+            FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
+        )
+    endforeach()
+
     if(TARGET infernux_gpu_jit_compiler)
         foreach(contract compiler bit)
             add_test(NAME infernux.compute_${contract}_contract

@@ -194,6 +194,7 @@
 </code></pre></div>
 
 <p>Save this Python file under <code>Assets</code>, select <strong>Scope Probe</strong>, and place test objects in Material Queues <code>1000</code>, <code>1100</code>, and <code>1200</code>. Mount the Edge Fade asset from the previous chapter in one probe list at a time:</p>
+<p>Set each queue through the Material Inspector's <strong>Render Queue</strong> control, which records an explicit override of the shader's default. If you author the <code>.mat</code> JSON directly, set the Render Queue bit (<code>64</code>) in <code>renderStateOverrides</code> as well as <code>renderState.renderQueue</code>. Place the objects near the edges of the Game view, keep them visible, and set Edge Fade's intensity to <code>1.0</code> for this comparison. The shader barely changes pixels near the center, so a centered object is a poor visibility check.</p>
 <table>
 <thead>
 <tr>
@@ -445,6 +446,7 @@
 </code></pre></div>
 
 <p>把这份 Python 文件保存到 <code>Assets</code>，选择 <strong>Scope Probe</strong>，再让测试物体分别使用 Material Queue <code>1000</code>、<code>1100</code>、<code>1200</code>。每次只把上一章的 Edge Fade 资产挂入一个 Probe 列表：</p>
+<p>通过 Material Inspector 的 <strong>Render Queue</strong> 控件设置各个队列，这会显式覆盖 Shader 默认值。如果直接编写 <code>.mat</code> JSON，除了 <code>renderState.renderQueue</code>，还要在 <code>renderStateOverrides</code> 中设置 Render Queue 位（<code>64</code>）。比较时把物体放到 Game 视图边缘附近，保持完整可见，并将 Edge Fade 的 intensity 设为 <code>1.0</code>。这个 Shader 对画面中心的像素几乎没有影响，居中的物体不适合用来判断效果是否执行。</p>
 <table>
 <thead>
 <tr>
