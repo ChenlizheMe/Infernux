@@ -130,14 +130,15 @@ The mount scope and route policy handle this together:
 - `ISOLATE_AND_COMPOSITE` suits an isolated contribution that may grow and must return through depth/alpha composition.
 - `ADDITIVE_EXTRACT` suits light-like energy added to the parent image.
 - `INLINE` uses the current contribution directly.
+- Mixing additive and replacement effects uses `ORDERED_COMPOSITE`: the complete chain executes in Slot/Group order, then geometry-bound color and pixels outside the original coverage are composed separately. Premultiplied alpha preserves both additive light and opaque outlines.
 - A layer-scoped stage lets several routes become one image before processing.
 
 Two overlapping isolated effects still require a pipeline decision. They can run and composite in route order, join a layer first, or move to a later stage. The active pipeline topology records that choice; slot order only settles effects that already share one stage.
 
-Reproduce overflow and policy conflict with the Scope Probe pipeline:
+Reproduce overflow and ordered effect composition with the Scope Probe pipeline:
 
 1. Create the built-in Bloom asset from **Create > Render Effect > Bloom**, mount it at `route_probe`, and use a bright Queue `1000` object whose silhouette overlaps a nearer Queue `1200` object. Bloom uses `ADDITIVE_EXTRACT`; its light can extend beyond the isolated silhouette and returns through the route's composition policy. Check both the halo outside the source mask and the nearer object's occlusion.
-2. Mount Edge Fade beside Bloom in the same `route_probe`. Edge Fade uses `MASK_AND_MODIFY`, a color-replacement policy. The route-policy merge rejects additive extraction mixed with color replacement and reports the affected Stage in the graph-build diagnostic. Move one asset to `layer_probe` or a later Composite stage, or remove it, then confirm the graph rebuilds.
+2. Mount Edge Fade beside Bloom in the same `route_probe`. Both effects must compile and execute. Set both intensities to zero first: the scene must match the version without effects, including the nearer object's occlusion. Then enable the effects and reverse their Slot order; Bloom followed by Edge Fade processes the glow with Edge Fade, while Edge Fade followed by Bloom extracts light from the modified image. The same ordered-chain rule supports custom Edge Detection and other color-replacement effects. Keep both effects at this route; moving one to a later Stage changes the intended scope.
 3. For a custom `creates` resource, mount two effects that both call `bus.set()` with the same semantic. Current ResourceBus behavior is ordered replacement: the later Slot/Group entry wins, with no duplicate-name diagnostic. Rename one semantic when both results must remain available.
 
 ## Mounting one asset more than once {#repeat-mounts}
@@ -330,14 +331,15 @@ class ScopeProbePipeline(inx.renderstack.RenderPipeline):
 - `ISOLATE_AND_COMPOSITE` 适合可能向外扩张、需要通过深度与 Alpha 合回去的隔离贡献。
 - `ADDITIVE_EXTRACT` 适合加到父图像上的光能。
 - `INLINE` 直接使用当前贡献。
+- 发光与颜色替换混用时采用 `ORDERED_COMPOSITE`：完整效果链按 Slot/Group 顺序执行，再分别合成物体覆盖区域内的颜色和区域外的效果像素。预乘 Alpha 同时保留叠加发光与不透明轮廓。
 - Layer Scope 可以先把多条 Route 合成一张图，再统一处理。
 
 两个互相遮挡的隔离效果仍需要管线做出选择：按 Route 顺序处理并合成，先并入 Layer，或移动到更后的 Stage。活动管线拓扑记录这项选择；Slot 顺序只处理已经位于同一 Stage 的 Effect。
 
-可以用 Scope Probe 管线复现外溢与 Policy 冲突：
+可以用 Scope Probe 管线复现外溢与有序效果组合：
 
 1. 通过 **Create > Render Effect > Bloom** 创建内置 Bloom，把它挂到 `route_probe`。让一个明亮的 Queue `1000` 物体轮廓与更近的 Queue `1200` 物体重叠。Bloom 使用 `ADDITIVE_EXTRACT`；光晕可以超出隔离轮廓，再通过 Route 的合成 Policy 返回父图。检查 Source Mask 外的光晕，也要检查近处物体的遮挡。
-2. 在同一 `route_probe` 中把 Edge Fade 放到 Bloom 旁边。Edge Fade 使用颜色替换型 `MASK_AND_MODIFY`。Route Policy 合并会拒绝 Additive Extract 与颜色替换混用，并在图构建诊断中列出相关 Stage。把其中一个资产移到 `layer_probe` 或更后的 Composite Stage，或将其移除，然后确认图可以重建。
+2. 在同一 `route_probe` 中把 Edge Fade 放到 Bloom 旁边，两者应正常编译和执行。先把两个强度都设为零，画面应与未挂效果时一致，包括前方物体的遮挡。再启用效果并交换 Slot 顺序：Bloom 在前会让 Edge Fade 继续处理光晕，Edge Fade 在前则让 Bloom 从修改后的图像提取发光。这项有序效果链规则也支持自定义 Edge Detection 与其他颜色替换效果。两者应保持在这条 Route；移到其他 Stage 会改变处理范围。
 3. 对于自定义 `creates` 资源，可以挂入两个都会用同一语义调用 `bus.set()` 的 Effect。当前 ResourceBus 按顺序替换，后面的 Slot/Group 条目生效，也不会出现同名诊断。两份结果都需要保留时，请重命名其中一个语义。
 
 ## 同一资产多次挂载 {#repeat-mounts_1}

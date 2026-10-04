@@ -501,15 +501,17 @@ def test_builtin_route_effects_declare_their_image_ownership_policy():
     assert get_render_effect_feature("infernux.post.motion_blur").route_policy is RoutePolicy.MASK_AND_MODIFY
 
 
-def test_route_policy_merge_rejects_additive_and_replacement_effects():
+def test_route_policy_merge_supports_ordered_additive_and_replacement_chains():
     assert merge_route_policies([]) is RoutePolicy.INLINE
     assert merge_route_policies(
         [RoutePolicy.MASK_AND_MODIFY, RoutePolicy.ISOLATE_AND_COMPOSITE]
     ) is RoutePolicy.ISOLATE_AND_COMPOSITE
-    with pytest.raises(ValueError, match="cannot be mixed"):
-        merge_route_policies(
-            [RoutePolicy.ADDITIVE_EXTRACT, RoutePolicy.MASK_AND_MODIFY]
-        )
+    assert merge_route_policies(
+        [RoutePolicy.ADDITIVE_EXTRACT, RoutePolicy.MASK_AND_MODIFY]
+    ).value == "ordered_composite"
+    assert merge_route_policies(
+        [RoutePolicy.ISOLATE_AND_COMPOSITE, RoutePolicy.ADDITIVE_EXTRACT]
+    ).value == "ordered_composite"
 
 
 def test_composite_stage_activity_does_not_merge_route_policies():
@@ -635,11 +637,20 @@ def test_bloom_route_extracts_only_additive_energy_and_handles_one_mip():
     assert bindings["_BloomTex"].endswith("/_bloom_mip0")
 
 
-def test_mixed_additive_and_replacement_route_effects_fail_actionably():
-    stack = _route_effect_stack(
+@pytest.mark.parametrize("reverse", [False, True])
+def test_mixed_additive_and_replacement_route_effects_compile_in_slot_order(reverse):
+    effects = [
         _effect("infernux.post.bloom", max_iterations=2),
         _effect("infernux.route.pixelation", pixel_size=16),
+    ]
+    if reverse:
+        effects.reverse()
+    stack = _route_effect_stack(
+        *effects,
     )
-
-    with pytest.raises(RenderEffectCompileError, match="incompatible route effect policies"):
-        stack.build_graph()
+    description = stack.build_graph()
+    assert stack.effect_compile_errors == ()
+    names = [render_pass.name for render_pass in description.passes]
+    bloom = next(i for i, name in enumerate(names) if name.endswith("Bloom_Composite"))
+    pixelation = next(i for i, name in enumerate(names) if "Pixelation" in name)
+    assert (pixelation < bloom) == reverse

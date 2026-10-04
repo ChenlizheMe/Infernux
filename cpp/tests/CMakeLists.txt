@@ -1427,6 +1427,23 @@ if(INFERNUX_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/python/Infernux/test/mixed_deferred_coverage_gpu_test.py
     )
+    foreach(_bloom_path forward forward_plus deferred)
+        foreach(_bloom_scope layer route)
+            set(_bloom_test "infernux.bloom_chain_${_bloom_path}_${_bloom_scope}_gpu")
+            add_test(NAME ${_bloom_test}
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/python/Infernux/test/bloom_route_occlusion_gpu_test.py
+                    --path ${_bloom_path} --scope ${_bloom_scope}
+            )
+            set_tests_properties(${_bloom_test} PROPERTIES
+                ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+                LABELS "requires_vulkan_device"
+                TIMEOUT 45
+                RUN_SERIAL TRUE
+                FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
+            )
+        endforeach()
+    endforeach()
     set_tests_properties(infernux.mixed_deferred_coverage_gpu PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
         LABELS "requires_vulkan_device"

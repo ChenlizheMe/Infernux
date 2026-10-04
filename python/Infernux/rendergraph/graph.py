@@ -952,9 +952,8 @@ class RenderGraph:
         """Return whether a declared mount point has any enabled slot.
 
         Activity is intentionally separate from route ownership policy. A
-        composite EffectGroup may legally contain additive and replacement
-        effects even though that combination is ambiguous for an isolated
-        render-queue route.
+        composite EffectGroup uses its parent image directly; route chains
+        additionally partition geometry-bound color and post-process overflow.
         """
         stable_id = getattr(stage, "stable_id", stage)
         if self._effect_stage_active_resolver is not None:

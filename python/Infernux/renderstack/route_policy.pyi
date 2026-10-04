@@ -6,6 +6,7 @@ class RoutePolicy(str, Enum):
     MASK_AND_MODIFY = "mask_and_modify"
     ISOLATE_AND_COMPOSITE = "isolate_and_composite"
     ADDITIVE_EXTRACT = "additive_extract"
+    ORDERED_COMPOSITE = "ordered_composite"
     CUSTOM_FEATURE = "custom_feature"
 
 def merge_route_policies(policies: Iterable[RoutePolicy]) -> RoutePolicy: ...

@@ -13,11 +13,12 @@ class RoutePolicy(str, Enum):
     MASK_AND_MODIFY = "mask_and_modify"
     ISOLATE_AND_COMPOSITE = "isolate_and_composite"
     ADDITIVE_EXTRACT = "additive_extract"
+    ORDERED_COMPOSITE = "ordered_composite"
     CUSTOM_FEATURE = "custom_feature"
 
 
 def merge_route_policies(policies: Iterable[RoutePolicy]) -> RoutePolicy:
-    """Return one route strategy or reject a semantically unsafe mixture."""
+    """Choose storage/composition for the whole ordered route effect chain."""
     normalized = {
         value if isinstance(value, RoutePolicy) else RoutePolicy(value)
         for value in policies
@@ -29,13 +30,11 @@ def merge_route_policies(policies: Iterable[RoutePolicy]) -> RoutePolicy:
         if len(normalized) != 1:
             raise ValueError("custom route policy cannot be mixed with built-in policies")
         return RoutePolicy.CUSTOM_FEATURE
+    if RoutePolicy.ORDERED_COMPOSITE in normalized:
+        return RoutePolicy.ORDERED_COMPOSITE
     if RoutePolicy.ADDITIVE_EXTRACT in normalized:
         if len(normalized) != 1:
-            names = ", ".join(sorted(value.value for value in normalized))
-            raise ValueError(
-                "additive-extract route effects cannot be mixed with color-replacement "
-                f"effects on one route: {names}"
-            )
+            return RoutePolicy.ORDERED_COMPOSITE
         return RoutePolicy.ADDITIVE_EXTRACT
     if RoutePolicy.ISOLATE_AND_COMPOSITE in normalized:
         return RoutePolicy.ISOLATE_AND_COMPOSITE

@@ -101,6 +101,7 @@ class _ImageAccumulator:
 class _RouteContribution:
     color: object | None = None
     additive: object | None = None
+    overlay: object | None = None
     deferred_overlay: bool = True
 
 
@@ -140,6 +141,23 @@ def _flush_route_contributions(
     for label, contribution in contributions:
         _consume_route_contribution(accumulator, contribution, label=label)
     contributions.clear()
+
+
+def _stage_route_contribution(accumulator, pending_overlays, contribution, *, label):
+    if contribution is None:
+        return
+    if contribution.additive is not None or contribution.overlay is not None:
+        # Original geometry belongs to the ordinary image now. Only extracted
+        # light waits for the scope's remaining geometry/background. Deferring
+        # both repaints an earlier object's silhouette over nearer later draws,
+        # even when the effect intensity is zero.
+        if contribution.color is not None:
+            accumulator.composite(contribution.color, label=label)
+        pending_overlays.append((label, _RouteContribution(color=contribution.overlay, additive=contribution.additive)))
+    elif contribution.deferred_overlay:
+        pending_overlays.append((label, contribution))
+    else:
+        _consume_route_contribution(accumulator, contribution, label=label)
 
 
 def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeline=None) -> None:
@@ -356,15 +374,7 @@ def _compile_domain(
                 inline_target=accumulator.current,
                 msaa_samples=msaa_samples,
             )
-            if contribution is not None:
-                if contribution.deferred_overlay:
-                    pending_overlays.append((stable_id, contribution))
-                else:
-                    _consume_route_contribution(
-                        accumulator,
-                        contribution,
-                        label=stable_id,
-                    )
+            _stage_route_contribution(accumulator, pending_overlays, contribution, label=stable_id)
             continue
         if operation == "layer":
             image = _compile_layer(
@@ -447,15 +457,7 @@ def _compile_layer(
                 inline_target=accumulator.current,
                 msaa_samples=msaa_samples,
             )
-            if contribution is not None:
-                if contribution.deferred_overlay:
-                    pending_overlays.append((stable_id, contribution))
-                else:
-                    _consume_route_contribution(
-                        accumulator,
-                        contribution,
-                        label=stable_id,
-                    )
+            _stage_route_contribution(accumulator, pending_overlays, contribution, label=stable_id)
             continue
         if operation == "effect":
             stage = stages[stable_id]
@@ -529,7 +531,7 @@ def _compile_route(
             shadow_map,
         )
         original_color = None
-        if policy is RoutePolicy.ADDITIVE_EXTRACT:
+        if policy in {RoutePolicy.ADDITIVE_EXTRACT, RoutePolicy.ORDERED_COMPOSITE}:
             with graph.name_scope(f"route/{route.route_id}"):
                 original_color = graph.create_texture("original", format=color_format)
                 with graph.add_pass("PreserveOriginal") as render_pass:
@@ -543,6 +545,8 @@ def _compile_route(
             resources = dict(result.snapshot)
         route_color = resources["color"]
 
+        if policy is RoutePolicy.ORDERED_COMPOSITE:
+            return _split_ordered_route(graph, route.route_id, original_color, route_color, color_format)
         if policy is not RoutePolicy.ADDITIVE_EXTRACT:
             return _RouteContribution(
                 color=route_color,
@@ -603,7 +607,7 @@ def _compile_route(
     )
 
     original_color = None
-    if policy is RoutePolicy.ADDITIVE_EXTRACT:
+    if policy in {RoutePolicy.ADDITIVE_EXTRACT, RoutePolicy.ORDERED_COMPOSITE}:
         with graph.name_scope(f"route/{route.route_id}"):
             original_color = graph.create_texture("original", format=color_format)
             with graph.add_pass("PreserveOriginal") as render_pass:
@@ -617,6 +621,8 @@ def _compile_route(
         resources = dict(result.snapshot)
     route_color = resources["color"]
 
+    if policy is RoutePolicy.ORDERED_COMPOSITE:
+        return _split_ordered_route(graph, route.route_id, original_color, route_color, color_format)
     if policy is not RoutePolicy.ADDITIVE_EXTRACT:
         # MSAA forces even an ordinary inline route through an isolated resolve
         # target. That is only a storage detail: it must join the scope's base
@@ -635,6 +641,28 @@ def _compile_route(
             render_pass.write_color(additive)
             render_pass.fullscreen_quad("Route Additive Delta")
     return _RouteContribution(color=original_color, additive=additive)
+
+
+def _split_ordered_route(graph, route_id, original, processed, color_format):
+    """Partition the executed chain without reordering or repeating effects.
+
+    Original coverage owns geometry-bound color, including antialiased pixels.
+    Pixels outside that coverage keep the chain's premultiplied alpha, so a
+    zero-alpha Bloom contribution adds light and an opaque outline replaces
+    color. Later geometry can occlude the base image without erasing overflow.
+    """
+    outputs = []
+    with graph.name_scope(f"route/{route_id}"):
+        for name, outside in (("ChainGeometry", 0.0), ("ChainOverflow", 1.0)):
+            output = graph.create_texture(name, format=color_format)
+            with graph.add_pass(name) as render_pass:
+                render_pass.set_texture("_OriginalTex", original)
+                render_pass.set_texture("_ProcessedTex", processed)
+                render_pass.set_param("outside", outside)
+                render_pass.write_color(output)
+                render_pass.fullscreen_quad("Route Coverage Split")
+            outputs.append(output)
+    return _RouteContribution(color=outputs[0], overlay=outputs[1])
 
 
 def _draw_deferred_route(

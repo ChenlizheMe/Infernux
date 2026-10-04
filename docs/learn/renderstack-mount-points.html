@@ -230,13 +230,14 @@
 <li><code>ISOLATE_AND_COMPOSITE</code> suits an isolated contribution that may grow and must return through depth/alpha composition.</li>
 <li><code>ADDITIVE_EXTRACT</code> suits light-like energy added to the parent image.</li>
 <li><code>INLINE</code> uses the current contribution directly.</li>
+<li>Mixing additive and replacement effects uses <code>ORDERED_COMPOSITE</code>: the complete chain executes in Slot/Group order, then geometry-bound color and pixels outside the original coverage are composed separately. Premultiplied alpha preserves both additive light and opaque outlines.</li>
 <li>A layer-scoped stage lets several routes become one image before processing.</li>
 </ul>
 <p>Two overlapping isolated effects still require a pipeline decision. They can run and composite in route order, join a layer first, or move to a later stage. The active pipeline topology records that choice; slot order only settles effects that already share one stage.</p>
-<p>Reproduce overflow and policy conflict with the Scope Probe pipeline:</p>
+<p>Reproduce overflow and ordered effect composition with the Scope Probe pipeline:</p>
 <ol>
 <li>Create the built-in Bloom asset from <strong>Create &gt; Render Effect &gt; Bloom</strong>, mount it at <code>route_probe</code>, and use a bright Queue <code>1000</code> object whose silhouette overlaps a nearer Queue <code>1200</code> object. Bloom uses <code>ADDITIVE_EXTRACT</code>; its light can extend beyond the isolated silhouette and returns through the route's composition policy. Check both the halo outside the source mask and the nearer object's occlusion.</li>
-<li>Mount Edge Fade beside Bloom in the same <code>route_probe</code>. Edge Fade uses <code>MASK_AND_MODIFY</code>, a color-replacement policy. The route-policy merge rejects additive extraction mixed with color replacement and reports the affected Stage in the graph-build diagnostic. Move one asset to <code>layer_probe</code> or a later Composite stage, or remove it, then confirm the graph rebuilds.</li>
+<li>Mount Edge Fade beside Bloom in the same <code>route_probe</code>. Both effects must compile and execute. Set both intensities to zero first: the scene must match the version without effects, including the nearer object's occlusion. Then enable the effects and reverse their Slot order; Bloom followed by Edge Fade processes the glow with Edge Fade, while Edge Fade followed by Bloom extracts light from the modified image. The same ordered-chain rule supports custom Edge Detection and other color-replacement effects. Keep both effects at this route; moving one to a later Stage changes the intended scope.</li>
 <li>For a custom <code>creates</code> resource, mount two effects that both call <code>bus.set()</code> with the same semantic. Current ResourceBus behavior is ordered replacement: the later Slot/Group entry wins, with no duplicate-name diagnostic. Rename one semantic when both results must remain available.</li>
 </ol>
 <h2 id="repeat-mounts">Mounting one asset more than once</h2>
@@ -248,7 +249,7 @@
 <ol>
 <li><strong>Orphan:</strong> Mount Edge Fade at <code>route_probe</code>, save the scene, rename the declaration to <code>route_probe_v2</code>, and save the Python file. <strong>Missing Effect Stages</strong> should list <code>route_probe</code> and its asset reference. The old Slot remains serialized and does not execute. Call <code>stack.remap_orphan_effect_stage("route_probe", "route_probe_v2")</code>, expect <code>1</code>, then save the scene and confirm the warning clears.</li>
 <li><strong>Per-effect failure:</strong> Add <code>requires = {"color", "missing_probe"}</code> to a copy of Edge Fade and put <code>if bus.get("missing_probe") is None: raise ValueError("missing effect-stage resource: missing_probe")</code> at the start of its <code>setup_passes()</code>. Mount it at <code>route_probe</code>. <strong>Effect Compile Errors</strong> should include <code>&lt;stage&gt;/&lt;slot&gt;</code> and <code>missing_probe</code>. Passes and bus publications made by that failing effect are removed; other Slots can remain visible. The explicit check matters because declarations describe the contract and custom implementations still own their bus validation.</li>
-<li><strong>Last valid topology:</strong> Begin with a visible valid graph, then temporarily declare a duplicate <code>scene_probe</code> stable ID and save. The Editor logs <code>Pipeline topology is invalid</code> and continues showing the last valid Inspector topology/render graph. Remove the duplicate and save again; invalidation allows a fresh build. This retained image is evidence of the old graph, so use the cleared diagnostic plus a deliberate visible parameter change to prove the new graph became active.</li>
+<li><strong>Last valid topology:</strong> Begin with a visible valid graph, then temporarily declare a duplicate <code>scene_probe</code> stable ID and save. The Inspector shows <code>Pipeline topology is invalid</code>; Console reports one source-owned graph-build diagnostic, and the last valid Inspector topology/render graph remains active. The rejected effect generation is not retried every frame. Remove the duplicate and save again; invalidation allows a fresh build, and successful runtime publication clears its diagnostic. This retained image is evidence of the old graph, so use the cleared diagnostic plus a deliberate visible parameter change to prove the new graph became active.</li>
 <li><strong>Save/reload:</strong> Put two differently named assets in <code>scene_probe</code>, record their top-to-bottom order and enabled states, save the scene, close it, and reopen it. The Inspector must restore the same order and state. For source-control evidence, the scene's serialized <code>effect_slots</code> records each <code>slot_id</code>, <code>stage_id</code>, GUID/path reference, and enabled value. Asset parameter values remain in their separate <code>.effect</code> or <code>.effectgroup</code> documents.</li>
 </ol>
 <h2 id="frame-tail">The built-in frame tail</h2>
@@ -482,13 +483,14 @@
 <li><code>ISOLATE_AND_COMPOSITE</code> 适合可能向外扩张、需要通过深度与 Alpha 合回去的隔离贡献。</li>
 <li><code>ADDITIVE_EXTRACT</code> 适合加到父图像上的光能。</li>
 <li><code>INLINE</code> 直接使用当前贡献。</li>
+<li>发光与颜色替换混用时采用 <code>ORDERED_COMPOSITE</code>：完整效果链按 Slot/Group 顺序执行，再分别合成物体覆盖区域内的颜色和区域外的效果像素。预乘 Alpha 同时保留叠加发光与不透明轮廓。</li>
 <li>Layer Scope 可以先把多条 Route 合成一张图，再统一处理。</li>
 </ul>
 <p>两个互相遮挡的隔离效果仍需要管线做出选择：按 Route 顺序处理并合成，先并入 Layer，或移动到更后的 Stage。活动管线拓扑记录这项选择；Slot 顺序只处理已经位于同一 Stage 的 Effect。</p>
-<p>可以用 Scope Probe 管线复现外溢与 Policy 冲突：</p>
+<p>可以用 Scope Probe 管线复现外溢与有序效果组合：</p>
 <ol>
 <li>通过 <strong>Create &gt; Render Effect &gt; Bloom</strong> 创建内置 Bloom，把它挂到 <code>route_probe</code>。让一个明亮的 Queue <code>1000</code> 物体轮廓与更近的 Queue <code>1200</code> 物体重叠。Bloom 使用 <code>ADDITIVE_EXTRACT</code>；光晕可以超出隔离轮廓，再通过 Route 的合成 Policy 返回父图。检查 Source Mask 外的光晕，也要检查近处物体的遮挡。</li>
-<li>在同一 <code>route_probe</code> 中把 Edge Fade 放到 Bloom 旁边。Edge Fade 使用颜色替换型 <code>MASK_AND_MODIFY</code>。Route Policy 合并会拒绝 Additive Extract 与颜色替换混用，并在图构建诊断中列出相关 Stage。把其中一个资产移到 <code>layer_probe</code> 或更后的 Composite Stage，或将其移除，然后确认图可以重建。</li>
+<li>在同一 <code>route_probe</code> 中把 Edge Fade 放到 Bloom 旁边，两者应正常编译和执行。先把两个强度都设为零，画面应与未挂效果时一致，包括前方物体的遮挡。再启用效果并交换 Slot 顺序：Bloom 在前会让 Edge Fade 继续处理光晕，Edge Fade 在前则让 Bloom 从修改后的图像提取发光。这项有序效果链规则也支持自定义 Edge Detection 与其他颜色替换效果。两者应保持在这条 Route；移到其他 Stage 会改变处理范围。</li>
 <li>对于自定义 <code>creates</code> 资源，可以挂入两个都会用同一语义调用 <code>bus.set()</code> 的 Effect。当前 ResourceBus 按顺序替换，后面的 Slot/Group 条目生效，也不会出现同名诊断。两份结果都需要保留时，请重命名其中一个语义。</li>
 </ol>
 <h2 id="repeat-mounts_1">同一资产多次挂载</h2>
@@ -500,7 +502,7 @@
 <ol>
 <li><strong>Orphan：</strong> 在 <code>route_probe</code> 挂入 Edge Fade，保存场景，把声明改名为 <code>route_probe_v2</code>，再保存 Python 文件。<strong>Missing Effect Stages</strong> 应列出 <code>route_probe</code> 及其资产引用。旧 Slot 继续序列化，但不会执行。调用 <code>stack.remap_orphan_effect_stage("route_probe", "route_probe_v2")</code>，预期返回 <code>1</code>；保存场景并确认警告消失。</li>
 <li><strong>单 Effect 失败：</strong> 复制一份 Edge Fade，添加 <code>requires = {"color", "missing_probe"}</code>，并在 <code>setup_passes()</code> 开头加入 <code>if bus.get("missing_probe") is None: raise ValueError("missing effect-stage resource: missing_probe")</code>。把它挂到 <code>route_probe</code>。<strong>Effect Compile Errors</strong> 应包含 <code>&lt;stage&gt;/&lt;slot&gt;</code> 与 <code>missing_probe</code>。该 Effect 生成的 Pass 与 Bus 发布都会移除，其它 Slot 可以继续显示结果。这里需要显式检查，因为声明负责描述契约，自定义实现仍要负责 Bus 校验。</li>
-<li><strong>上一份有效拓扑：</strong> 先让有效图显示在画面中，再临时重复声明一个 <code>scene_probe</code> 稳定 ID 并保存。Editor 会记录 <code>Pipeline topology is invalid</code>，继续显示上一份有效 Inspector 拓扑与渲染图。删除重复声明并再次保存后，失效机制允许重新构建。保留画面只能证明旧图仍在工作；还需确认诊断清空，并故意修改一个可见参数，才能证明新图已经生效。</li>
+<li><strong>上一份有效拓扑：</strong> 先让有效图显示在画面中，再临时重复声明一个 <code>scene_probe</code> 稳定 ID 并保存。Inspector 显示 <code>Pipeline topology is invalid</code>，Console 记录一条指向管线源码的构图诊断，上一份有效 Inspector 拓扑与渲染图继续工作。被拒绝的效果版本不会每帧重试。删除重复声明并再次保存后，失效机制允许重新构建；运行时成功发布新图后会清理这条诊断。保留画面只能证明旧图仍在工作；还需确认诊断清空，并故意修改一个可见参数，才能证明新图已经生效。</li>
 <li><strong>保存与重载：</strong> 在 <code>scene_probe</code> 放入两个名称不同的资产，记下从上到下的顺序与启用状态，保存场景，关闭后重新打开。Inspector 应恢复相同顺序与状态。需要源码管理证据时，可以检查场景序列化字段 <code>effect_slots</code>：每项记录 <code>slot_id</code>、<code>stage_id</code>、GUID/路径引用与启用值。资产参数仍保存在各自的 <code>.effect</code> 或 <code>.effectgroup</code> 文档中。</li>
 </ol>
 <h2 id="frame-tail_1">内置管线的帧尾</h2>
