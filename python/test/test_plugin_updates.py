@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -58,6 +59,49 @@ def test_shared_cache_cannot_replace_an_installed_update_baseline(tmp_path, chan
         assert cache.store(str(incoming), reference="vendor/plugin", version="1.0.0") == str(baseline)
     assert baseline.read_bytes() == original.read_bytes()
     assert not list(baseline.parent.glob("*.tmp.*"))
+
+
+def test_registry_readers_wait_for_complete_environment_publication(installed, monkeypatch):
+    from Infernux.plugins import registry as registry_module
+
+    manager, source, root = installed
+    writer = manager.registry
+    reader = registry_module.PluginRegistry(manager.project_root)
+    document = writer.load()
+    document["installed"][0]["version"] = "2.0.0"
+    document["python_installs"] = [{"output": "new environment"}]
+    writing_environment = threading.Event()
+    release_writer = threading.Event()
+    reader_started = threading.Event()
+    reader_completed = threading.Event()
+    original_write = registry_module.write_document_text
+
+    def write(path, text):
+        if path == writer.environment_path:
+            writing_environment.set()
+            assert release_writer.wait(5)
+        return original_write(path, text)
+
+    def read():
+        reader_started.set()
+        result = reader.load()
+        reader_completed.set()
+        return result
+
+    monkeypatch.setattr(registry_module, "write_document_text", write)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        published = pool.submit(writer.save, document)
+        try:
+            assert writing_environment.wait(5)
+            observed = pool.submit(read)
+            assert reader_started.wait(5)
+            assert not reader_completed.wait(0.2)
+        finally:
+            release_writer.set()
+        published.result(timeout=5)
+        result = observed.result(timeout=5)
+    assert result["installed"][0]["version"] == "2.0.0"
+    assert result["python_installs"] == [{"output": "new environment"}]
 
 
 @pytest.mark.parametrize("modified", [False, True])

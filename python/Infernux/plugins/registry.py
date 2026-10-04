@@ -7,12 +7,14 @@ import copy
 import os
 import time
 import uuid
+import threading
+import weakref
 from typing import Iterable, Mapping
 
 from packaging.utils import canonicalize_name
 
 from Infernux.core.document_store import capture_document_file_state, submit_document_text, write_document_text
-from Infernux.engine.path_utils import resolved_path, is_path_within, relative_path, portable_path
+from Infernux.engine.path_utils import resolved_path, is_path_within, relative_path, portable_path, path_key
 
 from .content import normalize_locale, normalize_page_descriptor
 from .package import validate_reference
@@ -21,6 +23,8 @@ from .package import validate_reference
 REGISTRY_RELATIVE_PATH = os.path.join("ProjectSettings", "InxPlugins.json")
 LOCK_RELATIVE_PATH = os.path.join("ProjectSettings", "InxPackages.lock.json")
 REGISTRY_SCHEMA = "infernux.plugin_registry"
+_registry_locks = weakref.WeakValueDictionary()
+_registry_locks_guard = threading.Lock()
 
 
 class _RegistrySnapshot(dict):
@@ -38,8 +42,20 @@ class PluginRegistry:
         self.lock_path = os.path.join(self.project_root, LOCK_RELATIVE_PATH)
         self.environment_path = os.path.join(self.project_root, "Library", "Plugins", "PythonEnvironment.json")
         self._last_committed_state = None
+        # UI, preload and build readers can have separate registry instances.
+        # Serialize the shared ledger and local environment as one publication.
+        with _registry_locks_guard:
+            key = path_key(self.path)
+            self._publication_lock = _registry_locks.get(key)
+            if self._publication_lock is None:
+                self._publication_lock = threading.RLock()
+                _registry_locks[key] = self._publication_lock
 
     def load(self) -> dict[str, object]:
+        with self._publication_lock:
+            return self._load()
+
+    def _load(self) -> dict[str, object]:
         file_state = capture_document_file_state(self.path)
         if not os.path.isfile(self.path):
             return _RegistrySnapshot(self._empty(), file_state)
@@ -78,6 +94,10 @@ class PluginRegistry:
         return _RegistrySnapshot(value, file_state)
 
     def save(self, value: Mapping[str, object]) -> None:
+        with self._publication_lock:
+            self._save(value)
+
+    def _save(self, value: Mapping[str, object]) -> None:
         document = copy.deepcopy(dict(value))
         document["$schema"] = REGISTRY_SCHEMA
         if set(document) != {
