@@ -181,7 +181,8 @@ class ComponentBodyReloadTransaction:
             # Guard before registry/class mutation.  A later publication
             # failure must never leave a body patch visible in an active frame.
             assert_runtime_dispatch_safe_point()
-            _prepare_transaction_schema_state(self)
+            with self._candidate_import.serializable_type_scope():
+                _prepare_transaction_schema_state(self)
             self._result = _apply_component_body_patch_plans(self.plans)
             _refresh_transaction_type_names(self)
             if self._cds_publication is not None:
@@ -1175,6 +1176,12 @@ def _reload_value_signature(value):
 
 
 def _serialized_schema_signature(component_type):
+    """Compare declarations including the concrete runtime type bindings.
+
+    Reloaded classes can share a module/qualname and storage layout while being
+    distinct Python types. Their descriptors must publish with the new method
+    globals, even for an identical-source load or a callback-only edit.
+    """
     from .fields import get_serialized_fields
 
     signature = []
@@ -1184,7 +1191,8 @@ def _serialized_schema_signature(component_type):
             # UI callbacks are implementation details and are not field schema.
             if field.name in {"getter", "setter", "visible_when"}:
                 continue
-            values.append((field.name, _reload_value_signature(getattr(metadata, field.name))))
+            value = getattr(metadata, field.name)
+            values.append((field.name, value if isinstance(value, type) else _reload_value_signature(value)))
         signature.append((name, tuple(values)))
     return tuple(signature)
 

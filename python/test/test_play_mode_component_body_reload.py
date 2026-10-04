@@ -216,6 +216,93 @@ def _overwrite_preserving_pyc_fingerprint(path, source: str) -> None:
     )
 
 
+@pytest.mark.parametrize("uses_cds", [False, True])
+@pytest.mark.parametrize("body_edit", [False, True])
+@pytest.mark.parametrize("reject_publication", [False, True])
+def test_reload_rebinds_unchanged_field_types_to_published_declarations(
+    component_script, monkeypatch, uses_cds, body_edit, reject_publication,
+):
+    source = '''
+        from enum import Enum
+        import infernux as inx
+
+        class Mode(Enum):
+            IDLE = 0
+            CHASE = 1
+
+        class Stats(inx.SerializableObject):
+            health: int = inx.serialized_field(default=100)
+
+        class TypedReloadProbe(inx.InxComponent):
+            _uses_component_data_store = USES_CDS
+            counter: int = inx.serialized_field(default=7)
+            mode: Mode = inx.serialized_field(default=Mode.IDLE)
+            modes: list[Mode] = inx.serialized_field(default=[])
+            stats: Stats = inx.serialized_field(default_factory=Stats)
+            members: list[Stats] = inx.serialized_field(default=[])
+
+            def declarations(self):
+                return Mode, Stats, "old"
+    '''.replace("USES_CDS", str(uses_cds))
+    guid = "unchanged-runtime-field-bindings-guid"
+    path, (owner,) = component_script("TypedReloadProbe.py", source, guid)
+    first, second = owner(), owner()
+    old_mode, old_stats, _ = first.declarations()
+    first.mode = old_mode.CHASE
+    first.counter = 17
+    first.modes = [old_mode.CHASE, old_mode.IDLE]
+    first.stats.health = 88
+    first.members = [old_stats(health=7), old_stats(health=9)]
+    manager = _play_manager(monkeypatch, path, guid, (first, second))
+    path.write_text(textwrap.dedent(source.replace('"old"', '"new"') if body_edit else source), encoding="utf-8")
+
+    if reject_publication:
+        from infernux.engine.candidate_import import CandidateImportTransaction
+
+        original_values = (first.mode, first.modes, first.stats, first.members)
+        original_slot = first._cds_slot
+        original_class_id = first._cds_class_id
+        original_module = sys.modules[owner.__module__]
+
+        def reject(_transaction):
+            raise RuntimeError("simulated module publication failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(CandidateImportTransaction, "commit", reject)
+            rejected = manager.reload_components_from_script_result(str(path))
+        assert not rejected.success and "simulated module publication failure" in rejected.error
+        assert first.declarations() == (old_mode, old_stats, "old")
+        assert first.counter == 17 and second.counter == 7
+        assert all(value is original for value, original in zip(
+            (first.mode, first.modes, first.stats, first.members), original_values,
+        ))
+        assert first._cds_slot == original_slot and first._cds_class_id == original_class_id
+        assert sys.modules[owner.__module__] is original_module
+        assert get_serialized_fields(owner)["mode"].enum_type is old_mode
+        assert get_serialized_fields(owner)["stats"].serializable_class is old_stats
+
+    outcome = manager.reload_components_from_script_result(str(path))
+    assert outcome.success and outcome.had_live_targets, outcome
+    mode, stats, label = first.declarations()
+    assert mode is not old_mode and stats is not old_stats
+    assert label == ("new" if body_edit else "old")
+    assert type(first) is owner and type(second) is owner
+    assert first.counter == 17 and second.counter == 7
+    assert type(first.mode) is mode and first.mode is mode.CHASE
+    assert all(type(value) is mode for value in first.modes)
+    assert [value.name for value in first.modes] == ["CHASE", "IDLE"]
+    assert type(first.stats) is stats and first.stats.health == 88
+    assert all(type(value) is stats for value in first.members)
+    assert [value.health for value in first.members] == [7, 9]
+    assert type(second.mode) is mode and second.mode is mode.IDLE
+    assert type(second.stats) is stats and second.stats.health == 100
+    assert second.modes == second.members == []
+    assert first.modes is not second.modes and first.stats is not second.stats
+    metadata = get_serialized_fields(owner)
+    assert metadata["mode"].enum_type is metadata["modes"].enum_type is mode
+    assert metadata["stats"].serializable_class is metadata["members"].element_class is stats
+
+
 def test_play_body_reload_preserves_identity_state_and_uses_new_body(
     component_script,
     monkeypatch,

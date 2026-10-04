@@ -198,9 +198,18 @@ def prepare_instance_values(
                 raise FieldSchemaMigrationError(
                     f"live field descriptor is unavailable: {field.source_name}"
                 )
-            values[field.target_name] = normalize_runtime_field_value(
-                _convert_value(descriptor.get_raw(instance), field.conversion),
-                field.target,
-            )
+            value = _convert_value(descriptor.get_raw(instance), field.conversion)
+            if field.target.field_type in (FieldType.ENUM, FieldType.SERIALIZABLE_OBJECT) or (
+                field.target.field_type is FieldType.LIST
+                and field.target.element_type in (FieldType.ENUM, FieldType.SERIALIZABLE_OBJECT)
+            ):
+                # Persistent type IDs retain the authored data; decoding binds
+                # it to this transaction's concrete declarations. Keeping the
+                # old instance would disagree with the candidate method globals.
+                from .value_codec import VALUE_CODECS
+
+                path = f"{migration.candidate_type.__qualname__}.{field.target_name}"
+                value = VALUE_CODECS.decode(VALUE_CODECS.encode(value, path), field.target, path)
+            values[field.target_name] = normalize_runtime_field_value(value, field.target)
         prepared[instance] = values
     return prepared

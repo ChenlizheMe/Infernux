@@ -91,7 +91,7 @@ file(GLOB_RECURSE _native_files LIST_DIRECTORIES false
 )
 
 if(NOT _native_files)
-    message(FATAL_ERROR "No native package files found below ${_package_root}/Infernux")
+    message(FATAL_ERROR "No native package files found below ${_package_root}/infernux")
 endif()
 
 file(GLOB _bootstrap_source_files

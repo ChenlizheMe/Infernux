@@ -494,6 +494,12 @@ class CandidateImportTransaction:
         self._attach_child(absolute, module)
         return root
 
+    def serializable_type_scope(self):
+        """Resolve staged data types while preparing private instance values."""
+        from infernux.components.serializable_object import _candidate_serializable_scope
+
+        return _candidate_serializable_scope(self._serializable_types, "")
+
     def commit(self) -> None:
         if self._rolled_back:
             raise CandidateImportError("candidate import transaction has been rolled back")
