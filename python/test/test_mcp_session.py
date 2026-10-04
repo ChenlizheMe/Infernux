@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
+import subprocess
 import zipfile
 
 import pytest
@@ -45,6 +48,23 @@ def test_mode_remediation_exposes_only_engine_capture_contract(tmp_path):
     assert "os_foreground_control" not in remediation
     assert remediation["capture_source"] == "engine_render_target_only"
     assert "foreground window" not in remediation["instructions"]
+
+
+def test_mode_remediation_runs_outside_editor_module_paths(tmp_path):
+    session.configure(str(tmp_path), _config("developer_assist"))
+    argv = session.mode_remediation("global_validation")["config_update_argv"]
+    environment = os.environ.copy()
+    # The Editor adds plugin directories only to its own sys.path. A fresh
+    # interpreter must bootstrap that exact installed directory itself.
+    environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    result = subprocess.run(
+        argv, cwd=tmp_path, env=environment, text=True,
+        capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    config = json.loads((tmp_path / "ProjectSettings/mcp_capabilities.json").read_text())
+    assert config["enabled"] is True
+    assert config["profile"] == "global_validation"
 
 
 def test_supervisor_lease_is_verified_but_never_exposed_in_status_or_trace(tmp_path, monkeypatch):
