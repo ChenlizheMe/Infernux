@@ -215,7 +215,8 @@ def test_typed_creation_preserves_an_asset_arriving_during_save(
     attempts = []
 
     def concurrent_write(target, content, **options):
-        assert Path(target) == path
+        # Save APIs resolve Windows short names before publishing the document.
+        assert Path(target).resolve() == path.resolve()
         path.write_bytes(external)
         sidecar.write_bytes(external_meta)
         attempts.append(target)
