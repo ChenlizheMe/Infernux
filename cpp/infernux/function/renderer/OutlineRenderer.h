@@ -159,8 +159,7 @@ class OutlineRenderer
     VkPipeline CreateMaskPipeline(const VkPipelineShaderStageCreateInfo stages[2], VkPipelineLayout layout,
                                   const ShaderReflection &vertexReflection);
     VkPipeline GetOrCreateMtlOutlinePipeline(InxMaterial *material);
-    VkDescriptorSet GetOrCreateMtlOutlineDescSet(InxMaterial *material);
-    void EnsureOutlineSkinBufferCapacity(uint32_t frameIndex, size_t boneMatrixCount);
+    void EnsureOutlineBufferCapacity(uint32_t frameIndex, size_t instanceCount, size_t boneMatrixCount);
 
     // ========================================================================
     // Internal Rendering
@@ -201,43 +200,27 @@ class OutlineRenderer
     // Per-material outline mask pipeline resources
     // ========================================================================
 
-    // Pipeline layout: set 0 (vertex material properties), set 1 (active camera view),
-    // set 2 (globals + instance SSBO)
-    VkPipelineLayout m_outlineMtlPipelineLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout m_outlineMtlSet0Layout = VK_NULL_HANDLE;
-
-    // Per-frame single-instance buffer (1 mat4, for outline object transform)
-    struct OutlineInstanceBuf
-    {
-        VkBuffer buffer = VK_NULL_HANDLE;
-        VmaAllocation allocation = VK_NULL_HANDLE;
-        void *mapped = nullptr;
-    };
-    std::vector<OutlineInstanceBuf> m_outlineInstanceBufs;
-
-    struct OutlineSkinBuf
+    struct OutlineStorageBuffer
     {
         VkBuffer buffer = VK_NULL_HANDLE;
         VmaAllocation allocation = VK_NULL_HANDLE;
         void *mapped = nullptr;
         size_t capacity = 0;
     };
-    std::vector<OutlineSkinBuf> m_outlineSkinInstanceBufs;
-    std::vector<OutlineSkinBuf> m_outlineSkinPaletteBufs;
-    std::vector<OutlineSkinBuf> m_outlineInstanceAuxBufs;
+    std::vector<OutlineStorageBuffer> m_outlineInstanceBufs;
+    std::vector<OutlineStorageBuffer> m_outlineSkinInstanceBufs;
+    std::vector<OutlineStorageBuffer> m_outlineSkinPaletteBufs;
+    std::vector<OutlineStorageBuffer> m_outlineInstanceAuxBufs;
 
     // Per-frame outline globals descriptor sets (binding 0 = globals UBO, binding 1 = instance buf,
-    // binding 2 = one selected skin instance, binding 3 = selected skin palette,
+    // binding 2 = selected skin instances, binding 3 = selected skin palette,
     // binding 4 = selected instance identity/layer data)
     std::vector<VkDescriptorSet> m_outlineGlobalsDescSets;
     std::vector<vk::DescriptorLease> m_outlineGlobalsDescLeases;
 
-    // Cached per-material outline mask pipelines (key = material name)
+    // Cached per-material outline mask pipelines (key = stable material identity)
     std::unordered_map<std::string, VkPipeline> m_perMtlOutlinePipelines;
-
-    // Cached per-material set 0 descriptor sets (scene UBO + vertex material UBO)
-    std::unordered_map<std::string, VkDescriptorSet> m_perMtlOutlineDescSets;
-    std::unordered_map<std::string, vk::DescriptorLease> m_perMtlOutlineDescLeases;
+    std::unordered_map<std::string, std::string> m_perMtlOutlineProgramIds;
 
     // ========================================================================
     // Outline Parameters

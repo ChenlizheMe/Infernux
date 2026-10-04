@@ -4800,6 +4800,15 @@ void SceneRenderGraph::BuildRenderGraph()
                     }
                 }
 
+                if (shaderName == "Display Encode") {
+                    // Scene View is an opaque editor display. Keep coverage alpha
+                    // in graph intermediates and Game/RenderTexture output, while
+                    // exposing black background and overlays even without a sky.
+                    packedPushConstants.values[2] = m_renderView.kind == rhi::RenderViewKind::Scene ? 1.0f : 0.0f;
+                    packedPushConstantSize =
+                        std::max(packedPushConstantSize, 3u * static_cast<uint32_t>(sizeof(float)));
+                }
+
                 // Determine output target (primary color)
                 vk::ResourceHandle fsOutputTarget = primaryColorTarget;
                 vk::ResourceHandle fsWrittenVersion;
@@ -4987,6 +4996,12 @@ void SceneRenderGraph::BuildRenderGraph()
                         if (cameraStopNaNsParameterIndex >= 0 && static_cast<uint32_t>(cameraStopNaNsParameterIndex) <
                                                                      drawPushConstantSize / sizeof(float)) {
                             drawPushConstants.values[cameraStopNaNsParameterIndex] = m_cameraStopNaNs ? 1.0f : 0.0f;
+                        }
+
+                        if (shaderName == "Display Encode") {
+                            drawPushConstants.values[2] = m_renderView.kind == rhi::RenderViewKind::Scene ? 1.0f : 0.0f;
+                            drawPushConstantSize =
+                                std::max(drawPushConstantSize, 3u * static_cast<uint32_t>(sizeof(float)));
                         }
 
                         fsRenderer->Draw(ctx.GetGraphicsCommandEncoder(), entry, bindGroup, GetPerViewBindGroup(),

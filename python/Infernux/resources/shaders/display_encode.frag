@@ -11,6 +11,7 @@ ShaderInfo {
     PushConstants pc {
         Float dithering
         Float stopNaNs
+        Float opaqueOutput
     }
     Inputs {
         Float2 inUV
@@ -62,5 +63,5 @@ void main() {
         );
         encoded = clamp(encoded + noise * (1.0 / 255.0), 0.0, 1.0);
     }
-    outColor = vec4(encoded, source.a);
+    outColor = vec4(encoded, pc.opaqueOutput > 0.5 ? 1.0 : source.a);
 }
