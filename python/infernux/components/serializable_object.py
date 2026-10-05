@@ -96,6 +96,12 @@ def get_serializable_type_id(value: type | "SerializableObject") -> str:
 
 def get_serializable_class(type_id: str) -> Optional[Type["SerializableObject"]]:
     """Look up a registered SerializableObject subclass by module:qualname."""
+    # Scenes authored before the package rename store this exact engine prefix.
+    # Migrate the persisted identity at the read boundary; newly serialized
+    # values use their registered lowercase class identity. No import aliases
+    # or case-insensitive class/name searches participate in resolution.
+    if type_id.startswith("Infernux."):
+        type_id = "infernux." + type_id.removeprefix("Infernux.")
     candidate = _CANDIDATE_TYPES.get()
     if candidate is not None and type_id in candidate[0]:
         return candidate[0][type_id]
