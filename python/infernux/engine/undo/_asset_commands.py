@@ -11,6 +11,8 @@ from collections.abc import Callable
 from typing import Any, Optional
 
 from infernux.engine.path_utils import (
+    is_case_only_rename,
+    resolve_destination_path,
     is_path_within,
     path_key,
     resolved_path,
@@ -136,8 +138,8 @@ class ProjectAssetRenameCommand(UndoCommand):
     ) -> None:
         super().__init__(description)
         self._old_path = resolved_path(old_path)
-        self._new_path = resolved_path(new_path)
-        if same_path(self._old_path, self._new_path):
+        self._new_path = resolve_destination_path(new_path)
+        if same_path(self._old_path, self._new_path) and not is_case_only_rename(self._old_path, self._new_path):
             raise ValueError("asset rename command requires two different paths")
         if not same_path(
             os.path.dirname(self._old_path),

@@ -2765,7 +2765,8 @@ AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const s
     MoveMetadata(oldPath, newPath);
 
     UpdateMapping(guid, newPath);
-    RemoveMappingByPath(oldPath);
+    if (normalizedOldPath != FilesystemPathKey(newPath))
+        RemoveMappingByPath(oldPath);
     m_fileStates.erase(normalizedOldPath);
     UpdateCachedFileState(newPath, IsReadOnlyPath(FilesystemPathKey(newPath)));
     m_assetIndexDirty = true;
@@ -2818,7 +2819,8 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
     for (const auto &[oldPath, newPath] : moves) {
         const std::string oldKey = FilesystemPathKey(oldPath);
         const std::string newKey = FilesystemPathKey(newPath);
-        if (oldKey.empty() || newKey.empty() || oldKey == newKey)
+        if (oldKey.empty() || newKey.empty() ||
+            NormalizeFilesystemPathLexically(oldPath) == NormalizeFilesystemPathLexically(newPath))
             return failure(oldPath, newPath, AssetMutationErrorCode::InvalidPath,
                            "asset relocation requires two different paths");
         if (!sourceKeys.insert(oldKey).second || !destinationKeys.insert(newKey).second)
@@ -2850,7 +2852,8 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
             MoveMetadata(move.oldPath, move.newPath);
             metadataMoved.push_back(&move);
             UpdateMapping(move.guid, move.newPath);
-            RemoveMappingByPath(move.oldPath);
+            if (move.oldKey != move.newKey)
+                RemoveMappingByPath(move.oldPath);
             m_fileStates.erase(move.oldKey);
             UpdateCachedFileState(move.newPath, IsReadOnlyPath(move.newKey));
         }
@@ -3513,14 +3516,19 @@ void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &
     if (fs::exists(oldMetaFsPath) && meta.LoadFromFile(oldMetaPath)) {
         existingGuid = meta.GetGuid();
 
+        const bool sameMetadata = FilesystemPathKey(oldMetaPath) == FilesystemPathKey(newMetaPath);
+        if (sameMetadata && oldMetaFsPath.filename() != ToFsPath(newMetaPath).filename())
+            fs::rename(oldMetaFsPath, ToFsPath(newMetaPath));
         meta.UpdateFilePath(newPath);
         DocumentStore::Instance().WriteAndWait(newMetaPath,
                                                meta.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n");
-        std::error_code removeError;
-        if (!fs::remove(oldMetaFsPath, removeError) || removeError) {
-            std::error_code rollbackError;
-            fs::remove(ToFsPath(newMetaPath), rollbackError);
-            throw std::runtime_error("Failed to remove old asset metadata: " + oldMetaPath);
+        if (!sameMetadata) {
+            std::error_code removeError;
+            if (!fs::remove(oldMetaFsPath, removeError) || removeError) {
+                std::error_code rollbackError;
+                fs::remove(ToFsPath(newMetaPath), rollbackError);
+                throw std::runtime_error("Failed to remove old asset metadata: " + oldMetaPath);
+            }
         }
 
         auto it = m_metas.find(existingGuid);

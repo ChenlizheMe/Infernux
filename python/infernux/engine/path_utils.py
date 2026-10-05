@@ -45,6 +45,14 @@ def resolved_path(path: PathLike) -> str:
     return os.path.normpath(os.path.realpath(lexical))
 
 
+def resolve_destination_path(path: PathLike) -> str:
+    """Resolve a destination's parent aliases while retaining its requested name."""
+    if not path:
+        return ""
+    lexical = lexical_path(path)
+    return os.path.join(resolved_path(os.path.dirname(lexical)), os.path.basename(lexical))
+
+
 def resolve_project_path(path: PathLike, root: PathLike) -> str:
     """Resolve an I/O path against its explicit project, independent of cwd."""
     if not root:
@@ -89,6 +97,18 @@ def same_path(left: PathLike, right: PathLike) -> bool:
     except OSError:
         pass
     return path_key(left) == path_key(right)
+
+
+def is_case_only_rename(left: PathLike, right: PathLike) -> bool:
+    """Distinguish requested filename spelling from case-insensitive identity.
+
+    This compares lexical intent, so resolving an existing destination cannot
+    erase its requested case. Other aliases (short names, links) do not qualify.
+    """
+    if not left or not right:
+        return False
+    source, destination = lexical_path(left), lexical_path(right)
+    return source != destination and os.path.normcase(source) == os.path.normcase(destination)
 
 
 def is_path_within(path: PathLike, root: PathLike, *, allow_root: bool = True) -> bool:

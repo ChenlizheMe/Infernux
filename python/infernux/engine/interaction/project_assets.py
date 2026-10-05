@@ -6,7 +6,9 @@ import os
 from typing import Any, Callable, Iterable, Optional
 
 from infernux.engine.path_utils import (
+    is_case_only_rename,
     is_path_within,
+    resolve_destination_path,
     path_key,
     resolved_path,
     same_path,
@@ -254,7 +256,7 @@ class ProjectAssetCommandService:
         self._require_configured()
         source = self._project_path(source_path)
         destination = project_file_ops.rename_destination(source, new_name)
-        if not destination or same_path(source, destination):
+        if not destination or (same_path(source, destination) and not is_case_only_rename(source, destination)):
             return destination
         self._project_path(destination)
         command = ProjectAssetRenameCommand(
@@ -280,10 +282,10 @@ class ProjectAssetCommandService:
             if not os.path.exists(source):
                 return False
             destination = project_file_ops.rename_destination(source, new_name)
-            if not destination or same_path(source, destination):
+            if not destination or (same_path(source, destination) and not is_case_only_rename(source, destination)):
                 return False
             self._project_path(destination)
-            return not os.path.exists(destination)
+            return not os.path.exists(destination) or same_path(source, destination)
         except (OSError, RuntimeError, ValueError):
             return False
 
@@ -495,8 +497,19 @@ class ProjectAssetCommandService:
         select_result: bool = False,
     ) -> str:
         source = self._project_path(source_path)
-        destination = self._project_path(destination_path)
+        self._project_path(destination_path)
+        destination = resolve_destination_path(destination_path)
         if same_path(source, destination):
+            if is_case_only_rename(source, destination):
+                from infernux.engine.undo import ProjectAssetRenameCommand
+
+                command = ProjectAssetRenameCommand(
+                    source, destination, asset_database=self._asset_database,
+                    on_changed=self._notify_changed,
+                )
+                self._execute(command, origin)
+                if select_result:
+                    self._select_project_paths((destination,))
             return destination
         overwrite_paths = (destination,) if overwrite and os.path.exists(destination) else ()
         result = self._execute_plan(

@@ -8,7 +8,7 @@ import os
 import uuid
 from typing import Callable, Iterable, Optional, TypeAlias
 
-from infernux.engine.path_utils import resolved_path, same_path
+from infernux.engine.path_utils import is_case_only_rename, lexical_path, path_key, resolved_path, same_path
 
 from .action_journal import ActionOrigin
 from .documents import DocumentRegistry
@@ -44,13 +44,14 @@ class AssetMutation:
     operation_id: str = ""
 
     def __post_init__(self) -> None:
-        source = resolved_path(self.source_path)
         kind = AssetMutationKind(self.kind)
-        destination = resolved_path(self.destination_path) if self.destination_path else ""
+        normalize = lexical_path if kind is AssetMutationKind.MOVED else resolved_path
+        source = normalize(self.source_path)
+        destination = normalize(self.destination_path) if self.destination_path else ""
         if not source:
             raise ValueError("asset mutation requires a source path")
         if kind is AssetMutationKind.MOVED:
-            if not destination or same_path(source, destination):
+            if not destination or (same_path(source, destination) and not is_case_only_rename(source, destination)):
                 raise ValueError("asset move requires two different paths")
         elif destination:
             raise ValueError(f"{kind.value} asset mutation must not have a destination")
@@ -317,8 +318,8 @@ class AssetMutationService:
             for source, destination, guid in entries
         )
         plan = AssetRelocationPlan(mutations, operation, action_origin)
-        source_keys = {mutation.source_path.casefold() for mutation in mutations}
-        destination_keys = {mutation.destination_path.casefold() for mutation in mutations}
+        source_keys = {path_key(mutation.source_path) for mutation in mutations}
+        destination_keys = {path_key(mutation.destination_path) for mutation in mutations}
         if len(source_keys) != len(mutations) or len(destination_keys) != len(mutations):
             raise ValueError("asset relocation contains duplicate source or destination paths")
         self._documents.preflight_resource_remaps(

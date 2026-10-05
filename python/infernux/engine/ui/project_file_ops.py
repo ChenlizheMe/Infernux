@@ -14,9 +14,11 @@ import time
 
 from infernux.debug import Debug
 from infernux.engine.path_utils import (
+    is_case_only_rename,
     is_path_within,
     path_key,
     relative_path,
+    resolve_destination_path,
     resolved_path,
     same_path,
 )
@@ -260,16 +262,17 @@ def move_paths_batch(
         if not old_path or not new_path or not os.path.exists(old_path):
             return None
         old_abs = resolved_path(old_path)
-        new_abs = resolved_path(new_path)
-        if same_path(old_abs, new_abs):
+        new_abs = resolve_destination_path(new_path)
+        case_only = is_case_only_rename(old_abs, new_abs)
+        if same_path(old_abs, new_abs) and not case_only:
             continue
         old_key = path_key(old_abs)
         new_key = path_key(new_abs)
         if old_key in source_keys or new_key in destination_keys:
             raise ValueError("asset move batch contains duplicate sources or destinations")
-        if os.path.exists(new_abs):
+        if os.path.exists(new_abs) and not (case_only and same_path(old_abs, new_abs)):
             return None
-        if os.path.isdir(old_abs) and is_path_within(new_abs, old_abs):
+        if os.path.isdir(old_abs) and is_path_within(new_abs, old_abs, allow_root=False):
             return None
         if any(
             is_path_within(old_abs, existing, allow_root=True)
@@ -328,7 +331,10 @@ def move_paths_batch(
 
         for old_abs, new_abs in roots:
             os.makedirs(os.path.dirname(new_abs), exist_ok=True)
-            shutil.move(old_abs, new_abs)
+            if is_case_only_rename(old_abs, new_abs):
+                os.rename(old_abs, new_abs)
+            else:
+                shutil.move(old_abs, new_abs)
             workspace_moves.append((old_abs, new_abs))
 
         use_native_batch = (
@@ -365,7 +371,10 @@ def move_paths_batch(
         rollback_failures = []
         for old_abs, new_abs in reversed(workspace_moves):
             try:
-                shutil.move(new_abs, old_abs)
+                if is_case_only_rename(new_abs, old_abs):
+                    os.rename(new_abs, old_abs)
+                else:
+                    shutil.move(new_abs, old_abs)
             except OSError as rollback_exc:
                 rollback_failures.append(
                     RuntimeError(
