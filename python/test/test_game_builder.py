@@ -325,17 +325,18 @@ def _make_builder(tmp_path, output_dir):
     return GameBuilder(str(project_root), str(output_dir), game_name="TestGame")
 
 
-def _scene_with_component(fields, *, type_id="python::cook-fixture:CookFixture:CookFixture"):
+def _scene_with_component(fields, *, type_id="python:cook-script:cook-fixture:CookFixture:CookFixture"):
     """Identity-complete authoring input for dependency/cook unit tests."""
     return {
         "identity_format": "guid-v1", "name": "Main", "isPlaying": False,
         "objects": [{
             "id": "1" * 32, "name": "CookFixture", "active": True,
             "is_static": False, "tag": "Untagged", "layer": 0, "children": [],
-            "transform": {"component_id": "2" * 32, "position": [0, 0, 0],
+            "transform": {"component_id": "2" * 32, "type": "Transform",
+                          "enabled": True, "execution_order": 0, "position": [0, 0, 0],
                           "rotation": [0, 0, 0], "scale": [1, 1, 1]},
             "components": [{"component_id": "3" * 32, "type_id": type_id,
-                            "enabled": True, "data": fields}],
+                            "enabled": True, "execution_order": 0, "data": fields}],
         }],
     }
 
@@ -3906,7 +3907,8 @@ def test_player_cooks_variant_from_current_base_without_authoring_metadata(tmp_p
     variant_path = project / "Assets/Variant.prefab"
     base = dict(root_object=dict(local_id=1, name="Base", active=True, is_static=False,
                 tag="Untagged", layer=0, children=[], components=[],
-                transform=dict(position=[0, 0, 0], rotation=[0, 0, 0], scale=[1, 1, 1])),
+                transform=dict(type="Transform", enabled=True, execution_order=0,
+                               position=[0, 0, 0], rotation=[0, 0, 0], scale=[1, 1, 1])),
                 next_local_id=3, next_component_id=1)
     child = copy.deepcopy(base["root_object"])
     child.update(local_id=2, name="Child")
@@ -3936,7 +3938,7 @@ def test_player_cooks_variant_from_current_base_without_authoring_metadata(tmp_p
     instance["children"][0]["name"] = "Instance override"
     scene_path = project / "Assets/Scene.scene"
     from infernux.engine.scene_authoring import encode_scene_document
-    snapshot = {"objects": [instance], "authoring_identity": {
+    snapshot = {"name": "VariantScene", "isPlaying": False, "objects": [instance], "authoring_identity": {
         "objects": {str(node["id"]): f'{node["id"]:032x}' for node in (instance, instance["children"][0])},
         "components": {str(node["transform"]["component_id"]): f'{node["transform"]["component_id"]:032x}'
                        for node in (instance, instance["children"][0])},

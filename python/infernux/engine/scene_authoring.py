@@ -16,6 +16,8 @@ def encode_runtime_scene_artifact(snapshot: dict) -> dict:
     """The cook owns resolved compact IDs; it never allocates random file GUIDs."""
     if not isinstance(snapshot, dict) or "identity_format" in snapshot:
         raise ValueError("Scene cooking requires a resolved runtime snapshot")
+    from infernux.lib import _Infernux
+    _Infernux._validate_resolved_scene_document(snapshot)
     result = dict(snapshot)
     result.pop("authoring_identity", None)
     result.pop("nextObjectId", None)

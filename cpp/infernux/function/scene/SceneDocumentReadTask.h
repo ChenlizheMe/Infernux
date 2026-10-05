@@ -58,4 +58,8 @@ class SceneDocumentReadTicket
 
 SceneDocumentReadTicket ScheduleSceneDocumentRead(const std::string &path);
 
+// Shared by Scene file reads and cook after authored identities/Prefabs resolve.
+// Validates the in-memory document without allocating or changing a live World.
+void ValidateResolvedSceneDocument(const nlohmann::json &document);
+
 } // namespace infernux

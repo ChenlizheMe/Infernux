@@ -2703,6 +2703,10 @@ void RegisterSceneBindings(py::module_ &m)
     m.def("_schedule_scene_document_read", &ScheduleSceneDocumentRead, py::arg("path"),
           "Schedule scene file IO and structural validation on the native JobSystem");
     m.def(
+        "_validate_resolved_scene_document",
+        [](py::handle document) { ValidateResolvedSceneDocument(PythonToJson(document)); },
+        py::arg("document"), "Validate a resolved Scene before publishing its cooked artifact");
+    m.def(
         "_encode_scene_authoring_document",
         [](py::handle document) {
             const auto snapshot = PythonToJson(document);

@@ -156,7 +156,9 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
                        componentIds, componentTypes);
 }
 
-void ValidateSceneDocument(const json &document)
+} // namespace
+
+void ValidateResolvedSceneDocument(const nlohmann::json &document)
 {
     static const std::unordered_set<std::string> allowed = {
         "name",        "isPlaying",    "objects",         "mainCameraComponentId",
@@ -193,8 +195,6 @@ void ValidateSceneDocument(const json &document)
             throw std::invalid_argument("Scene.mainCameraComponentId must reference a native Camera");
     }
 }
-
-} // namespace
 
 bool SceneDocumentReadTicket::IsComplete() const noexcept
 {
@@ -309,7 +309,7 @@ SceneDocumentReadTicket ScheduleSceneDocumentRead(const std::string &path)
                 SceneAuthoringIdentity identities;
                 document = DecodeSceneAuthoringDocument(document, identities);
             }
-            ValidateSceneDocument(document);
+            ValidateResolvedSceneDocument(document);
             std::lock_guard<std::mutex> lock(state->mutex);
             if (state->cancelRequested.load(std::memory_order_acquire)) {
                 state->status.store(SceneDocumentReadTicket::Status::Cancelled, std::memory_order_release);
