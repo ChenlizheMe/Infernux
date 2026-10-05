@@ -1725,8 +1725,10 @@ def _render_animclip_body(ctx: InxGUIContext, panel, state: _State):
     ctx.dummy(0, 4)
 
     # ── Clip name (read-only, derived from filename) ───────────
-    clip_display_name = (clip.name if embedded else
-                         os.path.splitext(os.path.basename(state.file_path))[0] if state.file_path else clip.name)
+    clip_display_name = (
+        os.path.splitext(os.path.basename(state.file_path))[0]
+        if state.file_path else clip.name
+    )
     field_label(ctx, t("asset.animclip_name"), lw)
     ctx.begin_disabled(True)
     ctx.text_input("##animclip_name", clip_display_name, 256)

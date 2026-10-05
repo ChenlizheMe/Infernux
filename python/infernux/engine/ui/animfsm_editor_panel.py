@@ -2514,8 +2514,6 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         p = payload.strip()
         if not p:
             return
-        if not self._clip_path_matches_fsm_mode(p):
-            return
         # Check if dropped on an existing state node
         for uid, name in self._uid_to_name.items():
             node = self._graph.find_node(uid)
@@ -2530,7 +2528,8 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
                 name=self._unique_state_name(f"State {self._fsm.state_count}")
             )
             state.position = [gx, gy]
-            self._assign_clip_to_state(state, p, record_undo=False)
+            if not self._assign_clip_to_state(state, p, record_undo=False):
+                return
             self._insert_state(
                 state,
                 "Drop clip to canvas",
@@ -2556,7 +2555,8 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             state = AnimState(name=self._unique_state_name("Timeline"))
             state.position = [gx, gy]
             state.kind = "timeline"
-            self._assign_timeline_to_state(state, p, record_undo=False)
+            if not self._assign_timeline_to_state(state, p, record_undo=False):
+                return
             self._insert_state(
                 state,
                 "Drop timeline to canvas",
@@ -2568,11 +2568,11 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             p = resolve_asset_reference_path("AnimationTimeline", path)
         except (KeyError, TypeError, ValueError) as exc:
             Debug.log_error(f"Animation timeline assignment rejected: {exc}")
-            return
+            return False
         guid = self._resolve_guid(p) if p else ""
         if not guid:
             Debug.log_error("Animation timeline assignment requires a registered asset GUID")
-            return
+            return False
         if record_undo:
             self._update_state_fields(
                 state,
@@ -2585,6 +2585,8 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             state.kind = "timeline"
             state.timeline_guid = guid
         self._clip_name_cache = {}
+
+        return True
 
     def _clear_timeline_from_state(self, state: AnimState, node=None, *, record_undo: bool = True):
         if record_undo:
@@ -2679,11 +2681,11 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             p = resolve_asset_reference_path(self._fsm_clip_asset_type(), clip_path)
         except (KeyError, TypeError, ValueError) as exc:
             Debug.log_error(f"Animation state clip assignment rejected: {exc}")
-            return
+            return False
         guid = self._resolve_guid(p) if p else ""
         if not guid:
             Debug.log_error("Animation state clip assignment requires a registered asset GUID")
-            return
+            return False
         if record_undo:
             self._update_state_fields(
                 state,
@@ -2694,6 +2696,8 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         else:
             state.clip_guid = guid
         self._clip_name_cache = {}
+
+        return True
 
     # ── Save ──────────────────────────────────────────────────────────
 
