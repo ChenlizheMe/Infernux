@@ -83,7 +83,9 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
     # One RenderStack is active per loaded Scene. Additive scenes are peers in
     # one World, so a process-global singleton cannot represent ownership.
-    _active_instances: Dict[int, "RenderStack"] = {}
+    # Keep this separate from InxComponent._active_instances, whose values are
+    # lists keyed by GameObject ID. A World ID may legally equal an object ID.
+    _scene_instances: Dict[int, "RenderStack"] = {}
 
     @staticmethod
     def _scene_key(scene) -> int:
@@ -108,9 +110,9 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         key = cls._scene_key(scene)
         if key <= 0:
             return None
-        inst = cls._active_instances.get(key)
+        inst = cls._scene_instances.get(key)
         if inst is not None and not cls._is_effectively_active(inst, scene=scene):
-            cls._active_instances.pop(key, None)
+            cls._scene_instances.pop(key, None)
             return None
         return inst
 
@@ -118,9 +120,9 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     def clear_active_instance(cls, scene=None) -> None:
         """Forget the active stack for one Scene, or all loaded Scenes."""
         if scene is None:
-            cls._active_instances.clear()
+            cls._scene_instances.clear()
             return
-        cls._active_instances.pop(cls._scene_key(scene), None)
+        cls._scene_instances.pop(cls._scene_key(scene), None)
 
     @classmethod
     def activate_instance(cls, stack: "RenderStack", scene) -> None:
@@ -128,7 +130,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         if not cls._is_effectively_active(stack, scene=scene):
             raise RuntimeError("RenderStack activation requires its live owning Scene")
         stack._owning_scene = scene
-        cls._active_instances[cls._scene_key(scene)] = stack
+        cls._scene_instances[cls._scene_key(scene)] = stack
 
     @classmethod
     def refresh_active_instance(
@@ -147,7 +149,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         if scene is None or not hasattr(scene, "get_all_objects"):
             return None
         key = cls._scene_key(scene)
-        cls._active_instances.pop(key, None)
+        cls._scene_instances.pop(key, None)
         for obj in scene.get_all_objects() or ():
             if not obj.is_active_in_hierarchy():
                 continue
@@ -265,7 +267,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         self._clear_pipeline_diagnostic()
         scene = self._owning_scene
         key = RenderStack._scene_key(scene)
-        was_active = RenderStack._active_instances.get(key) is self
+        was_active = RenderStack._scene_instances.get(key) is self
         if was_active:
             RenderStack.clear_active_instance(scene)
         if self._pipeline is not None and hasattr(self._pipeline, "dispose"):
@@ -291,7 +293,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     def on_disable(self) -> None:
         """Release active ownership and promote another enabled RenderStack."""
         scene = self._owning_scene or getattr(self.game_object, "scene", None)
-        if RenderStack._active_instances.get(RenderStack._scene_key(scene)) is self:
+        if RenderStack._scene_instances.get(RenderStack._scene_key(scene)) is self:
             RenderStack.clear_active_instance(scene)
             self._promote_next_stack()
         self.invalidate_graph()
