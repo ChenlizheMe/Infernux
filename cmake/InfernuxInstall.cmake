@@ -212,7 +212,6 @@ install(
     FILES
         "${CMAKE_SOURCE_DIR}/pyproject.toml"
         "${CMAKE_SOURCE_DIR}/setup.py"
-        "${CMAKE_SOURCE_DIR}/setup.cfg"
         "${CMAKE_SOURCE_DIR}/MANIFEST.in"
         "${CMAKE_SOURCE_DIR}/README.md"
         "${CMAKE_SOURCE_DIR}/README-zh.md"

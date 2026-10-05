@@ -13,6 +13,7 @@ from setuptools.command.build_py import build_py as _build_py
 import os
 import json
 import shutil
+import runpy
 from pathlib import Path
 
 
@@ -62,4 +63,9 @@ class CleanPackageDataBuild(_build_py):
 
 
 
-setup(distclass=BinaryDistribution, cmdclass={"build_py": CleanPackageDataBuild})
+release = runpy.run_path(str(Path(__file__).parent / "python/infernux/version.py"))
+setup(
+    distclass=BinaryDistribution,
+    cmdclass={"build_py": CleanPackageDataBuild},
+    options={"bdist_wheel": {"build_number": str(release["ENGINE_BUILD_NUMBER"])}},
+)

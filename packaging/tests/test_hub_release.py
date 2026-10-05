@@ -27,7 +27,8 @@ def test_project_version_uses_current_project_metadata(tmp_path: Path):
 
 def test_rebuild_keeps_package_version_and_has_distinct_hub_identity(tmp_path):
     (tmp_path / "pyproject.toml").write_text('[project]\nversion = "0.4.1"\n')
-    (tmp_path / "setup.cfg").write_text('[bdist_wheel]\nbuild_number = 2\n')
+    (tmp_path / "python/infernux").mkdir(parents=True)
+    (tmp_path / "python/infernux/version.py").write_text('ENGINE_BUILD_NUMBER = 2\n')
     assert project_version(tmp_path) == "0.4.1"
     assert project_hub_version(tmp_path) == "0.4.1-2"
     assert release_tag_for("0.4.1", 2) == "v0.4.1-v2"

@@ -29,9 +29,11 @@ import logging
 
 from packaging.tags import sys_tags
 from packaging.utils import InvalidWheelFilename, parse_wheel_filename
+from packaging.version import InvalidVersion, Version
 
 from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME, PythonRuntimeId
 from hub_utils import get_hub_shared_data_dir
+from wheel_identity import has_matching_wheel_identity, validate_wheel_identity
 
 
 class DownloadCancelled(Exception):
@@ -178,7 +180,9 @@ class VersionManager:
         atomic installs existed) are deleted on sight so they neither appear
         in the version list nor block a clean re-download (issue #43).
         """
-        ver_dir = _VERSIONS_DIR / version
+        if _tag_to_version(version) != version:
+            return None
+        ver_dir = _VERSIONS_DIR / _base_version(version)
         if not ver_dir.is_dir():
             return None
         target_python = (
@@ -187,9 +191,11 @@ class VersionManager:
         valid_wheels: list[str] = []
         for wheel in glob.glob(str(ver_dir / "infernux-*.whl")):
             if self._is_valid_wheel(wheel):
-                if not wheel_platform_compatible(wheel):
+                if wheel_release(wheel) != version or not wheel_platform_compatible(wheel):
                     continue
                 if target_python and wheel_python_version(wheel) != target_python:
+                    continue
+                if not has_matching_wheel_identity(wheel):
                     continue
                 valid_wheels.append(wheel)
                 continue
@@ -206,7 +212,9 @@ class VersionManager:
         return preferred or max(valid_wheels, key=wheel_build)
 
     def installed_python_versions(self, version: str) -> list[str]:
-        ver_dir = _VERSIONS_DIR / version
+        if _tag_to_version(version) != version:
+            return []
+        ver_dir = _VERSIONS_DIR / _base_version(version)
         if not ver_dir.is_dir():
             return []
         versions = {
@@ -214,8 +222,10 @@ class VersionManager:
             for path in glob.glob(str(ver_dir / "infernux-*.whl"))
             if (
                 self._is_valid_wheel(path)
+                and wheel_release(path) == version
                 and wheel_platform_compatible(path)
                 and wheel_python_version(path)
+                and has_matching_wheel_identity(path)
             )
         }
         return sorted(
@@ -285,16 +295,15 @@ class VersionManager:
         wheel = wheels[0]
         self._require_installed_python(wheel.python_version, engine_version=version)
 
-        ver_dir = _VERSIONS_DIR / version
+        ver_dir = _VERSIONS_DIR / _base_version(version)
         ver_dir.mkdir(parents=True, exist_ok=True)
 
         filename = wheel.filename or wheel.url.rsplit("/", 1)[-1]
         dest = ver_dir / filename
 
         if dest.exists():
-            if self._is_valid_wheel(str(dest)):
+            if self._is_valid_wheel(str(dest)) and has_matching_wheel_identity(str(dest)):
                 return str(dest)
-            dest.unlink(missing_ok=True)  # heal corrupted leftovers
 
         # PyPI wheels sort first. A transport failure gets one deterministic
         # chance to use the matching GitHub Release asset; invalid content is
@@ -332,6 +341,7 @@ class VersionManager:
                         f"Downloaded file for {version} is not a valid wheel "
                         "(truncated or corrupted transfer)."
                     )
+                validate_wheel_identity(tmp_path, filename=filename)
                 os.replace(tmp_path, str(dest))
                 transport_error = None
                 break
@@ -358,13 +368,17 @@ class VersionManager:
 
     def remove_version(self, version: str) -> bool:
         """Delete a cached version.  Returns True if it existed."""
-        import shutil
-
-        ver_dir = _VERSIONS_DIR / version
-        if ver_dir.is_dir():
-            shutil.rmtree(ver_dir, ignore_errors=True)
-            return True
-        return False
+        ver_dir = _VERSIONS_DIR / _base_version(version)
+        if not ver_dir.is_dir():
+            return False
+        removed = False
+        for path in ver_dir.glob("infernux-*.whl"):
+            if wheel_release(str(path)) == version:
+                path.unlink()
+                removed = True
+        if not any(ver_dir.iterdir()):
+            ver_dir.rmdir()
+        return removed
 
     def install_local_wheel(self, wheel_path: str) -> str:
         """Copy a local .whl into the versions cache.
@@ -379,13 +393,12 @@ class VersionManager:
             raise ValueError(
                 f"The selected wheel is not compatible with this platform: {filename}"
             )
-        match = re.match(r"infernux-([^-]+)-", filename, re.IGNORECASE)
-        if not match:
+        version = wheel_release(filename)
+        if not version:
             raise ValueError(
                 f"Cannot determine version from wheel filename: {filename}\n"
                 "Expected a file like infernux-0.4.0-cp313-cp313-win_amd64.whl"
             )
-        version = match.group(1)
         python_version = wheel_python_version(filename)
         if not python_version:
             raise ValueError(
@@ -401,10 +414,16 @@ class VersionManager:
                 f"target Python {python_version}."
             )
 
-        ver_dir = _VERSIONS_DIR / version
+        ver_dir = _VERSIONS_DIR / _base_version(version)
         ver_dir.mkdir(parents=True, exist_ok=True)
         dest = ver_dir / filename
-        shutil.copy2(wheel_path, str(dest))
+        temporary = ver_dir / f"{filename}.tmp-{uuid.uuid4().hex}"
+        try:
+            shutil.copyfile(wheel_path, temporary)
+            validate_wheel_identity(str(temporary), filename=filename)
+            os.replace(temporary, dest)
+        finally:
+            temporary.unlink(missing_ok=True)
         return version
 
     # ── Project version binding ──────────────────────────────────────
@@ -430,7 +449,7 @@ class VersionManager:
         vf = os.path.join(project_dir, ".infernux-version")
         with open(vf, "w", encoding="utf-8") as f:
             f.write("# Infernux project version pin — do not edit manually.\n")
-            f.write("# Format: <major>.<minor>.<patch>\n")
+            f.write("# Exact release: <package-version>[-v<revision>]; no automatic upgrades.\n")
             f.write(version + "\n")
 
     # ── Internal ─────────────────────────────────────────────────────
@@ -519,14 +538,16 @@ class VersionManager:
         Uses get_wheel_path() so corrupted leftovers from interrupted
         installs are healed and never listed (issue #43).
         """
-        result = []
+        result = set()
         if not _VERSIONS_DIR.is_dir():
-            return result
+            return []
         for entry in _VERSIONS_DIR.iterdir():
             if entry.is_dir() and not entry.name.startswith("_"):
-                if self.get_wheel_path(entry.name, python_version):
-                    result.append(entry.name)
-        return result
+                for path in entry.glob("infernux-*.whl"):
+                    release = wheel_release(str(path))
+                    if release and _base_version(release) == entry.name and self.get_wheel_path(release, python_version):
+                        result.add(release)
+        return list(result)
 
     def _require_installed_python(
         self,
@@ -589,24 +610,47 @@ class VersionManager:
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
-_TAG_RE = re.compile(r"^v?(\d+\.\d+\.\d+.*)$")
+_RELEASE_RE = re.compile(r"([0-9][A-Za-z0-9.!+]*)(?:-v([1-9]\d*))?")
+
+
+def _base_version(release: str) -> str:
+    match = _RELEASE_RE.fullmatch(release)
+    if match is None:
+        raise ValueError(f"Invalid Infernux release identity: {release!r}")
+    return str(Version(match.group(1)))
+
+
+def _release_for(version: str, build: int) -> str:
+    return version if build == 1 else f"{version}-v{build}"
 
 
 def _tag_to_version(tag: str) -> str:
     """Convert 'v0.3.0' → '0.3.0', return '' on failure."""
-    m = _TAG_RE.match(tag)
-    return re.sub(r"-v[1-9]\d*$", "", m.group(1)) if m else ""
+    value = tag.removeprefix("v")
+    match = _RELEASE_RE.fullmatch(value)
+    if match is None:
+        return ""
+    try:
+        return _release_for(_base_version(value), int(match.group(2) or 1))
+    except InvalidVersion:
+        return ""
 
 
 def _version_tuple(version: str):
-    """Parse '0.3.0' → (0, 3, 0) for sorting."""
-    parts = []
-    for p in version.split(".")[:3]:
-        digits = re.match(r"\d+", p)
-        parts.append(int(digits.group()) if digits else 0)
-    while len(parts) < 3:
-        parts.append(0)
-    return tuple(parts)
+    """Sort package versions and their independent wheel revisions numerically."""
+    match = _RELEASE_RE.fullmatch(version)
+    return (Version(_base_version(version)), int(match.group(2) or 1))
+
+
+def wheel_release(path_or_name: str) -> str:
+    """Read the exact release identity, never infer it from a cache directory."""
+    try:
+        distribution, version, build, _tags = parse_wheel_filename(os.path.basename(path_or_name))
+    except InvalidWheelFilename:
+        return ""
+    if distribution != "infernux" or (build and (build[0] < 1 or build[1])):
+        return ""
+    return _release_for(str(version), build[0] if build else 1)
 
 
 _CPYTHON_WHEEL_TAG = re.compile(r"(?:^|-)(cp(\d)(\d{1,2}))(?:-|_)", re.IGNORECASE)
@@ -659,7 +703,7 @@ def _find_wheel_assets(release: dict) -> tuple[EngineWheel, ...]:
         name = asset.get("name", "")
         if (
             name.endswith(".whl")
-            and "infernux" in name.lower()
+            and wheel_release(name) == _tag_to_version(release.get("tag_name", ""))
             and wheel_platform_compatible(name)
         ):
             python_version = wheel_python_version(name)
@@ -729,19 +773,23 @@ def _merge_release_catalogs(github: list[dict], pypi: dict) -> list[dict]:
             ]
             if not wheels:
                 continue
-            current = merged.setdefault(
-                str(version),
-                {
-                    "tag_name": f"v{version}",
-                    "prerelease": bool(re.search(r"[A-Za-z]", str(version))),
-                    "published_at": max(
-                        (str(item.get("upload_time_iso_8601", "")) for item in files if isinstance(item, dict)),
-                        default="",
-                    ),
-                    "assets": [],
-                },
-            )
-            current["assets"] = wheels + list(current.get("assets", []))
+            for wheel in wheels:
+                release = wheel_release(wheel["name"])
+                if not release or _base_version(release) != str(version):
+                    continue
+                current = merged.setdefault(
+                    release,
+                    {
+                        "tag_name": f"v{release}",
+                        "prerelease": Version(str(version)).is_prerelease,
+                        "published_at": max(
+                            (str(item.get("upload_time_iso_8601", "")) for item in files if isinstance(item, dict)),
+                            default="",
+                        ),
+                        "assets": [],
+                    },
+                )
+                current["assets"].insert(0, wheel)
 
     return sorted(
         merged.values(),

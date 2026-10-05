@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import configparser
+import runpy
 import json
 import platform
 import tomllib
@@ -30,12 +30,10 @@ def project_version(source_root: str | Path | None = None) -> str:
 
 def project_build_number(source_root: str | Path | None = None) -> int:
     root = Path(source_root).resolve() if source_root else Path(__file__).resolve().parents[1]
-    configuration = configparser.ConfigParser()
-    configuration.read(root / "setup.cfg", encoding="utf-8")
-    value = configuration.get("bdist_wheel", "build_number", fallback="")
-    if not value.isdigit() or int(value) < 1:
-        raise ValueError("setup.cfg must declare a positive bdist_wheel build_number")
-    return int(value)
+    value = runpy.run_path(str(root / "python/infernux/version.py"))["ENGINE_BUILD_NUMBER"]
+    if type(value) is not int or value < 1:
+        raise ValueError("infernux.version must declare a positive ENGINE_BUILD_NUMBER")
+    return value
 
 
 def hub_version_for(version: str, build: int) -> str:

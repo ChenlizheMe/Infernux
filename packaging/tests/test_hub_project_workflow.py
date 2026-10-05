@@ -313,7 +313,7 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     )
     monkeypatch.setattr(model, "_create_vscode_workspace", lambda project: (Path(project) / ".vscode").mkdir())
 
-    result = model.init_project_folder("SafeProject", str(tmp_path), "0.4.1")
+    result = model.init_project_folder("SafeProject", str(tmp_path), project_model_module.source_engine_version())
 
     assert Path(result) == (tmp_path / "SafeProject").resolve()
     assert runtime_locations == [Path(result)]
@@ -474,7 +474,7 @@ def test_new_project_failure_removes_only_staging(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(model, "_install_infernux_in_runtime", fail_install)
 
     with pytest.raises(RuntimeError, match="expected install failure"):
-        model.init_project_folder("FailedProject", str(tmp_path), "0.4.1")
+        model.init_project_folder("FailedProject", str(tmp_path), project_model_module.source_engine_version())
 
     assert unrelated.is_dir()
     assert not (tmp_path / "FailedProject").exists()

@@ -28,7 +28,7 @@ def _project_python_version(project_dir: str) -> str:
 def source_engine_version() -> str:
     """Read the source release identity without importing the native engine."""
     engine_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    return runpy.run_path(os.path.join(engine_root, "python", "infernux", "version.py"))["ENGINE_VERSION"]
+    return runpy.run_path(os.path.join(engine_root, "python", "infernux", "version.py"))["ENGINE_RELEASE"]
 
 
 def _write_json_document(path: str, document: dict, *, indent: int = 2) -> None:

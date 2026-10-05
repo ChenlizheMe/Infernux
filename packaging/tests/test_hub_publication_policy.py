@@ -41,7 +41,8 @@ def test_preparing_a_release_does_not_make_it_published(tmp_path, monkeypatch):
 
 
 def _project(tmp_path, monkeypatch, version):
-    (tmp_path / "setup.cfg").write_text("[bdist_wheel]\nbuild_number = 1\n")
+    (tmp_path / "python/infernux").mkdir(parents=True)
+    (tmp_path / "python/infernux/version.py").write_text("ENGINE_BUILD_NUMBER = 1\n")
     monkeypatch.setattr(catalog_builder, "ROOT", tmp_path)
     (tmp_path / "pyproject.toml").write_text(
         f'[project]\nversion = "{version}"\n', encoding="utf-8"

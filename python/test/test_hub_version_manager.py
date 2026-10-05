@@ -37,15 +37,20 @@ def test_catalog_network_failures_are_not_an_empty_version_list(tmp_path, monkey
     assert "certificate" in str(error.value)
 
 
-def _make_wheel_bytes() -> bytes:
-    """Minimal valid wheel = a zip with one entry."""
+def _make_wheel_bytes(version="9.9.9", *, build=None, python="312") -> bytes:
+    """Minimal wheel with the real distribution and target identity documents."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         z.writestr("infernux/__init__.py", "")
+        z.writestr(f"infernux-{version}.dist-info/METADATA",
+                   f"Metadata-Version: 2.1\nName: infernux\nVersion: {version}\n")
+        z.writestr(f"infernux-{version}.dist-info/WHEEL",
+                   "Wheel-Version: 1.0\n" + (f"Build: {build}\n" if build else "")
+                   + f"Tag: cp{python}-cp{python}-win_amd64\n")
     return buf.getvalue()
 
 
-def test_rebuilds_share_one_version_and_choose_latest_cached_build(tmp_path, monkeypatch):
+def test_rebuilds_keep_independent_project_version_pins(tmp_path, monkeypatch):
     monkeypatch.setattr(vm_mod, "_VERSIONS_DIR", tmp_path)
     names = [f"infernux-0.4.1-{build}-cp313-cp313-win_amd64.whl" for build in (1, 2, 10)]
     releases = _merge_release_catalogs([
@@ -56,15 +61,16 @@ def test_rebuilds_share_one_version_and_choose_latest_cached_build(tmp_path, mon
     monkeypatch.setattr(manager, "_fetch_releases", lambda: releases)
     cache = tmp_path / "0.4.1"
     cache.mkdir()
-    (cache / names[0]).write_bytes(_make_wheel_bytes())
+    (cache / names[0]).write_bytes(_make_wheel_bytes("0.4.1", build=1, python="313"))
     versions = manager.list_versions()
-    assert len(versions) == 1 and versions[0].version == "0.4.1"
-    assert versions[0].update_available
+    assert [entry.version for entry in versions] == ["0.4.1-v10", "0.4.1-v2", "0.4.1"]
+    assert not any(entry.update_available for entry in versions)
     assert versions[0].wheel_url.endswith(names[2])
     # Directory enumeration / lexicographic order must not choose build 2 over 10.
-    (cache / names[2]).write_bytes(_make_wheel_bytes())
-    (cache / names[1]).write_bytes(_make_wheel_bytes())
-    assert Path(manager.get_wheel_path("0.4.1")).name == names[2]
+    (cache / names[2]).write_bytes(_make_wheel_bytes("0.4.1", build=10, python="313"))
+    (cache / names[1]).write_bytes(_make_wheel_bytes("0.4.1", build=2, python="313"))
+    assert Path(manager.get_wheel_path("0.4.1")).name == names[0]
+    assert Path(manager.get_wheel_path("0.4.1-v10")).name == names[2]
     assert not manager.list_versions()[0].update_available
 
 
@@ -73,7 +79,7 @@ def test_channel_retry_never_installs_older_build_under_new_name(tmp_path, monke
     manager = VersionManager(_RuntimeInventory("3.13"))
     old = "infernux-0.4.1-1-cp313-cp313-win_amd64.whl"
     new = "infernux-0.4.1-2-cp313-cp313-win_amd64.whl"
-    monkeypatch.setattr(manager, "_fetch_releases", lambda: [{"tag_name": "v0.4.1", "assets": [
+    monkeypatch.setattr(manager, "_fetch_releases", lambda: [{"tag_name": "v0.4.1-v2", "assets": [
         {"name": old, "browser_download_url": "https://example.invalid/old"},
         {"name": new, "browser_download_url": "https://example.invalid/new"},
     ]}])
@@ -83,7 +89,7 @@ def test_channel_retry_never_installs_older_build_under_new_name(tmp_path, monke
         raise urllib.error.URLError("unavailable")
     monkeypatch.setattr(vm_mod.urllib.request, "urlopen", fail)
     with pytest.raises(urllib.error.URLError):
-        manager.download_version("0.4.1")
+        manager.download_version("0.4.1-v2")
     assert requests == ["https://example.invalid/new"]
     assert not list(tmp_path.rglob("*.whl"))
 
@@ -281,7 +287,7 @@ class TestDownload:
 
         def open_asset(request):
             requested.append(request.full_url)
-            return _FakeResponse(_make_wheel_bytes())
+            return _FakeResponse(_make_wheel_bytes(build=1))
 
         monkeypatch.setattr(vm_mod.urllib.request, "urlopen", open_asset)
 
@@ -341,7 +347,7 @@ class TestListingHealsCorruption:
     def test_valid_wheel_listed(self, vm):
         ver_dir = vm_mod._VERSIONS_DIR / "2.0.0"
         ver_dir.mkdir(parents=True)
-        (ver_dir / "infernux-2.0.0-cp312-cp312-win_amd64.whl").write_bytes(_make_wheel_bytes())
+        (ver_dir / "infernux-2.0.0-cp312-cp312-win_amd64.whl").write_bytes(_make_wheel_bytes("2.0.0"))
 
         assert vm.get_wheel_path("2.0.0") is not None
         assert "2.0.0" in vm.installed_versions()
@@ -349,7 +355,7 @@ class TestListingHealsCorruption:
     def test_remove_version(self, vm):
         ver_dir = vm_mod._VERSIONS_DIR / "2.0.0"
         ver_dir.mkdir(parents=True)
-        (ver_dir / "infernux-2.0.0-cp312-cp312-win_amd64.whl").write_bytes(_make_wheel_bytes())
+        (ver_dir / "infernux-2.0.0-cp312-cp312-win_amd64.whl").write_bytes(_make_wheel_bytes("2.0.0"))
         assert vm.remove_version("2.0.0") is True
         assert not ver_dir.exists()
         assert vm.remove_version("2.0.0") is False
@@ -377,7 +383,7 @@ def test_legacy_wheel_requires_its_legacy_runtime_before_local_import(
 ):
     monkeypatch.setattr(vm_mod, "_VERSIONS_DIR", tmp_path / "versions")
     wheel = tmp_path / "infernux-0.3.7-cp312-cp312-win_amd64.whl"
-    wheel.write_bytes(_make_wheel_bytes())
+    wheel.write_bytes(_make_wheel_bytes("0.3.7"))
 
     current_only = VersionManager(_RuntimeInventory("3.13"))
     with pytest.raises(
@@ -470,8 +476,8 @@ def test_cached_engine_wheels_are_resolved_by_exact_python_abi(
     version_dir.mkdir(parents=True)
     cp312 = version_dir / "infernux-0.4.0-cp312-cp312-win_amd64.whl"
     cp313 = version_dir / "infernux-0.4.0-cp313-cp313-win_amd64.whl"
-    cp312.write_bytes(_make_wheel_bytes())
-    cp313.write_bytes(_make_wheel_bytes())
+    cp312.write_bytes(_make_wheel_bytes("0.4.0", python="312"))
+    cp313.write_bytes(_make_wheel_bytes("0.4.0", python="313"))
     manager = VersionManager(_RuntimeInventory("3.12", "3.13"))
 
     assert manager.get_wheel_path("0.4.0", "3.12") == str(cp312)

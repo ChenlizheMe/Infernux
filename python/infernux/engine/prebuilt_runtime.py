@@ -15,7 +15,7 @@ from infernux.engine.path_utils import resolved_path
 from infernux.engine.game_builder import GameBuilder
 from infernux.engine.nuitka_builder import NuitkaBuilder
 from infernux.resources import get_package_resources_path
-from infernux.version import ENGINE_VERSION
+from infernux.version import ENGINE_RELEASE, ENGINE_VERSION
 
 
 def _player_host_path() -> Path:
@@ -119,6 +119,7 @@ def build_prebuilt_runtime(
             "distribution": "platform-build",
             "profile": profile,
             "engine_version": ENGINE_VERSION,
+            "engine_release": ENGINE_RELEASE,
         })
         temporary = manifest_path + f".{os.getpid()}.tmp"
         with open(temporary, "w", encoding="utf-8") as manifest_file:
@@ -134,6 +135,7 @@ def build_prebuilt_runtime(
             "distribution": "platform-build",
             "profile": profile,
             "engine_version": ENGINE_VERSION,
+            "engine_release": ENGINE_RELEASE,
         })
         temporary = module_manifest_path + f".{os.getpid()}.tmp"
         with open(temporary, "w", encoding="utf-8") as manifest_file:
@@ -189,15 +191,21 @@ def export_platform_player(result: dict[str, object], destination: str) -> str:
     from .precompiled_player import inspect_desktop_runtime
 
     source = Path(str(result["path"]))
-    inspect_desktop_runtime(str(source))
+    manifest = inspect_desktop_runtime(str(source))
+    module_root = Path(str(result["parallel_module_path"]))
+    module_manifest = json.loads((module_root / "Player.inxmanifest").read_text(encoding="utf-8"))
+    identity = ("engine_version", "engine_release", "python_abi", "platform", "machine")
+    if not isinstance(module_manifest, dict) or any(
+        module_manifest.get(key) != manifest[key] for key in identity
+    ):
+        raise RuntimeError("The parallel module does not match the Player release or target")
     target = Path(resolved_path(destination))
     target.mkdir(parents=True, exist_ok=True)
     host = "InfernuxPlayerHost.exe" if sys.platform == "win32" else "InfernuxPlayerHost"
     for name in ("Runtime.inxrt", host):
         shutil.copy2(source / name, target / name)
-    module = Path(str(result["parallel_module_path"])) / "Parallel.inxmod"
+    module = module_root / "Parallel.inxmod"
     shutil.copy2(module, target / module.name)
-    manifest = json.loads((source / "Player.inxmanifest").read_text(encoding="utf-8"))
     manifest["distribution"] = "platform-plugin"
     (target / "Player.inxmanifest").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8",

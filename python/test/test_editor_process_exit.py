@@ -126,9 +126,9 @@ def test_editor_entry_point_cleans_up_before_releasing_project_lock(monkeypatch,
     import infernux.engine as entry
     from infernux.engine import bootstrap as bootstrap_module
     from infernux.engine import library_sync
-    from infernux.version import ENGINE_VERSION
+    from infernux.version import ENGINE_RELEASE
 
-    (tmp_path / ".infernux-version").write_text(ENGINE_VERSION + "\n", encoding="utf-8")
+    (tmp_path / ".infernux-version").write_text(ENGINE_RELEASE + "\n", encoding="utf-8")
 
     calls = []
 

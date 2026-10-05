@@ -9,7 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from infernux.version import ENGINE_VERSION
+from infernux.version import ENGINE_RELEASE, ENGINE_VERSION
 from .player_package_native import extract_pack
 
 
@@ -27,6 +27,7 @@ def inspect_desktop_runtime(root: str) -> dict[str, object]:
     machine = platform.machine().casefold().replace("amd64", "x86_64")
     expected = {
         "engine_version": ENGINE_VERSION,
+        "engine_release": ENGINE_RELEASE,
         "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
         "platform": sys.platform,
     }

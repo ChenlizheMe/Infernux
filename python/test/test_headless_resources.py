@@ -59,11 +59,11 @@ def test_headless_prepares_resources_before_plugin_startup(tmp_path, monkeypatch
         or _Plugins(),
     )
 
-    from infernux.version import ENGINE_VERSION
+    from infernux.version import ENGINE_RELEASE
 
     project_dir = tmp_path / "project"
     project_dir.mkdir()
-    (project_dir / ".infernux-version").write_text(ENGINE_VERSION + "\n", encoding="utf-8")
+    (project_dir / ".infernux-version").write_text(ENGINE_RELEASE + "\n", encoding="utf-8")
     project = str(project_dir)
     assert headless.run_headless(project, lambda *_: True, max_frames=0) == 0
 

@@ -53,8 +53,9 @@ def test_release_catalog_reads_the_wheel_build_number(tmp_path):
         '[project]\nversion = "1.2.3"\n',
         encoding="utf-8",
     )
-    (tmp_path / "setup.cfg").write_text(
-        "[bdist_wheel]\nbuild_number = 4\n",
+    (tmp_path / "python/infernux").mkdir(parents=True)
+    (tmp_path / "python/infernux/version.py").write_text(
+        "ENGINE_BUILD_NUMBER = 4\n",
         encoding="utf-8",
     )
     (tmp_path / "docs/hub-catalog.json").write_text(
@@ -112,7 +113,8 @@ def test_release_catalog_rejects_republishing_an_existing_hub_version(tmp_path):
         '[project]\nversion = "1.2.4"\n',
         encoding="utf-8",
     )
-    (tmp_path / "setup.cfg").write_text("[bdist_wheel]\nbuild_number = 1\n")
+    (tmp_path / "python/infernux").mkdir(parents=True)
+    (tmp_path / "python/infernux/version.py").write_text("ENGINE_BUILD_NUMBER = 1\n")
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs/hub-catalog.json").write_text(
         json.dumps(
@@ -136,7 +138,7 @@ def test_release_catalog_rejects_republishing_an_existing_hub_version(tmp_path):
 
     with pytest.raises(ValueError, match="already published.*increment the build number"):
         module.require_new_hub_version()
-    (tmp_path / "setup.cfg").write_text("[bdist_wheel]\nbuild_number = 2\n")
+    (tmp_path / "python/infernux/version.py").write_text("ENGINE_BUILD_NUMBER = 2\n")
     assert module.require_new_hub_version() == "1.2.4"
 
 

@@ -9,7 +9,7 @@ import pytest
 
 from infernux.engine.precompiled_player import inspect_desktop_runtime, stage_desktop_runtime
 from infernux.engine.player_package_native import write_pack
-from infernux.version import ENGINE_VERSION
+from infernux.version import ENGINE_RELEASE, ENGINE_VERSION
 
 
 @pytest.fixture
@@ -18,6 +18,7 @@ def payload(tmp_path):
     root.mkdir(parents=True)
     manifest = {
         "engine_version": ENGINE_VERSION,
+        "engine_release": ENGINE_RELEASE,
         "python_abi": f"cp{sys.version_info.major}{sys.version_info.minor}",
         "platform": sys.platform, "machine": platform.machine().casefold(),
         "archive": "Runtime.inxrt", "distribution": "platform-plugin",
@@ -41,7 +42,7 @@ def test_consumer_extracts_plugin_archives_without_compiler_or_fingerprint(tmp_p
     assert (staged / "Parallel.inxmod").read_bytes() == (payload / "Parallel.inxmod").read_bytes()
 
 
-@pytest.mark.parametrize("field", ["engine_version", "python_abi", "platform", "machine"])
+@pytest.mark.parametrize("field", ["engine_version", "engine_release", "python_abi", "platform", "machine"])
 def test_incompatible_plugin_payload_is_rejected_before_staging(tmp_path, payload, field):
     path = payload / "Player.inxmanifest"
     manifest = json.loads(path.read_bytes())
@@ -88,3 +89,17 @@ def test_release_engineering_exports_existing_formats_into_plugin_payload(tmp_pa
     assert inspect_desktop_runtime(str(target))["distribution"] == "platform-plugin"
     assert (target / "Runtime.inxrt").read_bytes() == (payload / "Runtime.inxrt").read_bytes()
     assert (target / "Parallel.inxmod").read_bytes() == (payload / "Parallel.inxmod").read_bytes()
+
+
+def test_same_version_different_revision_parallel_module_cannot_be_published(tmp_path, payload):
+    from infernux.engine.prebuilt_runtime import export_platform_player
+    module = tmp_path / "other-revision"
+    module.mkdir()
+    manifest = json.loads((payload / "Player.inxmanifest").read_bytes())
+    manifest["engine_release"] = f"{ENGINE_VERSION}-v999"
+    (module / "Player.inxmanifest").write_text(json.dumps(manifest), encoding="utf-8")
+    (module / "Parallel.inxmod").write_bytes(b"other revision")
+    target = tmp_path / "published"
+    with pytest.raises(RuntimeError, match="parallel module does not match"):
+        export_platform_player({"path": str(payload), "parallel_module_path": str(module)}, str(target))
+    assert not target.exists()

@@ -1,7 +1,7 @@
 # Hub publication and update discovery
 
 Every public change must have a new version/build identity. A same-version
-rebuild increments `setup.cfg`'s wheel build number: engine metadata stays
+rebuild increments `ENGINE_BUILD_NUMBER` in `python/infernux/version.py`: engine metadata stays
 `0.4.1`, the wheel uses build tag `2`, Hub uses `0.4.1-2`, and the GitHub tag
 is `v0.4.1-v2`. Numeric post-release Hub identities are understood by existing
 0.4.1 installations. Published artifact URLs are immutable.
