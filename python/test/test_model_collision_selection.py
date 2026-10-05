@@ -16,11 +16,14 @@ def test_model_selection_schema_uses_native_declarations(scene, monkeypatch):
     monkeypatch.setattr(host, "scene_component", lambda object_id, component_id: renderer)
     described = host.scene_component_schema(go.id, renderer.component_id)
     native = get_native_field_schemas("native:infernux.MeshRenderer")
-    assert [field['name'] for field in described['fields']] == [
+    assert described['fields'][0] == {
+        'name': 'enabled', 'type': 'bool', 'readonly': False, 'hidden': False,
+    }
+    assert [field['name'] for field in described['fields'][1:]] == [
         field.attributes['serialized_name'] for field in native
     ]
     assert {field['name'] for field in described['fields']} == {
-        'castShadows', 'receivesShadows', 'submeshIndex', 'meshPivotOffset',
+        'enabled', 'castShadows', 'receivesShadows', 'submeshIndex', 'meshPivotOffset',
     }
     for field in native:
         descriptor = getattr(type(renderer), field.attributes['field_id'])
