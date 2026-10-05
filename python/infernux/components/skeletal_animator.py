@@ -241,14 +241,18 @@ class SkeletalAnimator(InxComponent):
         transform.translate_local(translation)
         transform.local_rotation = transform.local_rotation * rotation
 
-    def _dispatch_clip_events(self, clip, prev_norm: float, curr_norm: float, looped: bool):
+    def _dispatch_clip_events(
+        self, clip, prev_norm: float, curr_norm: float, looped: bool, *, wrap_count: int = 1,
+    ):
         """Fire any animation events on *clip* crossed this frame."""
         events = getattr(clip, "events", None)
         if not events:
             return
         try:
             from infernux.core.animation_event import dispatch_animation_events
-            dispatch_animation_events(self.game_object, events, prev_norm, curr_norm, looped)
+            dispatch_animation_events(
+                self.game_object, events, prev_norm, curr_norm, looped, wrap_count=wrap_count,
+            )
         except Exception as exc:
             Debug.log_warning(f"[SkeletalAnimator] event dispatch error: {exc}")
 
@@ -256,11 +260,7 @@ class SkeletalAnimator(InxComponent):
         self, clip, prev_norm: float, curr_norm: float, wrap_count: int,
     ) -> None:
         """Dispatch every crossed occurrence, including multiple wraps in one update."""
-        self._dispatch_clip_events(clip, prev_norm, curr_norm, True)
-        for _ in range(max(int(wrap_count) - 1, 0)):
-            # (1, 1] with looped=True denotes one complete additional cycle
-            # and includes normalized-time zero exactly once.
-            self._dispatch_clip_events(clip, 1.0, 1.0, True)
+        self._dispatch_clip_events(clip, prev_norm, curr_norm, True, wrap_count=wrap_count)
 
     def _sample_imported_curves(self, clip: Optional[AnimationClip3D], normalized_time: float) -> None:
         curves = getattr(clip, "curves", ()) if clip is not None else ()
@@ -288,7 +288,8 @@ class SkeletalAnimator(InxComponent):
     def normalized_time(self) -> float:
         if self._current_timeline is not None:
             dur = max(1e-6, float(self._current_timeline.duration))
-            if bool(getattr(self._current_timeline, "loop", True)):
+            state = self._get_current_state()
+            if state is None or state.loop:
                 return (self._elapsed % dur) / dur
             return min(self._elapsed / dur, 1.0)
         duration = self._clip_duration(self._current_clip)
@@ -906,10 +907,12 @@ class SkeletalAnimator(InxComponent):
 
     def _evaluate_condition(self, transition: AnimTransition) -> bool:
         if not transition.conditions:
+            state = self._get_current_state()
+            if self._current_timeline is not None:
+                return bool(state and not state.loop and self._elapsed >= self._current_timeline.duration)
             duration = self._clip_duration(self._current_clip)
             if duration <= 0.0:
                 return False
-            state = self._get_current_state()
             should_loop = _clip_should_loop(state, self._current_clip)
             if self._current_clip and not should_loop:
                 return self._elapsed >= duration

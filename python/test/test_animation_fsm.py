@@ -409,6 +409,34 @@ def test_imported_events_dispatch_every_occurrence_across_multiple_wraps(monkeyp
     assert calls == [("L", 1.0), ("L", 1.0)]
 
 
+@pytest.mark.parametrize("deltas", [[2.0], [0.25] * 8])
+def test_imported_events_keep_playback_order_across_loop_boundaries(monkeypatch, deltas):
+    from infernux.core.animation_event import AnimationEvent
+
+    calls = []
+
+    class Receiver:
+        def on_animation_event(self, function, text, number):
+            calls.append(function)
+
+    owner = _HierarchyOwner(renderer=_RendererBinding(_NativePoseRecorder()))
+    owner.get_py_components = lambda: [Receiver()]
+    monkeypatch.setattr(SkeletalAnimator, "game_object", property(lambda _self: owner))
+    animator = _make_animator()
+    animator._fsm = AnimStateMachine(states=[AnimState(name="Loop", loop=True)], default_state="Loop")
+    animator._current_state_name = "Loop"
+    animator._current_clip = _FakeClip("Loop", duration_hint=1.0)
+    animator._current_clip.events = [
+        AnimationEvent(0.75, "late"), AnimationEvent(0.0, "zero"),
+        AnimationEvent(1.0, "end"), AnimationEvent(0.25, "early"),
+    ]
+    animator._elapsed = animator._prev_event_norm = 0.5
+    animator._playing = True
+    for delta in deltas:
+        animator.update(delta)
+    assert calls == ["late", "end", "zero", "early"] * 2
+
+
 def test_blend_state_does_not_fall_back_when_pose_stack_is_missing(monkeypatch):
     animator = _make_animator()
     native = SimpleNamespace(submit_animation_pose=lambda *_args: None)

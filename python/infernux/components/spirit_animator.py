@@ -153,8 +153,10 @@ class SpiritAnimator(InxComponent):
             if should_loop:
                 post = (self._elapsed % duration) if duration > 0 else 0.0
                 post_norm = (post / duration) if duration > 0 else 0.0
-                # Fire events crossed in (prev, 1] ∪ [0, post] for the looped clip.
-                self._dispatch_clip_events(clip, prev_norm, post_norm, True)
+                self._dispatch_clip_events(
+                    clip, prev_norm, post_norm, True,
+                    wrap_count=int(self._elapsed / duration),
+                )
                 self._prev_event_norm = post_norm
                 # Evaluate transitions at loop boundary while progress == 1.0,
                 # BEFORE wrapping elapsed (preserves exit-time gating).
@@ -163,6 +165,7 @@ class SpiritAnimator(InxComponent):
                     self._elapsed = post
             else:
                 self._elapsed = duration
+                self._apply_current_clip_frame()
                 self._dispatch_clip_events(clip, prev_norm, 1.0, False)
                 self._prev_event_norm = 1.0
                 self._playing = False
@@ -179,25 +182,23 @@ class SpiritAnimator(InxComponent):
         clip = self._current_clip
         if not self._playing or clip is None or clip.fps <= 0 or clip.frame_count == 0:
             return
-        raw_frame = int(self._elapsed * clip.fps)
-        raw_frame = min(raw_frame, clip.frame_count - 1)
-        sprite_frame = clip.frames[raw_frame].sprite_frame_id
-        if sprite_frame != getattr(self, "_last_applied_frame", None):
-            self._sprite_renderer.frame_id = sprite_frame
-            self._sprite_renderer.sync_visual()
-            self._last_applied_frame = sprite_frame
+        self._apply_current_clip_frame()
 
         # Check transitions every frame (for condition-driven transitions)
         self._try_auto_transition()
 
-    def _dispatch_clip_events(self, clip, prev_norm: float, curr_norm: float, looped: bool):
+    def _dispatch_clip_events(
+        self, clip, prev_norm: float, curr_norm: float, looped: bool, *, wrap_count: int = 1,
+    ):
         """Fire any animation events on *clip* crossed this frame."""
         events = getattr(clip, "events", None)
         if not events:
             return
         try:
             from infernux.core.animation_event import dispatch_animation_events
-            dispatch_animation_events(self.game_object, events, prev_norm, curr_norm, looped)
+            dispatch_animation_events(
+                self.game_object, events, prev_norm, curr_norm, looped, wrap_count=wrap_count,
+            )
         except Exception as exc:
             Debug.log_warning(f"[SpiritAnimator] event dispatch error: {exc}")
 
@@ -217,7 +218,8 @@ class SpiritAnimator(InxComponent):
         """Current playback position in [0, 1]."""
         if self._current_timeline is not None:
             dur = max(1e-6, float(self._current_timeline.duration))
-            if bool(getattr(self._current_timeline, "loop", True)):
+            state = self._get_current_state()
+            if state is None or state.loop:
                 return (self._elapsed % dur) / dur
             return min(self._elapsed / dur, 1.0)
         if self._current_clip and self._current_clip.duration > 0:
@@ -326,6 +328,8 @@ class SpiritAnimator(InxComponent):
             clip.frame_count - 1,
         )
         frame_id = clip.frames[frame_index].sprite_frame_id
+        if frame_id == getattr(self, "_last_applied_frame", None):
+            return
         renderer.frame_id = frame_id
         renderer.sync_visual()
         self._last_applied_frame = frame_id
@@ -650,10 +654,9 @@ class SpiritAnimator(InxComponent):
         self._prev_event_norm = 0.0
         self._playing = True
 
-        # Apply first frame immediately
-        if clip and clip.frame_count > 0 and self._sprite_renderer:
-            self._sprite_renderer.frame_id = clip.frames[0].sprite_frame_id
-            self._sprite_renderer.sync_visual()
+        # State entry and frame advancement share the same renderer/cache owner.
+        self._last_applied_frame = None
+        self._apply_current_clip_frame()
 
         return True
 
@@ -698,6 +701,8 @@ class SpiritAnimator(InxComponent):
         """
         if not transition.conditions:
             state = self._get_current_state()
+            if self._current_timeline is not None:
+                return bool(state and not state.loop and self._elapsed >= self._current_timeline.duration)
             should_loop = state.loop if state else (
                 self._current_clip.loop if self._current_clip else False)
             if self._current_clip and not should_loop:

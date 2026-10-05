@@ -77,26 +77,26 @@ def events_from_list(raw: Any) -> List[AnimationEvent]:
 
 
 def collect_crossed_events(
-    events: List[AnimationEvent], prev_norm: float, curr_norm: float, looped: bool
+    events: List[AnimationEvent], prev_norm: float, curr_norm: float, looped: bool,
+    *, wrap_count: int = 1,
 ) -> List[AnimationEvent]:
     """Return events whose normalized time falls in the just-played window.
 
     Non-looping window is ``(prev_norm, curr_norm]``.  When the clip wrapped this
-    frame (``looped``) the window is ``(prev_norm, 1] ∪ [0, curr_norm]``.
+    frame (``looped``), visit the tail, each intervening complete cycle, then
+    the head. An event may occur more than once in a long frame. Equal-time
+    events retain their authored order; the end of one cycle precedes zero
+    in the next cycle.
     """
     if not events:
         return []
     eps = 1e-6
-    fired: List[AnimationEvent] = []
-    for ev in events:
-        t = ev.time_normalized
-        if looped:
-            if (prev_norm + eps < t <= 1.0 + eps) or (-eps <= t <= curr_norm + eps):
-                fired.append(ev)
-        else:
-            if prev_norm + eps < t <= curr_norm + eps:
-                fired.append(ev)
-    return fired
+    ordered = sorted(events, key=lambda event: event.time_normalized)
+    if not looped:
+        return [ev for ev in ordered if prev_norm + eps < ev.time_normalized <= curr_norm + eps]
+    tail = [ev for ev in ordered if prev_norm + eps < ev.time_normalized <= 1.0 + eps]
+    head = [ev for ev in ordered if -eps <= ev.time_normalized <= curr_norm + eps]
+    return tail + ordered * (wrap_count - 1) + head
 
 
 def _invoke_event_descriptor(
@@ -134,10 +134,11 @@ def _same_raw_method(left: RuntimeMethodDescriptor, right: RuntimeMethodDescript
 
 
 def dispatch_animation_events(
-    game_object, events: List[AnimationEvent], prev_norm: float, curr_norm: float, looped: bool
+    game_object, events: List[AnimationEvent], prev_norm: float, curr_norm: float, looped: bool,
+    *, wrap_count: int = 1,
 ) -> None:
     """Fire all events crossed in the current frame's playback window."""
-    fired = collect_crossed_events(events, prev_norm, curr_norm, looped)
+    fired = collect_crossed_events(events, prev_norm, curr_norm, looped, wrap_count=wrap_count)
     if not fired or game_object is None:
         return
     try:
