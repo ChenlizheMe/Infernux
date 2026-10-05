@@ -20,6 +20,7 @@ Usage::
 
 from __future__ import annotations
 
+from numbers import Real
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -64,11 +65,15 @@ def Instantiate(original, *args, **kwargs):
     # ── Python Material wrapper ──────────────────────────────────────────
     from infernux.core.material import Material
     if isinstance(original, Material):
+        if args or kwargs:
+            raise TypeError("Instantiate: Material clones do not accept parent or transform overload arguments")
         return original.clone()
 
     # ── C++ InxMaterial (raw) ────────────────────────────────────────────
     from infernux.lib import InxMaterial
     if isinstance(original, InxMaterial):
+        if args or kwargs:
+            raise TypeError("Instantiate: Material clones do not accept parent or transform overload arguments")
         return original.clone()
 
     # ── C++ GameObject ───────────────────────────────────────────────────
@@ -100,10 +105,14 @@ def Destroy(obj, delay: float = 0.0):
     obj : GameObject
         The GameObject to destroy.
     delay : float
-        Unused (reserved for future delayed-destroy support).
+        Must be zero; delayed destruction is not implemented.
     """
     from infernux.lib import GameObject
     if isinstance(obj, GameObject):
+        if not isinstance(delay, Real):
+            raise TypeError("Destroy: delay must be a real number")
+        if delay != 0.0:
+            raise NotImplementedError("Destroy: delayed destruction is not implemented; time the lifetime before calling Destroy")
         GameObject.destroy(obj)
     else:
         raise TypeError(

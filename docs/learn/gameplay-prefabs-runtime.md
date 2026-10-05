@@ -87,7 +87,7 @@ The public `Instantiate(original, *args, **kwargs)` dispatcher currently support
 - A `GameObject`, producing a deep copy of its hierarchy and components.
 - A `GameObjectRef`, after resolving its live scene object.
 - A `PrefabRef`, by loading the referenced `.prefab` asset.
-- A Python `Material` or native `InxMaterial`, producing a material clone. Parent and Transform overloads do not apply to materials.
+- A Python `Material` or native `InxMaterial`, producing a material clone. Passing parent or Transform arguments for a material raises `TypeError`.
 
 For GameObject and Prefab sources, the scalar overload returns the new root `GameObject`, or `None` when no instance can be created. Check that result before accessing `name`, `transform`, or components.
 
@@ -156,7 +156,7 @@ inx.Destroy(instance)
 
 Destruction enters the scene's pending-destroy flow. Treat the object and all descendants as unavailable after requesting destruction, clear references you own, and let lifecycle cleanup run. Active Python components receive their disable and destroy cleanup as the pending operation is processed.
 
-The `delay` parameter exists in the current signature, but delayed destruction has not been implemented. `Destroy(instance, 3.0)` does not schedule a three-second lifetime. For timed cleanup, track elapsed time in a component or use the coroutine timing APIs introduced later in the course.
+The `delay` parameter must be zero. Delayed destruction has not been implemented: `Destroy(instance, 3.0)` raises `NotImplementedError` and leaves the object alive. For timed cleanup, track elapsed time in a component or use the coroutine timing APIs introduced later in the course, then call `Destroy(instance)`.
 
 `Destroy(component)` raises `TypeError`. A Python component can remove itself with its `destroy()` method; that is a separate component-lifetime operation.
 
@@ -172,7 +172,9 @@ The `delay` parameter exists in the current signature, but delayed destruction h
 
 **A destroyed reference is used again.** Set owned references to `None` immediately after `Destroy`, as the spawner does. Store every returned instance in a list when the design needs to manage more than the latest one.
 
-**Delayed destruction does not wait.** The current `delay` argument is reserved. Implement the timer in gameplay code before calling `Destroy(instance)`.
+**An overload raises `TypeError`.** Supply valid argument types and pass each parameter once. Reference wrappers propagate these errors; `None` means a missing source, not an invalid call.
+
+**Delayed destruction raises `NotImplementedError`.** Nonzero `delay` is unsupported and does not destroy the object. Complete the timer in gameplay code before calling `Destroy(instance)`.
 
 ## Verify the result {#verify-prefab-runtime}
 
@@ -275,7 +277,7 @@ class PrefabSpawner(inx.InxComponent):
 - `GameObject`：深拷贝它的层级与组件。
 - `GameObjectRef`：先解析对应的活动场景对象。
 - `PrefabRef`：加载引用的 `.prefab` 资产。
-- Python `Material` 或原生 `InxMaterial`：创建材质克隆；parent 与 Transform 重载不适用于材质。
+- Python `Material` 或原生 `InxMaterial`：创建材质克隆；传入 parent 或 Transform 参数会抛出 `TypeError`。
 
 来源为 GameObject 或 Prefab 时，标量重载会返回新根节点 `GameObject`；无法创建时返回 `None`。访问 `name`、`transform` 或组件前应先检查结果。
 
@@ -344,7 +346,7 @@ inx.Destroy(instance)
 
 销毁请求会进入场景的待处理销毁流程。发出请求后，应把该对象及其所有后代视为不可再用，清空自己保存的引用，并让生命周期清理继续执行。活动 Python 组件会在处理待销毁操作时收到停用与销毁清理。
 
-当前签名包含 `delay` 参数，但延迟销毁尚未实现。`Destroy(instance, 3.0)` 不会安排三秒生命周期。需要定时清理时，可以在组件中累计时间，或使用课程后面介绍的协程计时 API。
+`delay` 参数必须为零。延迟销毁尚未实现：`Destroy(instance, 3.0)` 会抛出 `NotImplementedError`，物体保持存活。需要定时清理时，可以在组件中累计时间，或使用课程后面介绍的协程计时 API，计时完成后再调用 `Destroy(instance)`。
 
 `Destroy(component)` 会抛出 `TypeError`。Python 组件可以调用自身的 `destroy()` 方法移除自己，这是另一种组件生命周期操作。
 
@@ -360,7 +362,9 @@ inx.Destroy(instance)
 
 **销毁后又使用旧引用。** 调用 `Destroy` 后立刻把自己保存的引用设为 `None`，示例生成器已经这样处理。需要管理多个实例时，应保存每次返回值到列表。
 
-**延迟销毁没有等待。** 当前 `delay` 参数仅作预留。请先在游戏逻辑中完成计时，再调用 `Destroy(instance)`。
+**重载抛出 `TypeError`。** 使用正确的参数类型，每个参数只传一次。引用包装器也会传递这些错误；返回 `None` 表示源对象缺失，而不是调用方式错误。
+
+**延迟销毁抛出 `NotImplementedError`。** 非零 `delay` 尚不支持，也不会销毁物体。请先在游戏逻辑中完成计时，再调用 `Destroy(instance)`。
 
 ## 验证结果 {#verify-prefab-runtime_1}
 

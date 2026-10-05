@@ -809,15 +809,38 @@ def _instantiate_prefab_reference(
     )
 
 
+def _pop_instantiate_world_space(kwargs, default=None):
+    if "instantiate_in_world_space" in kwargs and "instantiateInWorldSpace" in kwargs:
+        raise TypeError("instantiate(): multiple values for instantiate_in_world_space")
+    if "instantiate_in_world_space" in kwargs:
+        return kwargs.pop("instantiate_in_world_space")
+    return kwargs.pop("instantiateInWorldSpace", default)
+
+
 def _parse_instantiate_arguments(args, kwargs):
     if len(args) > 3:
         raise TypeError("instantiate(): expected at most 4 arguments including original")
+
+    keyword_names = set(kwargs)
+    if "instantiateInWorldSpace" in keyword_names:
+        keyword_names.add("instantiate_in_world_space")
+    position_rotation_overload = len(args) == 2 and _is_vector3_like(args[0]) and _is_quat_like(args[1])
+    positional_names = ()
+    if len(args) == 1:
+        positional_names = ("parent",)
+    elif len(args) == 2:
+        positional_names = ("position", "rotation") if position_rotation_overload else ("parent", "instantiate_in_world_space")
+    elif len(args) == 3:
+        positional_names = ("position", "rotation", "parent")
+    for name in positional_names:
+        if name in keyword_names:
+            raise TypeError(f"instantiate(): multiple values for {name}")
 
     position = kwargs.pop("position", None)
     rotation = kwargs.pop("rotation", None)
     parent_was_keyword = "parent" in kwargs
     parent = kwargs.pop("parent", None)
-    instantiate_in_world_space = kwargs.pop("instantiate_in_world_space", kwargs.pop("instantiateInWorldSpace", None))
+    instantiate_in_world_space = _pop_instantiate_world_space(kwargs)
     if kwargs:
         unexpected = ", ".join(sorted(kwargs.keys()))
         raise TypeError(f"instantiate(): unexpected keyword arguments: {unexpected}")
@@ -827,7 +850,7 @@ def _parse_instantiate_arguments(args, kwargs):
         if instantiate_in_world_space is None:
             instantiate_in_world_space = False
     elif len(args) == 2:
-        if _is_vector3_like(args[0]) and _is_quat_like(args[1]):
+        if position_rotation_overload:
             position, rotation = args
         else:
             parent = args[0]
@@ -861,10 +884,7 @@ def _game_object_instantiate(original, *args, **kwargs):
         batch_rotations = kwargs.pop("rotations", None)
         batch_scales = kwargs.pop("scales", None)
         parent_arg = kwargs.pop("parent", None)
-        instantiate_in_world_space = kwargs.pop(
-            "instantiate_in_world_space",
-            kwargs.pop("instantiateInWorldSpace", True),
-        )
+        instantiate_in_world_space = _pop_instantiate_world_space(kwargs, True)
         return_objects = kwargs.pop("return_objects", True)
         if kwargs:
             unexpected = ", ".join(sorted(kwargs.keys()))

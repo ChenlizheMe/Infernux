@@ -221,12 +221,8 @@ class GameObjectRef:
 
     def instantiate(self, *args, **kwargs):
         """Clone this referenced GameObject using Unity-style instantiate overloads."""
-        try:
-            from infernux.lib import GameObject
-            return GameObject.instantiate(self, *args, **kwargs)
-        except Exception as exc:
-            _log.warning("GameObjectRef.instantiate failed: %s", exc)
-            return None
+        from infernux.lib import GameObject
+        return GameObject.instantiate(self, *args, **kwargs)
 
     def __repr__(self):
         obj = self.resolve()
@@ -355,12 +351,8 @@ class PrefabRef:
 
     def instantiate(self, *args, **kwargs):
         """Create a new GameObject from this prefab using Unity-style instantiate overloads."""
-        try:
-            from infernux.lib import GameObject
-            return GameObject.instantiate(self, *args, **kwargs)
-        except Exception as exc:
-            _log.warning("PrefabRef.instantiate failed: %s", exc)
-            return None
+        from infernux.lib import GameObject
+        return GameObject.instantiate(self, *args, **kwargs)
 
     # -- serialization -----------------------------------------------------
 
