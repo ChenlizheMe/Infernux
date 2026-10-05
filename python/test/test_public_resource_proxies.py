@@ -137,7 +137,9 @@ def test_clear_transient_material_releases_the_assignment(scene, assignment):
     elif assignment == "empty-guid":
         renderer.material_guid = ""
     else:
-        renderer.set_materials([""])
+        # Exercise the native batch path separately from the public list setter,
+        # which delegates to individual slots.
+        renderer._cpp_component.set_materials([""])
     assert renderer.get_material(0) is None
     assert renderer._cpp_component.get_material(0) is None
     assert isinstance(renderer.get_effective_material(0), inx.Material)
