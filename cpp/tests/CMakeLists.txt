@@ -1437,6 +1437,20 @@ if(INFERNUX_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
         )
     endforeach()
+    foreach(_surface_contract lit_surface_contract surface_gbuffer_scalars)
+        set(_surface_test "infernux.${_surface_contract}_gpu")
+        add_test(NAME ${_surface_test}
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/python/infernux/test/${_surface_contract}_gpu_test.py
+        )
+        set_tests_properties(${_surface_test} PROPERTIES
+            ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+            LABELS "requires_vulkan_device"
+            TIMEOUT 60
+            RUN_SERIAL TRUE
+            FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
+        )
+    endforeach()
     foreach(_outline_check background deformation multiple reload game-alpha gizmo properties)
         set(_outline_test "infernux.selection_outline_${_outline_check}_gpu")
         add_test(NAME ${_outline_test}
