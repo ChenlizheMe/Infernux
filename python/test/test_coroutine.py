@@ -145,6 +145,58 @@ class TestCoroutineHandle:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestCoroutineScheduler:
+    @pytest.mark.parametrize("candidate", [None, 42, iter([None]), lambda: None])
+    def test_invalid_generator_input_is_rejected_before_scheduler_mutation(self, candidate, monkeypatch):
+        scheduler = CoroutineScheduler()
+        observed = scheduler.diagnostics()
+        monkeypatch.setattr(CoroutineScheduler, "_advance", lambda _self, _co: pytest.fail("invalid input must not reach coroutine execution"))
+        with pytest.raises(TypeError, match="generator"):
+            scheduler.start(candidate)
+        assert scheduler.diagnostics() == observed
+
+    def test_bound_generator_method_must_be_called_before_start(self, monkeypatch):
+        class Owner:
+            def sequence(self):
+                yield None
+
+        scheduler = CoroutineScheduler()
+        monkeypatch.setattr(CoroutineScheduler, "_advance", lambda _self, _co: pytest.fail("a method must not reach coroutine execution"))
+        with pytest.raises(TypeError, match="generator"):
+            scheduler.start(Owner().sequence)
+        assert scheduler.count == 0
+
+    def test_generator_protocol_adapter_preserves_execution_and_cleanup(self):
+        from collections.abc import Generator
+
+        cleaned = []
+
+        def sequence():
+            try:
+                yield None
+                yield None
+            finally:
+                cleaned.append(True)
+
+        class Adapter(Generator):
+            def __init__(self, inner):
+                self.inner = inner
+
+            def send(self, value):
+                return self.inner.send(value)
+
+            def throw(self, *args):
+                return self.inner.throw(*args)
+
+            def close(self):
+                self.inner.close()
+
+        scheduler = CoroutineScheduler()
+        handle = scheduler.start(Adapter(sequence()))
+        scheduler.tick_update(0.016)
+        assert not handle.is_finished and scheduler.count == 1
+        scheduler.stop(handle)
+        assert handle.is_finished and scheduler.count == 0 and cleaned == [True]
+
     def test_start_runs_to_first_yield(self):
         steps = []
 

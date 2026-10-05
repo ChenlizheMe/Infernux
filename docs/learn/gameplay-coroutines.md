@@ -198,7 +198,7 @@ To inspect a handle during development, log `self._sequence_handle.is_finished`.
 
 ## Common errors {#common-errors}
 
-- **Passing the method instead of its generator**: call `self.start_coroutine(self.run_sequence())`, including the final parentheses.
+- **Passing the method instead of its generator**: call `self.start_coroutine(self.run_sequence())`, including the final parentheses. Invalid inputs raise `TypeError` before scheduling; objects implementing Python's standard Generator protocol are supported.
 - **Using `time.sleep()`**: it blocks the thread and freezes other engine work. Yield `inx.WaitForSecondsRealtime()` for a wall-clock delay.
 - **Expecting an exact timestamp**: waits resume on scheduler checks, so a duration is a minimum and can overshoot by part of a frame.
 - **Expecting `WaitForSeconds` to continue during a game-clock pause**: `time_scale = 0` pauses this wait. Use `WaitForSecondsRealtime` when a sequence must continue independently of the game clock. Pausing the Editor itself suspends update checks for both waits.
@@ -413,7 +413,7 @@ def temporary_state(self):
 
 ## 常见错误 {#zh-common-errors}
 
-- **传入方法本身**：应写成 `self.start_coroutine(self.run_sequence())`，末尾括号不能省略。
+- **传入方法本身**：应写成 `self.start_coroutine(self.run_sequence())`，末尾括号不能省略。非法参数会在调度前抛出 `TypeError`；支持实现 Python 标准 Generator 协议的对象。
 - **使用 `time.sleep()`**：它会阻塞线程并冻结其他引擎工作。墙钟延时请 `yield inx.WaitForSecondsRealtime()`。
 - **期待精确时间点**：等待只能在调度检查时恢复，所以指定时长是下限，可能多出一小段帧时间。
 - **期待 `WaitForSeconds` 在游戏时钟暂停时继续**：`time_scale = 0` 会暂停该等待。需要独立于游戏时钟继续时，请用 `WaitForSecondsRealtime`。编辑器自身暂停时，两种等待的更新检查都会停止。

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import time as _time
 import weakref
+from collections.abc import Generator as GeneratorProtocol
 from typing import Any, Callable, Generator, Optional
 
 
@@ -284,7 +285,9 @@ class CoroutineScheduler:
         *,
         epoch: Any = None,
     ) -> Coroutine:
-        """Start a new coroutine and return a handle."""
+        """Start a generator, rejecting API misuse before changing scheduler state."""
+        if not isinstance(generator, GeneratorProtocol):
+            raise TypeError("start_coroutine requires a generator object; call the coroutine method first")
         was_active = bool(self._coroutines)
         selected_epoch = _capture_runtime_epoch() if epoch is None else epoch
         self._observe_epoch(selected_epoch)
