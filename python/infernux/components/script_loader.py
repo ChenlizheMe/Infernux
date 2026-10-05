@@ -828,11 +828,22 @@ def stage_component_body_reload_batch(
     request_modules = tuple(request_modules)
 
     from .registry import (
+        component_types_for_script_path,
         restore_component_registry_state,
         snapshot_component_registry_state,
     )
 
     registry_snapshot = snapshot_component_registry_state()
+    # Capture all published declarations before candidate imports, including
+    # declarations without Scene instances and paths retired by an asset move.
+    published_types_by_module = {
+        module_name: tuple(dict.fromkeys(
+            component_type
+            for script_path in (request.file_path, *request.retire_script_paths)
+            for component_type in component_types_for_script_path(script_path)
+        ))
+        for request, module_name in zip(normalized_requests, request_modules)
+    }
     diagnostic_snapshot = _snapshot_script_diagnostics()
     module_snapshot: dict[str, object] = {}
     plans: list[tuple[type, tuple[tuple[str, bool, object], ...]]] = []
@@ -856,7 +867,12 @@ def stage_component_body_reload_batch(
     try:
         for request, module_name in zip(normalized_requests, request_modules):
             file_path = request.file_path
-            targets = request.target_types
+            published_types = published_types_by_module[module_name]
+            targets = tuple(dict.fromkeys((
+                *request.target_types,
+                *(component_type for component_type in published_types
+                  if collect_live_instances(component_type)),
+            )))
             instances_by_type = {
                 target_type: tuple(values)
                 for target_type, values in (request.instances_by_type or {}).items()
@@ -948,6 +964,10 @@ def stage_component_body_reload_batch(
                 (target_type.__name__, target_type.__qualname__): target_type
                 for target_type in targets
             }
+            if len(target_by_identity) != len(targets):
+                raise ScriptReloadRejected(
+                    "multiple live component types claim the same declaration; reload rejected"
+                )
             target_by_candidate: dict[type, type] = {}
             for candidate_type in candidates:
                 target_type = target_by_identity.get(
@@ -956,12 +976,15 @@ def stage_component_body_reload_batch(
                 if target_type is not None:
                     target_by_candidate[candidate_type] = target_type
 
-            # A script GUID identifies the asset independently of the Python
-            # class name.  Preserve the live class/instance identity when the
-            # authored class is renamed, pairing unmatched declarations in
-            # source order.  Equal cardinality is required so adding/removing
-            # a second component cannot silently attach an old instance to a
-            # different class.
+            # Exact declarations keep their identity regardless of Scene or
+            # source order. A rename is unique only when exactly one old and
+            # one new declaration remain across the whole script, including
+            # unmounted types. Never pair multiple renames by traversal order.
+            published_identities = {
+                (component_type.__name__, component_type.__qualname__)
+                for component_type in (*published_types, *targets)
+            }
+            removed_identities = published_identities.difference(candidate_by_identity)
             unmatched_targets = [
                 target_type
                 for target_type in targets
@@ -970,14 +993,20 @@ def stage_component_body_reload_batch(
             unmatched_candidates = [
                 candidate_type
                 for candidate_type in candidates
-                if candidate_type not in target_by_candidate
+                if (candidate_type.__name__, candidate_type.__qualname__) not in published_identities
             ]
-            if unmatched_targets and len(unmatched_targets) == len(unmatched_candidates):
-                for target_type, candidate_type in zip(unmatched_targets, unmatched_candidates):
-                    target_by_candidate[candidate_type] = target_type
-                    target_by_identity[
-                        (candidate_type.__name__, candidate_type.__qualname__)
-                    ] = target_type
+            if unmatched_targets and unmatched_candidates:
+                if not (len(unmatched_targets) == len(removed_identities) == len(unmatched_candidates) == 1):
+                    raise ScriptReloadRejected(
+                        "component rename is ambiguous; rename one declaration at a time "
+                        "without adding or removing other declarations"
+                    )
+                target_type = unmatched_targets[0]
+                candidate_type = unmatched_candidates[0]
+                target_by_candidate[candidate_type] = target_type
+                target_by_identity[
+                    (candidate_type.__name__, candidate_type.__qualname__)
+                ] = target_type
             effective_targets = list(targets)
             if request.script_guid:
                 from .registry import get_type_by_identity
