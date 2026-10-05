@@ -778,6 +778,75 @@ def test_schema_gateway_can_edit_real_material_document(engine):
         Path(str(path) + ".meta").unlink(missing_ok=True)
 
 
+@pytest.mark.parametrize("field,value,override", [
+    ("renderQueue", 3500, "RENDER_QUEUE"),
+    ("renderQueue", 2000, "RENDER_QUEUE"),
+    ("depthWriteEnable", False, "DEPTH_WRITE"),
+    ("blendEnable", True, "BLEND_ENABLE"),
+])
+def test_schema_gateway_material_render_state_edit_claims_only_requested_override(engine, field, value, override):
+    from infernux.core.assets import AssetManager
+    from infernux.core.material import Material
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui import project_file_ops
+    from infernux.engine.undo import UndoManager
+    from infernux.host import MainThreadCommandQueue
+    from infernux.lib import RenderStateOverride
+    from infernux.plugins import PluginManager
+
+    database = engine.get_asset_database()
+    project_root = Path(database.project_root)
+    assets = project_root / "Assets"
+    assets.mkdir(exist_ok=True)
+    name = f"McpAuthorship_{uuid.uuid4().hex}"
+    path = assets / f"{name}.mat"
+    created, error = project_file_ops.create_material(str(assets), name, database)
+    assert created, error
+    guid = database.get_guid_from_path(str(path))
+    previous_plugins = PluginManager._instance
+    previous_database = AssetManager._asset_database
+    previous_undo = UndoManager._instance
+    core = EditorInteractionCore()
+    core.project_assets.configure(str(project_root), database)
+    undo = UndoManager(core.action_journal)
+    manager = PluginManager(str(project_root), engine=engine)
+    PluginManager._instance = manager
+    AssetManager._asset_database = database
+    queue = MainThreadCommandQueue.instance()
+    queue.drain()
+    mcp = _FakeMCP()
+    try:
+        register_gateways(mcp, str(project_root), {})
+        arguments = {"asset_guid": guid, "pointer": f"/renderState/{field}", "value": value}
+        changed = mcp.tools["operation_command_execute"]("infernux.material.property.set", arguments)
+        assert changed["ok"], changed
+        expected_override = int(getattr(RenderStateOverride, override))
+        assert changed["data"]["result"]["document"].get("renderStateOverrides", 0) == expected_override
+        material = Material.load(str(path))
+        assert material is not None
+        material.native.apply_shader_render_meta("back", "on", "less", "off", 2500)
+        assert material.serialize_document()["renderState"][field] == value
+        revision = core.action_journal.revision
+        entries = core.action_journal.applied_entries()
+        repeated = mcp.tools["operation_command_execute"]("infernux.material.property.set", arguments)
+        assert repeated["ok"], repeated
+        assert core.action_journal.revision == revision
+        assert core.action_journal.applied_entries() == entries
+        undo.undo()
+        assert material.render_state_overrides == 0
+    finally:
+        shutdown_adapter()
+        manager.shutdown()
+        core.shutdown()
+        UndoManager._instance = previous_undo
+        PluginManager._instance = previous_plugins
+        AssetManager._asset_database = previous_database
+        queue.release_owner("MCP material render-state authorship test finished")
+        database.delete_asset(str(path))
+        path.unlink(missing_ok=True)
+        Path(str(path) + ".meta").unlink(missing_ok=True)
+
+
 def test_schema_gateway_repeated_material_slot_assignment_is_success(engine, scene):
     from infernux.core.assets import AssetManager
     from infernux.engine.interaction import EditorInteractionCore
