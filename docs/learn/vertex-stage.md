@@ -27,15 +27,15 @@ ShaderInfo {
 
 With no authored hook, Infernux supplies the normal mesh inputs and performs the standard object-to-world-to-view-to-clip transform. This is deliberate: ordinary materials should not repeat matrix boilerplate, descriptor layouts, or vertex locations.
 
-`Name` is the exact, case-sensitive ID shown in the Material selector. The file name organizes the asset; it never becomes the selector value. A file named `wave_bent.vert` with `Name "Wave"` appears as `Wave` under **Vertex**.
+`Name` is the case-sensitive stage identifier displayed in the Material's bound field. The Project asset picker displays the file name: choose `wave_bent.vert`, and the **Vertex** field displays `Wave` when the file declares `Name "Wave"`.
 
 ### How the Material finds it
 
-When a `.vert` or `.frag` is imported from the project's `Assets` tree, the editor reads its compiled metadata and `ShaderInfo Name`. It also scans the built-in shader directory. A `.vert` appears in the Material's **Vertex** selector, a `.frag` appears under **Fragment**, and `Hidden On` entries stay out of both menus.
+Import a `.vert` or `.frag` inside the project's `Assets` tree, then open the corresponding **Vertex** or **Fragment** asset picker in the Material Inspector. Select the shader file by its file name. The Material stores the selected project asset's GUID and displays its current `ShaderInfo Name`; the file name and displayed stage name need not match. Built-in stages such as `Standard` and `Lit` use symbolic stage identifiers rather than project asset GUIDs.
 
-The current selector is keyed only by `Name`: it scans project `Assets` before built-in shaders, duplicate IDs collapse to the first path discovered, the menu does not show origin, and it emits no duplicate-origin diagnostic. Keep names unique across project and built-in shaders; do not depend on discovery order among project files. A project stage can retain its GUID/path reference, while a built-in stage is resolved by ID. After changing `ShaderInfo Name`, save and reimport the shader, then reselect the new ID on affected Materials. Renaming only the file leaves the selector ID unchanged.
+Keep stage names unique across project and built-in shaders: linked programs currently use stage names for their program namespace. A project's GUID reference owns the asset identity; its cached stage name is a derived label. Changing `ShaderInfo Name` and saving the shader automatically updates referencing loaded Materials and runtime clones after a successful import. Existing saved Materials also resolve the current name from GUID metadata when loaded; you do not need to select the shader again. If any dependent stage pair fails compilation or linking, the reload is rejected before live Material references migrate. Correct the source and save again.
 
-The material linker pairs the selected stages and checks their properties and varyings before Vulkan pipeline creation. To verify selection semantics, save `Assets/Shaders/wave_bent.vert` with `Name "Wave"`, wait for import, and confirm that **Vertex** lists `Wave` and does not list `wave_bent.vert`. Change only `Name` to `Wave V2`, reimport, and confirm that affected Materials require the new ID.
+The material linker checks the selected stages' properties and varyings before Vulkan pipeline creation. To verify selection and reload, save `Assets/Shaders/wave_bent.vert` with `Name "Wave"`, wait for import, choose `wave_bent.vert` in the **Vertex** asset picker, and confirm that the bound field displays `Wave`. Change only `Name` to `Wave V2` and save. The field should update to `Wave V2` while the Material keeps the same shader GUID and its authored values. Restore `Name "Wave"` and confirm that both Scene and Game continue rendering without shader errors.
 
 ## Where vertex data comes from {#vertex-layout}
 
@@ -236,15 +236,15 @@ ShaderInfo {
 
 没有自定义 Hook 时，Infernux 会提供常规网格输入，并完成物体空间到世界、观察和裁剪空间的标准变换。普通材质不需要重复矩阵样板、描述符布局或顶点 Location，这是有意设计的结果。
 
-`Name` 是 Material 选择器显示的精确 ID，并且区分大小写。文件名只负责整理资产，不会成为选择器值。文件 `wave_bent.vert` 若写有 `Name "Wave"`，会在 **Vertex** 中显示为 `Wave`。
+`Name` 是 Material 已绑定字段显示的阶段标识符，并且区分大小写。Project 资产选择弹窗显示的是文件名：选择 `wave_bent.vert` 后，若文件声明 `Name "Wave"`，**Vertex** 字段会显示 `Wave`。
 
 ### Material 怎样找到它
 
-项目 `Assets` 目录里的 `.vert`、`.frag` 导入后，编辑器会读取编译元数据和 `ShaderInfo Name`，同时也会扫描内置 Shader 目录。`.vert` 进入 Material 的 **Vertex** 选择器，`.frag` 进入 **Fragment**；写了 `Hidden On` 的内部项不会出现在菜单里。
+把 `.vert` 或 `.frag` 放入项目 `Assets` 目录并完成导入，再打开 Material Inspector 中对应的 **Vertex** 或 **Fragment** 资产选择弹窗，按文件名选择 Shader。Material 保存所选项目资产的 GUID，并显示它当前的 `ShaderInfo Name`；文件名与显示的阶段名不必一致。`Standard`、`Lit` 等内置阶段使用符号化阶段标识符，不使用项目资产 GUID。
 
-当前选择器只按 `Name` 建索引：它先扫描项目 `Assets`，再扫描内置 Shader；重名 ID 会折叠到先发现的路径。菜单不显示来源，也不会报告来源冲突。项目 Shader 与内置 Shader 应使用全局唯一名字，不能依赖项目文件之间的扫描顺序。项目阶段可以保留 GUID/路径引用，内置阶段则按 ID 解析。修改 `ShaderInfo Name` 后，先保存并重新导入，再让受影响的 Material 重新选择新 ID。只改文件名会保留选择器 ID。
+项目 Shader 与内置 Shader 应使用唯一阶段名：当前链接程序仍以阶段名作为程序命名空间。项目 GUID 引用决定资产身份，缓存的阶段名只是派生标签。修改 `ShaderInfo Name` 并保存后，成功导入会自动更新引用它的已加载 Material 和运行时克隆材质；已有的磁盘 Material 在加载时也会从 GUID 元数据取得当前名称，不需要重新选择 Shader。如果任何依赖阶段组合编译或链接失败，热重载会在迁移实际 Material 引用之前拒绝此次更新；修正源码后再次保存即可。
 
-Material 链接器会组合所选阶段，并在 Vulkan Pipeline 创建前检查属性与 Varying。可以这样验证选择语义：把带有 `Name "Wave"` 的文件保存为 `Assets/Shaders/wave_bent.vert`，等待导入，确认 **Vertex** 只列出 `Wave`，不会列出 `wave_bent.vert`。随后只把 `Name` 改为 `Wave V2` 并重新导入，确认受影响的 Material 需要选择新 ID。
+Material 链接器会在 Vulkan Pipeline 创建前检查所选阶段的属性与 Varying。可以这样验证选择和重载：把带有 `Name "Wave"` 的文件保存为 `Assets/Shaders/wave_bent.vert`，等待导入，在 **Vertex** 资产选择弹窗中选择 `wave_bent.vert`，确认绑定字段显示 `Wave`。随后只把 `Name` 改为 `Wave V2` 并保存：字段应自动更新为 `Wave V2`，Material 的 Shader GUID 与已设置参数保持不变。恢复 `Name "Wave"` 后，确认 Scene 与 Game 仍然正常渲染，没有 Shader 错误。
 
 ## 顶点数据从哪里来 {#vertex-layout_1}
 

@@ -19,7 +19,7 @@ This course follows the **authored rendering path**: the files and settings you 
 
 ## Get one material on screen first {#first-result}
 
-**Prerequisites.** Open an Infernux project with a writable `Assets` folder and show the Hierarchy, Project, Inspector, Scene, Game, and Console panels. This exercise uses the built-in Cube mesh, `Standard` vertex stage, and `Lit` fragment stage; it needs no imported asset, custom shader, or RenderStack. Use a clean project, or first rename any project shader whose `ShaderInfo Name` is `Standard` or `Lit`: project shaders are scanned before built-ins and the current selector does not label their origin. A newly created scene already contains **Main Camera** and **Directional Light**. The camera/light steps below also cover a scene whose Hierarchy was cleared.
+**Prerequisites.** Open an Infernux project with a writable `Assets` folder and show the Hierarchy, Project, Inspector, Scene, Game, and Console panels. This exercise uses the built-in Cube mesh, `Standard` vertex stage, and `Lit` fragment stage; it needs no imported asset, custom shader, or RenderStack. Keep project shader names distinct from those built-in stage identifiers, because linked programs currently use stage names for their program namespace. A newly created scene already contains **Main Camera** and **Directional Light**. The camera/light steps below also cover a scene whose Hierarchy was cleared.
 
 Reproduce the complete baseline from an otherwise empty scene:
 
@@ -48,7 +48,7 @@ If the preview changes but the mesh stays white, do not compensate by editing th
 
 Start with one object in a scene:
 
-1. Its **Material** chooses one `.vert` and one `.frag` by their case-sensitive `ShaderInfo Name`, then stores the property values declared by those stages.
+1. Its **Material** binds one vertex stage and one fragment stage, then stores the property values declared by those stages. Project `.vert` and `.frag` assets are referenced by GUID and display their current, case-sensitive `ShaderInfo Name`; built-in stages use symbolic identifiers such as `Standard` and `Lit`.
 2. The **vertex stage** decides where the mesh vertices end up. If it contains no `vertex()` hook, Infernux uses the standard object-to-clip transform.
 3. The **fragment stage** samples textures and turns the material inputs into `SurfaceData`: albedo, normal, metallic, smoothness, emission, alpha, and related surface facts.
 4. The **ShadingModel** decides how that surface interacts with the current camera's lights. PBR, unlit, toon, and project-specific lighting belong here.
@@ -127,7 +127,7 @@ Infernux 没有把所有渲染决定塞进一份 Shader。Material、顶点阶�
 
 ## 先让一个材质正确出现在画面里 {#first-result_1}
 
-**准备条件。** 打开一个 `Assets` 目录可写的 Infernux 项目，并显示 Hierarchy、Project、Inspector、Scene、Game 与 Console 面板。本练习只使用内置 Cube Mesh、`Standard` 顶点阶段和 `Lit` 片元阶段，不需要导入资产、自定义 Shader 或 RenderStack。请使用干净项目，或先给 `ShaderInfo Name` 为 `Standard`、`Lit` 的项目 Shader 改名：选择器会先扫描项目 Shader，再扫描内置 Shader，当前菜单也不显示来源。新建场景已经带有 **Main Camera** 与 **Directional Light**；下面也包含 Hierarchy 被清空后的补建步骤。
+**准备条件。** 打开一个 `Assets` 目录可写的 Infernux 项目，并显示 Hierarchy、Project、Inspector、Scene、Game 与 Console 面板。本练习只使用内置 Cube Mesh、`Standard` 顶点阶段和 `Lit` 片元阶段，不需要导入资产、自定义 Shader 或 RenderStack。项目 Shader 名称应与这些内置阶段标识符保持区别，因为当前链接程序仍以阶段名作为程序命名空间。新建场景已经带有 **Main Camera** 与 **Directional Light**；下面也包含 Hierarchy 被清空后的补建步骤。
 
 从其余内容为空的场景复现完整基线：
 
@@ -156,7 +156,7 @@ Infernux 没有把所有渲染决定塞进一份 Shader。Material、顶点阶�
 
 从场景里的一个物体开始：
 
-1. **Material** 按区分大小写的 `ShaderInfo Name` 选择一份 `.vert` 和一份 `.frag`，并保存这些阶段声明的材质参数。
+1. **Material** 绑定一个顶点阶段和一个片元阶段，并保存这些阶段声明的材质参数。项目 `.vert`、`.frag` 资产通过 GUID 引用，显示其当前且区分大小写的 `ShaderInfo Name`；内置阶段使用 `Standard`、`Lit` 等符号化标识符。
 2. **顶点阶段**决定网格顶点最终在哪里。没有提供 `vertex()` Hook 时，Infernux 使用标准的物体空间到裁剪空间变换。
 3. **片元阶段**采样贴图，把材质输入整理成 `SurfaceData`：基础色、法线、金属度、平滑度、自发光、透明度等表面事实。
 4. **ShadingModel** 决定表面怎样和当前相机的光源交互。PBR、无光照、卡通渲染和项目独有的光照风格都属于这一层。

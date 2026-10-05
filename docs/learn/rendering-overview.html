@@ -46,7 +46,7 @@
 <div class="learn-note"><strong>The frame contains more work.</strong><p>The default pipelines and renderer add shadow rendering, depth work, GPU picking, motion-vector variants, and MSAA color/depth resolves around this path when a view or effect needs them. These engine-internal paths sit outside the sequence of authoring stages shown above.</p></div>
 
 <h2 id="first-result">Get one material on screen first</h2>
-<p><strong>Prerequisites.</strong> Open an Infernux project with a writable <code>Assets</code> folder and show the Hierarchy, Project, Inspector, Scene, Game, and Console panels. This exercise uses the built-in Cube mesh, <code>Standard</code> vertex stage, and <code>Lit</code> fragment stage; it needs no imported asset, custom shader, or RenderStack. Use a clean project, or first rename any project shader whose <code>ShaderInfo Name</code> is <code>Standard</code> or <code>Lit</code>: project shaders are scanned before built-ins and the current selector does not label their origin. A newly created scene already contains <strong>Main Camera</strong> and <strong>Directional Light</strong>. The camera/light steps below also cover a scene whose Hierarchy was cleared.</p>
+<p><strong>Prerequisites.</strong> Open an Infernux project with a writable <code>Assets</code> folder and show the Hierarchy, Project, Inspector, Scene, Game, and Console panels. This exercise uses the built-in Cube mesh, <code>Standard</code> vertex stage, and <code>Lit</code> fragment stage; it needs no imported asset, custom shader, or RenderStack. Keep project shader names distinct from those built-in stage identifiers, because linked programs currently use stage names for their program namespace. A newly created scene already contains <strong>Main Camera</strong> and <strong>Directional Light</strong>. The camera/light steps below also cover a scene whose Hierarchy was cleared.</p>
 <p>Reproduce the complete baseline from an otherwise empty scene:</p>
 <ol>
 <li>Right-click empty space in <strong>Hierarchy</strong>, choose <strong>Create 3D Object &gt; Cube</strong>, and leave the Cube Transform at position <code>(0, 0, 0)</code>. Its MeshRenderer should show one mesh and one material slot.</li>
@@ -67,7 +67,7 @@
 <h2 id="the-rendering-chain">The authored rendering chain</h2>
 <p>Start with one object in a scene:</p>
 <ol>
-<li>Its <strong>Material</strong> chooses one <code>.vert</code> and one <code>.frag</code> by their case-sensitive <code>ShaderInfo Name</code>, then stores the property values declared by those stages.</li>
+<li>Its <strong>Material</strong> binds one vertex stage and one fragment stage, then stores the property values declared by those stages. Project <code>.vert</code> and <code>.frag</code> assets are referenced by GUID and display their current, case-sensitive <code>ShaderInfo Name</code>; built-in stages use symbolic identifiers such as <code>Standard</code> and <code>Lit</code>.</li>
 <li>The <strong>vertex stage</strong> decides where the mesh vertices end up. If it contains no <code>vertex()</code> hook, Infernux uses the standard object-to-clip transform.</li>
 <li>The <strong>fragment stage</strong> samples textures and turns the material inputs into <code>SurfaceData</code>: albedo, normal, metallic, smoothness, emission, alpha, and related surface facts.</li>
 <li>The <strong>ShadingModel</strong> decides how that surface interacts with the current camera's lights. PBR, unlit, toon, and project-specific lighting belong here.</li>
@@ -154,7 +154,7 @@
 <div class="learn-note"><strong>一帧还包含更多工作。</strong><p>默认管线和渲染器会按相机与效果的需要，在这条路径周围安排阴影、深度、GPU 拾取、运动向量变体，以及 MSAA 颜色/深度 Resolve。这些引擎内部路径位于上图所示的作者阶段序列之外。</p></div>
 
 <h2 id="first-result_1">先让一个材质正确出现在画面里</h2>
-<p><strong>准备条件。</strong> 打开一个 <code>Assets</code> 目录可写的 Infernux 项目，并显示 Hierarchy、Project、Inspector、Scene、Game 与 Console 面板。本练习只使用内置 Cube Mesh、<code>Standard</code> 顶点阶段和 <code>Lit</code> 片元阶段，不需要导入资产、自定义 Shader 或 RenderStack。请使用干净项目，或先给 <code>ShaderInfo Name</code> 为 <code>Standard</code>、<code>Lit</code> 的项目 Shader 改名：选择器会先扫描项目 Shader，再扫描内置 Shader，当前菜单也不显示来源。新建场景已经带有 <strong>Main Camera</strong> 与 <strong>Directional Light</strong>；下面也包含 Hierarchy 被清空后的补建步骤。</p>
+<p><strong>准备条件。</strong> 打开一个 <code>Assets</code> 目录可写的 Infernux 项目，并显示 Hierarchy、Project、Inspector、Scene、Game 与 Console 面板。本练习只使用内置 Cube Mesh、<code>Standard</code> 顶点阶段和 <code>Lit</code> 片元阶段，不需要导入资产、自定义 Shader 或 RenderStack。项目 Shader 名称应与这些内置阶段标识符保持区别，因为当前链接程序仍以阶段名作为程序命名空间。新建场景已经带有 <strong>Main Camera</strong> 与 <strong>Directional Light</strong>；下面也包含 Hierarchy 被清空后的补建步骤。</p>
 <p>从其余内容为空的场景复现完整基线：</p>
 <ol>
 <li>在 <strong>Hierarchy</strong> 空白处右键，选择 <strong>Create 3D Object &gt; Cube</strong>，保持 Cube 的 Transform 位置为 <code>(0, 0, 0)</code>。它的 MeshRenderer 应显示一个 Mesh 和一个 Material Slot。</li>
@@ -175,7 +175,7 @@
 <h2 id="the-rendering-chain_1">用户编写的渲染链</h2>
 <p>从场景里的一个物体开始：</p>
 <ol>
-<li><strong>Material</strong> 按区分大小写的 <code>ShaderInfo Name</code> 选择一份 <code>.vert</code> 和一份 <code>.frag</code>，并保存这些阶段声明的材质参数。</li>
+<li><strong>Material</strong> 绑定一个顶点阶段和一个片元阶段，并保存这些阶段声明的材质参数。项目 <code>.vert</code>、<code>.frag</code> 资产通过 GUID 引用，显示其当前且区分大小写的 <code>ShaderInfo Name</code>；内置阶段使用 <code>Standard</code>、<code>Lit</code> 等符号化标识符。</li>
 <li><strong>顶点阶段</strong>决定网格顶点最终在哪里。没有提供 <code>vertex()</code> Hook 时，Infernux 使用标准的物体空间到裁剪空间变换。</li>
 <li><strong>片元阶段</strong>采样贴图，把材质输入整理成 <code>SurfaceData</code>：基础色、法线、金属度、平滑度、自发光、透明度等表面事实。</li>
 <li><strong>ShadingModel</strong> 决定表面怎样和当前相机的光源交互。PBR、无光照、卡通渲染和项目独有的光照风格都属于这一层。</li>
