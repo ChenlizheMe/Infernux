@@ -61,13 +61,9 @@ def _validate_reference_documents(
         target_id = value.get("object_id")
         if type(target_id) is not int or target_id < 0:
             raise PythonComponentRestoreError(f"{path}: GameObjectRef id must be a non-negative integer")
-        target_exists = bool(
-            target_id == 0
-            or (document_object_ids is not None and target_id in document_object_ids)
-            or (scene is not None and scene.find_by_id(target_id) is not None)
-        )
-        if target_id and not target_exists:
-            raise PythonComponentRestoreError(f"{path}: GameObjectRef target {target_id} does not exist")
+        # A deleted target is a missing reference, not a corrupt scene. Keep
+        # its persistent identity just as exact ComponentRef does; resolution
+        # returns None until that identity is available again (e.g. after Undo).
         return
 
     if document_type == COMPONENT_REF:
