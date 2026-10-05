@@ -54,7 +54,7 @@ def test_imported_clip_guid_picker_fsm_and_cook(model, tmp_path, monkeypatch):
     builder._runtime_artifact_source_paths = set()
     data = tmp_path / "Player" / "Data"
     builder.freeze_asset_index_entries(list(entries.values()))
-    monkeypatch.setattr(builder, "_collect_library_asset_entries", lambda _: {guid: entry})
+    monkeypatch.setattr(builder, "_collect_library_asset_entries", lambda _, **kwargs: {guid: entry})
     builder._copy_cooked_assets(str(data))
     assert not (data / "Assets").exists()
     builder._stage_library_runtime_documents(str(data))

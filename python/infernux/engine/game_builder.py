@@ -1486,12 +1486,12 @@ finally:
 
         self._prepare_startup_warmup_registry(data_dir)
 
+        self._stage_player_plugins(data_dir)
         self._copy_cooked_assets(
             data_dir,
             package_builtin_resources=package_builtin_resources,
         )
         self._prune_player_editor_data(data_dir)
-        self._stage_player_plugins(data_dir)
         self._stage_library_runtime_artifacts(data_dir)
         self._stage_library_runtime_documents(data_dir)
         self._stage_cpu_jit_cache(data_dir)
@@ -1899,17 +1899,20 @@ finally:
                     "Player asset cook selected no runtime assets; refresh Assets "
                     "and add at least one valid build scene"
                 )
-            selected = self._collect_library_asset_entries(entries)
+            selected = self._collect_library_asset_entries(
+                entries, extra_roots=tuple(sorted(getattr(self, "_staged_player_plugin_guids", ())))
+            )
         except RuntimeArtifactError as exc:
             raise RuntimeError(f"Player asset cook failed: {exc}") from exc
 
         self._cooked_asset_entries = dict(selected)
 
         assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
+        packages_root = resolved_path(os.path.join(self.project_path, "Packages"))
         builtin_resources_roots = self._builtin_resource_roots()
         copied: set[str] = set()
 
-        def copy_source(source_path: str, *, reason: str) -> None:
+        def copy_source(source_path: str, *, entry: dict, reason: str) -> None:
             source = resolved_path(source_path)
             if not is_path_within(source, assets_root, allow_root=False):
                 raise RuntimeError(
@@ -1928,11 +1931,19 @@ finally:
             destination = os.path.join(data_dir, *relative.split("/"))
             os.makedirs(os.path.dirname(destination), exist_ok=True)
             shutil.copy2(source, destination)
+            # Validate the captured revision, including a save between the
+            # source check and the copy. Later phases consume only this copy.
+            source_fingerprint(data_dir, {**entry, "normalized_path": relative})
             copied.add(key)
 
         for guid in sorted(selected):
             entry = selected[guid]
             source = self._library_source_entry_path(entry)
+            package_source = is_path_within(source, packages_root, allow_root=False)
+            if package_source and guid.casefold() not in getattr(self, "_staged_player_plugin_guids", ()):
+                raise RuntimeError(
+                    f"Player dependency is not exported by an enabled Runtime package: {guid}: {source}"
+                )
             builtin_relative = (
                 self._builtin_resource_relative_path(source)
                 if bool(entry.get("read_only", False))
@@ -1976,7 +1987,14 @@ finally:
                     f"guid={guid}, source={source}"
                 )
             if is_path_within(source, assets_root, allow_root=False):
-                copy_source(source, reason=f"AssetIndex GUID {guid}")
+                copy_source(source, entry=entry, reason=f"AssetIndex GUID {guid}")
+                continue
+            if package_source:
+                # Enabled Runtime membership staged this exact source before
+                # dependency selection; it is consumed from Data/ below.
+                source_fingerprint(data_dir, {
+                    **entry, "normalized_path": relative_path(source, self.project_path),
+                })
                 continue
             if bool(entry.get("read_only", False)) and builtin_relative:
                 # Desktop Players receive built-in resources from Runtime.inxrt.
@@ -2384,7 +2402,9 @@ finally:
             entry = self._cooked_asset_entries.get(prefab_guid)
             if entry is None:
                 raise RuntimeError(f"Prefab source is outside the build catalog: {prefab_guid}")
-            return self._library_source_entry_path(entry)
+            return os.path.join(data_dir, *relative_path(
+                self._library_source_entry_path(entry), self.project_path
+            ).split("/"))
 
         for guid, entry in sorted(
             getattr(self, "_cooked_asset_entries", {}).items()
@@ -2416,6 +2436,7 @@ finally:
             source_relative = relative_path(
                 source_path, self.project_path
             ).replace("\\", "/")
+            staged_source = os.path.join(data_dir, *source_relative.split("/"))
             logical_type = logical_type_for_path("imported" + suffix if imported_document is not None else source_relative)
             payload_kind = payload_kind_for(logical_type)
             if logical_type == "data_asset":
@@ -2448,7 +2469,7 @@ finally:
             elif logical_type == "data_asset":
                 from infernux.core.data_asset import encode_data_asset_artifact
 
-                with open(source_path, "r", encoding="utf-8") as source_stream:
+                with open(staged_source, "r", encoding="utf-8") as source_stream:
                     data_asset_document = json.load(source_stream)
                 Path(destination).write_bytes(
                     encode_data_asset_artifact(data_asset_document)
@@ -2470,7 +2491,7 @@ finally:
                     if imported_document is not None:
                         authored = json.loads(imported_document)
                     else:
-                        with open(source_path, "r", encoding="utf-8") as source_stream:
+                        with open(staged_source, "r", encoding="utf-8") as source_stream:
                             authored = json.load(source_stream)
                     scene_document = decode_scene_document(authored)
                     cooked = encode_runtime_scene_artifact(
@@ -2480,14 +2501,14 @@ finally:
                         )
                     )
                 else:
-                    cooked = _read_resolved_prefab_document(source_path, path_for_guid=prefab_path_for_guid)
+                    cooked = _read_resolved_prefab_document(staged_source, path_for_guid=prefab_path_for_guid)
                     # A Player consumes the resolved tree, not editor inheritance
                     # snapshots or an independent Variant runtime.
                     cooked.pop("variant", None)
                 _write_json_atomic(destination, cooked)
                 self._rewrite_player_document_paths(destination, suffix)
             else:
-                shutil.copy2(source_path, destination)
+                shutil.copy2(staged_source, destination)
                 self._rewrite_player_document_paths(destination, suffix)
 
             source_state = entry.get("source", {})

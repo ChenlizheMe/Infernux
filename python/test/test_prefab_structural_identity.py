@@ -370,6 +370,7 @@ def _all_nodes(root):
 
 
 def test_builder_stages_latest_prefab_for_unopened_scene(scene, tmp_path):
+    from pathlib import Path
     from infernux.engine.game_builder import GameBuilder
     from infernux.engine.prefab_manager import save_prefab_document
     from infernux.engine.scene_document_transaction import SceneDocumentTransaction
@@ -394,6 +395,9 @@ def test_builder_stages_latest_prefab_for_unopened_scene(scene, tmp_path):
     builder._runtime_artifact_bindings = {}
     builder._runtime_artifact_source_paths = set()
     data = tmp_path / "Data"
+    (data / "Assets").mkdir(parents=True)
+    for source in (Path(path), scene_path):
+        (data / "Assets" / source.name).write_bytes(source.read_bytes())
     builder._stage_library_runtime_documents(str(data))
     artifact = data / "Library/Artifacts/Document/scene-guid.scene"
     cooked = json.loads(artifact.read_text(encoding="utf-8"))

@@ -57,6 +57,9 @@ def test_cook_rejects_invalid_unopened_scene_before_publishing_artifact(scene, t
     builder._runtime_artifact_bindings = {}
     builder._runtime_artifact_source_paths = set()
     data = tmp_path / "Data"
+    staged = data / "Assets/Unopened.scene"
+    staged.parent.mkdir(parents=True)
+    staged.write_bytes(source)
     with pytest.raises(ValueError):
         builder._stage_library_runtime_documents(str(data))
     assert not (data / "Library/Artifacts/Document/scene-guid.scene").exists()

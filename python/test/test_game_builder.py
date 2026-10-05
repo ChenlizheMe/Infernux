@@ -52,6 +52,17 @@ from infernux.plugins.preload import PreloadManager
 from infernux.plugins.registry import PluginRegistry
 
 
+def _stage_document_inputs(builder, data_dir):
+    """Prepare the captured source input required by the document cook phase."""
+    for entry in builder._cooked_asset_entries.values():
+        if "import_document" in entry.get("metadata", {}).get("metadata", {}):
+            continue
+        source = Path(entry["normalized_path"])
+        destination = data_dir / source.relative_to(builder.project_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+
 @pytest.mark.parametrize(
     ("suffix", "magic", "schema"),
     (
@@ -396,6 +407,7 @@ def test_relative_file_import_keeps_guid_after_cook_pack_and_project_move(monkey
     builder._runtime_artifact_source_paths = set()
     final = tmp_path / "CookedBuild"
     data_root = final / "Data"
+    _stage_document_inputs(builder, data_root)
     builder._stage_library_runtime_documents(str(data_root))
     builder._write_runtime_asset_records(str(final))
     records = json.loads((data_root / "Library/RuntimeAssetRecords.json").read_text(encoding="utf-8"))
@@ -3813,6 +3825,7 @@ def test_player_stages_project_shader_as_packed_runtime_glsl(tmp_path):
     builder._runtime_artifact_source_paths = set()
     data_dir = tmp_path / "dist" / "Data"
 
+    _stage_document_inputs(builder, data_dir)
     builder._stage_library_runtime_documents(str(data_dir))
 
     artifact = (
@@ -3840,6 +3853,7 @@ def test_player_stages_font_as_guid_owned_runtime_blob(tmp_path):
     builder._runtime_artifact_source_paths = set()
     data_dir = tmp_path / "dist" / "Data"
 
+    _stage_document_inputs(builder, data_dir)
     builder._stage_library_runtime_documents(str(data_dir))
 
     runtime_path = "Library/Artifacts/Blob/font-guid.ttf"
@@ -3876,6 +3890,7 @@ def test_player_cooks_data_asset_to_binary_infernux_artifact(tmp_path):
     builder._runtime_artifact_source_paths = set()
     data_dir = tmp_path / "dist" / "Data"
 
+    _stage_document_inputs(builder, data_dir)
     builder._stage_library_runtime_documents(str(data_dir))
 
     runtime_path = "Library/Artifacts/Data/data-guid.inxasset"
@@ -3896,7 +3911,8 @@ def test_player_cooks_data_asset_to_binary_infernux_artifact(tmp_path):
 
 
 @pytest.mark.parametrize("depth", [1, 2, 4])
-def test_player_cooks_variant_from_current_base_without_authoring_metadata(tmp_path, depth):
+@pytest.mark.parametrize("source_change", ["none", "base-edit", "source-removal"])
+def test_player_cooks_variant_from_current_base_without_authoring_metadata(tmp_path, depth, source_change):
     import copy
     from infernux.engine.prefab_variant import create_variant_definition, variant_document
     from infernux.engine.prefab_manager import _make_prefab_baseline
@@ -3961,13 +3977,25 @@ def test_player_cooks_variant_from_current_base_without_authoring_metadata(tmp_p
     builder._runtime_artifact_bindings = {}
     builder._runtime_artifact_source_paths = set()
     data_dir = tmp_path / "dist/Data"
+    _stage_document_inputs(builder, data_dir)
+    if source_change == "base-edit":
+        base["root_object"]["layer"] = 12
+        base["root_object"]["children"][0]["layer"] = 12
+        base_path.write_text(json.dumps(base), encoding="utf8")
+        before = [path.read_bytes() for path in source_paths]
+    elif source_change == "source-removal":
+        for path in [*source_paths, scene_path]:
+            path.unlink()
     builder._stage_library_runtime_documents(str(data_dir))
     cooked = json.loads((data_dir / "Library/Artifacts/Document/variant-guid.prefab").read_text(encoding="utf8"))
     assert cooked["root_object"]["name"] == "Authored Variant"
     assert cooked["root_object"]["layer"] == 7
     assert cooked["root_object"]["tag"] == (f"Level {depth - 1}" if depth > 1 else "Untagged")
     assert "variant" not in cooked
-    assert [path.read_bytes() for path in source_paths] == before
+    if source_change == "source-removal":
+        assert not any(path.exists() for path in [*source_paths, scene_path])
+    else:
+        assert [path.read_bytes() for path in source_paths] == before
     for guid, _ in ancestors:
         ancestor = json.loads((data_dir / f"Library/Artifacts/Document/{guid}.prefab").read_text(encoding="utf8"))
         assert "variant" not in ancestor
@@ -4021,6 +4049,7 @@ def test_scene_cook_preserves_native_joint_references_and_loads(scene, tmp_path,
     builder._runtime_artifact_source_paths = set()
     data_dir = tmp_path / "dist/Data"
     artifact = data_dir / "Library/Artifacts/Document/scene-guid.scene"
+    _stage_document_inputs(builder, data_dir)
     builder._stage_library_runtime_documents(str(data_dir))
     first = artifact.read_bytes()
     builder._stage_library_runtime_documents(str(data_dir))
