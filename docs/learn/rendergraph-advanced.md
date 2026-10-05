@@ -201,7 +201,7 @@ result = self.geometry_stage(
 object_index = self.sample_buffer(result, requested)
 ```
 
-`require_buffer()` is valid only while RenderStack or the base DSL implementation has set the defining graph. The returned `BufferHandle` is a semantic request from `infernux.renderstack`; it is separate from the transient GPU `BufferHandle` returned by `graph.create_buffer()`. Standalone overrides use `graph.require_geometry_buffers({"object_index"})`, then pass the same graph into `geometry_stage()`.
+`require_buffer()` is valid during `define_topology()` in either RenderStack or standalone pipelines. The returned `BufferHandle` is a semantic request from `infernux.renderstack`; it is separate from the transient GPU `BufferHandle` returned by `graph.create_buffer()`. Either host also supports calling `graph.require_geometry_buffers({"object_index"})` directly before passing the same graph into `geometry_stage()`.
 
 ## PassResult, handles, and native actions {#pass-results}
 
@@ -356,6 +356,31 @@ graph.set_output(resolved)
 ```
 
 The pass must have exactly one color output at slot `0`. The source must be multisampled; the target must be a transient, single-sample color texture with matching format and extent. The current Python API has no depth-resolve operation.
+
+## Draw selected renderers {#renderer-selection-en}
+
+Use `RendererSelection` to draw ordinary MeshRenderers and selected submeshes with a replacement material, without copying meshes or editing their original materials. Create the selection once when initializing the pipeline; `mask_material` is a project material and `target_renderer` is an Inspector reference or a renderer selected by gameplay code:
+
+```python
+import infernux as inx
+
+selection = inx.rendergraph.RendererSelection(mask_material)
+parameters = inx.rendergraph.DrawParameterBlock()
+parameters.set_color("baseColor", (1.0, 0.2, 0.05, 1.0))
+selection.set(target_renderer, parameters=parameters)
+
+with graph.add_pass("SelectedMask") as p:
+    p.write_color(mask)
+    p.write_depth(mask_depth)
+    p.set_clear(color=(0, 0, 0, 0), depth=1.0)
+    p.draw_renderers(renderer_selection=selection)
+```
+
+Create `mask` and `mask_depth` on the same graph with matching dimensions and sample counts. The project chooses independent mask depth or scene depth. Parameters must be declared by the selection material's ShaderInfo; they do not modify the original shared material or search other parameter domains.
+
+`set(renderer, submesh=2, parameters=parameters)` selects one submesh; the default `submesh=-1` selects all. An exact submesh entry takes precedence over an all-submeshes entry. Each `set()` captures the parameter values; later changes to the block take effect only after another `set()`. Use `remove(renderer, submesh=2)` or `clear()` to edit membership.
+
+Update the existing selection during Update/LateUpdate without rebuilding topology. The graph retains the selection and its material; drawing uses the current camera-visible geometry, transforms, skinning and GPU vertex buffers, filtered by the original material's Queue/Pass Tag. Retired renderers are not selected by a reused object ID. A replacement vertex shader must implement source-shader deformation explicitly; deformation already stored in the shared GPU mesh remains visible. Per-draw texture overrides currently accept ordinary texture GUIDs; bind RenderTextures on the selection material or through explicit graph inputs.
 
 ## Raw object-data masks {#object-data-mask-en}
 
@@ -697,7 +722,7 @@ result = self.geometry_stage(
 object_index = self.sample_buffer(result, requested)
 ```
 
-`require_buffer()` 只在 RenderStack 或基础 DSL 实现已设置 Defining Graph 时有效。它返回的是 `infernux.renderstack` 中的语义请求 `BufferHandle`；`graph.create_buffer()` 返回的是瞬态 GPU Buffer Handle，两者类型职责不同。Standalone Override 应先调用 `graph.require_geometry_buffers({"object_index"})`，再把同一 Graph 传给 `geometry_stage()`。
+`require_buffer()` 在 RenderStack 与 standalone 管线的 `define_topology()` 期间都有效。它返回的是 `infernux.renderstack` 中的语义请求 `BufferHandle`；`graph.create_buffer()` 返回的是瞬态 GPU Buffer Handle，两者类型职责不同。两种 Host 也都支持先直接调用 `graph.require_geometry_buffers({"object_index"})`，再把同一 Graph 传给 `geometry_stage()`。
 
 ## PassResult、Handle 生命周期与 Native Action {#pass-results_1}
 

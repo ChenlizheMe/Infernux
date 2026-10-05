@@ -60,10 +60,12 @@ def test_bad_capture_is_atomic_and_validated_against_selection_material(selected
         selection.set(renderer, parameters=values)
 
 
-def test_documented_selection_example_uses_the_public_namespace(scene):
+@pytest.mark.parametrize("language", ("en", "zh"))
+def test_documented_selection_example_uses_the_public_namespace(scene, language):
     """Execute the actual guide, not just its import spelling."""
     text = (Path(__file__).parents[2] / 'docs/learn/rendergraph-advanced.md').read_text(encoding='utf-8')
-    section = text.split('{#renderer-selection}', 1)[1]
+    anchor = 'renderer-selection-en' if language == 'en' else 'renderer-selection'
+    section = text.split('{#' + anchor + '}', 1)[1]
     source = section.split('```python\n', 1)[1].split('```', 1)[0]
     material = Material(InxMaterial('Documented mask', 'Unlit'))
     material.set_color('baseColor', 1., 1., 1., 1.)
