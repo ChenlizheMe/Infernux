@@ -98,9 +98,9 @@ class UICanvas(InxUIComponent):
         if previous is not game_object:
             self._publish_canvas_membership_change()
 
-    def _invalidate_native_binding(self):
+    def _invalidate_native_binding(self, *, release_fields: bool = True):
         was_bound = self.__dict__.get("_game_object") is not None
-        super()._invalidate_native_binding()
+        super()._invalidate_native_binding(release_fields=release_fields)
         if was_bound:
             self._publish_canvas_membership_change()
 

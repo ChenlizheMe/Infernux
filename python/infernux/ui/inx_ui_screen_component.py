@@ -253,9 +253,11 @@ class InxUIScreenComponent(InxUIComponent):
     def _canvas_for_owner(self, current):
         """Resolve hierarchy using the owner already validated by this query."""
         from .ui_canvas import UICanvas
+        from .ui_canvas_utils import canvas_membership_revision, scene_canvas_cache_key
 
         scene = current.scene if current is not None else None
-        key = (current, scene, scene.world_id, scene.structure_version) if scene is not None else None
+        key = (current, scene_canvas_cache_key(scene), scene.structure_version,
+               canvas_membership_revision()) if scene is not None else None
         cached = self.__dict__.get("_canvas_ancestor")
         if key is not None and cached is not None and cached[0] == key:
             return cached[1]

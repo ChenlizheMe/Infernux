@@ -4,6 +4,42 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_canvas_ancestor_tracks_python_membership_when_native_topology_is_unchanged(monkeypatch):
+    from infernux.ui import UICanvas, UIText
+    from infernux.ui.ui_canvas_utils import invalidate_canvas_cache
+
+    native_scene = SimpleNamespace(world_id=7, structure_version=12, temporal_discontinuity_revision=0)
+    components = []
+    root = SimpleNamespace(id=1, scene=native_scene, get_py_components=lambda: components, get_parent=lambda: None)
+    child = SimpleNamespace(id=2, scene=native_scene, get_py_components=lambda: [], get_parent=lambda: root)
+    text = UIText()
+    monkeypatch.setattr(text, "_try_get_game_object", lambda: child)
+    first = UICanvas()
+    components.append(first)
+    invalidate_canvas_cache()
+    assert text.get_canvas() is first
+    replacement = UICanvas()
+    components[:] = [replacement]
+    invalidate_canvas_cache()
+    assert text.get_canvas() is replacement
+    components.clear()
+    invalidate_canvas_cache()
+    assert text.get_canvas() is None
+
+
+def test_canvas_invalidation_preserves_base_retirement_keyword(scene):
+    from infernux.ui import UICanvas
+    from infernux.ui.ui_canvas_utils import canvas_membership_revision
+
+    owner = scene.create_game_object("CanvasRetirement")
+    canvas = UICanvas()
+    owner.add_py_component(canvas)
+    before = canvas_membership_revision()
+    canvas._invalidate_native_binding(release_fields=False)
+    assert canvas._try_get_game_object() is None
+    assert canvas_membership_revision() == before + 1
+
+
 def test_canvas_ancestor_snapshot_reuses_topology_and_tracks_reparent(scene, monkeypatch):
     from infernux.lib import GameObject, Vector3
     from infernux.ui import UICanvas, UIText
