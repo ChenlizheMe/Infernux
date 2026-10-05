@@ -20,7 +20,6 @@ import copy
 import json
 import os
 import uuid
-import wave
 import zlib
 from dataclasses import dataclass, field
 from enum import Enum
@@ -1131,20 +1130,10 @@ def _load_texture(path: str):
 
 
 def _load_audio(path: str):
-    extra = {"duration": 0.0, "sample_rate": 0, "channels": 0, "sample_count": 0}
-    try:
-        with wave.open(path, "rb") as stream:
-            sample_rate = int(stream.getframerate())
-            sample_count = int(stream.getnframes())
-            extra.update(
-                duration=(float(sample_count) / float(sample_rate)) if sample_rate > 0 else 0.0,
-                sample_rate=sample_rate,
-                channels=int(stream.getnchannels()),
-                sample_count=sample_count,
-            )
-    except (OSError, EOFError, wave.Error):
-        pass
-    return read_audio_import_settings(path), extra
+    from infernux.lib import _Infernux
+
+    settings = read_audio_import_settings(path)
+    return settings, _Infernux._inspect_audio_file(path)
 
 
 def _load_identity_asset(path: str):

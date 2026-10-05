@@ -1211,6 +1211,8 @@ class Camera(Component):
 # =============================================================================
 
 
+def _inspect_audio_file(file_path: str) -> dict[str, int | float]: ...
+
 class AudioClip:
     """Loaded audio clip data."""
 

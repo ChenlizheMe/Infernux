@@ -10,6 +10,7 @@
 #include "function/audio/AudioEngine.h"
 #include "function/audio/AudioListener.h"
 #include "function/audio/AudioSource.h"
+#include "function/audio/AudioStreamDecoder.h"
 #include "function/scene/Component.h"
 #include "function/scene/GameObject.h"
 
@@ -23,6 +24,24 @@ namespace infernux
 
 void RegisterAudioBindings(py::module_ &m)
 {
+    m.def("_inspect_audio_file", [](const std::string &filePath) {
+        uint64_t frames;
+        int rate, channels;
+        {
+            py::gil_scoped_release release;
+            AudioStreamDecoder decoder(filePath);
+            frames = decoder.FrameCount();
+            rate = decoder.SampleRate();
+            channels = decoder.Channels();
+        }
+        py::dict info;
+        info["duration"] = static_cast<double>(frames) / rate;
+        info["sample_count"] = frames;
+        info["sample_rate"] = rate;
+        info["channels"] = channels;
+        return info;
+    }, py::arg("file_path"), "Read source codec metadata without loading resident PCM or creating a voice.");
+
     // ========================================================================
     // AudioClip — loaded audio data (Unity: AudioClip)
     // ========================================================================
