@@ -652,6 +652,7 @@ class AssetDatabase
     void InstallWorkingSet(WorkingSet workingSet);
     void PublishQuerySnapshot(bool includeCatalog = true);
     void PublishModelSubAssetEvents(const std::shared_ptr<const QuerySnapshot> &previous);
+    void PublishRefreshAssetEvents(const WorkingSet &previous);
     void PublishQuerySnapshotForPaths(const std::vector<std::string> &paths);
     void InstallQuerySnapshot(std::shared_ptr<QuerySnapshot> snapshot) noexcept;
     [[nodiscard]] std::shared_ptr<const QuerySnapshot> LoadQuerySnapshot() const;

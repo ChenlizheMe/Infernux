@@ -61,6 +61,7 @@ void AssetRegistry::Shutdown()
     m_cpuEvictionCount = 0;
     m_runtimeMeshSerial = 0;
     m_assetMutationGenerations.clear();
+    m_assetContentGenerations.clear();
     m_assetRuntimeVersions.clear();
     m_meshGpuViewResidency.clear();
     m_assetRuntimeTypes.clear();
@@ -174,6 +175,8 @@ void AssetRegistry::RemoveEntry(AssetEntryMap::iterator entry)
 
 bool AssetRegistry::ReloadAsset(const std::string &guid)
 {
+    ++m_assetContentGenerations[guid];
+    ++m_assetMutationGenerations[guid];
     auto it = m_loadedAssets.find(guid);
     if (it == m_loadedAssets.end())
         return false;
@@ -205,7 +208,6 @@ bool AssetRegistry::ReloadAsset(const std::string &guid)
     it->second.cpuBytes = updatedBytes;
     it->second.lastAccessSerial = ++m_accessSerial;
     it->second.version = NextRuntimeVersion(guid);
-    ++m_assetMutationGenerations[guid];
     (void)TrimCpuBudget();
     return true;
 }
@@ -300,6 +302,7 @@ void AssetRegistry::DestroyRuntimeMesh(const std::string &guid)
         graph.RemoveRuntimeDependency(dependentGuid, guid);
     RemoveEntry(entry);
     ++m_assetMutationGenerations[guid];
+    ++m_assetContentGenerations[guid];
     graph.RemoveAsset(guid);
 }
 
@@ -325,6 +328,7 @@ void AssetRegistry::PublishMesh(const std::string &guid, InxMesh replacement)
     entry->second.lastAccessSerial = ++m_accessSerial;
     m_totalCpuBytes = remainingBytes + bytes;
     ++m_assetMutationGenerations[guid];
+    ++m_assetContentGenerations[guid];
     AssetDependencyGraph::Instance().NotifyEvent(guid, ResourceType::Mesh, AssetEvent::RuntimeModified);
     (void)TrimCpuBudget();
 }
@@ -332,6 +336,7 @@ void AssetRegistry::PublishMesh(const std::string &guid, InxMesh replacement)
 void AssetRegistry::InvalidateAsset(const std::string &guid)
 {
     ++m_assetMutationGenerations[guid];
+    ++m_assetContentGenerations[guid];
     auto it = m_loadedAssets.find(guid);
     if (it != m_loadedAssets.end()) {
         RemoveEntry(it);
@@ -341,6 +346,7 @@ void AssetRegistry::InvalidateAsset(const std::string &guid)
 void AssetRegistry::RemoveAsset(const std::string &guid)
 {
     ++m_assetMutationGenerations[guid];
+    ++m_assetContentGenerations[guid];
     const auto entry = m_loadedAssets.find(guid);
     if (entry != m_loadedAssets.end())
         RemoveEntry(entry);
@@ -359,6 +365,7 @@ std::shared_ptr<AssetLoadTicket> AssetRegistry::BeginLoadAsset(const std::string
     ticket->m_resourceType = type;
     ticket->m_ownerThread = m_ownerThread;
     ticket->m_expectedMutationGeneration = m_assetMutationGenerations[guid];
+    ticket->m_expectedContentGeneration = m_assetContentGenerations[guid];
 
     const auto cached = m_loadedAssets.find(guid);
     if (cached != m_loadedAssets.end()) {
@@ -421,7 +428,8 @@ bool AssetRegistry::TryCommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &t
     }
     const bool staleAfterMutation = m_assetMutationGenerations[ticket->m_guid] != ticket->m_expectedMutationGeneration;
     const bool canUseStaleUnloadedPayload =
-        allowStaleIfUnloaded && m_loadedAssets.find(ticket->m_guid) == m_loadedAssets.end();
+        allowStaleIfUnloaded && m_loadedAssets.find(ticket->m_guid) == m_loadedAssets.end() &&
+        m_assetContentGenerations[ticket->m_guid] == ticket->m_expectedContentGeneration;
     if (staleAfterMutation && !canUseStaleUnloadedPayload) {
         ticket->m_rejected = true;
         throw std::logic_error("Asset load ticket is stale after a newer registry mutation");
@@ -572,6 +580,7 @@ void AssetRegistry::UpdateLoadedAssetPath(const std::string &guid, const std::st
         throw std::invalid_argument("AssetRegistry::UpdateLoadedAssetPath requires GUID and destination path");
 
     ++m_assetMutationGenerations[guid];
+    ++m_assetContentGenerations[guid];
     auto it = m_loadedAssets.find(guid);
     if (it == m_loadedAssets.end())
         return;

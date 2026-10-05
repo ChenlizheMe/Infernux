@@ -682,6 +682,80 @@ void AssetDatabase::PublishModelSubAssetEvents(const std::shared_ptr<const Query
     }
 }
 
+void AssetDatabase::PublishRefreshAssetEvents(const WorkingSet &previous)
+{
+    struct Change
+    {
+        std::string guid;
+        ResourceType type;
+        AssetEvent event;
+        bool moved = false;
+    };
+    std::vector<Change> changes;
+    for (const auto &[guid, metadata] : previous.metas) {
+        if (!metadata->HasKey("import_owner_guid") && m_metas.find(guid) == m_metas.end())
+            changes.push_back({guid, metadata->GetResourceType(), AssetEvent::Deleted});
+    }
+    for (const auto &[guid, metadata] : m_metas) {
+        if (metadata->HasKey("import_owner_guid"))
+            continue; // Model-owned resources have their own publication below.
+        const auto result = m_importResults.find(guid);
+        if (result != m_importResults.end() && !result->second.succeeded)
+            continue; // An unsuccessful import does not replace the last valid runtime payload.
+        const auto old = previous.metas.find(guid);
+        if (old == previous.metas.end()) {
+            changes.push_back({guid, metadata->GetResourceType(), AssetEvent::Modified});
+            continue;
+        }
+        const auto &path = m_guidToPath.at(guid);
+        const auto &oldPath = previous.guidToPath.at(guid);
+        const bool moved = path != oldPath;
+        const auto oldFile = previous.fileStates.find(FilesystemPathKey(oldPath));
+        const auto file = m_fileStates.find(FilesystemPathKey(path));
+        const auto oldResult = previous.importResults.find(guid);
+        bool modified = oldFile == previous.fileStates.end() || file == m_fileStates.end() ||
+                        oldFile->second.source != file->second.source ||
+                        (oldResult != previous.importResults.end() && !oldResult->second.succeeded);
+        if (!modified && old->second != metadata) {
+            // Source observations live in the local index; only authored settings
+            // can change the runtime contract without a source change. A path-only
+            // move must retain the payload and its published runtime version.
+            auto oldSettings = old->second->SerializeDocumentPortable(m_projectRoot);
+            auto settings = metadata->SerializeDocumentPortable(m_projectRoot);
+            oldSettings["metadata"].erase("file_path");
+            settings["metadata"].erase("file_path");
+            modified = oldSettings != settings;
+        }
+        if (modified || moved)
+            changes.push_back(
+                {guid, metadata->GetResourceType(), modified ? AssetEvent::Modified : AssetEvent::Moved, moved});
+    }
+    std::sort(changes.begin(), changes.end(),
+              [](const Change &left, const Change &right) { return left.guid < right.guid; });
+    auto &registry = AssetRegistry::Instance();
+    // Install every CPU cache change before notifying consumers, which may load
+    // other changed assets through the already-published catalog.
+    for (const auto &change : changes) {
+        if (change.event == AssetEvent::Deleted) {
+            registry.RemoveAsset(change.guid);
+            continue;
+        }
+        if (change.moved)
+            registry.UpdateLoadedAssetPath(change.guid, m_guidToPath.at(change.guid));
+        if (change.event == AssetEvent::Modified) {
+            const bool loaded = registry.IsLoaded(change.guid);
+            if (!registry.ReloadAsset(change.guid) && loaded)
+                throw std::runtime_error("Could not publish refreshed runtime asset: " + change.guid);
+        }
+    }
+    auto &graph = AssetDependencyGraph::Instance();
+    for (const auto &change : changes) {
+        graph.NotifyEvent(change.guid, change.type, change.event);
+        if (change.event == AssetEvent::Deleted)
+            graph.RemoveAsset(change.guid);
+    }
+}
+
 void AssetDatabase::PublishQuerySnapshotForPaths(const std::vector<std::string> &paths)
 {
     const auto previous = LoadQuerySnapshot();
@@ -2308,6 +2382,7 @@ void AssetDatabase::FinalizePendingRefreshCommit(const std::shared_ptr<PendingRe
         state->ownerFinalizeMilliseconds +
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - finalizeStarted).count();
     restorePreviousWorkingSet.Release();
+    PublishRefreshAssetEvents(previousWorkingSet);
     PublishModelSubAssetEvents(previousSnapshot);
     // INXLOG_INFO("AssetDatabase.Refresh completed. Total assets: ", m_guidToPath.size(),
     //             ", scanned: ", m_lastRefreshScannedCount, ", scan_ms: ", m_lastRefreshScanMilliseconds,

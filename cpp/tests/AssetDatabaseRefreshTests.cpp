@@ -852,6 +852,86 @@ void TestBlenderNumberedBackupsAreNotAssets()
     std::filesystem::remove_all(root);
 }
 
+void TestRefreshPublishesDeterministicAssetEvents()
+{
+    using namespace infernux;
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("infernux-refresh-events-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto first = root / "Assets" / "First.txt";
+    const auto second = root / "Assets" / "Second.txt";
+    WriteText(first, "first");
+    WriteText(second, "second");
+    JobSystem::Initialize(2);
+    auto &registry = AssetRegistry::Instance();
+    auto &graph = AssetDependencyGraph::Instance();
+    graph.Clear();
+    try {
+        auto database = std::make_unique<AssetDatabase>();
+        database->Initialize(FromFsPath(root));
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(ResourceType::DefaultText,
+                                std::make_unique<InxDefaultTextLoader>(ResourceType::DefaultText));
+        registry.PopulateAssetDatabaseLoaders();
+        auto *db = registry.GetAssetDatabase();
+        db->Refresh();
+        const auto firstGuid = db->GetGuidFromPath(FromFsPath(first));
+        const auto secondGuid = db->GetGuidFromPath(FromFsPath(second));
+        graph.AddRuntimeDependency("refresh-consumer", firstGuid);
+        graph.AddRuntimeDependency("refresh-consumer", secondGuid);
+        std::vector<std::pair<std::string, AssetEvent>> events;
+        graph.RegisterCallback(ResourceType::DefaultText,
+                               [&](const std::string &dependent, const std::string &guid, AssetEvent event) {
+                                   Require(dependent == "refresh-consumer", "unexpected refresh consumer");
+                                   Require(db->GetPathFromGuid(guid).empty() == (event == AssetEvent::Deleted),
+                                           "consumer observed the old catalog during refresh publication");
+                                   events.emplace_back(guid, event);
+                               });
+        WriteText(first, "first modified");
+        WriteText(second, "second modified");
+        db->Refresh();
+        Require(events.size() == 2 && events[0].first < events[1].first && events[0].second == AssetEvent::Modified &&
+                    events[1].second == AssetEvent::Modified,
+                "refresh did not publish deterministic content events");
+        events.clear();
+        db->Refresh();
+        Require(events.empty(), "unchanged refresh emitted a content event");
+        const auto moved = root / "Assets" / "Moved.txt";
+        const auto movedMeta = ToFsPath(FromFsPath(moved) + ".meta");
+        std::filesystem::rename(first, moved);
+        std::filesystem::rename(ToFsPath(FromFsPath(first) + ".meta"), movedMeta);
+        db->Refresh();
+        Require(events == std::vector<std::pair<std::string, AssetEvent>>{{firstGuid, AssetEvent::Moved}},
+                "external move did not publish one Moved event");
+        std::ifstream metadataInput(movedMeta, std::ios::binary);
+        const std::string sidecar((std::istreambuf_iterator<char>(metadataInput)), std::istreambuf_iterator<char>());
+        metadataInput.close();
+        events.clear();
+        std::filesystem::remove(moved);
+        std::filesystem::remove(movedMeta);
+        db->Refresh();
+        Require(events == std::vector<std::pair<std::string, AssetEvent>>{{firstGuid, AssetEvent::Deleted}},
+                "external deletion did not publish one Deleted event");
+        Require(graph.HasDependency("refresh-consumer", firstGuid), "deletion erased authored runtime identity");
+        events.clear();
+        WriteText(moved, "restored original identity");
+        WriteText(movedMeta, sidecar);
+        db->Refresh();
+        Require(events == std::vector<std::pair<std::string, AssetEvent>>{{firstGuid, AssetEvent::Modified}},
+                "restored GUID did not notify its retained consumer");
+        graph.Clear();
+        registry.Shutdown();
+        JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+    } catch (...) {
+        graph.Clear();
+        if (registry.IsInitialized())
+            registry.Shutdown();
+        JobSystem::Shutdown();
+        throw;
+    }
+}
+
 void TestVersionControlFilesAreNotAssets()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-vcs-control-scan";
@@ -930,6 +1010,7 @@ int main()
         TestMoveRequiresRegisteredGuidIdentity();
         TestBlenderNumberedBackupsAreNotAssets();
         TestVersionControlFilesAreNotAssets();
+        TestRefreshPublishesDeterministicAssetEvents();
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "Asset database refresh test failed: " << error.what() << '\n';

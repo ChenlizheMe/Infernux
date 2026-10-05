@@ -90,6 +90,7 @@ class AssetLoadTicket final
     std::thread::id m_ownerThread;
     std::thread::id m_producerThread;
     uint64_t m_expectedMutationGeneration = 0;
+    uint64_t m_expectedContentGeneration = 0;
     bool m_committed = false;
     bool m_rejected = false;
 };
@@ -239,9 +240,8 @@ class AssetRegistry
 
     [[nodiscard]] std::shared_ptr<AssetLoadTicket> BeginLoadAsset(const std::string &guid, ResourceType type);
     /// Commit a completed worker load on the owner thread.  The optional
-    /// stale-if-unloaded mode is reserved for non-authoritative previews: if
-    /// no live cache entry exists, metadata/index churn during a first import
-    /// must not discard an otherwise valid decoded payload.
+    /// stale-if-unloaded mode permits cache residency changes for previews,
+    /// but never a content change, invalidation, deletion or relocation.
     bool TryCommitAssetLoad(const std::shared_ptr<AssetLoadTicket> &ticket, bool allowStaleIfUnloaded = false);
     [[nodiscard]] std::shared_ptr<TextureUploadStagingTicket> BeginTextureUploadStaging(const std::string &guid);
     [[nodiscard]] std::shared_ptr<const TextureCpuData>
@@ -339,6 +339,7 @@ class AssetRegistry
     std::unique_ptr<AssetDatabase> m_assetDb;
     AssetEntryMap m_loadedAssets; // GUID → live instance
     std::unordered_map<std::string, uint64_t> m_assetMutationGenerations;
+    std::unordered_map<std::string, uint64_t> m_assetContentGenerations;
     std::unordered_map<std::string, uint64_t> m_assetRuntimeVersions;
     struct MeshGpuViewResidency
     {
