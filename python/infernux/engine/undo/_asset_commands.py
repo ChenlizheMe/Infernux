@@ -89,6 +89,8 @@ class EditableDocumentDraftCommand(UndoCommand):
         edit_key: str,
         description: str,
     ) -> None:
+        from infernux.engine.interaction.documents import DocumentRegistry
+
         super().__init__(description)
         self._controller = controller
         self._old_document = copy.deepcopy(old_document)
@@ -97,11 +99,26 @@ class EditableDocumentDraftCommand(UndoCommand):
         self._new_revision = int(new_revision)
         self._document_id = str(getattr(controller, "document_id", ""))
         self._edit_key = str(edit_key or "")
+        self._imported_disk_revision = DocumentRegistry.instance().require(
+            self._document_id
+        ).imported_disk_revision
+
+    def _require_current_external_revision(self) -> None:
+        from infernux.engine.interaction.documents import DocumentRegistry
+
+        document = DocumentRegistry.instance().require(self._document_id)
+        if document.imported_disk_revision != self._imported_disk_revision:
+            raise RuntimeError(
+                "Cannot replay a whole-document edit after an external resource revision; "
+                "edit the current document instead"
+            )
 
     def execute(self) -> None:
+        self._require_current_external_revision()
         self._controller.restore_document(self._new_document, self._new_revision)
 
     def undo(self) -> None:
+        self._require_current_external_revision()
         self._controller.restore_document(self._old_document, self._old_revision)
 
     def redo(self) -> None:
@@ -111,6 +128,7 @@ class EditableDocumentDraftCommand(UndoCommand):
         return (
             isinstance(other, EditableDocumentDraftCommand)
             and self._document_id == other._document_id
+            and self._imported_disk_revision == other._imported_disk_revision
             and self._edit_key == other._edit_key
             and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW
         )
