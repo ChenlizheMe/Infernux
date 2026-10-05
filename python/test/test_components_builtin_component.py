@@ -422,6 +422,46 @@ class TestBuiltinComponent:
         assert wrapper_ref() is None
         bus.shutdown()
 
+    @pytest.mark.parametrize("clear_cache", [False, True])
+    def test_sprite_renderer_retirement_does_not_resolve_dead_native_owner(self, clear_cache):
+        from infernux.components.builtin.sprite_renderer import SpriteRenderer
+        from infernux.engine.interaction import AssetMutationService, DocumentRegistry, SelectionService
+
+        class NativeOwner:
+            alive = True
+            enabled = True
+            execution_order = 0
+            handle = object()
+
+            @property
+            def component_id(self):
+                if not self.alive:
+                    raise RuntimeError("native component was destroyed")
+                return 42
+
+        previous = AssetMutationService.instance()
+        if previous is not None:
+            previous.shutdown()
+        bus = AssetMutationService(DocumentRegistry(), SelectionService())
+        wrapper = SpriteRenderer()
+        native = NativeOwner()
+        wrapper._bind_native_component(native)
+        wrapper._subscribe_asset_events()
+        assert bus.listener_diagnostics["component_callbacks"] == 1
+        native.alive = False
+        try:
+            if clear_cache:
+                wrapper._invalidate_native_binding()
+            else:
+                assert wrapper.is_valid is False
+            assert wrapper._cpp_component is None
+            assert wrapper._is_destroyed is True
+            assert bus.listener_diagnostics["component_callbacks"] == 0
+            wrapper._invalidate_native_binding()
+            assert bus.listener_diagnostics["component_callbacks"] == 0
+        finally:
+            bus.shutdown()
+
     def test_sprite_renderer_missing_frame_id_does_not_fall_back_by_index(self):
         from types import SimpleNamespace
 

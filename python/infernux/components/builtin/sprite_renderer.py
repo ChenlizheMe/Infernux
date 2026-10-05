@@ -157,7 +157,7 @@ class SpriteRenderer(BuiltinComponent):
         """Subscribe to typed asset mutations so texture reimport refreshes this renderer."""
         from infernux.engine.interaction import AssetMutationService
 
-        previous = getattr(self, "_asset_mutation_service", None)
+        previous = self.__dict__.get("_asset_mutation_service")
         if previous is not None:
             previous.remove_component_listener(self._on_asset_changed)
         service = AssetMutationService.instance()
@@ -167,19 +167,22 @@ class SpriteRenderer(BuiltinComponent):
 
     def _unsubscribe_asset_events(self):
         """Release the mutation-service reference while this wrapper is live."""
-        service = getattr(self, "_asset_mutation_service", None)
+        service = self.__dict__.get("_asset_mutation_service")
         if service is not None:
             service.remove_component_listener(self._on_asset_changed)
         self._asset_mutation_service = None
 
     def _invalidate_native_binding(self):
-        """Release wrapper-owned resources before a scene rebuild invalidates C++."""
+        """Detach before removing callbacks that inspect the owner's identity."""
+        # Listener removal reads component_id. Once the native owner is gone,
+        # resolving that ID through a live-looking binding would re-enter this
+        # method. Publish the detached state before releasing subscriptions.
+        super()._invalidate_native_binding()
         self._unsubscribe_asset_events()
         self._sprite_material = None
         self._material_ready = False
         self._sprite_frames = []
         self._sprite_frames_by_id = {}
-        super()._invalidate_native_binding()
 
     def _on_asset_changed(self, change):
         """Refresh only mutations carrying this renderer's sprite identity."""
