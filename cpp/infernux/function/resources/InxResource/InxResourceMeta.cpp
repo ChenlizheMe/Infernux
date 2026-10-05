@@ -520,6 +520,15 @@ void InxResourceMeta::DeserializeDocument(const nlohmann::json &document)
         } else if (typeName == "int") {
             if (!value.is_number_integer())
                 throw std::invalid_argument("metadata int value expected: " + key);
+            // Check while the JSON value still has its full signed/unsigned
+            // precision. get<int>() alone silently narrows out-of-range input.
+            const bool outsideRange =
+                value.is_number_unsigned()
+                    ? value.get<uint64_t>() > static_cast<uint64_t>(std::numeric_limits<int>::max())
+                    : (value.get<int64_t>() < std::numeric_limits<int>::min() ||
+                       value.get<int64_t>() > std::numeric_limits<int>::max());
+            if (outsideRange)
+                throw std::invalid_argument("metadata int value out of range: " + key);
             staged.m_metadata[key] = std::make_pair(typeName, MetadataValue(value.get<int>()));
         } else if (typeName == "bool") {
             if (!value.is_boolean())

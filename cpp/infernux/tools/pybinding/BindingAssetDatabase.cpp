@@ -1,4 +1,5 @@
 #include "JsonPyBridge.h"
+#include "ResourceMetaPyView.h"
 #include "function/resources/AssetDatabase/AssetDatabase.h"
 #include "function/resources/AssetDependencyGraph.h"
 #include "function/resources/InxResource/InxResourceMeta.h"
@@ -130,13 +131,13 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def(
             "get_meta_by_guid",
             [](const AssetDatabase &database, const std::string &guid) {
-                return std::const_pointer_cast<InxResourceMeta>(database.GetMetaByGuid(guid));
+                return ResourceMetaView::From(database.GetMetaByGuid(guid));
             },
             py::arg("guid"), py::call_guard<py::gil_scoped_release>(), "Get immutable meta by GUID")
         .def(
             "get_meta_by_path",
             [](const AssetDatabase &database, const std::string &path) {
-                return std::const_pointer_cast<InxResourceMeta>(database.GetMetaByPath(path));
+                return ResourceMetaView::From(database.GetMetaByPath(path));
             },
             py::arg("path"), py::call_guard<py::gil_scoped_release>(), "Get immutable meta by path")
         .def("get_all_guids", &AssetDatabase::GetAllGuids, py::call_guard<py::gil_scoped_release>(),

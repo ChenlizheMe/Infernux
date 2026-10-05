@@ -1,5 +1,6 @@
 #include "JsonPyBridge.h"
 #include "MatrixPyBridge.h"
+#include "ResourceMetaPyView.h"
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
@@ -23,6 +24,53 @@ namespace infernux
 
 namespace
 {
+
+template <typename Value, typename... Options, typename Access>
+void BindMetadataReadMethods(py::class_<Value, Options...> &binding, Access access)
+{
+    binding.def("get_resource_name", [access](const Value &self) { return access(self).GetResourceName(); })
+        .def("get_guid", [access](const Value &self) { return access(self).GetGuid(); })
+        .def("get_resource_type", [access](const Value &self) { return access(self).GetResourceType(); })
+        .def(
+            "has_key", [access](const Value &self, const std::string &key) { return access(self).HasKey(key); },
+            py::arg("key"))
+        .def(
+            "get_string",
+            [access](const Value &self, const std::string &key) {
+                const InxResourceMeta &meta = access(self);
+                return meta.HasKey(key) ? meta.GetDataAs<std::string>(key) : std::string{};
+            },
+            py::arg("key"))
+        .def(
+            "get_int",
+            [access](const Value &self, const std::string &key) {
+                const InxResourceMeta &meta = access(self);
+                return meta.HasKey(key) ? meta.GetDataAs<int>(key) : 0;
+            },
+            py::arg("key"))
+        .def(
+            "get_float",
+            [access](const Value &self, const std::string &key) {
+                const InxResourceMeta &meta = access(self);
+                return meta.HasKey(key) ? meta.GetDataAs<float>(key) : 0.0f;
+            },
+            py::arg("key"))
+        .def(
+            "get_bool",
+            [access](const Value &self, const std::string &key) {
+                const InxResourceMeta &meta = access(self);
+                return meta.HasKey(key) ? meta.GetDataAs<bool>(key) : false;
+            },
+            py::arg("key"))
+        .def("serialize_document",
+             [access](const Value &self) { return JsonToPython(access(self).SerializeDocument()); })
+        .def(
+            "serialize_document_portable",
+            [access](const Value &self, const std::string &projectRoot) {
+                return JsonToPython(access(self).SerializeDocumentPortable(projectRoot));
+            },
+            py::arg("project_root"));
+}
 
 py::object ShaderReferenceToPython(const ShaderAssetReference &reference)
 {
@@ -236,54 +284,18 @@ void RegisterResourceBindings(py::module_ &m)
         .value("DataAsset", ResourceType::DataAsset)
         .value("RenderTexture", ResourceType::RenderTexture);
 
-    // InxResourceMeta - resource metadata
-    py::class_<InxResourceMeta, std::shared_ptr<InxResourceMeta>>(m, "ResourceMeta")
-        .def(py::init<>())
-        .def("get_resource_name", &InxResourceMeta::GetResourceName,
-             "Get the resource name (filename without extension)")
-        .def("get_guid", &InxResourceMeta::GetGuid, "Get the stable GUID for this resource")
-        .def("get_resource_type", &InxResourceMeta::GetResourceType, "Get the resource type")
-        .def("has_key", &InxResourceMeta::HasKey, py::arg("key"), "Check if metadata has a specific key")
-        .def(
-            "get_string",
-            [](const InxResourceMeta &self, const std::string &key) {
-                if (!self.HasKey(key))
-                    return std::string("");
-                return self.GetDataAs<std::string>(key);
-            },
-            py::arg("key"), "Get a string metadata value")
-        .def(
-            "get_int",
-            [](const InxResourceMeta &self, const std::string &key) {
-                if (!self.HasKey(key))
-                    return 0;
-                return self.GetDataAs<int>(key);
-            },
-            py::arg("key"), "Get an integer metadata value")
-        .def(
-            "get_float",
-            [](const InxResourceMeta &self, const std::string &key) {
-                if (!self.HasKey(key))
-                    return 0.0f;
-                return self.GetDataAs<float>(key);
-            },
-            py::arg("key"), "Get a float metadata value")
-        .def(
-            "get_bool",
-            [](const InxResourceMeta &self, const std::string &key) {
-                if (!self.HasKey(key))
-                    return false;
-                return self.GetDataAs<bool>(key);
-            },
-            py::arg("key"), "Get a boolean metadata value")
-        .def("serialize_document", [](const InxResourceMeta &self) { return JsonToPython(self.SerializeDocument()); })
-        .def("serialize_document_portable", [](const InxResourceMeta &self, const std::string &projectRoot) {
-            return JsonToPython(self.SerializeDocumentPortable(projectRoot));
-        }, py::arg("project_root"), "Serialize authored metadata using the persisted project-relative contract")
+    // Independent authoring values are editable; database queries expose only
+    // a read view of the retained published generation.
+    auto metadata = py::class_<InxResourceMeta, std::shared_ptr<InxResourceMeta>>(m, "ResourceMeta");
+    BindMetadataReadMethods(metadata, [](const InxResourceMeta &self) -> const InxResourceMeta & { return self; });
+    metadata.def(py::init<>())
         .def(
             "deserialize_document",
             [](InxResourceMeta &self, const py::object &document) { self.DeserializeDocument(PythonToJson(document)); },
             py::arg("document"));
+    auto metadataView = py::class_<ResourceMetaView>(m, "ResourceMetaView");
+    BindMetadataReadMethods(metadataView,
+                            [](const ResourceMetaView &self) -> const InxResourceMeta & { return self.Get(); });
 
     py::class_<PhysicMaterial, std::shared_ptr<PhysicMaterial>>(m, "InxPhysicMaterial")
         .def(py::init<>())

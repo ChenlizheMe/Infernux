@@ -1,4 +1,5 @@
 #include "JsonPyBridge.h"
+#include "ResourceMetaPyView.h"
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>
@@ -212,7 +213,7 @@ void RegisterAssetRegistryBindings(py::module_ &m)
         .def(
             "get_meta_by_guid",
             [](const AssetDatabase &database, const std::string &guid) {
-                return std::const_pointer_cast<InxResourceMeta>(database.GetMetaByGuid(guid));
+                return ResourceMetaView::From(database.GetMetaByGuid(guid));
             },
             py::arg("guid"), py::call_guard<py::gil_scoped_release>(), "Get immutable meta by GUID")
         .def("get_all_guids", &AssetDatabase::GetAllGuids, py::call_guard<py::gil_scoped_release>(),
