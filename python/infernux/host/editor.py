@@ -813,11 +813,14 @@ class EditorAutomationHost:
             )
 
     def set_scene_transforms(self, object_id: int, transform: dict[str, object]) -> None:
-        if not self.interaction_core().scene_objects.set_transforms(
+        from infernux.engine.interaction.serialized_properties import PropertyTransactionStatus
+
+        status = self.interaction_core().scene_objects.set_transforms_status(
             [int(object_id)], [dict(transform)]
-        ):
+        )
+        if status is PropertyTransactionStatus.REJECTED:
             raise OperationError(
-                "scene.edit_rejected", "Transform edit was rejected or unchanged."
+                "scene.edit_rejected", "Transform edit was rejected."
             )
 
     def set_scene_parent(self, object_ids: Iterable[int], parent_id: int = 0) -> None:

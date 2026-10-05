@@ -390,6 +390,81 @@ def test_schema_gateway_can_create_and_transform_real_scene_object(tmp_path, sce
         queue.release_owner("MCP editing operation test finished")
 
 
+@pytest.mark.parametrize("transform", [
+    {"position": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1]},
+    {"position": [1, 2, 3], "rotation": [0, 90, 0], "scale": [2, 3, 4]},
+])
+def test_schema_gateway_repeated_transform_is_success_without_extra_history(scene, tmp_path, transform):
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.undo import UndoManager
+    from infernux.host import MainThreadCommandQueue
+
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    owner = scene.create_game_object("Repeated Transform")
+    previous_undo = UndoManager._instance
+    core = EditorInteractionCore()
+    undo = UndoManager(core.action_journal)
+    queue = MainThreadCommandQueue.instance()
+    queue.drain()
+    mcp = _FakeMCP()
+    try:
+        register_gateways(mcp, str(tmp_path), {})
+        execute = mcp.tools["operation_command_execute"]
+        arguments = dict(object_id=owner.id, **transform)
+        first = execute("infernux.scene.object.transform.set", arguments)
+        assert first["ok"], first
+        before = owner.serialize_document()
+        entries = tuple(undo.action_journal.applied_entries())
+        revision = scene.structure_version
+        repeated = execute("infernux.scene.object.transform.set", arguments)
+        assert repeated["ok"], repeated
+        assert owner.serialize_document() == before
+        assert tuple(undo.action_journal.applied_entries()) == entries
+        assert scene.structure_version == revision
+    finally:
+        shutdown_adapter()
+        core.shutdown()
+        UndoManager._instance = previous_undo
+        queue.release_owner("MCP repeated transform test finished")
+
+
+@pytest.mark.parametrize("invalid", [True, False])
+def test_schema_gateway_transform_rejection_does_not_masquerade_as_no_change(scene, tmp_path, invalid):
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.undo import UndoManager
+    from infernux.host import MainThreadCommandQueue
+
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    owner = scene.create_game_object("Rejected Transform")
+    previous_undo = UndoManager._instance
+    core = EditorInteractionCore()
+    undo = UndoManager(core.action_journal)
+    queue = MainThreadCommandQueue.instance()
+    queue.drain()
+    mcp = _FakeMCP()
+    try:
+        register_gateways(mcp, str(tmp_path), {})
+        before = owner.serialize_document()
+        if not invalid:
+            undo.enabled = False
+        rejected = mcp.tools["operation_command_execute"](
+            "infernux.scene.object.transform.set",
+            {"object_id": owner.id, "position": [float("nan") if invalid else 5, 0, 0],
+             "rotation": [0, 0, 0], "scale": [1, 1, 1]},
+        )
+        assert not rejected["ok"], rejected
+        assert rejected["error"]["code"] == "scene.edit_rejected", rejected
+        assert owner.serialize_document() == before
+        assert not undo.action_journal.applied_entries()
+    finally:
+        shutdown_adapter()
+        core.shutdown()
+        UndoManager._instance = previous_undo
+        queue.release_owner("MCP rejected transform test finished")
+
+
 def test_schema_gateway_native_and_python_fields_share_constraints_and_undo(
     scene, tmp_path
 ):

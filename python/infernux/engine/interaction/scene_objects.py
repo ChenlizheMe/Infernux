@@ -937,17 +937,26 @@ class SceneObjectCommandService:
 
     def set_transforms(self, object_ids, transform_values, gesture_id="") -> bool:
         """Commit one single- or multi-object Transform edit atomically."""
-        prepared = self._prepare_transform_edit(object_ids, transform_values)
-        if prepared is None:
-            return False
-        ids, before, after = prepared
-        if before == after:
-            return False
+        from .serialized_properties import PropertyTransactionStatus
 
+        return self.set_transforms_status(
+            object_ids, transform_values, gesture_id
+        ) is PropertyTransactionStatus.APPLIED
+
+    def set_transforms_status(self, object_ids, transform_values, gesture_id=""):
+        """Return the authoritative applied, unchanged, or rejected outcome."""
         from .serialized_properties import (
             PropertyTransactionStatus,
             SnapshotPropertyTransaction,
         )
+
+        prepared = self._prepare_transform_edit(object_ids, transform_values)
+        if prepared is None:
+            return PropertyTransactionStatus.REJECTED
+        ids, before, after = prepared
+        if before == after:
+            return PropertyTransactionStatus.NO_CHANGE
+
         from infernux.engine.undo import restore_live_transform, snapshot_live_transform
 
         def capture():
@@ -970,7 +979,7 @@ class SceneObjectCommandService:
             "Edit Transform" if len(ids) == 1 else "Edit Transforms",
             gesture_id=str(gesture_id or "").strip(),
         )
-        return transaction.commit(after) is PropertyTransactionStatus.APPLIED
+        return transaction.commit(after)
 
     @staticmethod
     def _parent_id(obj):
