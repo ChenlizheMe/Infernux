@@ -1882,6 +1882,26 @@ void PhysicsWorld::MoveBodyKinematic(uint32_t bodyId, const glm::vec3 &targetPos
     MoveBodyKinematicUnlocked(bodyId, targetPos, targetRot, deltaTime, maxSpeed);
 }
 
+void PhysicsWorld::MoveBodyKinematicPosition(uint32_t bodyId, const glm::vec3 &targetPos, float deltaTime)
+{
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
+    const auto pending = m_kinematicMoveStates.find(bodyId);
+    const glm::quat rotation = pending != m_kinematicMoveStates.end() && pending->second.movedThisStep
+                                   ? pending->second.targetRotation
+                                   : GetBodyRotation(bodyId);
+    MoveBodyKinematicUnlocked(bodyId, targetPos, rotation, deltaTime, 0.0f);
+}
+
+void PhysicsWorld::MoveBodyKinematicRotation(uint32_t bodyId, const glm::quat &targetRot, float deltaTime)
+{
+    std::unique_lock snapshotWrite(m_querySnapshotMutex);
+    const auto pending = m_kinematicMoveStates.find(bodyId);
+    const glm::vec3 position = pending != m_kinematicMoveStates.end() && pending->second.movedThisStep
+                                  ? pending->second.targetPosition
+                                  : GetBodyPosition(bodyId);
+    MoveBodyKinematicUnlocked(bodyId, position, targetRot, deltaTime, 0.0f);
+}
+
 void PhysicsWorld::MoveBodyKinematicUnlocked(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot,
                                              float deltaTime, float maxSpeed)
 {
@@ -1916,6 +1936,8 @@ void PhysicsWorld::MoveBodyKinematicUnlocked(uint32_t bodyId, const glm::vec3 &t
     // Track the move so SettleKinematicMoves() can zero the velocity once the
     // body has arrived — MoveKinematic velocity persists in Jolt otherwise.
     auto &state = m_kinematicMoveStates[bodyId];
+    state.targetPosition = targetPos;
+    state.targetRotation = targetRot;
     state.movedThisStep = true;
     state.idleSteps = 0;
     if (posePublished)

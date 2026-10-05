@@ -29,6 +29,8 @@ A GameObject can participate in this exercise in three ways:
 
 `Rigidbody` adds mass, gravity, drag, constraints, velocity, forces, and kinematic movement. A dynamic body has `is_kinematic` disabled. A kinematic body is script-driven and can use `move_position(...)` or `move_rotation(...)` during fixed steps.
 
+You can call both movement methods in the same fixed step: their position and rotation targets compose in either call order. The physics step applies the combined pose; these methods do not immediately teleport the Transform while the callback is running.
+
 <div class="learn-note"><strong>Use the physics clock.</strong><p><code>fixed_update(self, fixed_delta_time)</code> runs on the fixed physics step, whose default is 50 Hz. Apply continuous forces and kinematic movement there. Frame-rate presentation and ordinary per-frame input polling can remain in <code>update</code>.</p></div>
 
 ## Build the test scene {#build-physics-scene}
@@ -211,6 +213,8 @@ The Probe now turns low-level physics transitions into clean gameplay events. In
 `Collider` 是 `BoxCollider`、`SphereCollider` 等具体形状的公共基类。`center` 会在局部空间偏移碰撞形状，`is_trigger` 用于选择实体接触或 Trigger 行为。具体形状还有自己的属性，例如 `BoxCollider.size` 表示局部空间中的完整尺寸。
 
 `Rigidbody` 提供质量、重力、阻力、约束、速度、力和运动接口。关闭 `is_kinematic` 后，刚体由物理模拟驱动。启用运动学模式后，可以在固定步中调用 `move_position(...)` 或 `move_rotation(...)`。
+
+可以在同一个固定步中同时调用两个运动接口：位置与旋转目标会合并，调用顺序不影响结果。物理步会应用合并后的位姿；这些方法不会在回调执行期间立即瞬移 Transform。
 
 <div class="learn-note"><strong>使用物理时钟。</strong><p><code>fixed_update(self, fixed_delta_time)</code> 按固定物理步运行，默认频率为 50 Hz。连续施力与运动学移动适合放在这里。逐帧显示逻辑和普通输入轮询可以留在 <code>update</code>。</p></div>
 

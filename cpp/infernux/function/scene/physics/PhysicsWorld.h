@@ -338,6 +338,10 @@ class PhysicsWorld
     void MoveBodyKinematic(uint32_t bodyId, const glm::vec3 &targetPos, const glm::quat &targetRot, float deltaTime,
                            float maxSpeed = 0.0f);
 
+    /// Compose partial script targets against the pose already queued for this step.
+    void MoveBodyKinematicPosition(uint32_t bodyId, const glm::vec3 &targetPos, float deltaTime);
+    void MoveBodyKinematicRotation(uint32_t bodyId, const glm::quat &targetRot, float deltaTime);
+
     /// Move a collider-only (static) body to a new pose with real velocity so
     /// overlapping dynamic bodies receive momentum (Unity-like drag push).
     ///
@@ -628,6 +632,8 @@ class PhysicsWorld
     /// move. See MoveBodyKinematic / MoveStaticBodyWithVelocity.
     struct KinematicMoveState
     {
+        glm::vec3 targetPosition{0.0f};
+        glm::quat targetRotation{1.0f, 0.0f, 0.0f, 0.0f};
         bool movedThisStep = true;  ///< Received a target since the last Step().
         bool restoreStatic = false; ///< Body is a collider-only static, temporarily kinematic.
         int idleSteps = 0;          ///< Steps elapsed without a new target.

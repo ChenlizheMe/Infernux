@@ -627,8 +627,7 @@ void Rigidbody::MovePosition(const glm::vec3 &position)
     if (bodyId == 0xFFFFFFFF)
         throw std::logic_error("MovePosition requires an enabled Collider body");
 
-    const glm::quat rotation = pw->GetBodyRotation(bodyId);
-    pw->MoveBodyKinematic(bodyId, position, rotation, dt);
+    pw->MoveBodyKinematicPosition(bodyId, position, dt);
 }
 
 void Rigidbody::MoveRotation(const glm::quat &rotation)
@@ -648,8 +647,7 @@ void Rigidbody::MoveRotation(const glm::quat &rotation)
     if (bodyId == 0xFFFFFFFF)
         throw std::logic_error("MoveRotation requires an enabled Collider body");
 
-    const glm::vec3 position = pw->GetBodyPosition(bodyId);
-    pw->MoveBodyKinematic(bodyId, position, glm::normalize(rotation), dt);
+    pw->MoveBodyKinematicRotation(bodyId, glm::normalize(rotation), dt);
 }
 
 // ============================================================================
