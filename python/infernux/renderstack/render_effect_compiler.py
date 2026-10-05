@@ -98,6 +98,21 @@ def publish_live_effect_group_document(path: str, document) -> None:
         pass
 
 
+def _validate_declared_effect_dependencies(source_asset: RenderEffectAsset) -> None:
+    """Require declared identities before publishing or reusing an artifact.
+
+    Catalog validity is independent of GPU availability. Shader preparation
+    remains at graph compilation, where the renderer owns its live modules.
+    """
+    from infernux.core.assets import AssetManager
+
+    for reference in source_asset.dependencies:
+        if not AssetManager._get_path_from_guid(reference.guid):
+            raise RenderEffectCompileError(
+                f"effect dependency GUID is unavailable: {reference.guid!r}"
+            )
+
+
 def _prepare_runtime_dependencies(source: RenderEffect) -> None:
     """Publish declared shader dependencies before graph passes consume them.
 
@@ -232,6 +247,9 @@ class RenderEffectArtifactRegistry:
             document = parse_render_effect_document(source_text)
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise RenderEffectCompileError(f"failed to read render effect source: {exc}") from exc
+
+        if isinstance(document, RenderEffectAsset):
+            _validate_declared_effect_dependencies(document)
 
         source_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
         key = cls._source_key(source_path, guid)
@@ -368,6 +386,9 @@ class RenderEffectArtifactRegistry:
 
     @staticmethod
     def _compile_feature_record(source: RenderEffect) -> Mapping[str, Any]:
+        # Groups flatten into leaf effects here; their Shader/asset identities
+        # obey the same publication contract as directly imported effects.
+        _validate_declared_effect_dependencies(source.to_asset())
         feature = get_render_effect_feature(source.feature_type)
         passes = _record_feature_passes(source, feature)
         return {

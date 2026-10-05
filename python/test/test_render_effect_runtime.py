@@ -623,6 +623,57 @@ def test_render_effect_failed_compile_preserves_last_known_good_artifact(
     assert Path(published.artifact_path).read_text(encoding="utf-8") == artifact_text
 
 
+def test_unresolved_effect_dependency_preserves_accepted_artifact(tmp_path, monkeypatch, effect_catalog):
+    from infernux.engine import project_context
+
+    RenderEffectArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = tmp_path / "Assets" / "Dependency.effect"
+    path.parent.mkdir()
+    _write_effect(path)
+    guid = effect_catalog.register(path)
+    accepted, _ = RenderEffectArtifactRegistry.compile_and_publish(str(path), guid=guid)
+    artifact_bytes = Path(accepted.artifact_path).read_bytes()
+    source = json.loads(path.read_text(encoding="utf-8"))
+    source["dependencies"] = [{"guid": "unresolved-shader-guid"}]
+    path.write_text(json.dumps(source), encoding="utf-8")
+
+    with pytest.raises(RenderEffectCompileError, match="effect dependency GUID is unavailable"):
+        RenderEffectArtifactRegistry.compile_and_publish(str(path), guid=guid)
+    assert RenderEffectArtifactRegistry.get(str(path), guid) is accepted
+    assert Path(accepted.artifact_path).read_bytes() == artifact_bytes
+
+
+@pytest.mark.parametrize("clear_memory_cache", [False, True])
+def test_effect_cache_cannot_hide_a_removed_dependency(tmp_path, monkeypatch, effect_catalog, clear_memory_cache):
+    from infernux.engine import project_context
+
+    RenderEffectArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    path = tmp_path / "Assets" / "Dependency.effect"
+    path.parent.mkdir()
+    shader = path.with_suffix(".frag")
+    shader.write_text("void main() {}", encoding="utf-8")
+    dependency_guid = effect_catalog.register(shader)
+    guid = effect_catalog.register(path)
+    _write_effect(path)
+    source = json.loads(path.read_text(encoding="utf-8"))
+    source["dependencies"] = [{"guid": dependency_guid}]
+    path.write_text(json.dumps(source), encoding="utf-8")
+    accepted, _ = RenderEffectArtifactRegistry.compile_and_publish(str(path), guid=guid)
+    artifact_bytes = Path(accepted.artifact_path).read_bytes()
+    if clear_memory_cache:
+        RenderEffectArtifactRegistry.clear()
+    catalog_lookup = effect_catalog.get_path_from_guid
+    monkeypatch.setattr(effect_catalog, "get_path_from_guid", staticmethod(lambda lookup: "" if lookup == dependency_guid else catalog_lookup(lookup)))
+
+    with pytest.raises(RenderEffectCompileError, match="effect dependency GUID is unavailable"):
+        RenderEffectArtifactRegistry.compile_and_publish(str(path), guid=guid)
+    assert Path(accepted.artifact_path).read_bytes() == artifact_bytes
+    if not clear_memory_cache:
+        assert RenderEffectArtifactRegistry.get(str(path), guid) is accepted
+
+
 def test_render_effect_load_reuses_matching_persisted_artifact(tmp_path, monkeypatch):
     from infernux.engine import project_context
 
