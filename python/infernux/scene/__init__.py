@@ -229,6 +229,10 @@ class SceneManager:
     @staticmethod
     def set_active_scene(scene) -> None:
         """Select the loaded Scene that receives newly authored objects."""
+        runtime_service = SceneManager._runtime_scene_service
+        if runtime_service is not None:
+            runtime_service.set_active_scene(scene)
+            return
         from infernux.engine.scene_manager import SceneFileManager
 
         scene_files = SceneFileManager.instance()
@@ -241,6 +245,10 @@ class SceneManager:
     @staticmethod
     def unload_scene(scene) -> None:
         """Unload one resident Scene without changing the others."""
+        runtime_service = SceneManager._runtime_scene_service
+        if runtime_service is not None:
+            runtime_service.unload_scene(scene)
+            return
         from infernux.engine.scene_manager import SceneFileManager
 
         scene_files = SceneFileManager.instance()

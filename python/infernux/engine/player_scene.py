@@ -29,6 +29,7 @@ class PlayerSceneService:
         self._asset_database = asset_database
         self._native_engine = native_engine
         self._runtime_catalog: Any = None
+        self._scene_paths: dict[int, str] = {}
         self._active_scene_path: Optional[str] = None
         self._pending_scene_path: Optional[str] = None
         self._pending_scene_mode = "single"
@@ -45,6 +46,42 @@ class PlayerSceneService:
     @property
     def active_scene_path(self) -> Optional[str]:
         return self._active_scene_path
+
+    def set_active_scene(self, scene) -> None:
+        """Select a published resident Scene without importing editor services."""
+        from infernux.lib import SceneManager
+
+        self._require_published_scene_mutation(scene, selecting=True)
+        SceneManager.instance().set_active_scene(scene)
+        self._active_scene_path = self._scene_paths.get(int(scene.world_id)) if scene is not None else None
+
+    def unload_scene(self, scene) -> None:
+        """Release one resident world and its catalog origin after native unload."""
+        from infernux.lib import SceneManager
+
+        if scene is None:
+            return
+        self._require_published_scene_mutation(scene, selecting=False)
+        world_id = int(scene.world_id)
+        native = SceneManager.instance()
+        native.unload_scene(scene)
+        self._scene_paths.pop(world_id, None)
+        active = native.get_active_scene()
+        self._active_scene_path = self._scene_paths.get(int(active.world_id)) if active is not None else None
+
+    def _require_published_scene_mutation(self, scene, *, selecting: bool) -> None:
+        if not self.is_load_pending:
+            return
+        from infernux.lib import SceneManager
+
+        mode = self._transaction_mode if self._transaction is not None else self._pending_scene_mode
+        owns_target = (
+            (selecting or scene is SceneManager.instance().get_active_scene())
+            if mode == "single"
+            else scene is not None and scene is self._transaction_target
+        )
+        if owns_target:
+            raise RuntimeError("Cannot change a Scene owned by a preparing Player scene load")
 
     @property
     def is_load_pending(self) -> bool:
@@ -70,7 +107,7 @@ class PlayerSceneService:
             raise TypeError("PlayerSceneService requires a RuntimeAssetCatalog")
         if self._runtime_catalog is not None and self._runtime_catalog is not runtime_catalog:
             raise RuntimeError("PlayerSceneService runtime catalog is already bound")
-        if self.is_load_pending or self._active_scene_path is not None:
+        if self.is_load_pending or self._scene_paths:
             raise RuntimeError("PlayerSceneService catalog cannot change after scene loading")
         self._runtime_catalog = runtime_catalog
 
@@ -354,7 +391,8 @@ class PlayerSceneService:
                 raise AttributeError("native SceneManager.get_scene_at is unavailable")
             scene_manager.set_active_scene(scene)
         reset_runtime_ui_state()
-        self._active_scene_path = path
+        self._scene_paths = {int(scene.world_id): path} if scene is not None else {}
+        self._active_scene_path = path if scene is not None else None
         self._last_error = ""
         from infernux.timing import Time
         Time._reset_frame_delta()
@@ -376,6 +414,7 @@ class PlayerSceneService:
             raise RuntimeError("additive Player scene transaction lost its target Scene")
         from infernux.lib import SceneManager
 
+        self._scene_paths[int(scene.world_id)] = path
         SceneManager.instance()._start_scene_for_play(scene)
         self._last_error = ""
         authored_camera = scene.main_camera is not None
