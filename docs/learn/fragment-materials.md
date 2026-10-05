@@ -58,7 +58,7 @@ If the Cube uses the fallback/error appearance, first confirm that both shader f
 
 A Material is a small document plus two stage references. Project **Vertex** and **Fragment** assets are stored by GUID with a derived `ShaderInfo Name` label; built-in stages use symbolic identifiers. The fragment's `ShaderInfo` block carries the `ShadingModel` entry that picks the lighting model. When the fragment is imported, the engine links the pair, generates the property schema, and compiles the program variants for each material pass; the Material then owns only the values.
 
-Properties are declared in the fragment's `ShaderInfo` block and become typed Material fields serialized into the `.mat` document. At draw time the engine packs the numeric fields into the material uniform block (`material`, set 0, binding 14) and binds each texture property from binding 2 upward, with `white` and `normal` as built-in defaults. The fragment reads them through the `material.*` members and the `sample*` helpers. A user shader never declares descriptor sets, buffer bindings, or push constants for ordinary material data; the compiler and the engine binding layer own that layout.
+Properties are declared in the fragment's `ShaderInfo` block and become typed Material fields serialized into the `.mat` document. At draw time the engine packs the numeric fields into the material uniform block (`material`, set 0, binding 14) and binds each texture property from binding 2 upward, with `white`, `black`, and `normal` as built-in defaults. The fragment reads them through the `material.*` members and the `sample*` helpers. A user shader never declares descriptor sets, buffer bindings, or push constants for ordinary material data; the compiler and the engine binding layer own that layout.
 
 ShaderInfo entries affect different things:
 
@@ -98,7 +98,7 @@ Properties {
 
 `Range(min, max)` is optional UI metadata for a bounded float; the built-in Lit declaration leaves these floats unannotated. `HDR` allows a color above display white. `Internal` keeps an engine-managed property out of the ordinary Material UI.
 
-Texture defaults such as `white` and `normal` keep the material valid before users assign project assets. The renderer manages texture bindings; users do not declare descriptor sets.
+The declared texture default chooses the binding independently of the property name: `white`, `black`, or `normal`. An empty texture GUID in the `.mat` document means no project asset is assigned, so the renderer uses that ShaderInfo default. Clearing an assigned texture restores the declared default. A successful shader reload updates unassigned defaults while preserving assigned assets. The renderer manages texture bindings; users do not declare descriptor sets.
 
 Color space comes from the texture asset import settings and the property type. Select an image in the Project panel to edit **Import Settings**. Use **Texture Type: Default** with **sRGB** enabled for albedo and ordinary color. Use **Texture Type: Data** for metallic, smoothness, AO, height, masks, and packed channels. Use **Texture Type: Normal Map** for tangent-space normals. Selecting Data or Normal Map forces sRGB off and disables the checkbox. With **Compression: Auto**, Normal Map resolves to BC5 and Data resolves to no block compression.
 
@@ -288,7 +288,7 @@ Cube 显示回退或错误外观时，先确认两个 Shader 字段都有值，�
 
 Material 是一份小文档加上两个阶段引用。项目中的 **Vertex** 与 **Fragment** 资产按 GUID 保存，并附带由 `ShaderInfo Name` 派生的显示名称；内置阶段使用符号标识。片元 `ShaderInfo` 块里的 `ShadingModel` 条目选择光照模型。片元导入时，引擎链接这对阶段、生成属性 Schema，并为每种材质 Pass 编译程序变体；Material 此后只拥有参数值。
 
-属性在片元的 `ShaderInfo` 块里声明，会变成有类型的 Material 字段，序列化进 `.mat` 文档。绘制时引擎把数值字段打包进材质 Uniform Block（`material`，set 0、binding 14），并从 binding 2 起绑定每个纹理属性，`white` 与 `normal` 是内置默认值。片元通过 `material.*` 成员与 `sample*` 辅助函数读取它们。用户 Shader 不用为普通材质数据声明描述符集、缓冲绑定或 Push Constant；这份布局由编译器与引擎绑定层持有。
+属性在片元的 `ShaderInfo` 块里声明，会变成有类型的 Material 字段，序列化进 `.mat` 文档。绘制时引擎把数值字段打包进材质 Uniform Block（`material`，set 0、binding 14），并从 binding 2 起绑定每个纹理属性，`white`、`black` 与 `normal` 是内置默认值。片元通过 `material.*` 成员与 `sample*` 辅助函数读取它们。用户 Shader 不用为普通材质数据声明描述符集、缓冲绑定或 Push Constant；这份布局由编译器与引擎绑定层持有。
 
 ShaderInfo 各条目影响不同环节：
 
@@ -328,7 +328,7 @@ Properties {
 
 `Range(min, max)` 是可选的浮点数 UI 约束；内置 Lit 的这些 Float 没有添加该标记。`HDR` 允许颜色超过显示白，`Internal` 会隐藏由引擎管理的属性。
 
-`white`、`normal` 等贴图默认值，让材质在用户尚未分配项目资源时仍然有效。纹理由渲染器绑定，用户不需要声明描述符 Set。
+纹理绑定由声明的默认值决定，与属性名称无关：可以使用 `white`、`black` 或 `normal`。`.mat` 文档中的纹理 GUID 为空，表示尚未分配项目资产，渲染器会使用对应的 ShaderInfo 默认值。清空已分配的纹理会恢复声明默认值；成功热重载 Shader 后，未分配资产的字段采用新默认值，已分配的资产保持不变。纹理由渲染器绑定，用户不需要声明描述符 Set。
 
 颜色空间由贴图资产导入设置和属性类型决定。在 Project 面板选中图片即可编辑 **导入设置**。Albedo 与普通颜色使用 **贴图类型：默认**，并启用 **sRGB**。金属度、光滑度、AO、高度、Mask 和打包通道使用 **贴图类型：数据**。切线空间法线使用 **贴图类型：法线贴图**。选择数据或法线贴图会强制关闭 sRGB 并禁用该复选框。采用 **压缩：自动** 时，法线贴图会解析为 BC5，数据贴图会解析为无块压缩。
 
