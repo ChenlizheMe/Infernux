@@ -10,7 +10,7 @@ from infernux.ui.ui_render_dispatch import image_texture_source, material_visual
 
 
 def target():
-    result = RenderTexture.__new__(RenderTexture)
+    result = object.__new__(RenderTexture)
     result._native = SimpleNamespace(revision=1, asset_guid='')
     return result
 

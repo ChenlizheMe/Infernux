@@ -222,6 +222,8 @@ __all__ = [
     "DrivesTransform",
     # Core assets
     "Material",
+    "PhysicMaterial",
+    "PhysicMaterialRef",
     "Texture",
     "RenderTexture",
     "Mesh",

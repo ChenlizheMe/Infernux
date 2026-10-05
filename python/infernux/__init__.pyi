@@ -148,6 +148,8 @@ from infernux.components import drives_transform as drives_transform
 from infernux.components import DrivesTransform as DrivesTransform
 # Core assets
 from infernux.core import Material as Material
+from infernux.core import PhysicMaterial as PhysicMaterial
+from infernux.core import PhysicMaterialRef as PhysicMaterialRef
 from infernux.core import Texture as Texture
 from infernux.core import Mesh as Mesh
 from infernux.core import Shader as Shader

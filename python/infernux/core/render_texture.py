@@ -8,6 +8,7 @@ Unwritten pixels are undefined.
 from __future__ import annotations
 
 import math
+from infernux.core._resource_proxy import ResourceProxy
 
 try:
     from infernux.lib import PixelFormat, SampleCount
@@ -39,7 +40,7 @@ except ImportError:
         Eight = 8
 
 
-class RenderTexture:
+class RenderTexture(ResourceProxy):
     """A fixed or Game-relative GPU target with matching depth/MSAA attachments.
 
     Create on the engine thread, for example in ``start``. Resize publishes a
@@ -83,7 +84,7 @@ class RenderTexture:
     screen Overlay encodes linear camera colors once for display.
     """
 
-    def __init__(self, width: int | None = None, height: int | None = None, *,
+    def __new__(cls, width: int | None = None, height: int | None = None, *,
                  scale: tuple[float, float] | None = None,
                  format: PixelFormat = PixelFormat.RGBA8_UNORM,
                  depth_format: PixelFormat = PixelFormat.UNDEFINED,
@@ -93,7 +94,7 @@ class RenderTexture:
         from infernux.lib import _Infernux
 
         if scale is None:
-            self._require_size(width, height)
+            cls._require_size(width, height)
         else:
             if width is not None or height is not None:
                 raise ValueError("RenderTexture accepts pixel dimensions or scale, not both")
@@ -118,7 +119,21 @@ class RenderTexture:
         description.linear_filter = filter == "linear"
         description.storage = storage
         description.sampled_depth = sampled_depth
-        self._native = engine.get_native_engine()._create_render_texture(description)
+        native = engine.get_native_engine()._create_render_texture(description)
+        return ResourceProxy.__new__(cls, native)
+
+    def __init__(self, width: int | None = None, height: int | None = None, *,
+                 scale: tuple[float, float] | None = None,
+                 format: PixelFormat = PixelFormat.RGBA8_UNORM,
+                 depth_format: PixelFormat = PixelFormat.UNDEFINED,
+                 samples: int = 1, filter: str = "linear", storage: bool = False,
+                 sampled_depth: bool = False):
+        """Allocation and proxy identity are established by __new__."""
+
+    @classmethod
+    def _from_native(cls, native) -> "RenderTexture":
+        """Return the shared proxy for an existing native target owner."""
+        return ResourceProxy.__new__(cls, native)
 
     @classmethod
     def load(cls, path: str) -> "RenderTexture":
@@ -138,9 +153,7 @@ class RenderTexture:
         engine = Application._current_engine()
         if engine is None:
             raise RuntimeError("RenderTexture requires a running graphical engine")
-        result = cls.__new__(cls)
-        result._native = engine.get_native_engine()._load_render_texture(guid)
-        return result
+        return cls._from_native(engine.get_native_engine()._load_render_texture(guid))
 
     @property
     def guid(self) -> str:

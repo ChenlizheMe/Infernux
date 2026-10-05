@@ -37,6 +37,7 @@ from infernux.core.texture import Texture
 from infernux.core.shader import Shader
 from infernux.core.mesh import Mesh
 from infernux.core.audio_clip import AudioClip
+from infernux.core.physic_material import PhysicMaterial
 from infernux.core.asset_types import (
     IMAGE_EXTENSIONS, SHADER_EXTENSIONS, MATERIAL_EXTENSIONS, AUDIO_EXTENSIONS,
     ANIMCLIP_EXTENSIONS,
@@ -44,6 +45,7 @@ from infernux.core.asset_types import (
     ANIMFSM_EXTENSIONS,
     RENDER_EFFECT_EXTENSIONS,
     PARTICLE_GRAPH_EXTENSIONS,
+    PHYSIC_MATERIAL_EXTENSIONS,
     asset_category_from_extension,
 )
 from infernux.core.animation_clip import AnimationClip
@@ -2160,6 +2162,8 @@ class AssetManager:
             return Shader
         if ext in AUDIO_EXTENSIONS:
             return AudioClip
+        if ext in PHYSIC_MATERIAL_EXTENSIONS:
+            return PhysicMaterial
         if ext in ANIMCLIP_EXTENSIONS:
             return AnimationClip
         if ext in ANIMCLIP3D_EXTENSIONS:
@@ -2199,6 +2203,8 @@ class AssetManager:
             return ShaderAssetInfo.from_path(path, guid=guid)
         if asset_type is AudioClip:
             return AudioClip.load(path)
+        if asset_type is PhysicMaterial:
+            return PhysicMaterial.load(path)
         if asset_type is AnimationClip:
             return AnimationClip.load(path)
         if asset_type is AnimationClip3D:

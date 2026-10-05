@@ -75,7 +75,7 @@ def test_render_texture_binding_does_not_schedule_asset_save(monkeypatch):
     bindings = {}
     native._set_render_texture = lambda name, owner: bindings.update({name: owner})
     material = Material(native)
-    target = RenderTexture.__new__(RenderTexture)
+    target = object.__new__(RenderTexture)
     target._native = SimpleNamespace(asset_guid='')
     monkeypatch.setattr(material, '_auto_save', lambda: pytest.fail('runtime target must not save an asset'))
     material.set_texture('texSampler', target)

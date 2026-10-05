@@ -5,11 +5,15 @@ from __future__ import annotations
 from typing import Optional
 
 from infernux.lib import AssetRegistry, InxPhysicMaterial as NativePhysicMaterial
+from infernux.core._resource_proxy import ResourceProxy
 
 
-class PhysicMaterial:
+class PhysicMaterial(ResourceProxy):
+    def __new__(cls, native: Optional[NativePhysicMaterial] = None):
+        return ResourceProxy.__new__(cls, native if native is not None else NativePhysicMaterial())
+
     def __init__(self, native: Optional[NativePhysicMaterial] = None):
-        self._native = native if native is not None else NativePhysicMaterial()
+        """Native creation and proxy identity are established by __new__."""
 
     @staticmethod
     def load(path: str) -> Optional["PhysicMaterial"]:

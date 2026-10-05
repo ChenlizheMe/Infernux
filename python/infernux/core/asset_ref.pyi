@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from infernux.core.material import Material
+from infernux.core.physic_material import PhysicMaterial
+from infernux.core.render_texture import RenderTexture
 from infernux.lib import InxMaterial
 
 
@@ -69,7 +71,12 @@ class TextureRef(AssetRefBase):
 
 class RenderTextureRef(AssetRefBase):
     """Reference to an imported RenderTexture description."""
-    ...
+    def resolve(self) -> RenderTexture | None: ...
+
+
+class PhysicMaterialRef(AssetRefBase):
+    """Reference to the shared Python PhysicMaterial proxy."""
+    def resolve(self) -> PhysicMaterial | None: ...
 
 
 class ShaderRef(AssetRefBase):

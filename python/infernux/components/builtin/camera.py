@@ -47,9 +47,7 @@ def _wrap_target_texture(state):
     guid, native = state
     if native is None:
         return RenderTextureRef(guid) if guid else None
-    result = RenderTexture.__new__(RenderTexture)
-    result._native = native
-    return result
+    return RenderTexture._from_native(native)
 
 
 def _set_target_texture(cpp, value):

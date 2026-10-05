@@ -476,7 +476,7 @@ def test_material_version_and_image_resize_refresh_commands(ui):
     image = ui.add(UIImage)
     material = Material(InxMaterial('UI packets', 'Unlit'))
     image.material = material
-    target = RenderTexture.__new__(RenderTexture)
+    target = object.__new__(RenderTexture)
     target._native = SimpleNamespace(revision=1, asset_guid='')
     image.texture = target
     ui.frame()
@@ -594,7 +594,7 @@ def test_render_texture_resize_reextracts_only_its_images(ui):
     from infernux.ui import UIImage
     targets = []
     for revision in (1, 10):
-        target = RenderTexture.__new__(RenderTexture)
+        target = object.__new__(RenderTexture)
         target._native = SimpleNamespace(revision=revision, asset_guid='')
         targets.append(target)
     images = [ui.add(UIImage) for _ in range(12)]
@@ -614,7 +614,7 @@ def test_button_render_texture_assignment_tracks_later_target_revision(ui):
 
     button = ui.add(UIButton)
     ui.frame()
-    target = RenderTexture.__new__(RenderTexture)
+    target = object.__new__(RenderTexture)
     target._native = SimpleNamespace(revision=1, asset_guid='')
     button.background_texture = target
     ui.frame()

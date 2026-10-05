@@ -333,14 +333,14 @@ def test_load_path_guid_reference_and_camera_share_owner(imported_target, scene)
     from infernux.engine.ui._inspector_references import _get_reference_display_name
     assert _get_reference_display_name(inx.FieldType.ASSET, target) == source.name
     assert (target.width, target.height) == (53, 29)
-    assert RenderTexture.load_by_guid(guid)._native is target._native
-    assert AssetManager.load_by_guid(guid)._native is target._native
+    assert RenderTexture.load_by_guid(guid) is target
+    assert AssetManager.load_by_guid(guid) is target
     ref = RenderTextureRef(guid)
-    assert ref.resolve()._native is target._native
+    assert ref.resolve() is target
     camera = scene.create_game_object('AssetCamera').add_component('Camera')
     try:
         camera.target_texture = target
-        assert camera.target_texture._native is target._native
+        assert camera.target_texture is target
         assert camera.target_texture.guid == guid
         assert RenderTexture(2, 2).guid == ''
         assert RenderTexture(2, 2).display_name == 'RenderTexture'

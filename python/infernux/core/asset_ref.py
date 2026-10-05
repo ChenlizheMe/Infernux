@@ -232,7 +232,15 @@ class DataAssetRef(AssetRefBase):
 
 
 class PhysicMaterialRef(AssetRefBase):
-    """Reference to a native PhysicMaterial asset."""
+    """Reference to the current shared Python PhysicMaterial proxy."""
+
+    def resolve(self):
+        # The native registry owns publication/deletion. A GUID-local cache
+        # would keep returning a deleted or replaced resource. Runtime-only
+        # materials have no catalog identity and retain their assigned proxy.
+        if self._guid:
+            self._cached = self._do_resolve()
+        return self._cached
 
     def _do_resolve(self):
         from infernux.core.physic_material import PhysicMaterial
