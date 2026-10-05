@@ -349,6 +349,7 @@ depth = graph.create_texture(
 with graph.add_pass("Route") as render_pass:
     render_pass.write_color(color)
     render_pass.write_depth(depth)
+    render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
     if samples > 1:
         render_pass.write_resolve(resolved)
     render_pass.draw_renderers(queue_range=(0, 2500))
@@ -870,6 +871,7 @@ depth = graph.create_texture(
 with graph.add_pass("Route") as render_pass:
     render_pass.write_color(color)
     render_pass.write_depth(depth)
+    render_pass.set_clear(color=(0.0, 0.0, 0.0, 0.0), depth=1.0)
     if samples > 1:
         render_pass.write_resolve(resolved)
     render_pass.draw_renderers(queue_range=(0, 2500))

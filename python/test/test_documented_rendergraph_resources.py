@@ -30,6 +30,8 @@ def test_documented_resolve_uses_effective_camera_samples(language, samples):
     route, = description.passes
     assert route.name == 'Route'
     assert route.write_depth == 'depth'
+    assert route.clear_color and route.clear_depth
+    assert route.clear_depth_value == 1.0
     if samples == 1:
         assert route.write_colors == [(0, 'route_color')]
         assert route.resolve_color == ''
