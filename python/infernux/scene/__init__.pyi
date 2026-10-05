@@ -4,29 +4,30 @@ from enum import Enum
 from typing import ClassVar, Union, Optional, List
 
 from infernux.lib import TagLayerManager as TagLayerManager
+from infernux.lib import GameObject, Scene
 
 
 class GameObjectQuery:
     """Static methods for finding GameObjects across loaded scenes."""
 
     @staticmethod
-    def find(name: str) -> Optional[object]:
+    def find(name: str) -> Optional[GameObject]:
         """Find a GameObject by name."""
         ...
     @staticmethod
-    def find_with_tag(tag: str) -> Optional[object]:
+    def find_with_tag(tag: str) -> Optional[GameObject]:
         """Find the first GameObject with the given tag."""
         ...
     @staticmethod
-    def find_game_objects_with_tag(tag: str) -> list:
+    def find_game_objects_with_tag(tag: str) -> list[GameObject]:
         """Find all GameObjects with the given tag."""
         ...
     @staticmethod
-    def find_game_objects_in_layer(layer: int) -> list:
+    def find_game_objects_in_layer(layer: int) -> list[GameObject]:
         """Find all GameObjects in the specified layer."""
         ...
     @staticmethod
-    def find_by_id(object_id: int) -> Optional[object]:
+    def find_by_id(object_id: int) -> Optional[GameObject]:
         """Find a GameObject by its unique ID."""
         ...
 
@@ -57,38 +58,38 @@ class SceneManager:
     """Manages scene loading, unloading, and queries."""
 
     _pending_scene_load: Optional[str]
-    active_scene: ClassVar[Optional[object]]
+    active_scene: ClassVar[Optional[Scene]]
 
     @staticmethod
-    def get_active_scene() -> Optional[object]:
+    def get_active_scene() -> Optional[Scene]:
         """Get the currently active scene."""
         ...
     @staticmethod
-    def get_scene_by_name(name: str) -> Optional[object]:
+    def get_scene_by_name(name: str) -> Optional[Scene]:
         """Get a loaded scene by its name."""
         ...
     @staticmethod
-    def get_scene_by_world_id(world_id: int) -> Optional[object]:
+    def get_scene_by_world_id(world_id: int) -> Optional[Scene]:
         """Get a loaded scene by its stable runtime World identity."""
         ...
     @staticmethod
-    def get_scene_by_build_index(build_index: int) -> Optional[object]:
+    def get_scene_by_build_index(build_index: int) -> Optional[Scene]:
         """Get a loaded scene corresponding to a build-list entry."""
         ...
     @staticmethod
-    def get_scene_at(index: int) -> Optional[object]:
+    def get_scene_at(index: int) -> Optional[Scene]:
         """Get a scene by index in the loaded-scene list."""
         ...
     @staticmethod
-    def set_active_scene(scene: object) -> None:
+    def set_active_scene(scene: Scene) -> None:
         """Select which loaded scene receives newly authored objects."""
         ...
     @staticmethod
-    def unload_scene(scene: object) -> None:
+    def unload_scene(scene: Scene) -> None:
         """Unload one resident scene."""
         ...
     @staticmethod
-    def move_game_object_to_scene(game_object: object, destination: object) -> None:
+    def move_game_object_to_scene(game_object: GameObject, destination: Scene) -> None:
         """Move a root hierarchy to another loaded Scene without cloning it."""
         ...
     @staticmethod
