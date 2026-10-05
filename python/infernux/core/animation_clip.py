@@ -232,11 +232,13 @@ class AnimationClip:
         if not target:
             return False
         try:
-            self.validate_sprite_frame_references(
+            document = self.to_dict()
+            snapshot = type(self).from_dict(document)
+            snapshot.validate_sprite_frame_references(
                 project_root=self._project_root_for_asset(target),
             )
             from infernux.core.document_store import write_document_text
-            write_document_text(target, json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n")
+            write_document_text(target, json.dumps(document, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
             return True
         except (OSError, RuntimeError, TypeError, ValueError):
             return False

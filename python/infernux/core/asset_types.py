@@ -630,7 +630,11 @@ def write_meta_fields(asset_path: str, updates: Dict[str, Any]) -> bool:
         for key, value in updates.items():
             type_tag = _python_type_to_meta_tag(value)
             entries[key] = {"type": type_tag, "value": value}
-        blob = json.dumps(root, indent=4) + "\n"
+        from infernux.lib import ResourceMeta
+        # Use the native persisted type contract, including integer ranges,
+        # for the complete candidate before submitting its conditional write.
+        ResourceMeta().deserialize_document(root)
+        blob = json.dumps(root, indent=4, allow_nan=False) + "\n"
         write_document_text(meta_path, blob, expected_file_state=file_state)
         return True
     except Exception as e:
@@ -724,7 +728,8 @@ def read_audio_import_settings(asset_path: str) -> AudioImportSettings:
 
 def write_audio_import_settings(asset_path: str, settings: AudioImportSettings) -> bool:
     """Write audio import settings back to the .meta file."""
-    return write_meta_fields(asset_path, settings.to_dict())
+    canonical = AudioImportSettings.from_dict(settings.to_dict())
+    return write_meta_fields(asset_path, canonical.to_dict())
 
 
 # ═══════════════════════════════════════════════════════════════════════════
