@@ -6,7 +6,7 @@ import copy
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .documents import (
     DocumentActionResult,
@@ -17,6 +17,9 @@ from .documents import (
     DocumentRegistry,
     document_content_token,
 )
+
+if TYPE_CHECKING:
+    from .serialized_properties import PropertyTransactionStatus
 
 
 @dataclass(frozen=True)
@@ -188,8 +191,28 @@ class EditableResourceDocumentController:
         origin=None,
     ) -> bool:
         """Commit one user edit through the shared resource transaction."""
+        from .serialized_properties import PropertyTransactionStatus
+
+        return self.apply_document_status(
+            document,
+            view_id=view_id,
+            edit_key=edit_key,
+            description=description,
+            origin=origin,
+        ) is PropertyTransactionStatus.APPLIED
+
+    def apply_document_status(
+        self,
+        document: dict,
+        *,
+        view_id: str,
+        edit_key: str,
+        description: str,
+        origin=None,
+    ) -> PropertyTransactionStatus:
+        """Preserve unchanged and rejected outcomes of the resource transaction."""
         old_document = self.capture_document()
-        return self.commit_applied_document(
+        return self.commit_applied_document_status(
             old_document,
             document,
             view_id=view_id,
@@ -214,7 +237,30 @@ class EditableResourceDocumentController:
         resulting gesture is still recorded exactly once through the shared
         document journal when it ends.
         """
+        from .serialized_properties import PropertyTransactionStatus
+
+        return self.commit_applied_document_status(
+            old_document,
+            document,
+            view_id=view_id,
+            edit_key=edit_key,
+            description=description,
+            origin=origin,
+        ) is PropertyTransactionStatus.APPLIED
+
+    def commit_applied_document_status(
+        self,
+        old_document: dict,
+        document: dict,
+        *,
+        view_id: str,
+        edit_key: str,
+        description: str,
+        origin=None,
+    ) -> PropertyTransactionStatus:
+        """Record a resource edit once and return its authoritative outcome."""
         from .action_journal import ActionOrigin
+        from .serialized_properties import PropertyTransactionStatus
         from infernux.engine.undo import EditableDocumentDraftCommand, UndoManager
 
         registry = DocumentRegistry.instance()
@@ -222,31 +268,30 @@ class EditableResourceDocumentController:
         previous_document = copy.deepcopy(old_document)
         next_document = copy.deepcopy(document)
         if next_document == previous_document:
-            return False
+            return PropertyTransactionStatus.NO_CHANGE
         owner_view_id = str(view_id or "").strip()
         if not owner_view_id:
             raise ValueError("editable resource mutation requires an authoring view id")
         manager = UndoManager.instance()
         if manager is None or not manager.enabled or manager.is_executing:
-            return False
+            return PropertyTransactionStatus.REJECTED
         next_revision = registry.reserve_changed_revision(
             self.document_id,
             view_id=owner_view_id,
         )
-        return bool(
-            manager.execute(
-                EditableDocumentDraftCommand(
-                    self,
-                    previous_document,
-                    next_document,
-                    editor_document.revision,
-                    next_revision,
-                    edit_key=edit_key,
-                    description=description,
-                ),
-                origin=(ActionOrigin.USER if origin is None else ActionOrigin(origin)),
-            )
+        applied = manager.execute(
+            EditableDocumentDraftCommand(
+                self,
+                previous_document,
+                next_document,
+                editor_document.revision,
+                next_revision,
+                edit_key=edit_key,
+                description=description,
+            ),
+            origin=(ActionOrigin.USER if origin is None else ActionOrigin(origin)),
         )
+        return PropertyTransactionStatus.APPLIED if applied else PropertyTransactionStatus.REJECTED
 
     def _flush_submission(self, *, force: bool = False):
         if self.exec_layer is not None and not bool(

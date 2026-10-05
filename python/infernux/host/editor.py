@@ -469,6 +469,7 @@ class EditorAutomationHost:
             DocumentKind,
             ensure_editable_resource_document,
         )
+        from infernux.engine.interaction.serialized_properties import PropertyTransactionStatus
 
         material, _before = self.material_document(path)
         controller = ensure_editable_resource_document(
@@ -480,16 +481,18 @@ class EditorAutomationHost:
             title=material.name,
             view_id="automation",
         )
-        changed = controller.apply_document(
+        status = controller.apply_document_status(
             document,
             view_id="automation",
             edit_key=edit_key,
             description=description,
         )
-        if not changed:
+        if status is PropertyTransactionStatus.REJECTED:
             raise OperationError(
-                "material.edit_rejected", "Material edit was rejected or unchanged."
+                "material.edit_rejected", "Material edit was rejected."
             )
+        if status is PropertyTransactionStatus.NO_CHANGE:
+            return
         controller.flush_autosave(force=True)
         native = getattr(
             getattr(self.plugin_manager(), "engine", None),

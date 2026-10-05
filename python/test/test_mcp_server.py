@@ -712,14 +712,14 @@ def test_schema_gateway_can_edit_real_material_document(engine):
             {
                 "asset_guid": guid,
                 "pointer": "/properties/baseColor/value",
-                "value": [0.2, 0.4, 0.6, 1.0],
+                "value": [0.25, 0.5, 0.75, 1.0],
             },
         )
         assert changed["ok"] is True
         assert changed["data"]["result"]["document"]["properties"]["baseColor"]["value"] == [
-            0.2,
-            0.4,
-            0.6,
+            0.25,
+            0.5,
+            0.75,
             1.0,
         ]
         document = None
@@ -733,14 +733,37 @@ def test_schema_gateway_can_edit_real_material_document(engine):
                 time.sleep(0.01)
                 continue
             if document["properties"]["baseColor"]["value"] == pytest.approx(
-                [0.2, 0.4, 0.6, 1.0]
+                [0.25, 0.5, 0.75, 1.0]
             ):
                 break
             time.sleep(0.01)
         assert document is not None
         assert document["properties"]["baseColor"]["value"] == pytest.approx(
-            [0.2, 0.4, 0.6, 1.0]
+            [0.25, 0.5, 0.75, 1.0]
         )
+        assert len(undo.action_journal.applied_entries()) == 1
+        repeated = mcp.tools["operation_command_execute"](
+            "infernux.material.property.set",
+            {
+                "asset_guid": guid,
+                "pointer": "/shaders",
+                "value": changed["data"]["result"]["document"]["shaders"],
+            },
+        )
+        assert repeated["ok"] is True, repeated
+        assert len(undo.action_journal.applied_entries()) == 1
+        assert repeated["data"]["result"]["document"] == changed["data"]["result"]["document"]
+        undo.enabled = False
+        rejected = mcp.tools["operation_command_execute"](
+            "infernux.material.property.set",
+            {
+                "asset_guid": guid,
+                "pointer": "/properties/baseColor/value",
+                "value": [0.8, 0.4, 0.6, 1.0],
+            },
+        )
+        assert rejected["ok"] is False
+        assert rejected["error"]["code"] == "material.edit_rejected"
         assert len(undo.action_journal.applied_entries()) == 1
     finally:
         shutdown_adapter()

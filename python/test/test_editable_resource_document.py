@@ -194,6 +194,58 @@ def test_view_scoped_execution_uses_controller_owned_asset_path(monkeypatch):
     assert flushed == [("Assets/Ocean.mat", True)]
 
 
+def test_editable_resource_status_preserves_no_change_without_history_or_save():
+    from infernux.engine.interaction.serialized_properties import PropertyTransactionStatus
+
+    previous_registry = DocumentRegistry._instance
+    previous_manager = UndoManager._instance
+    registry = DocumentRegistry()
+    manager = UndoManager()
+    resource = _Resource()
+    execution = _ExecutionLayer()
+    restores = []
+    controller = EditableResourceDocumentController(
+        "physic_material", "Assets/Status.physmat", resource,
+        on_restored=lambda value: restores.append(value.value),
+    )
+    document = registry.create(
+        DocumentKind.PHYSIC_MATERIAL,
+        "Status.physmat",
+        key=DocumentKey.asset(DocumentKind.PHYSIC_MATERIAL, "status-guid"),
+        resource_path="Assets/Status.physmat",
+        capabilities=DocumentCapability.SAVE | DocumentCapability.DISCARD,
+        controller=controller,
+    )
+    controller.document_id = document.document_id
+    controller.bind(file_path=controller.file_path, resource=resource, exec_layer=execution, state=None)
+    arguments = dict(view_id="automation", edit_key="value", description="Set value")
+    try:
+        status = controller.apply_document_status({"value": 2.0}, **arguments)
+        assert status is PropertyTransactionStatus.APPLIED
+        assert controller.flush_autosave(force=True)
+        revision = document.revision
+        assert restores == [2.0]
+        assert execution.saved == [{"value": 2.0}]
+        assert len(manager.action_journal.applied_entries()) == 1
+        assert controller.apply_document_status({"value": 2.0}, **arguments) is PropertyTransactionStatus.NO_CHANGE
+        assert not controller.apply_document({"value": 2.0}, **arguments)
+        assert controller.commit_applied_document_status({"value": 2.0}, {"value": 2.0}, **arguments) is PropertyTransactionStatus.NO_CHANGE
+        assert document.revision == revision
+        assert not execution.pending
+        assert execution.saved == [{"value": 2.0}]
+        assert restores == [2.0]
+        assert len(manager.action_journal.applied_entries()) == 1
+        manager.enabled = False
+        assert controller.apply_document_status({"value": 3.0}, **arguments) is PropertyTransactionStatus.REJECTED
+        assert not controller.apply_document({"value": 3.0}, **arguments)
+        assert resource.value == 2.0
+        assert document.revision == revision
+        assert len(manager.action_journal.applied_entries()) == 1
+    finally:
+        DocumentRegistry._instance = previous_registry
+        UndoManager._instance = previous_manager
+
+
 def test_editable_resource_document_tracks_autosave_and_undo_revisions():
     previous_registry = DocumentRegistry._instance
     previous_manager = UndoManager._instance
