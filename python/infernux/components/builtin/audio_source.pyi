@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from infernux.components.builtin_component import BuiltinComponent
+from infernux.core.audio_clip import AudioClip
 
 class AudioSource(BuiltinComponent):
     """Multi-track audio playback component.
@@ -112,8 +113,8 @@ class AudioSource(BuiltinComponent):
         source may play it.
         """
         ...
-    def get_track_clip(self, track_index: int) -> Any:
-        """Return the audio clip assigned to the specified track."""
+    def get_track_clip(self, track_index: int) -> AudioClip | None:
+        """Return the shared Python AudioClip proxy assigned to the track."""
         ...
     def get_track_clip_guid(self, track_index: int) -> str:
         """Return the asset GUID of the clip on the specified track."""

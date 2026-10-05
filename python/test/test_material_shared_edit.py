@@ -13,6 +13,7 @@ from infernux.engine.ui.asset_details_renderer import _load_material
 from infernux.engine.ui.inspector_material import _get_inline_material_extra
 from infernux.engine.ui.project_file_ops import _new_material_document
 from infernux.lib import AssetRegistry
+from infernux.core.material import Material
 
 
 def _rgba(material):
@@ -47,7 +48,10 @@ def test_asset_edits_reach_assigned_cube_and_cached_inline_inspector(engine, sce
     assert authored.deserialize_document(document)
     for color in ((0.9, 0.1, 0.2, 1), (0.2, 0.7, 0.1, 1)):
         authored.set_color("baseColor", color)
-        assert renderer.get_effective_material(0) is authored
+        proxy = renderer.get_effective_material(0)
+        assert isinstance(proxy, Material)
+        assert proxy.native is authored
+        assert proxy is Material.from_native(authored)
         assert _rgba(bound) == pytest.approx(color)
         cache = _get_inline_material_extra(panel, bound)
         assert cache["cached_data"]["properties"]["baseColor"]["value"] == pytest.approx(color)

@@ -134,7 +134,7 @@ The following members are declared by the current Python wrapper and type stub.
 | Method | Purpose |
 | --- | --- |
 | `set_track_clip(i, clip)` | Assign a Python `AudioClip`, native clip, or `None` to zero-based track `i`. |
-| `get_track_clip(i)` | Return the native clip assigned to track `i`, or `None`. |
+| `get_track_clip(i)` | Return the shared Python `AudioClip` proxy assigned to track `i`, or `None`. Repeated queries return the same live proxy. |
 | `set_track_clip_by_guid(i, guid)` | Resolve and assign a registered audio asset; an empty GUID clears it. |
 | `get_track_clip_guid(i)` | Return the assigned asset GUID, or an empty string. |
 | `set_track_volume(i, volume)` / `get_track_volume(i)` | Write or read the per-track volume. |
@@ -324,7 +324,7 @@ def update(self, delta_time):
 | 方法 | 用途 |
 | --- | --- |
 | `set_track_clip(i, clip)` | 给索引为 `i` 的轨道分配 Python `AudioClip`、原生音频或 `None`。 |
-| `get_track_clip(i)` | 返回轨道 `i` 的原生音频；未分配时返回 `None`。 |
+| `get_track_clip(i)` | 返回轨道 `i` 的共享 Python `AudioClip` 代理；未分配时返回 `None`。重复查询返回同一个存活代理。 |
 | `set_track_clip_by_guid(i, guid)` | 解析并分配已注册音频资源；空 GUID 会清除轨道。 |
 | `get_track_clip_guid(i)` | 返回轨道资源 GUID；未分配时返回空字符串。 |
 | `set_track_volume(i, volume)` / `get_track_volume(i)` | 写入或读取单轨音量。 |

@@ -866,7 +866,11 @@ def _save_mesh_asset_copy(mesh):
 
 def _render_mesh_save_copy(ctx: InxGUIContext, comp):
     # The static source format cannot preserve a model's skeletal companion.
+    from infernux.core.mesh import Mesh
+
     mesh = comp.get_mesh_asset()
+    if isinstance(mesh, Mesh):
+        mesh = mesh.native
     if mesh is None or mesh.has_skinned_data:
         return
     if ctx.button(f"{t('inspector.mesh_save_copy')}##mesh_copy_{comp.component_id}"):

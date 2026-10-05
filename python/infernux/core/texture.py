@@ -30,9 +30,10 @@ from __future__ import annotations
 from typing import Optional
 
 from infernux.lib import TextureLoader, TextureData
+from infernux.core._resource_proxy import ResourceProxy
 
 
-class Texture:
+class Texture(ResourceProxy):
     """Pythonic wrapper around C++ TextureData.
 
     Provides:
@@ -44,6 +45,8 @@ class Texture:
     def __init__(self, native: "TextureData"):
         if native is None:
             raise ValueError("Cannot wrap a None TextureData")
+        if "_guid" in self.__dict__:
+            return
         self._native = native
         self._guid = ""
 

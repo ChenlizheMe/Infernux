@@ -70,11 +70,16 @@ def _collect_material_renderers(items, native_map, obj):
 
 def _rebuild_material_entries(renderers):
     """Build the valid_entries list from collected renderers."""
+    from infernux.core.material import Material
+
     valid_entries = []
     for renderer, mat_count, material_guids, slot_names in renderers:
         renderer_type = getattr(renderer, "type_name", "") or ""
         for slot_idx in range(mat_count):
             mat = renderer.get_effective_material(slot_idx)
+            # Inspector authoring operates on native material documents.
+            if isinstance(mat, Material):
+                mat = mat.native
             if mat is None:
                 continue
             if slot_idx < len(slot_names) and slot_names[slot_idx]:

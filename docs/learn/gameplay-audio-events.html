@@ -195,7 +195,7 @@
 </tr>
 <tr>
 <td><code>get_track_clip(i)</code></td>
-<td>Return the native clip assigned to track <code>i</code>, or <code>None</code>.</td>
+<td>Return the shared Python <code>AudioClip</code> proxy assigned to track <code>i</code>, or <code>None</code>. Repeated queries return the same live proxy.</td>
 </tr>
 <tr>
 <td><code>set_track_clip_by_guid(i, guid)</code></td>
@@ -436,7 +436,7 @@
 </tr>
 <tr>
 <td><code>get_track_clip(i)</code></td>
-<td>返回轨道 <code>i</code> 的原生音频；未分配时返回 <code>None</code>。</td>
+<td>返回轨道 <code>i</code> 的共享 Python <code>AudioClip</code> 代理；未分配时返回 <code>None</code>。重复查询返回同一个存活代理。</td>
 </tr>
 <tr>
 <td><code>set_track_clip_by_guid(i, guid)</code></td>

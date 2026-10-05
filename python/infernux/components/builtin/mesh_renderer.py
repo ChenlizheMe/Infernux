@@ -20,6 +20,8 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from infernux.components.builtin_component import BuiltinComponent, CppProperty
+from infernux.core.material import Material
+from infernux.core.mesh import Mesh
 
 
 def _to_native_material(value):
@@ -72,12 +74,9 @@ class MeshRenderer(BuiltinComponent):
     # ------------------------------------------------------------------
 
     @property
-    def material(self):
+    def material(self) -> Optional[Material]:
         """The material for slot 0 (Unity-style)."""
-        cpp = self._cpp_component
-        if cpp is not None:
-            return cpp.get_material(0)
-        return None
+        return self.get_material(0)
 
     @material.setter
     def material(self, value) -> None:
@@ -95,12 +94,12 @@ class MeshRenderer(BuiltinComponent):
         self.material = value
 
     @property
-    def materials(self) -> list:
+    def materials(self) -> list[Optional[Material]]:
         """All materials across every slot (Unity-style)."""
         cpp = self._cpp_component
         if cpp is None:
             return []
-        return [cpp.get_material(i) for i in range(cpp.material_count)]
+        return [self.get_material(i) for i in range(cpp.material_count)]
 
     @materials.setter
     def materials(self, value: list) -> None:
@@ -138,11 +137,12 @@ class MeshRenderer(BuiltinComponent):
         """Check if a custom material is assigned at slot 0."""
         return self.material is not None
 
-    def get_effective_material(self, slot: int = 0):
+    def get_effective_material(self, slot: int = 0) -> Optional[Material]:
         """Get the effective material at slot (custom or default)."""
         cpp = self._cpp_component
         if cpp is not None:
-            return cpp.get_effective_material(slot)
+            native = cpp.get_effective_material(slot)
+            return Material.from_native(native) if native is not None else None
         return None
 
     # ------------------------------------------------------------------
@@ -159,11 +159,12 @@ class MeshRenderer(BuiltinComponent):
 
     materialCount = material_count  # Unity PascalCase alias
 
-    def get_material(self, slot: int):
+    def get_material(self, slot: int) -> Optional[Material]:
         """Get the material at a given slot index."""
         cpp = self._cpp_component
         if cpp is not None:
-            return cpp.get_material(slot)
+            native = cpp.get_material(slot)
+            return Material.from_native(native) if native is not None else None
         return None
 
     def set_material(self, slot_or_material, material=None) -> None:
@@ -347,22 +348,18 @@ class MeshRenderer(BuiltinComponent):
             return getattr(cpp, "mesh_name", "")
         return ""
 
-    def get_mesh_asset(self):
-        """Get the InxMesh asset object (None if no asset mesh)."""
+    def get_mesh_asset(self) -> Optional[Mesh]:
+        """Return the shared Python Mesh proxy, or None if no mesh is assigned."""
         cpp = self._cpp_component
         if cpp is not None:
-            return cpp.get_mesh_asset()
+            native = cpp.get_mesh_asset()
+            return Mesh.from_native(native) if native is not None else None
         return None
 
     @property
     def mesh(self):
         """The shared public Mesh resource; reading never creates a copy."""
-        native = self.get_mesh_asset()
-        if native is None:
-            return None
-        from infernux.core.mesh import Mesh
-
-        return Mesh.from_native(native)
+        return self.get_mesh_asset()
 
     @mesh.setter
     def mesh(self, value) -> None:
@@ -389,11 +386,11 @@ class MeshRenderer(BuiltinComponent):
         """Material slot names from the model file (e.g. 'Body', 'Glass')."""
         mesh = self.get_mesh_asset()
         if mesh is not None:
-            names = list(mesh.material_slot_names)
+            names = list(mesh.material_slots)
             cpp = self._cpp_component
             submesh_index = getattr(cpp, "submesh_index", -1) if cpp is not None else -1
             if submesh_index >= 0 and submesh_index < mesh.submesh_count:
-                info = mesh.get_submesh_info(submesh_index)
+                info = mesh.get_submesh(submesh_index)
                 slot = int(info.get("material_slot", 0))
                 if 0 <= slot < len(names):
                     return [names[slot]]
@@ -414,11 +411,11 @@ class MeshRenderer(BuiltinComponent):
         cpp = self._cpp_component
         submesh_index = getattr(cpp, "submesh_index", -1) if cpp is not None else -1
         if submesh_index >= 0 and submesh_index < mesh.submesh_count:
-            return [mesh.get_submesh_info(submesh_index)]
+            return [mesh.get_submesh(submesh_index)]
         result = []
         node_group = cpp.model_node_group if cpp is not None else -1
         for i in range(mesh.submesh_count):
-            info = mesh.get_submesh_info(i)
+            info = mesh.get_submesh(i)
             if node_group < 0 or int(info["node_group"]) == node_group:
                 result.append(info)
         return result

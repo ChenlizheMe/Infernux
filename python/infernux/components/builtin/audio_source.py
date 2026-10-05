@@ -35,6 +35,7 @@ from __future__ import annotations
 from typing import Optional
 
 from infernux.components.builtin_component import BuiltinComponent, CppProperty
+from infernux.core.audio_clip import AudioClip
 class AudioSource(BuiltinComponent):
     """Python wrapper for the C++ AudioSource component.
 
@@ -96,11 +97,12 @@ class AudioSource(BuiltinComponent):
         native_clip = getattr(clip, "native", clip) if clip is not None else None
         cpp.set_track_clip(track_index, native_clip)
 
-    def get_track_clip(self, track_index: int):
-        """Get the AudioClip on a specific track."""
+    def get_track_clip(self, track_index: int) -> Optional[AudioClip]:
+        """Return the shared Python AudioClip proxy on a track, or None."""
         cpp = self._cpp_component
         if cpp is not None:
-            return cpp.get_track_clip(track_index)
+            native = cpp.get_track_clip(track_index)
+            return AudioClip.from_native(native) if native is not None else None
         return None
 
     def get_track_clip_guid(self, track_index: int) -> str:

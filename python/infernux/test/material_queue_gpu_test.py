@@ -100,7 +100,7 @@ def main() -> int:
                     material_path.write_text(json.dumps(material_document), encoding='utf-8')
                     result = AssetManager.reimport_asset(str(material_path), database=frontend.get_asset_database())
                     assert result, result.error
-                    assert renderer.get_material(0).get_render_queue() == queue
+                    assert renderer.get_material(0).render_queue == queue
                 else:
                     material.set_render_queue(queue)
 

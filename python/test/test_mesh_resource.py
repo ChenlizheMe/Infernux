@@ -138,7 +138,7 @@ def test_public_mesh_resource_create_share_copy_and_publish(engine, scene):
         assert first_renderer.get_mesh_asset() is second_renderer.get_mesh_asset()
         cloned = scene._clone_game_object(first)
         cloned_renderer = cloned.get_component("MeshRenderer")
-        assert cloned_renderer.get_mesh_asset() is mesh.native
+        assert cloned_renderer.get_mesh_asset() is mesh
 
         version = registry.get_asset_residency(mesh.guid).runtime_version
         replacement = np.array([[2, 3, 4]], dtype=np.float32)
@@ -215,10 +215,10 @@ def test_runtime_mesh_survives_play_mode_scene_rebuild(engine, scene):
     try:
         assert manager._rebuild_active_scene(snapshot, for_play=True)
         runtime_owner = scene.find("Play Runtime Mesh")
-        assert runtime_owner.get_component("MeshRenderer").get_mesh_asset() is mesh.native
+        assert runtime_owner.get_component("MeshRenderer").get_mesh_asset() is mesh
 
         assert manager._rebuild_active_scene(snapshot, for_play=False)
         restored_owner = scene.find("Play Runtime Mesh")
-        assert restored_owner.get_component("MeshRenderer").get_mesh_asset() is mesh.native
+        assert restored_owner.get_component("MeshRenderer").get_mesh_asset() is mesh
     finally:
         PlayModeManager._instance = previous_manager

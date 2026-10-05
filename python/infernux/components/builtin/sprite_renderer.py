@@ -17,6 +17,7 @@ from infernux.components.builtin_component import BuiltinComponent, CppProperty
 from infernux.components.fields import FieldType
 from infernux.debug import Debug
 from infernux.engine.path_utils import lexical_path, portable_path
+from infernux.core.material import Material
 
 
 def _to_native_material(value):
@@ -320,12 +321,14 @@ class SpriteRenderer(BuiltinComponent):
     # ── Material access (direct to C++ SpriteRenderer) ──────────────
 
     @property
-    def material(self):
+    def material(self) -> Optional[Material]:
         """The material on slot 0."""
         cpp = self._cpp_component
         if cpp is not None:
-            return cpp.get_material(0)
-        return self._sprite_material
+            native = cpp.get_material(0)
+        else:
+            native = self._sprite_material
+        return Material.from_native(native) if native is not None else None
 
     @material.setter
     def material(self, value):

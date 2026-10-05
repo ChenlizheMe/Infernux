@@ -14,7 +14,7 @@ Usage::
 
     # Context manager
     with AudioClip.load("Assets/Audio/bgm.wav") as clip:
-        source.clip = clip.native
+        source.set_track_clip(0, clip)
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Optional
 
 from infernux import lib as _native_lib
+from infernux.core._resource_proxy import ResourceProxy
 
 CppAudioClip = getattr(_native_lib, "AudioClip", None)
 
@@ -32,7 +33,7 @@ def _require_native_audio_clip():
     return CppAudioClip
 
 
-class AudioClip:
+class AudioClip(ResourceProxy):
     """Pythonic wrapper around C++ AudioClip.
 
     Provides:
@@ -69,7 +70,7 @@ class AudioClip:
 
     @staticmethod
     def from_native(native: CppAudioClip) -> "AudioClip":
-        """Wrap an existing C++ AudioClip."""
+        """Return the live Python proxy for an existing C++ AudioClip."""
         return AudioClip(native)
 
     # ==========================================================================

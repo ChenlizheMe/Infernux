@@ -10,9 +10,10 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from infernux.lib import AssetRegistry, InxMesh
+from infernux.core._resource_proxy import ResourceProxy
 
 
-class Mesh:
+class Mesh(ResourceProxy):
     """A shared Mesh resource with explicit copy and mutation semantics."""
 
     def __init__(self, native: InxMesh):

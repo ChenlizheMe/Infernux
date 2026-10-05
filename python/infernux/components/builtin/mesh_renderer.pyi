@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional, Tuple, overload
 from infernux.components.builtin_component import BuiltinComponent
 from infernux.compute import Buffer
 from infernux.core.mesh import Mesh
+from infernux.core.material import Material
+from infernux.lib import InxMaterial
 
 class MeshRenderer(BuiltinComponent):
     """Renders a mesh with assigned materials."""
@@ -31,6 +33,27 @@ class MeshRenderer(BuiltinComponent):
     # ---- Material properties ----
 
     @property
+    def material(self) -> Material | None: ...
+    @material.setter
+    def material(self, value: Material | InxMaterial | str | None) -> None: ...
+    @property
+    def sharedMaterial(self) -> Material | None: ...
+    @sharedMaterial.setter
+    def sharedMaterial(self, value: Material | InxMaterial | str | None) -> None: ...
+    @property
+    def materials(self) -> list[Material | None]: ...
+    @materials.setter
+    def materials(self, value: list[Material | InxMaterial | str | None]) -> None: ...
+    @property
+    def sharedMaterials(self) -> list[Material | None]: ...
+    @sharedMaterials.setter
+    def sharedMaterials(self, value: list[Material | InxMaterial | str | None]) -> None: ...
+    def get_materials(self, result: list[Material | None] | None = ...) -> list[Material | None]: ...
+    def get_shared_materials(self, result: list[Material | None] | None = ...) -> list[Material | None]: ...
+    GetMaterials = get_materials
+    GetSharedMaterials = get_shared_materials
+
+    @property
     def material_guid(self) -> str:
         """The asset GUID of the material at slot 0."""
         ...
@@ -40,7 +63,7 @@ class MeshRenderer(BuiltinComponent):
     def has_render_material(self) -> bool:
         """Return whether a material is assigned at slot 0."""
         ...
-    def get_effective_material(self, slot: int = ...) -> Any:
+    def get_effective_material(self, slot: int = ...) -> Material | None:
         """Return the effective material for the given slot, including fallbacks."""
         ...
 
@@ -51,7 +74,7 @@ class MeshRenderer(BuiltinComponent):
         """The number of material slots on this renderer."""
         ...
 
-    def get_material(self, slot: int) -> Any:
+    def get_material(self, slot: int) -> Material | None:
         """Return the material at the specified slot index."""
         ...
     @overload
@@ -117,8 +140,8 @@ class MeshRenderer(BuiltinComponent):
         """The name of the assigned mesh."""
         ...
 
-    def get_mesh_asset(self) -> Any:
-        """Return the InxMesh asset object, or None."""
+    def get_mesh_asset(self) -> Mesh | None:
+        """Return the shared Python Mesh proxy, or None."""
         ...
     @property
     def mesh(self) -> Optional[Mesh]: ...

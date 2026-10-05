@@ -22,7 +22,7 @@ Usage::
     mat = Material.load("materials/gold.mat")
 
     # Assign to a MeshRenderer
-    mesh_renderer.material = mat.native
+    mesh_renderer.material = mat
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from typing import Optional, Tuple
 
 from infernux.debug import Debug
 from infernux.lib import InxMaterial
+from infernux.core._resource_proxy import ResourceProxy
 
 _EMBEDDED_MODEL_MAT_TOKEN = "::submat:"
 
@@ -48,7 +49,7 @@ _RENDER_QUEUE_TRANSPARENT: int = 3000
 _DEFAULT_ALPHA_CLIP_THRESHOLD: float = 0.5
 
 
-class Material:
+class Material(ResourceProxy):
     """Pythonic wrapper around C++ InxMaterial.
 
     Provides:
@@ -75,6 +76,8 @@ class Material:
         """
         if native is None:
             raise ValueError("Cannot wrap a None InxMaterial")
+        if "_disposed" in self.__dict__:
+            return
         self._native = native
         self._disposed = False
         self._last_save_time: float = 0.0
@@ -210,6 +213,11 @@ class Material:
     def native(self) -> "InxMaterial":
         """Access the underlying C++ InxMaterial (for passing to C++ APIs)."""
         return self._native
+
+    @property
+    def file_path(self) -> str:
+        """The registered source path, or an empty string for a transient material."""
+        return self._native.file_path
 
     @property
     def name(self) -> str:
@@ -657,11 +665,11 @@ class Material:
 
     def __eq__(self, other):
         if isinstance(other, Material):
-            return self.guid == other.guid
+            return self._native is other._native
         return NotImplemented
 
     def __hash__(self):
-        return hash(self.guid)
+        return hash(id(self._native))
 
     # ==========================================================================
     # Clone / Instantiate (Unity-style)
