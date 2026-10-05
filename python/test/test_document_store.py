@@ -3,6 +3,7 @@ import pytest
 from infernux.core.document_store import (
     DocumentStore,
     capture_document_file_state,
+    read_document_text_snapshot,
     submit_document_text,
     write_document_text,
 )
@@ -34,6 +35,29 @@ def test_native_store_writes_ordered_generations(tmp_path):
     assert metrics.latest_failed_generation == 0
     assert metrics.pending_generation == 0
     assert metrics.active_generation == 0
+
+
+def test_snapshot_read_baseline_guards_the_consumed_unicode_bytes(tmp_path):
+    path = tmp_path / "协作.json"
+    path.write_text('{"name":"甲"}', encoding="utf-8")
+    text, state = read_document_text_snapshot(str(path))
+    assert text == '{"name":"甲"}'
+    path.write_text('{"name":"乙"}', encoding="utf-8")
+    ticket = submit_document_text(str(path), "local", expected_file_state=state)
+    with pytest.raises(RuntimeError, match="changed outside the editor"):
+        ticket.wait()
+    assert path.read_text(encoding="utf-8") == '{"name":"乙"}'
+
+
+def test_snapshot_of_absent_file_does_not_authorize_replacing_later_creation(tmp_path):
+    path = tmp_path / "created.json"
+    text, state = read_document_text_snapshot(str(path))
+    assert text is None and not state.exists
+    path.write_text("teammate", encoding="utf-8")
+    ticket = submit_document_text(str(path), "local", expected_file_state=state)
+    with pytest.raises(RuntimeError, match="changed outside the editor"):
+        ticket.wait()
+    assert path.read_text() == "teammate"
 
 
 def test_backup_contains_previous_complete_generation(tmp_path):

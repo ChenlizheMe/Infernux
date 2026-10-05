@@ -9,6 +9,7 @@
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
+#include <platform/filesystem/AtomicFile.h>
 #include <platform/filesystem/DocumentStore.h>
 #include <platform/filesystem/InxPack.h>
 #include <platform/filesystem/InxPath.h>
@@ -261,6 +262,15 @@ void RegisterResourceBindings(py::module_ &m)
         .def("cancel", &DocumentStore::Cancel, py::arg("ticket"))
         .def("get_metrics", &DocumentStore::GetMetrics, py::arg("path"))
         .def("capture_file_state", &DocumentStore::CaptureFileState, py::arg("path"))
+        .def_static(
+            "read_text_snapshot",
+            [](const std::string &path) -> py::tuple {
+                if (!std::filesystem::exists(ToFsPath(path)))
+                    return py::make_tuple(py::none(), DocumentFileState{});
+                const auto snapshot = ReadTextFileSnapshot(path);
+                return py::make_tuple(snapshot.content, snapshot.state);
+            },
+            py::arg("path"), "Read UTF-8 content and its consumed file state; return None for an absent file")
         .def_property_readonly("is_idle", &DocumentStore::IsIdle, "Whether all queued document writes have completed")
         .def("flush_all", py::overload_cast<>(&DocumentStore::Flush), py::call_guard<py::gil_scoped_release>())
         .def("flush_path", py::overload_cast<const std::string &>(&DocumentStore::Flush), py::arg("path"),

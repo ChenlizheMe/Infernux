@@ -32,6 +32,11 @@ TagLayerManager::TagLayerManager()
     InitDefaults();
 }
 
+std::string TagLayerManager::SerializeDefaults()
+{
+    return TagLayerManager{}.Serialize();
+}
+
 void TagLayerManager::InitDefaults()
 {
     // Built-in tags (indices 0-6)

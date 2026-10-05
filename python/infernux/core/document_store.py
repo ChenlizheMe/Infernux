@@ -42,6 +42,11 @@ def capture_document_file_state(path: str):
     return NativeDocumentStore.instance().capture_file_state(path)
 
 
+def read_document_text_snapshot(path: str):
+    """Read content with the exact baseline for its next conditional write."""
+    return NativeDocumentStore.read_text_snapshot(path)
+
+
 def write_document_text(
     path: str,
     content: str,
@@ -88,6 +93,7 @@ __all__ = [
     "DocumentWriteSuperseded",
     "DocumentWriteTicket",
     "capture_document_file_state",
+    "read_document_text_snapshot",
     "submit_document_text",
     "write_document_text",
 ]

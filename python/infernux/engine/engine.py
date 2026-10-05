@@ -462,11 +462,14 @@ class Engine():
         physics_settings.apply(settings)
 
         tag_layer_path = os.path.join(project_path, "ProjectSettings", "TagLayerSettings.json")
-        if os.path.isfile(tag_layer_path):
-            from infernux.lib import TagLayerManager
+        from infernux.lib import TagLayerManager
 
-            if not TagLayerManager.instance().load_from_file(_safe_path(tag_layer_path)):
+        tag_layers = TagLayerManager.instance()
+        if os.path.exists(tag_layer_path):
+            if not tag_layers.load_from_file(_safe_path(tag_layer_path)):
                 raise RuntimeError(f"Invalid tag/layer settings document: {tag_layer_path}")
+        elif not tag_layers.deserialize(TagLayerManager.serialize_defaults()):
+            raise RuntimeError("The runtime rejected its tag/layer defaults")
     
     def _load_project_materials(self, project_path):
         """Load all .mat files from the project via AssetRegistry.

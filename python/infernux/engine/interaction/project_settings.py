@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from typing import Any, Callable, Optional
+from uuid import uuid4
 
-from infernux.core.document_store import submit_document_text
+from infernux.core.document_store import read_document_text_snapshot, submit_document_text
 from infernux.engine.build_settings import (
     BUILD_SETTINGS_DEFAULTS,
     _json_copy,
@@ -23,6 +24,7 @@ from .documents import (
     DocumentKey,
     DocumentKind,
     DocumentRegistry,
+    DocumentState,
     document_content_token,
 )
 
@@ -36,10 +38,10 @@ _SECTION_FILENAMES = {
 
 @dataclass(frozen=True)
 class _PendingSettingsWrite:
-    tickets: tuple[Any, ...]
-    revision: int
+    tickets: dict[str, Any]
     document: dict[str, Any]
     save_ticket_id: str = ""
+    submission_errors: dict[str, str] = field(default_factory=dict)
 
 
 class ProjectSettingsDocumentController:
@@ -64,7 +66,10 @@ class ProjectSettingsDocumentController:
         self._submitter = submitter
         self._listeners: list[Callable[[dict[str, Any]], None]] = []
         self._pending_writes: dict[int, _PendingSettingsWrite] = {}
-        self._document = self._load_document()
+        self._failed_sections: set[str] = set()
+        self._commit_chain_token = uuid4().hex
+        self._minimum_revision = 0
+        self._document, self._file_states = self._load_document()
         self._saved_document = copy.deepcopy(self._document)
         self._apply_runtime(self._document)
 
@@ -85,28 +90,19 @@ class ProjectSettingsDocumentController:
     def _section_path(self, section: str) -> str:
         return os.path.join(self.settings_path, _SECTION_FILENAMES[section])
 
-    @staticmethod
-    def _read_json(path: str) -> Any:
-        with open(path, "r", encoding="utf-8") as stream:
-            return json.load(stream)
+    def _load_document(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        from infernux.physics.settings import DEFAULT_PHYSICS_SETTINGS
 
-    def _load_document(self) -> dict[str, Any]:
-        build_path = self._section_path("build")
-        build = (
-            self._read_json(build_path)
-            if os.path.isfile(build_path)
-            else copy.deepcopy(BUILD_SETTINGS_DEFAULTS)
-        )
-        tag_path = self._section_path("tag_layers")
-        tag_layers = (
-            self._read_json(tag_path)
-            if os.path.isfile(tag_path)
-            else json.loads(self._manager().serialize())
-        )
-        physics = self._physics().load(self.project_path)
-        return self._normalize_document(
-            {"build": build, "tag_layers": tag_layers, "physics": physics}
-        )
+        defaults = {
+            "build": BUILD_SETTINGS_DEFAULTS,
+            "tag_layers": json.loads(self._manager().serialize_defaults()),
+            "physics": DEFAULT_PHYSICS_SETTINGS,
+        }
+        sections, states = {}, {}
+        for section in _SECTION_FILENAMES:
+            text, states[section] = read_document_text_snapshot(self._section_path(section))
+            sections[section] = json.loads(text) if text is not None else copy.deepcopy(defaults[section])
+        return self._normalize_document(sections), states
 
     def _normalize_document(self, value: Any) -> dict[str, Any]:
         if not isinstance(value, dict) or set(value) != set(_SECTION_FILENAMES):
@@ -168,7 +164,13 @@ class ProjectSettingsDocumentController:
         *,
         persist: bool = True,
     ) -> None:
+        if revision is not None and revision < self._minimum_revision:
+            raise RuntimeError("Project settings history predates the last durable reload")
         normalized = self._normalize_document(document)
+        changed = tuple(
+            section for section in _SECTION_FILENAMES
+            if normalized[section] != self._document[section]
+        )
         self._apply_runtime(normalized, self._document)
         self._document = normalized
         if revision is not None:
@@ -177,7 +179,7 @@ class ProjectSettingsDocumentController:
             )
         self._notify()
         if persist:
-            self.schedule_autosave()
+            self.schedule_autosave(sections=changed)
 
     def apply_document(
         self,
@@ -210,7 +212,7 @@ class ProjectSettingsDocumentController:
                     following,
                     editor_document.revision,
                     next_revision,
-                    edit_key=str(edit_key or "project_settings"),
+                    edit_key=f"{self._minimum_revision}:{edit_key or 'project_settings'}",
                     description=str(description or "Edit Project Settings"),
                 )
             )
@@ -267,59 +269,87 @@ class ProjectSettingsDocumentController:
         self,
         document: dict[str, Any],
         *,
-        revision: int,
+        sections: tuple[str, ...],
         save_ticket_id: str = "",
-    ) -> Optional[_PendingSettingsWrite]:
-        os.makedirs(self.settings_path, exist_ok=True)
-        try:
-            tickets = tuple(
-                self._submitter(
-                    self._section_path(section),
-                    json.dumps(
-                        document[section],
-                        indent=2,
-                        ensure_ascii=False,
-                        allow_nan=False,
-                    )
-                    + "\n",
+    ) -> _PendingSettingsWrite:
+        payloads = {
+            section: json.dumps(document[section], indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+            for section in sections
+        }
+        tickets, errors = {}, {}
+        if sections:
+            try:
+                os.makedirs(self.settings_path, exist_ok=True)
+            except OSError as exc:
+                errors.update({section: str(exc) for section in sections})
+                self._failed_sections.update(sections)
+                payloads.clear()
+        for section, payload in payloads.items():
+            try:
+                tickets[section] = self._submitter(
+                    self._section_path(section), payload,
+                    expected_file_state=self._file_states[section],
+                    commit_chain_token=self._commit_chain_token,
                 )
-                for section in _SECTION_FILENAMES
-            )
-        except Exception as exc:
-            from infernux.debug import Debug
-
-            Debug.log_error(f"Project settings persistence submission failed: {exc}")
-            return None
+            except Exception as exc:
+                # Retain already submitted tickets: a partial submission must
+                # never lose the actual durable state of another section.
+                errors[section] = str(exc)
+                self._failed_sections.add(section)
         pending = _PendingSettingsWrite(
             tickets=tickets,
-            revision=int(revision),
-            document=copy.deepcopy(document),
+            document={section: copy.deepcopy(document[section]) for section in sections},
             save_ticket_id=str(save_ticket_id or ""),
+            submission_errors=errors,
         )
         self._pending_writes[id(pending)] = pending
         return pending
 
-    def schedule_autosave(self) -> bool:
-        document = DocumentRegistry.instance().require(self.document_id)
-        return self._submit_snapshot(
-            self.capture_document(), revision=document.revision
-        ) is not None
+    def _unsaved_sections(self) -> tuple[str, ...]:
+        in_flight = {
+            section for pending in self._pending_writes.values()
+            for section in (pending.tickets.keys() | pending.submission_errors.keys())
+        }
+        return tuple(
+            section for section in _SECTION_FILENAMES
+            if self._document[section] != self._saved_document[section]
+            or section in in_flight or section in self._failed_sections
+        )
+
+    def schedule_autosave(self, *, sections: Optional[tuple[str, ...]] = None) -> bool:
+        DocumentRegistry.instance().require(self.document_id)
+        pending = self._submit_snapshot(
+            self.capture_document(),
+            sections=self._unsaved_sections() if sections is None else sections,
+        )
+        return not pending.submission_errors
 
     def poll_pending_writes(self) -> int:
         registry = DocumentRegistry.instance()
         completed = 0
         for key, pending in tuple(self._pending_writes.items()):
-            if not all(bool(getattr(ticket, "is_complete", False)) for ticket in pending.tickets):
-                continue
-            statuses = tuple(self._ticket_status(ticket) for ticket in pending.tickets)
-            succeeded = all(status == "succeeded" for status in statuses)
-            superseded = any(status == "superseded" for status in statuses)
-            message = "" if succeeded else f"project settings persistence failed: {statuses}"
+            if not all(ticket.is_complete for ticket in pending.tickets.values()):
+                # Consume snapshots in submission order, including batches
+                # involving different files. Never regress a saved baseline.
+                break
+            statuses = tuple(self._ticket_status(ticket) for ticket in pending.tickets.values())
+            succeeded = not pending.submission_errors and all(status == "succeeded" for status in statuses)
+            errors = [f"{_SECTION_FILENAMES[section]}: {error}"
+                      for section, error in pending.submission_errors.items()]
+            self._failed_sections.update(pending.submission_errors)
+            for section, ticket in pending.tickets.items():
+                status = self._ticket_status(ticket)
+                if status == "succeeded":
+                    self._saved_document[section] = copy.deepcopy(pending.document[section])
+                    self._file_states[section] = ticket.committed_file_state
+                    self._failed_sections.discard(section)
+                elif status != "superseded":
+                    self._failed_sections.add(section)
+                    errors.append(f"{_SECTION_FILENAMES[section]}: {status}: {ticket.error}")
+            message = "project settings persistence failed: " + "; ".join(errors or statuses)
             if pending.save_ticket_id:
                 save_ticket = registry.get_save_ticket(pending.save_ticket_id)
                 if save_ticket is not None and save_ticket.is_pending:
-                    if succeeded:
-                        self._saved_document = copy.deepcopy(pending.document)
                     registry.complete_save(
                         pending.save_ticket_id,
                         success=succeeded,
@@ -328,22 +358,28 @@ class ProjectSettingsDocumentController:
                             if succeeded
                             else None
                         ),
-                        message=message,
+                        message="" if succeeded else message,
                     )
-            elif succeeded:
-                self._saved_document = copy.deepcopy(pending.document)
-                editor_document = registry.get(self.document_id)
-                if (
-                    editor_document is not None
-                    and registry.active_save_ticket(self.document_id) is None
-                ):
-                    registry.mark_saved(self.document_id, pending.revision)
-            elif not superseded:
+            if errors:
                 from infernux.debug import Debug
 
                 Debug.log_error(message)
+                if any("target changed" in error for error in errors):
+                    registry.mark_conflict(self.document_id)
             self._pending_writes.pop(key, None)
             completed += 1
+        editor_document = registry.get(self.document_id)
+        if (
+            completed and editor_document is not None and not self._pending_writes
+            and registry.active_save_ticket(self.document_id) is None
+        ):
+            if self._document == self._saved_document and not self._failed_sections:
+                if editor_document.state is not DocumentState.CONFLICT:
+                    registry.mark_saved(self.document_id)
+            elif not editor_document.is_dirty:
+                # Undo can return to an old revision while a newer autosave
+                # has already reached disk. A failed undo write is still dirty.
+                registry.mark_changed(self.document_id)
         return completed
 
     def save(self, *, ticket, save_as: bool = False):
@@ -355,16 +391,14 @@ class ProjectSettingsDocumentController:
             ticket.ticket_id,
             content_token=document_content_token(document),
         )
-        pending = self._submit_snapshot(
+        self._submit_snapshot(
             document,
-            revision=ticket.captured_revision,
+            sections=self._unsaved_sections(),
             save_ticket_id=ticket.ticket_id,
         )
-        if pending is None:
-            return False
         self.poll_pending_writes()
         return (
-            True
+            ticket.status.value == "succeeded"
             if not ticket.is_pending
             else DocumentActionResult(DocumentActionStatus.PENDING)
         )
@@ -376,20 +410,30 @@ class ProjectSettingsDocumentController:
             return None
         return current.status.value == "succeeded"
 
-    def discard(self, *, document_id: str):
+    def reload_from_resource(self, *, document_id: str, resource_path: str = ""):
         if str(document_id or "") != self.document_id:
             return False
+        self.poll_pending_writes()
+        if self._pending_writes:
+            return DocumentActionResult(DocumentActionStatus.REJECTED, "Wait for pending settings writes before reloading")
         registry = DocumentRegistry.instance()
-        editor_document = registry.require(self.document_id)
-        draft = self.capture_document()
-        self.restore_document(self._saved_document, None, persist=False)
-        pending = self._submit_snapshot(
-            self.capture_document(), revision=editor_document.saved_revision
-        )
-        if pending is None:
-            self.restore_document(draft, None, persist=False)
+        if registry.active_save_ticket(self.document_id) is not None:
             return False
+        document, states = self._load_document()
+        self._apply_runtime(document, self._document)
+        self._document = document
+        self._saved_document = copy.deepcopy(document)
+        self._file_states = states
+        self._failed_sections.clear()
+        self._commit_chain_token = uuid4().hex
+        self._minimum_revision = registry.establish_loaded_baseline(self.document_id)
+        self._notify()
         return True
+
+    def discard(self, *, document_id: str):
+        # Discard is a read. It must not restore cached bytes over another
+        # author's version, even if only one of the settings files changed.
+        return self.reload_from_resource(document_id=document_id)
 
     def resource_moved(self, **_kwargs) -> None:
         raise RuntimeError("project settings cannot be moved as an asset")

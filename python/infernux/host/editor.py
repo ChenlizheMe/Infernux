@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import tempfile
 from typing import Any, Iterable
 
 from infernux.debug import DebugConsole
@@ -1132,6 +1131,7 @@ class EditorAutomationHost:
         import os
 
         from dataclasses import replace
+        from infernux.core.document_store import read_document_text_snapshot, write_document_text
         from infernux.engine.build import (
             BuildConfiguration,
             BuildProfile,
@@ -1152,9 +1152,11 @@ class EditorAutomationHost:
         root = resolved_path(project_root)
         settings_path = os.path.join(root, "ProjectSettings", "BuildSettings.json")
         try:
-            with open(settings_path, "r", encoding="utf-8") as stream:
-                settings = json.load(stream)
-        except (OSError, json.JSONDecodeError) as exc:
+            settings_text, settings_file_state = read_document_text_snapshot(settings_path)
+            if settings_text is None:
+                raise FileNotFoundError(settings_path)
+            settings = json.loads(settings_text)
+        except (OSError, ValueError, RuntimeError) as exc:
             raise OperationError(
                 "player.build_settings",
                 f"Build Settings could not be read: {settings_path}",
@@ -1361,26 +1363,27 @@ class EditorAutomationHost:
             )
 
         if persist_settings:
-            os.makedirs(os.path.dirname(settings_path), exist_ok=True)
-            descriptor, temporary_path = tempfile.mkstemp(
-                prefix=".build-settings-",
-                suffix=".tmp",
-                dir=os.path.dirname(settings_path),
-                text=True,
-            )
             try:
-                with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-                    json.dump(settings, stream, indent=2, ensure_ascii=False)
-                    stream.write("\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                os.replace(temporary_path, settings_path)
-            except Exception:
-                try:
-                    os.remove(temporary_path)
-                except OSError:
-                    pass
-                raise
+                write_document_text(
+                    settings_path,
+                    json.dumps(settings, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
+                    expected_file_state=settings_file_state,
+                )
+            except (OSError, RuntimeError) as exc:
+                raise OperationError(
+                    "player.settings_persistence_failed",
+                    "Player artifacts were built, but Build Settings could not be saved. "
+                    "Review the current settings file before building again.",
+                    details={
+                        "build_succeeded": True,
+                        "settings_saved": False,
+                        "settings_path": settings_path,
+                        "error": str(exc),
+                        "artifacts": artifacts,
+                        "manifest": dict(result.manifest),
+                        "diagnostics": diagnostics,
+                    },
+                ) from exc
 
         is_desktop = desktop is not None and final_target == desktop.id
         desktop_output = str(result.manifest.get("output_dir", final_output))
@@ -1404,6 +1407,7 @@ class EditorAutomationHost:
             "compress_resources": final_compress,
             "android_artifact": final_artifact,
             "elapsed_seconds": result.elapsed_seconds,
+            "settings_saved": bool(persist_settings),
             "artifacts": artifacts,
             "diagnostics": diagnostics,
             "manifest": dict(result.manifest),

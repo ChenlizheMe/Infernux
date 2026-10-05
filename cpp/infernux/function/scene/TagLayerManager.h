@@ -103,6 +103,9 @@ class TagLayerManager
     /// @brief Serialize to JSON string
     [[nodiscard]] std::string Serialize() const;
 
+    /// @brief Serialize project defaults independently of the active singleton.
+    [[nodiscard]] static std::string SerializeDefaults();
+
     /// @brief Deserialize from JSON string
     bool Deserialize(const std::string &json);
 

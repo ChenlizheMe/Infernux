@@ -165,6 +165,52 @@ def test_host_build_target_catalog_is_json_serializable():
     assert payload["targets"] == []
 
 
+@pytest.mark.parametrize("external_change", ["modified", "conflict", "deleted"])
+@pytest.mark.parametrize("persist", [True, False])
+def test_host_build_settings_publication_preserves_other_author(
+    monkeypatch, tmp_path, external_change, persist,
+):
+    project = _project(tmp_path)
+    settings = project / "ProjectSettings/BuildSettings.json"
+    original = settings.read_bytes()
+    expected = None if external_change == "deleted" else (
+        b"<<<<<<< HEAD\nconflict\n=======\nexternal\n>>>>>>> teammate\n"
+        if external_change == "conflict" else original + b"\n  "
+    )
+
+    class ConcurrentExporter(_FixtureExporter):
+        def execute(self, request, plan):
+            # Exercise the real Host/document IO boundary while the fixture
+            # exporter creates an artifact. This does not compile a Player.
+            result = super().execute(request, plan)
+            if expected is None:
+                settings.unlink()
+            else:
+                settings.write_bytes(expected)
+            return result
+
+    registration = exporter_registry.register("test:host-build-conflict", ConcurrentExporter())
+    monkeypatch.setattr(
+        "infernux.engine.player_build_preflight.publish_player_asset_catalog_for_host",
+        lambda _root: {"entries": [{"guid": "a" * 32}]},
+    )
+    try:
+        if persist:
+            with pytest.raises(OperationError) as error:
+                EditorAutomationHost().build_player(str(project), target="fixture-x64")
+            assert error.value.code == "player.settings_persistence_failed"
+            assert error.value.details["build_succeeded"] is True
+            assert error.value.details["settings_saved"] is False
+            artifacts = error.value.details["artifacts"]
+        else:
+            result = EditorAutomationHost().build_player(str(project), target="fixture-x64", persist_settings=False)
+            artifacts = result["artifacts"]
+        assert Path(artifacts[0]["path"]).is_file()
+        assert (settings.read_bytes() if settings.exists() else None) == expected
+    finally:
+        exporter_registry.unregister(registration)
+
+
 def test_host_build_target_catalog_exposes_required_platform_plugin(monkeypatch):
     monkeypatch.setattr(
         "infernux.engine.build.platform_support_catalog",

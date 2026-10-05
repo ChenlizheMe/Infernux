@@ -55,6 +55,8 @@ void RegisterTagLayerBindings(py::module_ &m)
 
         // --- Serialization ---
         .def("serialize", &TagLayerManager::Serialize, "Serialize to JSON string")
+        .def_static("serialize_defaults", &TagLayerManager::SerializeDefaults,
+                    "Serialize project defaults without changing the active project")
         .def("deserialize", &TagLayerManager::Deserialize, py::arg("json_str"), "Deserialize from JSON string")
         .def("save_to_file", &TagLayerManager::SaveToFile, py::arg("path"), "Save tag/layer settings to file")
         .def("load_from_file", &TagLayerManager::LoadFromFile, py::arg("path"), "Load tag/layer settings from file");

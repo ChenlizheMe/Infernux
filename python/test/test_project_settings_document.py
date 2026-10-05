@@ -95,6 +95,10 @@ def test_build_branding_requires_the_exact_current_splash_shape():
 
 
 class _TagManager:
+    @staticmethod
+    def serialize_defaults():
+        return json.dumps(_tag_document())
+
     def __init__(self):
         self.document = _tag_document()
 
@@ -129,6 +133,8 @@ class _WriteTicket:
     def __init__(self):
         self.is_complete = False
         self.status = "pending"
+        self.committed_file_state = None
+        self.error = ""
 
     def complete(self, status="succeeded"):
         self.status = status
@@ -139,7 +145,9 @@ class _Submitter:
     def __init__(self):
         self.calls = []
 
-    def __call__(self, path, content):
+    def __call__(self, path, content, **options):
+        assert options["expected_file_state"] is not None
+        assert options["commit_chain_token"]
         ticket = _WriteTicket()
         self.calls.append((path, json.loads(content), ticket))
         return ticket
@@ -380,8 +388,6 @@ def test_project_settings_async_persistence_owns_saved_revision(tmp_path):
         assert not document.is_dirty
         assert {Path(path).name for path, _, _ in submitter.calls} == {
             "BuildSettings.json",
-            "TagLayerSettings.json",
-            "PhysicsSettings.json",
         }
     finally:
         DocumentRegistry._instance = previous_registry
@@ -408,7 +414,7 @@ def test_project_settings_derived_update_does_not_publish_a_second_user_action(t
         assert controller.section("build")["scene_guids"] == ["scene-guid"]
         assert len(manager.action_journal.entries) == 0
         assert document.is_dirty
-        assert len(submitter.calls) == 3
+        assert len(submitter.calls) == 1
     finally:
         DocumentRegistry._instance = previous_registry
         UndoManager._instance = previous_manager
