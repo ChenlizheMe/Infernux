@@ -59,7 +59,11 @@ class Material:
         """Exit context manager and dispose resources."""
         ...
     def dispose(self) -> None:
-        """Release the underlying native material resources."""
+        """Retire this proxy; native renderer/registry owners keep their resource.
+
+        Accessing the retired proxy raises ReferenceError. A subsequent
+        renderer or asset query returns a live proxy.
+        """
         ...
     def clone(self) -> Material:
         """Create a deep copy of this material, including shader state and properties."""

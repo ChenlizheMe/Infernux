@@ -2106,6 +2106,9 @@ class AssetManager:
         if ref is not None:
             obj = ref()
             if obj is not None:
+                if isinstance(obj, Material) and obj._disposed:
+                    del cls._cache[guid]
+                    return None
                 if play_cache is not None:
                     from infernux.core.data_asset import DataAsset
 

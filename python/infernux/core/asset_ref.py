@@ -562,8 +562,13 @@ class MaterialRef(AssetRefBase):
 
     def resolve(self):
         """Return the loaded Material, or ``None`` if missing."""
+        from infernux.core.material import Material
+
         mat = self._cached
         if mat is not None:
+            if isinstance(mat, Material) and mat._disposed:
+                self._cached = None
+                return self._do_resolve()
             try:
                 native = getattr(mat, "native", mat)
                 _ = native.name

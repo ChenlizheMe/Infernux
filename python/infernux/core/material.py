@@ -190,6 +190,7 @@ class Material(ResourceProxy):
     # ==========================================================================
 
     def __enter__(self) -> "Material":
+        _ = self._native  # A retired proxy cannot enter a new ownership scope.
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -197,17 +198,33 @@ class Material(ResourceProxy):
         return False
 
     def dispose(self):
-        """Release this material reference."""
-        if not self._disposed and self._native is not None:
+        """Retire this Python proxy and release its native reference.
+
+        Renderers and the asset registry retain their own native ownership.
+        A later query creates a live proxy for that resource; this retired
+        proxy remains invalid, including through other Python aliases.
+        """
+        if not self._disposed:
             self._save_pending = False
             Material._pending_saves.pop(id(self), None)
+            self._retire_proxy()
             self._disposed = True
-            # Note: actual GPU resource cleanup happens in C++ destructor
-            # when the last shared_ptr reference is released.
+            self._native_handle = None
 
     # ==========================================================================
     # Properties
     # ==========================================================================
+
+    @property
+    def _native(self) -> "InxMaterial":
+        native = self._native_handle
+        if native is None:
+            raise ReferenceError("Material has been disposed")
+        return native
+
+    @_native.setter
+    def _native(self, value):
+        self._native_handle = value
 
     @property
     def native(self) -> "InxMaterial":
@@ -661,15 +678,17 @@ class Material(ResourceProxy):
     # ==========================================================================
 
     def __repr__(self):
+        if self._disposed:
+            return "<Material (disposed)>"
         return f"Material(name='{self.name}', queue={self.render_queue})"
 
     def __eq__(self, other):
         if isinstance(other, Material):
-            return self._native is other._native
+            return self is other
         return NotImplemented
 
     def __hash__(self):
-        return hash(id(self._native))
+        return object.__hash__(self)
 
     # ==========================================================================
     # Clone / Instantiate (Unity-style)

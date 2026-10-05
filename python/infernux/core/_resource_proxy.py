@@ -26,3 +26,7 @@ class ResourceProxy:
             proxy._native = native
             ResourceProxy._proxies[key] = proxy
         return proxy
+
+    def _retire_proxy(self):
+        """Remove this live binding before its owner explicitly releases it."""
+        ResourceProxy._proxies.pop((type(self), id(self._native)))
