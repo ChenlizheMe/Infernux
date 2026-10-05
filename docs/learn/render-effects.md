@@ -118,8 +118,8 @@ Assets/
 Then complete the path in this order:
 
 1. Save `Assets/Rendering/edge_fade_effect.py` with the registered class above and save `Assets/Shaders/edge_fade.frag` with the fullscreen shader. The scan root is the current project's `Assets` directory. Hidden directories and `__pycache__`, `build`, `dist`, `.venv`, `venv`, and `.runtime` are skipped; Python source candidates must mention `render_effect_feature` or `register_render_effect_feature`.
-2. Save `Assets/Rendering/Edge Fade.effect` with the strict JSON below. Querying its `feature_type` triggers the candidate import and registry lookup. The Project panel's **Create > Render Effect** submenu currently creates built-in types only, so a custom type still starts as authored JSON. Creation refuses an existing `Edge Fade.effect` path instead of replacing it.
-3. Import compiles the document before publication: it validates the four-key schema, resolves the registered feature, rejects unknown parameters, records the passes emitted by `setup_passes()`, prepares declared shader dependencies, and writes the successful product under `Library/Artifacts/RenderEffect/<guid>.inxeffect`. The source receives a `.meta` GUID; references retain both that GUID and `path_hint`.
+2. After the shader is imported, read `metadata.guid.value` from `Assets/Shaders/edge_fade.frag.meta`. Replace `EDGE_FADE_SHADER_GUID` in the strict JSON below with that actual GUID, then save `Assets/Rendering/Edge Fade.effect`. An empty GUID is an unassigned reference; a path does not resolve it. Querying its `feature_type` triggers the candidate import and registry lookup. The Project panel's **Create > Render Effect** submenu currently creates built-in types only, so a custom type still starts as authored JSON. Creation refuses an existing `Edge Fade.effect` path instead of replacing it.
+3. Import compiles the document before publication: it validates the four-key schema, resolves the registered feature, rejects unknown parameters, records the passes emitted by `setup_passes()`, prepares declared shader dependencies, and writes the successful product under `Library/Artifacts/RenderEffect/<guid>.inxeffect`. The source receives a `.meta` GUID; references store only that GUID. Paths select files while authoring and are not serialized reference identities.
 4. Add a RenderStack component, select its GameObject, and drag `Edge Fade.effect` into `final`. RenderStack resolves the enabled slot, instantiates a feature for that mount, and invokes `setup_passes()` when the graph reaches `final`.
 5. Verify the result in Game view: set `intensity` to `0` and then `1`. The center remains unchanged while the corners darken at `1`. Confirm that **Effect Compile Errors** is empty in the RenderStack Inspector. A missing project shader should instead report `failed to prepare effect shader dependency`; an unimportable feature ends as `unknown render effect feature` for the mounted stage and slot, while the original Python import exception is retained by discovery and logged during the failed import/reload path.
 
@@ -132,8 +132,7 @@ Discovery, asset import, and graph compilation respond to data changes. They do 
   "$schema": "infernux.render_effect",
   "dependencies": [
     {
-      "guid": "",
-      "path_hint": "Assets/Shaders/edge_fade.frag"
+      "guid": "EDGE_FADE_SHADER_GUID"
     }
   ],
   "feature_type": "game.post.edge_fade",
@@ -158,7 +157,7 @@ The current editing rules are authoritative:
 - Every accepted Inspector edit enters the global Undo history as a document edit. Undo reverses the latest accepted edit regardless of which view made it, republishes the restored in-memory document, and schedules persistence again. An external file reload is a filesystem consequence and creates no Undo entry.
 - The `.effect` document autosaves through a 0.5-second debounced snapshot. Saving the scene persists Slot identity, stage, order, asset reference, and enabled state; it does not replace the separate asset autosave. Closing or changing scenes drains pending autosave work through the resource-document lifecycle.
 - Watcher notifications that exactly match an Editor write are acknowledged. A notification arriving while that local write is pending is deferred. Once a different durable revision is confirmed, this non-scene asset follows the disk revision automatically: queued local asset persistence is cancelled, the loaded resource is refreshed, and both views update.
-- External schema changes receive no automatic parameter migration. Removing or renaming a serialized field makes old source parameters or group overrides unknown; compilation is rejected until the JSON is updated. Existing Slots keep their GUID/path reference. If external reimport or compilation fails, the loaded source and artifact stay on the last successfully published revision and the document enters a diagnostic/conflict state.
+- External schema changes receive no automatic parameter migration. Removing or renaming a serialized field makes old source parameters or group overrides unknown; compilation is rejected until the JSON is updated. Existing Slots keep their GUID reference. If external reimport or compilation fails, the loaded source and artifact stay on the last successfully published revision and the document enters a diagnostic/conflict state.
 
 ## Declare what the effect reads and writes {#resource-contract}
 
@@ -190,7 +189,7 @@ Most parameter edits only change a parameter block. Put a field in the decorator
 
 Before stacking groups, pin down the four records this course uses. A **RenderEffect feature** is a Python class registered with `render_effect_feature(type_id, ...)`; it owns `setup_passes()` and the parameter schema. A **`.effect` asset** stores a `feature_type` plus concrete parameter values, and `RenderEffect` is its mutable runtime wrapper. An **`.effectgroup`** is an asset document whose entries reference effects or nested groups with optional overrides; when mounted, the group expands in place and has no separate runtime object. **EffectStage** and **EffectSlot** belong to the pipeline and the scene, and the next chapter covers them.
 
-An `.effectgroup` is an ordered list of `.effect` or nested `.effectgroup` references. Each entry has a stable `entry_id`, an enabled flag, and optional parameter overrides. The group Inspector available today can add references, enable entries, rename them, move them up or down, remove them, and edit referenced source effects. After the group is mounted, editing a projected effect under its RenderStack slot writes the group entry's override, leaving the source `.effect` value intact.
+An `.effectgroup` is an ordered list of `.effect` or nested `.effectgroup` references. Each entry has a stable `entry_id`, an enabled flag, and optional parameter overrides. The group Inspector available today can add references, enable entries, rename them, move them up or down, remove them, and edit referenced source effects. After the group is mounted, editing a projected effect under its RenderStack slot writes the group entry's override, leaving the source `.effect` value intact. Before saving the JSON below, replace `EDGE_FADE_EFFECT_GUID` with `metadata.guid.value` from the imported `Assets/Rendering/Edge Fade.effect.meta`. The group entry stores that GUID; an empty GUID leaves the entry unassigned and it is skipped.
 
 ```json
 {
@@ -199,8 +198,7 @@ An `.effectgroup` is an ordered list of `.effect` or nested `.effectgroup` refer
     {
       "entry_id": "edge_fade",
       "asset": {
-        "guid": "",
-        "path_hint": "Assets/Rendering/Edge Fade.effect"
+        "guid": "EDGE_FADE_EFFECT_GUID"
       },
       "enabled": true,
       "overrides": {
@@ -356,8 +354,8 @@ Assets/
 然后按以下顺序完成接入：
 
 1. 把上面的注册类保存到 `Assets/Rendering/edge_fade_effect.py`，把全屏 Shader 保存到 `Assets/Shaders/edge_fade.frag`。扫描根目录是当前项目的 `Assets`。隐藏目录以及 `__pycache__`、`build`、`dist`、`.venv`、`venv`、`.runtime` 会被跳过；Python 源码候选文件必须出现 `render_effect_feature` 或 `register_render_effect_feature`。
-2. 使用下方严格 JSON 保存 `Assets/Rendering/Edge Fade.effect`。系统查询其中的 `feature_type` 时，会导入候选模块并查找注册项。Project 面板的 **Create > Render Effect** 子菜单当前只创建内置类型，自定义类型仍需编写 JSON。创建操作发现 `Edge Fade.effect` 已存在时会拒绝覆盖。
-3. 导入过程先编译文档，再发布结果：检查四键 Schema、解析注册 Feature、拒绝未知参数、记录 `setup_passes()` 生成的 Pass、准备声明的 Shader 依赖，最后把成功产物写到 `Library/Artifacts/RenderEffect/<guid>.inxeffect`。源码通过 `.meta` 获得 GUID；引用同时保留 GUID 与 `path_hint`。
+2. Shader 导入后，从 `Assets/Shaders/edge_fade.frag.meta` 读取 `metadata.guid.value`，用这个实际 GUID 替换下方严格 JSON 中的 `EDGE_FADE_SHADER_GUID`，再保存 `Assets/Rendering/Edge Fade.effect`。空 GUID 表示未赋值的引用，路径不会代替它解析资产。系统查询其中的 `feature_type` 时，会导入候选模块并查找注册项。Project 面板的 **Create > Render Effect** 子菜单当前只创建内置类型，自定义类型仍需编写 JSON。创建操作发现 `Edge Fade.effect` 已存在时会拒绝覆盖。
+3. 导入过程先编译文档，再发布结果：检查四键 Schema、解析注册 Feature、拒绝未知参数、记录 `setup_passes()` 生成的 Pass、准备声明的 Shader 依赖，最后把成功产物写到 `Library/Artifacts/RenderEffect/<guid>.inxeffect`。源码通过 `.meta` 获得 GUID；引用只保存 GUID。路径用于创作时选择文件，不是序列化引用的身份。
 4. 加入 RenderStack 组件并选中其 GameObject，把 `Edge Fade.effect` 拖入 `final`。RenderStack 解析启用的 Slot，为这次挂载实例化 Feature，并在图到达 `final` 时调用 `setup_passes()`。
 5. 在 Game 视图验收：先把 `intensity` 设为 `0`，再设为 `1`。中心应保持原样，四角在 `1` 时变暗。确认 RenderStack Inspector 的 **Effect Compile Errors** 为空。项目 Shader 缺失时应出现 `failed to prepare effect shader dependency`；Feature 无法导入时，挂载位置最终显示 `unknown render effect feature`，其中带 Stage 与 Slot，原始 Python 导入异常则由发现系统保留，并在失败的导入或重载路径中记录。
 
@@ -370,8 +368,7 @@ Assets/
   "$schema": "infernux.render_effect",
   "dependencies": [
     {
-      "guid": "",
-      "path_hint": "Assets/Shaders/edge_fade.frag"
+      "guid": "EDGE_FADE_SHADER_GUID"
     }
   ],
   "feature_type": "game.post.edge_fade",
@@ -396,7 +393,7 @@ Assets/
 - 每次被接受的 Inspector 修改都会作为文档操作进入全局 Undo 历史。Undo 会撤销最后一次被接受的修改，不受修改入口影响；恢复后的内存文档会再次发布，并重新安排持久化。外部文件重载属于文件系统结果，不会新增 Undo 条目。
 - `.effect` 文档通过 0.5 秒防抖快照自动保存。保存场景会持久化 Slot 身份、Stage、顺序、资产引用与启用状态；`.effect` 资产仍由自己的自动保存负责。关闭场景或切换场景时，资源文档生命周期会排空待完成的自动保存。
 - 与 Editor 写入内容完全相同的 Watcher 通知会被确认并忽略。通知在本地写入尚未完成时会被延后。系统确认磁盘上出现另一份持久 Revision 后，这类非 Scene 资产会自动跟随磁盘内容：排队中的本地资产持久化会取消，已加载资源会刷新，两个视图也会更新。
-- 外部 Schema 变化没有自动参数迁移。删除或重命名序列化字段后，旧 Source 参数或 Group Override 会成为未知参数；更新 JSON 后才能通过编译。现有 Slot 继续保留 GUID/路径引用。外部重新导入或编译失败时，已加载 Source 与 Artifact 会保持最后一次成功发布的 Revision，文档进入诊断或冲突状态。
+- 外部 Schema 变化没有自动参数迁移。删除或重命名序列化字段后，旧 Source 参数或 Group Override 会成为未知参数；更新 JSON 后才能通过编译。现有 Slot 继续保留 GUID 引用。外部重新导入或编译失败时，已加载 Source 与 Artifact 会保持最后一次成功发布的 Revision，文档进入诊断或冲突状态。
 
 ## 声明读写资源 {#resource-contract_1}
 
@@ -428,7 +425,7 @@ Assets/
 
 在叠加 Group 之前，先固定本课程用到的四类记录。**RenderEffect Feature** 是注册了 `render_effect_feature(type_id, ...)` 的 Python 类，它拥有 `setup_passes()` 和参数 Schema。**`.effect` 资产**保存 `feature_type` 与具体参数值，`RenderEffect` 是它的可变运行时包装。**`.effectgroup`** 是资产文档，条目引用 Effect 或嵌套 Group，可以带 Override；挂载时 Group 就地展开，没有独立的运行时对象。**EffectStage** 与 **EffectSlot** 属于管线与场景，下一章介绍。
 
-`.effectgroup` 是一份有序的 `.effect` 或嵌套 `.effectgroup` 引用列表。每项有稳定的 `entry_id`、启用状态和可选参数 Override。当前已经存在的 EffectGroup Inspector 可以添加引用、启停条目、改名、上下移动、删除，并编辑被引用的源 Effect。组挂入 RenderStack 后，在 Slot 下修改展开出的 Effect 会写入该组条目的 Override，源 `.effect` 数值保持不变。
+`.effectgroup` 是一份有序的 `.effect` 或嵌套 `.effectgroup` 引用列表。每项有稳定的 `entry_id`、启用状态和可选参数 Override。当前已经存在的 EffectGroup Inspector 可以添加引用、启停条目、改名、上下移动、删除，并编辑被引用的源 Effect。组挂入 RenderStack 后，在 Slot 下修改展开出的 Effect 会写入该组条目的 Override，源 `.effect` 数值保持不变。保存下方 JSON 前，从已导入的 `Assets/Rendering/Edge Fade.effect.meta` 读取 `metadata.guid.value`，用它替换 `EDGE_FADE_EFFECT_GUID`。组条目保存这个 GUID；空 GUID 表示未赋值，该条目会被跳过。
 
 ```json
 {
@@ -437,8 +434,7 @@ Assets/
     {
       "entry_id": "edge_fade",
       "asset": {
-        "guid": "",
-        "path_hint": "Assets/Rendering/Edge Fade.effect"
+        "guid": "EDGE_FADE_EFFECT_GUID"
       },
       "enabled": true,
       "overrides": {
