@@ -82,6 +82,16 @@ def test_create_component_instance_accepts_stale_module_type_guid(tmp_path, monk
     assert instance is not None
     assert type(instance).__name__ == "Jump"
     assert instance.__class__._get_type_guid() == component_type_guid(script_guid, "Jump")
+    restored, restored_path = create_component_instance(
+        script_guid, instance.__class__._get_type_guid(), "Jump", _Db(),
+        prefer_loaded_type=True,
+    )
+    assert type(restored) is type(instance)
+    assert restored_path == str(script)
+    assert restored._script_guid == script_guid
+    assert restored._script_path == str(script)
+    from infernux.host.operation_support import serializable_component
+    assert serializable_component(restored)["python"]["script_path"] == str(script)
 
 
 def test_create_component_instance_follows_class_rename_in_one_component_script(tmp_path):

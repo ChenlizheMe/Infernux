@@ -1352,6 +1352,7 @@ def create_component_instance(
         if component_type is not None:
             instance = component_type()
             instance._script_guid = script_guid
+            instance._script_path = script_path
             if asset_exists:
                 runtime_contract = validate_runtime_component_identity(
                     script_guid=script_guid,
