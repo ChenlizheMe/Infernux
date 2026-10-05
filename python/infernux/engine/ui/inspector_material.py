@@ -521,7 +521,7 @@ def _get_material_property_layout_cache(ctx, state, mat_data):
 def _shader_reference_path(value, ext: str) -> str:
     reference = shader_utils.make_shader_reference(value, ext)
     path = str(reference.get("path_hint", "") or "")
-    if not path:
+    if not path and not reference.get("guid"):
         path = str(shader_utils.get_shader_file_path(
             shader_utils.shader_ref_id(reference), ext,
         ) or "")

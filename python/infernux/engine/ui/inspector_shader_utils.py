@@ -453,20 +453,21 @@ def make_shader_reference(value, ext: str) -> dict[str, str]:
         else:
             shader_id = candidate
 
-    database = None
-    try:
-        from infernux.lib import AssetRegistry
-        database = AssetRegistry.instance().get_asset_database()
-    except (AttributeError, RuntimeError, ValueError):
-        pass
+    from infernux.lib import AssetRegistry
+    database = AssetRegistry.instance().get_asset_database()
 
     resolved_path = ""
-    if guid and database:
-        resolved_path = database.get_path_from_guid(guid) or ""
-    if not structured and not resolved_path and path_hint and os.path.isfile(path_hint):
-        resolved_path = path_hint
-    if not resolved_path:
-        resolved_path = get_shader_file_path(shader_id, ext) or ""
+    if guid:
+        # A persisted GUID owns identity. A missing asset stays missing even
+        # when another project or builtin stage has the same display name.
+        if database:
+            resolved_path = database.get_path_from_guid(guid) or ""
+    else:
+        if not structured and path_hint and os.path.isfile(path_hint):
+            resolved_path = path_hint
+        if not resolved_path:
+            # Name-only references are builtin IDs or legacy authoring input.
+            resolved_path = get_shader_file_path(shader_id, ext) or ""
 
     if resolved_path:
         resolved_path = portable_path(resolved_path)
