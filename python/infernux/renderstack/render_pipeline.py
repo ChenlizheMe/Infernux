@@ -319,7 +319,11 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
         self._standalone_desc = self._standalone_graphs.get(samples)
         if self._standalone_desc is None:
             g = RenderGraph(self.name, output_samples=samples)
-            self.define_topology(g)
+            self._defining_graph = g
+            try:
+                self.define_topology(g)
+            finally:
+                self._defining_graph = None
             self._standalone_desc = self._standalone_graphs[samples] = g.build()
         context.setup_camera_properties(camera)
         culling = context.cull(camera)

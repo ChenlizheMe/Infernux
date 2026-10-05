@@ -55,7 +55,7 @@
 </ul>
 <p>Choose one method for each pipeline class. The built-in pipelines remain useful references for low-level code because they currently implement <code>define_topology(graph)</code> directly.</p>
 <h2 id="host-matrix">RenderStack and standalone capability matrix</h2>
-<p><code>RenderPipeline.render(context, camera)</code> is the standalone host. RenderStack has a separate build path that installs Effect callbacks, sets the pipeline's private defining-graph state, completes the standard tail, and applies failure recovery. Those differences are observable in the current source:</p>
+<p><code>RenderPipeline.render(context, camera)</code> is the standalone host. Both hosts establish the topology-definition context used by the pipeline's public result helpers. RenderStack additionally installs mounted Effect callbacks, completes the standard tail, and applies failure recovery:</p>
 <table>
 <thead>
 <tr>
@@ -72,13 +72,13 @@
 </tr>
 <tr>
 <td><code>self.require_buffer()</code></td>
-<td>Supported while RenderStack calls the override</td>
-<td><strong>Unsupported currently:</strong> raises because <code>_defining_graph</code> was not set</td>
+<td>Supported while defining topology</td>
+<td>Supported while defining topology</td>
 </tr>
 <tr>
 <td><code>self.publish_result()</code> and <code>self.write_buffer()</code></td>
-<td>Supported while RenderStack calls the override</td>
-<td><strong>Unsupported currently:</strong> same <code>_defining_graph</code> limitation</td>
+<td>Supported while defining topology</td>
+<td>Supported while defining topology</td>
 </tr>
 <tr>
 <td>Direct <code>graph.require_geometry_buffers()</code>, <code>graph.publish_pass_result()</code>, <code>graph.write_buffer()</code></td>
@@ -88,7 +88,7 @@
 <tr>
 <td><code>@geometry_buffer</code> plus <code>self.geometry_stage()</code></td>
 <td>Supported; RenderStack also adds mounted Effect requirements</td>
-<td>Supported only when requirements are set directly on <code>graph</code></td>
+<td>Supported; declare requirements with <code>self.require_buffer()</code> or directly on <code>graph</code></td>
 </tr>
 <tr>
 <td>Mounted RenderStack Effects and stage-local resource buses</td>
@@ -107,7 +107,7 @@
 </tr>
 </tbody>
 </table>
-<p>The three <code>self.*</code> helpers are not promised for a standalone override in the current implementation. A standalone author can use the direct <code>graph.*</code> result methods. Setting <code>self._defining_graph</code> manually relies on private state and is excluded from the supported contract. The complete example below intentionally targets RenderStack.</p>
+<p>The three <code>self.*</code> helpers are valid only during <code>define_topology()</code> in either host. The direct <code>graph.*</code> result methods are also available. No manual private-state setup is needed. The complete example below can build through either host; use RenderStack when mounting reusable Effects.</p>
 <p>In both hosts, return from <code>define_topology()</code> after recording declarations; the host calls <code>graph.build()</code>. Call <code>build()</code> directly only in an isolated topology test like the verification used for this chapter.</p>
 <h2 id="minimal-graph">Complete RenderStack graph: provider to present</h2>
 <p>Save this class under <code>Assets</code>, select <strong>Base Color Present</strong> on the scene RenderStack, and use an active Camera with an opaque MeshRenderer. It performs a depth prepass, lazily materializes a custom base-color Provider, publishes that texture through a <code>PassResult</code>, copies it to the camera target, runs the canonical UI/display tail, and presents the result.</p>
@@ -485,7 +485,7 @@
 </ul>
 <p>每个管线类选择一个方法。内置管线当前直接实现 <code>define_topology(graph)</code>，可作为低层代码参考。</p>
 <h2 id="host-matrix_1">RenderStack 与 standalone 能力矩阵</h2>
-<p><code>RenderPipeline.render(context, camera)</code> 是 standalone Host。RenderStack 使用另一条构建路径，它会安装 Effect Callback、设置管线的私有 Defining Graph 状态、补全标准帧尾并执行失败恢复。当前源码中的差异如下：</p>
+<p><code>RenderPipeline.render(context, camera)</code> 是 standalone Host。两种 Host 都会建立管线公开 Result Helper 所需的拓扑定义上下文。RenderStack 还会安装已挂载 Effect 的 Callback、补全标准帧尾并执行失败恢复：</p>
 <table>
 <thead>
 <tr>
@@ -502,13 +502,13 @@
 </tr>
 <tr>
 <td><code>self.require_buffer()</code></td>
-<td>RenderStack 调用 Override 期间支持</td>
-<td><strong>当前不支持：</strong> <code>_defining_graph</code> 未设置，会抛出异常</td>
+<td>定义拓扑期间支持</td>
+<td>定义拓扑期间支持</td>
 </tr>
 <tr>
 <td><code>self.publish_result()</code> 与 <code>self.write_buffer()</code></td>
-<td>RenderStack 调用 Override 期间支持</td>
-<td><strong>当前不支持：</strong> 受同一 <code>_defining_graph</code> 限制</td>
+<td>定义拓扑期间支持</td>
+<td>定义拓扑期间支持</td>
 </tr>
 <tr>
 <td>直接调用 <code>graph.require_geometry_buffers()</code>、<code>graph.publish_pass_result()</code>、<code>graph.write_buffer()</code></td>
@@ -518,7 +518,7 @@
 <tr>
 <td><code>@geometry_buffer</code> 与 <code>self.geometry_stage()</code></td>
 <td>支持；RenderStack 还会加入已挂载 Effect 的需求</td>
-<td>需要直接在 <code>graph</code> 上设置需求后使用</td>
+<td>支持；通过 <code>self.require_buffer()</code> 或直接在 <code>graph</code> 上声明需求</td>
 </tr>
 <tr>
 <td>已挂载的 RenderStack Effect 与 Stage 局部 Resource Bus</td>
@@ -537,7 +537,7 @@
 </tr>
 </tbody>
 </table>
-<p>当前实现没有承诺三项 <code>self.*</code> Helper 可用于 standalone Override。Standalone 作者可以改用直接的 <code>graph.*</code> Result 方法。手动设置 <code>self._defining_graph</code> 会依赖私有状态，不属于受支持契约。下面的完整样例明确以 RenderStack 为 Host。</p>
+<p>三项 <code>self.*</code> Helper 在两种 Host 的 <code>define_topology()</code> 期间都有效，也可以直接使用 <code>graph.*</code> Result 方法，无需手动设置私有状态。下面的完整样例可以通过两种 Host 构建；需要挂载可复用 Effect 时使用 RenderStack。</p>
 <p>两种 Host 都要求 <code>define_topology()</code> 记录完声明后直接返回，由 Host 调用 <code>graph.build()</code>。只有独立拓扑测试才应直接调用 <code>build()</code>，例如本章样例采用的验证方式。</p>
 <h2 id="minimal-graph_1">完整 RenderStack Graph：从 Provider 到 Present</h2>
 <p>把这个类保存到 <code>Assets</code> 下，在场景 RenderStack 中选择 <strong>Base Color Present</strong>，并准备一台活动 Camera 和一个不透明 MeshRenderer。样例先执行 Depth Prepass，再惰性生成自定义 Base-color Provider，通过 <code>PassResult</code> 发布纹理，把结果复制到 Camera Target，执行标准 UI/显示帧尾，最后 Present。</p>

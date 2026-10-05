@@ -32,20 +32,20 @@ Choose one method for each pipeline class. The built-in pipelines remain useful 
 
 ## RenderStack and standalone capability matrix {#host-matrix}
 
-`RenderPipeline.render(context, camera)` is the standalone host. RenderStack has a separate build path that installs Effect callbacks, sets the pipeline's private defining-graph state, completes the standard tail, and applies failure recovery. Those differences are observable in the current source:
+`RenderPipeline.render(context, camera)` is the standalone host. Both hosts establish the topology-definition context used by the pipeline's public result helpers. RenderStack additionally installs mounted Effect callbacks, completes the standard tail, and applies failure recovery:
 
 | Capability in an overridden `define_topology(graph)` | Through RenderStack | Standalone `RenderPipeline.render()` |
 | --- | --- | --- |
 | `graph.create_texture()`, pass builders, `graph.set_output()` | Supported | Supported |
-| `self.require_buffer()` | Supported while RenderStack calls the override | **Unsupported currently:** raises because `_defining_graph` was not set |
-| `self.publish_result()` and `self.write_buffer()` | Supported while RenderStack calls the override | **Unsupported currently:** same `_defining_graph` limitation |
+| `self.require_buffer()` | Supported while defining topology | Supported while defining topology |
+| `self.publish_result()` and `self.write_buffer()` | Supported while defining topology | Supported while defining topology |
 | Direct `graph.require_geometry_buffers()`, `graph.publish_pass_result()`, `graph.write_buffer()` | Supported | Supported |
-| `@geometry_buffer` plus `self.geometry_stage()` | Supported; RenderStack also adds mounted Effect requirements | Supported only when requirements are set directly on `graph` |
+| `@geometry_buffer` plus `self.geometry_stage()` | Supported; RenderStack also adds mounted Effect requirements | Supported; declare requirements with `self.require_buffer()` or directly on `graph` |
 | Mounted RenderStack Effects and stage-local resource buses | Compiled at declared stages | No RenderStack instance is present, so stages are declarations only |
 | Missing standard post-process and Screen UI tail | RenderStack appends the safety net | Pipeline must call the needed section helpers itself |
 | Failed rebuild | Keeps a previous valid graph; without one, construction fails explicitly | No fallback cache; the build exception leaves `_standalone_desc` unset and the next call retries |
 
-The three `self.*` helpers are not promised for a standalone override in the current implementation. A standalone author can use the direct `graph.*` result methods. Setting `self._defining_graph` manually relies on private state and is excluded from the supported contract. The complete example below intentionally targets RenderStack.
+The three `self.*` helpers are valid only during `define_topology()` in either host. The direct `graph.*` result methods are also available. No manual private-state setup is needed. The complete example below can build through either host; use RenderStack when mounting reusable Effects.
 
 In both hosts, return from `define_topology()` after recording declarations; the host calls `graph.build()`. Call `build()` directly only in an isolated topology test like the verification used for this chapter.
 
@@ -528,20 +528,20 @@ Before shipping a low-level pipeline, check these points:
 
 ## RenderStack 与 standalone 能力矩阵 {#host-matrix_1}
 
-`RenderPipeline.render(context, camera)` 是 standalone Host。RenderStack 使用另一条构建路径，它会安装 Effect Callback、设置管线的私有 Defining Graph 状态、补全标准帧尾并执行失败恢复。当前源码中的差异如下：
+`RenderPipeline.render(context, camera)` 是 standalone Host。两种 Host 都会建立管线公开 Result Helper 所需的拓扑定义上下文。RenderStack 还会安装已挂载 Effect 的 Callback、补全标准帧尾并执行失败恢复：
 
 | 覆盖 `define_topology(graph)` 后的能力 | 通过 RenderStack | Standalone `RenderPipeline.render()` |
 | --- | --- | --- |
 | `graph.create_texture()`、Pass Builder、`graph.set_output()` | 支持 | 支持 |
-| `self.require_buffer()` | RenderStack 调用 Override 期间支持 | **当前不支持：** `_defining_graph` 未设置，会抛出异常 |
-| `self.publish_result()` 与 `self.write_buffer()` | RenderStack 调用 Override 期间支持 | **当前不支持：** 受同一 `_defining_graph` 限制 |
+| `self.require_buffer()` | 定义拓扑期间支持 | 定义拓扑期间支持 |
+| `self.publish_result()` 与 `self.write_buffer()` | 定义拓扑期间支持 | 定义拓扑期间支持 |
 | 直接调用 `graph.require_geometry_buffers()`、`graph.publish_pass_result()`、`graph.write_buffer()` | 支持 | 支持 |
-| `@geometry_buffer` 与 `self.geometry_stage()` | 支持；RenderStack 还会加入已挂载 Effect 的需求 | 需要直接在 `graph` 上设置需求后使用 |
+| `@geometry_buffer` 与 `self.geometry_stage()` | 支持；RenderStack 还会加入已挂载 Effect 的需求 | 支持；通过 `self.require_buffer()` 或直接在 `graph` 上声明需求 |
 | 已挂载的 RenderStack Effect 与 Stage 局部 Resource Bus | 在声明位置编译 | 没有 RenderStack 实例，Stage 只保留声明信息 |
 | 缺失的标准后处理与 Screen UI 帧尾 | RenderStack 会追加安全网 | 管线必须自行调用所需 Section Helper |
 | 重建失败 | 保留上一份有效 Graph；没有有效 Graph 时明确报告构建失败 | 没有回退缓存；异常后 `_standalone_desc` 为空，下次调用重试 |
 
-当前实现没有承诺三项 `self.*` Helper 可用于 standalone Override。Standalone 作者可以改用直接的 `graph.*` Result 方法。手动设置 `self._defining_graph` 会依赖私有状态，不属于受支持契约。下面的完整样例明确以 RenderStack 为 Host。
+三项 `self.*` Helper 在两种 Host 的 `define_topology()` 期间都有效，也可以直接使用 `graph.*` Result 方法，无需手动设置私有状态。下面的完整样例可以通过两种 Host 构建；需要挂载可复用 Effect 时使用 RenderStack。
 
 两种 Host 都要求 `define_topology()` 记录完声明后直接返回，由 Host 调用 `graph.build()`。只有独立拓扑测试才应直接调用 `build()`，例如本章样例采用的验证方式。
 
