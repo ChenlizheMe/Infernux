@@ -444,7 +444,7 @@ def test_native_automation_schema_projects_catalog_metadata(scene, monkeypatch):
     schema = host.scene_component_schema(owner.id, camera.component_id)
     fields = {field["name"]: field for field in schema["fields"]}
 
-    assert len(fields) == 27
+    assert len(fields) == 28
     assert fields["targetTextureGuid"]["type"] == "asset"
     assert fields["targetTextureGuid"]["asset_type"] == "RenderTexture"
     assert fields["targetTextureGuid"]["nullable"] is True
@@ -475,7 +475,7 @@ def test_light_automation_schema_uses_native_serialized_names(scene, monkeypatch
     schema = host.scene_component_schema(owner.id, light.component_id)
     fields = {field["name"]: field for field in schema["fields"]}
 
-    assert len(fields) == 18
+    assert len(fields) == 19
     assert fields["lightType"]["enum"][0] == {"name": "Directional", "value": 0}
     assert fields["intensity"]["range"] == [0.0, 10.0]
     assert fields["color"]["type"] == "vec3"
@@ -498,6 +498,44 @@ def test_automation_schema_does_not_infer_undeclared_json_fields(monkeypatch):
     schema = host.scene_component_schema(7, 41)
 
     assert schema["fields"] == []
+
+
+@pytest.mark.parametrize("type_name", ["Rigidbody", "BoxCollider", "Camera"])
+def test_native_automation_enabled_uses_property_history(scene, monkeypatch, type_name):
+    from types import SimpleNamespace
+    from infernux.engine.interaction import ComponentCommandService
+    from infernux.engine.undo import UndoManager
+    from infernux.host import EditorAutomationHost
+
+    owner = scene.create_game_object("NativeEnabledAutomation")
+    component = owner.add_component(type_name)
+    host = EditorAutomationHost()
+    service = ComponentCommandService()
+    previous_manager = UndoManager._instance
+    manager = UndoManager()
+    monkeypatch.setattr(host, "scene_component", lambda *_: component)
+    monkeypatch.setattr(host, "interaction_core", lambda: SimpleNamespace(components=service))
+    monkeypatch.setattr(service, "restore_document", lambda *_a, **_k: pytest.fail("enabled must use its live setter"))
+    before = component.serialize_document()
+    try:
+        fields = {f["name"]: f for f in host.scene_component_schema(owner.id, component.component_id)["fields"]}
+        assert fields["enabled"] == {"name": "enabled", "type": "bool", "readonly": False, "hidden": False}
+        host.set_scene_component_field(owner.id, component.component_id, "enabled", False)
+        assert component.enabled is False and component.serialize_document()["enabled"] is False
+        assert len(manager.action_journal.applied_entries()) == 1
+        for invalid in (0, 1, "false", None):
+            with pytest.raises(TypeError, match="requires a boolean"):
+                host.set_scene_component_field(owner.id, component.component_id, "enabled", invalid)
+            assert component.enabled is False and len(manager.action_journal.applied_entries()) == 1
+        manager.undo()
+        assert component.enabled is True and component.serialize_document() == before
+        manager.redo()
+        assert component.enabled is False
+        assert owner.get_component(type(component)) is component
+    finally:
+        service.shutdown()
+        manager.clear()
+        UndoManager._instance = previous_manager
 
 
 @pytest.mark.parametrize('type_name,field,value', [

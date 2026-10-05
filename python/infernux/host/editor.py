@@ -731,6 +731,10 @@ class EditorAutomationHost:
         value = self.scene_component(object_id, component_id)
         fields: list[dict[str, object]] = []
         type_name = str(getattr(value, "type_name", "") or type(value).__name__)
+        if isinstance(value, BuiltinComponent):
+            # The component header owns enabled; it is inherited from Component
+            # and is not part of each concrete native component's field catalog.
+            fields.append({"name": "enabled", "type": "bool", "readonly": False, "hidden": False})
         if type_name == "Transform" or isinstance(value, BuiltinComponent):
             from infernux.field_schema import get_native_field_schemas
 
@@ -849,7 +853,13 @@ class EditorAutomationHost:
 
         target = self.scene_component(object_id, component_id)
         service = self.interaction_core().components
-        if isinstance(target, BuiltinComponent):
+        if isinstance(target, BuiltinComponent) and field == "enabled":
+            if type(value) is not bool:
+                raise TypeError(f"{target.type_name}.enabled requires a boolean")
+            # Match the Inspector header: use the live Component setter and
+            # shared property history, without deserializing the whole body.
+            changed = service.set_field(target, "enabled", value)
+        elif isinstance(target, BuiltinComponent):
             # scene_component_schema and serialize_document expose the native
             # document vocabulary (including integer enums), not wrapper names.
             # Preserve live setter semantics (e.g. mute must not reload tracks).
