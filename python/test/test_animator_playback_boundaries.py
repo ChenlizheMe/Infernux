@@ -20,9 +20,14 @@ CASES = [
 
 @pytest.mark.parametrize("case", CASES)
 def test_animator_playback_boundary(tmp_path, case):
+    import infernux
+
+    # A subprocess must exercise the same source or installed package as its
+    # parent. Pytest's pythonpath setting is not inherited by child Python.
+    package_root = str(Path(infernux.__file__).resolve().parent.parent)
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), str(tmp_path), case],
-        env=dict(os.environ), capture_output=True, text=True, encoding="utf-8",
+        env=dict(os.environ, PYTHONPATH=package_root), capture_output=True, text=True, encoding="utf-8",
         errors="replace", timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
