@@ -191,10 +191,8 @@ class DataAsset(SerializableObject):
         value._bind_asset(resolved, guid)
         return value
 
-    def save_to(self, path: str, *, database: Any = None, expected_file_state=None) -> str:
+    def _require_authoring_write(self) -> None:
         from infernux.application import Application
-        from infernux.core.assets import AssetManager
-        from infernux.core.document_store import write_document_text
 
         if Application.is_player():
             raise RuntimeError("DataAsset authoring is read-only in Player")
@@ -202,6 +200,15 @@ class DataAsset(SerializableObject):
             raise RuntimeError(
                 "Play-isolated DataAsset values cannot overwrite authored assets"
             )
+
+    def save_to(self, path: str, *, database: Any = None, expected_file_state=None) -> str:
+        self._require_authoring_write()
+        return self._save_document_to(path, database=database, expected_file_state=expected_file_state)
+
+    def _save_document_to(self, path: str, *, database: Any = None, expected_file_state=None) -> str:
+        from infernux.core.assets import AssetManager
+        from infernux.core.document_store import write_document_text
+
         resolved, database = self._resolve_project_path(path, database)
         if not os.path.isdir(os.path.dirname(resolved)):
             raise FileNotFoundError(os.path.dirname(resolved))
@@ -225,9 +232,18 @@ class DataAsset(SerializableObject):
         return resolved
 
     def save(self) -> None:
-        if not self.file_path:
-            raise RuntimeError("DataAsset has no persistent file path; call save_to(path)")
-        self.save_to(self.file_path)
+        from infernux.core.assets import AssetManager
+
+        self._require_authoring_write()
+        if not self.guid:
+            raise RuntimeError("DataAsset has no persistent GUID; call save_to(path)")
+        database = AssetManager.require_asset_database()
+        target = str(database.get_path_from_guid(self.guid) or "")
+        if not target:
+            raise RuntimeError(f"DataAsset GUID is no longer registered: {self.guid}")
+        # file_path is a retained location hint. Another asset may now occupy
+        # it after a move or deletion; only the bound GUID chooses this save.
+        self._save_document_to(target, database=database)
 
     def instantiate(self) -> "DataAsset":
         """Return an explicit mutable copy without persistent asset identity."""
