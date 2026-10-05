@@ -1267,6 +1267,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 )
                 raise _AssetImportNotReady(f"shader publish failed: {path}: {detail}")
             self._notify_shader_reloaded(path)
+        elif path.lower().endswith(".prefab"):
+            # A restored GUID is a new catalog entry, but existing instances
+            # and variants still depend on it across all resident scenes.
+            from infernux.engine.scene_manager import SceneFileManager
+
+            files = SceneFileManager.instance()
+            if files is not None:
+                files.sync_prefab_dependents(str(result.guid))
         self._rejected_compiled_assets.discard(path_key(path))
 
     def _commit_metadata_modified(self, path: str) -> None:
