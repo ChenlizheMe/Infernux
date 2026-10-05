@@ -1093,6 +1093,46 @@ CollisionInfo.collider = property(_collision_collider, doc="The public Collider 
 RaycastHit.collider = property(_raycast_collider, doc="The public Collider hit by this query")
 
 
+_native_scene_main_camera = Scene.main_camera
+_native_scene_effective_game_camera = Scene.effective_game_camera
+_native_scene_active_game_cameras = Scene.active_game_cameras
+
+
+def _scene_main_camera(self):
+    return _wrap_native_builtin_component(_native_scene_main_camera.__get__(self))
+
+
+def _scene_set_main_camera(self, camera):
+    from infernux.components.builtin.camera import Camera as PublicCamera
+
+    if isinstance(camera, PublicCamera):
+        camera = camera._require_cpp_component()
+    _native_scene_main_camera.__set__(self, camera)
+
+
+def _scene_effective_game_camera(self):
+    return _wrap_native_builtin_component(_native_scene_effective_game_camera.__get__(self))
+
+
+def _scene_active_game_cameras(self):
+    return [_wrap_native_builtin_component(camera)
+            for camera in _native_scene_active_game_cameras.__get__(self)]
+
+
+Scene.main_camera = property(
+    _scene_main_camera, _scene_set_main_camera,
+    doc="The explicitly preferred public Camera component for this scene",
+)
+Scene.effective_game_camera = property(
+    _scene_effective_game_camera,
+    doc="The preferred active public Camera, or the first active camera by depth",
+)
+Scene.active_game_cameras = property(
+    _scene_active_game_cameras,
+    doc="Active public Camera components in stable depth order",
+)
+
+
 def _resolve_public_component(component):
     if component is None:
         return None

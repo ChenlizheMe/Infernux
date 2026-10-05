@@ -17,6 +17,7 @@ Provides IDE auto-completion and type checking for:
 from __future__ import annotations
 
 from infernux.components.builtin.collider import Collider as _PublicCollider
+from infernux.components.builtin.camera import Camera as _PublicCamera
 from infernux.components.component import InxComponent as _PublicComponent
 
 from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional, Sequence, Tuple, TypeVar, Union, overload
@@ -1616,11 +1617,11 @@ class Scene:
     def temporal_discontinuity_revision(self) -> int: ...
     @property
     def world_id(self) -> int: ...
-    main_camera: Optional[Camera]
+    main_camera: Optional[_PublicCamera]
     @property
-    def effective_game_camera(self) -> Optional[Camera]: ...
+    def effective_game_camera(self) -> Optional[_PublicCamera]: ...
     @property
-    def active_game_cameras(self) -> List[Camera]: ...
+    def active_game_cameras(self) -> List[_PublicCamera]: ...
 
 
 class NativeRuntimeFrameBarrier(IntEnum):
