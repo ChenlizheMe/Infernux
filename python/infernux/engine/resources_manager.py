@@ -1445,24 +1445,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             raise RuntimeError(f"asset deletion failed: {path}")
         self._rejected_compiled_assets.discard(path_key(path))
         if path.lower().endswith(".py") and not _is_particle_script_path(path):
-            from infernux.components.script_loader import (
-                clear_deleted_script_errors,
-                retire_script_module,
-            )
-            from infernux.components.registry import unregister_component_script
-            clear_deleted_script_errors(path)
-            Debug.clear_source_entries(path)
-            unregister_component_script(path)
-            retire_script_module(path)
-            if (
-                self._dependency_graph is not None
-                and self._dependency_graph.module_for_path(path) is not None
-            ):
-                mutation = self._dependency_graph.remove(path)
-                self._last_dependency_affected = tuple(mutation.affected)
-            manager = ResourcesManager.instance()
-            if manager is not None:
-                manager.notify_script_catalog_changed(path, "deleted")
+            self._retire_script_path(path)
         elif self._is_editor_translation_change(path):
             manager = ResourcesManager.instance()
             if manager is not None:
@@ -1493,6 +1476,11 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if path_key(old_path) in self._rejected_compiled_assets:
             self._rejected_compiled_assets.remove(path_key(old_path))
             self._rejected_compiled_assets.add(path_key(new_path))
+        reload_destination = self._is_gameplay_script_source(new_path)
+        if not reload_destination:
+            # The source has already left the script domain. Even a rejected
+            # import of its new asset type must not keep the old code alive.
+            self._publish_script_path_move(old_path, new_path, origin="watchdog")
         if os.path.splitext(old_path)[1].lower() != os.path.splitext(new_path)[1].lower():
             # A real move preserves GUID identity, but changing the extension
             # changes the authoritative importer and resource metadata type.
@@ -1505,30 +1493,9 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 _reject_failed_compiled_asset(new_path, result)
                 raise _AssetImportNotReady(f"renamed asset reimport failed: {new_path}")
             self._rejected_compiled_assets.discard(path_key(new_path))
-        if new_path.lower().endswith(".py") and not _is_particle_script_path(new_path):
-            if is_project_component_script(
-                new_path,
-                self._dependency_graph.project_root,
-            ):
-                self._submit_moved_script(old_path, new_path, origin="watchdog")
-            else:
-                if is_project_component_script(
-                    old_path,
-                    self._dependency_graph.project_root,
-                ):
-                    from infernux.components.registry import unregister_component_script
-                    from infernux.components.script_loader import retire_script_module
-
-                    unregister_component_script(old_path)
-                    retire_script_module(old_path)
-                    if self._dependency_graph.module_for_path(old_path) is not None:
-                        mutation = self._dependency_graph.remove(old_path)
-                        self._last_dependency_affected = tuple(mutation.affected)
-                manager = ResourcesManager.instance()
-                if manager is not None:
-                    manager.notify_script_catalog_changed(old_path, "deleted")
-                    manager.notify_script_catalog_changed(new_path, "moved")
-        elif self._is_editor_translation_change(
+        if reload_destination:
+            self._publish_script_path_move(old_path, new_path, origin="watchdog")
+        if self._is_editor_translation_change(
             old_path
         ) or self._is_editor_translation_change(new_path):
             manager = ResourcesManager.instance()
@@ -1546,6 +1513,44 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 raise RuntimeError(f"moved shader reimport failed: {new_path}")
             self._notify_shader_reloaded(new_path)
             self._rejected_compiled_assets.discard(path_key(new_path))
+
+    def _retire_script_path(self, path: str) -> None:
+        """Retire a committed deletion or move out of the gameplay domain."""
+        from infernux.components.registry import unregister_component_script
+        from infernux.components.script_loader import clear_deleted_script_errors, retire_script_module
+
+        unregister_component_script(path)
+        retire_script_module(path)
+        clear_deleted_script_errors(path)
+        Debug.clear_source_entries(path)
+        if self._dependency_graph is not None and self._dependency_graph.module_for_path(path) is not None:
+            mutation = self._dependency_graph.remove(path)
+            self._last_dependency_affected = tuple(mutation.affected)
+        manager = ResourcesManager.instance()
+        if manager is not None:
+            manager.notify_script_catalog_changed(path, "deleted")
+
+    def _publish_script_path_move(self, old_path: str, new_path: str, *, origin: str) -> None:
+        """Apply one script-domain transition after the asset move commits."""
+        old_script = old_path.lower().endswith(".py") and not _is_particle_script_path(old_path)
+        new_script = new_path.lower().endswith(".py") and not _is_particle_script_path(new_path)
+        if self._is_gameplay_script_source(new_path):
+            self._submit_moved_script(old_path, new_path, origin=origin)
+            return
+        if old_script:
+            self._retire_script_path(old_path)
+        if new_script:
+            manager = ResourcesManager.instance()
+            if manager is not None:
+                manager.notify_script_catalog_changed(new_path, "moved")
+
+    def _is_gameplay_script_source(self, path: str) -> bool:
+        return (
+            path.lower().endswith(".py")
+            and not _is_particle_script_path(path)
+            and self._dependency_graph is not None
+            and is_project_component_script(path, self._dependency_graph.project_root)
+        )
 
     def _process_meta_missing_rebuild(self, owner_path: str):
         """Handle a deleted .meta sidecar (watchdog-driven, main thread).
@@ -2136,10 +2141,10 @@ class ResourcesManager:
                 Debug.log_error(f"Script catalog callback failed: {e}")
 
     def reload_moved_script(self, old_path: str, new_path: str) -> None:
-        """Queue a GUID-stable script move after the durable asset move."""
+        """Publish a script-domain move after the durable asset move."""
         if self._event_handler is None:
             return
-        self._event_handler._submit_moved_script(
+        self._event_handler._publish_script_path_move(
             old_path,
             new_path,
             origin="editor",

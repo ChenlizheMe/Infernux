@@ -1211,7 +1211,9 @@ class AssetManager:
         if os.path.splitext(old_path)[1].lower() != os.path.splitext(new_path)[1].lower():
             cls._invalidate_shader_authoring_cache(new_path)
         cls._invalidate_project_panel_cache()
-        if suppress_watcher_echo and new_path.lower().endswith(".py"):
+        if suppress_watcher_echo and (
+            old_path.lower().endswith(".py") or new_path.lower().endswith(".py")
+        ):
             from infernux.engine.resources_manager import ResourcesManager
 
             resources = ResourcesManager.instance()
