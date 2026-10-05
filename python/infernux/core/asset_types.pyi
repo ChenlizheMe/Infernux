@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from concurrent.futures import Future
 from enum import IntEnum
 from typing import Any, Dict, FrozenSet, List, Optional
 
@@ -16,6 +17,8 @@ class TextureType(IntEnum):
     UI = 2
     SPRITE = 3
     DATA = 4
+    VECTOR_FIELD = 5
+    SDF = 6
 
 
 class TextureCompression(IntEnum):
@@ -89,6 +92,20 @@ class AudioCompressionFormat(IntEnum):
 # ── Dataclasses ────────────────────────────────────────────────────────
 
 @dataclass
+class SpriteFrame:
+    stable_id: str = ...
+    name: str = ...
+    x: int = ...
+    y: int = ...
+    w: int = ...
+    h: int = ...
+    pivot_x: float = ...
+    pivot_y: float = ...
+    def to_dict(self) -> Dict[str, Any]: ...
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> SpriteFrame: ...
+
+@dataclass
 class TextureImportSettings:
     """Unity-style texture import settings stored in .meta."""
 
@@ -102,6 +119,7 @@ class TextureImportSettings:
     format: TextureFormat = ...
     compression: TextureCompression = ...
     compression_quality: TextureCompressionQuality = ...
+    sprite_frames: List[SpriteFrame] = ...
     def to_dict(self) -> Dict[str, Any]:
         """Serialize settings to a dictionary."""
         ...
@@ -110,7 +128,7 @@ class TextureImportSettings:
         """Create settings from a dictionary."""
         ...
     def copy(self) -> TextureImportSettings:
-        """Create a shallow copy of these settings."""
+        """Create an independent settings draft, including sprite frames."""
         ...
     def __eq__(self, other: object) -> bool: ...
 
@@ -235,6 +253,16 @@ MATERIAL_EXTENSIONS: FrozenSet[str]
 AUDIO_EXTENSIONS: FrozenSet[str]
 FONT_EXTENSIONS: FrozenSet[str]
 MESH_EXTENSIONS: FrozenSet[str]
+PHYSIC_MATERIAL_EXTENSIONS: FrozenSet[str]
+RENDER_EFFECT_EXTENSIONS: FrozenSet[str]
+PARTICLE_GRAPH_EXTENSIONS: FrozenSet[str]
+DATA_ASSET_EXTENSIONS: FrozenSet[str]
+PREFAB_EXTENSIONS: FrozenSet[str]
+ANIMCLIP_EXTENSIONS: FrozenSet[str]
+ANIMCLIP3D_EXTENSIONS: FrozenSet[str]
+ANIMFSM_EXTENSIONS: FrozenSet[str]
+ANIMTIMELINE_EXTENSIONS: FrozenSet[str]
+TIMELINEFSM_EXTENSIONS: FrozenSet[str]
 
 # ── Meta-file utilities ────────────────────────────────────────────────
 
@@ -247,6 +275,8 @@ def read_asset_metadata(asset_path: str, *, guid: str = "") -> Optional[Dict[str
 def write_meta_fields(asset_path: str, updates: Dict[str, Any]) -> bool:
     """Write updated fields to an asset's .meta file."""
     ...
+
+def write_meta_fields_async(asset_path: str, updates: Dict[str, Any]) -> Future[bool]: ...
 
 # ── Import settings read/write ─────────────────────────────────────────
 

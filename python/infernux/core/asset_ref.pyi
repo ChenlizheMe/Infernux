@@ -7,6 +7,11 @@ from typing import Any, Optional
 from infernux.core.material import Material
 from infernux.core.physic_material import PhysicMaterial
 from infernux.core.render_texture import RenderTexture
+from infernux.core.animation_clip import AnimationClip
+from infernux.core.animation_clip3d import AnimationClip3D
+from infernux.core.animation_timeline import AnimationTimeline
+from infernux.core.anim_state_machine import AnimStateMachine
+from infernux.particle.asset import ParticleGraphAsset
 from infernux.lib import InxMaterial
 
 
@@ -94,6 +99,30 @@ class DataAssetRef(AssetRefBase):
     ...
 
 
+class AnimationClipRef(AssetRefBase):
+    def resolve(self) -> AnimationClip | None: ...
+
+
+class AnimationClip3DRef(AssetRefBase):
+    def resolve(self) -> AnimationClip3D | None: ...
+
+
+class AnimationTimelineRef(AssetRefBase):
+    def resolve(self) -> AnimationTimeline | None: ...
+
+
+class AnimStateMachineRef(AssetRefBase):
+    def resolve(self) -> AnimStateMachine | None: ...
+
+
+class TimelineFSMRef(AssetRefBase):
+    def resolve(self) -> AnimStateMachine | None: ...
+
+
+class ParticleGraphRef(AssetRefBase):
+    def resolve(self) -> ParticleGraphAsset | None: ...
+
+
 class RenderEffectRef(AssetRefBase):
     """Reference to a mutable RenderEffect asset."""
     def __init__(self, effect: Any = ..., *, guid: str = ..., path_hint: str = ...) -> None: ...
@@ -126,3 +155,10 @@ def create_asset_ref(
 ) -> AssetRefBase: ...
 
 def get_asset_type_for_ref(ref: AssetRefBase | type[AssetRefBase]) -> Optional[str]: ...
+
+def register_asset_type(
+    asset_type: str, *, ref_class: type[AssetRefBase], drag_type: str,
+    extensions: tuple[str, ...], display: str, prefix: str,
+) -> None: ...
+
+def get_asset_type_config(asset_type: str) -> Optional[dict]: ...
