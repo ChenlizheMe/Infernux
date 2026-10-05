@@ -11,6 +11,20 @@ import pytest
 from infernux.timing import Time
 
 
+def test_realtime_elapsed_ignores_wall_clock_adjustment(monkeypatch):
+    from infernux import timing
+
+    clocks = {"wall": 1000.0, "monotonic": 100.0}
+    monkeypatch.setattr(timing._time_mod, "time", lambda: clocks["wall"])
+    monkeypatch.setattr(timing._time_mod, "monotonic", lambda: clocks["monotonic"])
+    monkeypatch.setattr(timing.Time, "_startup_time", 100.0)
+    assert timing.Time.realtime_since_startup == 0.0
+    clocks.update(wall=-5000.0, monotonic=100.5)
+    assert timing.Time.realtime_since_startup == 0.5
+    clocks.update(wall=50000.0, monotonic=101.0)
+    timing.Time._reset()
+    assert timing.Time.realtime_since_startup == 1.0
+
 @pytest.fixture(autouse=True)
 def _reset_time():
     """Reset Time state before each test."""

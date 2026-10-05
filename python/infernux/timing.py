@@ -152,12 +152,12 @@ class _TimeMeta(type):
         """Number of frames elapsed since play mode started."""
         return cls._frame_count
 
-    # -- Real (wall-clock) timing -------------------------------------------
+    # -- Real elapsed timing -----------------------------------------------
 
     @property
     def realtime_since_startup(cls) -> float:
-        """Wall-clock seconds since the engine process launched."""
-        return _time_mod.time() - cls._startup_time
+        """Monotonic seconds since engine startup, unaffected by clock changes."""
+        return _time_mod.monotonic() - cls._startup_time
 
     @property
     def shader_time(cls) -> float:
@@ -216,7 +216,7 @@ class Time(metaclass=_TimeMeta):
         Time.fixed_delta_time       # physics step interval (default 0.02)
         Time.time_scale             # get / set  (0 = frozen, 1 = normal)
         Time.frame_count            # frame number since play started
-        Time.realtime_since_startup # wall-clock since engine launch
+        Time.realtime_since_startup # monotonic elapsed seconds since engine launch
         Time.shader_time            # exact time used by animated shaders
     """
 
@@ -231,7 +231,7 @@ class Time(metaclass=_TimeMeta):
     _unscaled_time: float = 0.0
     _fixed_time: float = 0.0
     _fixed_unscaled_time: float = 0.0
-    _startup_time: float = _time_mod.time()
+    _startup_time: float = _time_mod.monotonic()
     _maximum_delta_time: float = 1.0 / 3.0
     _reset_delta_on_next_tick: bool = False
 
