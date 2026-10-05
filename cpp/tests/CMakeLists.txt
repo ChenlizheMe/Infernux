@@ -1422,6 +1422,21 @@ if(INFERNUX_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/python/infernux/test/material_first_shadow_gpu_test.py
     )
+    foreach(_variant_instances 1 2)
+        set(_variant_test "infernux.material_geometry_variants_${_variant_instances}_gpu")
+        add_test(NAME ${_variant_test}
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/python/infernux/test/material_geometry_variants_gpu_test.py
+                --instances ${_variant_instances}
+        )
+        set_tests_properties(${_variant_test} PROPERTIES
+            ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+            LABELS "requires_vulkan_device"
+            TIMEOUT 60
+            RUN_SERIAL TRUE
+            FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
+        )
+    endforeach()
     foreach(_outline_check background deformation multiple reload game-alpha gizmo properties)
         set(_outline_test "infernux.selection_outline_${_outline_check}_gpu")
         add_test(NAME ${_outline_test}

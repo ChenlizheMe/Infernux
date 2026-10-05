@@ -732,13 +732,14 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     }
     if (pipelineDesc.depthReadOnly)
         effectiveState.depthWriteEnable = false;
-    if (pipelineDesc.target == ShaderCompileTarget::Normal || pipelineDesc.target == ShaderCompileTarget::BaseColor) {
-        // The normal pass replays the visible opaque geometry against the
+    if (pipelineDesc.target == ShaderCompileTarget::Motion || pipelineDesc.target == ShaderCompileTarget::Normal ||
+        pipelineDesc.target == ShaderCompileTarget::BaseColor) {
+        // Geometry buffer passes replay the visible opaque geometry against the
         // camera depth attachment.  Exact equality is unnecessarily brittle:
         // a semantic shader variant can produce a sub-ULP clip-depth change
         // even though it covers the same surface.  LESS_OR_EQUAL preserves
         // hidden-surface rejection while allowing that visible surface to
-        // publish its normal.
+        // publish its motion, normal or base color.
         effectiveState.depthCompareOp = MaterialCompareOp::LessOrEqual;
     }
     if (!rhi::IsStencilFormat(pipelineDesc.depthFormat))
