@@ -52,11 +52,11 @@ This editor workflow closes the loop with the shader above:
 4. In the Hierarchy, choose **Create > 3D Object > Cube**. Select the Cube and assign `PaintedCube.mat` to **Materials > Element 0** on its `MeshRenderer`. Select `PaintedCube.mat` in Project and set `baseColor` to `(0.9, 0.1, 0.2, 1)` (normalized RGBA). The default `white` texture makes that color visible without another asset.
 5. Save the scene, move the camera or Cube, and confirm that the object remains visible in Scene and Game views. Reopen `PaintedCube.mat`: Vertex must still read `Standard`, Fragment must still identify `Painted Unlit`, and Queue must be `2000`. These three observations distinguish a saved mesh binding from a Material preview alone.
 
-If the Cube uses the fallback/error appearance, first confirm that both shader fields are populated and that `ShaderInfo Name` still matches the imported ID. If changing `Name` during hot reload reports that an asset reimport is required, restore the old ID or reimport and reassign the Fragment asset. A Material property that does not appear usually means the fragment import failed or the assigned Material still points at another fragment ID.
+If the Cube uses the fallback/error appearance, first confirm that both shader fields are populated and that the Fragment field refers to the intended project asset. A successful save/import of a changed `ShaderInfo Name` updates referencing Materials automatically through the shader GUID; you do not need to reassign the Fragment asset. A rejected compile leaves the live references unchanged: correct the reported source error and save again. A missing Material property usually means the fragment import failed or the assigned Material still points at another fragment asset.
 
 ## Who owns what: stages, properties, and bindings {#ownership}
 
-A Material is a small document plus two stage references. The **Vertex** and **Fragment** selectors store `ShaderInfo Name` values, and the fragment's `ShaderInfo` block carries the `ShadingModel` entry that picks the lighting model. When the fragment is imported, the engine links the pair, generates the property schema, and compiles the program variants for each material pass; the Material then owns only the values.
+A Material is a small document plus two stage references. Project **Vertex** and **Fragment** assets are stored by GUID with a derived `ShaderInfo Name` label; built-in stages use symbolic identifiers. The fragment's `ShaderInfo` block carries the `ShadingModel` entry that picks the lighting model. When the fragment is imported, the engine links the pair, generates the property schema, and compiles the program variants for each material pass; the Material then owns only the values.
 
 Properties are declared in the fragment's `ShaderInfo` block and become typed Material fields serialized into the `.mat` document. At draw time the engine packs the numeric fields into the material uniform block (`material`, set 0, binding 14) and binds each texture property from binding 2 upward, with `white` and `normal` as built-in defaults. The fragment reads them through the `material.*` members and the `sample*` helpers. A user shader never declares descriptor sets, buffer bindings, or push constants for ordinary material data; the compiler and the engine binding layer own that layout.
 
@@ -64,7 +64,7 @@ ShaderInfo entries affect different things:
 
 | Entry | What it does |
 | --- | --- |
-| `Name` | The stable, case-sensitive selector ID |
+| `Name` | The case-sensitive stage identifier and displayed label |
 | `ShadingModel` | Which `.shadingmodel` provides `shading()` for the surface |
 | `Properties` | Typed Material fields and Inspector controls |
 | `Surface` | A defaults bundle (opaque or transparent) for fields left unspecified |
@@ -282,11 +282,11 @@ Material 保存参数值，编译后的 Shader 状态由渲染系统管理。切
 4. 在 Hierarchy 选择 **创建 > 3D Object > Cube**。选中 Cube，把 `PaintedCube.mat` 分配给 `MeshRenderer` 的 **Materials > Element 0**，随后在 Project 中选择 `PaintedCube.mat`，将 `baseColor` 设为 `(0.9, 0.1, 0.2, 1)`（归一化 RGBA）。默认 `white` 贴图足以显示这个颜色。
 5. 保存场景，移动相机或 Cube，确认对象在 Scene 与 Game View 都保持可见。重新打开 `PaintedCube.mat`：Vertex 应保持 `Standard`，Fragment 应保持 `Painted Unlit`，Queue 应为 `2000`。这三项观察可以确认场景保存了 Mesh 绑定，验证范围超过单独的 Material 预览。
 
-Cube 显示回退或错误外观时，先确认两个 Shader 字段都有值，并检查 `ShaderInfo Name` 是否仍与导入 ID 一致。热重载期间修改 `Name` 会提示必须重新导入资产；可以恢复旧 ID，也可以重新导入后再次分配 Fragment。Material 属性没有出现时，常见原因是 Frag 导入失败，或当前 Material 仍指向另一个 Fragment ID。
+Cube 显示回退或错误外观时，先确认两个 Shader 字段都有值，并确认 Fragment 字段引用了预期的项目资产。修改 `ShaderInfo Name` 后，成功保存并导入会通过 Shader GUID 自动更新引用它的 Material，无需重新分配 Fragment 资产。编译被拒绝时，当前运行引用保持不变；修正报告的源码错误后再次保存即可。Material 属性没有出现时，常见原因是片元导入失败，或当前 Material 仍指向另一个片元资产。
 
 ## 谁拥有什么：阶段、属性与绑定 {#ownership_1}
 
-Material 是一份小文档加上两个阶段引用。**Vertex** 与 **Fragment** 选择器保存 `ShaderInfo Name` 值，片元 `ShaderInfo` 块里的 `ShadingModel` 条目选择光照模型。片元导入时，引擎链接这对阶段、生成属性 Schema，并为每种材质 Pass 编译程序变体；Material 此后只拥有参数值。
+Material 是一份小文档加上两个阶段引用。项目中的 **Vertex** 与 **Fragment** 资产按 GUID 保存，并附带由 `ShaderInfo Name` 派生的显示名称；内置阶段使用符号标识。片元 `ShaderInfo` 块里的 `ShadingModel` 条目选择光照模型。片元导入时，引擎链接这对阶段、生成属性 Schema，并为每种材质 Pass 编译程序变体；Material 此后只拥有参数值。
 
 属性在片元的 `ShaderInfo` 块里声明，会变成有类型的 Material 字段，序列化进 `.mat` 文档。绘制时引擎把数值字段打包进材质 Uniform Block（`material`，set 0、binding 14），并从 binding 2 起绑定每个纹理属性，`white` 与 `normal` 是内置默认值。片元通过 `material.*` 成员与 `sample*` 辅助函数读取它们。用户 Shader 不用为普通材质数据声明描述符集、缓冲绑定或 Push Constant；这份布局由编译器与引擎绑定层持有。
 
@@ -294,7 +294,7 @@ ShaderInfo 各条目影响不同环节：
 
 | 条目 | 作用 |
 | --- | --- |
-| `Name` | 稳定且区分大小写的选择器 ID |
+| `Name` | 区分大小写的阶段标识与显示名称 |
 | `ShadingModel` | 由哪个 `.shadingmodel` 提供表面的 `shading()` |
 | `Properties` | 有类型的 Material 字段与 Inspector 控件 |
 | `Surface` | 为未指定字段提供的 Opaque 或 Transparent 默认值包 |
