@@ -231,6 +231,7 @@ class InxVkCoreModular
     ShareShaderProgramArtifact(const ShaderStagePair &stages) const;
     /// Retire the exact UI-only publication when its final UI command owner releases it.
     bool ReleaseUIShaderProgramArtifact(const ShaderProgramKey &key);
+    void RetireShaderProgramArtifact(const ShaderProgramKey &key);
     void AcquireUIShaderProgramOwner(const ShaderProgramKey &key);
     void ReleaseUIShaderProgramOwner(const ShaderProgramKey &key);
     void SweepReleasedUIShaderProgramArtifacts();

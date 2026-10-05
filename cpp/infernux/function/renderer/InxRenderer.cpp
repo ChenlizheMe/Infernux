@@ -2639,6 +2639,14 @@ void InxRenderer::InvalidateUIMaterialProgram(const ShaderStagePair &stages)
         m_vkCore->ReleaseUIShaderProgramArtifact(oldProgram->key);
 }
 
+void InxRenderer::RetireShaderProgramArtifact(const ShaderProgramKey &key)
+{
+    if (m_screenUIRenderer)
+        m_screenUIRenderer->InvalidateMaterialProgram(key.stages);
+    if (m_vkCore)
+        m_vkCore->RetireShaderProgramArtifact(key);
+}
+
 bool InxRenderer::HasShaderProgramArtifact(const ShaderProgramKey &programKey) const
 {
     return m_vkCore && m_vkCore->HasShaderProgramArtifact(programKey);

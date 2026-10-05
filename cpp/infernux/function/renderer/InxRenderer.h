@@ -341,6 +341,7 @@ class InxRenderer
     void SetShaderAssetResolver(std::function<bool(const std::string &, const std::string &)> resolver);
     bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
     void InvalidateUIMaterialProgram(const ShaderStagePair &stages);
+    void RetireShaderProgramArtifact(const ShaderProgramKey &key);
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
     ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial> &material,

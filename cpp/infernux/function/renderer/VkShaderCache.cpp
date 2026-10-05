@@ -248,6 +248,14 @@ std::shared_ptr<const ShaderProgramArtifact> VkShaderCache::TakeUIProgramArtifac
         (found->second->domain != ShaderProgramDomain::ScreenUI &&
          found->second->domain != ShaderProgramDomain::WorldUI))
         return nullptr;
+    return TakeProgramArtifact(key);
+}
+
+std::shared_ptr<const ShaderProgramArtifact> VkShaderCache::TakeProgramArtifact(const ShaderProgramKey &key)
+{
+    const auto found = m_programArtifacts.find(key.stages);
+    if (found == m_programArtifacts.end() || found->second->key != key)
+        return nullptr;
     auto artifact = std::move(found->second);
     m_programArtifacts.erase(found);
     return artifact;

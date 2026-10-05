@@ -68,6 +68,7 @@ void AssetRegistry::Shutdown()
     m_pendingTextureStagingLoads.clear();
     m_loaders.clear();
     m_builtinMaterials.clear();
+    m_runtimeMaterials.clear();
     m_assetDb.reset();
     m_ownerThread = {};
     m_initialized = false;
@@ -674,8 +675,17 @@ void AssetRegistry::InitializeBuiltinMaterials()
 }
 
 // =============================================================================
-// GetAllMaterials — builtin + loaded from disk
+// GetAllMaterials — builtin + loaded assets + live runtime instances
 // =============================================================================
+
+void AssetRegistry::RegisterRuntimeMaterial(const std::shared_ptr<InxMaterial> &material)
+{
+    if (std::this_thread::get_id() != m_ownerThread)
+        throw std::logic_error("Runtime material registration requires the AssetRegistry owner thread");
+    if (!material)
+        throw std::invalid_argument("Runtime material registration requires a material");
+    m_runtimeMaterials[material.get()] = material;
+}
 
 std::vector<std::shared_ptr<InxMaterial>> AssetRegistry::GetAllMaterials() const
 {
@@ -701,6 +711,16 @@ std::vector<std::shared_ptr<InxMaterial>> AssetRegistry::GetAllMaterials() const
         }
     }
 
+    for (auto it = m_runtimeMaterials.begin(); it != m_runtimeMaterials.end();) {
+        auto material = it->second.lock();
+        if (!material) {
+            it = m_runtimeMaterials.erase(it);
+            continue;
+        }
+        if (seen.insert(material.get()).second)
+            result.push_back(std::move(material));
+        ++it;
+    }
     return result;
 }
 

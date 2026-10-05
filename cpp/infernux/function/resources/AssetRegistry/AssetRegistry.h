@@ -258,6 +258,8 @@ class AssetRegistry
     void InitializeBuiltinMaterials();
 
     void RegisterBuiltinMaterial(const std::string &key, std::shared_ptr<InxMaterial> mat);
+    /// Weakly track project-shader references on runtime-only material instances.
+    void RegisterRuntimeMaterial(const std::shared_ptr<InxMaterial> &material);
     [[nodiscard]] std::shared_ptr<InxMaterial> GetBuiltinMaterial(const std::string &key) const;
 
     /// @brief Load a builtin material from a .mat file, replacing the existing
@@ -349,6 +351,7 @@ class AssetRegistry
     std::vector<std::weak_ptr<TextureUploadStagingTicket>> m_pendingTextureStagingLoads;
     std::unordered_map<ResourceType, std::unique_ptr<IAssetLoader>> m_loaders;        // type → loader
     std::unordered_map<std::string, std::shared_ptr<InxMaterial>> m_builtinMaterials; // name → builtin mat
+    mutable std::unordered_map<InxMaterial *, std::weak_ptr<InxMaterial>> m_runtimeMaterials;
     mutable uint64_t m_accessSerial = 0;
     size_t m_totalCpuBytes = 0;
     size_t m_cpuBudgetBytes = 512ULL * 1024ULL * 1024ULL;

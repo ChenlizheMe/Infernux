@@ -4258,8 +4258,139 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
         if (changedShaderId.empty())
             return "ShaderInfo Name is required for runtime reload";
         if (!previousShaderId.empty() && changedShaderId != previousShaderId) {
-            return "Changing ShaderInfo Name during hot reload requires an asset reimport before materials can be "
-                   "migrated";
+            // Rename the label of this GUID, not every material with the same
+            // display name. Validate all referencing stage pairs before any
+            // live material moves to the new program namespace.
+            const bool vertexChanged = ext == ".vert";
+            const auto materials = registry.GetAllMaterials();
+            struct Migration {
+                std::shared_ptr<InxMaterial> material;
+                ShaderAssetReference reference;
+                ShaderStagePair stages;
+            };
+            struct PreparedProgram {
+                ShaderProgramArtifact artifact;
+                ShaderDescriptor fragment;
+                uint64_t sourceStamp;
+                bool ui;
+            };
+            std::vector<Migration> migrations;
+            std::unordered_map<ShaderStagePair, PreparedProgram, ShaderStagePairHash> programs;
+            const auto stagePath = [&](const ShaderAssetReference &reference, const char *stage) {
+                return !reference.guid.empty() ? adb->GetPathFromGuid(reference.guid)
+                                              : adb->FindShaderPathById(reference.shaderId, stage);
+            };
+            const auto readStage = [&](const std::string &path, std::string &text) {
+                std::vector<char> bytes;
+                if (path.empty() || !adb->ReadFile(path, bytes) || bytes.empty())
+                    return false;
+                if (bytes.back() == '\0')
+                    bytes.pop_back();
+                text.assign(bytes.begin(), bytes.end());
+                return true;
+            };
+            for (const auto &material : materials) {
+                if (!material)
+                    continue;
+                auto reference = vertexChanged ? material->GetVertShaderReference() : material->GetFragShaderReference();
+                if (reference.guid != guid)
+                    continue;
+                reference.shaderId = changedShaderId;
+                reference.pathHint = shaderPath;
+                const ShaderStagePair stages{vertexChanged ? changedShaderId : material->GetVertShaderName(),
+                                             vertexChanged ? material->GetFragShaderName() : changedShaderId};
+                migrations.push_back({material, reference, stages});
+                if (IsDirectStructuredStage(changedDescriptor) || programs.count(stages))
+                    continue;
+                const std::string vertexPath =
+                    vertexChanged ? shaderPath : stagePath(material->GetVertShaderReference(), "vertex");
+                const std::string fragmentPath =
+                    vertexChanged ? stagePath(material->GetFragShaderReference(), "fragment") : shaderPath;
+                std::string vertexSource, fragmentSource;
+                if (!readStage(vertexPath, vertexSource) || !readStage(fragmentPath, fragmentSource))
+                    return "Shader rename requires both referenced stage GUIDs to resolve to readable sources";
+                auto compiled = sourceParser.CompileLinkedProgramArtifact(
+                    vertexSource, InxShaderLoader::StageQualifiedVirtualPath(vertexPath, "vertex"),
+                    fragmentSource, InxShaderLoader::StageQualifiedVirtualPath(fragmentPath, "fragment"));
+                if (!compiled.IsValid()) {
+                    std::ostringstream errors;
+                    for (const auto &error : compiled.errors)
+                        errors << error << '\n';
+                    return errors.str().empty() ? "Shader rename stage-pair compilation failed" : errors.str();
+                }
+                auto artifact = compiled.CreateRuntimeArtifact();
+                if (!artifact.IsValid() || artifact.key.stages != stages)
+                    return "Shader rename produced a mismatched linked program";
+                const auto vertex = sourceParser.ParseShaderSource(vertexSource, vertexPath);
+                const auto fragment = sourceParser.ParseShaderSource(fragmentSource, fragmentPath);
+                programs.emplace(
+                    stages, PreparedProgram{
+                                std::move(artifact), fragment,
+                                ComputeShaderProgramRevision(vertexSource, fragmentSource, ShaderCompileTarget::Forward,
+                                                             0),
+                                ShaderStageLinker::IsUIStagePair(vertex, fragment)});
+            }
+            registry.InvalidateAsset(guid);
+            if (IsDirectStructuredStage(changedDescriptor)) {
+                auto shader = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
+                if (!shader || !shader->HasVariant(ShaderCompileTarget::Forward))
+                    return InxShaderLoader::GetLastCompileError().empty()
+                               ? "Renamed standalone shader compilation failed"
+                               : InxShaderLoader::GetLastCompileError();
+                m_renderer->InvalidateShaderCache(changedShaderId, shader->shaderType);
+                RegisterShaderToRenderer(*shader);
+            }
+            for (const auto &[stages, program] : programs) {
+                // UI draws own publication and lifetime. Compilation above is
+                // a preflight only; it must not introduce an ownerless UI artifact.
+                if (!program.ui && !m_renderer->PublishShaderProgramArtifact(program.artifact))
+                    return "Renderer rejected the renamed linked shader program";
+            }
+            for (const auto &[stages, program] : programs) {
+                if (program.ui)
+                    continue;
+                m_linkedShaderProgramCache[stages] = {program.sourceStamp, program.artifact.key, 0, {}};
+                const auto &fragment = program.fragment;
+                m_renderer->StoreShaderRenderMeta(
+                    stages.fragmentShaderId, fragment.surfaceOptions.cullMode, fragment.depthWrite, fragment.depthTest,
+                    fragment.surfaceOptions.blendMode, fragment.renderQueue, fragment.passTag, fragment.stencil,
+                    fragment.surfaceOptions.alphaClip);
+            }
+            for (const auto &migration : migrations) {
+                if (vertexChanged)
+                    migration.material->SetVertShaderReference(migration.reference);
+                else
+                    migration.material->SetFragShaderReference(migration.reference);
+                const auto program = programs.find(migration.stages);
+                if (program != programs.end() && program->second.ui)
+                    m_renderer->InvalidateUIMaterialProgram(migration.stages);
+                else
+                    m_renderer->RefreshMaterialPipeline(migration.material);
+            }
+            // A name that no resident material uses must not remain a loaded
+            // program or accumulate SPIR-V/Vulkan generations after repeated renames.
+            for (auto it = m_linkedShaderProgramCache.begin(); it != m_linkedShaderProgramCache.end();) {
+                const bool oldStage = vertexChanged ? it->first.vertexShaderId == previousShaderId
+                                                    : it->first.fragmentShaderId == previousShaderId;
+                const bool referenced = std::any_of(materials.begin(), materials.end(), [&](const auto &material) {
+                    return material &&
+                           ShaderStagePair{material->GetVertShaderName(), material->GetFragShaderName()} == it->first;
+                });
+                if (!oldStage || referenced) {
+                    ++it;
+                    continue;
+                }
+                if (it->second.programKey.IsValid())
+                    m_renderer->RetireShaderProgramArtifact(it->second.programKey);
+                it = m_linkedShaderProgramCache.erase(it);
+            }
+            const bool oldNameReferenced = std::any_of(materials.begin(), materials.end(), [&](const auto &material) {
+                return material &&
+                       (vertexChanged ? material->GetVertShaderName() : material->GetFragShaderName()) == previousShaderId;
+            });
+            if (!oldNameReferenced)
+                m_renderer->InvalidateShaderCache(previousShaderId, vertexChanged ? "vertex" : "fragment");
+            return "";
         }
 
         if (IsDirectStructuredStage(changedDescriptor)) {

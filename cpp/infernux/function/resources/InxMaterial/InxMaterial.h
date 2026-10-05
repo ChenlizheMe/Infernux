@@ -251,7 +251,7 @@ struct RenderState
  * - Material properties (uniforms, textures)
  * - Per-pass pipeline storage (Forward, GBuffer, Shadow)
  */
-class InxMaterial
+class InxMaterial : public std::enable_shared_from_this<InxMaterial>
 {
   public:
 #if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
@@ -392,6 +392,7 @@ class InxMaterial
             return;
         const bool switched = !ReferencesSameShader(m_vertexShader, reference);
         m_vertexShader = std::move(reference);
+        TrackRuntimeShaderReferences();
         if (switched)
             ResetRenderStateAuthorship();
         m_pipelineDirty = true;
@@ -404,6 +405,7 @@ class InxMaterial
             return;
         const bool switched = !ReferencesSameShader(m_fragmentShader, reference);
         m_fragmentShader = std::move(reference);
+        TrackRuntimeShaderReferences();
         if (switched)
             ResetRenderStateAuthorship();
         m_pipelineDirty = true;
@@ -793,6 +795,7 @@ class InxMaterial
 
   private:
     static uint64_t AllocateRuntimeId() noexcept;
+    void TrackRuntimeShaderReferences();
     bool ApplyDocument(const nlohmann::json &document);
     void SetPropertyValue(const std::string &name, MaterialPropertyType type, MaterialPropertyValue value);
 

@@ -1334,6 +1334,22 @@ bool InxMaterial::Deserialize(const std::string &jsonStr)
     }
 }
 
+void InxMaterial::TrackRuntimeShaderReferences()
+{
+#if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
+    // Asset materials are already owned by the asset registry. This weak
+    // enrollment covers runtime instances without extending their lifetime.
+    if (m_guid.empty() && (!m_vertexShader.guid.empty() || !m_fragmentShader.guid.empty())) {
+        auto &registry = AssetRegistry::Instance();
+        // Parsing/cloning a document outside an engine has no runtime owner.
+        if (registry.IsInitialized()) {
+            if (auto material = weak_from_this().lock())
+                registry.RegisterRuntimeMaterial(material);
+        }
+    }
+#endif
+}
+
 bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
 {
     InxMaterial staged(*this);
@@ -1356,6 +1372,7 @@ bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
     m_pipelineDirty = true;
     m_propertiesDirty = true;
     ++m_version;
+    TrackRuntimeShaderReferences();
     return true;
 }
 
@@ -1958,6 +1975,7 @@ std::shared_ptr<InxMaterial> InxMaterial::Clone() const
     clone->m_version = 0;
     clone->m_isDeleted = false;
 
+    clone->TrackRuntimeShaderReferences();
     return clone;
 }
 

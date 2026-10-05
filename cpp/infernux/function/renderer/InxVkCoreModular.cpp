@@ -635,6 +635,23 @@ bool InxVkCoreModular::ReleaseUIShaderProgramArtifact(const ShaderProgramKey &ke
     return true;
 }
 
+void InxVkCoreModular::RetireShaderProgramArtifact(const ShaderProgramKey &key)
+{
+    if (m_materialPipelineManagerInitialized)
+        m_materialPipelineManager.InvalidateMaterialsUsingProgramPair(key.stages);
+    if (m_uiProgramOwners.count(key) ||
+        (m_materialPipelineManagerInitialized && m_materialPipelineManager.HasMaterialProgramOwner(key)))
+        throw std::logic_error("Cannot retire a shader program artifact with live material/UI owners");
+    auto artifact = m_shaderCache.TakeProgramArtifact(key);
+    auto programs = m_shaderCache.GetProgramCache().TakePrograms(key);
+    for (auto &program : programs) {
+        m_deletionQueue.Retire([retired = std::move(program)]() mutable { retired.reset(); });
+        ++m_shaderHotReloadRetirementCount;
+    }
+    if (artifact)
+        m_deletionQueue.Retire([retired = std::move(artifact)]() mutable { retired.reset(); });
+}
+
 void InxVkCoreModular::AcquireUIShaderProgramOwner(const ShaderProgramKey &key)
 {
     if (!key.IsValid())

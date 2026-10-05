@@ -107,6 +107,7 @@ class VkShaderCache
     ShareProgramArtifact(const ShaderStagePair &stages) const;
     /// Removes only the exact UI-domain revision. Mesh/particle publications are never owned by UI.
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact> TakeUIProgramArtifact(const ShaderProgramKey &key);
+    [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact> TakeProgramArtifact(const ShaderProgramKey &key);
     /// Materialize one semantic pass on first use. Publishing an artifact only
     /// creates its mandatory Forward program.
     [[nodiscard]] ShaderProgramPublication MaterializeProgramVariant(const ShaderStagePair &stages,

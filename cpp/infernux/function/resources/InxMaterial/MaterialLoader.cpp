@@ -40,8 +40,13 @@ ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, Asset
         if (const auto meta = database->GetMetaByPath(resolvedPath)) {
             if (meta->HasKey("shader_id")) {
                 const std::string authoredId = meta->GetDataAs<std::string>("shader_id");
-                if (authoredId.empty() || authoredId != reference.shaderId)
-                    throw std::runtime_error("Material shader reference disagrees with its GUID: " + resolvedPath);
+                if (authoredId.empty())
+                    throw std::runtime_error("Material shader GUID resolves to metadata without ShaderInfo Name: " +
+                                             resolvedPath);
+                // The GUID owns identity. A saved shader_id is a derived label
+                // and can predate a source rename; never reject or rebind that
+                // durable reference because its cached label changed.
+                reference.shaderId = authoredId;
             }
         }
     }
@@ -78,6 +83,9 @@ RuntimeAssetPayload MaterialLoader::Load(const std::string &filePath, const std:
 
     // Deserialize
     auto material = std::make_shared<InxMaterial>();
+    // Disk identity is known before parsing, including on a worker. It must
+    // never be enrolled in the owner-thread-only runtime material registry.
+    material->SetGuid(guid);
     if (!material->Deserialize(jsonStr)) {
         INXLOG_ERROR("MaterialLoader::Load: deserialization failed for '", filePath, "'");
         return nullptr;
@@ -86,7 +94,6 @@ RuntimeAssetPayload MaterialLoader::Load(const std::string &filePath, const std:
     // Identity — authoritative source is .meta / AssetDatabase, NOT JSON
     material->SetFilePath(filePath);
     material->SetName(FromFsPath(ToFsPath(filePath).stem()));
-    material->SetGuid(guid);
     EnrichShaderReferences(*material, adb);
 
     // Dependency graph edges (textures, shaders)
