@@ -362,7 +362,7 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
             return False
 
         play_mode = PlayModeManager.instance()
-        if play_mode and play_mode.is_playing:
+        if play_mode and not play_mode.is_edit_mode:
             runner = DeferredTaskRunner.instance()
             if runner.is_busy:
                 Debug.log_warning(
@@ -379,7 +379,7 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
                     nsm = NativeSM.instance()
                 except Exception:
                     nsm = None
-                if play_mode.is_playing:
+                if not play_mode.is_edit_mode:
                     Debug.log_warning(
                         "Scene open cancelled — Play Mode still active")
                     return

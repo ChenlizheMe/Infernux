@@ -335,7 +335,12 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             if not pmm:
                 return PlayState.Edit
             state = pmm.state
-            if state == PlayModeState.PLAYING:
+            if state in (
+                PlayModeState.PLAYING,
+                PlayModeState.RESTORING,
+                PlayModeState.RECOVERY_REQUIRED,
+            ):
+                # The Stop control also owns explicit failed-restore recovery.
                 return PlayState.Playing
             elif state == PlayModeState.PAUSED:
                 return PlayState.Paused

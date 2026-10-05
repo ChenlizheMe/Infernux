@@ -211,9 +211,9 @@ class SceneViewOverlaysMixin:
         from infernux.engine.play_mode import PlayModeState
 
         if event.new_state is PlayModeState.EDIT:
-            # The EDIT notification precedes the deferred scene restore. Delay
-            # rebinding until that task is idle so the outgoing runtime wrapper
-            # cannot alias the restored scene's stable GPU batch IDs.
+            # The EDIT notification runs inside the completed restore step.
+            # Rebind once that task is idle, against the published graph, so an
+            # outgoing runtime wrapper cannot alias its stable GPU batch IDs.
             self._forget_particle_preview_selection()
             self._particle_preview_restore_pending = True
             return

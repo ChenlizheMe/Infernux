@@ -113,9 +113,8 @@ class BootstrapWiringMixin:
         def _toggle_play(_context):
             if not pmm:
                 return False
-            if pmm.is_playing:
-                pmm.exit_play_mode()
-                return True
+            if not pmm.is_edit_mode:
+                return bool(pmm.exit_play_mode())
             if not pmm.enter_play_mode():
                 return False
             wm.open_window_from_user(

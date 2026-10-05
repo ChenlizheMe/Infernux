@@ -263,6 +263,7 @@ class TestPlayModeManager:
         engine._last_frame_time = time.time()
         engine._editor_frame_sync_callback = None
         engine._resources_manager = Resources()
+        engine._play_mode_manager = None
         engine._next_reload_poll_time = 0.0
         engine._reload_poll_interval = 0.1
 
@@ -382,13 +383,15 @@ class TestPlayModeManager:
         manager._notify_state_change = lambda old, new: notifications.append((old, new))
 
         assert manager.exit_play_mode() is True
-        assert manager.state is PlayModeState.EDIT
+        assert manager.state is PlayModeState.RESTORING
         assert scene_manager.stop_calls == 1
         assert focus_calls == [False]
         assert lock_calls == [False]
 
         _, _, restore = runner.steps[0]
         restore()
+
+        assert manager.state is PlayModeState.EDIT
 
         assert rebuild_calls == [
             (manager._scene_backup, {"for_play": False, "restore_scene_path": True})

@@ -32,6 +32,8 @@ class PlayModeState(Enum):
     EDIT = auto()      # Normal editor mode
     PLAYING = auto()   # Runtime playing
     PAUSED = auto()    # Runtime paused
+    RESTORING = auto()  # Simulation stopped; authored scenes are not published yet
+    RECOVERY_REQUIRED = auto()  # Restore failed; retain the snapshot and block authoring saves
 
 
 @dataclass
@@ -608,6 +610,11 @@ class PlayModeManager(PlayModeSerializationMixin):
     def is_edit_mode(self) -> bool:
         """True if in edit mode."""
         return self._state == PlayModeState.EDIT
+
+    @property
+    def is_restoring(self) -> bool:
+        """True while the deferred Stop transaction owns the scene graph."""
+        return self._state == PlayModeState.RESTORING
     
     @property
     def delta_time(self) -> float:
@@ -812,7 +819,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         Restores scene state to before play mode.
         
         Returns:
-            True if successfully exited play mode
+            True if the Stop request was accepted. ``on_complete`` reports restoration success.
         """
         if self._state == PlayModeState.EDIT:
             Debug.log_warning("Cannot exit play mode: already in edit mode")
@@ -838,7 +845,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         #    simulation to end.
         old_state = self._state
         scene_manager = self._get_scene_manager()
-        if scene_manager:
+        if scene_manager and old_state in (PlayModeState.PLAYING, PlayModeState.PAUSED):
             scene_manager.stop()
 
         # Stop owns the editor cursor boundary even when the Game View is
@@ -847,17 +854,14 @@ class PlayModeManager(PlayModeSerializationMixin):
         Input.set_game_focused(False)
         Input.set_cursor_locked(False)
 
-        # 2. Transition Python state to EDIT immediately so:
-        #    - PlayModeManager.tick() becomes a no-op (no timing / scene loads)
-        #    - Toolbar shows "Play" right away
-        #    - No deferred scene loads from user scripts are processed
-        self._state = PlayModeState.EDIT
-
-        # Re-enable material auto-save now that play mode is over.
+        # Stopping simulation does not publish an authored scene. Keep saves
+        # disabled until the retained snapshot has been restored successfully.
+        self._state = PlayModeState.RESTORING
+        self._pending_step_requests = 0
         from infernux.core.material import Material
         from infernux.renderstack.render_effect import RenderEffect
-        Material._suppress_auto_save = False
-        RenderEffect._suppress_auto_save = False
+        Material._suppress_auto_save = True
+        RenderEffect._suppress_auto_save = True
 
         # 3. Discard any pending runtime scene load queued by user scripts
         #    during the last play frame — we're about to restore the backup.
@@ -887,16 +891,19 @@ class PlayModeManager(PlayModeSerializationMixin):
             self._invalidate_native_gpu_view_state()
             rebuild_ms = (time.perf_counter() - rebuild_started) * 1000.0
             if not restore_ok:
-                Debug.log_error(
-                    "Failed to restore scene after exiting Play Mode "
-                    "— editor may be in a degraded state"
+                raise RuntimeError(
+                    "Cannot restore authored scenes after Play Mode; the snapshot is retained. "
+                    "Resolve the error and use Stop to restore again."
                 )
 
             # The rebuild above restores the authored document identity and
             # its exact revision/saved-revision pair. A second dirty-baseline
             # write here would duplicate ownership and discard revision data.
             notify_started = time.perf_counter()
+            self._state = PlayModeState.EDIT
             self._notify_state_change(old_state, PlayModeState.EDIT)
+            Material._suppress_auto_save = False
+            RenderEffect._suppress_auto_save = False
             notify_ms = (time.perf_counter() - notify_started) * 1000.0
             total_ms = (time.perf_counter() - transition_started) * 1000.0
             self._last_transition_timings_ms = {
@@ -912,7 +919,12 @@ class PlayModeManager(PlayModeSerializationMixin):
             if ok:
                 EngineStatus.flash("已停止 Stopped ■", 1.0, duration=1.5)
             else:
-                EngineStatus.flash("停止失败 Stop Failed", 0.0, duration=2.0)
+                self._state = PlayModeState.RECOVERY_REQUIRED
+                Material._suppress_auto_save = True
+                RenderEffect._suppress_auto_save = True
+                if self._native_engine is not None:
+                    self._native_engine.set_play_mode_rendering(False)
+                EngineStatus.flash("恢复失败，请修正错误后再次停止 Restore Failed", 0.0, duration=4.0)
             if on_complete:
                 try:
                     on_complete(ok)
@@ -1059,7 +1071,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             external_delta_time: Optional externally provided delta time.
                                 If None, calculates from wall clock.
         """
-        if self._state == PlayModeState.EDIT:
+        if not self.is_playing:
             return
 
         # --- Process deferred scene loads (must run outside C++ iteration) ---
@@ -1256,6 +1268,7 @@ class PlayModeManager(PlayModeSerializationMixin):
             PlayModeState.EDIT,
             PlayModeState.PLAYING,
             PlayModeState.PAUSED,
+            PlayModeState.RECOVERY_REQUIRED,
         ):
             return self._reload_play_component_body(
                 file_path,
@@ -1361,8 +1374,11 @@ class PlayModeManager(PlayModeSerializationMixin):
         file_path: str,
     ) -> ScriptDeleteBatch:
         """Stage missing-script replacements for Edit or Play mode."""
-        if self._state not in (PlayModeState.EDIT, PlayModeState.PLAYING, PlayModeState.PAUSED):
-            raise RuntimeError("script deletion requires Edit, Play, or Pause mode")
+        if self._state not in (
+            PlayModeState.EDIT, PlayModeState.PLAYING, PlayModeState.PAUSED,
+            PlayModeState.RECOVERY_REQUIRED,
+        ):
+            raise RuntimeError("script deletion is unavailable during scene restoration")
         target_guid = str(script_guid or "").strip()
         if not target_guid:
             raise ValueError("script deletion requires an asset GUID")
@@ -1431,20 +1447,21 @@ class PlayModeManager(PlayModeSerializationMixin):
         revisions: Iterable[ScriptReloadBatchInput],
     ) -> ScriptReloadBatch:
         """Collect resident-scene targets and stage one stable-class batch."""
-        if self._state not in (
-            PlayModeState.EDIT,
-            PlayModeState.PLAYING,
-            PlayModeState.PAUSED,
-        ):
-            raise ScriptReloadRejected(
-                "batch body reload requires Edit, Play, or Pause mode"
-            )
-
         from infernux.components.script_loader import (
             ComponentBodyReloadRequest,
             ScriptReloadRejected,
             stage_component_body_reload_batch,
         )
+
+        if self._state not in (
+            PlayModeState.EDIT,
+            PlayModeState.PLAYING,
+            PlayModeState.PAUSED,
+            PlayModeState.RECOVERY_REQUIRED,
+        ):
+            raise ScriptReloadRejected(
+                "batch body reload is unavailable during scene restoration"
+            )
 
         targets_by_guid: dict[str, dict[type, list[object]]] = {}
         missing_by_guid: dict[str, list[tuple[int, int, object, dict]]] = {}

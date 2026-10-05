@@ -806,16 +806,19 @@ def test_play_command_reveals_game_view_through_window_manager_only():
     class PlayModeStub:
         def __init__(self):
             self.is_playing = False
+            self.is_edit_mode = True
             self.calls = []
 
         def enter_play_mode(self):
             self.calls.append("enter")
             self.is_playing = True
+            self.is_edit_mode = False
             return True
 
         def exit_play_mode(self):
             self.calls.append("exit")
             self.is_playing = False
+            self.is_edit_mode = True
             return True
 
     play_mode = PlayModeStub()
@@ -847,6 +850,12 @@ def test_play_command_reveals_game_view_through_window_manager_only():
 
     assert registry.execute("play.toggle").accepted
     assert play_mode.calls == ["enter", "exit"]
+    assert window_calls == [("game_view", "play_mode_enter")]
+
+    # Failed restoration has stopped simulation but still owns a Play snapshot.
+    play_mode.is_edit_mode = False
+    assert registry.execute("play.toggle").accepted
+    assert play_mode.calls == ["enter", "exit", "exit"]
     assert window_calls == [("game_view", "play_mode_enter")]
 
 

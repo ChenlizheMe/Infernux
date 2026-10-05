@@ -12,6 +12,8 @@ class PlayModeState(Enum):
     EDIT = auto()
     PLAYING = auto()
     PAUSED = auto()
+    RESTORING = auto()
+    RECOVERY_REQUIRED = auto()
 
 
 @dataclass
@@ -106,6 +108,10 @@ class PlayModeManager:
     @property
     def is_edit_mode(self) -> bool:
         """Returns True if the editor is in edit mode."""
+        ...
+    @property
+    def is_restoring(self) -> bool:
+        """True while the deferred Stop transaction owns the scene graph."""
         ...
     @property
     def delta_time(self) -> float:

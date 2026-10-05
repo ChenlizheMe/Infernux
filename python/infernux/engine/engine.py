@@ -736,12 +736,12 @@ class Engine():
             self._editor_frame_sync_callback()
         
         # Process pending script reloads on the main thread, but throttle polling.
+        pmm = self._play_mode_manager
         rm = self._resources_manager
-        if rm and current_time >= self._next_reload_poll_time:
+        if rm and current_time >= self._next_reload_poll_time and not (pmm and pmm.is_restoring):
             rm.process_pending_reloads()
             self._next_reload_poll_time = current_time + self._reload_poll_interval
         
-        pmm = self._play_mode_manager
         player_runtime = self._player_runtime
         is_playing = (
             player_runtime.is_playing
@@ -778,7 +778,7 @@ class Engine():
                     Time._tick(delta_time)
 
         # Flush throttled material saves — skip during play mode
-        if not is_playing:
+        if not is_playing and (pmm is None or pmm.is_edit_mode):
             self._flush_pending_material_saves()
 
         return delta_time
