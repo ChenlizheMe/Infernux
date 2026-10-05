@@ -7,6 +7,7 @@ from typing import Iterator, List, Optional, Tuple
 from infernux.ui.inx_ui_component import InxUIComponent
 from infernux.ui.inx_ui_screen_component import InxUIScreenComponent
 from infernux.ui.enums import RenderMode, ScreenMatchMode, UIScaleMode
+from infernux.lib import GameObject
 
 
 class UICanvas(InxUIComponent):
@@ -19,7 +20,8 @@ class UICanvas(InxUIComponent):
     Attributes:
         render_mode: ``ScreenOverlay`` or ``CameraOverlay``.
         sort_order: Rendering order (lower draws first).
-        target_camera_id: Camera GameObject ID (CameraOverlay mode only).
+        target_camera: Camera GameObject reference (CameraOverlay mode only).
+        target_camera_id: Compatibility access to the reference's runtime ID.
         reference_width: Design reference width in pixels (default 1920).
         reference_height: Design reference height in pixels (default 1080).
         ui_scale_mode: Canvas scaler mode.
@@ -32,6 +34,7 @@ class UICanvas(InxUIComponent):
     render_mode: RenderMode
     sort_order: int
     target_camera_id: int
+    target_camera: GameObject | None
     reference_width: int
     reference_height: int
     ui_scale_mode: UIScaleMode

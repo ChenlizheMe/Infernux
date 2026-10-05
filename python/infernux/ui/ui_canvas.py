@@ -14,13 +14,16 @@ Hierarchy:
 """
 
 import math
+from numbers import Integral
 
 from infernux.components import (
     disallow_multiple,
     add_component_menu,
     serialized_field,
     int_field,
+    GameObjectRef,
 )
+from infernux.components.fields import FieldType
 from .inx_ui_component import InxUIComponent
 from .inx_ui_screen_component import is_ui_screen_component
 from .enums import RenderMode, UIScaleMode, ScreenMatchMode
@@ -51,12 +54,43 @@ class UICanvas(InxUIComponent):
     Attributes:
         render_mode: ScreenOverlay or CameraOverlay.
         sort_order: Rendering order (lower draws first).
-        target_camera_id: Camera GameObject ID (CameraOverlay mode only).
+        target_camera: Camera GameObject reference (CameraOverlay mode only).
+        target_camera_id: Compatibility access to the reference's runtime ID.
     """
 
     render_mode: RenderMode = serialized_field(default=RenderMode.ScreenOverlay)
     sort_order: int = int_field(0, range=(-1000, 1000), tooltip="Render order (lower = earlier)")
-    target_camera_id: int = int_field(0, tooltip="Camera ID for CameraOverlay mode")
+    target_camera: GameObjectRef = serialized_field(
+        default=None,
+        field_type=FieldType.GAME_OBJECT,
+        required_component="Camera",
+        tooltip="Camera GameObject for CameraOverlay mode",
+    )
+
+    @property
+    def target_camera_id(self) -> int:
+        """Runtime ID view of the serialized camera reference."""
+        reference = type(self).target_camera.get_raw(self)
+        return int(reference.persistent_id) if reference is not None else 0
+
+    @target_camera_id.setter
+    def target_camera_id(self, value: int) -> None:
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            raise TypeError("Canvas target_camera_id must be an integer runtime ID")
+        if value < 0:
+            raise ValueError("Canvas target_camera_id must not be negative")
+        self.target_camera = GameObjectRef(persistent_id=int(value)) if value else None
+
+    def _deserialize_fields_document(self, data, **kwargs):
+        if isinstance(data, dict) and "target_camera_id" in data:
+            if "target_camera" in data:
+                raise ValueError("Canvas document declares both target_camera and target_camera_id")
+            data = dict(data)
+            legacy_id = data.pop("target_camera_id")
+            if isinstance(legacy_id, bool) or not isinstance(legacy_id, Integral) or legacy_id < 0:
+                raise ValueError("Legacy Canvas target_camera_id must be a nonnegative runtime ID")
+            data["target_camera"] = {"$type": "game_object_ref", "object_id": int(legacy_id)}
+        return super()._deserialize_fields_document(data, **kwargs)
 
     # Design reference resolution (serialized, user-editable)
     reference_width: int = int_field(1920, range=(1, 8192), tooltip="Design reference width", slider=False)
