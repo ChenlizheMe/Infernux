@@ -11,7 +11,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -481,7 +480,6 @@ class AssetDatabase
         }
 
         std::mutex mutex;
-        std::condition_variable completedCv;
         std::optional<AssetScanArtifact> artifact;
         std::exception_ptr failure;
         uint64_t expectedQueryGeneration = 0;
@@ -533,6 +531,12 @@ class AssetDatabase
         std::optional<ImportArtifact> artifact;
         std::string error;
         std::thread::id producerThread;
+        std::optional<size_t> skeletonDependency;
+        std::function<std::shared_ptr<const SkeletonDefinitionSnapshot>()> captureSkeletonDefinition;
+        std::shared_ptr<const SkeletonDefinitionSnapshot> producedSkeletonDefinition;
+        bool providesSkeletonDefinition = false;
+        bool scheduled = false;
+        bool complete = false;
     };
 
     struct WorkerMetadataPrepare
@@ -602,6 +606,7 @@ class AssetDatabase
         std::vector<DocumentTransactionEntry> metadataWrites;
         JobHandle metadataJobs;
         JobHandle importJobs;
+        std::vector<size_t> importWave;
         JobHandle metadataWriteJob;
         JobHandle indexBuildJob;
         std::exception_ptr metadataWriteFailure;
@@ -665,6 +670,7 @@ class AssetDatabase
                                bool includeCatalog = true);
     [[nodiscard]] bool CommitScanArtifact(AssetScanArtifact artifact, uint64_t expectedQueryGeneration);
     [[nodiscard]] bool ContinuePendingMetadataMerge(const std::shared_ptr<PendingRefreshCommit> &state);
+    [[nodiscard]] bool BeginNextImportWave(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingImportMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     [[nodiscard]] bool ContinuePendingFileStateMerge(const std::shared_ptr<PendingRefreshCommit> &state);
     void BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshCommit> &state);
@@ -687,6 +693,8 @@ class AssetDatabase
                                         AssetMutationResult &result);
     ImportRequest MakeImportRequest(const std::string &guid, const std::string &path, bool isReimport,
                                     const InxResourceMeta &metadata) const;
+    ImportRequest MakeImportRequestBase(const std::string &guid, const std::string &path, bool isReimport,
+                                        const InxResourceMeta &metadata) const;
     void PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata,
                                const AtomicFileState *expectedMetadata, double *prepareMilliseconds = nullptr,
                                double *persistenceMilliseconds = nullptr,

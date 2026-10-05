@@ -229,6 +229,55 @@ InxResourceMeta LoadMetadataDocument(const std::string &path, AtomicFileState *c
     return metadata;
 }
 
+std::string CopiedSkeletonOwner(const ImportRequest &request)
+{
+    if (request.resourceType != ResourceType::Mesh)
+        return {};
+    const auto settings = MeshImportSettings::Read(request.metadata);
+    if (settings.skeletonDefinitionMode != "copy")
+        return {};
+    if (!IsCanonicalAssetGuid(settings.skeletonDefinitionGuid) || settings.skeletonDefinitionGuid == request.guid)
+        throw std::invalid_argument("copied skeleton definition must reference another mesh asset GUID");
+    return settings.skeletonDefinitionGuid;
+}
+
+std::string SkeletonSourceHash(const InxResourceMeta *metadata)
+{
+    if (!metadata || metadata->GetResourceType() != ResourceType::Mesh || !metadata->HasKey("content_hash"))
+        throw std::invalid_argument("copied skeleton definition asset is unavailable");
+    return metadata->GetDataAs<std::string>("content_hash");
+}
+
+std::shared_ptr<const SkeletonDefinitionSnapshot>
+ReadSkeletonSnapshot(const std::string &guid, const std::string &sourceHash, const std::string &artifactPath)
+{
+    std::ifstream stream(ToFsPath(artifactPath), std::ios::binary);
+    if (!stream)
+        throw std::invalid_argument("copied skeleton definition has no current skinned artifact");
+    stream.seekg(0, std::ios::end);
+    const std::streamoff size = stream.tellg();
+    if (size <= 0 || static_cast<uintmax_t>(size) > std::numeric_limits<size_t>::max())
+        throw std::invalid_argument("copied skeleton definition artifact is invalid");
+    stream.seekg(0, std::ios::beg);
+    auto snapshot = std::make_shared<SkeletonDefinitionSnapshot>();
+    snapshot->ownerGuid = guid;
+    snapshot->sourceContentHash = sourceHash;
+    snapshot->artifactBytes.resize(static_cast<size_t>(size));
+    if (!stream.read(snapshot->artifactBytes.data(), size))
+        throw std::invalid_argument("copied skeleton definition artifact could not be read");
+    return snapshot;
+}
+
+// A reused definition is read once on an import worker and shared by all its
+// consumers. Captured GUID/hash/path are immutable; failed reads are retained,
+// not retried by each model and never resolved against a mutable live catalog.
+struct CachedSkeletonCapture
+{
+    std::once_flag once;
+    std::shared_ptr<const SkeletonDefinitionSnapshot> snapshot;
+    std::exception_ptr failure;
+};
+
 std::string
 RuntimeArtifactRelativePath(const std::string &guid, ResourceType type,
                             ImportArtifact::RuntimeArtifactKind kind = ImportArtifact::RuntimeArtifactKind::Primary)
@@ -1248,7 +1297,6 @@ void AssetDatabase::BeginRefresh()
                 state->failure = failure;
                 state->complete = true;
             }
-            state->completedCv.notify_all();
         });
     } catch (...) {
         m_pendingAssetScan.reset();
@@ -1274,6 +1322,10 @@ bool AssetDatabase::TryCommitRefresh()
             }
             if (state->phase == PendingRefreshCommit::Phase::Import) {
                 if (state->importJobs.IsValid() && !state->importJobs.IsComplete())
+                    return false;
+                for (const auto index : state->importWave)
+                    state->workerImports[index].complete = true;
+                if (BeginNextImportWave(state))
                     return false;
                 state->phase = PendingRefreshCommit::Phase::ImportMerge;
             }
@@ -1378,9 +1430,13 @@ void AssetDatabase::WaitForPendingWork() const noexcept
         } catch (...) {
         }
     }
-    if (const auto scan = m_pendingAssetScan) {
-        std::unique_lock<std::mutex> lock(scan->mutex);
-        scan->completedCv.wait(lock, [&scan] { return scan->complete; });
+    if (m_pendingAssetScan) {
+        // The scan is a JobSystem task. Waiting on its fence also drives it in
+        // inline mode, where no worker exists to signal a condition variable.
+        try {
+            JobSystem::Get().WaitPassive(m_pendingAssetScanJob);
+        } catch (...) {
+        }
         return;
     }
     if (const auto commit = m_pendingRefreshCommit) {
@@ -1735,14 +1791,7 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
         WorkerImport item;
         item.assetIndex = assetIndex;
         item.importer = importer;
-        item.request.sourcePath = asset.path;
-        item.request.projectRoot = m_projectRoot;
-        item.request.blenderExecutable = m_blenderExecutable;
-        item.request.blenderExportScript = m_blenderExportScript;
-        item.request.guid = asset.guid;
-        item.request.resourceType = metadata->second->GetResourceType();
-        item.request.metadata = *metadata->second;
-        item.request.metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(asset.path));
+        item.request = MakeImportRequestBase(asset.guid, asset.path, false, *metadata->second);
         item.expectedSource = asset.source;
         state->workerImports.push_back(std::move(item));
         ++processed;
@@ -1764,6 +1813,10 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
     // One immutable catalog for the batch, including freshly assigned GUIDs
     // whose sidecars have not yet been written. Workers never query live state.
     std::shared_ptr<QuerySnapshot> textureCatalog;
+    std::unordered_map<std::string, size_t> importByGuid;
+    for (size_t index = 0; index < state->workerImports.size(); ++index)
+        importByGuid.emplace(state->workerImports[index].request.guid, index);
+    std::unordered_map<std::string, std::shared_ptr<CachedSkeletonCapture>> reusedDefinitions;
     for (auto &item : state->workerImports) {
         if (item.request.resourceType != ResourceType::Mesh)
             continue;
@@ -1773,19 +1826,104 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
             textureCatalog->metas.insert(workingSet.metas.begin(), workingSet.metas.end());
         }
         item.request.resolveTextureGuid = ModelTextureResolver(textureCatalog);
+        try {
+            const auto owner = CopiedSkeletonOwner(item.request);
+            if (owner.empty())
+                continue;
+            const auto metadata = workingSet.metas.find(owner);
+            const auto sourceHash =
+                SkeletonSourceHash(metadata == workingSet.metas.end() ? nullptr : metadata->second.get());
+            if (const auto dependency = importByGuid.find(owner); dependency != importByGuid.end()) {
+                item.skeletonDependency = dependency->second;
+                state->workerImports[dependency->second].providesSkeletonDefinition = true;
+            } else {
+                const auto result = workingSet.importResults.find(owner);
+                if (result != workingSet.importResults.end() && !result->second.succeeded)
+                    throw std::invalid_argument("copied skeleton definition import failed: " + owner);
+                auto &capture = reusedDefinitions[owner];
+                if (!capture)
+                    capture = std::make_shared<CachedSkeletonCapture>();
+                const auto artifactPath = GetSkinnedMeshArtifactPath(owner);
+                item.captureSkeletonDefinition = [capture, owner, sourceHash, artifactPath] {
+                    std::call_once(capture->once, [&] {
+                        try {
+                            capture->snapshot = ReadSkeletonSnapshot(owner, sourceHash, artifactPath);
+                        } catch (...) {
+                            capture->failure = std::current_exception();
+                        }
+                    });
+                    if (capture->failure)
+                        std::rethrow_exception(capture->failure);
+                    return capture->snapshot;
+                };
+            }
+        } catch (const std::exception &exception) {
+            item.error = exception.what();
+        }
     }
 
     state->phase = PendingRefreshCommit::Phase::Import;
     state->importStarted = std::chrono::steady_clock::now();
+    (void)BeginNextImportWave(state);
+    return true;
+}
+
+bool AssetDatabase::BeginNextImportWave(const std::shared_ptr<PendingRefreshCommit> &state)
+{
+    state->importWave.clear();
+    for (size_t index = 0; index < state->workerImports.size(); ++index) {
+        auto &item = state->workerImports[index];
+        if (item.scheduled || item.complete)
+            continue;
+        if (item.skeletonDependency && !state->workerImports[*item.skeletonDependency].complete)
+            continue;
+        item.scheduled = true;
+        state->importWave.push_back(index);
+    }
+    if (state->importWave.empty()) {
+        // Every runnable predecessor has finished. Remaining nodes are in, or
+        // blocked by, a cycle; they never consume stale on-disk artifacts.
+        for (auto &item : state->workerImports) {
+            if (!item.complete) {
+                item.error = "copied skeleton import dependency cycle: " + item.request.guid;
+                item.complete = true;
+                item.producerThread = m_ownerThread;
+            }
+        }
+        return false;
+    }
     state->importJobs =
-        JobSystem::Get().ScheduleBatch(static_cast<uint32_t>(state->workerImports.size()), [state](uint32_t index) {
+        JobSystem::Get().ScheduleBatch(static_cast<uint32_t>(state->importWave.size()), [state](uint32_t waveIndex) {
+            const auto index = state->importWave[waveIndex];
             return [state, index] {
                 auto &item = state->workerImports[index];
                 item.producerThread = std::this_thread::get_id();
                 try {
+                    if (!item.error.empty())
+                        return;
+                    if (item.skeletonDependency) {
+                        const auto &dependency = state->workerImports[*item.skeletonDependency];
+                        if (!dependency.error.empty() || !dependency.producedSkeletonDefinition)
+                            throw std::invalid_argument("copied skeleton definition import failed: " +
+                                                        dependency.request.guid);
+                        item.request.skeletonDefinition = dependency.producedSkeletonDefinition;
+                    } else if (item.captureSkeletonDefinition) {
+                        item.request.skeletonDefinition = item.captureSkeletonDefinition();
+                    }
                     item.artifact = item.importer->Import(item.request);
                     ValidateImportedDependencyIdentities(*item.artifact, item.request.sourcePath);
                     RequireUnchangedFingerprint(item.request.sourcePath, item.expectedSource);
+                    if (item.providesSkeletonDefinition) {
+                        const auto &outputs = item.artifact->runtimeCpuArtifacts;
+                        const auto skinned = std::find_if(outputs.begin(), outputs.end(), [](const auto &output) {
+                            return output.kind == ImportArtifact::RuntimeArtifactKind::SkinnedMesh;
+                        });
+                        if (skinned == outputs.end())
+                            throw std::invalid_argument("copied skeleton definition has no skinned artifact");
+                        item.producedSkeletonDefinition =
+                            std::make_shared<const SkeletonDefinitionSnapshot>(SkeletonDefinitionSnapshot{
+                                item.request.guid, SkeletonSourceHash(&item.artifact->metadata), skinned->bytes});
+                    }
                 } catch (const std::exception &exception) {
                     item.error = exception.what();
                 } catch (...) {
@@ -3042,6 +3180,25 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
 ImportRequest AssetDatabase::MakeImportRequest(const std::string &guid, const std::string &path, bool isReimport,
                                                const InxResourceMeta &metadata) const
 {
+    auto request = MakeImportRequestBase(guid, path, isReimport, metadata);
+    if (request.resourceType == ResourceType::Mesh)
+        request.resolveTextureGuid = ModelTextureResolver(LoadQuerySnapshot());
+    const auto owner = CopiedSkeletonOwner(request);
+    if (!owner.empty()) {
+        const auto definitionMeta = m_metas.find(owner);
+        const auto sourceHash =
+            SkeletonSourceHash(definitionMeta == m_metas.end() ? nullptr : definitionMeta->second.get());
+        const auto result = m_importResults.find(owner);
+        if (result != m_importResults.end() && !result->second.succeeded)
+            throw std::invalid_argument("copied skeleton definition import failed: " + owner);
+        request.skeletonDefinition = ReadSkeletonSnapshot(owner, sourceHash, GetSkinnedMeshArtifactPath(owner));
+    }
+    return request;
+}
+
+ImportRequest AssetDatabase::MakeImportRequestBase(const std::string &guid, const std::string &path, bool isReimport,
+                                                   const InxResourceMeta &metadata) const
+{
     ImportRequest request;
     request.sourcePath = path;
     request.projectRoot = m_projectRoot;
@@ -3050,38 +3207,8 @@ ImportRequest AssetDatabase::MakeImportRequest(const std::string &guid, const st
     request.guid = guid;
     request.resourceType = GetResourceTypeForPath(path);
     request.metadata = metadata;
+    request.metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(path));
     request.isReimport = isReimport;
-    if (request.resourceType == ResourceType::Mesh) {
-        request.resolveTextureGuid = ModelTextureResolver(LoadQuerySnapshot());
-        const MeshImportSettings settings = MeshImportSettings::Read(metadata);
-        if (settings.skeletonDefinitionMode == "copy") {
-            if (!IsCanonicalAssetGuid(settings.skeletonDefinitionGuid) || settings.skeletonDefinitionGuid == guid)
-                throw std::invalid_argument("copied skeleton definition must reference another mesh asset GUID");
-            const auto definitionMeta = m_metas.find(settings.skeletonDefinitionGuid);
-            const auto definitionPath = m_guidToPath.find(settings.skeletonDefinitionGuid);
-            if (definitionMeta == m_metas.end() || !definitionMeta->second || definitionPath == m_guidToPath.end() ||
-                GetResourceTypeForPath(definitionPath->second) != ResourceType::Mesh ||
-                !definitionMeta->second->HasKey("content_hash"))
-                throw std::invalid_argument("copied skeleton definition asset is unavailable");
-            const std::string artifactPath = GetSkinnedMeshArtifactPath(settings.skeletonDefinitionGuid);
-            std::ifstream stream(ToFsPath(artifactPath), std::ios::binary);
-            if (!stream)
-                throw std::invalid_argument("copied skeleton definition has no current skinned artifact");
-            stream.seekg(0, std::ios::end);
-            const std::streamoff size = stream.tellg();
-            if (size <= 0 || static_cast<uintmax_t>(size) > std::numeric_limits<size_t>::max())
-                throw std::invalid_argument("copied skeleton definition artifact is invalid");
-            stream.seekg(0, std::ios::beg);
-            SkeletonDefinitionSnapshot snapshot;
-            snapshot.ownerGuid = settings.skeletonDefinitionGuid;
-            snapshot.sourceContentHash = definitionMeta->second->GetDataAs<std::string>("content_hash");
-            snapshot.artifactBytes.resize(static_cast<size_t>(size));
-            stream.read(snapshot.artifactBytes.data(), size);
-            if (!stream)
-                throw std::invalid_argument("copied skeleton definition artifact could not be read");
-            request.skeletonDefinition = std::move(snapshot);
-        }
-    }
     return request;
 }
 

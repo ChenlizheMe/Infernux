@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -40,7 +41,7 @@ struct ImportRequest
     // Native immutable catalog lookup, captured before worker execution.
     // No AssetDatabase mutation or Python callback is permitted here.
     std::function<std::string(const std::string &, bool linear)> resolveTextureGuid;
-    std::optional<SkeletonDefinitionSnapshot> skeletonDefinition;
+    std::shared_ptr<const SkeletonDefinitionSnapshot> skeletonDefinition;
 };
 
 /**

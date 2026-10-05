@@ -606,6 +606,92 @@ void TestModelSettingsPublishOnlyAfterSuccessfulImport()
     }
 }
 
+void TestCopiedSkeletonRefreshWithLimitedWorkers(bool inlineJobs)
+{
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("infernux-copied-skeleton-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto authored = root / "author";
+    const auto clone = root / "clone";
+    const auto fixture =
+        std::filesystem::path(INFERNUX_SOURCE_DIR) / "external/assimp/test/models/FBX/animation_with_skeleton.fbx";
+    std::filesystem::create_directories(authored / "Assets");
+    std::filesystem::copy_file(fixture, authored / "Assets/Z_Definition.fbx");
+    std::filesystem::copy_file(fixture, authored / "Assets/A_Copy.fbx");
+    if (inlineJobs)
+        infernux::JobSystem::InitializeInline();
+    else
+        infernux::JobSystem::Initialize(1);
+    auto &registry = infernux::AssetRegistry::Instance();
+    const auto initialize = [&](const std::filesystem::path &project) {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(project));
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::Mesh, std::make_unique<infernux::MeshLoader>());
+        registry.RegisterLoader(infernux::ResourceType::Texture, std::make_unique<infernux::TextureLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        return registry.GetAssetDatabase();
+    };
+    try {
+        auto *database = initialize(authored);
+        const auto definitionPath = authored / "Assets/Z_Definition.fbx";
+        const auto copyPath = authored / "Assets/A_Copy.fbx";
+        const auto definition = database->ImportAsset(infernux::FromFsPath(definitionPath));
+        const auto copy = database->ImportAsset(infernux::FromFsPath(copyPath));
+        Require(definition.succeeded && copy.succeeded, "could not author copied skeleton fixtures");
+        Require(database
+                    ->ReimportAsset(infernux::FromFsPath(copyPath), {{"skeleton_definition_mode", "copy"},
+                                                                     {"skeleton_definition_guid", definition.guid},
+                                                                     {"skeleton_definition_id", "skeleton"},
+                                                                     {"rig_root_node", ""}})
+                    .succeeded,
+                "could not author copied skeleton settings");
+        const auto verify = [&](const std::filesystem::path &project) {
+            std::ifstream input(infernux::ToFsPath(database->GetAssetIndexPath()));
+            const auto index = nlohmann::json::parse(input);
+            for (const auto &identity : {definition.guid, copy.guid}) {
+                bool found = false;
+                for (const auto &entry : index.at("entries")) {
+                    if (entry.at("guid") == identity) {
+                        Require(entry.at("import_succeeded").get<bool>(),
+                                "copied skeleton batch import failed with limited workers");
+                        found = true;
+                    }
+                }
+                Require(found, "copied skeleton asset is missing from imported catalog");
+                const auto metadata = database->GetMetaByGuid(identity);
+                Require(metadata && metadata->GetStringData("published_skeleton_definition_guid") == definition.guid,
+                        "copied skeleton batch changed published skeleton identity");
+            }
+            Require(database->GetGuidFromPath(infernux::FromFsPath(project / "Assets/A_Copy.fbx")) == copy.guid,
+                    "copied skeleton batch changed source GUID");
+        };
+        // Force a definition and its lexically earlier dependent into the same batch.
+        for (const auto &path : {definitionPath, copyPath})
+            std::filesystem::last_write_time(path, std::filesystem::last_write_time(path) + std::chrono::seconds(1));
+        database->Refresh();
+        verify(authored);
+        registry.Shutdown();
+        std::filesystem::create_directories(clone);
+        std::filesystem::copy(authored / "Assets", clone / "Assets", std::filesystem::copy_options::recursive);
+        Require(!std::filesystem::exists(clone / "Library"), "clone unexpectedly has local import artifacts");
+        database = initialize(clone);
+        database->Refresh();
+        verify(clone);
+        std::cout << "Copied skeleton warm/clean refresh passed: " << (inlineJobs ? "inline" : "one worker")
+                  << std::endl;
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (registry.IsInitialized())
+            registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
 void TestRuntimeAssetCatalogResolvesPrimaryContentArtifact()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-runtime-content-catalog";
@@ -836,6 +922,8 @@ int main()
         TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar();
         TestCompositeModelPublishesExternalTextureGuidDependencies();
         TestModelSettingsPublishOnlyAfterSuccessfulImport();
+        TestCopiedSkeletonRefreshWithLimitedWorkers(false);
+        TestCopiedSkeletonRefreshWithLimitedWorkers(true);
         TestRuntimeAssetCatalogResolvesBuiltInArchiveResources();
         TestRuntimeAssetCatalogResolvesPrimaryContentArtifact();
         TestCookedModelTexturesKeepArtifactPaths();
