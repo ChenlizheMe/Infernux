@@ -80,6 +80,12 @@ def test_created_scene_and_material_use_current_native_document_contract(scene, 
     assert document["shaders"]["fragment"]["shader_id"] == "Lit"
     assert document["builtin"] is False
     assert document["properties"]["baseColor"]["type"] == 7
+    assert material.render_state_overrides == 0
+    material.apply_shader_render_meta("back", "off", "less_equal", "alpha", 3000, "transparent")
+    inherited_state = material.get_render_state()
+    assert inherited_state.render_queue == 3000
+    assert inherited_state.blend_enable
+    assert not inherited_state.depth_write_enable
 
     success, error = ops.create_physic_material(str(directory), "接触材质", database)
     assert success, error

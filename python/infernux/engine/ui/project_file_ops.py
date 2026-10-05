@@ -81,6 +81,9 @@ def _new_material_document(name: str) -> dict:
     document = InxMaterial.create_default_lit().serialize_document()
     document["name"] = name
     document["builtin"] = False
+    # The built-in factory fixes its own render state. A new editable asset
+    # inherits shader defaults until the user explicitly overrides a field.
+    document.pop("renderStateOverrides", None)
     return document
 
 
