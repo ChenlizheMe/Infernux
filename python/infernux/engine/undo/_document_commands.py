@@ -90,6 +90,12 @@ class DocumentRevisionCommand(UndoCommand):
     def dispose(self) -> None:
         self._command.dispose()
 
+    def scene_world_id(self) -> int:
+        return self._command.scene_world_id()
+
+    def scene_world_ids(self) -> tuple[int, ...]:
+        return self._command.scene_world_ids()
+
     def bind_operation_id(self, operation_id: str) -> None:
         super().bind_operation_id(operation_id)
         self._command.bind_operation_id(self.operation_id)

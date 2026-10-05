@@ -172,12 +172,16 @@ class CompoundCommand(UndoCommand):
             command.bind_operation_id(self.operation_id)
 
     def scene_world_id(self) -> int:
-        world_ids = {
+        world_ids = self.scene_world_ids()
+        return world_ids[0] if len(world_ids) == 1 else 0
+
+    def scene_world_ids(self) -> tuple[int, ...]:
+        return tuple(dict.fromkeys(
             world_id
             for command in self._commands
-            if (world_id := command.scene_world_id()) > 0
-        }
-        return world_ids.pop() if len(world_ids) == 1 else 0
+            if command.marks_dirty
+            for world_id in command.scene_world_ids()
+        ))
 
 
 class LambdaCommand(UndoCommand):

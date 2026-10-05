@@ -677,8 +677,12 @@ class UndoManager:
                 return None
         except (AttributeError, ImportError, RuntimeError):
             pass
-        targets = [target for world_id in dict.fromkeys(cmd.scene_world_ids())
-                   if (target := self._scene_revision_target_for_world(world_id)) is not None]
+        targets = {}
+        for world_id in dict.fromkeys(cmd.scene_world_ids()):
+            target = self._scene_revision_target_for_world(world_id)
+            if target is not None:
+                document, locator = target
+                targets[locator.stable_id] = document, locator
         try:
             from infernux.engine.interaction import FocusService
 
@@ -686,7 +690,7 @@ class UndoManager:
         except (AttributeError, ImportError, RuntimeError):
             source_view_id = ""
         return tuple((locator, int(document.revision), str(source_view_id or ""))
-                     for document, locator in targets)
+                     for document, locator in targets.values())
 
     @staticmethod
     def _bind_scene_revision(cmd: UndoCommand, target):
