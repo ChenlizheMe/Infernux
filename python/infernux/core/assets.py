@@ -40,9 +40,12 @@ from infernux.core.audio_clip import AudioClip
 from infernux.core.physic_material import PhysicMaterial
 from infernux.core.asset_types import (
     IMAGE_EXTENSIONS, SHADER_EXTENSIONS, MATERIAL_EXTENSIONS, AUDIO_EXTENSIONS,
+    MESH_EXTENSIONS,
     ANIMCLIP_EXTENSIONS,
     ANIMCLIP3D_EXTENSIONS,
     ANIMFSM_EXTENSIONS,
+    ANIMTIMELINE_EXTENSIONS,
+    TIMELINEFSM_EXTENSIONS,
     RENDER_EFFECT_EXTENSIONS,
     PARTICLE_GRAPH_EXTENSIONS,
     PHYSIC_MATERIAL_EXTENSIONS,
@@ -51,6 +54,7 @@ from infernux.core.asset_types import (
 from infernux.core.animation_clip import AnimationClip
 from infernux.core.animation_clip3d import AnimationClip3D
 from infernux.core.anim_state_machine import AnimStateMachine
+from infernux.core.animation_timeline import AnimationTimeline
 from infernux.debug import Debug
 from infernux.engine.path_utils import path_key, portable_path, resolved_path
 
@@ -2140,7 +2144,7 @@ class AssetManager:
     def _type_from_extension(cls, ext: str) -> Optional[Type]:
         """Map file extension to Python asset type."""
         ext = ext.lower()
-        if ext == ".inxmesh":
+        if ext == ".inxmesh" or ext in MESH_EXTENSIONS:
             return Mesh
         if ext == ".inxtex":
             return Texture
@@ -2161,15 +2165,17 @@ class AssetManager:
             return AnimationClip
         if ext in ANIMCLIP3D_EXTENSIONS:
             return AnimationClip3D
-        if ext in ANIMFSM_EXTENSIONS:
+        if ext in ANIMFSM_EXTENSIONS or ext in TIMELINEFSM_EXTENSIONS:
             return AnimStateMachine
+        if ext in ANIMTIMELINE_EXTENSIONS:
+            return AnimationTimeline
         if ext in {".effect", ".effectgroup"}:
             from infernux.renderstack.render_effect import RenderEffect
             return RenderEffect
         if ext in PARTICLE_GRAPH_EXTENSIONS:
             from infernux.particle.asset import ParticleGraphAsset
             return ParticleGraphAsset
-        if ext == ".inxdata":
+        if ext in {".inxdata", ".inxasset"}:
             from infernux.core.data_asset import DataAsset
             return DataAsset
         if ext == ".rendertexture":
@@ -2204,6 +2210,8 @@ class AssetManager:
             return AnimationClip3D.load(path)
         if asset_type is AnimStateMachine:
             return AnimStateMachine.load(path)
+        if asset_type is AnimationTimeline:
+            return AnimationTimeline.load(path)
         from infernux.renderstack.render_effect import EditableRenderEffectGroup, RenderEffect
         if asset_type is RenderEffect or (
             asset_type is None
