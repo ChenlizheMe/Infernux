@@ -890,6 +890,10 @@ void MeshRenderer::SetReceivesShadows(bool receive)
 
 void MeshRenderer::SetMaterial(uint32_t slot, const std::string &guid)
 {
+    if (guid.empty()) {
+        SetMaterial(slot, std::shared_ptr<InxMaterial>{});
+        return;
+    }
     if (slot >= m_materials.size())
         m_materials.resize(slot + 1);
     EnsureParameterSlot(slot);
@@ -926,7 +930,12 @@ void MeshRenderer::SetMaterials(const std::vector<std::string> &guids)
     m_runtimeParameters.resize(guids.size());
     m_parameterBlocks.resize(guids.size());
     for (uint32_t i = 0; i < guids.size(); ++i) {
-        m_materials[i].SetGuid(guids[i]);
+        // Empty GUID is an explicit clear, including transient resources whose
+        // previous GUID was also empty. SetGuid alone retains that cached pointer.
+        if (guids[i].empty())
+            m_materials[i] = AssetRef<InxMaterial>{};
+        else
+            m_materials[i].SetGuid(guids[i]);
         AssetRegistry::Instance().Resolve(m_materials[i], ResourceType::Material);
 
         if (!guids[i].empty())
