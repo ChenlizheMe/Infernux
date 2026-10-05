@@ -160,6 +160,8 @@ yield child
 
 Yielding `self.child_sequence()` directly produces an unsupported generator value. The next update check raises `TypeError`, stops the parent, and never schedules that generator. Always use `start_coroutine()` when the child needs independent scheduling and a handle.
 
+Errors from wait predicates or unsupported yielded values stop and close the affected coroutine. The runtime reports the error in Console while other coroutines and components continue. If both the wait and its cleanup fail, both errors are retained.
+
 Stopping a generator marks its handle finished and calls `close()`. Put essential generator-local cleanup in `finally`:
 
 ```python
@@ -374,6 +376,8 @@ yield child
 ```
 
 直接 `yield self.child_sequence()` 会产生调度器不支持的生成器值。下一次更新检查会报 `TypeError` 并停止父流程，该生成器不会被调度。需要独立调度和句柄时，必须调用 `start_coroutine()`。
+
+等待条件抛错或产生不支持的 `yield` 值时，会停止并关闭出错的协程。运行时在 Console 报告错误，其它协程和组件继续运行。若等待与清理都出错，会保留两项错误。
 
 停止操作会把句柄标记为完成，并调用生成器的 `close()`。生成器内部的重要清理可放在 `finally` 中：
 

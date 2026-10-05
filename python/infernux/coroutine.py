@@ -390,6 +390,7 @@ class CoroutineScheduler:
 
         was_active = True
         to_remove: list[Coroutine] = []
+        errors: list[Exception] = []
 
         # Iterate a snapshot so that coroutines started from within user code
         # during _advance don't affect the current tick.
@@ -403,34 +404,44 @@ class CoroutineScheduler:
             should_advance = False
             current = co._current_yield
 
-            if current is None:
-                # ``yield None`` / bare ``yield`` → wait one frame
-                should_advance = True
-            elif isinstance(current, WaitForSeconds):
-                should_advance = current._tick(dt)
-            elif isinstance(current, WaitForSecondsRealtime):
-                should_advance = current._is_ready()
-            elif isinstance(current, WaitForEndOfFrame):
-                should_advance = current._tick()
-            elif isinstance(current, WaitForFrames):
-                should_advance = current._tick()
-            elif isinstance(current, WaitForFixedUpdate):
-                # Already in the correct phase (fixed_update)
-                should_advance = True
-            elif isinstance(current, WaitUntil):
-                should_advance = current._is_ready()
-            elif isinstance(current, WaitWhile):
-                should_advance = current._is_ready()
-            elif isinstance(current, Coroutine):
-                # Nested/chained coroutine — wait for it to finish
-                should_advance = current._is_finished
-            else:
-                self.stop(co)
-                raise TypeError(
-                    "unsupported coroutine yield value "
-                    f"{type(current).__name__}; yield None, a yield instruction, "
-                    "or a Coroutine handle"
-                )
+            try:
+                if current is None:
+                    # ``yield None`` / bare ``yield`` → wait one frame
+                    should_advance = True
+                elif isinstance(current, WaitForSeconds):
+                    should_advance = current._tick(dt)
+                elif isinstance(current, WaitForSecondsRealtime):
+                    should_advance = current._is_ready()
+                elif isinstance(current, WaitForEndOfFrame):
+                    should_advance = current._tick()
+                elif isinstance(current, WaitForFrames):
+                    should_advance = current._tick()
+                elif isinstance(current, WaitForFixedUpdate):
+                    # Already in the correct phase (fixed_update)
+                    should_advance = True
+                elif isinstance(current, WaitUntil):
+                    should_advance = current._is_ready()
+                elif isinstance(current, WaitWhile):
+                    should_advance = current._is_ready()
+                elif isinstance(current, Coroutine):
+                    # Nested/chained coroutine — wait for it to finish
+                    should_advance = current._is_finished
+                else:
+                    raise TypeError(
+                        "unsupported coroutine yield value "
+                        f"{type(current).__name__}; yield None, a yield instruction, "
+                        "or a Coroutine handle"
+                    )
+            except Exception as exc:
+                try:
+                    self.stop(co)
+                except Exception as cleanup_error:
+                    errors.append(ExceptionGroup("coroutine wait and cleanup failed", [exc, cleanup_error]))
+                else:
+                    errors.append(exc)
+                # stop() already published any active-state transition.
+                was_active = bool(self._coroutines)
+                continue
 
             if should_advance:
                 self._advance(co)
@@ -442,6 +453,10 @@ class CoroutineScheduler:
                 self._coroutines.remove(co)
                 self._stale_epoch_count -= int(co._is_stale_epoch)
         self._notify_active_changed(was_active)
+        if len(errors) == 1:
+            raise errors[0]
+        if errors:
+            raise ExceptionGroup("coroutine waits failed", errors)
 
     def _advance(self, co: Coroutine) -> None:
         """Call ``next()`` on the generator and update the coroutine state."""

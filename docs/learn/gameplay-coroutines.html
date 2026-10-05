@@ -233,6 +233,7 @@
 </code></pre></div>
 
 <p>Yielding <code>self.child_sequence()</code> directly produces an unsupported generator value. The next update check raises <code>TypeError</code>, stops the parent, and never schedules that generator. Always use <code>start_coroutine()</code> when the child needs independent scheduling and a handle.</p>
+<p>Errors from wait predicates or unsupported yielded values stop and close the affected coroutine. The runtime reports the error in Console while other coroutines and components continue. If both the wait and its cleanup fail, both errors are retained.</p>
 <p>Stopping a generator marks its handle finished and calls <code>close()</code>. Put essential generator-local cleanup in <code>finally</code>:</p>
 <div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">temporary_state</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">True</span>
@@ -479,6 +480,7 @@
 </code></pre></div>
 
 <p>直接 <code>yield self.child_sequence()</code> 会产生调度器不支持的生成器值。下一次更新检查会报 <code>TypeError</code> 并停止父流程，该生成器不会被调度。需要独立调度和句柄时，必须调用 <code>start_coroutine()</code>。</p>
+<p>等待条件抛错或产生不支持的 <code>yield</code> 值时，会停止并关闭出错的协程。运行时在 Console 报告错误，其它协程和组件继续运行。若等待与清理都出错，会保留两项错误。</p>
 <p>停止操作会把句柄标记为完成，并调用生成器的 <code>close()</code>。生成器内部的重要清理可放在 <code>finally</code> 中：</p>
 <div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">temporary_state</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_busy</span> <span class="o">=</span> <span class="kc">True</span>

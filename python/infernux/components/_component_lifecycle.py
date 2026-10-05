@@ -699,15 +699,22 @@ class RuntimeExecutionScheduler:
                 coroutine_scheduler = self._active_coroutine_scheduler(component)
                 if not bool(getattr(component, "_runtime_active_in_hierarchy", True)):
                     continue
-                if phase == "update":
-                    if coroutine_scheduler is not None:
-                        coroutine_scheduler.tick_update(delta_time, epoch=frame.epoch)
-                elif phase == "fixed_update":
-                    if coroutine_scheduler is not None:
-                        coroutine_scheduler.tick_fixed_update(delta_time, epoch=frame.epoch)
-                elif phase == "late_update":
-                    if coroutine_scheduler is not None:
-                        coroutine_scheduler.tick_late_update(delta_time, epoch=frame.epoch)
+                try:
+                    if phase == "update":
+                        if coroutine_scheduler is not None:
+                            coroutine_scheduler.tick_update(delta_time, epoch=frame.epoch)
+                    elif phase == "fixed_update":
+                        if coroutine_scheduler is not None:
+                            coroutine_scheduler.tick_fixed_update(delta_time, epoch=frame.epoch)
+                    elif phase == "late_update":
+                        if coroutine_scheduler is not None:
+                            coroutine_scheduler.tick_late_update(delta_time, epoch=frame.epoch)
+                except Exception as exc:
+                    reporter = getattr(component, "_report_lifecycle_exception", None)
+                    if callable(reporter):
+                        reporter(exc)
+                    else:
+                        self._counters["phase_errors"] += 1
                 self._counters["phase_dispatches"] += 1
 
     def execute_frame(

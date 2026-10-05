@@ -57,6 +57,50 @@ class _Owner:
         self.active_in_hierarchy = active
 
 
+@pytest.mark.parametrize("native_frame", [False, True])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_coroutine_wait_errors_are_reported_without_escaping_runtime_frame(native_frame, enabled):
+    from infernux.coroutine import CoroutineScheduler
+
+    errors = []
+    cleaned = []
+    runtime = RuntimeExecutionScheduler()
+    failing = _ScheduledProbe(1)
+    failing._enabled = enabled
+    failing._report_lifecycle_exception = errors.append
+    failing._runtime_coroutine_scheduler = CoroutineScheduler()
+
+    def invalid():
+        try:
+            yield object()
+        finally:
+            cleaned.append(True)
+
+    handle = failing._runtime_coroutine_scheduler.start(invalid())
+    following = _ScheduledProbe(2)
+    runtime.register_component(failing)
+    runtime.register_component(following)
+    if native_frame:
+        runtime.begin_native_frame()
+        try:
+            for phase in ("fixed_update", "physics_pre_step", "physics_post_step", "update", "late_update"):
+                runtime.execute_native_phase(phase, 0.016)
+        finally:
+            runtime.end_native_frame()
+    else:
+        runtime.execute_frame(0.02, 0.016)
+    assert handle.is_finished and cleaned == [True]
+    assert len(errors) == 1 and isinstance(errors[0], TypeError)
+    assert following.calls == [
+        "fixed:0.016" if native_frame else "fixed:0.02",
+        "physics_pre:0.016" if native_frame else "physics_pre:0.02",
+        "physics_post:0.016" if native_frame else "physics_post:0.02",
+        "update:0.016", "late:0.016",
+    ]
+    runtime.execute_frame(0.02, 0.016)
+    assert len(errors) == 1
+
+
 def test_framework_lifecycle_noops_do_not_schedule_declarative_components():
     class DeclarativeComponent(InxComponent):
         pass

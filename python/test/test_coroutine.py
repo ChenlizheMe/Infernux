@@ -145,6 +145,74 @@ class TestCoroutineHandle:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestCoroutineScheduler:
+    @pytest.mark.parametrize("wait", [WaitUntil, WaitWhile])
+    def test_failed_wait_predicate_closes_its_coroutine_and_preserves_other_work(self, wait):
+        calls = []
+
+        def predicate():
+            raise ValueError("wait predicate failed")
+
+        def failing():
+            try:
+                yield wait(predicate)
+            finally:
+                calls.append("closed")
+
+        def healthy():
+            yield None
+            calls.append("healthy advanced")
+            yield None
+
+        scheduler = CoroutineScheduler()
+        failed = scheduler.start(failing())
+        following = scheduler.start(healthy())
+        with pytest.raises(ValueError, match="wait predicate failed"):
+            scheduler.tick_update(0.016)
+        assert failed.is_finished and not following.is_finished
+        assert calls == ["closed", "healthy advanced"]
+        assert scheduler.count == 1
+        scheduler.tick_update(0.016)
+        assert following.is_finished and scheduler.count == 0
+
+    def test_multiple_unsupported_yields_report_all_errors_after_advancing_healthy_work(self):
+        calls = []
+
+        def failing():
+            try:
+                yield object()
+            finally:
+                calls.append("closed")
+
+        def healthy():
+            yield None
+            calls.append("healthy advanced")
+
+        scheduler = CoroutineScheduler()
+        handles = [scheduler.start(failing()), scheduler.start(failing()), scheduler.start(healthy())]
+        with pytest.raises(ExceptionGroup) as reported:
+            scheduler.tick_update(0.016)
+        assert len(reported.value.exceptions) == 2
+        assert all(isinstance(error, TypeError) for error in reported.value.exceptions)
+        assert calls == ["closed", "closed", "healthy advanced"]
+        assert all(handle.is_finished for handle in handles) and scheduler.count == 0
+
+    def test_wait_failure_keeps_original_error_when_generator_cleanup_also_fails(self):
+        def predicate():
+            raise ValueError("wait predicate failed")
+
+        def failing():
+            try:
+                yield WaitUntil(predicate)
+            finally:
+                raise RuntimeError("generator cleanup failed")
+
+        scheduler = CoroutineScheduler()
+        handle = scheduler.start(failing())
+        with pytest.raises(ExceptionGroup) as reported:
+            scheduler.tick_update(0.016)
+        assert [type(error) for error in reported.value.exceptions] == [ValueError, RuntimeError]
+        assert handle.is_finished and scheduler.count == 0
+
     @pytest.mark.parametrize("candidate", [None, 42, iter([None]), lambda: None])
     def test_invalid_generator_input_is_rejected_before_scheduler_mutation(self, candidate, monkeypatch):
         scheduler = CoroutineScheduler()
@@ -441,7 +509,8 @@ class TestCoroutineScheduler:
         def gen():
             yield object()
 
-        sched = CoroutineScheduler()
+        transitions = []
+        sched = CoroutineScheduler(on_active_changed=transitions.append)
         co = sched.start(gen())
 
         with pytest.raises(TypeError, match="unsupported coroutine yield value object"):
@@ -449,6 +518,7 @@ class TestCoroutineScheduler:
 
         assert co.is_finished is True
         assert sched.count == 0
+        assert transitions == [True, False]
 
     def test_count_property(self):
         def gen():
