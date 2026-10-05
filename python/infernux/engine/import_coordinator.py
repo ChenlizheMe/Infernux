@@ -18,6 +18,7 @@ class AssetFsEventKind(str, Enum):
     DELETED = "deleted"
     MOVED = "moved"
     META_DELETED = "meta_deleted"
+    META_MODIFIED = "meta_modified"
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +153,7 @@ class ImportCoordinator:
         return self._debounce_seconds if debounce_seconds is None else debounce_seconds
 
     def _event_key(self, event: AssetFsEvent) -> str:
-        if event.kind is AssetFsEventKind.META_DELETED:
+        if event.kind in (AssetFsEventKind.META_DELETED, AssetFsEventKind.META_MODIFIED):
             return "meta:" + _path_key(event.path)
         target = event.destination if event.kind is AssetFsEventKind.MOVED else event.path
         return "asset:" + _path_key(target)
@@ -229,7 +230,7 @@ class ImportCoordinator:
             return
 
         previous = previous_pending.event
-        if previous.kind is AssetFsEventKind.META_DELETED or event.kind is AssetFsEventKind.META_DELETED:
+        if event.kind in (AssetFsEventKind.META_DELETED, AssetFsEventKind.META_MODIFIED):
             self._pending[key] = _PendingEvent(
                 event,
                 now + self._delay_for(event.kind, debounce_seconds),

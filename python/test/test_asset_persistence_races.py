@@ -505,8 +505,9 @@ def test_registered_and_unregistered_imports_share_external_publish(monkeypatch,
             del guid
             return True
 
-        def preflight_external_resource_change(self, value, *, guid=""):
+        def preflight_external_resource_change(self, value, *, guid="", metadata_only=False):
             del guid
+            assert not metadata_only
             return value == resolved
 
         def has_pending_external_change_preflight(self, value, *, guid=""):

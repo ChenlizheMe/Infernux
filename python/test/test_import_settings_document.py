@@ -22,6 +22,34 @@ class _ExecutionLayer:
         return True
 
 
+def test_external_metadata_cancels_texture_apply_before_deferred_work(monkeypatch, tmp_path):
+    from infernux.engine.interaction import DocumentKind, DocumentKey, DocumentCapability
+    from infernux.engine.ui.asset_details_renderer import _ImportSettingsController
+
+    for cls in (DocumentRegistry, AssetImportProgressService):
+        monkeypatch.setattr(cls, "_instance", None)
+    core = type("_TestInteractionCore", (), {"modals": ModalService()})()
+    monkeypatch.setattr(EditorInteractionCore, "_instance", core)
+    path = tmp_path / "Texture.png"
+    path.write_bytes(b"unchanged source")
+    registry = DocumentRegistry.instance()
+    controller = _ImportSettingsController("texture", str(path), TextureImportSettings(max_size=32))
+    document = registry.create(DocumentKind.IMPORT_SETTINGS, "Import", key=DocumentKey.asset(
+        DocumentKind.IMPORT_SETTINGS, "texture-guid"), resource_path=str(path),
+        capabilities=DocumentCapability.SAVE, controller=controller, revision=1, saved_revision=0)
+    controller.document_id = document.document_id
+    controller.exec_layer = _ExecutionLayer()
+    assert registry.request_save(document.document_id).accepted
+    transaction = AssetImportProgressService.instance()._transaction
+    assert transaction is not None
+    monkeypatch.setattr(details, "read_texture_import_settings", lambda _path: TextureImportSettings(max_size=64))
+    assert registry.preflight_external_resource_change(str(path), guid="texture-guid", metadata_only=True)
+    registry.publish_external_resource_change(str(path), guid="texture-guid")
+    assert not transaction.work()
+    assert controller.exec_layer.applied == []
+    assert controller.settings.max_size == 64 and not document.is_dirty
+
+
 def test_import_settings_are_document_backed_and_undoable(monkeypatch):
     previous_registry = DocumentRegistry._instance
     previous_manager = UndoManager._instance

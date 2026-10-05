@@ -78,6 +78,9 @@ class _AssetDatabaseProbe:
     def contains_path(self, path):
         return path in self.guid_by_path
 
+    def get_meta_by_path(self, path):
+        return None
+
     def reimport_asset(self, path):
         self.mutations.append(("modified", path, threading.get_ident()))
         return _mutation("reimport", path, self.guid_by_path.get(path, ""))

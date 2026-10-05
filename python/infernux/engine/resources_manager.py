@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import threading
@@ -285,7 +286,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
         return meta_path[:-5]
 
     def _should_ignore(self, file_path: str) -> bool:
-        """Ignore meta/temp/cache files to avoid GUID churn and noisy events."""
+        """Ignore sidecars as source assets; their events have a separate path."""
         lower = portable_path(file_path).lower()
         if (
             is_version_control_path(file_path)
@@ -312,6 +313,9 @@ class ResourceChangeHandler(FileSystemEventHandler):
         )
 
     def on_created(self, event):
+        if not event.is_directory and self._is_meta_sidecar_path(event.src_path):
+            self._submit_metadata_change(event.src_path)
+            return
         if event.is_directory or self._should_ignore(event.src_path):
             return
         lower = str(event.src_path or "").lower()
@@ -353,6 +357,9 @@ class ResourceChangeHandler(FileSystemEventHandler):
             self._wake_editor()
 
     def on_modified(self, event):
+        if not event.is_directory and self._is_meta_sidecar_path(event.src_path):
+            self._submit_metadata_change(event.src_path)
+            return
         if event.is_directory or self._should_ignore(event.src_path):
             return
         lower = str(event.src_path or "").lower()
@@ -369,7 +376,11 @@ class ResourceChangeHandler(FileSystemEventHandler):
     def on_moved(self, event):
         if event.is_directory:
             return
-        if self._is_meta_sidecar_path(event.src_path) and self._is_meta_sidecar_path(event.dest_path):
+        if self._is_meta_sidecar_path(event.dest_path):
+            self._submit_metadata_change(event.dest_path)
+            return
+        if self._is_meta_sidecar_path(event.src_path):
+            self.on_deleted(event)
             return
         if self._should_ignore(event.dest_path):
             return
@@ -402,6 +413,12 @@ class ResourceChangeHandler(FileSystemEventHandler):
             destination_lower.endswith(".py")
             and not _is_particle_script_path(destination_lower)
         ) or self._is_editor_translation_change(event.dest_path):
+            self._wake_editor()
+
+    def _submit_metadata_change(self, meta_path: str) -> None:
+        owner_path = self._owner_path_for_meta_sidecar(meta_path)
+        if not self._should_ignore(owner_path):
+            self._coordinator.submit(AssetFsEventKind.META_MODIFIED, owner_path)
             self._wake_editor()
 
     @property
@@ -1153,13 +1170,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if event.kind is AssetFsEventKind.META_DELETED:
             # META_DELETED is advisory: watchdog may deliver it after the
             # owning asset was renamed/deleted or after an atomic sidecar
-            # replace has already completed.  Do not enter the main-thread
-            # import transaction for either stale case.
-            if not os.path.isfile(event.path) or os.path.isfile(event.path + ".meta"):
+            # replace has already completed. Never rebuild a missing sidecar
+            # for a vanished owner or during our own atomic write gap.
+            if not os.path.isfile(event.path):
                 return
-            if AssetManager.is_meta_watcher_suppressed(event.path):
+            if (not os.path.isfile(event.path + ".meta")
+                    and AssetManager.is_meta_watcher_suppressed(event.path)):
                 return
-        else:
+        elif event.kind is not AssetFsEventKind.META_MODIFIED:
             watcher_echo = AssetManager.is_watcher_echo_suppressed(
                 event.kind.value,
                 event.path,
@@ -1193,7 +1211,15 @@ class ResourceChangeHandler(FileSystemEventHandler):
             elif event.kind is AssetFsEventKind.MOVED:
                 self._commit_moved(event.path, event.destination)
             elif event.kind is AssetFsEventKind.META_DELETED:
-                self._process_meta_missing_rebuild(event.path)
+                if os.path.isfile(event.path + ".meta"):
+                    # Notifications can arrive out of order after replacement.
+                    # Inspect the surviving candidate instead of losing a real
+                    # meta edit when its stale delete was delivered last.
+                    self._commit_metadata_modified(event.path)
+                else:
+                    self._process_meta_missing_rebuild(event.path)
+            elif event.kind is AssetFsEventKind.META_MODIFIED:
+                self._commit_metadata_modified(event.path)
             else:
                 raise RuntimeError(f"Unhandled asset event kind: {event.kind}")
 
@@ -1243,7 +1269,24 @@ class ResourceChangeHandler(FileSystemEventHandler):
             self._notify_shader_reloaded(path)
         self._rejected_compiled_assets.discard(path_key(path))
 
-    def _commit_modified(self, path: str) -> None:
+    def _commit_metadata_modified(self, path: str) -> None:
+        # A sidecar can outlive a deleted/moved source, or arrive before the
+        # source's create event. The source transaction owns registration.
+        if not os.path.isfile(path) or not os.path.isfile(path + ".meta"):
+            return
+        metadata = self._asset_database.get_meta_by_path(path)
+        if metadata is None:
+            return
+        with open(path + ".meta", encoding="utf-8") as stream:
+            candidate = json.load(stream)
+        # Compare the same authored representation that native import writes.
+        # Runtime observations and absolute paths never enter this comparison.
+        # No time window: an immediate collaborator edit must remain visible.
+        if candidate == metadata.serialize_document_portable(self._asset_database.project_root):
+            return
+        self._commit_modified(path, metadata_only=True)
+
+    def _commit_modified(self, path: str, *, metadata_only: bool = False) -> None:
         if not os.path.isfile(path):
             raise _AssetImportNotReady(f"modified file is not ready: {path}")
         from infernux.core.assets import AssetManager
@@ -1254,14 +1297,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
         # A self-write watcher event may arrive before AssetManager has polled
         # its ticket. Acknowledge an exact committed fingerprint and defer an
         # incomplete write; neither path is an external edit.
-        local_write_state = AssetManager.local_write_event_state(path)
+        local_write_state = "" if metadata_only else AssetManager.local_write_event_state(path)
         if local_write_state == "ack" and path_key(path) not in self._rejected_compiled_assets:
             return
         if local_write_state == "pending":
             raise _AssetLocalWritePending(
                 f"local document write is still pending: {path}"
             )
-        durable_change = documents.durable_resource_content_changed(
+        durable_change = True if metadata_only else documents.durable_resource_content_changed(
             path,
             guid=asset_guid,
         )
@@ -1279,7 +1322,9 @@ class ResourceChangeHandler(FileSystemEventHandler):
             # a document content change or retrying the failed source.
             if path_key(path) not in self._rejected_compiled_assets:
                 return
-        if not documents.preflight_external_resource_change(path, guid=asset_guid):
+        if not documents.preflight_external_resource_change(
+            path, guid=asset_guid, metadata_only=metadata_only,
+        ):
             return
         script_change = path.lower().endswith(".py") and not _is_particle_script_path(path)
         was_registered = self._asset_database.contains_path(path)
@@ -1295,6 +1340,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
                     detail = str(
                         getattr(result, "error", "") or "unknown reimport error"
                     )
+                    if metadata_only:
+                        raise RuntimeError(f"metadata reimport rejected: {path}: {detail}")
                     raise _AssetImportNotReady(
                         f"reimport failed: {path}: {detail}"
                     )

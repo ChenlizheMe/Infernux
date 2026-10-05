@@ -277,6 +277,9 @@ void RegisterResourceBindings(py::module_ &m)
             },
             py::arg("key"), "Get a boolean metadata value")
         .def("serialize_document", [](const InxResourceMeta &self) { return JsonToPython(self.SerializeDocument()); })
+        .def("serialize_document_portable", [](const InxResourceMeta &self, const std::string &projectRoot) {
+            return JsonToPython(self.SerializeDocumentPortable(projectRoot));
+        }, py::arg("project_root"), "Serialize authored metadata using the persisted project-relative contract")
         .def(
             "deserialize_document",
             [](InxResourceMeta &self, const py::object &document) { self.DeserializeDocument(PythonToJson(document)); },

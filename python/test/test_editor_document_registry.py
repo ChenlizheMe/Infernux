@@ -158,6 +158,44 @@ def test_clean_external_change_reloads_and_establishes_a_new_baseline(tmp_path):
     assert not document.is_dirty
 
 
+def test_sidecar_change_reloads_only_import_document_and_cancels_its_save(tmp_path):
+    registry = DocumentRegistry()
+    path = tmp_path / "Source.scene"
+    path.write_text("unchanged source", encoding="utf-8")
+    Path(str(path) + ".meta").write_text("changed sidecar", encoding="utf-8")
+    source = registry.create(DocumentKind.SCENE, "Source", key=DocumentKey.asset(
+        DocumentKind.SCENE, "shared-guid"), resource_path=str(path), revision=1, saved_revision=0)
+    settings = registry.create(DocumentKind.IMPORT_SETTINGS, "Import", key=DocumentKey.asset(
+        DocumentKind.IMPORT_SETTINGS, "shared-guid"), resource_path=str(path), revision=1, saved_revision=0)
+    source_controller = _Controller(registry, source.document_id)
+    settings_controller = _Controller(registry, settings.document_id)
+    registry.update_metadata(source.document_id, controller=source_controller)
+    registry.update_metadata(settings.document_id, controller=settings_controller)
+    ticket = registry.begin_save(settings.document_id)
+    assert registry.durable_resource_content_changed(str(path), guid="shared-guid") is False
+    assert registry.preflight_external_resource_change(str(path), guid="shared-guid", metadata_only=True)
+    assert ticket.status is SaveTicketStatus.CANCELLED
+    registry.publish_external_resource_change(str(path), guid="shared-guid")
+    assert settings_controller.reloaded and not settings.is_dirty
+    assert source.is_dirty and source.state is DocumentState.READY
+    assert not source_controller.reloaded
+
+
+def test_empty_metadata_projection_does_not_publish_pending_source_edit(tmp_path):
+    registry = DocumentRegistry()
+    path = tmp_path / "Source.scene"
+    path.write_text("baseline", encoding="utf-8")
+    document, controller = _document(registry, kind=DocumentKind.SCENE, dirty=True)
+    registry.rekey(document.document_id, DocumentKey.asset(DocumentKind.SCENE, "scene-guid"), resource_path=str(path))
+    path.write_text("source event has not been handled yet", encoding="utf-8")
+    assert registry.preflight_external_resource_change(str(path), guid="scene-guid", metadata_only=True)
+    assert registry.publish_external_resource_change(str(path), guid="scene-guid") == ()
+    assert document.is_dirty and document.state is DocumentState.READY
+    assert not controller.reloaded
+    assert not registry.preflight_external_resource_change(str(path), guid="scene-guid")
+    assert document.state is DocumentState.CONFLICT
+
+
 @pytest.mark.parametrize("kind,extension", [(DocumentKind.RENDER_EFFECT, ".effect"), (DocumentKind.PARTICLE_GRAPH, ".particlegraph")])
 def test_reverted_failed_asset_reimport_retires_document_conflict(tmp_path, kind, extension):
     registry = DocumentRegistry()

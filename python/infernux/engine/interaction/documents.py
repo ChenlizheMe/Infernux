@@ -1946,6 +1946,7 @@ class DocumentRegistry:
         *,
         guid: str = "",
         deleted: bool = False,
+        metadata_only: bool = False,
     ) -> bool:
         """Reserve one real content change before AssetManager mutates resources.
 
@@ -1958,12 +1959,22 @@ class DocumentRegistry:
         """
         identity = str(guid or _asset_guid_from_path(resource_path)).strip().casefold()
         affected = self.documents_for_resource(resource_path, guid=guid)
+        if metadata_only:
+            # Native import has compared persisted metadata with its published
+            # snapshot. A source-file baseline cannot detect this change.
+            # Sidecars own import settings, not scene graphs or source drafts.
+            affected = tuple(document for document in affected
+                             if document.kind is DocumentKind.IMPORT_SETTINGS)
         if not affected:
+            if metadata_only:
+                # An empty metadata projection is still an approved preflight.
+                # Publication must not reinterpret it as a source-file edit.
+                self._external_change_preflights[identity] = ()
             return True
         if identity in self._external_change_preflights:
             return True
 
-        content_changed = self.durable_resource_content_changed(
+        content_changed = True if metadata_only else self.durable_resource_content_changed(
             resource_path,
             guid=guid,
             deleted=deleted,
@@ -1980,7 +1991,9 @@ class DocumentRegistry:
         if content_changed is None:
             return False
 
-        observed_file_state = _capture_durable_file_state(resource_path)
+        observed_file_state = _capture_durable_file_state(
+            resource_path + ".meta" if metadata_only else resource_path
+        )
         for document in affected:
             if (_durable_file_identity(document.external_file_state)
                     != _durable_file_identity(observed_file_state)):
@@ -2075,8 +2088,9 @@ class DocumentRegistry:
         touch the global action journal.
         """
         identity = str(guid or _asset_guid_from_path(resource_path)).strip().casefold()
+        preflighted = identity in self._external_change_preflights
         document_ids = self._external_change_preflights.pop(identity, ())
-        if not document_ids:
+        if not preflighted:
             if not self.preflight_external_resource_change(
                 resource_path,
                 guid=guid,

@@ -47,6 +47,21 @@ def test_repeated_modifications_coalesce_to_one_event(tmp_path):
     assert events[0].kind is AssetFsEventKind.MODIFIED
 
 
+@pytest.mark.parametrize("kinds", [
+    (AssetFsEventKind.META_MODIFIED, AssetFsEventKind.META_MODIFIED),
+    (AssetFsEventKind.META_DELETED, AssetFsEventKind.META_MODIFIED),
+    (AssetFsEventKind.META_MODIFIED, AssetFsEventKind.META_DELETED),
+])
+def test_metadata_events_share_one_queue_entry_distinct_from_source(tmp_path, kinds):
+    coordinator = _coordinator(_Clock())
+    path = str(tmp_path / "image.png")
+    coordinator.submit(AssetFsEventKind.MODIFIED, path)
+    for kind in kinds:
+        coordinator.submit(kind, path)
+    events = coordinator.drain(force=True)
+    assert [event.kind for event in events] == [AssetFsEventKind.MODIFIED, kinds[-1]]
+
+
 def test_one_submission_can_use_a_shorter_debounce(tmp_path):
     clock = _Clock()
     coordinator = _coordinator(clock)

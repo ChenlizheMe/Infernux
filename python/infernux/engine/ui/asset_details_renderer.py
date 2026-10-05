@@ -282,6 +282,11 @@ class _ImportSettingsController:
             content_token = document_content_token(content)
 
             def _work() -> bool:
+                # An external sidecar publication can retire this save while
+                # its progress modal is still presenting the opening frame.
+                # Never apply the captured draft after its ticket was cancelled.
+                if not ticket.is_pending:
+                    return False
                 if not self.exec_layer.apply_import_settings(settings_snapshot):
                     return False
                 from infernux.core.assets import AssetManager
@@ -390,6 +395,24 @@ class _ImportSettingsController:
         if str(document_id) != self.document_id:
             return False
         self.settings = copy.deepcopy(self.disk_settings)
+        if self.state is not None and self.state.import_controller is self:
+            self.state.settings = self.settings
+            self.state.disk_settings = self.disk_settings
+        return True
+
+    def reload_from_resource(self, *, document_id: str, resource_path: str):
+        if str(document_id) != self.document_id:
+            return False
+        readers = {
+            "texture": read_texture_import_settings,
+            "audio": read_audio_import_settings,
+            "mesh": read_mesh_import_settings,
+        }
+        settings = readers[self.category](resource_path)
+        self.cancel_pending_writes()
+        self.file_path = str(resource_path)
+        self.settings = settings
+        self.disk_settings = copy.deepcopy(settings)
         if self.state is not None and self.state.import_controller is self:
             self.state.settings = self.settings
             self.state.disk_settings = self.disk_settings
