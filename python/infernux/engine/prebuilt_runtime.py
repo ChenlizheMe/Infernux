@@ -38,7 +38,7 @@ def _clean_generated_python_package_artifacts() -> None:
     build_root = repository_root / "build"
     if not build_root.is_dir():
         return
-    for package_copy in build_root.glob("lib*/Infernux"):
+    for package_copy in build_root.glob("lib*/infernux"):
         for generated_dir in ("_runtime_packs", "_runtime_modules"):
             shutil.rmtree(package_copy / generated_dir, ignore_errors=True)
         for metadata_path in package_copy.rglob("*.meta"):
