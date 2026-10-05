@@ -256,8 +256,8 @@ class InputAction:
                 previous_scalar += binding.scale if previous_held else 0.0
                 direct_pressed = direct_pressed or down
                 direct_released = direct_released or up
-            current = max(-1.0, min(1.0, current_scalar))
-            previous = max(-1.0, min(1.0, previous_scalar))
+            current = current_scalar
+            previous = previous_scalar
         else:
             current_x = current_y = previous_x = previous_y = 0.0
             for binding in self._composite_bindings:
@@ -283,8 +283,8 @@ class InputAction:
                 current_x += Input.get_axis_raw("Mouse X") * binding.scale
                 pointer_y = Input.get_axis_raw("Mouse Y") * binding.scale
                 current_y += -pointer_y if binding.invert_y else pointer_y
-            current = _clamp_vector((current_x, current_y))
-            previous = _clamp_vector((previous_x, previous_y))
+            current = (current_x, current_y)
+            previous = (previous_x, previous_y)
 
         for source in self._virtual_sources.values():
             source_previous = (
@@ -297,13 +297,20 @@ class InputAction:
                 vx, vy = _as_vector(source.value)
                 px, py = _as_vector(previous)
                 pvx, pvy = _as_vector(source_previous)
-                current = _clamp_vector((cx + vx, cy + vy))
-                previous = _clamp_vector((px + pvx, py + pvy))
+                current = (cx + vx, cy + vy)
+                previous = (px + pvx, py + pvy)
             else:
-                current = max(-1.0, min(1.0, float(current) + float(source.value)))
-                previous = max(
-                    -1.0, min(1.0, float(previous) + float(source_previous))
-                )
+                current = float(current) + float(source.value)
+                previous = float(previous) + float(source_previous)
+
+        # Clamp once after all contributors. Intermediate clipping changes the
+        # result when bindings or virtual sources are registered in another order.
+        if self.action_type is InputActionType.VECTOR2:
+            current = _clamp_vector(current)
+            previous = _clamp_vector(previous)
+        else:
+            current = max(-1.0, min(1.0, current))
+            previous = max(-1.0, min(1.0, previous))
 
         current_pressed = _magnitude(current) >= self.press_point
         previous_pressed = _magnitude(previous) >= self.press_point

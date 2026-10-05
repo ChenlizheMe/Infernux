@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import math
+from itertools import permutations
+
+import pytest
 
 import infernux.input.actions as action_module
 from infernux.input import (
@@ -43,6 +46,45 @@ def _reset_fake(monkeypatch):
     _FakeInput.up = set()
     _FakeInput.axes = {}
     monkeypatch.setattr(action_module, "Input", _FakeInput)
+
+
+@pytest.mark.parametrize("values", list(dict.fromkeys(permutations([1.0, 1.0, -1.0]))))
+def test_axis_aggregation_is_independent_of_source_registration_order(monkeypatch, values):
+    _reset_fake(monkeypatch)
+    action = InputAction("Move", InputActionType.AXIS)
+    for index, value in enumerate(values):
+        action.set_virtual_value(str(index), value)
+    assert action.read_value() == 1.0
+    assert action.was_pressed_this_frame
+    _FakeInput.frame_index += 1
+    for index in range(3):
+        action.clear_virtual_value(str(index))
+    assert action.read_value() == 0.0
+    assert action.was_released_this_frame
+
+
+@pytest.mark.parametrize("values", list(permutations([(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)])))
+def test_vector_aggregation_normalizes_only_the_complete_sum(monkeypatch, values):
+    _reset_fake(monkeypatch)
+    action = InputAction("Move", InputActionType.VECTOR2)
+    for index, value in enumerate(values):
+        action.set_virtual_value(str(index), value)
+    assert action.read_value() == pytest.approx((0.0, 1.0))
+    assert action.was_pressed_this_frame
+    _FakeInput.frame_index += 1
+    for index in range(3):
+        action.clear_virtual_value(str(index))
+    assert action.was_released_this_frame
+
+
+def test_physical_and_virtual_aggregation_share_the_same_sum(monkeypatch):
+    _reset_fake(monkeypatch)
+    action = InputAction("Move", InputActionType.AXIS)
+    action.bind_key(KeyCode.D, scale=1.0)
+    action.bind_key(KeyCode.RIGHT_ARROW, scale=1.0)
+    _FakeInput.held = _FakeInput.down = {KeyCode.D, KeyCode.RIGHT_ARROW}
+    action.set_virtual_value("opposing-stick", -1.0)
+    assert action.read_value() == 1.0
 
 
 def test_standard_gameplay_map_combines_keyboard_move(monkeypatch):
