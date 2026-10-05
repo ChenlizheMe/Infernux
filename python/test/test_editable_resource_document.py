@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 import json
+import pytest
 
 from infernux.engine.interaction import (
     DocumentCapability,
@@ -383,6 +384,59 @@ def test_async_resource_save_stays_pending_until_io_succeeds():
         assert registry.process_pending_saves() == 1
         assert registry.active_save_ticket(document.document_id) is None
         assert document.is_dirty is False
+    finally:
+        DocumentRegistry._instance = previous_registry
+
+
+@pytest.mark.parametrize("claim_before_save", [False, True])
+@pytest.mark.parametrize("edit_after_save", [False, True])
+def test_repeated_autosave_claim_preserves_explicit_save_completion(claim_before_save, edit_after_save):
+    from infernux.engine.interaction import CloseCoordinator, CloseIntent, CloseIntentKind, CloseState
+
+    previous_registry = DocumentRegistry._instance
+    registry = DocumentRegistry()
+    resource = _Resource(4.0)
+    execution = _AsyncExecutionLayer()
+    controller = EditableResourceDocumentController("render_effect", "Assets/Bloom.effect", resource)
+    document = registry.create(
+        DocumentKind.RENDER_EFFECT,
+        "Bloom.effect",
+        resource_path="Assets/Bloom.effect",
+        capabilities=DocumentCapability.SAVE | DocumentCapability.DISCARD,
+        controller=controller,
+    )
+    controller.document_id = document.document_id
+    controller.bind(file_path="Assets/Bloom.effect", resource=resource, exec_layer=execution, state=None)
+    registry.mark_changed(document.document_id)
+    try:
+        if claim_before_save:
+            controller.schedule_autosave()
+            assert controller.flush_autosave(force=True)
+            write = execution.tickets[-1]
+            execution.flush_rw_autosave = lambda *, force=False: write
+        assert registry.request_save(document.document_id).status.value == "pending"
+        written_revision = document.revision
+        write = execution.tickets[-1]
+        # The runtime owner returns an existing in-flight write to each view.
+        # Inspector autosave must not erase the formal SaveTicket association.
+        execution.flush_rw_autosave = lambda *, force=False: write
+        if edit_after_save:
+            resource.value = 9.0
+            registry.mark_changed(document.document_id)
+        assert controller.flush_autosave(force=True)
+        assert controller.flush_autosave(force=True)
+        closed = []
+        closer = CloseCoordinator(registry)
+        assert closer.request(CloseIntent(CloseIntentKind.EXIT_EDITOR), lambda: closed.append(True))
+        assert closer.state is CloseState.WAITING_FOR_SAVE
+        write.complete()
+        assert registry.process_pending_saves() == 1
+        assert registry.active_save_ticket(document.document_id) is None
+        assert document.saved_revision == written_revision
+        assert document.is_dirty is edit_after_save
+        closer.poll()
+        assert bool(closed) is (not edit_after_save)
+        assert closer.state is (CloseState.AWAITING_DECISION if edit_after_save else CloseState.IDLE)
     finally:
         DocumentRegistry._instance = previous_registry
 

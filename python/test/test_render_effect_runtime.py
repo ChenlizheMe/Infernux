@@ -289,6 +289,16 @@ def test_render_effect_inspector_edit_updates_shared_instance_and_queues_snapsho
         assert effect.revision == 1
         assert json.loads(snapshots[-1][1])["parameters"]["intensity"] == pytest.approx(1.75)
         assert scheduled[-1][:3] == ("render_effect", str(path), effect)
+
+        # The tutorial promises global Undo/Redo republishes the shared source
+        # and schedules its restored value for persistence, not just the UI.
+        manager = UndoManager.instance()
+        manager.undo()
+        assert effect.get_float("intensity") == pytest.approx(0.5)
+        assert json.loads(snapshots[-1][1])["parameters"]["intensity"] == pytest.approx(0.5)
+        manager.redo()
+        assert effect.get_float("intensity") == pytest.approx(1.75)
+        assert json.loads(snapshots[-1][1])["parameters"]["intensity"] == pytest.approx(1.75)
     finally:
         DocumentRegistry._instance = previous_registry
         UndoManager._instance = previous_manager

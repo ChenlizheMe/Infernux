@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .documents import (
@@ -314,6 +314,18 @@ class EditableResourceDocumentController:
         document: dict,
         save_ticket_id: str = "",
     ) -> None:
+        existing = self._pending_writes.get(id(submission))
+        if existing is not None:
+            # One IO ticket owns one frozen snapshot. Inspector polling may
+            # claim that same write again; it must not replace its revision,
+            # submission order, or formal SaveTicket completion association.
+            if save_ticket_id:
+                if existing.revision != int(revision) or existing.document != document:
+                    raise RuntimeError("A pending write cannot represent a different document revision")
+                if existing.save_ticket_id and existing.save_ticket_id != str(save_ticket_id):
+                    raise RuntimeError("A pending write already belongs to another SaveTicket")
+                self._pending_writes[id(submission)] = replace(existing, save_ticket_id=str(save_ticket_id))
+            return
         self._write_submission_sequence += 1
         self._pending_writes[id(submission)] = _PendingResourceWrite(
             ticket=submission,
