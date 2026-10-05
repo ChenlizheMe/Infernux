@@ -40,6 +40,7 @@ from infernux.engine.interaction import (
 )
 from infernux.lib import InxGUIContext
 from infernux.core.animation_clip import AnimationFrame
+from infernux.core.animation_event import AnimationEvent, events_from_list
 
 from .asset_save_dialog import AssetSaveAsDialog
 from .editor_panel import EditorPanel
@@ -58,6 +59,7 @@ class _ClipState:
     stable_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     name: str = "NewClip"
     frames: List[AnimationFrame] = field(default_factory=list)
+    events: List[AnimationEvent] = field(default_factory=list)
     fps: float = 12.0
     loop: bool = True
 
@@ -115,7 +117,7 @@ def _sprite_frame_by_id(frames, frame_id: str):
 
 
 def _clip_state_from_document(document: dict) -> _ClipState:
-    expected = {"stable_id", "name", "frames", "fps", "loop"}
+    expected = {"stable_id", "name", "frames", "events", "fps", "loop"}
     if type(document) is not dict or set(document) != expected:
         raise ValueError("2D animation clip state must use the complete current field set")
     stable_id = document["stable_id"]
@@ -148,6 +150,7 @@ def _clip_state_from_document(document: dict) -> _ClipState:
         stable_id=stable_id,
         name=document["name"],
         frames=frames,
+        events=events_from_list(document["events"]),
         fps=float(fps),
         loop=document["loop"],
     )
@@ -424,6 +427,7 @@ class AnimClip2DEditorPanel(EditorPanel):
                     "stable_id": clip.stable_id,
                     "name": clip.name,
                     "frames": [frame.to_dict() for frame in clip.frames],
+                    "events": [event.to_dict() for event in clip.events],
                     "fps": float(clip.fps),
                     "loop": bool(clip.loop),
                 }
@@ -486,6 +490,7 @@ class AnimClip2DEditorPanel(EditorPanel):
                 "stable_id",
                 "name",
                 "frames",
+                "events",
                 "fps",
                 "loop",
             }
@@ -1749,6 +1754,7 @@ class AnimClip2DEditorPanel(EditorPanel):
         cs = _ClipState(
             name=clip_data.name,
             frames=copy.deepcopy(clip_data.frames),
+            events=copy.deepcopy(clip_data.events),
             fps=clip_data.fps,
             loop=clip_data.loop,
         )
@@ -1850,6 +1856,7 @@ class AnimClip2DEditorPanel(EditorPanel):
             name=name or clip.name,
             authoring_texture_guid=tex.guid if tex else "",
             frames=copy.deepcopy(clip.frames),
+            events=copy.deepcopy(clip.events),
             fps=clip.fps,
             loop=clip.loop,
         )
