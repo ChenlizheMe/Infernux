@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 from pathlib import Path
 import sys
 
+from infernux.core.document_store import read_document_text_snapshot, write_document_text
+from .jsonc_document import JsoncDocument
 from .path_utils import (
     is_path_within,
     portable_path,
@@ -35,15 +36,17 @@ def synchronize_vscode_workspace(project_root: str) -> None:
     except ValueError:
         interpreter_path = portable_path(interpreter)
 
-    def read_document(path: Path) -> dict:
-        if not path.exists():
-            return {}
-        document = json.loads(path.read_text(encoding="utf-8-sig"))
-        if not isinstance(document, dict):
-            raise ValueError(f"IDE configuration must be a JSON object: {path}")
-        return document
+    def read_document(path: Path):
+        text, state = read_document_text_snapshot(str(path))
+        try:
+            document = JsoncDocument(text if text is not None else "{}\n")
+        except ValueError as exc:
+            raise ValueError(f"Invalid IDE configuration {path}: {exc}") from exc
+        return document, state
 
     def search_paths(previous: list[str]) -> list[str]:
+        if not isinstance(previous, list) or any(not isinstance(value, str) for value in previous):
+            raise ValueError("IDE extraPaths must be an array of strings")
         paths = [module_path]
         for value in previous:
             resolved = resolve_project_path(value, root)
@@ -61,8 +64,10 @@ def synchronize_vscode_workspace(project_root: str) -> None:
 
     settings_path = root / ".vscode" / "settings.json"
     pyright_path = root / "pyrightconfig.json"
-    settings = read_document(settings_path)
-    pyright = read_document(pyright_path)
+    settings_source, settings_state = read_document(settings_path)
+    pyright_source, pyright_state = read_document(pyright_path)
+    settings = dict(settings_source.value)
+    pyright = dict(pyright_source.value)
     settings["python.defaultInterpreterPath"] = interpreter_path
     settings["python.analysis.extraPaths"] = search_paths(
         settings.get("python.analysis.extraPaths", [])
@@ -75,8 +80,11 @@ def synchronize_vscode_workspace(project_root: str) -> None:
     pyright["pythonVersion"] = f"{sys.version_info.major}.{sys.version_info.minor}"
     pyright["extraPaths"] = search_paths(pyright.get("extraPaths", []))
     pyright.setdefault("include", ["Assets"])
-    for path, document in ((settings_path, settings), (pyright_path, pyright)):
-        content = json.dumps(document, ensure_ascii=False, indent=4) + "\n"
-        if not path.exists() or path.read_text(encoding="utf-8-sig") != content:
+    changes = (
+        (settings_path, settings_source, settings_state, settings_source.render(settings)),
+        (pyright_path, pyright_source, pyright_state, pyright_source.render(pyright)),
+    )
+    for path, original, state, content in changes:
+        if not state.exists or original.source != content:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8", newline="\n")
+            write_document_text(str(path), content, expected_file_state=state)
