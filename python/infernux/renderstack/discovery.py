@@ -17,7 +17,7 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
-from infernux.engine.path_utils import path_key, relative_path
+from infernux.engine.path_utils import is_path_within, path_key, relative_path
 import sys
 from dataclasses import dataclass
 from typing import Dict, Optional, Set
@@ -167,15 +167,16 @@ def _candidate_source_paths(search_root: str, roots: set[str]) -> list[str]:
         changed = False
         for file_path, inheritance in sources:
             for class_name, bases in inheritance.classes:
-                if class_name in known or not any(base in known for base in bases):
+                if not any(base in known for base in bases):
                     continue
-                known.add(class_name)
+                if class_name not in known:
+                    known.add(class_name)
+                    changed = True
                 _catalog_class_names.add(class_name)
                 normalized = path_key(file_path)
                 if normalized not in selected_paths:
                     selected_paths.add(normalized)
                     selected.append(file_path)
-                changed = True
     # Packaged projects contain only curated bytecode, which cannot be
     # inspected cheaply. Preserve the existing unconditional player behavior.
     selected.extend(bytecode)
@@ -351,14 +352,20 @@ _loaded_script_mtime: Dict[str, float] = {}
 def _ensure_user_scripts_loaded(*keywords: str) -> None:
     """Import project sources belonging to the requested inheritance trees.
 
-    Each file is imported at most once across the lifetime of the process.
+    A previously discovered source remains owned by discovery when an edit
+    removes its final class. Changed files publish a new module namespace.
     """
     project_root = get_project_root()
     search_root = get_assets_root()
     if not project_root or not search_root or not os.path.isdir(search_root):
         return
 
-    _import_source_paths(_candidate_source_paths(search_root, set(keywords)))
+    candidates = _candidate_source_paths(search_root, set(keywords))
+    known_sources = sorted(
+        path for path in _loaded_script_modules
+        if is_path_within(path, search_root) and os.path.isfile(path)
+    )
+    _import_source_paths(dict.fromkeys((*candidates, *known_sources)))
 
 
 def _import_source_paths(paths) -> None:
@@ -399,7 +406,7 @@ def _import_source_paths(paths) -> None:
 
 def _prune_deleted_loaded_scripts() -> None:
     """Drop cache entries for scripts removed from disk."""
-    for norm in list(_loaded_scripts):
+    for norm in set(_loaded_scripts) | set(_loaded_script_modules) | set(_script_import_failures):
         if os.path.exists(norm):
             continue
         _loaded_scripts.discard(norm)
@@ -427,8 +434,8 @@ def _collect_subclasses(
 def _is_live_class(cls: type) -> bool:
     """Return True when a discovered class still points to a live module file.
 
-    This filters stale classes left in ``__subclasses__()`` after users delete
-    or move pipeline/pass scripts at runtime.
+    This filters retired and unpublished classes left in ``__subclasses__()``
+    after a module is replaced, a declaration is removed, or an import fails.
     """
     mod = sys.modules.get(getattr(cls, "__module__", ""))
     if mod is None:
@@ -440,4 +447,15 @@ def _is_live_class(cls: type) -> bool:
     src = getattr(mod, "__file__", "")
     if not src:
         return True
-    return os.path.exists(src)
+    if not os.path.exists(src):
+        return False
+    if any(value is cls for value in vars(mod).values()):
+        return True
+    owner = mod
+    for part in cls.__qualname__.split("."):
+        if part == "<locals>":
+            return False
+        owner = getattr(owner, part, None)
+        if owner is None:
+            return False
+    return owner is cls
