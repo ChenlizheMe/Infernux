@@ -373,7 +373,7 @@ class _RestoreComponentReference(InxComponent):
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestComponentLifecycle:
-    def test_pending_python_component_reference_targets_are_preflighted(self, scene):
+    def test_pending_python_component_reference_identity_is_preflighted(self, scene):
         from infernux.engine.component_restore import (
             PythonComponentRestoreError,
             deserialize_game_object_document_transactionally,
@@ -383,10 +383,26 @@ class TestComponentLifecycle:
         game_object.add_py_component(_RestoreReference())
         document = game_object.serialize_document()
         document["components"][0]["data"]["target"] = make_game_object_ref(999_999_999)
+        document["components"][0]["data"]["target"]["object_id"] = -1
 
-        with pytest.raises(PythonComponentRestoreError, match="does not exist"):
+        with pytest.raises(PythonComponentRestoreError, match="non-negative integer"):
             deserialize_game_object_document_transactionally(game_object, document)
         assert len(game_object.get_py_components()) == 1
+        assert scene.has_pending_py_components() is False
+
+    def test_pending_python_component_restore_preserves_missing_reference_identity(self, scene):
+        from infernux.engine.component_restore import deserialize_game_object_document_transactionally
+
+        game_object = scene.create_game_object("MissingReferenceRestore")
+        game_object.add_py_component(_RestoreReference())
+        document = game_object.serialize_document()
+        document["components"][0]["data"]["target"] = make_game_object_ref(999_999_999)
+
+        assert deserialize_game_object_document_transactionally(game_object, document)
+        restored, = game_object.get_py_components()
+        assert restored.target is None
+        assert type(restored).target.get_raw(restored).persistent_id == 999_999_999
+        assert game_object.serialize_document()["components"][0]["data"]["target"]["object_id"] == 999_999_999
         assert scene.has_pending_py_components() is False
 
     def test_component_reference_can_target_same_pending_batch(self, scene):
