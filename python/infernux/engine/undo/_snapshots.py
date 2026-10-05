@@ -35,11 +35,13 @@ def _get_nth_live_native_component(game_object_id: int, type_name: str,
         return None
     match_index = 0
     from infernux.components.component import InxComponent
+    from infernux.components.builtin_component import BuiltinComponent
 
     for comp in obj.get_components():
         if getattr(comp, 'type_name', None) != type_name:
             continue
-        if isinstance(comp, InxComponent) or hasattr(comp, 'get_py_component'):
+        if ((isinstance(comp, InxComponent) and not isinstance(comp, BuiltinComponent))
+                or hasattr(comp, 'get_py_component')):
             continue
         if match_index == ordinal:
             return comp

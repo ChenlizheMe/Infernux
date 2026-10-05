@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from infernux.lib._Infernux import (
     GameObject,
-    MeshRenderer,
     Transform,
     CollisionInfo,
 )

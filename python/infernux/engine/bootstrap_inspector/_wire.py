@@ -86,6 +86,8 @@ def _wire_cache_init(ctx):
 
 def _wire_component_list(ctx):
     """Wire get_component_list and helper resolvers."""
+    from infernux.components.builtin_component import BuiltinComponent
+
     SceneManager = ctx.SceneManager
     InspectorComponentInfo = ctx.InspectorComponentInfo
     InxComponent = ctx.InxComponent
@@ -137,6 +139,8 @@ def _wire_component_list(ctx):
         )
 
     def _is_py_entry(component):
+        if isinstance(component, BuiltinComponent):
+            return False
         return isinstance(component, InxComponent) or hasattr(component, 'get_py_component')
 
     def _get_component_payload(obj_id):
@@ -173,8 +177,6 @@ def _wire_component_list(ctx):
             return scene, [], {}, {}
 
         items, native_map, py_map = [], {}, {}
-        from infernux.components.builtin_component import BuiltinComponent
-
         # Single pass over get_components() preserves the actual insertion
         # order (C++ m_components vector) so the Inspector shows components
         # in chronological add-order.

@@ -1106,6 +1106,9 @@ def _resolve_public_component(component):
                 return None
             raise
 
+    if _resolve_builtin_wrapper(type(component)) is not None:
+        return _wrap_native_builtin_component(component)
+
     return component
 
 
