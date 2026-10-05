@@ -337,6 +337,7 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
             state = pmm.state
             if state in (
                 PlayModeState.PLAYING,
+                PlayModeState.ENTERING,
                 PlayModeState.RESTORING,
                 PlayModeState.RECOVERY_REQUIRED,
             ):

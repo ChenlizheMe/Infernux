@@ -14,6 +14,7 @@ class PlayModeState(Enum):
     PAUSED = auto()
     RESTORING = auto()
     RECOVERY_REQUIRED = auto()
+    ENTERING = auto()
 
 
 @dataclass

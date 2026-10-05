@@ -542,7 +542,7 @@ class BootstrapPanelsMixin:
             _play_mode_manager = engine._play_mode_manager
             def _on_play_clear(event):
                 from infernux.engine.play_mode import PlayModeState
-                if event.new_state == PlayModeState.PLAYING and _native_console.clear_on_play:
+                if event.new_state == PlayModeState.ENTERING and _native_console.clear_on_play:
                     _native_console.clear()
             engine._play_mode_manager.add_state_change_listener(_on_play_clear)
 

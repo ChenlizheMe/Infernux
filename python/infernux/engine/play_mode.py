@@ -34,6 +34,7 @@ class PlayModeState(Enum):
     PAUSED = auto()    # Runtime paused
     RESTORING = auto()  # Simulation stopped; authored scenes are not published yet
     RECOVERY_REQUIRED = auto()  # Restore failed; retain the snapshot and block authoring saves
+    ENTERING = auto()  # Snapshot retained; runtime preparation is not published yet
 
 
 @dataclass
@@ -666,7 +667,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         Saves scene state and initializes components.
         
         Returns:
-            True if successfully entered play mode
+            True if the deferred Play request was accepted.
         """
         if self._state != PlayModeState.EDIT:
             Debug.log_warning("Cannot enter play mode: not in edit mode")
@@ -710,86 +711,116 @@ class PlayModeManager(PlayModeSerializationMixin):
         def step_enter():
             """Save scene, rebuild from snapshot, and activate play — all in one frame."""
             transition_started = time.perf_counter()
-            sprite_init_started = transition_started
-            from infernux.components.builtin.sprite_renderer import SpriteRenderer
-            for scene in self._loaded_scenes():
-                SpriteRenderer.init_all_in_scene(scene)
-            sprite_init_ms = (time.perf_counter() - sprite_init_started) * 1000.0
-            # 1. Serialize scene + init timing (do not clear undo — asset editors keep history)
+            # Capture authoring before any preparation can modify the graph.
+            # Capture failure leaves Edit untouched and must not reuse an old backup.
             snapshot_started = time.perf_counter()
             self._save_scene_state()
             snapshot_ms = (time.perf_counter() - snapshot_started) * 1000.0
-            self._last_frame_time = time.time()
-            self._total_play_time = 0.0
-            self._delta_time = 0.0
-            self._step_sequence = 0
-            from infernux.timing import Time
-            Time._reset()
-            # Enter retains the native world. Its wrappers remain valid, including
-            # references held by edit callbacks while preparing the new domain.
-            # Stop clears bindings when it actually replaces native components.
-
             from infernux.core.assets import AssetManager
-            AssetManager._begin_play_data_asset_isolation()
-
-            # 2. Transition state early so that "clear on play" fires
-            #    BEFORE Python components are restored (which triggers
-            #    Awake → OnEnable and may produce user-visible logs).
-            old_state = self._state
-            self._state = PlayModeState.PLAYING
             from infernux.core.material import Material
             from infernux.renderstack.render_effect import RenderEffect
+            from infernux.timing import Time
+
+            self._state = PlayModeState.ENTERING
             Material._suppress_auto_save = True
             RenderEffect._suppress_auto_save = True
-            notify_started = time.perf_counter()
-            self._notify_state_change(old_state, self._state)
-            notify_ms = (time.perf_counter() - notify_started) * 1000.0
-
-            # 3. Recreate the scripting domain while retaining the unchanged
-            #    native graph. Stop Mode still restores the full snapshot.
-            rebuild_started = time.perf_counter()
             try:
-                if self._scene_backups:
-                    self._prepare_loaded_scenes_for_play()
-                else:
-                    self._prepare_active_scene_for_play(self._scene_backup)
-            except Exception:
-                AssetManager._end_play_data_asset_isolation()
-                self._state = PlayModeState.EDIT
-                Material._suppress_auto_save = False
-                RenderEffect._suppress_auto_save = False
-                self._notify_state_change(PlayModeState.PLAYING, PlayModeState.EDIT)
-                self._invalidate_native_gpu_view_state()
-                raise
-            rebuild_ms = (time.perf_counter() - rebuild_started) * 1000.0
+                self._last_frame_time = time.time()
+                self._total_play_time = 0.0
+                self._delta_time = 0.0
+                self._step_sequence = 0
+                self._pending_step_requests = 0
+                Time._reset()
+                AssetManager._begin_play_data_asset_isolation()
 
-            # 4. Drain retired edit-domain particle graphs, then enter C++
-            #    play. Waiting after Start would FlushRetired while the new
-            #    graphs already exist and can recycle the same Vulkan handles.
-            scene_manager = self._get_scene_manager()
-            native_start_started = time.perf_counter()
-            self._invalidate_native_gpu_view_state()
-            from infernux.engine.startup_warmup import run_project_script_warmups
-            from infernux.engine.project_context import get_project_root
-            run_project_script_warmups(
-                project_path=get_project_root(), scope="editor-startup"
-            )
-            if scene_manager:
+                # Clear-on-Play is a preparation event, before lifecycle logs.
+                notify_started = time.perf_counter()
+                self._notify_state_change(PlayModeState.EDIT, PlayModeState.ENTERING)
+                notify_ms = (time.perf_counter() - notify_started) * 1000.0
+                sprite_init_started = time.perf_counter()
+                from infernux.components.builtin.sprite_renderer import SpriteRenderer
+                for scene in self._loaded_scenes():
+                    SpriteRenderer.init_all_in_scene(scene)
+                sprite_init_ms = (time.perf_counter() - sprite_init_started) * 1000.0
+
+                # Retain native objects on the success path, replacing only the
+                # scripting domain. The same full snapshot owns every failure.
+                rebuild_started = time.perf_counter()
+                prepared = (
+                    self._prepare_loaded_scenes_for_play()
+                    if self._scene_backups
+                    else self._prepare_active_scene_for_play(self._scene_backup)
+                )
+                if not prepared:
+                    raise RuntimeError("Play scripting-domain preparation was rejected")
+                rebuild_ms = (time.perf_counter() - rebuild_started) * 1000.0
+
+                # Retired edit particle graphs must drain before Start creates
+                # runtime graphs that can reuse their native handles.
+                scene_manager = self._get_scene_manager()
+                if scene_manager is None:
+                    raise RuntimeError("Cannot enter Play Mode without SceneManager")
+                native_start_started = time.perf_counter()
+                self._invalidate_native_gpu_view_state()
+                from infernux.engine.startup_warmup import run_project_script_warmups, run_component_warmups
+                from infernux.engine.project_context import get_project_root
+                run_project_script_warmups(
+                    project_path=get_project_root(), scope="editor-startup"
+                )
                 scene_manager.play()
-            from infernux.components.component import InxComponent
-            from infernux.engine.startup_warmup import run_component_warmups
-            from infernux.engine.project_context import get_project_root
-            run_component_warmups(
-                (
-                    component
-                    for values in InxComponent._active_instances.values()
-                    for component in values
-                ),
-                scope="editor-play",
-                project_path=get_project_root(),
-            )
-            self._mark_native_scene_temporal_discontinuity()
-            native_start_ms = (time.perf_counter() - native_start_started) * 1000.0
+                from infernux.components.component import InxComponent
+                run_component_warmups(
+                    (
+                        component
+                        for values in InxComponent._active_instances.values()
+                        for component in values
+                    ),
+                    scope="editor-play",
+                    project_path=get_project_root(),
+                )
+                self._mark_native_scene_temporal_discontinuity()
+                native_start_ms = (time.perf_counter() - native_start_started) * 1000.0
+                notify_started = time.perf_counter()
+                self._state = PlayModeState.PLAYING
+                self._notify_state_change(PlayModeState.ENTERING, PlayModeState.PLAYING)
+                notify_ms += (time.perf_counter() - notify_started) * 1000.0
+            except Exception as enter_error:
+                self._state = PlayModeState.RESTORING
+                try:
+                    scene_manager = self._get_scene_manager()
+                    if scene_manager is not None:
+                        scene_manager.stop()
+                    from infernux.input import Input
+                    Input.set_game_focused(False)
+                    Input.set_cursor_locked(False)
+                    self._cancel_runtime_scene_loads()
+                    AssetManager._end_play_data_asset_isolation()
+                    restored = (
+                        self._restore_loaded_scenes_after_play()
+                        if self._scene_backups
+                        else self._rebuild_active_scene(
+                            self._scene_backup, for_play=False, restore_scene_path=True
+                        )
+                    )
+                    self._invalidate_native_gpu_view_state()
+                    if not restored:
+                        raise RuntimeError("Authored scene restoration was rejected")
+                    self._state = PlayModeState.EDIT
+                    self._notify_state_change(PlayModeState.ENTERING, PlayModeState.EDIT)
+                    Material._suppress_auto_save = False
+                    RenderEffect._suppress_auto_save = False
+                    self._pending_step_requests = 0
+                    self._total_play_time = self._delta_time = 0.0
+                    Time._reset()
+                except Exception as restore_error:
+                    self._state = PlayModeState.RECOVERY_REQUIRED
+                    if self._native_engine is not None:
+                        self._native_engine.set_play_mode_rendering(False)
+                    raise RuntimeError(
+                        f"Play initialization failed ({enter_error}); authored scene recovery "
+                        f"also failed ({restore_error}). Snapshot retained; repair and use Stop."
+                    ) from restore_error
+                raise
             total_ms = (time.perf_counter() - transition_started) * 1000.0
             self._last_transition_timings_ms = {
                 "transition": "enter",
@@ -845,7 +876,9 @@ class PlayModeManager(PlayModeSerializationMixin):
         #    simulation to end.
         old_state = self._state
         scene_manager = self._get_scene_manager()
-        if scene_manager and old_state in (PlayModeState.PLAYING, PlayModeState.PAUSED):
+        if scene_manager and old_state in (
+            PlayModeState.PLAYING, PlayModeState.PAUSED, PlayModeState.RECOVERY_REQUIRED,
+        ):
             scene_manager.stop()
 
         # Stop owns the editor cursor boundary even when the Game View is
@@ -865,12 +898,7 @@ class PlayModeManager(PlayModeSerializationMixin):
 
         # 3. Discard any pending runtime scene load queued by user scripts
         #    during the last play frame — we're about to restore the backup.
-        from infernux.scene import SceneManager as _SceneMgr
-        _SceneMgr._scene_load_generation += 1
-        transaction = _SceneMgr._active_scene_transaction
-        if transaction is not None and not transaction.is_complete:
-            transaction.cancel()
-        _SceneMgr._clear_runtime_load_state()
+        self._cancel_runtime_scene_loads()
 
         # ── Deferred step (single frame to avoid flicker) ─────────
 
@@ -1043,20 +1071,20 @@ class PlayModeManager(PlayModeSerializationMixin):
 
     def _prepare_loaded_scenes_for_play(self) -> bool:
         self.clear_runtime_hidden_object_ids()
-        prepared = []
-        try:
-            for backup in self._scene_backups:
-                self._prepare_scene_for_play(backup.scene, backup.snapshot)
-                prepared.append(backup)
-        except Exception:
-            for backup in prepared:
-                self._rebuild_scene(
-                    backup.scene,
-                    backup.snapshot,
-                    for_play=False,
-                )
-            raise
+        for backup in self._scene_backups:
+            if not self._prepare_scene_for_play(backup.scene, backup.snapshot):
+                raise RuntimeError(f"Play preparation rejected Scene '{backup.name}'")
         return True
+
+    @staticmethod
+    def _cancel_runtime_scene_loads() -> None:
+        from infernux.scene import SceneManager as RuntimeSceneManager
+
+        RuntimeSceneManager._scene_load_generation += 1
+        transaction = RuntimeSceneManager._active_scene_transaction
+        if transaction is not None and not transaction.is_complete:
+            transaction.cancel()
+        RuntimeSceneManager._clear_runtime_load_state()
     
     # ========================================================================
     # Game Loop Integration
@@ -1874,7 +1902,7 @@ class PlayModeManager(PlayModeSerializationMixin):
         """Notify all listeners of state change."""
         # Tell the C++ renderer whether we're in play mode so it can
         # bypass the editor FPS cap and idle sleep.
-        is_playing = new_state != PlayModeState.EDIT
+        is_playing = new_state in (PlayModeState.PLAYING, PlayModeState.PAUSED)
         if self._native_engine is not None:
             self._native_engine.set_play_mode_rendering(is_playing)
 
