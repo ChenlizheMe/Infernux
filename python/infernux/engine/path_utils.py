@@ -7,6 +7,7 @@ instead of assembling identity checks from ``abspath``/``normcase``.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import os
 import posixpath
@@ -17,6 +18,22 @@ PathLike: TypeAlias = str | os.PathLike[str]
 
 VERSION_CONTROL_DIRECTORIES = frozenset({".git", ".hg", ".svn"})
 _VERSION_CONTROL_FILES = frozenset({".gitignore", ".gitattributes", ".gitmodules", ".gitkeep"})
+
+
+def managed_asset_glob_match(value: str, pattern: str) -> bool:
+    """Match case-insensitive managed paths; ``**/`` spans zero or more levels."""
+    parts = value.casefold().split("/")
+    reachable = [True] + [False] * len(parts)
+    for segment in pattern.casefold().split("/"):
+        if segment == "**":
+            for index in range(1, len(reachable)):
+                reachable[index] = reachable[index] or reachable[index - 1]
+        else:
+            reachable = [False] + [
+                reachable[index] and fnmatch.fnmatchcase(part, segment)
+                for index, part in enumerate(parts)
+            ]
+    return reachable[-1]
 
 
 def is_version_control_path(path: PathLike) -> bool:

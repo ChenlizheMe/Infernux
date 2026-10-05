@@ -18,7 +18,7 @@ import struct
 import sys
 import time
 from collections import defaultdict
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 
 from infernux.core.asset_types import MESH_EXTENSIONS
@@ -288,25 +288,30 @@ def _read_text(path: Path) -> str:
         return ""
 
 
-def _contains_absolute_author_path(text: str) -> bool:
+def _contains_absolute_author_path(text: str, *, game_content: bool = False) -> bool:
+    """Check deployment documents strictly and game data by explicit references."""
     # JSON escaping is not a filesystem path.  In particular, an embedded
     # JSON string such as ``[\"driver\"]`` produces adjacent backslashes in
     # the outer document and used to be mistaken for a UNC prefix.  Inspect
-    # decoded string values when the payload is JSON; plain text still goes
-    # through the strict drive/POSIX/UNC expression unchanged.
+    # decoded string values when the payload is JSON. Game text has no path
+    # semantics; deployment text retains the strict drive/POSIX/UNC check.
     try:
         document = json.loads(text)
     except (TypeError, json.JSONDecodeError):
-        return ABSOLUTE_PATH_RE.search(text) is not None
+        return not game_content and ABSOLUTE_PATH_RE.search(text) is not None
 
     pending = [document]
     while pending:
         value = pending.pop()
         if isinstance(value, dict):
+            if game_content and value.get("$type") == "asset_ref":
+                hint = value.get("path_hint")
+                if isinstance(hint, str) and (hint.startswith("/") or PureWindowsPath(hint).anchor):
+                    return True
             pending.extend(value.values())
         elif isinstance(value, list):
             pending.extend(value)
-        elif isinstance(value, str) and ABSOLUTE_PATH_RE.search(value) is not None:
+        elif not game_content and isinstance(value, str) and ABSOLUTE_PATH_RE.search(value) is not None:
             return True
     return False
 
@@ -521,7 +526,18 @@ def _archive_entry_records(
             except Exception as exc:
                 forbidden.append(f"{entry_relative}: native entry decode failed ({exc})")
             else:
-                if _contains_absolute_author_path(text):
+                # Managed game documents and package Runtime data contain
+                # arbitrary dialogue/configuration. Only explicit resource
+                # references in those payloads have filesystem semantics.
+                game_content = (
+                    package_kind(relative_archive) == "content"
+                    and entry_suffix not in AUTHOR_SOURCE_SUFFIXES
+                    and (
+                        entry_name.startswith(("Library/Artifacts/Blob/", "Library/Artifacts/Document/"))
+                        or (entry_name.startswith("Packages/") and "/runtime/" in entry_name)
+                    )
+                )
+                if _contains_absolute_author_path(text, game_content=game_content):
                     absolute_paths.append(entry_relative)
 
     try:

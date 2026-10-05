@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-import fnmatch
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import MappingProxyType
@@ -17,6 +16,7 @@ from typing import Any, Mapping, Optional
 
 from .path_utils import (
     is_path_within,
+    managed_asset_glob_match,
     portable_relative_path,
     relative_path,
     resolved_path,
@@ -25,23 +25,6 @@ from .path_utils import (
 
 PLAYER_MANIFEST_SCHEMA = "infernux.player_runtime_manifest"
 _KNOWN_OPTIONAL_SUBSYSTEMS = frozenset({"splash"})
-
-
-def _portable_glob_match(value: str, pattern: str) -> bool:
-    """Match a portable glob with ``**/`` representing zero or more levels."""
-    candidates = {pattern}
-    collapsed = pattern
-    while "**/" in collapsed:
-        collapsed = collapsed.replace("**/", "", 1)
-        candidates.add(collapsed)
-    for candidate in candidates:
-        if not fnmatch.fnmatchcase(value, candidate):
-            continue
-        if "**" in candidate or "/" not in candidate:
-            return True
-        if value.count("/") == candidate.count("/"):
-            return True
-    return False
 
 
 def _freeze_document(value: Any) -> Any:
@@ -806,7 +789,7 @@ class PlayerRuntimeAssetCatalog:
             guid
             for path, guid in self._asset_guids_by_path.items()
             if path.startswith("assets/")
-            and _portable_glob_match(path, folded)
+            and managed_asset_glob_match(path, folded)
         }
         return tuple(sorted(matches))
 

@@ -4546,19 +4546,23 @@ finally:
                 return normalized
             return ""
 
-        def rewrite(value, field_name: str = ""):
+        def rewrite_reference_hint(value):
             nonlocal changed
-            if isinstance(value, dict):
-                return {key: rewrite(item, str(key)) for key, item in value.items()}
-            if isinstance(value, list):
-                return [rewrite(item, field_name) for item in value]
-            if not isinstance(value, str):
-                return value
-            if field_name.casefold() == "path_hint":
-                portable = portable_asset_hint(value)
-                if portable != value:
+            hint = value.get("path_hint")
+            if isinstance(hint, str):
+                portable = portable_asset_hint(hint)
+                if portable != hint:
+                    value["path_hint"] = portable
                     changed = True
-                return portable
+
+        def rewrite(value):
+            if isinstance(value, dict):
+                result = {key: rewrite(item) for key, item in value.items()}
+                if value.get("$type") == "asset_ref":
+                    rewrite_reference_hint(result)
+                return result
+            if isinstance(value, list):
+                return [rewrite(item) for item in value]
             # User string fields are payload, not engine resource references.
             # Managed references have already been authored as GUIDs. Rewriting
             # arbitrary strings changes gameplay between Editor and Player.
@@ -4576,6 +4580,9 @@ finally:
                 if not isinstance(item, dict):
                     passthrough.append(item)
                     continue
+                # This schema defines its entries as particle references;
+                # ordinary user dictionaries with path_hint are not references.
+                rewrite_reference_hint(item)
                 identity = (str(item.get("guid", "")), str(item.get("stable_id", "")))
                 existing = deduplicated.get(identity)
                 if existing is None or (

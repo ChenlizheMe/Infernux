@@ -21,7 +21,6 @@ Usage::
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import os
 import threading
@@ -56,29 +55,12 @@ from infernux.core.animation_clip3d import AnimationClip3D
 from infernux.core.anim_state_machine import AnimStateMachine
 from infernux.core.animation_timeline import AnimationTimeline
 from infernux.debug import Debug
-from infernux.engine.path_utils import path_key, portable_path, resolved_path
+from infernux.engine.path_utils import managed_asset_glob_match, path_key, portable_path, resolved_path
 
 # ── Constants ──
 _META_SUPPRESSION_TIMEOUT: float = 2.0  # seconds
 _DEFAULT_DEBOUNCE_SEC: float = 0.35  # seconds
 _RUNTIME_VOLUME_TEXTURE_EXTENSIONS = frozenset({".inxvfield", ".inxsdf"})
-
-
-def _portable_glob_match(value: str, pattern: str) -> bool:
-    """Match a portable glob with ``**/`` representing zero or more levels."""
-    candidates = {pattern}
-    collapsed = pattern
-    while "**/" in collapsed:
-        collapsed = collapsed.replace("**/", "", 1)
-        candidates.add(collapsed)
-    for candidate in candidates:
-        if not fnmatch.fnmatchcase(value, candidate):
-            continue
-        if "**" in candidate or "/" not in candidate:
-            return True
-        if value.count("/") == candidate.count("/"):
-            return True
-    return False
 
 
 @dataclass(slots=True)
@@ -417,7 +399,8 @@ class AssetManager:
         """Query managed asset files or explicitly sandboxed loose files.
 
         Args:
-            pattern: Asset glob/GUID, or a sandbox-relative glob when
+            pattern: Case-insensitive asset path/glob or exact GUID;
+                a sandbox-relative glob when
                 ``raw_filesystem`` is true.
             asset_type: If specified, filter by type.
             raw_filesystem: Query real files rather than the asset database.
@@ -488,7 +471,7 @@ class AssetManager:
             if not path or not os.path.isfile(path):
                 continue
             logical = cls._author_asset_path(path) if path else ""
-            logical_glob_match = _portable_glob_match(logical, normalized_pattern)
+            logical_glob_match = managed_asset_glob_match(logical, normalized_pattern)
             if logical and (
                 logical_glob_match
                 or (
