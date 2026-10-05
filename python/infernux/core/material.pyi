@@ -31,7 +31,7 @@ class Material:
         """Create a new material with the unlit shader."""
         ...
     @staticmethod
-    def from_native(native: InxMaterial) -> Material:
+    def from_native(native: InxMaterial | Material) -> Material:
         """Wrap an existing C++ InxMaterial instance."""
         ...
     def to_dict(self) -> dict:

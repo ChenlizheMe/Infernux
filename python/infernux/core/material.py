@@ -104,8 +104,10 @@ class Material(ResourceProxy):
         return Material(native)
 
     @staticmethod
-    def from_native(native: "InxMaterial") -> "Material":
-        """Wrap an existing C++ InxMaterial."""
+    def from_native(native: "InxMaterial | Material") -> "Material":
+        """Return the canonical proxy for a native or public material."""
+        if isinstance(native, Material):
+            native = native.native
         return Material(native)
 
     def to_dict(self) -> dict:
