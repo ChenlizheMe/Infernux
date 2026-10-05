@@ -95,7 +95,7 @@ class RuntimeButtonBinding(inx.InxComponent):
             button.on_click.add_listener(self.handle_click)
 
     def handle_click(self):
-        print("PlayButton clicked")
+        inx.Debug.log("PlayButton clicked", self)
 ```
 
 Use one binding route for one action. If the same method is present in **On Click ()** and added with `add_listener`, one click invokes it twice.
@@ -239,7 +239,7 @@ class RuntimeButtonBinding(inx.InxComponent):
             button.on_click.add_listener(self.handle_click)
 
     def handle_click(self):
-        print("PlayButton clicked")
+        inx.Debug.log("PlayButton clicked", self)
 ```
 
 一项操作保留一种绑定方式即可。如果同一方法既存在于 **On Click ()**，又通过 `add_listener` 添加，一次点击会调用两次。
