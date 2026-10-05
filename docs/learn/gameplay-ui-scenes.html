@@ -116,7 +116,7 @@
 <p><code>SceneManager</code> resolves only scenes listed for the build. Add both assets before testing:</p>
 <ol>
 <li>Open <code>MainMenu.scene</code>.</li>
-<li>Open <strong>Window &gt; Build Settings</strong>.</li>
+<li>Open <strong>Project &gt; Build Settings</strong>.</li>
 <li>In <strong>Scenes In Build</strong>, choose <strong>Add Open Scene</strong>. Keep <code>MainMenu.scene</code> at index <code>0</code>.</li>
 <li>Open <code>Level01.scene</code>, return to Build Settings, and choose <strong>Add Open Scene</strong> again. Keep <code>Level01.scene</code> at index <code>1</code>.</li>
 <li>Save both scenes after their Button bindings are complete.</li>
@@ -135,7 +135,7 @@
 <p><strong>The Button changes color but no method runs.</strong> Open <strong>On Click ()</strong> and confirm that Target, Component, and Method are all set. The target must be the GameObject that actually owns <code>SceneActions</code>.</p>
 <p><strong><code>SceneActions</code> does not appear in the Component menu.</strong> Attach the script component to the selected target GameObject, allow the script to reload without import errors, then reselect the target in the event entry.</p>
 <p><strong>The callback method does not appear.</strong> Use a public method name without a leading underscore. Lifecycle methods are filtered from the picker. Save the script and confirm the Console has no compilation or import error.</p>
-<p><strong>Clicking logs “scene not found in build list.”</strong> Add the saved <code>.scene</code> asset through <strong>Window &gt; Build Settings</strong>. The bare string must match its filename; <code>"Level01"</code> resolves <code>Level01.scene</code>.</p>
+<p><strong>Clicking logs “scene not found in build list.”</strong> Add the saved <code>.scene</code> asset through <strong>Project &gt; Build Settings</strong>. The bare string must match its filename; <code>"Level01"</code> resolves <code>Level01.scene</code>.</p>
 <p><strong>The click runs twice.</strong> Check for both a persistent <strong>On Click ()</strong> entry and a runtime <code>on_click.add_listener(...)</code> subscription for the same action. Keep one registration.</p>
 <p><strong>The Button never receives pointer input.</strong> Confirm the Button and Canvas are enabled, <code>interactable</code> is enabled, the Button lies inside the Canvas, and no frontmost UI element configured as a raycast target covers it.</p>
 <p><strong>Code after <code>load_scene</code> assumes the new scene is active.</strong> Treat a <code>True</code> return as an accepted request. Put new-scene setup in components belonging to the destination scene, using their <code>awake</code> and <code>start</code> callbacks.</p>
@@ -225,7 +225,7 @@
 <p><code>SceneManager</code> 只解析构建列表中的场景。测试前完成以下设置：</p>
 <ol>
 <li>打开 <code>MainMenu.scene</code>。</li>
-<li>打开 <strong>Window &gt; Build Settings</strong>。</li>
+<li>打开 <strong>项目 &gt; 构建设置（Project &gt; Build Settings）</strong>。</li>
 <li>在 <strong>Scenes In Build</strong> 中选择 <strong>Add Open Scene</strong>，让 <code>MainMenu.scene</code> 保持在索引 <code>0</code>。</li>
 <li>打开 <code>Level01.scene</code>，回到 Build Settings，再次选择 <strong>Add Open Scene</strong>，让 <code>Level01.scene</code> 保持在索引 <code>1</code>。</li>
 <li>完成 Button 绑定后，再保存两个场景。</li>
@@ -244,7 +244,7 @@
 <p><strong>Button 有颜色反馈，方法没有运行。</strong> 展开 <strong>On Click ()</strong>，确认 Target、Component、Method 都已设置。Target 必须指向真正挂有 <code>SceneActions</code> 的 GameObject。</p>
 <p><strong>Component 菜单中没有 <code>SceneActions</code>。</strong> 先把脚本组件挂到目标 GameObject，等待脚本无错误重载，再在事件记录中重新选择目标。</p>
 <p><strong>方法没有出现在列表中。</strong> 使用不以下划线开头的公开方法名。生命周期方法会被选择器过滤。保存脚本，并确认 Console 没有编译或导入错误。</p>
-<p><strong>点击后提示场景不在构建列表。</strong> 通过 <strong>Window &gt; Build Settings</strong> 添加已保存的 <code>.scene</code> 资产。裸字符串要与文件名一致；<code>"Level01"</code> 会解析 <code>Level01.scene</code>。</p>
+<p><strong>点击后提示场景不在构建列表。</strong> 通过 <strong>项目 &gt; 构建设置（Project &gt; Build Settings）</strong> 添加已保存的 <code>.scene</code> 资产。裸字符串要与文件名一致；<code>"Level01"</code> 会解析 <code>Level01.scene</code>。</p>
 <p><strong>一次点击运行两次。</strong> 检查同一操作是否同时存在持久化 <strong>On Click ()</strong> 记录和运行时 <code>on_click.add_listener(...)</code> 订阅，保留一处注册。</p>
 <p><strong>Button 收不到指针输入。</strong> 确认 Button 与 Canvas 已启用、<code>interactable</code> 已开启、Button 位于 Canvas 内，并检查前方是否有启用 Raycast Target 的 UI 元素遮挡它。</p>
 <p><strong><code>load_scene</code> 后的代码立即使用新场景。</strong> <code>True</code> 表示请求已接受。新场景初始化应放在目标场景组件的 <code>awake</code> 与 <code>start</code> 中。</p>

@@ -105,7 +105,7 @@ Use one binding route for one action. If the same method is present in **On Clic
 `SceneManager` resolves only scenes listed for the build. Add both assets before testing:
 
 1. Open `MainMenu.scene`.
-2. Open **Window > Build Settings**.
+2. Open **Project > Build Settings**.
 3. In **Scenes In Build**, choose **Add Open Scene**. Keep `MainMenu.scene` at index `0`.
 4. Open `Level01.scene`, return to Build Settings, and choose **Add Open Scene** again. Keep `Level01.scene` at index `1`.
 5. Save both scenes after their Button bindings are complete.
@@ -130,7 +130,7 @@ For an explicit API check, temporarily change `"Level01"` to `"MissingScene"`. T
 
 **The callback method does not appear.** Use a public method name without a leading underscore. Lifecycle methods are filtered from the picker. Save the script and confirm the Console has no compilation or import error.
 
-**Clicking logs “scene not found in build list.”** Add the saved `.scene` asset through **Window > Build Settings**. The bare string must match its filename; `"Level01"` resolves `Level01.scene`.
+**Clicking logs “scene not found in build list.”** Add the saved `.scene` asset through **Project > Build Settings**. The bare string must match its filename; `"Level01"` resolves `Level01.scene`.
 
 **The click runs twice.** Check for both a persistent **On Click ()** entry and a runtime `on_click.add_listener(...)` subscription for the same action. Keep one registration.
 
@@ -249,7 +249,7 @@ class RuntimeButtonBinding(inx.InxComponent):
 `SceneManager` 只解析构建列表中的场景。测试前完成以下设置：
 
 1. 打开 `MainMenu.scene`。
-2. 打开 **Window > Build Settings**。
+2. 打开 **项目 > 构建设置（Project > Build Settings）**。
 3. 在 **Scenes In Build** 中选择 **Add Open Scene**，让 `MainMenu.scene` 保持在索引 `0`。
 4. 打开 `Level01.scene`，回到 Build Settings，再次选择 **Add Open Scene**，让 `Level01.scene` 保持在索引 `1`。
 5. 完成 Button 绑定后，再保存两个场景。
@@ -274,7 +274,7 @@ class RuntimeButtonBinding(inx.InxComponent):
 
 **方法没有出现在列表中。** 使用不以下划线开头的公开方法名。生命周期方法会被选择器过滤。保存脚本，并确认 Console 没有编译或导入错误。
 
-**点击后提示场景不在构建列表。** 通过 **Window > Build Settings** 添加已保存的 `.scene` 资产。裸字符串要与文件名一致；`"Level01"` 会解析 `Level01.scene`。
+**点击后提示场景不在构建列表。** 通过 **项目 > 构建设置（Project > Build Settings）** 添加已保存的 `.scene` 资产。裸字符串要与文件名一致；`"Level01"` 会解析 `Level01.scene`。
 
 **一次点击运行两次。** 检查同一操作是否同时存在持久化 **On Click ()** 记录和运行时 `on_click.add_listener(...)` 订阅，保留一处注册。
 
