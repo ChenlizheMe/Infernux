@@ -22,6 +22,7 @@ from .inspector_utils import (
     render_serialized_field,
     semantic_capture_enabled,
     inspector_component_semantic_id,
+    record_inspector_component_item,
 )
 from .theme import Theme, ImGuiCol
 from ._inspector_undo import (
@@ -523,13 +524,18 @@ def _render_audio_source_extra(ctx: InxGUIContext, comp):
                 if is_playing:
                     if ctx.button(f"Stop##track_stop_{i}"):
                         comp.stop(i)
+                    record_inspector_component_item(ctx, comp, f"track_{i}.stop", "button", "Stop")
                 else:
                     if ctx.button(f"Play##track_play_{i}"):
                         comp.play(i)
+                    record_inspector_component_item(ctx, comp, f"track_{i}.play", "button", "Play")
                 ctx.same_line()
                 status = "Playing" if is_playing else ("Paused" if comp.is_track_paused(i) else "Stopped")
                 ctx.push_style_color(ImGuiCol.Text, *Theme.META_TEXT)
                 ctx.label(status)
+                record_inspector_component_item(
+                    ctx, comp, f"track_{i}.status", "audio_track_status", status, enabled=False
+                )
                 ctx.pop_style_color(1)
 
 
