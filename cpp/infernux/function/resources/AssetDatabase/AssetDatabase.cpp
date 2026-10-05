@@ -218,14 +218,14 @@ template <typename Resolve> void ValidateModelMaterialTargets(const ImportArtifa
     }
 }
 
-InxResourceMeta LoadMetadataDocument(const std::string &path)
+InxResourceMeta LoadMetadataDocument(const std::string &path, AtomicFileState *consumedState = nullptr)
 {
-    std::ifstream file(ToFsPath(path));
-    if (!file)
-        throw std::runtime_error("metadata sidecar cannot be opened: " + path);
-    const nlohmann::json document = nlohmann::json::parse(file);
+    const auto snapshot = ReadTextFileSnapshot(path);
+    const nlohmann::json document = nlohmann::json::parse(snapshot.content);
     InxResourceMeta metadata;
     metadata.DeserializeDocument(document);
+    if (consumedState)
+        *consumedState = snapshot.state;
     return metadata;
 }
 
@@ -1439,6 +1439,8 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
 
         const std::string metaPath = InxResourceMeta::GetMetaFilePath(item.file.path);
         const bool sidecarExists = std::filesystem::is_regular_file(ToFsPath(metaPath));
+        if (!item.file.readOnly)
+            item.expectedMetadata = AtomicFileState{};
         InxResourceMeta metadata;
         InxResourceMeta previousMetadata;
         bool previousMetadataLoaded = false;
@@ -1447,7 +1449,7 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
         // Read-only package roots never consume sidecars. They are derived
         // project state and may have been produced by a different engine.
         if (sidecarExists && !item.file.readOnly) {
-            InxResourceMeta loadedMetadata = LoadMetadataDocument(metaPath);
+            InxResourceMeta loadedMetadata = LoadMetadataDocument(metaPath, &*item.expectedMetadata);
             if (item.mode == WorkerMetadataPrepare::Mode::LoadExisting ||
                 item.mode == WorkerMetadataPrepare::Mode::CreateOrLoad) {
                 // The current source fingerprint is authoritative. Rebuild
@@ -1706,7 +1708,8 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
         workingSet.guidToPath[guid] = item.file.path;
         workingSet.pathToGuid[item.file.normalizedPath] = guid;
         state->pendingImports.push_back({guid, item.file.path, item.file.normalizedPath, item.file.source,
-                                         item.file.meta, item.file.readOnly, !item.file.readOnly});
+                                         item.file.meta, item.file.readOnly, !item.file.readOnly,
+                                         item.expectedMetadata});
         ++processed;
     }
 
@@ -1849,7 +1852,8 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
             } else {
                 const std::string metaPath = InxResourceMeta::GetMetaFilePath(asset.path);
                 state->metadataWrites.push_back(
-                    {metaPath, metadata->second->SerializeDocumentPortable(m_projectRoot).dump(4) + "\n"});
+                    {metaPath, metadata->second->SerializeDocumentPortable(m_projectRoot).dump(4) + "\n",
+                     asset.expectedMetadata});
             }
         }
         ++processed;
@@ -1888,6 +1892,8 @@ bool AssetDatabase::ContinuePendingImportMerge(const std::shared_ptr<PendingRefr
         state->metadataWriteJob = JobSystem::Get().Schedule([state, projectRoot, journalPath, assetIndexPath,
                                                              writes = std::move(state->metadataWrites)]() mutable {
             try {
+                for (const auto &asset : state->pendingImports)
+                    RequireUnchangedFingerprint(asset.path, asset.source);
                 const DocumentTransactionStats stats =
                     DocumentTransaction::Commit(projectRoot, journalPath, std::move(writes), {assetIndexPath});
                 state->journalUncompressedBytes = stats.uncompressedBytes;
@@ -2270,7 +2276,8 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
 
     const std::string normalizedPath = FilesystemPathKey(path);
     const bool readOnly = IsReadOnlyPath(normalizedPath);
-    std::string guid = CreateOrLoadMetadata(path, type, readOnly, !readOnly, normalizedPath);
+    std::optional<AtomicFileState> expectedMetadata;
+    std::string guid = CreateOrLoadMetadata(path, type, readOnly, !readOnly, normalizedPath, &expectedMetadata);
     if (guid.empty()) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
         result.error = "asset metadata could not be created or loaded";
@@ -2285,7 +2292,8 @@ AssetMutationResult AssetDatabase::ImportAsset(const std::string &path)
     // metadata sidecar that CreateOrLoadMetadata just persisted and commits a
     // heavyweight filesystem transaction on the editor thread.
     const bool imported = type == ResourceType::Script ? (m_importResults[guid] = {true, {}}, true)
-                                                       : RunImporter(guid, path, false, !readOnly);
+                                                       : RunImporter(guid, path, false, !readOnly, nullptr, nullptr,
+                                                                     expectedMetadata ? &*expectedMetadata : nullptr);
     if (!imported) {
         const auto importResult = m_importResults.find(guid);
         const std::string importError = importResult != m_importResults.end() && !importResult->second.error.empty()
@@ -2338,7 +2346,8 @@ AssetMutationResult AssetDatabase::ReimportAsset(const std::string &path, const 
         return result;
     if (ownedTexture)
         ApplyModelTextureSettings(*candidate.metadata, selected->GetGuid(), settings);
-    if (!RunImporter(result.guid, sourcePath, true, true, &*candidate.metadata, &candidate.file.source)) {
+    if (!RunImporter(result.guid, sourcePath, true, true, &*candidate.metadata, &candidate.file.source,
+                     &candidate.expectedMetadata.value())) {
         result.errorCode = AssetMutationErrorCode::ImportFailed;
         result.error = m_importResults.at(result.guid).error;
         return result;
@@ -2523,7 +2532,8 @@ std::optional<AssetMutationResult> AssetDatabase::TryCommitModelReimport()
             throw std::runtime_error("Model import settings changed outside this Apply");
         m_lastModelReimportWorkerMilliseconds = pending->workerMilliseconds;
         PublishImportArtifact(worker.request, std::move(*worker.artifact), true,
-                              &m_lastModelReimportPrepareMilliseconds, &m_lastModelReimportPersistenceMilliseconds,
+                              &pending->metadata.expectedMetadata.value(), &m_lastModelReimportPrepareMilliseconds,
+                              &m_lastModelReimportPersistenceMilliseconds,
                               &m_lastModelReimportLivePublicationMilliseconds);
         const auto livePublicationStart = std::chrono::steady_clock::now();
         FinishReimport(result);
@@ -2989,7 +2999,8 @@ void AssetDatabase::UpdateCachedFileState(const std::string &path, bool readOnly
 }
 
 bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata,
-                                const InxResourceMeta *candidateMetadata, const AssetFileFingerprint *expectedSource)
+                                const InxResourceMeta *candidateMetadata, const AssetFileFingerprint *expectedSource,
+                                const AtomicFileState *expectedMetadata)
 {
     if (guid.empty() || path.empty())
         throw std::invalid_argument("AssetDatabase importer request requires GUID and path");
@@ -3016,7 +3027,7 @@ bool AssetDatabase::RunImporter(const std::string &guid, const std::string &path
                                       : (isReimport ? importer->Reimport(request) : importer->Import(request));
         if (expectedSource)
             RequireUnchangedFingerprint(path, *expectedSource);
-        PublishImportArtifact(request, std::move(artifact), persistMetadata);
+        PublishImportArtifact(request, std::move(artifact), persistMetadata, expectedMetadata);
         return true;
     } catch (const std::exception &exception) {
         error = exception.what();
@@ -3075,8 +3086,8 @@ ImportRequest AssetDatabase::MakeImportRequest(const std::string &guid, const st
 }
 
 void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata,
-                                          double *prepareMilliseconds, double *persistenceMilliseconds,
-                                          double *livePublicationMilliseconds)
+                                          const AtomicFileState *expectedMetadata, double *prepareMilliseconds,
+                                          double *persistenceMilliseconds, double *livePublicationMilliseconds)
 {
     const auto prepareStart = std::chrono::steady_clock::now();
     const auto &guid = request.guid;
@@ -3090,10 +3101,13 @@ void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportAr
     std::vector<DocumentTransactionEntry> writes;
     writes.reserve(1 + artifact.runtimeCpuArtifacts.size());
     if (persistMetadata) {
+        if (!expectedMetadata)
+            throw std::logic_error("Author metadata publication requires its captured input state");
         const std::string metaPath = InxResourceMeta::GetMetaFilePath(path);
         if (metaPath.empty())
             throw std::runtime_error("Failed to resolve importer metadata path");
-        writes.push_back({metaPath, artifact.metadata.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n"});
+        writes.push_back(
+            {metaPath, artifact.metadata.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n", *expectedMetadata});
     }
     auto runtimeArtifactWrites =
         TakeRuntimeArtifactWrites(artifact.runtimeCpuArtifacts, guid, request.resourceType, m_projectRoot);
@@ -3117,7 +3131,9 @@ void AssetDatabase::PublishImportArtifact(const ImportRequest &request, ImportAr
                         throw std::runtime_error("Failed to create external import target directory: " +
                                                  directoryError.message());
                 }
-                (void)DocumentStore::Instance().WriteAndWait(write.path, std::move(write.content));
+                DocumentWriteOptions options;
+                options.expectedFileState = write.expectedFileState;
+                (void)DocumentStore::Instance().WriteAndWait(write.path, std::move(write.content), options);
             }
             std::error_code indexError;
             std::filesystem::remove(ToFsPath(m_assetIndexPath), indexError);
@@ -3257,7 +3273,8 @@ ResourceType AssetDatabase::GetResourceTypeForPath(const std::string &filePath) 
 }
 
 std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
-                                                bool persistMetadata, const std::string &identityKey)
+                                                bool persistMetadata, const std::string &identityKey,
+                                                std::optional<AtomicFileState> *expectedMetadata)
 {
     if (filePath.empty()) {
         INXLOG_ERROR("Received empty filePath!");
@@ -3283,9 +3300,10 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
     InxResourceMeta metaFile;
     std::string metaFilePath = InxResourceMeta::GetMetaFilePath(filePath);
     bool loadedExistingMeta = false;
+    AtomicFileState metadataState;
     std::string preservedGuid = GetGuidFromPath(filePath);
     if (!readOnly && std::filesystem::is_regular_file(ToFsPath(metaFilePath))) {
-        metaFile = LoadMetadataDocument(metaFilePath);
+        metaFile = LoadMetadataDocument(metaFilePath, &metadataState);
         loadedExistingMeta = true;
     }
     if (!loadedExistingMeta) {
@@ -3301,8 +3319,12 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
             MeshImportSettings::InitializeDefaults(metaFile);
         ApplyBuiltinSceneIconMetadata(metaFile, filePath, readOnly);
         if (!readOnly && persistMetadata) {
-            DocumentStore::Instance().WriteAndWait(metaFilePath,
-                                                   metaFile.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n");
+            DocumentWriteOptions options;
+            options.expectedFileState = metadataState;
+            const auto ticket = DocumentStore::Instance().Submit(
+                metaFilePath, metaFile.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n", options);
+            ticket->Wait();
+            metadataState = ticket->GetCommittedFileState().value();
         }
     } else {
         if (metaFile.GetResourceType() != type)
@@ -3314,6 +3336,8 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
         metaFile.AddMetadata("guid", existingGuid);
     }
 
+    if (expectedMetadata && !readOnly)
+        *expectedMetadata = metadataState;
     std::string guid = metaFile.GetGuid();
     m_metas[guid] = std::make_shared<InxResourceMeta>(metaFile);
     UpdateMapping(guid, filePath);

@@ -521,6 +521,7 @@ class AssetDatabase
         AssetFileFingerprint meta;
         bool readOnly = false;
         bool persistMetadata = true;
+        std::optional<AtomicFileState> expectedMetadata;
     };
 
     struct WorkerImport
@@ -548,6 +549,7 @@ class AssetDatabase
         const IAssetLoader *loader = nullptr;
         std::string fallbackGuid;
         std::optional<InxResourceMeta> metadata;
+        std::optional<AtomicFileState> expectedMetadata;
         std::string error;
         std::thread::id producerThread;
         Mode mode = Mode::CreateOrLoad;
@@ -678,19 +680,22 @@ class AssetDatabase
     /// Run the matching importer for this asset (dependency scanning etc.)
     bool RunImporter(const std::string &guid, const std::string &path, bool isReimport, bool persistMetadata = true,
                      const InxResourceMeta *candidateMetadata = nullptr,
-                     const AssetFileFingerprint *expectedSource = nullptr);
+                     const AssetFileFingerprint *expectedSource = nullptr,
+                     const AtomicFileState *expectedMetadata = nullptr);
     bool PrepareReimportInput(const std::string &path, WorkerMetadataPrepare &candidate, AssetMutationResult &result);
     static bool PrepareReimportMetadata(WorkerMetadataPrepare &candidate, const nlohmann::json &settings,
                                         AssetMutationResult &result);
     ImportRequest MakeImportRequest(const std::string &guid, const std::string &path, bool isReimport,
                                     const InxResourceMeta &metadata) const;
     void PublishImportArtifact(const ImportRequest &request, ImportArtifact artifact, bool persistMetadata,
-                               double *prepareMilliseconds = nullptr, double *persistenceMilliseconds = nullptr,
+                               const AtomicFileState *expectedMetadata, double *prepareMilliseconds = nullptr,
+                               double *persistenceMilliseconds = nullptr,
                                double *livePublicationMilliseconds = nullptr);
     void FinishReimport(AssetMutationResult &result);
 
     std::string CreateOrLoadMetadata(const std::string &filePath, ResourceType type, bool readOnly,
-                                     bool persistMetadata, const std::string &identityKey);
+                                     bool persistMetadata, const std::string &identityKey,
+                                     std::optional<AtomicFileState> *expectedMetadata = nullptr);
     void DeleteMetadata(const std::string &filePath);
     void MoveMetadata(const std::string &oldFilePath, const std::string &newFilePath);
     void RebuildDerivedIndex();

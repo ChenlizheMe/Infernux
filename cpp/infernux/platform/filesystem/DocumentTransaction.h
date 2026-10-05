@@ -1,5 +1,7 @@
 #pragma once
 
+#include "AtomicFile.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -11,6 +13,9 @@ struct DocumentTransactionEntry
 {
     std::string path;
     std::string content;
+    // Identity of the exact authored input consumed by this transaction.
+    // nullopt is reserved for derived outputs with no author baseline.
+    std::optional<AtomicFileState> expectedFileState;
 };
 
 struct DocumentTransactionFileState
@@ -42,6 +47,9 @@ class DocumentTransaction final
                                            std::vector<std::string> invalidatedPaths);
 
     /// Replay and remove an existing journal. Returns false when no journal exists.
+    /// Guarded targets must still match their input or this transaction's exact
+    /// completed payload. A later author edit rejects recovery and retains the
+    /// journal; resolving that edit belongs to the user's authoring/VCS workflow.
     static bool Recover(const std::string &projectRoot, const std::string &journalPath);
 };
 
