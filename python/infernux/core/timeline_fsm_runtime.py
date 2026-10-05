@@ -43,6 +43,7 @@ class TimelineFSMRuntime:
     def __init__(self):
         self._fsm: Optional[AnimStateMachine] = None
         self._params: Dict[str, object] = {}
+        self._pending_triggers: frozenset[str] = frozenset()
         self._timeline_cache: Dict[str, AnimationTimeline] = {}
         self._state_name: str = ""
         self._timeline: Optional[AnimationTimeline] = None
@@ -65,6 +66,7 @@ class TimelineFSMRuntime:
         self._fsm = fsm
         self._timeline_cache = {}
         self._params = {}
+        self._pending_triggers = frozenset()
         self._state_name = ""
         self._timeline = None
         self._elapsed = 0.0
@@ -113,30 +115,33 @@ class TimelineFSMRuntime:
     # ── Parameter API ──────────────────────────────────────────────────
     def set_parameter(self, name: str, value: object):
         self._params[name] = value
+        if name in self._pending_triggers:
+            self._pending_triggers -= {name}
 
     def get_parameter(self, name: str, default: object = None) -> object:
         return self._params.get(name, default)
 
     def set_bool(self, name: str, value: bool):
-        self._params[name] = bool(value)
+        self.set_parameter(name, bool(value))
 
     def get_bool(self, name: str) -> bool:
         return bool(self._params.get(name, False))
 
     def set_float(self, name: str, value: float):
-        self._params[name] = float(value)
+        self.set_parameter(name, float(value))
 
     def get_float(self, name: str) -> float:
         return float(self._params.get(name, 0.0))
 
     def set_int(self, name: str, value: int):
-        self._params[name] = int(value)
+        self.set_parameter(name, int(value))
 
     def get_int(self, name: str) -> int:
         return int(self._params.get(name, 0))
 
     def set_trigger(self, name: str):
         self._params[name] = True
+        self._pending_triggers |= {name}
 
     # ── Playback ───────────────────────────────────────────────────────
     def play(self, state_name: str = "", *, transform=None) -> bool:
@@ -297,11 +302,9 @@ class TimelineFSMRuntime:
         )
 
     def _consume_triggers(self, transition: AnimTransition):
-        names = set(
-            self._fsm.transition_parameter_names(transition)
-            if self._fsm is not None
-            else ()
-        )
-        for name, val in list(self._params.items()):
-            if val is True and name in names:
-                self._params[name] = False
+        if not self._pending_triggers or self._fsm is None:
+            return
+        consumed = self._pending_triggers.intersection(self._fsm.transition_parameter_names(transition))
+        for name in consumed:
+            self._params[name] = False
+        self._pending_triggers -= consumed

@@ -81,6 +81,8 @@ class SpiritAnimator(InxComponent):
     # ── Runtime parameters (user-settable, used in conditions) ──────
 
     _parameters: Dict[str, object] = {}
+    # Immutable default also keeps unattached instances independent before Awake.
+    _pending_triggers: frozenset[str] = frozenset()
 
     # ── Private runtime state ───────────────────────────────────────
 
@@ -101,6 +103,7 @@ class SpiritAnimator(InxComponent):
 
     def awake(self):
         self._parameters = {}
+        self._pending_triggers = frozenset()
         self._clip_cache = {}
         self._timeline_cache = {}
         self._current_timeline = None
@@ -242,6 +245,8 @@ class SpiritAnimator(InxComponent):
     def set_parameter(self, name: str, value: object):
         """Set a named parameter that transition conditions can reference."""
         self._parameters[name] = value
+        if name in self._pending_triggers:
+            self._pending_triggers -= {name}
 
     def get_parameter(self, name: str, default: object = None) -> object:
         """Get a named parameter value."""
@@ -251,23 +256,24 @@ class SpiritAnimator(InxComponent):
         return bool(self._parameters.get(name, False))
 
     def set_bool(self, name: str, value: bool):
-        self._parameters[name] = bool(value)
+        self.set_parameter(name, bool(value))
 
     def get_float(self, name: str) -> float:
         return float(self._parameters.get(name, 0.0))
 
     def set_float(self, name: str, value: float):
-        self._parameters[name] = float(value)
+        self.set_parameter(name, float(value))
 
     def get_int(self, name: str) -> int:
         return int(self._parameters.get(name, 0))
 
     def set_int(self, name: str, value: int):
-        self._parameters[name] = int(value)
+        self.set_parameter(name, int(value))
 
     def set_trigger(self, name: str):
         """Set a trigger parameter (auto-clears after consumed by a transition)."""
         self._parameters[name] = True
+        self._pending_triggers |= {name}
 
     def reload_controller(self):
         """Force-reload the FSM from disk."""
@@ -284,6 +290,7 @@ class SpiritAnimator(InxComponent):
         self._timeline_base = None
         self._last_timeline_pose = None
         self._parameters = {}
+        self._pending_triggers = frozenset()
 
     # ── Internals ───────────────────────────────────────────────────
 
@@ -385,6 +392,7 @@ class SpiritAnimator(InxComponent):
         normalized = self.normalized_time
         playing = self._playing
         parameters = dict(self._parameters)
+        pending_triggers = self._pending_triggers
         self._fsm = replacement
         self._clip_cache = {}
         self._timeline_cache = {}
@@ -394,6 +402,7 @@ class SpiritAnimator(InxComponent):
             for name, value in parameters.items()
             if name in self._parameters
         )
+        self._pending_triggers = pending_triggers.intersection(self._parameters)
         for candidate in replacement.states:
             self._precache_state_asset(candidate)
 
@@ -505,6 +514,7 @@ class SpiritAnimator(InxComponent):
     def _seed_parameters_from_fsm(self, fsm: AnimStateMachine) -> None:
         """Expose FSM parameter defaults in condition eval (``eval`` ctx)."""
         self._parameters = {}
+        self._pending_triggers = frozenset()
         for p in fsm.parameters:
             if p.value_type.value_type is ValueType.BOOL:
                 self._parameters[p.name] = bool(p.default)
@@ -716,11 +726,9 @@ class SpiritAnimator(InxComponent):
         )
 
     def _consume_triggers(self, transition: AnimTransition):
-        names = set(
-            self._fsm.transition_parameter_names(transition)
-            if self._fsm is not None
-            else ()
-        )
-        for name, val in list(self._parameters.items()):
-            if val is True and name in names:
-                self._parameters[name] = False
+        if not self._pending_triggers or self._fsm is None:
+            return
+        consumed = self._pending_triggers.intersection(self._fsm.transition_parameter_names(transition))
+        for name in consumed:
+            self._parameters[name] = False
+        self._pending_triggers -= consumed

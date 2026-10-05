@@ -499,7 +499,7 @@ class TestTriggerConsumption:
             name="attack", value_type=TypeRef(ValueType.BOOL), default=False
         )
         anim._fsm = AnimStateMachine(parameters=[attack])
-        anim._parameters = {"attack": True}
+        anim.set_trigger("attack")
         anim._consume_triggers(
             AnimTransition(conditions=[_condition(attack)])
         )
@@ -514,7 +514,7 @@ class TestTriggerConsumption:
             name="is_attacking", value_type=TypeRef(ValueType.BOOL), default=False
         )
         anim._fsm = AnimStateMachine(parameters=[attack, attacking])
-        anim._parameters = {"attack": True}
+        anim.set_trigger("attack")
         anim._consume_triggers(
             AnimTransition(conditions=[_condition(attacking)])
         )
@@ -530,7 +530,9 @@ class TestTriggerConsumption:
             name="fire", value_type=TypeRef(ValueType.BOOL), default=False
         )
         anim._fsm = AnimStateMachine(parameters=[jump, fire])
-        anim._parameters = {"jump": True, "fire": True, "idle": True}
+        anim.set_trigger("jump")
+        anim.set_trigger("fire")
+        anim.set_bool("idle", True)
         anim._consume_triggers(
             AnimTransition(conditions=[_condition(jump), _condition(fire)])
         )
@@ -547,7 +549,7 @@ class TestTriggerConsumption:
             name="is_attacking", value_type=TypeRef(ValueType.BOOL), default=False
         )
         sp._fsm = AnimStateMachine(parameters=[attack, attacking])
-        sp._parameters = {"attack": True}
+        sp.set_trigger("attack")
         sp._consume_triggers(
             AnimTransition(conditions=[_condition(attacking)])
         )
