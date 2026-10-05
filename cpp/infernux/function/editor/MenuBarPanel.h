@@ -18,6 +18,7 @@ struct WindowTypeInfo
 {
     std::string typeId;
     std::string displayName;
+    std::string titleKey;
     std::string menuPath = "Window";
     std::vector<std::string> menuPathKeys;
     bool singleton = true;

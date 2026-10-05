@@ -1759,6 +1759,7 @@ class BootstrapWiringMixin:
                 wti = WindowTypeInfo()
                 wti.type_id = type_id
                 wti.display_name = info.display_name
+                wti.title_key = info.title_key or ""
                 wti.menu_path = info.menu_path
                 wti.menu_path_keys = list(info.menu_path_keys)
                 wti.singleton = info.singleton

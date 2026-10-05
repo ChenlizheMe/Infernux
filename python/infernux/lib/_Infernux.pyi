@@ -2907,6 +2907,9 @@ class WindowTypeInfo:
     def __init__(self) -> None: ...
     type_id: str
     display_name: str
+    title_key: str
+    menu_path: str
+    menu_path_keys: list[str]
     singleton: bool
 
 

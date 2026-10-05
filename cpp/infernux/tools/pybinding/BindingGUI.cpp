@@ -1214,6 +1214,7 @@ void RegisterGUIBindings(py::module_ &m)
         .def(py::init<>())
         .def_readwrite("type_id", &WindowTypeInfo::typeId)
         .def_readwrite("display_name", &WindowTypeInfo::displayName)
+        .def_readwrite("title_key", &WindowTypeInfo::titleKey)
         .def_readwrite("menu_path", &WindowTypeInfo::menuPath)
         .def_readwrite("menu_path_keys", &WindowTypeInfo::menuPathKeys)
         .def_readwrite("singleton", &WindowTypeInfo::singleton);
