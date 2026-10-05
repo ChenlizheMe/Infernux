@@ -504,6 +504,7 @@ void InxVkCoreModular::PreparePipeline()
 {
     // Create default flat normal texture (0.5, 0.5, 1.0 = tangent-space (0,0,1))
     m_textureCache.CreateSolidColorTexture("_default_normal", 128, 128, 255, 255, m_resourceManager);
+    m_textureCache.CreateSolidColorTexture("_default_black", 0, 0, 0, 255, m_resourceManager);
 
     // Register the canonical per-view ABI before any ShaderProgram creates a
     // pipeline layout. Descriptor sets are allocated later, after the default

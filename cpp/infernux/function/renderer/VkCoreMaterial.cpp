@@ -701,6 +701,14 @@ void InxVkCoreModular::InitializeMaterialSystem()
                                                               rhiDevice.Resolve(normalTex->GetSampler()), normalTex);
         }
 
+        auto blackSlot = m_textureCache.Find("_default_black", m_ensureFrameCounter);
+        auto blackTex = blackSlot ? blackSlot->Acquire() : nullptr;
+        if (blackTex) {
+            auto &rhiDevice = m_backend.Device().GetRhiDevice();
+            m_materialPipelineManager.SetDefaultBlackTexture(rhiDevice.Resolve(blackTex->GetView()),
+                                                             rhiDevice.Resolve(blackTex->GetSampler()), blackTex);
+        }
+
         // Set up texture resolver for material Texture2D properties
         // Delegates to ResolveTextureForMaterial which uses GUID-based cache keys.
         m_materialPipelineManager.SetTextureResolver(

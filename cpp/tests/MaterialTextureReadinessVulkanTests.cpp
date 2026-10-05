@@ -59,8 +59,8 @@ int main(int argc, char **argv)
     rhi::TextureDesc textureDesc;
     textureDesc.format = rhi::PixelFormat::RGBA8UNorm;
     textureDesc.usage = rhi::TextureUsageFlags::Sampled;
-    std::array<rhi::TextureHandle, 3> textures;
-    std::array<rhi::TextureViewHandle, 3> views;
+    std::array<rhi::TextureHandle, 4> textures;
+    std::array<rhi::TextureViewHandle, 4> views;
     for (size_t i = 0; i < textures.size(); ++i) {
         textures[i] = device.CreateTexture(textureDesc);
         rhi::TextureViewDesc viewDesc;
@@ -76,8 +76,8 @@ int main(int argc, char **argv)
                                                      views[index], sampler, 4, std::make_shared<int>(1),
                                                      rhi::PixelFormat::RGBA8UNorm);
     };
-    std::array<std::shared_ptr<const rhi::TextureGpuView>, 3> gpuViews = {publication(0), publication(1),
-                                                                          publication(2)};
+    std::array<std::shared_ptr<const rhi::TextureGpuView>, 4> gpuViews = {
+        publication(0), publication(1), publication(2), publication(3)};
 
     vk::VkDescriptorManager descriptorAllocator(context.GetDevice(), context.GetDeviceId());
     GpuRetirementQueue retirement;
@@ -88,6 +88,45 @@ int main(int argc, char **argv)
                            &descriptorAllocator);
     descriptors.SetRetirementQueue(&retirement);
     descriptors.SetDefaultTexture(device.Resolve(views[0]), device.Resolve(sampler), gpuViews[0]);
+    descriptors.SetDefaultNormalTexture(device.Resolve(views[1]), device.Resolve(sampler), gpuViews[1]);
+    descriptors.SetDefaultBlackTexture(device.Resolve(views[3]), device.Resolve(sampler), gpuViews[3]);
+    descriptors.SetTextureResolver([](const std::string &, const std::string &, const MaterialTextureSampler *) {
+        return TextureResolveResult{};
+    });
+
+    // Texture defaults come from ShaderInfo, regardless of the property name.
+    // A project texture GUID remains empty until an asset is explicitly assigned.
+    ShaderProgramArtifact defaults;
+    ShaderProgramPropertyBinding declaredNormal;
+    declaredNormal.name = "texSampler";
+    declaredNormal.type = "Texture2D";
+    declaredNormal.textureDefault = "normal";
+    defaults.properties.push_back(declaredNormal);
+    ShaderProgramPropertyBinding declaredWhite;
+    declaredWhite.name = "detailTex";
+    declaredWhite.type = "Texture2D";
+    declaredWhite.textureDefault = "white";
+    defaults.properties.push_back(declaredWhite);
+    InxMaterial defaultMaterial("declared-texture-defaults", "Gizmo Icon");
+    defaultMaterial.SynchronizeShaderPropertyDefaults(defaults);
+    assert(defaultMaterial.SerializeDocument()["properties"]["texSampler"]["guid"] == "");
+    auto *defaultDescriptor = descriptors.GetOrCreateDescriptorSet(defaultMaterial, program);
+    assert(defaultDescriptor && defaultDescriptor->isValid);
+    descriptors.ResolveTextureProperties(defaultMaterial.GetMaterialKey(), defaultMaterial, program);
+    const bool declaredDefaultCorrect =
+        defaultDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[1];
+    assert(defaultDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[0]);
+    const uint64_t defaultAuthoredVersion = defaultMaterial.GetAuthoredVersion();
+    defaults.properties[0].textureDefault = "white";
+    defaults.properties[1].textureDefault = "Black";
+    assert(defaultMaterial.SynchronizeShaderPropertyDefaults(defaults));
+    assert(defaultMaterial.GetAuthoredVersion() == defaultAuthoredVersion);
+    descriptors.ResolveTextureProperties(defaultMaterial.GetMaterialKey(), defaultMaterial, program);
+    assert(defaultDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[0]);
+    assert(defaultDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
+    auto defaultClone = defaultMaterial.Clone();
+    auto *cloneDescriptor = descriptors.GetOrCreateDescriptorSet(*defaultClone, program);
+    assert(cloneDescriptor && cloneDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
 
     std::unordered_map<std::string, TextureResolveStatus> statuses = {{"icon-guid", TextureResolveStatus::Pending},
                                                                       {"detail-guid", TextureResolveStatus::Ready}};
@@ -102,6 +141,27 @@ int main(int argc, char **argv)
         }
         return result;
     });
+
+    auto assignedDocument = defaultMaterial.SerializeDocument();
+    assignedDocument["properties"]["detailTex"]["guid"] = "detail-guid";
+    assert(defaultMaterial.DeserializeDocument(assignedDocument));
+    defaultMaterial.SynchronizeShaderPropertyDefaults(defaults);
+    descriptors.ResolveTextureProperties(defaultMaterial.GetMaterialKey(), defaultMaterial, program);
+    assert(defaultDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[2]);
+    defaultMaterial.SetTextureGuid("detailTex", "");
+    descriptors.ResolveTextureProperties(defaultMaterial.GetMaterialKey(), defaultMaterial, program);
+    assert(defaultDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
+    assert(defaultMaterial.SerializeDocument()["properties"]["detailTex"]["guid"] == "");
+    auto parameters = std::make_shared<RendererParameterBlock>();
+    parameters->properties["detailTex"] =
+        MaterialProperty{"detailTex", MaterialPropertyType::Texture2D, std::string{}};
+    parameters->properties["texSampler"] =
+        MaterialProperty{"texSampler", MaterialPropertyType::Texture2D, std::string{"normal"}};
+    auto *rendererDescriptor = descriptors.GetOrCreateRendererDescriptorSet(defaultMaterial, program, parameters);
+    assert(rendererDescriptor &&
+           rendererDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
+    assert(rendererDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[1]);
+    assert(defaultDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[0]);
 
     InxMaterial material("texture-readiness", "Gizmo Icon");
     auto document = material.SerializeDocument();
@@ -163,6 +223,10 @@ int main(int argc, char **argv)
     context.Destroy();
     SDL_DestroyWindow(window);
     SDL_Quit();
+    if (!declaredDefaultCorrect) {
+        std::cerr << "ShaderInfo Texture2D texSampler = normal did not bind the declared normal texture\n";
+        return 1;
+    }
     std::cout << "Material texture readiness regression passed\n";
     return 0;
 }

@@ -562,7 +562,7 @@ size_t InxMaterial::GetRuntimeMemoryBytes() const noexcept
     bytes += m_properties.bucket_count() * sizeof(void *);
     bytes += m_properties.size() * sizeof(std::pair<const std::string, MaterialProperty>);
     for (const auto &[key, property] : m_properties) {
-        bytes += key.capacity() + property.name.capacity();
+        bytes += key.capacity() + property.name.capacity() + property.textureDefault.capacity();
         if (const auto *text = std::get_if<std::string>(&property.value))
             bytes += text->capacity();
     }
@@ -669,7 +669,10 @@ void InxMaterial::SetPropertyValue(const std::string &name, MaterialPropertyType
     m_runtimeTextureOverrides.erase(name);
     const bool hdr = existing != m_properties.end() && existing->second.hdr;
     const auto range = existing != m_properties.end() ? existing->second.range : std::nullopt;
-    m_properties[name] = MaterialProperty{name, type, std::move(value), hdr, range};
+    const std::string textureDefault = existing != m_properties.end() && type == MaterialPropertyType::Texture2D
+                                           ? existing->second.textureDefault
+                                           : std::string{};
+    m_properties[name] = MaterialProperty{name, type, std::move(value), hdr, range, textureDefault};
     m_propertiesDirty = true;
     ++m_version;
 }
@@ -848,7 +851,9 @@ void InxMaterial::SetTextureGuid(const std::string &name, const std::string &tex
     if (!m_guid.empty() && !previousGuid.empty() && !IsBuiltinTextureToken(previousGuid))
         AssetDependencyGraph::Instance().RemoveAssetDependency(m_guid, previousGuid);
 
-    m_properties[name] = MaterialProperty{name, MaterialPropertyType::Texture2D, validatedGuid, hdr, range};
+    const std::string textureDefault = it != m_properties.end() ? it->second.textureDefault : std::string{};
+    m_properties[name] =
+        MaterialProperty{name, MaterialPropertyType::Texture2D, validatedGuid, hdr, range, textureDefault};
     m_propertiesDirty = true;
     ++m_version;
 
@@ -916,6 +921,20 @@ const MaterialProperty *InxMaterial::GetProperty(const std::string &name) const
     return nullptr;
 }
 
+std::string_view InxMaterial::GetTextureDefault(const std::string &name) const
+{
+    const auto *property = GetProperty(name);
+    if (property && property->type == MaterialPropertyType::Texture2D) {
+        const auto *value = std::get_if<std::string>(&property->value);
+        if (value && IsBuiltinTextureToken(*value))
+            return *value;
+        if (!property->textureDefault.empty())
+            return property->textureDefault;
+    }
+    // A raw sampler without a ShaderInfo property has the neutral white default.
+    return "white";
+}
+
 bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact &artifact)
 {
     bool changed = false;
@@ -932,7 +951,7 @@ bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact 
         if (existing == m_properties.end() || !MaterialValueMatchesType(existing->second, *expectedType)) {
             m_properties[binding.name] =
                 MaterialProperty{binding.name, *expectedType, ParseShaderPropertyDefault(binding, *expectedType),
-                                 binding.hdr, binding.range};
+                                 binding.hdr, binding.range, binding.textureDefault};
             changed = true;
             continue;
         }
@@ -950,6 +969,10 @@ bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact 
         }
         if (existing->second.range != binding.range) {
             existing->second.range = binding.range;
+            changed = true;
+        }
+        if (existing->second.textureDefault != binding.textureDefault) {
+            existing->second.textureDefault = binding.textureDefault;
             changed = true;
         }
     }

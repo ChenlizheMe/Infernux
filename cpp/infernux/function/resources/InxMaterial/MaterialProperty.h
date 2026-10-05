@@ -83,6 +83,8 @@ struct MaterialProperty
     MaterialPropertyValue value;
     bool hdr = false;
     std::optional<std::array<double, 2>> range;
+    // Derived ShaderInfo metadata; not an authored texture asset reference.
+    std::string textureDefault;
 };
 
 } // namespace infernux

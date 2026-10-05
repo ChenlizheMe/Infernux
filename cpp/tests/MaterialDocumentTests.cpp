@@ -390,6 +390,35 @@ void VerifySparseMaterialUsesLinkedShaderDefaults()
     assert(material.GetAuthoredVersion() > authoredVersion);
 }
 
+void VerifyTextureDefaultsAreDerivedSchema()
+{
+    ShaderProgramArtifact artifact;
+    ShaderProgramPropertyBinding property;
+    property.name = "normalNamedButWhite";
+    property.type = "Texture2D";
+    property.textureDefault = "white";
+    artifact.properties.push_back(property);
+    InxMaterial material("TextureDefaults", "Lit");
+    const uint64_t authoredVersion = material.GetAuthoredVersion();
+    assert(material.SynchronizeShaderPropertyDefaults(artifact));
+    assert(material.GetAuthoredVersion() == authoredVersion);
+    assert(material.GetTextureDefault(property.name) == "white");
+    assert(material.SerializeDocument()["properties"][property.name]["guid"] == "");
+    assert(!material.SerializeDocument()["properties"][property.name].contains("textureDefault"));
+    artifact.properties[0].textureDefault = "normal";
+    assert(material.SynchronizeShaderPropertyDefaults(artifact));
+    assert(material.GetTextureDefault(property.name) == "normal");
+    assert(material.GetAuthoredVersion() == authoredVersion);
+    assert(material.Clone()->GetTextureDefault(property.name) == "normal");
+    material.SetTextureGuid(property.name, "white");
+    assert(material.GetTextureDefault(property.name) == "white");
+    material.SetTextureGuid(property.name, "");
+    assert(material.GetTextureDefault(property.name) == "normal");
+    const uint64_t version = material.GetVersion();
+    assert(!material.SynchronizeShaderPropertyDefaults(artifact));
+    assert(material.GetVersion() == version);
+}
+
 void VerifyColorVectorShaderTransitionsPreserveAuthoredValues()
 {
     InxMaterial material("AuthoredTint", "Unlit");
@@ -503,6 +532,7 @@ int main()
     VerifyBuiltinSixWaySmokeMaterial();
     VerifyBackendNeutralRenderStateSchema();
     VerifySparseMaterialUsesLinkedShaderDefaults();
+    VerifyTextureDefaultsAreDerivedSchema();
     VerifyColorVectorShaderTransitionsPreserveAuthoredValues();
     VerifyReflectedArrayRoundTripAndLengthAuthority();
     std::cout << "Material document tests passed\n";

@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -592,6 +593,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
 
     [[nodiscard]] bool HasProperty(const std::string &name) const;
     [[nodiscard]] const MaterialProperty *GetProperty(const std::string &name) const;
+    [[nodiscard]] std::string_view GetTextureDefault(const std::string &name) const;
     [[nodiscard]] const std::unordered_map<std::string, MaterialProperty> &GetAllProperties() const
     {
         return m_properties;

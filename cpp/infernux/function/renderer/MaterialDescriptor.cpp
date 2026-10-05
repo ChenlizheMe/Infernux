@@ -358,10 +358,13 @@ void MaterialDescriptorManager::Shutdown()
     // TextureResource alive until after InxVkCoreModular destroys its device.
     m_defaultGpuView.reset();
     m_defaultNormalGpuView.reset();
+    m_defaultBlackGpuView.reset();
     m_defaultImageView = VK_NULL_HANDLE;
     m_defaultSampler = VK_NULL_HANDLE;
     m_defaultNormalImageView = VK_NULL_HANDLE;
     m_defaultNormalSampler = VK_NULL_HANDLE;
+    m_defaultBlackImageView = VK_NULL_HANDLE;
+    m_defaultBlackSampler = VK_NULL_HANDLE;
 
     if (m_descriptorManager)
         (void)m_descriptorManager->Collect((std::numeric_limits<rhi::SubmissionSerial>::max)());
@@ -378,27 +381,25 @@ bool MaterialDescriptorManager::IsPlaceholderTexturePath(std::string_view textur
     return texturePath == "white" || texturePath == "black" || texturePath == "normal";
 }
 
-bool MaterialDescriptorManager::IsNormalBindingName(std::string_view bindingName) const
-{
-    return bindingName.find("normal") != std::string_view::npos || bindingName.find("Normal") != std::string_view::npos;
-}
-
-bool MaterialDescriptorManager::TryGetDefaultTextureBinding(std::string_view bindingName,
+bool MaterialDescriptorManager::TryGetDefaultTextureBinding(std::string_view textureDefault,
                                                             MaterialDescriptorSet::TextureBinding &outBinding) const
 {
-    if (IsNormalBindingName(bindingName) && m_defaultNormalImageView != VK_NULL_HANDLE &&
-        m_defaultNormalSampler != VK_NULL_HANDLE) {
+    if (textureDefault == "normal" || textureDefault == "Normal") {
         outBinding = {m_defaultNormalImageView, m_defaultNormalSampler, {}, m_defaultNormalGpuView};
-        return ResolveBindlessIndex(outBinding);
-    }
-
-    if (m_defaultImageView != VK_NULL_HANDLE && m_defaultSampler != VK_NULL_HANDLE) {
+    } else if (textureDefault == "black" || textureDefault == "Black") {
+        outBinding = {m_defaultBlackImageView, m_defaultBlackSampler, {}, m_defaultBlackGpuView};
+    } else if (textureDefault == "white" || textureDefault == "White") {
         outBinding = {m_defaultImageView, m_defaultSampler, {}, m_defaultGpuView};
-        return ResolveBindlessIndex(outBinding);
+    } else {
+        outBinding = {};
+        INXLOG_ERROR("Unsupported ShaderInfo Texture2D default '", textureDefault, "'");
+        return false;
     }
-
-    outBinding = {};
-    return false;
+    if (outBinding.imageView == VK_NULL_HANDLE || outBinding.sampler == VK_NULL_HANDLE) {
+        outBinding = {};
+        return false;
+    }
+    return ResolveBindlessIndex(outBinding);
 }
 
 bool MaterialDescriptorManager::ResolveBindlessIndex(MaterialDescriptorSet::TextureBinding &binding) const
@@ -594,6 +595,21 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
         if (auto buffer = material.GetBuffer(binding.name))
             matDescSet->storageBufferBindings[binding.binding] = std::move(buffer);
     }
+    // Publish complete declared defaults before the first descriptor write.
+    // Property names have no role in choosing a default texture.
+    if (!matDescSet->usesBindlessTextureABI) {
+        for (const auto &binding : matDescSet->bindings) {
+            if (binding.set != 0 || binding.type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
+                continue;
+            MaterialDescriptorSet::TextureBinding defaultBinding{};
+            if (!TryGetDefaultTextureBinding(material.GetTextureDefault(binding.name), defaultBinding)) {
+                m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
+                RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(matDescSet)));
+                return nullptr;
+            }
+            matDescSet->textureBindings[binding.binding] = std::move(defaultBinding);
+        }
+    }
     if (!UpdateDescriptorBindings(*matDescSet, program)) {
         m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
         RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(matDescSet)));
@@ -653,7 +669,8 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
                 }
 
                 const bool resolvedExplicit = resolveStatus == TextureResolveStatus::Ready;
-                if (!resolvedExplicit && !TryGetDefaultTextureBinding(propName, resolvedBinding)) {
+                if (!resolvedExplicit &&
+                    !TryGetDefaultTextureBinding(material.GetTextureDefault(propName), resolvedBinding)) {
                     INXLOG_ERROR("Failed to initialize required bindless texture property '", propName,
                                  "' for material '", materialName, "'");
                     m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(matDescSet->descriptorSet));
@@ -703,7 +720,8 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
                             matDescSet->hasPendingTextures = true;
                     }
 
-                    if (!resolvedExplicit && !TryGetDefaultTextureBinding(binding.name, resolvedBinding)) {
+                    if (!resolvedExplicit &&
+                        !TryGetDefaultTextureBinding(material.GetTextureDefault(binding.name), resolvedBinding)) {
                         matDescSet->textureBindings.erase(binding.binding);
                         break;
                     }
@@ -822,6 +840,8 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
 
     const auto resolveTexture = [&](const std::string &name, const std::string &guid,
                                     MaterialDescriptorSet::TextureBinding &binding) {
+        if (IsPlaceholderTexturePath(guid))
+            return TryGetDefaultTextureBinding(guid, binding);
         if (!guid.empty() && !IsPlaceholderTexturePath(guid)) {
             const TextureResolveStatus status =
                 ResolveExplicitTextureBinding(guid, name, binding, material.GetTextureSampler(name));
@@ -832,7 +852,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
                 return false;
             }
         }
-        return TryGetDefaultTextureBinding(name, binding);
+        return TryGetDefaultTextureBinding(material.GetTextureDefault(name), binding);
     };
 
     for (const auto &[name, property] : parameters->properties) {
@@ -1010,8 +1030,9 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
             MaterialDescriptorSet::TextureBinding textureBinding{};
             if (texIt != matDescSet.textureBindings.end()) {
                 textureBinding = texIt->second;
-            } else if (!TryGetDefaultTextureBinding(binding.name, textureBinding)) {
-                continue; // Skip if no valid image
+            } else {
+                INXLOG_ERROR("Material descriptor has no initialized texture binding '", binding.name, "'");
+                return false;
             }
 
             AppendImageWrite(writes, imageInfos, matDescSet.descriptorSet, binding.binding, textureBinding.imageView,
@@ -1129,7 +1150,7 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
         const auto texture = textureBindings.find(binding.binding);
         if (texture != textureBindings.end()) {
             textureBinding = texture->second;
-        } else if (!TryGetDefaultTextureBinding(binding.name, textureBinding)) {
+        } else {
             INXLOG_ERROR("Cannot publish material descriptor replacement: image binding ", binding.binding, " ('",
                          binding.name, "') has neither an explicit texture nor a default");
             m_descriptorManager->Retire(replacement);
@@ -1260,7 +1281,7 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
             const auto renderTexture = material.GetRenderTexture(propName);
             if (!renderTexture && (!texturePath || texturePath->empty())) {
                 MaterialDescriptorSet::TextureBinding defaultBinding{};
-                if (TryGetDefaultTextureBinding(propName, defaultBinding)) {
+                if (TryGetDefaultTextureBinding(material.GetTextureDefault(propName), defaultBinding)) {
                     const auto previous = candidateBindings.find(static_cast<uint32_t>(slot));
                     bindingsChanged = bindingsChanged || previous == candidateBindings.end() ||
                                       !HasSameGpuBinding(previous->second, defaultBinding);
@@ -1292,7 +1313,8 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
                 candidateHasUnresolvedExplicitTextures = true;
             }
 
-            if (!resolvedExplicit && !TryGetDefaultTextureBinding(propName, resolvedBinding)) {
+            if (!resolvedExplicit &&
+                !TryGetDefaultTextureBinding(material.GetTextureDefault(propName), resolvedBinding)) {
                 continue;
             }
             const auto previous = candidateBindings.find(static_cast<uint32_t>(slot));
@@ -1332,7 +1354,7 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
                 MaterialDescriptorSet::TextureBinding resolvedBinding{};
 
                 if (!renderTexture && (!texturePath || texturePath->empty())) {
-                    if (TryGetDefaultTextureBinding(binding.name, resolvedBinding)) {
+                    if (TryGetDefaultTextureBinding(material.GetTextureDefault(binding.name), resolvedBinding)) {
                         const auto previous = candidateBindings.find(binding.binding);
                         bindingsChanged = bindingsChanged || previous == candidateBindings.end() ||
                                           !HasSameGpuBinding(previous->second, resolvedBinding);
@@ -1360,7 +1382,8 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
                     candidateHasUnresolvedExplicitTextures = true;
                 }
 
-                const bool hasBinding = resolvedExplicit || TryGetDefaultTextureBinding(binding.name, resolvedBinding);
+                const bool hasBinding =
+                    resolvedExplicit || TryGetDefaultTextureBinding(material.GetTextureDefault(binding.name), resolvedBinding);
 
                 if (hasBinding) {
                     const auto previous = candidateBindings.find(binding.binding);
@@ -1578,6 +1601,14 @@ void MaterialDescriptorManager::SetDefaultNormalTexture(VkImageView imageView, V
     m_defaultNormalImageView = imageView;
     m_defaultNormalSampler = sampler;
     m_defaultNormalGpuView = std::move(gpuView);
+}
+
+void MaterialDescriptorManager::SetDefaultBlackTexture(VkImageView imageView, VkSampler sampler,
+                                                     std::shared_ptr<const rhi::TextureGpuView> gpuView)
+{
+    m_defaultBlackImageView = imageView;
+    m_defaultBlackSampler = sampler;
+    m_defaultBlackGpuView = std::move(gpuView);
 }
 
 } // namespace infernux

@@ -908,6 +908,12 @@ void MaterialPipelineManager::SetDefaultNormalTexture(VkImageView imageView, VkS
     m_descriptorManager.SetDefaultNormalTexture(imageView, sampler, std::move(gpuView));
 }
 
+void MaterialPipelineManager::SetDefaultBlackTexture(VkImageView imageView, VkSampler sampler,
+                                                  std::shared_ptr<const rhi::TextureGpuView> gpuView)
+{
+    m_descriptorManager.SetDefaultBlackTexture(imageView, sampler, std::move(gpuView));
+}
+
 void MaterialPipelineManager::InvalidateMaterialsUsingShader(const std::string &shaderId)
 {
     INXLOG_INFO("Invalidating materials using shader: ", shaderId);
