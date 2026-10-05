@@ -131,16 +131,17 @@ def test_button_render_color_consumes_selectable_state_tint():
 
 def test_ui_material_slots_use_normal_material_assets_and_button_has_two_slots():
     from infernux.components.fields import get_serialized_fields
+    from infernux.core.material import Material
     from infernux.ui import UIButton, UIText
     from infernux.ui.ui_render_dispatch import _get_button_bg, _get_label_attrs
 
-    class Material:
+    class NativeMaterialProbe:
         _texture_assets_pending = False
 
         def __init__(self, guid, color):
             self.guid = guid
             self.name = guid
-            self.native = self
+            self.file_path = ""
             self._color = color
 
         def get_version(self):
@@ -156,8 +157,8 @@ def test_ui_material_slots_use_normal_material_assets_and_button_has_two_slots()
             assert name == "baseColor"
             return self._color
 
-    background = Material("background-material", (0.5, 0.25, 1.0, 0.8))
-    label = Material("text-material", (0.25, 1.0, 0.5, 0.5))
+    background = Material(NativeMaterialProbe("background-material", (0.5, 0.25, 1.0, 0.8)))
+    label = Material(NativeMaterialProbe("text-material", (0.25, 1.0, 0.5, 0.5)))
     button = UIButton()
     button.background_color = [0.8, 0.4, 0.2, 1.0]
     button.label_color = [1.0, 0.5, 0.25, 1.0]

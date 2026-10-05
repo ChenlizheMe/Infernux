@@ -123,12 +123,12 @@ def test_runtime_ui_material_contract_uses_guid_generation_and_pipeline_key():
 
 
 def test_ui_material_generation_rebuilds_screen_and_world_packets(ui):
-    from infernux.core.asset_ref import MaterialRef
+    from infernux.core.material import Material
 
     element = ui.add()
     revision = [3]
     native = SimpleNamespace(
-        guid='ui-authored-guid', name='Authored UI', _texture_assets_pending=False,
+        guid='ui-authored-guid', name='Authored UI', file_path='', _texture_assets_pending=False,
         get_version=lambda: revision[0],
         _get_render_texture=lambda _name: None,
         has_property=lambda _name: False,
@@ -136,8 +136,9 @@ def test_ui_material_generation_rebuilds_screen_and_world_packets(ui):
         frag_shader_name='ui-fragment-guid',
         get_render_state=lambda: SimpleNamespace(alpha_clip_enabled=False, alpha_clip_threshold=0.0),
     )
-    element.material = MaterialRef(guid='ui-authored-guid')
-    type(element).material.get_raw(element)._cached = native
+    material = Material(native)
+    element.material = material
+    assert element.material is material
     def set_binding(*args):
         output = ui.renderer.commands if ui.renderer.capture is None else ui.renderer.capture
         output.append(('set_material_binding', args, {}))

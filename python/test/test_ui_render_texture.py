@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from infernux.core.render_texture import RenderTexture
+from infernux.core.material import Material
 from infernux.ui import UIImage
 from infernux.ui.ui_render_dispatch import image_texture_source, material_visual_state, runtime_ui_revision
 
@@ -90,13 +91,15 @@ def test_button_command_cache_tracks_live_background_resize(scene):
 
 def test_material_live_source_revision_and_explicit_image_priority():
     runtime = SimpleNamespace(revision=1)
-    material = SimpleNamespace(guid='authored-material', name='Authored Material', get_version=lambda: 2,
+    native = SimpleNamespace(guid='authored-material', name='Authored Material', file_path='', get_version=lambda: 2,
         _texture_assets_pending=False,
         _get_render_texture=lambda name: runtime,
         has_property=lambda name: name == 'texSampler',
         get_texture=lambda _name: 'material-texture-guid')
     image = UIImage()
+    material = Material(native)
     image.material = material
+    assert image.material is material
     before = material_visual_state(image)
     assert image_texture_source(image, before) is runtime
     runtime.revision += 1
@@ -109,9 +112,10 @@ def test_material_sampled_texture_keeps_guid_identity_until_cache_resolution():
     from infernux.core.asset_ref import TextureRef
 
     texture_guid = "8a51dcd72aa64cd5963731d9b4f2507f"
-    material = SimpleNamespace(
+    native = SimpleNamespace(
         guid="authored-material",
         name="Authored Material",
+        file_path="",
         get_version=lambda: 2,
         _texture_assets_pending=False,
         _get_render_texture=lambda _name: None,
@@ -120,7 +124,9 @@ def test_material_sampled_texture_keeps_guid_identity_until_cache_resolution():
         get_texture=lambda _name: texture_guid,
     )
     image = UIImage()
+    material = Material(native)
     image.material = material
+    assert image.material is material
 
     state = material_visual_state(image)
     source = image_texture_source(image, state)
