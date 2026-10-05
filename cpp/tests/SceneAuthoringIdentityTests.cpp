@@ -1,3 +1,4 @@
+#include <core/types/Guid.h>
 #include <function/scene/SceneAuthoringIdentity.h>
 
 #include <array>
@@ -160,6 +161,49 @@ void TestIndependentAuthorsDoNotPersistRuntimeCollisions()
             "independent authors' same runtime numbers collided");
     Require(EncodeSceneAuthoringDocument(decoded, identities) == combined, "combined references changed");
 }
+
+void TestSnapshotIdentityTables()
+{
+    const auto original = Identities();
+    const auto snapshot = SerializeSceneAuthoringIdentity(original);
+    const auto decoded = DeserializeSceneAuthoringIdentity(snapshot);
+    Require(decoded.objects == original.objects && decoded.components == original.components,
+            "snapshot lost author identities");
+    auto remapped = RemapSceneAuthoringIdentity(original, {{19, 219}, {91, 291}}, {{38, 238}, {99, 299}});
+    Require(remapped.objects.at(219) == original.objects.at(19) && !remapped.objects.count(19),
+            "object publication did not move author identity");
+    Require(remapped.components.at(299) == original.components.at(99), "missing reference identity changed");
+    MustReject([&] { (void)RemapSceneAuthoringIdentity(original, {{19, 26}}, {}); }, "remap alias accepted");
+    for (const std::string &key : {"0", "01", "-1", "18446744073709551615", "1x"}) {
+        auto invalid = snapshot;
+        invalid["objects"][key] = Guid('c', '4');
+        MustReject([&] { (void)DeserializeSceneAuthoringIdentity(invalid); }, "bad snapshot key accepted");
+    }
+    auto invalid = snapshot;
+    invalid["objects"]["92"] = invalid["objects"]["91"];
+    MustReject([&] { (void)DeserializeSceneAuthoringIdentity(invalid); }, "snapshot GUID alias accepted");
+    auto runtime = RuntimeDocument();
+    runtime["authoring_identity"] = snapshot;
+    const auto asset = EncodeSceneAuthoringDocument(runtime, original);
+    Require(!asset.contains("authoring_identity"), "snapshot identity table leaked into asset");
+    auto invalidAsset = asset;
+    invalidAsset["authoring_identity"] = snapshot;
+    SceneAuthoringIdentity output;
+    MustReject([&] { (void)DecodeSceneAuthoringDocument(invalidAsset, output); }, "file accepted snapshot tables");
+}
+
+void TestAllocatedGuids()
+{
+    SceneAuthoringIdentity allocated;
+    for (uint64_t id = 1; id <= 10000; ++id) {
+        const auto guid = GenerateGuid();
+        Require(guid[12] == '4' && (guid[16] == '8' || guid[16] == '9' || guid[16] == 'a' || guid[16] == 'b'),
+                "allocated GUID has invalid version/variant");
+        allocated.objects.emplace(id, guid);
+    }
+    // The strict decoder rejects repeated GUIDs and non-canonical spellings.
+    (void)DeserializeSceneAuthoringIdentity(SerializeSceneAuthoringIdentity(allocated));
+}
 } // namespace
 
 int main()
@@ -168,6 +212,8 @@ int main()
         TestRoundTripAndMissingReferences();
         TestRejectInvalidIdentityBeforePublishing();
         TestIndependentAuthorsDoNotPersistRuntimeCollisions();
+        TestSnapshotIdentityTables();
+        TestAllocatedGuids();
         std::cout << "Scene authoring identity codec contracts passed\n";
         return 0;
     } catch (const std::exception &error) {

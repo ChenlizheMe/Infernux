@@ -218,6 +218,7 @@ def test_prefab_refresh_without_scene_covers_all_resident_worlds(monkeypatch):
     from infernux.engine import prefab_overrides
     from infernux.engine.scene_manager import SceneFileManager
 
+    monkeypatch.setattr(SceneFileManager, "_instance", None)
     manager = SceneFileManager()
     manager._asset_database = object()
     worlds = (SimpleNamespace(world_id=11), SimpleNamespace(world_id=22))

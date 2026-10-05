@@ -54,7 +54,7 @@ def _exercise(project: Path, target_active: bool, dirty: bool, valid: bool) -> N
             source.create_game_object("Original" + label)
             source.create_game_object("Stack" + label).add_component(RenderStack)
             path = assets / (label + ".scene")
-            path.write_text(json.dumps(source.serialize_document()), encoding="utf-8")
+            path.write_text(source.serialize_asset(), encoding="utf-8")
             native.unload_scene(source)
             assert database.import_asset(str(path)).succeeded
             paths[label] = path

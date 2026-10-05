@@ -2,6 +2,7 @@ if(INFERNUX_BUILD_TESTS)
     add_executable(infernux_scene_authoring_identity_tests
         cpp/tests/SceneAuthoringIdentityTests.cpp
         cpp/infernux/function/scene/SceneAuthoringIdentity.cpp
+        cpp/infernux/core/types/Guid.cpp
     )
     target_include_directories(infernux_scene_authoring_identity_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux

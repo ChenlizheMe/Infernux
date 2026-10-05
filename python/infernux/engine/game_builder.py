@@ -2439,7 +2439,7 @@ finally:
             )
             destination = os.path.join(data_dir, *runtime_path.split("/"))
             os.makedirs(os.path.dirname(destination), exist_ok=True)
-            if imported_document is not None:
+            if imported_document is not None and suffix != ".scene":
                 # Importer-owned documents are already immutable source products,
                 # not files under the Project tree. Cook the same loader format.
                 if suffix not in RUNTIME_JSON_DOCUMENT_SUFFIXES:
@@ -2463,9 +2463,22 @@ finally:
                     )["root_object"]
 
                 if suffix == ".scene":
-                    with open(source_path, "r", encoding="utf-8") as source_stream:
-                        scene_document = json.load(source_stream)
-                    cooked = resolve_scene_prefab_documents(scene_document, load_prefab_source)
+                    from infernux.engine.scene_authoring import (
+                        decode_scene_document,
+                        encode_runtime_scene_artifact,
+                    )
+                    if imported_document is not None:
+                        authored = json.loads(imported_document)
+                    else:
+                        with open(source_path, "r", encoding="utf-8") as source_stream:
+                            authored = json.load(source_stream)
+                    scene_document = decode_scene_document(authored)
+                    cooked = encode_runtime_scene_artifact(
+                        resolve_scene_prefab_documents(
+                            scene_document, load_prefab_source,
+                            allocate_authoring_identities=False,
+                        )
+                    )
                 else:
                     cooked = _read_resolved_prefab_document(source_path, path_for_guid=prefab_path_for_guid)
                     # A Player consumes the resolved tree, not editor inheritance

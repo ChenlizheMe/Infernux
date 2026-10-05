@@ -425,7 +425,7 @@ class SceneSaveMixin:
 
                 scene = binding.scene if binding is not None else SceneManager.instance().get_active_scene()
                 if scene is not None:
-                    current_token = document_content_token(json.loads(scene.serialize()))
+                    current_token = document_content_token(scene.serialize_asset_document())
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
                 Debug.log_suppressed("scene_save.current_content_token", exc)
             registry.complete_save(
@@ -498,7 +498,7 @@ class SceneSaveMixin:
 
         # Step 1 (main thread): serialize scene graph → JSON string
         try:
-            json_str = scene.serialize()
+            json_str = scene.serialize_asset()
         except Exception as exc:
             scene.name = previous_scene_name
             Debug.log_error(f"Failed to serialize scene: {exc}")
@@ -869,6 +869,8 @@ class SceneSaveMixin:
         try:
             payload = dict(self._previous_scene_document)
             payload["name"] = os.path.splitext(os.path.basename(target))[0]
+            from infernux.engine.scene_authoring import encode_scene_document
+            payload = encode_scene_document(payload)
             serialized_token = document_content_token(payload)
             registry.capture_save_revision(
                 ticket_id,
@@ -878,7 +880,7 @@ class SceneSaveMixin:
 
             DocumentStore.instance().write_and_wait(
                 target,
-                json.dumps(payload, ensure_ascii=False),
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             )
         except Exception as exc:
             registry.complete_save(

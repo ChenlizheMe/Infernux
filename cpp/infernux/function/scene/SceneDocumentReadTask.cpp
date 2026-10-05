@@ -4,6 +4,7 @@
 #include <function/scene/ComponentFactory.h>
 #include <function/scene/ComponentRecord.h>
 #include <function/scene/GameObject.h>
+#include <function/scene/SceneAuthoringIdentity.h>
 #include <functional>
 #include <stdexcept>
 #include <thread>
@@ -158,7 +159,8 @@ void ValidateObject(const json &object, const std::string &path, std::unordered_
 void ValidateSceneDocument(const json &document)
 {
     static const std::unordered_set<std::string> allowed = {
-        "name", "isPlaying", "objects", "mainCameraComponentId", "environment", "nextObjectId", "nextComponentId",
+        "name",        "isPlaying",    "objects",         "mainCameraComponentId",
+        "environment", "nextObjectId", "nextComponentId", "authoring_identity",
     };
     RequireExactFields(document, allowed, "Scene");
     if (!document.contains("name") || !document["name"].is_string() || !document.contains("isPlaying") ||
@@ -298,6 +300,15 @@ SceneDocumentReadTicket ScheduleSceneDocumentRead(const std::string &path)
             }
             const auto snapshot = ReadTextFileSnapshot(path);
             json document = json::parse(snapshot.content);
+            // These are two explicit file contracts, never a legacy numeric
+            // fallback. Editor assets and cooked Player artifacts share the
+            // runtime staging/preflight path after this boundary.
+            if (document.value("identity_format", json{}) == "runtime-v1") {
+                document = DecodeSceneRuntimeArtifact(document);
+            } else {
+                SceneAuthoringIdentity identities;
+                document = DecodeSceneAuthoringDocument(document, identities);
+            }
             ValidateSceneDocument(document);
             std::lock_guard<std::mutex> lock(state->mutex);
             if (state->cancelRequested.load(std::memory_order_acquire)) {

@@ -41,6 +41,7 @@ from infernux.engine.scene_document_transaction import (
     SceneDocumentTransactionState,
 )
 from infernux.engine.scene_manager import SceneFileManager
+from infernux.engine.scene_authoring import encode_scene_document, encode_runtime_scene_artifact
 from infernux.engine.prefab_manager import PrefabDocumentError, _strip_prefab_runtime_fields
 from infernux.instantiate import Instantiate
 
@@ -339,7 +340,7 @@ class TestSceneLifecycle:
         source_document = json.loads(json.dumps(scene.serialize_document()))
         source_document["name"] = "AdditiveIdentityCopy"
         scene_path = tmp_path / "AdditiveIdentityCopy.scene"
-        scene_path.write_text(json.dumps(source_document), encoding="utf-8")
+        scene_path.write_text(json.dumps(encode_scene_document(source_document)), encoding="utf-8")
         loaded_before = native.scene_count
         # This exercises the runtime/current-schema transaction path.  Other
         # editor tests may have installed a process-wide SceneFileManager,
@@ -404,7 +405,7 @@ class TestSceneLifecycle:
 
         cooked_path = tmp_path / "Content" / "PlayerCatalogAdditive.scene"
         cooked_path.parent.mkdir(parents=True)
-        cooked_path.write_text(json.dumps(document), encoding="utf-8")
+        cooked_path.write_text(json.dumps(encode_runtime_scene_artifact(document)), encoding="utf-8")
         artifact_id = "content:scene-player-additive"
         catalog = PlayerRuntimeAssetCatalog.from_documents(
             str(tmp_path),
@@ -2520,7 +2521,7 @@ class TestInstantiate:
         document = scene.serialize_document()
         document["name"] = "UndoableAdditive"
         document["objects"] = []
-        additive_path.write_text(json.dumps(document), encoding="utf-8")
+        additive_path.write_text(json.dumps(encode_scene_document(document)), encoding="utf-8")
 
         core = EditorInteractionCore()
         manager = SceneFileManager()
@@ -2731,7 +2732,7 @@ class TestInstantiate:
         additive_path = assets / "Additive.scene"
         replacement_path = assets / "Replacement.scene"
         replacement_path.write_text(
-            json.dumps({"name": "Replacement", "isPlaying": False, "objects": []}),
+            json.dumps({"identity_format": "guid-v1", "name": "Replacement", "isPlaying": False, "objects": []}),
             encoding="utf-8",
         )
         native = SceneManager.instance()
@@ -2822,7 +2823,7 @@ class TestSceneSerialization:
         document = scene.serialize_document()
         document["objects"][0]["name"] = "WorkerReadTarget"
         path = tmp_path / "worker-read.scene"
-        path.write_text(json.dumps(document), encoding="utf-8")
+        path.write_text(json.dumps(encode_scene_document(document)), encoding="utf-8")
         transaction = SceneDocumentTransaction(scene, path=path)
 
         assert transaction.run_to_completion(raise_on_failure=False) is True
@@ -2836,7 +2837,7 @@ class TestSceneSerialization:
         candidate = json.loads(json.dumps(original_document))
         candidate["unexpected"] = True
         path = tmp_path / "invalid-worker.scene"
-        path.write_text(json.dumps(candidate), encoding="utf-8")
+        path.write_text(json.dumps(encode_scene_document(candidate)), encoding="utf-8")
         transaction = SceneDocumentTransaction(scene, path=path)
 
         assert transaction.run_to_completion(raise_on_failure=False) is False
@@ -2903,7 +2904,7 @@ class TestSceneSerialization:
                 component_document["convex"] = "yes"
 
         path = tmp_path / f"invalid-{corruption}.scene"
-        path.write_text(json.dumps(candidate), encoding="utf-8")
+        path.write_text(json.dumps(encode_scene_document(candidate)), encoding="utf-8")
         transaction = SceneDocumentTransaction(scene, path=path)
 
         assert transaction.run_to_completion(raise_on_failure=False) is False
@@ -2942,7 +2943,7 @@ class TestSceneSerialization:
 
         document = scene.serialize_document()
         path = tmp_path / "all-native-component-schemas.scene"
-        path.write_text(json.dumps(document), encoding="utf-8")
+        path.write_text(json.dumps(encode_scene_document(document)), encoding="utf-8")
         transaction = SceneDocumentTransaction(scene, path=path)
 
         assert transaction.run_to_completion(raise_on_failure=False) is True
@@ -2987,7 +2988,7 @@ class TestSceneSerialization:
             component_document["spriteColor"] = [1.0, 1.0, 1.0]
 
         path = tmp_path / f"invalid-{corruption}.scene"
-        path.write_text(json.dumps(candidate), encoding="utf-8")
+        path.write_text(json.dumps(encode_scene_document(candidate)), encoding="utf-8")
         transaction = SceneDocumentTransaction(scene, path=path)
 
         assert transaction.run_to_completion(raise_on_failure=False) is False
@@ -3006,7 +3007,7 @@ class TestSceneSerialization:
         component_document = candidate["objects"][0]["components"][0]["data"]
         component_document["sourceModelGuid"] = "removed"
         path = tmp_path / "removed-skinned-field.scene"
-        path.write_text(json.dumps(candidate), encoding="utf-8")
+        path.write_text(json.dumps(encode_scene_document(candidate)), encoding="utf-8")
         transaction = SceneDocumentTransaction(scene, path=path)
 
         assert transaction.run_to_completion(raise_on_failure=False) is True
@@ -3043,7 +3044,7 @@ class TestSceneSerialization:
             renderer_document["materials"] = [{"material": {}}]
 
         path = tmp_path / f"resource-{failure}.scene"
-        path.write_text(json.dumps(candidate), encoding="utf-8")
+        path.write_text(json.dumps(encode_scene_document(candidate)), encoding="utf-8")
         transaction = SceneDocumentTransaction(scene, path=path)
 
         assert transaction.run_to_completion(raise_on_failure=False) is False
@@ -3066,7 +3067,7 @@ class TestSceneSerialization:
         renderer_document["meshAssetGuid"] = "missing-scene-mesh-guid"
         renderer_document["materials"] = ["missing-scene-material-guid"]
         path = tmp_path / "missing-resources.scene"
-        path.write_text(json.dumps(document), encoding="utf-8")
+        path.write_text(json.dumps(encode_scene_document(document)), encoding="utf-8")
         transaction = SceneDocumentTransaction(scene, path=path)
 
         assert transaction.run_to_completion(raise_on_failure=False) is True
@@ -3095,7 +3096,7 @@ class TestSceneSerialization:
         document = scene.serialize_document()
         document["objects"][0]["components"][0]["data"]["physic_material_guid"] = material_guid
         path = tmp_path / "valid-resource.scene"
-        path.write_text(json.dumps(document), encoding="utf-8")
+        path.write_text(json.dumps(encode_scene_document(document)), encoding="utf-8")
         transaction = SceneDocumentTransaction(scene, path=path)
 
         assert transaction.run_to_completion(raise_on_failure=False) is True
@@ -3134,7 +3135,7 @@ class TestSceneSerialization:
         document = scene.serialize_document()
         document["objects"][0]["name"] = "DeferredManagerTarget"
         path = assets / "deferred.scene"
-        path.write_text(json.dumps(document), encoding="utf-8")
+        path.write_text(json.dumps(encode_scene_document(document)), encoding="utf-8")
 
         try:
             set_project_root(str(project_root))
@@ -3468,7 +3469,7 @@ class TestSceneSerialization:
         document = scene.serialize_document()
         document["objects"][0]["name"] = "RuntimeDeferredTarget"
         path = assets / "runtime-deferred.scene"
-        path.write_text(json.dumps(document), encoding="utf-8")
+        path.write_text(json.dumps(encode_scene_document(document)), encoding="utf-8")
 
         try:
             set_project_root(str(project_root))
@@ -3714,7 +3715,10 @@ class TestSceneSerialization:
         scene.create_game_object("PersistedHighId")
         document = scene.serialize_document()
         persisted_id = 9_000_000
+        original_id = document["objects"][0]["id"]
         document["objects"][0]["id"] = persisted_id
+        authoring_objects = document["authoring_identity"]["objects"]
+        authoring_objects[str(persisted_id)] = authoring_objects.pop(str(original_id))
         document["nextObjectId"] = persisted_id + 1
 
         assert scene._commit_document(document) is True

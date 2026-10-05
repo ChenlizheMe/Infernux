@@ -297,6 +297,10 @@ class _DocumentIdAllocator:
         value = self._next[key]
         self._next[key] = value + 1
         self._document[key] = value + 1
+        if "authoring_identity" in self._document:
+            from uuid import uuid4
+            table = "objects" if key == "nextObjectId" else "components"
+            self._document["authoring_identity"][table][str(value)] = uuid4().hex
         return value
 
 

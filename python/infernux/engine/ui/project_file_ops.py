@@ -708,7 +708,7 @@ def create_scene(current_path: str, scene_name: str, asset_database=None):
 
     content = _document_text({
         "name": scene_name, "isPlaying": False, "objects": [],
-        "nextObjectId": 1, "nextComponentId": 1,
+        "identity_format": "guid-v1",
     })
     written, error = _write_new_text_asset(file_path, content)
     if not written:

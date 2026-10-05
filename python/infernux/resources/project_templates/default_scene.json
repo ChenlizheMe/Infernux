@@ -1,16 +1,15 @@
 {
+  "identity_format": "guid-v1",
   "isPlaying": false,
-  "mainCameraComponentId": 2,
+  "mainCameraComponentId": "2a6e94320dbd450ab7c78e6b11dc123e",
   "name": "SampleScene",
-  "nextComponentId": 7,
-  "nextObjectId": 4,
   "objects": [
     {
       "active": true,
       "children": [],
       "components": [
         {
-          "component_id": 2,
+          "component_id": "2a6e94320dbd450ab7c78e6b11dc123e",
           "data": {
             "anamorphism": 0.0,
             "aperture": 16.0,
@@ -58,13 +57,13 @@
           "type_id": "native:infernux.Camera"
         }
       ],
-      "id": 1,
+      "id": "b73f1634e3854d7d965d267ba7a9c9ab",
       "is_static": false,
       "layer": 0,
       "name": "Main Camera",
       "tag": "MainCamera",
       "transform": {
-        "component_id": 1,
+        "component_id": "b425a8551fb24f0bb8803ae0c9d69976",
         "enabled": true,
         "execution_order": 0,
         "position": [
@@ -90,7 +89,7 @@
       "children": [],
       "components": [
         {
-          "component_id": 4,
+          "component_id": "ea42495309f341bc86ab2573c8653a4e",
           "data": {
             "areaSize": [
               1.6,
@@ -122,13 +121,13 @@
           "type_id": "native:infernux.Light"
         }
       ],
-      "id": 2,
+      "id": "9a0a6446a61d44aab3b38d65a1bbfde2",
       "is_static": false,
       "layer": 0,
       "name": "Directional Light",
       "tag": "Untagged",
       "transform": {
-        "component_id": 3,
+        "component_id": "ffcbf802938c42bca3d5ee99c218188b",
         "enabled": true,
         "execution_order": 0,
         "position": [
@@ -154,7 +153,7 @@
       "children": [],
       "components": [
         {
-          "component_id": 6,
+          "component_id": "46463a0ea882484e827949afda183f06",
           "data": {
             "effect_slots": [
               {
@@ -181,13 +180,13 @@
           "type_id": "python:c8489ce6fcec56c3ba561cee0f974422:0494e3d46259503a83500e57d4ca3f3b:infernux.renderstack.render_stack:RenderStack"
         }
       ],
-      "id": 3,
+      "id": "65bf784233544fa49162b7b378a52440",
       "is_static": false,
       "layer": 0,
       "name": "RenderStack",
       "tag": "Untagged",
       "transform": {
-        "component_id": 5,
+        "component_id": "4b8d0a52db454a7391da4aeb41a913e2",
         "enabled": true,
         "execution_order": 0,
         "position": [

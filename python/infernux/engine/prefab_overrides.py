@@ -843,12 +843,19 @@ def _project_prefab_document(source, current, *, object_id_map=None, component_i
             for child in value:
                 map_scene_references(child)
 
+    native_component_ids = {key[1]: value for key, value in local_to_runtime.items()
+                            if isinstance(key, tuple) and key[1] != 0}
+    native_component_ids[0] = 0
     for node in _object_nodes(result):
         node.pop("local_id")
         node.pop("nested_prefab", None)
         for component in node["components"]:
             map_scene_references(component["data"])
             component["data"] = _remap_local_reference_document(component["data"], local_to_runtime, "prefab")
+            if component["type_id"] in ("native:infernux.HingeJoint", "native:infernux.SliderJoint"):
+                fields = component["data"]
+                target = fields["connected_body_component_id"]
+                fields["connected_body_component_id"] = -target if target < 0 else native_component_ids[target]
     return result
 
 
@@ -1102,7 +1109,8 @@ def _merge_prefab_instance_document(runtime_document, local_document, object_ids
     )
 
 
-def resolve_scene_prefab_documents(document: dict, load_source, *, reserve_ids=None, affected_guids=None) -> dict:
+def resolve_scene_prefab_documents(document: dict, load_source, *, reserve_ids=None, affected_guids=None,
+                                   allocate_authoring_identities=True) -> dict:
     """Resolve a saved scene without instantiating objects or running scripts.
 
     Cook IDs are deterministic and allocated above every ID in this document,
@@ -1118,9 +1126,10 @@ def resolve_scene_prefab_documents(document: dict, load_source, *, reserve_ids=N
         nodes.extend(node.get("children", ()))
     if not any(node.get("prefab_guid") and node.get("prefab_root") for node in nodes):
         return result
-    next_object = max((node["id"] for node in nodes), default=0) + 1
-    next_component = max((component["component_id"] for node in nodes
-                          for component in [node["transform"], *node["components"]]), default=0) + 1
+    next_object = max(max((node["id"] for node in nodes), default=0) + 1, result.get("nextObjectId", 1))
+    next_component = max(max((component["component_id"] for node in nodes
+                          for component in [node["transform"], *node["components"]]), default=0) + 1,
+                         result.get("nextComponentId", 1))
 
     def reserve_document_ids(object_count, component_count):
         nonlocal next_object, next_component
@@ -1130,8 +1139,22 @@ def resolve_scene_prefab_documents(document: dict, load_source, *, reserve_ids=N
         next_component += component_count
         return objects, components
 
-    if reserve_ids is None:
-        reserve_ids = reserve_document_ids
+    allocator = reserve_ids or reserve_document_ids
+
+    def reserve_ids(object_count, component_count):
+        objects, components = allocator(object_count, component_count)
+        objects, components = list(objects), list(components)
+        for table, key, values in (("objects", "nextObjectId", objects),
+                                   ("components", "nextComponentId", components)):
+            result[key] = max(result.get(key, 1), max(values, default=0) + 1)
+            if allocate_authoring_identities and "authoring_identity" in result:
+                from uuid import uuid4
+                identities = result["authoring_identity"][table]
+                for value in values:
+                    if str(value) in identities:
+                        raise ValueError("Prefab publication reused a reserved Scene identity")
+                    identities[str(value)] = uuid4().hex
+        return objects, components
 
     sources = {}
 

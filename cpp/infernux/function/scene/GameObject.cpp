@@ -324,6 +324,10 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
         savedWorldScale = m_transform.GetWorldScale();
     }
 
+    if (newParent && previousScene && newParent->m_scene && newParent->m_scene != previousScene) {
+        newParent->m_scene->CopySubtreeAuthoringIdentity(*this, *previousScene);
+    }
+
     std::unique_ptr<GameObject> selfPtr;
 
     // 1. Detach from current owner
@@ -365,15 +369,34 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
     if (newParent) {
         m_parent = newParent;
         // Ensure scene matches new parent
-        if (newParent->m_scene != m_scene) {
-            m_scene = newParent->m_scene;
-        }
         newParent->AttachChild(std::move(selfPtr));
     } else {
         m_parent = nullptr;
         // Attached to root
         if (m_scene) {
             m_scene->AttachRootObject(std::move(selfPtr));
+        }
+    }
+
+    if (previousScene && previousScene != m_scene) {
+        const auto retireLookup = [&](const auto &self, GameObject *object) -> void {
+            previousScene->UnregisterGameObject(object->GetID());
+            for (const auto &child : object->m_children)
+                self(self, child.get());
+        };
+        retireLookup(retireLookup, this);
+        if (m_scene) {
+            m_scene->RegisterObjectSubtree(this);
+            // Mirrors contain a World-qualified handle. Refresh them after
+            // publishing the destination lookup, before lifecycle callbacks.
+            const auto rebind = [&](const auto &self, GameObject *object) -> void {
+                for (const auto &component : object->m_components)
+                    if (auto *proxy = dynamic_cast<PyComponentProxy *>(component.get()))
+                        proxy->RebindPythonMirror();
+                for (const auto &child : object->m_children)
+                    self(self, child.get());
+            };
+            rebind(rebind, this);
         }
     }
 
@@ -691,8 +714,10 @@ Component *GameObject::AddPreparedPythonComponent(std::unique_ptr<Component> com
     }
     m_components.insert(m_components.begin() + static_cast<std::ptrdiff_t>(componentIndex), std::move(component));
     m_preparedPythonComponents.insert(ptr);
-    if (m_scene)
+    if (m_scene) {
+        m_scene->RegisterAuthoringComponent(ptr->GetComponentID());
         m_scene->BumpStructureVersion();
+    }
     InvalidateComponentExecutionCache();
     RefreshLifecycleDispatchFlags();
     return ptr;
@@ -772,6 +797,7 @@ void GameObject::PostAddComponent(Component *component)
         return;
     }
 
+    m_scene->RegisterAuthoringComponent(component->GetComponentID());
     m_scene->BumpStructureVersion();
     InvalidateComponentExecutionCache();
     RefreshLifecycleDispatchFlags();

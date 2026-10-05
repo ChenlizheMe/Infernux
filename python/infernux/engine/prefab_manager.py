@@ -422,6 +422,19 @@ def _strip_prefab_runtime_fields(obj_data: dict, *, next_local_id=1, instance_sn
                 component["data"],
                 f"{location}.components[{index}].data",
             )
+            if component_ids is not None and component["type_id"] in (
+                "native:infernux.HingeJoint", "native:infernux.SliderJoint",
+            ):
+                fields = component["data"]
+                target = fields["connected_body_component_id"]
+                if target in component_ids:
+                    fields["connected_body_component_id"] = component_ids[target]
+                elif target and instance_snapshot:
+                    fields["connected_body_component_id"] = -target
+                elif target:
+                    raise PrefabDocumentError(
+                        f"{location}.components[{index}]: prefab joint references a body outside its subtree"
+                    )
     if runtime_to_local is not None and baseline:
         # Native nodes carry their outer asset identity. Recover nested ownership
         # from that asset's immutable author baseline when creating a merge view.

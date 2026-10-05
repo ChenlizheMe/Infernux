@@ -24,13 +24,18 @@ def test_multiplatform_player_fixture_has_a_buildable_camera_scene():
         scene_path.read_text(encoding="utf-8")
     )
 
-    assert scene["mainCameraComponentId"] > 0
+    assert scene["identity_format"] == "guid-v1"
     components = [
         component
         for item in scene["objects"]
         for component in item.get("components", [])
     ]
     assert any(item["type_id"] == "native:infernux.Camera" for item in components)
+    assert any(
+        item["component_id"] == scene["mainCameraComponentId"]
+        and item["type_id"] == "native:infernux.Camera"
+        for item in components
+    )
     light = next(item for item in components if item["type_id"] == "native:infernux.Light")
     assert light["data"]["shadows"] != 0
     assert any(

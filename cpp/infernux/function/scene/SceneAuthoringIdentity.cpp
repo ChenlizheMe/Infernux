@@ -1,5 +1,7 @@
 #include "SceneAuthoringIdentity.h"
+#include "core/types/Guid.h"
 
+#include <charconv>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -172,6 +174,63 @@ class Decoder
 };
 } // namespace
 
+nlohmann::json SerializeSceneAuthoringIdentity(const SceneAuthoringIdentity &identities)
+{
+    const auto encode = [](const IdentityTable &table) {
+        Json document = Json::object();
+        for (const auto &[id, guid] : table)
+            document[std::to_string(id)] = guid;
+        return document;
+    };
+    return {{"objects", encode(identities.objects)}, {"components", encode(identities.components)}};
+}
+
+SceneAuthoringIdentity DeserializeSceneAuthoringIdentity(const nlohmann::json &document)
+{
+    if (!document.is_object() || document.size() != 2 || !document.contains("objects") ||
+        !document.contains("components"))
+        throw std::invalid_argument("Scene snapshot requires object and component author identity tables");
+    const auto decode = [](const Json &value) {
+        if (!value.is_object())
+            throw std::invalid_argument("Scene snapshot identity table must be an object");
+        IdentityTable table;
+        table.reserve(value.size());
+        std::unordered_set<std::string> guids;
+        for (const auto &[key, entry] : value.items()) {
+            uint64_t id = 0;
+            const auto parsed = std::from_chars(key.data(), key.data() + key.size(), id);
+            if (parsed.ec != std::errc{} || parsed.ptr != key.data() + key.size() || id == 0 ||
+                id == std::numeric_limits<uint64_t>::max() || std::to_string(id) != key || !entry.is_string())
+                throw std::invalid_argument("Scene snapshot identity table contains an invalid runtime ID or GUID");
+            const auto &guid = entry.get_ref<const std::string &>();
+            RequireGuid(guid);
+            if (!guids.insert(guid).second)
+                throw std::invalid_argument("Scene snapshot author identity table contains a GUID alias");
+            table.emplace(id, guid);
+        }
+        return table;
+    };
+    return {decode(document.at("objects")), decode(document.at("components"))};
+}
+
+SceneAuthoringIdentity RemapSceneAuthoringIdentity(const SceneAuthoringIdentity &identities,
+                                                   const std::unordered_map<uint64_t, uint64_t> &objectIdRemap,
+                                                   const std::unordered_map<uint64_t, uint64_t> &componentIdRemap)
+{
+    const auto remap = [](const IdentityTable &table, const auto &mapping) {
+        IdentityTable result;
+        result.reserve(table.size());
+        for (const auto &[id, guid] : table) {
+            const auto entry = mapping.find(id);
+            const uint64_t target = entry == mapping.end() ? id : entry->second;
+            if (target == 0 || target == std::numeric_limits<uint64_t>::max() || !result.emplace(target, guid).second)
+                throw std::invalid_argument("Scene author identity publication aliases runtime IDs");
+        }
+        return result;
+    };
+    return {remap(identities.objects, objectIdRemap), remap(identities.components, componentIdRemap)};
+}
+
 nlohmann::json EncodeSceneAuthoringDocument(const nlohmann::json &runtimeDocument,
                                             const SceneAuthoringIdentity &identities)
 {
@@ -181,6 +240,7 @@ nlohmann::json EncodeSceneAuthoringDocument(const nlohmann::json &runtimeDocumen
     RewriteDocument(result, Encoder(identities.objects), Encoder(identities.components));
     result.erase("nextObjectId");
     result.erase("nextComponentId");
+    result.erase("authoring_identity");
     result["identity_format"] = "guid-v1";
     return result;
 }
@@ -188,7 +248,8 @@ nlohmann::json EncodeSceneAuthoringDocument(const nlohmann::json &runtimeDocumen
 nlohmann::json DecodeSceneAuthoringDocument(const nlohmann::json &assetDocument, SceneAuthoringIdentity &identities)
 {
     if (!assetDocument.is_object() || assetDocument.value("identity_format", Json{}) != "guid-v1" ||
-        assetDocument.contains("nextObjectId") || assetDocument.contains("nextComponentId"))
+        assetDocument.contains("nextObjectId") || assetDocument.contains("nextComponentId") ||
+        assetDocument.contains("authoring_identity"))
         throw std::invalid_argument("Expected the GUID scene authoring format without runtime watermarks");
     Json result = assetDocument;
     SceneAuthoringIdentity candidate;
@@ -196,7 +257,38 @@ nlohmann::json DecodeSceneAuthoringDocument(const nlohmann::json &assetDocument,
     result.erase("identity_format");
     result["nextObjectId"] = static_cast<uint64_t>(candidate.objects.size()) + 1;
     result["nextComponentId"] = static_cast<uint64_t>(candidate.components.size()) + 1;
+    result["authoring_identity"] = SerializeSceneAuthoringIdentity(candidate);
     identities = std::move(candidate);
+    return result;
+}
+
+nlohmann::json DecodeSceneRuntimeArtifact(const nlohmann::json &artifactDocument)
+{
+    if (!artifactDocument.is_object() || artifactDocument.value("identity_format", Json{}) != "runtime-v1" ||
+        artifactDocument.contains("authoring_identity") || artifactDocument.contains("nextObjectId") ||
+        artifactDocument.contains("nextComponentId"))
+        throw std::invalid_argument("Expected a cooked runtime-v1 Scene without authoring tables or watermarks");
+    Json result = artifactDocument;
+    SceneAuthoringIdentity identities;
+    uint64_t nextObject = 1, nextComponent = 1;
+    const auto reserve = [](IdentityTable &table, uint64_t &next) {
+        return [&table, &next](const Json &value, bool nullable, bool) -> Json {
+            const uint64_t id = ReadRuntimeId(value, nullable);
+            if (id == std::numeric_limits<uint64_t>::max())
+                throw std::invalid_argument("Cooked Scene contains an exhausted runtime identity");
+            if (id) {
+                if (!table.count(id))
+                    table.emplace(id, GenerateGuid());
+                next = std::max(next, id + 1);
+            }
+            return id;
+        };
+    };
+    RewriteDocument(result, reserve(identities.objects, nextObject), reserve(identities.components, nextComponent));
+    result.erase("identity_format");
+    result["nextObjectId"] = nextObject;
+    result["nextComponentId"] = nextComponent;
+    result["authoring_identity"] = SerializeSceneAuthoringIdentity(identities);
     return result;
 }
 } // namespace infernux

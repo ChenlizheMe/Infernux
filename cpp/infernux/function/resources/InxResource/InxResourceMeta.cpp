@@ -1,11 +1,11 @@
 #include "InxResourceMeta.h"
 
 #include <core/log/InxLog.h>
+#include <core/types/Guid.h>
 #include <nlohmann/json.hpp>
 #include <platform/filesystem/DocumentStore.h>
 #include <platform/filesystem/InxPath.h>
 
-#include <array>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -13,9 +13,7 @@
 #include <functional>
 #include <iomanip>
 #include <limits>
-#include <mutex>
 #include <optional>
-#include <random>
 #include <sstream>
 #include <string_view>
 
@@ -110,36 +108,6 @@ std::string ComputeContentHashHex(const char *content, size_t contentSize)
     std::stringstream ss;
     ss << std::hex << std::setfill('0') << std::setw(16) << hash;
     return ss.str();
-}
-
-std::string GenerateGuid()
-{
-    static std::mutex mutex;
-    static std::mt19937_64 generator = [] {
-        std::random_device device;
-        std::array<uint32_t, 10> seedData{};
-        for (auto &value : seedData)
-            value = device();
-
-        const auto timestamp =
-            static_cast<uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count());
-        seedData[8] ^= static_cast<uint32_t>(timestamp);
-        seedData[9] ^= static_cast<uint32_t>(timestamp >> 32u);
-        std::seed_seq seed(seedData.begin(), seedData.end());
-        return std::mt19937_64(seed);
-    }();
-
-    uint64_t hi = 0;
-    uint64_t lo = 0;
-    {
-        std::lock_guard lock(mutex);
-        hi = generator();
-        lo = generator();
-    }
-
-    std::stringstream stream;
-    stream << std::hex << std::setfill('0') << std::setw(16) << hi << std::setw(16) << lo;
-    return stream.str();
 }
 
 std::string NormalizeMetadataFilePath(const std::string &filePath)

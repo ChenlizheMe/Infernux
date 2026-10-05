@@ -2703,6 +2703,21 @@ void RegisterSceneBindings(py::module_ &m)
     m.def("_schedule_scene_document_read", &ScheduleSceneDocumentRead, py::arg("path"),
           "Schedule scene file IO and structural validation on the native JobSystem");
     m.def(
+        "_encode_scene_authoring_document",
+        [](py::handle document) {
+            const auto snapshot = PythonToJson(document);
+            const auto identities = DeserializeSceneAuthoringIdentity(snapshot.at("authoring_identity"));
+            return JsonToPython(EncodeSceneAuthoringDocument(snapshot, identities));
+        },
+        py::arg("document"), "Encode a runtime snapshot as a GUID authoring asset");
+    m.def(
+        "_decode_scene_authoring_document",
+        [](py::handle document) {
+            SceneAuthoringIdentity identities;
+            return JsonToPython(DecodeSceneAuthoringDocument(PythonToJson(document), identities));
+        },
+        py::arg("document"), "Decode a GUID authoring asset to a runtime snapshot");
+    m.def(
         "_pump_inline_jobs",
         [](uint32_t maxJobs) {
             if (!JobSystem::IsAvailable() || !JobSystem::Get().IsInline())
@@ -2897,6 +2912,11 @@ void RegisterSceneBindings(py::module_ &m)
         .def("awake_object", &Scene::AwakeObject, py::arg("game_object"),
              "Re-run Awake+OnEnable on a GameObject and its descendants (used after undo deserialization)")
         .def("serialize", &Scene::Serialize, "Serialize scene to JSON string")
+        .def("serialize_asset", &Scene::SerializeAuthoring, "Serialize a GUID Scene authoring file")
+        .def(
+            "serialize_asset_document",
+            [](const Scene &scene) { return JsonToPython(scene.SerializeAuthoringDocument()); },
+            "Serialize a GUID Scene authoring document without runtime allocation state")
         .def(
             "serialize_document", [](const Scene &scene) { return JsonToPython(scene.SerializeDocument()); },
             "Serialize scene to a Python document")

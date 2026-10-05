@@ -7,6 +7,7 @@ import pytest
 from infernux.components import InxComponent, FieldType, serialized_field
 from infernux.components.ref_wrappers import GameObjectRef, ComponentRef
 from infernux.engine.component_restore import clone_game_object_transactionally
+from infernux.engine.scene_authoring import encode_scene_document
 from infernux.engine.prefab_manager import PrefabDocumentError, _read_prefab_document, instantiate_prefab, save_prefab, _make_prefab_baseline
 from infernux.engine.prefab_overrides import (
     apply_overrides_to_prefab, build_prefab_apply_command, compute_overrides,
@@ -181,6 +182,7 @@ def test_prefab_mode_save_exit_preserves_instance_overrides_and_identities(scene
     monkeypatch.setattr(SceneFileManager, "_instance", None)
     core = EditorInteractionCore()
     core.panels.register_selection_authority("hierarchy", (SelectionDomain.SCENE_OBJECT,))
+    monkeypatch.setattr(SceneFileManager, "_instance", None)
     manager = SceneFileManager()
     database = SimpleNamespace(
         get_guid_from_path=lambda candidate: (
@@ -258,7 +260,7 @@ def test_scene_reopen_merges_updated_source_and_keeps_instance_references(scene,
     snapshot = scene.serialize_document()
     snapshot["objects"] = [serialize_game_object_document_authoritatively(obj) for obj in scene.get_root_objects()]
     scene_path = tmp_path / "instances.scene"
-    scene_path.write_text(json.dumps(snapshot), encoding="utf-8")
+    scene_path.write_text(json.dumps(encode_scene_document(snapshot)), encoding="utf-8")
 
     updated = _read_prefab_document(path)
     updated["root_object"]["children"][0]["active"] = False
@@ -273,6 +275,11 @@ def test_scene_reopen_merges_updated_source_and_keeps_instance_references(scene,
     transaction = SceneDocumentTransaction(scene, path=scene_path)
     assert transaction.run_to_completion()
     assert ScenePrefabMixin._refresh_prefab_instances(scene, "structural-guid", path)
+    runtime_ids = {guid: int(key) for key, guid in scene.serialize_document()["authoring_identity"]["objects"].items()}
+    first_id, second_id, child_id, private_id, watcher_id = (
+        runtime_ids[snapshot["authoring_identity"]["objects"][str(key)]]
+        for key in (first_id, second_id, child_id, private_id, watcher_id)
+    )
     first, second = scene.find_by_id(first_id), scene.find_by_id(second_id)
     assert {obj.name for obj in first.get_children()} == {"Original", "Source Addition"}
     assert {obj.name for obj in second.get_children()} == {"Local Name", "Local Addition", "Source Addition"}
@@ -336,11 +343,11 @@ def test_unopened_scene_cook_merges_source_without_live_objects(scene, tmp_path)
         assert guid == "structural-guid"
         return updated
 
-    cooked = resolve_scene_prefab_documents(document, load)
+    cooked = resolve_scene_prefab_documents(document, load, allocate_authoring_identities=False)
     assert document == before
     assert [obj.id for obj in scene.get_all_objects()] == live_ids
     assert reads == ["structural-guid"]
-    assert cooked == resolve_scene_prefab_documents(document, load)
+    assert cooked == resolve_scene_prefab_documents(document, load, allocate_authoring_identities=False)
     roots = {obj["id"]: obj for obj in cooked["objects"]}
     children = roots[second.id]["children"]
     assert {obj["name"] for obj in children} == {"Local Override", "Private", "New From Source"}
@@ -372,7 +379,7 @@ def test_builder_stages_latest_prefab_for_unopened_scene(scene, tmp_path):
     path, first, second = _make_prefab(scene, assets)
     second.get_child(0).name = "Placed Override"
     scene_path = assets / "unopened.scene"
-    scene_path.write_text(json.dumps(scene.serialize_document()), encoding="utf-8")
+    assert scene.save_to_file(str(scene_path))
     saved_bytes = scene_path.read_bytes()
     updated = _read_prefab_document(path)
     updated["root_object"]["children"][0]["active"] = False
@@ -394,7 +401,10 @@ def test_builder_stages_latest_prefab_for_unopened_scene(scene, tmp_path):
     assert scene_path.read_bytes() == saved_bytes
     # The Editor's live scene was deliberately not refreshed by the cook.
     assert first.get_child(0).active_self
-    second_id, child_id = second.id, second.get_child(0).id
+    # Cook allocates compact runtime IDs from the authored GUID declarations.
+    second_id = next(root["id"] for root in cooked["objects"]
+                     if root["children"][0]["name"] == "Placed Override")
+    child_id = next(root["children"][0]["id"] for root in cooked["objects"] if root["id"] == second_id)
     transaction = SceneDocumentTransaction(scene, path=artifact)
     assert transaction.run_to_completion()
     assert scene.find_by_id(second_id).get_child(0).name == "Placed Override"

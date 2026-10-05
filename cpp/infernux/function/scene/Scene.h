@@ -3,6 +3,7 @@
 #include "Camera.h"
 #include "GameObject.h"
 #include "ObjectHandle.h"
+#include "SceneAuthoringIdentity.h"
 #include "SceneEnvironment.h"
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -318,6 +319,10 @@ class Scene
     /// @brief Build the structured current-schema document without text conversion.
     [[nodiscard]] nlohmann::json SerializeDocument() const;
 
+    /// Authoring asset boundary: persistent GUIDs, without runtime ID tables.
+    [[nodiscard]] nlohmann::json SerializeAuthoringDocument() const;
+    [[nodiscard]] std::string SerializeAuthoring() const;
+
     /// @brief Commit an already parsed and cross-language-preflighted scene document.
     ///
     /// **Transactional Scene Rebuild Contract**:
@@ -437,6 +442,9 @@ class Scene
     /// @brief Recursively register all objects in a subtree with Scene's lookup map.
     void RegisterObjectSubtree(GameObject *root);
 
+    void RegisterAuthoringComponent(uint64_t componentId);
+    void CopySubtreeAuthoringIdentity(const GameObject &object, const Scene &source);
+
     static uint64_t GenerateWorldId();
 
     std::string m_name = "Untitled Scene";
@@ -448,6 +456,10 @@ class Scene
 
     // Quick lookup by ID
     std::unordered_map<uint64_t, GameObject *> m_objectsById;
+
+    // Persistent author identities outlive deletion, so Undo and missing refs
+    // keep the same identity. Runtime lookups continue to use compact integers.
+    SceneAuthoringIdentity m_authoringIdentity;
 
     // Persist allocation progress even after the highest authored IDs are deleted.
     mutable uint64_t m_nextDocumentObjectId = 1;

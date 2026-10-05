@@ -306,7 +306,7 @@ def _make_project(tmp_path):
     scene_path = project_root / "Assets" / "Main.scene"
     scene_path.parent.mkdir(parents=True)
     scene_path.write_text(
-        json.dumps({"objects": []}, ensure_ascii=False),
+        json.dumps({"identity_format": "guid-v1", "name": "Main", "isPlaying": False, "objects": []}, ensure_ascii=False),
         encoding="utf-8",
     )
     (settings_dir / "BuildSettings.json").write_text(
@@ -323,6 +323,21 @@ def _make_project(tmp_path):
 def _make_builder(tmp_path, output_dir):
     project_root = _make_project(tmp_path)
     return GameBuilder(str(project_root), str(output_dir), game_name="TestGame")
+
+
+def _scene_with_component(fields, *, type_id="python::cook-fixture:CookFixture:CookFixture"):
+    """Identity-complete authoring input for dependency/cook unit tests."""
+    return {
+        "identity_format": "guid-v1", "name": "Main", "isPlaying": False,
+        "objects": [{
+            "id": "1" * 32, "name": "CookFixture", "active": True,
+            "is_static": False, "tag": "Untagged", "layer": 0, "children": [],
+            "transform": {"component_id": "2" * 32, "position": [0, 0, 0],
+                          "rotation": [0, 0, 0], "scale": [1, 1, 1]},
+            "components": [{"component_id": "3" * 32, "type_id": type_id,
+                            "enabled": True, "data": fields}],
+        }],
+    }
 
 
 def test_builder_resolves_relative_output_against_project_after_cwd_changes(monkeypatch, tmp_path):
@@ -702,29 +717,10 @@ def _reference_particle_graph(project_root: Path, stable_id: str) -> Path:
     graph_path.write_text(graph.canonical_json(), encoding="utf-8")
     guid = hashlib.md5(stable_id.encode("utf-8")).hexdigest()
     scene_path = project_root / "Assets" / "Main.scene"
-    scene_path.write_text(
-        json.dumps(
-            {
-                "objects": [
-                    {
-                        "components": [
-                            {
-                                "data": {
-                                    "graph": {
-                                        "$type": "asset_ref",
-                                        "asset_type": "ParticleGraph",
-                                        "guid": guid,
-                                        "path_hint": f"Assets/VFX/{stable_id}.particlegraph",
-                                    }
-                                }
-                            }
-                        ]
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
+    scene_path.write_text(json.dumps(_scene_with_component({"graph": {
+        "$type": "asset_ref", "asset_type": "ParticleGraph", "guid": guid,
+        "path_hint": f"Assets/VFX/{stable_id}.particlegraph",
+    }})), encoding="utf-8")
     _write_asset_index(
         project_root,
         [
@@ -1303,14 +1299,14 @@ def _write_texture_asset_index(project_root: Path, source: Path, guid: str, arti
     scene_path = project_root / "Assets" / "Main.scene"
     scene_path.write_text(
         json.dumps(
-            {
+            _scene_with_component({
                 "texture": {
                     "$type": "asset_ref",
                     "asset_type": "Texture",
                     "guid": guid,
                     "path_hint": relative_source,
                 }
-            }
+            })
         ),
         encoding="utf-8",
     )
@@ -3702,18 +3698,9 @@ def test_game_data_includes_render_effect_artifacts(tmp_path):
         encoding="utf-8",
     )
     scene = project / "Assets" / "Main.scene"
-    scene.write_text(
-        json.dumps(
-            {
-                "effect": {
-                    "$type": "asset_ref",
-                    "guid": "effect-guid",
-                    "path_hint": "Assets/Rendering/Bloom.effect",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
+    scene.write_text(json.dumps(_scene_with_component({"effect": {
+        "$type": "asset_ref", "guid": "effect-guid", "path_hint": "Assets/Rendering/Bloom.effect",
+    }})), encoding="utf-8")
     artifact = (
         project
         / "Library"
@@ -3948,9 +3935,19 @@ def test_player_cooks_variant_from_current_base_without_authoring_metadata(tmp_p
     instance["prefab_source"] = _make_prefab_baseline(variant["root_object"])
     instance["children"][0]["name"] = "Instance override"
     scene_path = project / "Assets/Scene.scene"
-    scene_path.write_text(json.dumps({"objects": [instance]}), encoding="utf8")
+    from infernux.engine.scene_authoring import encode_scene_document
+    snapshot = {"objects": [instance], "authoring_identity": {
+        "objects": {str(node["id"]): f'{node["id"]:032x}' for node in (instance, instance["children"][0])},
+        "components": {str(node["transform"]["component_id"]): f'{node["transform"]["component_id"]:032x}'
+                       for node in (instance, instance["children"][0])},
+    }}
+    scene_path.write_text(json.dumps(encode_scene_document(snapshot)), encoding="utf8")
     base["root_object"]["layer"] = 7
     base["root_object"]["children"][0]["layer"] = 7
+    addition = copy.deepcopy(child)
+    addition.update(local_id=3, name="Added in current base")
+    base["root_object"]["children"].append(addition)
+    base["next_local_id"] = 4
     base_path.write_text(json.dumps(base), encoding="utf8")
     source_paths = [path for _, path in ancestors] + [variant_path]
     before = [path.read_bytes() for path in source_paths]
@@ -3975,10 +3972,67 @@ def test_player_cooks_variant_from_current_base_without_authoring_metadata(tmp_p
         assert ancestor["root_object"]["children"][0]["layer"] == 7
     cooked_scene = json.loads((data_dir / "Library/Artifacts/Document/scene-guid.scene").read_text(encoding="utf8"))
     result = cooked_scene["objects"][0]
-    assert result["id"] == 21 and result["children"][0]["id"] == 22
+    assert result["id"] == 1 and result["children"][0]["id"] == 2
     assert result["children"][0]["layer"] == 7
     assert result["children"][0]["name"] == "Instance override"
+    assert result["children"][1]["name"] == "Added in current base"
+    assert result["children"][1]["id"] not in (result["id"], result["children"][0]["id"])
     assert "prefab_source" not in result
+    assert cooked_scene["identity_format"] == "runtime-v1"
+    assert "authoring_identity" not in cooked_scene
+    artifact = data_dir / "Library/Artifacts/Document/scene-guid.scene"
+    first = artifact.read_bytes()
+    builder._stage_library_runtime_documents(str(data_dir))
+    assert artifact.read_bytes() == first
+
+
+@pytest.mark.parametrize("imported", [False, True])
+def test_scene_cook_preserves_native_joint_references_and_loads(scene, tmp_path, imported):
+    from infernux.lib import SceneManager
+    from infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
+
+    target = scene.create_game_object("JointTarget")
+    body = target.add_component("Rigidbody")
+    owner = scene.create_game_object("JointOwner")
+    owner.add_component("Rigidbody")
+    joint = owner.add_component("HingeJoint")
+    joint.connected_body = body
+    builder = _make_builder(tmp_path, tmp_path / "build_output")
+    project = Path(builder.project_path)
+    source = project / "Assets/Main.scene"
+    assert scene.save_to_file(str(source))
+    authored = source.read_bytes()
+    if imported:
+        source = project / "Assets/Generated.custom"
+        source.write_bytes(b"custom importer source")
+    entry = _asset_index_entry(project, source, "scene-guid", "", "Scene")
+    if imported:
+        entry["metadata"]["metadata"].update({
+            "import_document": {"value": authored.decode("utf-8")},
+            "file_extension": {"value": ".scene"},
+        })
+    source_before = source.read_bytes()
+    builder._cooked_asset_entries = {
+        "scene-guid": entry,
+    }
+    builder._runtime_artifact_bindings = {}
+    builder._runtime_artifact_source_paths = set()
+    data_dir = tmp_path / "dist/Data"
+    artifact = data_dir / "Library/Artifacts/Document/scene-guid.scene"
+    builder._stage_library_runtime_documents(str(data_dir))
+    first = artifact.read_bytes()
+    builder._stage_library_runtime_documents(str(data_dir))
+    assert artifact.read_bytes() == first
+    assert source.read_bytes() == source_before
+    cooked = json.loads(first)
+    assert cooked["identity_format"] == "runtime-v1"
+    assert not {"authoring_identity", "nextObjectId", "nextComponentId"}.intersection(cooked)
+    loaded = SceneManager.instance().create_scene("CookedWorld")
+    transaction = SceneDocumentTransaction(loaded, path=str(artifact), clear_registries=False)
+    assert transaction.run_to_completion(), transaction.error
+    assert loaded.find("JointTarget").id != target.id
+    connected = loaded.find("JointOwner").get_component("HingeJoint").connected_body
+    assert connected is loaded.find("JointTarget").get_component("Rigidbody")
 
 
 def test_player_catalog_excludes_editor_assets_and_rejects_runtime_dependencies(tmp_path):
@@ -5050,18 +5104,9 @@ def _write_scene_material_audio_reachability_fixture(
     unreachable = assets / "Unused.mat"
     material.parent.mkdir(parents=True, exist_ok=True)
     audio.parent.mkdir(parents=True, exist_ok=True)
-    scene.write_text(
-        json.dumps(
-            {
-                "material": {
-                    "$type": "asset_ref",
-                    "guid": "material-guid",
-                    "path_hint": "Assets/Materials/Bird.mat",
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
+    scene.write_text(json.dumps(_scene_with_component({"material": {
+        "$type": "asset_ref", "guid": "material-guid", "path_hint": "Assets/Materials/Bird.mat",
+    }})), encoding="utf-8")
     material.write_text(
         json.dumps(
             {
@@ -5510,24 +5555,7 @@ def test_cooked_python_component_keeps_script_and_runtime_guid_identity(tmp_path
     script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text("class Mover:\n    pass\n", encoding="utf-8")
     script_guid = "1234567890abcdef1234567890abcdef"
-    scene.write_text(
-        json.dumps(
-            {
-                "objects": [
-                    {
-                        "components": [
-                            {
-                                "type_id": (
-                                    f"python:{script_guid}:type-guid:Scripts.Mover:Mover"
-                                )
-                            }
-                        ]
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
+    scene.write_text(json.dumps(_scene_with_component({}, type_id=f"python:{script_guid}:type-guid:Scripts.Mover:Mover")), encoding="utf-8")
     _write_asset_index(
         project,
         [
