@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from uuid import uuid4
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from infernux.engine.interaction import (
     ExternalDocumentConflictService,
 )
 from infernux.engine.scene_manager import SceneFileManager
+from infernux.engine.scene_authoring import encode_scene_document
 from infernux.host import EditorAutomationHost, OperationError
 
 
@@ -26,9 +28,9 @@ def test_scene_entry_points_reject_invalid_disk_fields_and_publish_reason(
 
     owner = scene.create_game_object("KeepLocalTank")
     original = scene.serialize_document()
-    invalid = json.loads(json.dumps(original))
+    invalid = encode_scene_document(original)
     record = {
-        "component_id": 981725,
+        "component_id": uuid4().hex,
         "type_id": "python:script-guid:type-guid:TankBattle:TankBattle",
         "enabled": True,
         "execution_order": 0,
@@ -150,7 +152,7 @@ def persisted_scene(scene, engine, tmp_path, monkeypatch):
 
     owner = scene.create_game_object("LocalTank")
     path = tmp_path / "TankBattle.scene"
-    path.write_text(json.dumps(scene.serialize_document()), encoding="utf-8")
+    path.write_text(json.dumps(encode_scene_document(scene.serialize_document())), encoding="utf-8")
     monkeypatch.setattr(SceneFileManager, "_instance", None)
     manager = SceneFileManager()
     manager._current_scene_path = str(path)
@@ -229,7 +231,7 @@ def test_queued_external_reload_reports_newer_disk_revision_as_conflict(
 
     manager, registry, path, _owner = persisted_scene
     document = registry.require(manager.document_id)
-    read_version = scene.serialize_document()
+    read_version = encode_scene_document(scene.serialize_document())
     read_version["objects"][0]["name"] = "QueuedReadVersion"
     path.write_text(json.dumps(read_version), encoding="utf-8")
     registry.mark_conflict(document.document_id)
@@ -273,7 +275,7 @@ def test_successful_same_path_mcp_reload_establishes_savable_disk_baseline(
     document = registry.require(manager.document_id)
     if dirty:
         registry.mark_changed(document.document_id)
-    changed = scene.serialize_document()
+    changed = encode_scene_document(scene.serialize_document())
     changed["objects"][0]["name"] = "DiskTank"
     path.write_text(json.dumps(changed), encoding="utf-8")
     registry.mark_conflict(document.document_id)
@@ -300,7 +302,7 @@ def test_scene_baseline_keeps_read_snapshot_when_disk_changes_before_publish(
 ):
     manager, registry, path, _owner = persisted_scene
     document = registry.require(manager.document_id)
-    initial = scene.serialize_document()
+    initial = encode_scene_document(scene.serialize_document())
     initial["objects"][0]["name"] = "ReadVersion"
     path.write_text(json.dumps(initial), encoding="utf-8")
     newer = json.loads(json.dumps(initial))
@@ -346,7 +348,7 @@ def test_watcher_publishes_disk_change_after_scene_read_before_open_completes(
     previous_document_id = manager.document_id
     path = (original_path.with_name("FirstOpen.scene")
             if entry == "new_path" else original_path)
-    read_version = scene.serialize_document()
+    read_version = encode_scene_document(scene.serialize_document())
     read_version["objects"][0]["name"] = "ReadVersion"
     path.write_text(json.dumps(read_version), encoding="utf-8")
     newer = json.loads(json.dumps(read_version))

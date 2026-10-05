@@ -67,10 +67,14 @@ def test_created_scene_and_material_use_current_native_document_contract(scene, 
     assert success, path
     scene_document = json.loads(Path(path).read_bytes())
     from infernux.engine.component_restore import deserialize_scene_document_transactionally
+    from infernux.engine.scene_authoring import decode_scene_document
 
-    assert deserialize_scene_document_transactionally(scene, scene_document, database)
+    assert scene_document["identity_format"] == "guid-v1"
+    assert "nextObjectId" not in scene_document and "nextComponentId" not in scene_document
+    runtime_document = decode_scene_document(scene_document)
+    assert deserialize_scene_document_transactionally(scene, runtime_document, database)
     assert scene.serialize_document()["name"] == "新场景 {01}"
-    assert scene_document["nextObjectId"] == scene_document["nextComponentId"] == 1
+    assert runtime_document["nextObjectId"] == runtime_document["nextComponentId"] == 1
 
     success, error = ops.create_material(str(directory), "共享材质 {01}", database)
     assert success, error

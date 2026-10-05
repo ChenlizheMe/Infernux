@@ -42,6 +42,7 @@ def exercise(project, phase, deleted):
     from infernux.engine.engine import Engine
     from infernux.engine.preferences_store import PreferencesStore
     from infernux.engine.runtime_scene_transaction import SceneDocumentTransaction
+    from infernux.engine.scene_authoring import encode_scene_document
     from infernux.lib import LogLevel, RuntimeMode, SceneManager
 
     assets = project / "Assets"
@@ -72,6 +73,10 @@ def exercise(project, phase, deleted):
         manager.set_active_scene(scene)
         path = assets / "Reference.scene"
         if phase == "author":
+            for index in range(4):
+                discarded = scene.create_game_object(f"Discarded {index}")
+                scene.destroy_game_object(discarded)
+            scene.process_pending_destroys()
             owner = scene.create_game_object("Owner")
             target = scene.create_game_object("Target")
             instance = owner.add_component(classes[0])
@@ -80,26 +85,37 @@ def exercise(project, phase, deleted):
             if deleted:
                 scene.destroy_game_object(target)
                 scene.process_pending_destroys()
-            path.write_text(json.dumps(scene.serialize_document()), encoding="utf-8")
+            snapshot = scene.serialize_document()
+            identity = snapshot["authoring_identity"]
+            path.write_text(json.dumps(encode_scene_document(snapshot)), encoding="utf-8")
             (project / "expected.json").write_text(json.dumps({
-                "owner": int(owner.id), "component": int(instance.component_id), "target": target_id,
+                "owner": identity["objects"][str(owner.id)],
+                "component": identity["components"][str(instance.component_id)],
+                "target": identity["objects"][str(target_id)],
+                "old_owner_runtime_id": int(owner.id),
             }), encoding="utf-8")
         else:
             expected = json.loads((project / "expected.json").read_text(encoding="utf-8"))
             transaction = SceneDocumentTransaction(scene, path=str(path), asset_database=database)
             assert transaction.run_to_completion()
-            owner = scene.find_by_id(expected["owner"])
+            snapshot = scene.serialize_document()
+            identity = snapshot["authoring_identity"]
+            owner = scene.find("Owner")
+            assert owner is not None
+            assert owner.id != expected["old_owner_runtime_id"]
+            assert identity["objects"][str(owner.id)] == expected["owner"]
             matches = [component for component in owner.get_py_components()
-                       if int(component.component_id) == expected["component"]]
+                       if identity["components"][str(component.component_id)] == expected["component"]]
             assert len(matches) == 1
             instance = matches[0]
             assert not getattr(instance, "_is_broken", False)
             reference = type(instance).target.get_raw(instance)
-            assert reference.persistent_id == expected["target"]
+            assert identity["objects"][str(reference.persistent_id)] == expected["target"]
             assert (reference.resolve() is None) is deleted
             if not deleted:
-                assert int(reference.resolve().id) == expected["target"]
-            document = scene.serialize_document()
+                assert reference.resolve() is scene.find("Target")
+                assert int(reference.resolve().id) == reference.persistent_id
+            document = encode_scene_document(scene.serialize_document())
             saved_owner = next(item for item in document["objects"] if item["id"] == expected["owner"])
             saved_component = next(item for item in saved_owner["components"]
                                    if item["type_id"].startswith("python:"))

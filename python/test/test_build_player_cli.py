@@ -96,7 +96,10 @@ def test_desktop_target_loads_the_core_exporter():
     assert [target.id for target in exporter.targets()] == [module.DESKTOP_TARGET]
 
 
-def test_installed_acceptance_rejects_the_source_checkout():
+def test_installed_acceptance_rejects_the_source_checkout(monkeypatch):
+    import infernux
+
+    monkeypatch.setattr(infernux, "__file__", str(Path(__file__).resolve().parents[1] / "infernux/__init__.py"))
     module = _module()
     with pytest.raises(RuntimeError, match="installed wheel"):
         module._prepare_engine(installed=True)

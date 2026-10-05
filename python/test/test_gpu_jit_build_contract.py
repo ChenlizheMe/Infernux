@@ -12,6 +12,7 @@ def test_source_checkout_gpu_vendor_follows_the_loaded_native_directory(tmp_path
     monkeypatch.delenv("INFERNUX_GPU_JIT_VENDOR_DIR", raising=False)
     monkeypatch.delenv("INFERNUX_NATIVE_MODULE_DIR", raising=False)
     monkeypatch.setattr(engine_lib, "native_dir", str(native_dir))
+    monkeypatch.setattr(compiler_loader, "__file__", str(tmp_path / "source/infernux/_compiler/taichi/__init__.py"))
 
     assert compiler_loader._vendor_dir() == vendor
 

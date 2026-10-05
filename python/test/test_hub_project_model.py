@@ -40,6 +40,7 @@ def test_hub_generated_assets_are_readable_by_native_asset_database(engine, scen
     from infernux.lib import ResourceMeta, ResourceType
     from infernux.engine.build_settings import load_build_settings_for_build
     from infernux.engine.component_restore import deserialize_scene_document_transactionally
+    from infernux.engine.scene_authoring import decode_scene_document
     from infernux.renderstack.render_stack import RenderStack
     from infernux.renderstack.render_effect_asset import parse_render_effect_document
 
@@ -70,7 +71,8 @@ def test_hub_generated_assets_are_readable_by_native_asset_database(engine, scen
         assert settings["scene_guids"] == [identities[scene_path]]
         assert not (project / "ProjectSettings" / "EditorSettings.json").exists()
         document = json.loads(scene_path.read_text(encoding="utf-8"))
-        assert deserialize_scene_document_transactionally(scene, document, database)
+        assert document["identity_format"] == "guid-v1"
+        assert deserialize_scene_document_transactionally(scene, decode_scene_document(document), database)
         assert scene.find("Main Camera").get_component("Camera") is not None
         assert scene.find("Directional Light").get_component("Light") is not None
         stack = scene.find("RenderStack").get_py_component(RenderStack)
