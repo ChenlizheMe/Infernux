@@ -674,6 +674,77 @@ def test_effect_cache_cannot_hide_a_removed_dependency(tmp_path, monkeypatch, ef
         assert RenderEffectArtifactRegistry.get(str(path), guid) is accepted
 
 
+@pytest.mark.parametrize("clear_memory_cache", [False, True])
+def test_group_cache_cannot_hide_removed_leaf_dependency(tmp_path, monkeypatch, effect_catalog, clear_memory_cache):
+    from infernux.engine import project_context
+
+    RenderEffectArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    shader = tmp_path / "Dependency.frag"
+    shader.write_text("void main() {}", encoding="utf-8")
+    dependency_guid = effect_catalog.register(shader)
+    effect_path = tmp_path / "Leaf.effect"
+    _write_effect(effect_path)
+    source = json.loads(effect_path.read_text(encoding="utf-8"))
+    source["dependencies"] = [{"guid": dependency_guid}]
+    effect_path.write_text(json.dumps(source), encoding="utf-8")
+    effect_guid = effect_catalog.register(effect_path)
+    group_path = tmp_path / "Root.effectgroup"
+    group_path.write_text(dump_render_effect_document(RenderEffectGroupAsset(entries=(
+        RenderEffectGroupEntry("leaf", EffectAssetReference(guid=effect_guid)),
+    ))), encoding="utf-8")
+    group_guid = effect_catalog.register(group_path)
+    accepted, _ = RenderEffectArtifactRegistry.compile_and_publish(str(group_path), guid=group_guid)
+    artifact_bytes = Path(accepted.artifact_path).read_bytes()
+    if clear_memory_cache:
+        RenderEffectArtifactRegistry.clear()
+    catalog_lookup = effect_catalog.get_path_from_guid
+    monkeypatch.setattr(effect_catalog, "get_path_from_guid", staticmethod(
+        lambda guid: "" if guid == dependency_guid else catalog_lookup(guid)
+    ))
+
+    with pytest.raises(RenderEffectCompileError, match="effect dependency GUID is unavailable"):
+        RenderEffectArtifactRegistry.compile_and_publish(str(group_path), guid=group_guid)
+    assert Path(accepted.artifact_path).read_bytes() == artifact_bytes
+    if not clear_memory_cache:
+        assert RenderEffectArtifactRegistry.get(str(group_path), group_guid) is accepted
+
+
+@pytest.mark.parametrize("clear_memory_cache", [False, True])
+def test_group_cache_recompiles_changed_published_leaf_feature(tmp_path, monkeypatch, effect_catalog, clear_memory_cache):
+    from infernux.engine import project_context
+
+    RenderEffectArtifactRegistry.clear()
+    monkeypatch.setattr(project_context, "get_project_root", lambda: str(tmp_path))
+    # Imported publication updates the live resource without authoring a save.
+    monkeypatch.setattr(RenderEffect, "_suppress_auto_save", True)
+    effect_path = tmp_path / "Leaf.effect"
+    effect_guid = effect_catalog.register(effect_path)
+    leaf = RenderEffect(RenderEffectAsset("infernux.post.bloom"), file_path=str(effect_path), guid=effect_guid)
+    monkeypatch.setattr(AssetManager, "load_by_guid", staticmethod(
+        lambda guid, asset_type=None: leaf if guid == effect_guid else None
+    ))
+    group_path = tmp_path / "Root.effectgroup"
+    group_path.write_text(dump_render_effect_document(RenderEffectGroupAsset(entries=(
+        RenderEffectGroupEntry("leaf", EffectAssetReference(guid=effect_guid)),
+    ))), encoding="utf-8")
+    group_guid = effect_catalog.register(group_path)
+    accepted, _ = RenderEffectArtifactRegistry.compile_and_publish(str(group_path), guid=group_guid)
+    original_group = group_path.read_bytes()
+    assert accepted.features[0]["feature_type"] == "infernux.post.bloom"
+    if clear_memory_cache:
+        RenderEffectArtifactRegistry.clear()
+    assert leaf.deserialize_document(RenderEffectAsset("infernux.post.sharpen"))
+
+    updated, _ = RenderEffectArtifactRegistry.compile_and_publish(str(group_path), guid=group_guid)
+
+    assert group_path.read_bytes() == original_group
+    assert updated.features[0]["feature_type"] == "infernux.post.sharpen"
+    assert updated.structural_hash != accepted.structural_hash
+    persisted = json.loads(Path(updated.artifact_path).read_text(encoding="utf-8"))
+    assert persisted["features"][0]["feature_type"] == "infernux.post.sharpen"
+
+
 def test_render_effect_load_reuses_matching_persisted_artifact(tmp_path, monkeypatch):
     from infernux.engine import project_context
 

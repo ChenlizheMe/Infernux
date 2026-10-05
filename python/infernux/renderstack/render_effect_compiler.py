@@ -248,20 +248,14 @@ class RenderEffectArtifactRegistry:
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise RenderEffectCompileError(f"failed to read render effect source: {exc}") from exc
 
+        group_sources = None
+        features = None
         if isinstance(document, RenderEffectAsset):
             _validate_declared_effect_dependencies(document)
-
-        source_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
-        key = cls._source_key(source_path, guid)
-        existing = cls._artifacts.get(key)
-        if existing is not None and existing.source_hash == source_hash:
-            return existing, document
-
-        group_sources = None
-        if isinstance(document, RenderEffectGroupAsset):
-            # Group membership is an asset-time concern. Publish a fresh,
-            # flattened memory view when the source changes so RenderStack and
-            # its Inspector never need to poll or parse source files per frame.
+        else:
+            # A group's unchanged JSON does not establish that its referenced
+            # effects are unchanged or still valid. Resolve and compile the
+            # candidate leaves at import time, before accepting either cache.
             _clear_effect_group_expansions()
             group_sources = _expand_render_effect_group_document(
                 document,
@@ -269,6 +263,22 @@ class RenderEffectArtifactRegistry:
                 _group_guid=guid,
                 _trail=(path_key(source_path),),
             )
+            features = tuple(
+                cls._compile_feature_record(source) for source in group_sources
+            )
+
+        source_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+        key = cls._source_key(source_path, guid)
+        existing = cls._artifacts.get(key)
+        if (
+            existing is not None
+            and existing.source_hash == source_hash
+            and (features is None or existing.features == features)
+        ):
+            if group_sources is not None:
+                _LIVE_EFFECT_GROUP_DOCUMENTS[path_key(source_path)] = document
+                _EFFECT_GROUP_EXPANSIONS[path_key(source_path)] = tuple(group_sources)
+            return existing, document
 
         artifact_path = cls._artifact_path(source_path, guid)
         if existing is None and artifact_path:
@@ -277,20 +287,17 @@ class RenderEffectArtifactRegistry:
                 key=key,
                 source_hash=source_hash,
             )
-            if persisted is not None:
+            if persisted is not None and (features is None or persisted.features == features):
                 cls._artifacts[key] = persisted
                 cls._revision = max(cls._revision, persisted.revision)
                 cls._topology_generation += 1
                 if group_sources is not None:
+                    _LIVE_EFFECT_GROUP_DOCUMENTS[path_key(source_path)] = document
                     _EFFECT_GROUP_EXPANSIONS[path_key(source_path)] = tuple(group_sources)
                 return persisted, document
 
-        if group_sources is None:
+        if features is None:
             features = cls._compile_document(document, source_path, guid)
-        else:
-            features = tuple(
-                cls._compile_feature_record(source) for source in group_sources
-            )
         structural_hash = cls._structural_hash(document, features)
         next_revision = cls._revision + 1
         payload = {
