@@ -15,6 +15,7 @@
 #include "RendererSelection.h"
 #include "SceneRenderTarget.h"
 #include "gui/InxScreenUIRenderer.h"
+#include "gui/WorldUIDepthReplay.h"
 #include "particle/ParticleGpuBounds.h"
 #include "particle/ParticleGpuCuller.h"
 #include "particle/ParticleGpuDrawRegistry.h"
@@ -3702,34 +3703,13 @@ void SceneRenderGraph::BuildRenderGraph()
         const auto worldUIDepthRuns =
             hasSelectiveWorldUI ? m_screenUIRenderer->GetWorldDepthRuns(m_cachedProj * m_drawView, worldUIMask)
                                 : std::vector<InxScreenUIRenderer::WorldDepthRun>{};
-        const GraphPassDesc *worldUIOpaqueSource = nullptr;
+        std::optional<WorldUIDepthReplay> worldUIOpaqueSource;
         if (hasSelectiveWorldUI) {
-            bool seenWorldUI = false;
-            bool invalidDepthWriter =
-                m_pythonGraphDesc.name != "Default Forward" || m_cameraClearFlags == CameraClearFlags::DontClear;
-            for (const auto &candidate : sortedPasses) {
-                const auto *candidateCommand = PrimaryCommand(candidate);
-                if (candidateCommand && candidateCommand->type == GraphCommandType::DrawWorldUI) {
-                    seenWorldUI = true;
-                    break;
-                }
-                if (candidate.writeDepth != "depth")
-                    continue;
-                if (candidate.name == "OpaquePass" && candidateCommand &&
-                    candidateCommand->type == GraphCommandType::DrawRenderers &&
-                    candidateCommand->shaderTarget == ShaderCompileTarget::Forward &&
-                    candidate.type == GraphPassType::Raster && candidate.commands.size() == 1 && candidate.clearDepth &&
-                    candidate.clearDepthValue == 1.0f && !candidateCommand->rendererSelection &&
-                    candidateCommand->overrideMaterial.empty() &&
-                    candidateCommand->materialFilter == GraphMaterialFilter::All) {
-                    worldUIOpaqueSource = &candidate;
-                } else {
-                    invalidDepthWriter = true;
-                }
-            }
-            if (!seenWorldUI || !worldUIOpaqueSource || invalidDepthWriter) {
-                INXLOG_ERROR("Selective World UI occlusion requires the unmodified Default Forward scene-depth "
-                             "writer; this graph or camera depth-preservation policy cannot be replayed exactly");
+            worldUIOpaqueSource =
+                BuildWorldUIDepthReplay(m_pythonGraphDesc, m_cameraClearFlags == CameraClearFlags::DontClear);
+            if (!worldUIOpaqueSource) {
+                INXLOG_ERROR("Selective World UI occlusion requires one cleared Forward scene-depth writer; "
+                             "this graph or camera depth-preservation policy cannot be replayed exactly");
                 return;
             }
         }
@@ -5066,15 +5046,15 @@ void SceneRenderGraph::BuildRenderGraph()
                     INXLOG_ERROR("Selective World UI requires one existing color target and scene depth");
                     return;
                 }
-                const auto *opaqueCommand = PrimaryCommand(*worldUIOpaqueSource);
-                auto replayPipeline = m_pythonMaterialPasses.at(worldUIOpaqueSource->name);
+                const auto opaqueCommand = worldUIOpaqueSource->draw;
+                auto replayPipeline = m_pythonMaterialPasses.at(worldUIOpaqueSource->passName);
                 const auto uiMaterialPass = m_pythonMaterialPasses.at(passDesc.name);
                 const uint32_t worldUILayerMask = command->worldUILayerMask;
                 replayPipeline.target = ShaderCompileTarget::Depth;
                 replayPipeline.colorFormats.clear();
                 replayPipeline.depthReadOnly = false;
                 std::vector<vk::ResourceHandle> replayTextureReads;
-                if (const auto inputs = m_drawTextureInputs.find(worldUIOpaqueSource->name);
+                if (const auto inputs = m_drawTextureInputs.find(worldUIOpaqueSource->passName);
                     inputs != m_drawTextureInputs.end()) {
                     for (const auto &generation : inputs->second) {
                         const auto resources = m_renderGraph->ImportRenderTexture(
@@ -5094,7 +5074,7 @@ void SceneRenderGraph::BuildRenderGraph()
                     vk::ResourceHandle writtenAlternateDepth;
                     m_renderGraph->AddPass(replayName, [=, &writtenAlternateDepth](vk::PassBuilder &builder) {
                         builder.ReadRendererList(m_visibleRendererList);
-                        declareMaterialBufferReads(builder, worldUIOpaqueSource->name);
+                        declareMaterialBufferReads(builder, worldUIOpaqueSource->passName);
                         for (const auto texture : replayTextureReads)
                             builder.Read(texture,
                                          rhi::PipelineStage::VertexShader | rhi::PipelineStage::FragmentShader);
@@ -5108,9 +5088,9 @@ void SceneRenderGraph::BuildRenderGraph()
                             if (!vkCore->UsesDrawCalls(draws))
                                 vkCore->SetDrawCalls(draws);
                             vkCore->DrawSceneFiltered(ctx.GetCommandBuffer(), width, height, GetPerViewBindGroup(),
-                                                      m_drawView, opaqueCommand->queueMin, opaqueCommand->queueMax,
-                                                      opaqueCommand->sortMode, "", opaqueCommand->passTag,
-                                                      &replayPipeline, opaqueCommand->materialFilter, nullptr,
+                                                      m_drawView, opaqueCommand.queueMin, opaqueCommand.queueMax,
+                                                      opaqueCommand.sortMode, "", opaqueCommand.passTag,
+                                                      &replayPipeline, opaqueCommand.materialFilter, nullptr,
                                                       excludedId, true);
                         };
                     });

@@ -1,5 +1,6 @@
 #include <function/renderer/FullscreenRenderer.h>
 #include <function/renderer/SceneRenderGraph.h>
+#include <function/renderer/gui/WorldUIDepthReplay.h>
 #include <function/scene/Camera.h>
 
 #ifdef NDEBUG
@@ -14,6 +15,78 @@ using namespace infernux;
 
 namespace
 {
+
+void CheckWorldUIDepthReplay()
+{
+    RenderGraphDescription graph;
+    graph.name = "Pipeline+Stack";
+    graph.textures.push_back({"depth", rhi::PixelFormat::D32SFloat, false, true});
+    GraphPassDesc opaque;
+    opaque.name = "OpaquePass";
+    opaque.writeDepth = "depth";
+    opaque.clearDepth = true;
+    GraphCommandDesc draw;
+    draw.queueMax = 2999;
+    draw.sortMode = "front_to_back";
+    draw.passTag = "Forward-replay-command-with-owned-string-storage";
+    opaque.commands.push_back(draw);
+    GraphPassDesc ui;
+    ui.name = "_WorldUI";
+    ui.writeDepth = "depth";
+    GraphCommandDesc world;
+    world.type = GraphCommandType::DrawWorldUI;
+    ui.commands.push_back(world);
+    graph.passes = {opaque, ui};
+    const auto replay = BuildWorldUIDepthReplay(graph, false);
+    assert(replay && replay->draw.queueMax == 2999 && replay->draw.sortMode == "front_to_back");
+    assert(!BuildWorldUIDepthReplay(graph, true));
+    graph.name = "Default Forward";
+    graph.passes[0].name = "Renamed depth producer";
+    assert(BuildWorldUIDepthReplay(graph, false)); // Labels do not determine depth semantics.
+
+    auto invalid = graph;
+    invalid.passes.insert(invalid.passes.begin() + 1, opaque);
+    assert(!BuildWorldUIDepthReplay(invalid, false)); // Two writers cannot be replayed as one.
+    invalid = graph;
+    invalid.passes[0].clearDepth = false;
+    assert(!BuildWorldUIDepthReplay(invalid, false));
+    invalid = graph;
+    invalid.passes[0].clearDepthValue = 0.0f;
+    assert(!BuildWorldUIDepthReplay(invalid, false));
+    invalid = graph;
+    invalid.passes[0].commands[0].type = GraphCommandType::FullscreenQuad;
+    assert(!BuildWorldUIDepthReplay(invalid, false));
+    invalid = graph;
+    invalid.passes[0].commands[0].overrideMaterial = "custom-depth";
+    assert(!BuildWorldUIDepthReplay(invalid, false));
+    invalid = graph;
+    invalid.passes[0].commands[0].shaderTarget = ShaderCompileTarget::Depth;
+    assert(!BuildWorldUIDepthReplay(invalid, false));
+    invalid = graph;
+    invalid.passes[0].commands[0].materialFilter = GraphMaterialFilter::DeferredCompatible;
+    assert(!BuildWorldUIDepthReplay(invalid, false));
+    invalid = graph;
+    invalid.passes[0].commands.push_back(draw);
+    assert(!BuildWorldUIDepthReplay(invalid, false));
+    invalid = graph;
+    invalid.passes[1].writeDepth = "other_depth";
+    assert(!BuildWorldUIDepthReplay(invalid, false));
+    invalid = graph;
+    invalid.passes.erase(invalid.passes.begin());
+    assert(!BuildWorldUIDepthReplay(invalid, false));
+    invalid = graph;
+    invalid.passes.pop_back();
+    assert(!BuildWorldUIDepthReplay(invalid, false));
+    invalid = graph;
+    invalid.textures[0].width = 128;
+    assert(!BuildWorldUIDepthReplay(invalid, false)); // Not the view depth attachment.
+
+    // Replacing a graph must not invalidate its compiled replay parameters.
+    graph = {};
+    assert(replay->passName == "OpaquePass");
+    assert(replay->draw.passTag == "Forward-replay-command-with-owned-string-storage");
+    assert(replay->draw.queueMax == 2999);
+}
 
 void CheckCameraHistoryResetIsolation()
 {
@@ -563,6 +636,7 @@ int main(int argc, char **argv)
     CheckViewLightListValidation();
     CheckSampledAssetTextureValidation();
     CheckWorldUIPassAttachments();
+    CheckWorldUIDepthReplay();
     CheckViewResourceSchedule();
     CheckViewMaterialContracts();
     const auto invalidTarget = MakeShadowGraph(ShaderCompileTarget::Forward);
