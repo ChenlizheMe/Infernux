@@ -119,6 +119,53 @@ def _tracked_project(tmp_path):
     return project
 
 
+def test_project_clone_keeps_native_plugin_payloads_and_ignores_bytecode(tmp_path):
+    project = _project(tmp_path)
+    authored = {
+        "Assets/Plugins/solver.cp313-win_amd64.pyd": b"authored extension\x00\xff\r\n",
+        "Packages/studio/solver/runtime/solver.cp313-win_amd64.pyd": b"package extension\x00\xfe\r\n",
+        "Packages/studio/solver/runtime/dependency.dll": b"native dependency\x00\xfd\r\n",
+    }
+    for relative, content in tuple(authored.items()):
+        authored[relative + ".meta"] = b'{"author":"shared"}\n'
+    generated = (
+        "Assets/Plugins/solver.pyc", "Assets/Plugins/solver.pyo",
+        "Packages/studio/solver/runtime/__pycache__/helper.cpython-313.pyc",
+        ".runtime/python313/Lib/site-packages/solver.pyd",
+        "Library/solver.pyd", "Cache/solver.pyd",
+    )
+    for relative, content in authored.items():
+        path = project / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    for relative in generated:
+        path = project / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"local generated content")
+
+    def git(*arguments, cwd=project):
+        return subprocess.run(
+            ["git", "-c", "user.name=Sync Test", "-c", "user.email=sync-test@example.invalid",
+             "-c", "commit.gpgsign=false", "-C", str(cwd), *arguments],
+            check=True, capture_output=True, text=True, encoding="utf-8",
+        ).stdout
+
+    git("init", "-q")
+    git("add", ".")
+    tracked = set(git("ls-files").splitlines())
+    assert set(authored) <= tracked
+    assert not set(generated) & tracked
+    attributes = git("check-attr", "text", "diff", "merge", "--",
+                     "Assets/Plugins/solver.cp313-win_amd64.pyd")
+    assert all(line.endswith(": unset") for line in attributes.splitlines())
+    git("commit", "-qm", "Native project inputs")
+    clone = tmp_path / "New teammate"
+    git("clone", "--no-local", str(project), str(clone), cwd=tmp_path)
+    assert all((clone / relative).read_bytes() == content for relative, content in authored.items())
+    assert all(not (clone / relative).exists() for relative in generated)
+    assert not git("status", "--porcelain", cwd=clone)
+
+
 def test_effective_ignore_override_cannot_hide_source_sidecars(tmp_path):
     project = _tracked_project(tmp_path)
     (project / "Assets" / ".gitignore").write_text("*.meta\n", encoding="utf-8")

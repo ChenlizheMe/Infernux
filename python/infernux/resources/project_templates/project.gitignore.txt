@@ -31,9 +31,10 @@
 /pyrightconfig.json
 /ProjectSettings/requirements.txt.migrate-*
 
-# Python caches and compiled scripts
+# Python bytecode caches; native .pyd plugin payloads are project inputs.
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
 *$py.class
 .pytest_cache/
 .mypy_cache/
