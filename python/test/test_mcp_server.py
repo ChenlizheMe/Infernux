@@ -465,6 +465,116 @@ def test_schema_gateway_transform_rejection_does_not_masquerade_as_no_change(sce
         queue.release_owner("MCP rejected transform test finished")
 
 
+@pytest.mark.parametrize("kind", ["native", "python", "render_stack"])
+@pytest.mark.parametrize("changed", [False, True])
+def test_schema_gateway_repeated_component_field_set_is_success_without_history(
+    scene, tmp_path, kind, changed
+):
+    from infernux.components import InxComponent, serialized_field
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.undo import UndoManager
+    from infernux.host import MainThreadCommandQueue
+    from infernux.renderstack import RenderStack
+
+    class McpRepeatedFieldProbe(InxComponent):
+        speed: float = serialized_field(default=3.0, range=(0.0, 20.0))
+
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    owner = scene.create_game_object("MCP Repeated Component Field")
+    if kind == "native":
+        component = owner.add_component("Light")
+        field, value = "intensity", 2.5 if changed else 1.0
+    elif kind == "python":
+        component = owner.add_py_component(McpRepeatedFieldProbe())
+        field, value = "speed", 8.0 if changed else 3.0
+    else:
+        component = owner.add_py_component(RenderStack())
+        field, value = "pipeline_class_name", "Default Deferred" if changed else "Default Forward"
+    previous_undo = UndoManager._instance
+    core = EditorInteractionCore()
+    undo = UndoManager(core.action_journal)
+    queue = MainThreadCommandQueue.instance()
+    queue.drain()
+    mcp = _FakeMCP()
+    try:
+        register_gateways(mcp, str(tmp_path), {})
+        arguments = {"object_id": owner.id, "component_id": component.component_id,
+                     "field": field, "value": value}
+        first = mcp.tools["operation_command_execute"](
+            "infernux.scene.component.property.set", arguments
+        )
+        assert first["ok"], first
+        before = owner.serialize_document()
+        revision = core.action_journal.revision
+        entries = core.action_journal.applied_entries()
+        assert len(entries) == int(changed)
+        repeated = mcp.tools["operation_command_execute"](
+            "infernux.scene.component.property.set", arguments
+        )
+        assert repeated["ok"], repeated
+        assert owner.serialize_document() == before
+        assert core.action_journal.revision == revision
+        assert core.action_journal.applied_entries() == entries
+    finally:
+        shutdown_adapter()
+        core.shutdown()
+        UndoManager._instance = previous_undo
+        queue.release_owner("MCP repeated component field test finished")
+
+
+@pytest.mark.parametrize("kind", ["native", "python", "render_stack"])
+@pytest.mark.parametrize("invalid", [False, True])
+def test_schema_gateway_component_field_rejection_is_not_no_change(scene, tmp_path, kind, invalid):
+    from infernux.components import InxComponent, serialized_field
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.undo import UndoManager
+    from infernux.host import MainThreadCommandQueue
+    from infernux.renderstack import RenderStack
+
+    class McpRejectedFieldProbe(InxComponent):
+        speed: float = serialized_field(default=3.0, range=(0.0, 20.0))
+
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    owner = scene.create_game_object("MCP Rejected Component Field")
+    if kind == "native":
+        component = owner.add_component("Light")
+        field, value = "intensity", "invalid" if invalid else 2.5
+    elif kind == "python":
+        component = owner.add_py_component(McpRejectedFieldProbe())
+        field, value = "speed", "invalid" if invalid else 8.0
+    else:
+        component = owner.add_py_component(RenderStack())
+        field, value = "pipeline_class_name", 123 if invalid else "Default Deferred"
+    previous_undo = UndoManager._instance
+    core = EditorInteractionCore()
+    undo = UndoManager(core.action_journal)
+    queue = MainThreadCommandQueue.instance()
+    queue.drain()
+    mcp = _FakeMCP()
+    try:
+        register_gateways(mcp, str(tmp_path), {})
+        before = owner.serialize_document()
+        revision = core.action_journal.revision
+        if not invalid:
+            undo.enabled = False
+        rejected = mcp.tools["operation_command_execute"](
+            "infernux.scene.component.property.set",
+            {"object_id": owner.id, "component_id": component.component_id,
+             "field": field, "value": value},
+        )
+        assert not rejected["ok"], rejected
+        assert owner.serialize_document() == before
+        assert core.action_journal.revision == revision
+        assert not core.action_journal.applied_entries()
+    finally:
+        shutdown_adapter()
+        core.shutdown()
+        UndoManager._instance = previous_undo
+        queue.release_owner("MCP rejected component field test finished")
+
+
 def test_schema_gateway_native_and_python_fields_share_constraints_and_undo(
     scene, tmp_path
 ):

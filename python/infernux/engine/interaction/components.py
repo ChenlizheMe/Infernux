@@ -260,6 +260,22 @@ class ComponentCommandService:
         *,
         description: str = "",
     ) -> bool:
+        """Return whether a valid property write changed the component."""
+        from .serialized_properties import PropertyTransactionStatus
+
+        return self.set_field_status(
+            component, field_name, value, description=description
+        ) is PropertyTransactionStatus.APPLIED
+
+    def set_field_status(
+        self,
+        component: Any,
+        field_name: str,
+        value: Any,
+        *,
+        description: str = "",
+    ):
+        """Return the property transaction outcome without losing NO_CHANGE."""
         field = str(field_name or "").strip()
         if component is None or not field:
             raise ValueError("component property edit requires a target and field")
@@ -323,8 +339,7 @@ class ComponentCommandService:
                 property_path=f"{type(component).__name__}.{field}",
                 description=text,
             )
-        status = transaction.commit_or_raise(value)
-        return status is PropertyTransactionStatus.APPLIED
+        return transaction.commit_or_raise(value)
 
     def execute_property_changes(
         self,
@@ -447,12 +462,30 @@ class ComponentCommandService:
         edit_key: str = "",
         origin: Optional[ActionOrigin] = None,
     ) -> bool:
+        from .serialized_properties import PropertyTransactionStatus
+
+        return self.restore_document_status(
+            component, document, description=description, edit_key=edit_key, origin=origin
+        ) is PropertyTransactionStatus.APPLIED
+
+    def restore_document_status(
+        self,
+        component: Any,
+        document: dict,
+        *,
+        description: str = "",
+        edit_key: str = "",
+        origin: Optional[ActionOrigin] = None,
+    ):
+        """Preserve unchanged document writes as successful no-op outcomes."""
+        from .serialized_properties import PropertyTransactionStatus
+
         if component is None or not isinstance(document, dict):
             raise ValueError("component restore requires a typed document")
         before = self._capture_document(component)
         after = copy.deepcopy(document)
         if before == after:
-            return False
+            return PropertyTransactionStatus.NO_CHANGE
         command = self._document_command(
             component,
             before,
@@ -462,7 +495,7 @@ class ComponentCommandService:
             mergeable=False,
         )
         self._execute(command, origin=origin)
-        return True
+        return PropertyTransactionStatus.APPLIED
 
     def restore_many(
         self,

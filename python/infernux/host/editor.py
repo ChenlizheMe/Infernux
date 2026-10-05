@@ -853,6 +853,7 @@ class EditorAutomationHost:
         self, object_id: int, component_id: int, field: str, value: object
     ):
         from infernux.components.builtin_component import BuiltinComponent, CppProperty
+        from infernux.engine.interaction.serialized_properties import PropertyTransactionStatus
 
         target = self.scene_component(object_id, component_id)
         service = self.interaction_core().components
@@ -861,7 +862,7 @@ class EditorAutomationHost:
                 raise TypeError(f"{target.type_name}.enabled requires a boolean")
             # Match the Inspector header: use the live Component setter and
             # shared property history, without deserializing the whole body.
-            changed = service.set_field(target, "enabled", value)
+            status = service.set_field_status(target, "enabled", value)
         elif isinstance(target, BuiltinComponent):
             # scene_component_schema and serialize_document expose the native
             # document vocabulary (including integer enums), not wrapper names.
@@ -880,7 +881,7 @@ class EditorAutomationHost:
                 # This field's public value is not its native storage shape
                 # (for example a RenderTexture reference versus a GUID string).
                 # The shared property transaction owns normalization/setter use.
-                changed = service.set_field(target, attribute, value)
+                status = service.set_field_status(target, attribute, value)
             elif isinstance(prop, CppProperty):
                 from infernux.components.fields import FieldType
                 from infernux.components.value_codec import VALUE_CODECS
@@ -897,15 +898,15 @@ class EditorAutomationHost:
                     native_value = VALUE_CODECS.decode(value, FieldType[schema.value_type.removeprefix("FieldType.")],
                                                        schema.property_path)
                 public_value = prop.get_converter(native_value) if prop.get_converter is not None else native_value
-                changed = service.set_field(target, attribute, public_value)
+                status = service.set_field_status(target, attribute, public_value)
             else:
-                changed = service.restore_document(target, document,
+                status = service.restore_document_status(target, document,
                                                    description=f"Set {target.type_name}.{field}", edit_key=str(field))
         else:
-            changed = service.set_field(target, str(field), value)
-        if not changed:
+            status = service.set_field_status(target, str(field), value)
+        if status is PropertyTransactionStatus.REJECTED:
             raise OperationError(
-                "scene.edit_rejected", "Component field edit was rejected or unchanged."
+                "scene.edit_rejected", "Component field edit was rejected."
             )
         return target
 
