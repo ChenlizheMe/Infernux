@@ -64,6 +64,8 @@ The exercise passes when there are no import or lifecycle exceptions, the one-se
 
 Entering Play replaces the Edit-mode component instance. If that instance has already received `awake`, its teardown can log `OnDestroy` before the fresh Play instance logs `Awake: HelloObject`. These messages belong to different instance lifetimes.
 
+During cleanup, `self.game_object` and the retiring component's fields remain available until its callback returns. If entering Play fails, the original Edit instance remains in place without running its destroy callback.
+
 ## GameObject and component {#component-model}
 
 A `GameObject` supplies scene identity, hierarchy, active state, tag, layer, and an always-present `Transform`. Components supply behavior or data. Several components can share one owner.
@@ -181,6 +183,8 @@ class HelloComponent(inx.InxComponent):
 没有导入或生命周期异常、一秒提示对每个组件实例只出现一次、切换启用状态能得到对应回调，就算验证通过。
 
 进入 Play 时，引擎会替换编辑态组件实例。如果旧实例已经执行过 `awake`，销毁它时可能先输出 `OnDestroy`，随后新的 Play 实例才输出 `Awake: HelloObject`。这些日志属于不同实例的生命周期。
+
+清理回调返回前，`self.game_object` 与旧组件自己的字段仍然可用。如果进入 Play 失败，原编辑态实例会保留，不会执行它的销毁回调。
 
 ## GameObject 与组件 {#component-model_1}
 

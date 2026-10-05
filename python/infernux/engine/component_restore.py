@@ -826,6 +826,7 @@ def replace_scene_python_components_for_play(
     existing_by_object: dict[int, list[Any]] = {}
     targets: dict[int, Any] = {}
     replaced: list[tuple[Any, Any, Any, bool]] = []
+    retiring: list[Any] = []
 
     try:
         for item in prepared:
@@ -869,6 +870,8 @@ def replace_scene_python_components_for_play(
                     f"Python component '{item.type_name}' lost its edit-mode counterpart"
                 )
             previous_was_awake = bool(getattr(previous, "_awake_called", False))
+            previous._begin_play_domain_replacement(target)
+            retiring.append(previous)
             instance = target.replace_py_component(previous, item.instance)
             if instance is not item.instance:
                 raise PythonComponentRestoreError(
@@ -919,6 +922,8 @@ def replace_scene_python_components_for_play(
                     rollback_errors.append(type(previous).__name__)
             except Exception as rollback_exc:
                 rollback_errors.append(f"{type(previous).__name__}: {rollback_exc}")
+        for previous in retiring:
+            previous._cancel_play_domain_replacement()
         prepared_graph.discard()
         if rollback_errors:
             raise PythonComponentRestoreError(

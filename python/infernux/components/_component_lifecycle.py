@@ -1199,15 +1199,27 @@ class ComponentLifecycleMixin:
         if self.__dict__.get("_play_domain_destroy_finalized", False):
             return
         self.__dict__["_play_domain_destroy_finalized"] = True
-        if was_awake:
-            # The edit instance may already be absent from the newly published
-            # runtime epoch. Resolve against its own retired class body instead
-            # of accidentally consulting the fresh Play-domain dispatch table.
+        owner = self.__dict__["_play_domain_retirement_owner"]
+
+        def cleanup():
             try:
-                self.on_destroy()
-            except Exception as exc:
-                self._report_lifecycle_exception(exc)
-        self.__dict__["_runtime_coroutine_scheduler"] = None
+                if self._coroutine_scheduler is not None:
+                    self._coroutine_scheduler.stop_all()
+            finally:
+                self._coroutine_scheduler = None
+                self.__dict__["_runtime_coroutine_scheduler"] = None
+                if was_awake:
+                    # Resolve against the retired class body; the replacement
+                    # has its own native proxy, fields and dispatch descriptor.
+                    self.on_destroy()
+
+        try:
+            self._invoke_native_cleanup(cleanup, None, owner, True)
+        except Exception as exc:
+            self._report_lifecycle_exception(exc)
+        finally:
+            self._invalidate_native_binding()
+            self.__dict__.pop("_play_domain_retirement_owner", None)
 
     def _release_component_data_slot(self):
         """Relinquish the numeric-field slot exactly once."""

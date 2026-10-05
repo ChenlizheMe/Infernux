@@ -72,11 +72,11 @@ class ComponentNativeMixin:
 
     def _try_get_game_object(self) -> Optional['GameObject']:
         """Return the owning GameObject, or None when the component is unbound."""
-        if self._is_destroyed:
-            return None
         cleanup_binding = self.__dict__.get("_native_cleanup_binding")
         if cleanup_binding is not None:
             return cleanup_binding[1]
+        if self._is_destroyed:
+            return None
         cpp_component = self._get_bound_native_component()
         if cpp_component is not None:
             try:
@@ -206,9 +206,10 @@ class ComponentNativeMixin:
             return
         self._native_handle = cpp_component.handle
 
-    def _invalidate_native_binding(self):
+    def _invalidate_native_binding(self, *, release_fields: bool = True):
         """Invalidate native references after scene rebuild/destruction."""
-        self._release_component_data_slot()
+        if release_fields:
+            self._release_component_data_slot()
         self._cpp_component = None
         self._native_handle = None
         self._native_scene = None
@@ -224,12 +225,27 @@ class ComponentNativeMixin:
 
     def _detach_native_binding_for_replacement(self):
         """Detach for script reload without invoking the user's on_destroy hook."""
+        if "_play_domain_retirement_owner" in self.__dict__:
+            # Play publication must retain old fields and coroutine handles
+            # until it either commits cleanup or restores this exact instance.
+            self._invalidate_native_binding(release_fields=False)
+            return
         scheduler = getattr(self, '_coroutine_scheduler', None)
         if scheduler is not None:
             scheduler.stop_all()
             self._sync_coroutine_scheduler_state()
             self._coroutine_scheduler = None
         self._invalidate_native_binding()
+
+    def _begin_play_domain_replacement(self, game_object) -> None:
+        """Retain the transaction-owned native owner for committed cleanup."""
+        if "_play_domain_retirement_owner" in self.__dict__:
+            raise RuntimeError("Play domain replacement is already pending")
+        self.__dict__["_play_domain_retirement_owner"] = game_object
+
+    def _cancel_play_domain_replacement(self) -> None:
+        """Release the cleanup owner after rollback has rebound this instance."""
+        self.__dict__.pop("_play_domain_retirement_owner", None)
 
     def _tracks_scene_structure_binding(self) -> bool:
         """Inspector builtin wrappers may need a Play-rebuild rebind.
