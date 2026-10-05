@@ -3445,14 +3445,6 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
         if (type == ResourceType::Mesh)
             MeshImportSettings::InitializeDefaults(metaFile);
         ApplyBuiltinSceneIconMetadata(metaFile, filePath, readOnly);
-        if (!readOnly && persistMetadata) {
-            DocumentWriteOptions options;
-            options.expectedFileState = metadataState;
-            const auto ticket = DocumentStore::Instance().Submit(
-                metaFilePath, metaFile.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n", options);
-            ticket->Wait();
-            metadataState = ticket->GetCommittedFileState().value();
-        }
     } else {
         if (metaFile.GetResourceType() != type)
             throw std::runtime_error("Asset metadata resource_type does not match its file extension: " + metaFilePath);
@@ -3463,9 +3455,29 @@ std::string AssetDatabase::CreateOrLoadMetadata(const std::string &filePath, Res
         metaFile.AddMetadata("guid", existingGuid);
     }
 
+    std::string guid = metaFile.GetGuid();
+    // Incremental import publishes one asset, not a replacement catalog. It
+    // must not reinterpret an existing GUID as a move or replace a path's
+    // registered identity. Explicit relocation and full Refresh own those
+    // operations, including when a previous source has disappeared on disk.
+    const auto registered = m_guidToPath.find(guid);
+    if (registered != m_guidToPath.end() && FilesystemPathKey(registered->second) != FilesystemPathKey(filePath))
+        throw std::runtime_error("Asset GUID is already registered at another path: " + guid + " ('" +
+                                 registered->second + "', '" + filePath + "')");
+    if (!preservedGuid.empty() && guid != preservedGuid)
+        throw std::runtime_error("Asset metadata changed the registered GUID at path: " + filePath);
+
+    // Validate ownership before the first durable write or live catalog edit.
+    if (!loadedExistingMeta && !readOnly && persistMetadata) {
+        DocumentWriteOptions options;
+        options.expectedFileState = metadataState;
+        const auto ticket = DocumentStore::Instance().Submit(
+            metaFilePath, metaFile.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n", options);
+        ticket->Wait();
+        metadataState = ticket->GetCommittedFileState().value();
+    }
     if (expectedMetadata && !readOnly)
         *expectedMetadata = metadataState;
-    std::string guid = metaFile.GetGuid();
     m_metas[guid] = std::make_shared<InxResourceMeta>(metaFile);
     UpdateMapping(guid, filePath);
 
@@ -3521,13 +3533,30 @@ void AssetDatabase::MoveMetadata(const std::string &oldPath, const std::string &
         INXLOG_INFO("AssetDatabase: moved metadata ", oldPath, " -> ", newPath, " (guid preserved: ", existingGuid,
                     ")");
     } else {
-        std::string ext = FromFsPath(ToFsPath(newPath).extension());
-        ResourceType type = GetResourcesType(ext);
-
-        if (type != ResourceType::Meta) {
-            CreateOrLoadMetadata(newPath, type, false, true, FilesystemPathKey(newPath));
-            INXLOG_INFO("AssetDatabase: created metadata at moved path: ", newPath);
+        // Directory relocation has already moved its sidecars on disk. This
+        // is still an explicit move of the registered asset, never an import
+        // of a new identity at the destination.
+        const auto source = m_pathToGuid.find(FilesystemPathKey(oldPath));
+        if (source == m_pathToGuid.end())
+            throw std::runtime_error("asset metadata relocation requires a registered source: " + oldPath);
+        const auto current = m_metas.at(source->second);
+        AtomicFileState destinationState;
+        if (fs::is_regular_file(ToFsPath(newMetaPath))) {
+            meta = LoadMetadataDocument(newMetaPath, &destinationState);
+            if (meta.GetGuid() != source->second || meta.GetResourceType() != current->GetResourceType())
+                throw std::runtime_error("asset relocation destination metadata has a different identity: " + newPath);
+        } else {
+            meta = *current;
         }
+        meta.UpdateFilePath(newPath);
+        DocumentWriteOptions options;
+        options.expectedFileState = destinationState;
+        DocumentStore::Instance()
+            .Submit(newMetaPath, meta.SerializeDocumentPortable(m_projectRoot).dump(4) + "\n", options)
+            ->Wait();
+        auto movedMeta = std::make_shared<InxResourceMeta>(*current);
+        movedMeta->UpdateFilePath(newPath);
+        m_metas[source->second] = std::move(movedMeta);
     }
 }
 
