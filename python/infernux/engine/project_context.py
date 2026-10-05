@@ -39,11 +39,14 @@ def set_project_root(path: Optional[str]) -> None:
     """Set the current project root for path normalization."""
     global _project_root, _runtime_asset_resolver, _runtime_package_resolver
     global _runtime_asset_query, _runtime_asset_extension_resolver
+    global _guid_manifest, _guid_manifest_loaded
     _project_root = resolved_path(path) if path else None
     _runtime_asset_resolver = None
     _runtime_package_resolver = None
     _runtime_asset_query = None
     _runtime_asset_extension_resolver = None
+    _guid_manifest = None
+    _guid_manifest_loaded = False
 
 
 def set_runtime_asset_resolver(
@@ -192,7 +195,10 @@ def get_project_root() -> Optional[str]:
 @contextmanager
 def using_project_root(path: Optional[str]) -> Iterator[Optional[str]]:
     """Bind ``get_project_root()`` for one compile or cook interval."""
+    global _guid_manifest, _guid_manifest_loaded
     previous = get_project_root()
+    previous_manifest = _guid_manifest
+    previous_manifest_loaded = _guid_manifest_loaded
     previous_resolver = _runtime_asset_resolver
     previous_package_resolver = _runtime_package_resolver
     previous_query = _runtime_asset_query
@@ -202,6 +208,8 @@ def using_project_root(path: Optional[str]) -> Iterator[Optional[str]]:
         yield get_project_root()
     finally:
         set_project_root(previous)
+        _guid_manifest = previous_manifest
+        _guid_manifest_loaded = previous_manifest_loaded
         set_runtime_asset_resolver(previous_resolver)
         set_runtime_package_resolver(previous_package_resolver)
         set_runtime_asset_query(previous_query)
@@ -614,6 +622,9 @@ def resolve_script_guid_to_path(guid: str) -> Optional[str]:
     relative ``.pyc`` paths.  This function loads and queries it.
     """
     global _guid_manifest, _guid_manifest_loaded
+    # An unbound lookup cannot consume the future project's load-once state.
+    if not guid or not _project_root:
+        return None
     if not _guid_manifest_loaded:
         _guid_manifest_loaded = True
         if _project_root:
