@@ -1749,6 +1749,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         self,
         path: str,
         *,
+        scene=None,
         runtime_load: bool = False,
         record_navigation: bool = True,
         preserve_document: bool = False,
@@ -1761,8 +1762,17 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         subsequent loads, but must not replace the Editor's persisted scene or
         clear its pre-play undo history.
         """
-        self._current_scene_path = resolved_path(path)
-        self._last_loaded_file_state = file_state
+        from infernux.lib import SceneManager
+
+        active_scene = SceneManager.instance().get_active_scene()
+        if scene is None:
+            scene = active_scene
+        is_active = scene is active_scene
+        if not is_active and not preserve_document:
+            raise ValueError("non-active scene publication must preserve its document")
+        if is_active:
+            self._current_scene_path = resolved_path(path)
+            self._last_loaded_file_state = file_state
         if not runtime_load and not preserve_document:
             self._replace_scene_document(
                 kind="scene",
@@ -1772,9 +1782,6 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
                 loaded_file_state=file_state,
             )
             self._unload_non_active_scenes()
-
-        from infernux.lib import SceneManager
-        scene = SceneManager.instance().get_active_scene()
 
         from infernux.renderstack.render_stack import RenderStack
         RenderStack.refresh_active_instance(scene)
@@ -1787,9 +1794,10 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         except Exception as exc:
             Debug.log_internal(f"SpriteRenderer init: {exc}")
 
-        self._restore_camera_state(self._current_scene_path)
-        if not runtime_load:
-            self._remember_last_scene(self._current_scene_path)
+        if is_active:
+            self._restore_camera_state(self._current_scene_path)
+            if not runtime_load:
+                self._remember_last_scene(self._current_scene_path)
 
         self._last_scene_load = {
             "status": "loaded", "path": resolved_path(path), "error": "",
@@ -1810,9 +1818,12 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         if not runtime_load and (synchronized or document_reconciliation_count):
             _mark_scene_dirty(scene)
 
-        if self._on_scene_changed:
+        from infernux.gizmos.collector import notify_scene_changed
+
+        notify_scene_changed()
+        if is_active and self._on_scene_changed:
             self._on_scene_changed()
-        if not runtime_load and record_navigation:
+        if is_active and not runtime_load and record_navigation:
             self._publish_scene_navigation(
                 f"Open Scene {os.path.splitext(os.path.basename(path))[0]}"
             )
@@ -1842,7 +1853,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         return True
 
     def reload_from_resource(self, *, document_id: str, resource_path: str):
-        """Reload the current scene from its current durable disk contents.
+        """Reload one resident scene from its current durable disk contents.
 
         Conflict resolution already happened in DocumentRegistry.  This
         controller always creates a fresh path-backed transaction, so reload
@@ -1850,9 +1861,10 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         in-memory scene.  The existing document identity is retained and its
         controller binding is refreshed after the transaction publishes.
         """
-        if str(document_id or "") != self._scene_document_id:
+        binding = self._binding_for_document(document_id)
+        if binding is None:
             return False
-        target = resolved_path(resource_path or self._current_scene_path or "")
+        target = resolved_path(resource_path or binding.resource_path or "")
         if not target or not os.path.isfile(target):
             return False
         if self.is_prefab_mode or self._is_play_mode() or self.is_loading:
@@ -1872,26 +1884,55 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         target_guid, current_path = self._scene_asset_from_path(target)
         if target_guid != document.key.identity or not current_path:
             return False
-        reloaded = self._do_open_scene(
-            current_path,
-            record_navigation=False,
-            preserve_document=True,
+        if not self._is_under_assets(current_path):
+            self._scene_load_failed(current_path, "Scene file must be under the project's Assets/ directory.")
+            return False
+
+        scene = binding.scene
+
+        def before_commit():
+            if self._binding_for_document(document_id) is not binding:
+                raise RuntimeError("scene document ownership changed while reloading")
+            self._prepare_native_scene_swap()
+
+        # A durable reload replaces only this World. Opening a different scene
+        # through the active-scene route would mutate navigation and residency.
+        from infernux.engine.scene_document_transaction import SceneDocumentTransaction
+
+        self._last_scene_load = {
+            "status": "loading", "path": current_path, "error": "",
+        }
+        transaction = SceneDocumentTransaction(
+            scene,
+            path=current_path,
+            asset_database=self._asset_database,
+            native_engine=self._native_engine_for_close(),
+            clear_registries=True,
+            before_commit=before_commit,
         )
-        if not reloaded:
+        if not transaction.run_to_completion(raise_on_failure=False):
+            self._scene_load_failed(current_path, transaction.error)
             return False
         from infernux.engine.interaction import DocumentActionResult, DocumentActionStatus
 
-        document = registry.get(document_id)
-        if document is None:
-            return False
+        binding.resource_path = current_path
+        binding.asset_guid = target_guid
         registry.update_metadata(
             document.document_id,
             resource_path=current_path,
             controller=self,
         )
+        self._finish_open_scene(
+            current_path,
+            scene=scene,
+            record_navigation=False,
+            preserve_document=True,
+            file_state=transaction.file_state,
+            document_reconciliation_count=transaction.document_reconciliation_count,
+        )
         return DocumentActionResult(
             DocumentActionStatus.APPLIED,
-            durable_file_state=self._last_loaded_file_state,
+            durable_file_state=transaction.file_state,
         )
 
     def request_external_reload(self, *, document_id: str, resource_path: str):
@@ -1907,7 +1948,8 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         )
 
         identifier = str(document_id or "")
-        target = resolved_path(resource_path or self._current_scene_path or "")
+        binding = self._binding_for_document(identifier)
+        target = resolved_path(resource_path or (binding.resource_path if binding else ""))
         if not self.owns_document(identifier):
             return DocumentActionResult(
                 DocumentActionStatus.REJECTED,
