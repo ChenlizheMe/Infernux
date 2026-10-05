@@ -248,9 +248,9 @@ class PhysicsECSStore
         m_pendingBroadphaseRemoveSet.reserve(m_pendingBroadphaseRemoveSet.size() + count);
     }
 
-    /// Clear all pending queues (body creation + broadphase adds + dirty tracking).
-    /// Must be called before scene rebuild so stale handle.index entries in the
-    /// dedup sets don't block newly allocated colliders that reuse pool slots.
+    /// Clear all pending work after all Worlds have retired at engine shutdown.
+    /// Scene replacement must preserve live Worlds' commands. Generation-aware
+    /// handles already distinguish newly allocated slots from retired owners.
     void ClearPendingQueues();
 
     // ---- Rigidbody pool ----

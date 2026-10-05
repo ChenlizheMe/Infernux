@@ -298,6 +298,7 @@ void SceneManager::Shutdown()
     // Destroy all scenes (GameObjects → Components → Colliders → bodies).
     UnloadAllScenes();
     m_previewScenes.clear();
+    PhysicsECSStore::Instance().ClearPendingQueues();
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
     // Destroy the editor camera object (its Camera component must leave the
@@ -983,9 +984,8 @@ void SceneManager::PrepareActiveSceneReplacement()
     m_resetDeltaTimeOnNextFrame = true;
     if (m_isPlaying) {
         FlushPersistentPromotions();
-        // Scene commit clears pending physics queues belonging to the dying
-        // active graph. Publish persistent bodies first so no queued creation
-        // or broadphase add is accidentally discarded with that graph.
+        // Publish promoted bodies at this explicit Single-replacement boundary.
+        // Scene commits retain other Worlds' pending physics work.
         FlushPendingBroadphase();
     }
 }
@@ -1027,15 +1027,6 @@ void SceneManager::RestoreResidentComponentRegistries(Scene *sceneBeingRebuilt)
             for (Light *light : object->GetComponents<Light>()) {
                 if (light && light->IsEnabled())
                     RegisterLight(light);
-            }
-            auto colliders = object->GetComponents<Collider>();
-            if (!colliders.empty()) {
-                Collider *primary = colliders.front();
-                if (primary && primary->IsEnabled()) {
-                    if (primary->GetBodyId() == 0xFFFFFFFF)
-                        primary->RegisterBody();
-                    primary->RestoreSceneResidency();
-                }
             }
         }
     };
@@ -1380,12 +1371,10 @@ void SceneManager::ClearComponentRegistries(Scene *sceneBeingRebuilt)
     m_activeLights.clear();
     ++m_meshRendererVersion;
 
-    // Physics pending queues: edit-mode Collider::Awake() may have queued
-    // body creations whose handle.index entries are about to be reused for
-    // freshly-allocated colliders. If we leave the dedup set populated, the
-    // new QueueBodyCreation() silently fails its insert and the body is never
-    // created, leading to invisible collisions/missing rigidbodies post-load.
-    PhysicsECSStore::Instance().ClearPendingQueues();
+    // Physics queues belong to individual actors across all resident Worlds.
+    // Collider/actor handles include their generation, and body destruction
+    // cancels its own pending broadphase commands. Clearing those queues here
+    // would discard live Worlds' creation, enabled-state and transform edits.
     m_posePresentationBodyIds.clear();
 
     // Scene document replacement clears process-wide registries. Re-publish

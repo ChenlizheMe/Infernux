@@ -164,6 +164,11 @@ void RestoreSceneComponentRegistries(Scene &scene)
 
 SceneCommitToken::SceneCommitToken(Scene &scene) : m_impl(std::make_unique<Impl>())
 {
+    // Commit pending body creation and broadphase membership before retaining
+    // the old graph. SuspendSceneResidency must remove actual resident bodies,
+    // not queued additions; no deferred creation may resurrect the old graph.
+    SceneManager::Instance().FlushPendingBroadphase();
+
     Impl &state = *m_impl;
     state.scene = &scene;
     state.name = scene.m_name;

@@ -14,9 +14,10 @@
  * Rigidbody::OnDisable() is the primary cleaner;
  *     ScrubCachedRigidbody() is the safety net for paths that bypass
  * it (editor undo/redo on inactive objects, scene rebuild order anomalies).
- *   * The pending-queue dedup sets MUST be cleared whenever pool slots may be
- *     recycled; ClearPendingQueues() is the single chokepoint for that — see
- *     SceneManager::ClearComponentRegistries.
+ *   * Deferred collider/actor handles include their pool generation; retiring
+ *     one World must not discard another World's pending physics work.
+ *     Body destruction cancels its own queued broadphase commands.
+ *     ClearPendingQueues() is reserved for complete SceneManager shutdown.
  */
 
 #include "PhysicsECSStore.h"
