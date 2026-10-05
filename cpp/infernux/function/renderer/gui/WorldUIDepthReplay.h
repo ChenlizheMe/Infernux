@@ -2,6 +2,7 @@
 
 #include "../RenderGraphDescription.h"
 #include <optional>
+#include <string_view>
 
 namespace infernux
 {
@@ -14,10 +15,11 @@ struct WorldUIDepthReplay
     GraphCommandDesc draw;
 };
 
-// Replay the one cleared Forward depth producer preceding WorldUI. Graph and
+// Replay the one cleared Forward depth producer preceding this WorldUI pass. Graph and
 // pass names are diagnostic labels, not capabilities of the depth producer.
 [[nodiscard]] inline std::optional<WorldUIDepthReplay> BuildWorldUIDepthReplay(const RenderGraphDescription &graph,
-                                                                               bool preservesCameraDepth)
+                                                                               bool preservesCameraDepth,
+                                                                               std::string_view worldUIPassName)
 {
     if (preservesCameraDepth)
         return std::nullopt;
@@ -30,8 +32,16 @@ struct WorldUIDepthReplay
     std::optional<WorldUIDepthReplay> source;
     for (const auto &pass : graph.passes) {
         const auto *command = pass.commands.empty() ? nullptr : &pass.commands.front();
-        if (command && command->type == GraphCommandType::DrawWorldUI)
-            return pass.commands.size() == 1 && pass.writeDepth == "depth" ? source : std::nullopt;
+        if (command && command->type == GraphCommandType::DrawWorldUI) {
+            if (pass.name == worldUIPassName)
+                return pass.commands.size() == 1 && pass.writeDepth == "depth" && !pass.clearDepth
+                           ? source : std::nullopt;
+            // Ordinary UI only reads scene depth. Clearing it changes the
+            // depth contract seen by a later stage and cannot be replayed.
+            if (pass.writeDepth == "depth" && pass.clearDepth)
+                return std::nullopt;
+            continue;
+        }
         if (pass.writeDepth != "depth")
             continue;
         if (source || !command || pass.type != GraphPassType::Raster || pass.commands.size() != 1 ||

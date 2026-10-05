@@ -37,49 +37,74 @@ void CheckWorldUIDepthReplay()
     world.type = GraphCommandType::DrawWorldUI;
     ui.commands.push_back(world);
     graph.passes = {opaque, ui};
-    const auto replay = BuildWorldUIDepthReplay(graph, false);
+    const auto replay = BuildWorldUIDepthReplay(graph, false, "_WorldUI");
     assert(replay && replay->draw.queueMax == 2999 && replay->draw.sortMode == "front_to_back");
-    assert(!BuildWorldUIDepthReplay(graph, true));
+    assert(!BuildWorldUIDepthReplay(graph, true, "_WorldUI"));
     graph.name = "Default Forward";
     graph.passes[0].name = "Renamed depth producer";
-    assert(BuildWorldUIDepthReplay(graph, false)); // Labels do not determine depth semantics.
+    assert(BuildWorldUIDepthReplay(graph, false, "_WorldUI")); // Labels do not determine depth semantics.
 
     auto invalid = graph;
     invalid.passes.insert(invalid.passes.begin() + 1, opaque);
-    assert(!BuildWorldUIDepthReplay(invalid, false)); // Two writers cannot be replayed as one.
+    assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI")); // Two writers cannot be replayed as one.
     invalid = graph;
     invalid.passes[0].clearDepth = false;
-    assert(!BuildWorldUIDepthReplay(invalid, false));
+    assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
     invalid = graph;
     invalid.passes[0].clearDepthValue = 0.0f;
-    assert(!BuildWorldUIDepthReplay(invalid, false));
+    assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
     invalid = graph;
     invalid.passes[0].commands[0].type = GraphCommandType::FullscreenQuad;
-    assert(!BuildWorldUIDepthReplay(invalid, false));
+    assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
     invalid = graph;
     invalid.passes[0].commands[0].overrideMaterial = "custom-depth";
-    assert(!BuildWorldUIDepthReplay(invalid, false));
+    assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
     invalid = graph;
     invalid.passes[0].commands[0].shaderTarget = ShaderCompileTarget::Depth;
-    assert(!BuildWorldUIDepthReplay(invalid, false));
+    assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
     invalid = graph;
     invalid.passes[0].commands[0].materialFilter = GraphMaterialFilter::DeferredCompatible;
-    assert(!BuildWorldUIDepthReplay(invalid, false));
+    assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
     invalid = graph;
     invalid.passes[0].commands.push_back(draw);
-    assert(!BuildWorldUIDepthReplay(invalid, false));
+    assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
     invalid = graph;
     invalid.passes[1].writeDepth = "other_depth";
-    assert(!BuildWorldUIDepthReplay(invalid, false));
+    assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
     invalid = graph;
     invalid.passes.erase(invalid.passes.begin());
-    assert(!BuildWorldUIDepthReplay(invalid, false));
+    assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
     invalid = graph;
     invalid.passes.pop_back();
-    assert(!BuildWorldUIDepthReplay(invalid, false));
+    assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
     invalid = graph;
     invalid.textures[0].width = 128;
-    assert(!BuildWorldUIDepthReplay(invalid, false)); // Not the view depth attachment.
+    assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI")); // Not the view depth attachment.
+
+    // A later label stage must inspect its own depth history, rather than
+    // returning the first World UI stage's replay unconditionally.
+    GraphPassDesc late = ui;
+    late.name = "LateLabels";
+    late.commands[0].worldUILayerMask = 1u << 30;
+    graph.passes.push_back(late);
+    const auto lateReplay = BuildWorldUIDepthReplay(graph, false, "LateLabels");
+    assert(lateReplay && lateReplay->passName == "Renamed depth producer");
+    assert(!BuildWorldUIDepthReplay(graph, false, "MissingStage"));
+    assert(!BuildWorldUIDepthReplay(graph, true, "LateLabels"));
+    invalid = graph;
+    GraphPassDesc customDepth = opaque;
+    customDepth.name = "InterveningDepthWriter";
+    customDepth.commands[0].type = GraphCommandType::FullscreenQuad;
+    invalid.passes.insert(invalid.passes.end() - 1, customDepth);
+    assert(BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
+    assert(!BuildWorldUIDepthReplay(invalid, false, "LateLabels"));
+    invalid = graph;
+    invalid.passes[1].clearDepth = true;
+    assert(!BuildWorldUIDepthReplay(invalid, false, "_WorldUI"));
+    assert(!BuildWorldUIDepthReplay(invalid, false, "LateLabels"));
+    invalid = graph;
+    invalid.passes.back().writeDepth = "other_depth";
+    assert(!BuildWorldUIDepthReplay(invalid, false, "LateLabels"));
 
     // Replacing a graph must not invalidate its compiled replay parameters.
     graph = {};
