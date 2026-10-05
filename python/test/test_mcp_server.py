@@ -783,6 +783,7 @@ def test_schema_gateway_can_edit_real_material_document(engine):
     ("renderQueue", 2000, "RENDER_QUEUE"),
     ("depthWriteEnable", False, "DEPTH_WRITE"),
     ("blendEnable", True, "BLEND_ENABLE"),
+    (None, None, None),
 ])
 def test_schema_gateway_material_render_state_edit_claims_only_requested_override(engine, field, value, override):
     from infernux.core.assets import AssetManager
@@ -817,15 +818,21 @@ def test_schema_gateway_material_render_state_edit_claims_only_requested_overrid
     mcp = _FakeMCP()
     try:
         register_gateways(mcp, str(project_root), {})
-        arguments = {"asset_guid": guid, "pointer": f"/renderState/{field}", "value": value}
+        if field is None:
+            value = Material.load(str(path)).serialize_document()["renderState"]
+        arguments = {"asset_guid": guid, "pointer": f"/renderState/{field}" if field is not None else "/renderState", "value": value}
         changed = mcp.tools["operation_command_execute"]("infernux.material.property.set", arguments)
         assert changed["ok"], changed
-        expected_override = int(getattr(RenderStateOverride, override))
+        expected_override = (
+            int(getattr(RenderStateOverride, override)) if override is not None
+            else sum(int(flag) for flag in RenderStateOverride.__members__.values())
+        )
         assert changed["data"]["result"]["document"].get("renderStateOverrides", 0) == expected_override
         material = Material.load(str(path))
         assert material is not None
         material.native.apply_shader_render_meta("back", "on", "less", "off", 2500)
-        assert material.serialize_document()["renderState"][field] == value
+        actual_state = material.serialize_document()["renderState"]
+        assert (actual_state[field] if field is not None else actual_state) == value
         revision = core.action_journal.revision
         entries = core.action_journal.applied_entries()
         repeated = mcp.tools["operation_command_execute"]("infernux.material.property.set", arguments)

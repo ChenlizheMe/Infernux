@@ -25,6 +25,24 @@ _LEVEL_ALIASES = {
 }
 
 
+_MATERIAL_RENDER_STATE_OVERRIDES = {
+    "cullMode": "CULL_MODE",
+    "depthWriteEnable": "DEPTH_WRITE",
+    "depthTestEnable": "DEPTH_TEST",
+    "depthCompareOp": "DEPTH_COMPARE_OP",
+    "blendEnable": "BLEND_ENABLE",
+    "srcColorBlendFactor": "BLEND_MODE",
+    "dstColorBlendFactor": "BLEND_MODE",
+    "colorBlendOp": "BLEND_MODE",
+    "srcAlphaBlendFactor": "BLEND_MODE",
+    "dstAlphaBlendFactor": "BLEND_MODE",
+    "alphaBlendOp": "BLEND_MODE",
+    "renderQueue": "RENDER_QUEUE",
+    "alphaClipEnabled": "ALPHA_CLIP",
+    "alphaClipThreshold": "ALPHA_CLIP",
+}
+
+
 class EditorAutomationHost:
     """JSON-oriented access to editor capabilities used by automation plugins.
 
@@ -455,6 +473,31 @@ class EditorAutomationHost:
         if material is None:
             raise OperationError("material.load_failed", f"Material could not be loaded: {path}")
         return material, dict(material.serialize_document())
+
+    def prepare_material_document_edit(
+        self, document: dict[str, object], *, property_pointer: str,
+    ) -> dict[str, object]:
+        """Claim exactly the render-state groups explicitly edited by a client.
+
+        Keep native enum resolution inside the host boundary. Even assigning
+        the current default authors that field; repeating it is unchanged.
+        """
+        result = dict(document)
+        if property_pointer == "/renderState":
+            names = set(_MATERIAL_RENDER_STATE_OVERRIDES.values()) | {"SURFACE_TYPE"}
+        elif property_pointer.startswith("/renderState/"):
+            name = _MATERIAL_RENDER_STATE_OVERRIDES.get(property_pointer.removeprefix("/renderState/"))
+            names = {name} if name is not None else set()
+        else:
+            names = set()
+        if names:
+            from infernux.lib import RenderStateOverride
+
+            overrides = int(result.get("renderStateOverrides", 0))
+            for name in names:
+                overrides |= int(getattr(RenderStateOverride, name))
+            result["renderStateOverrides"] = overrides
+        return result
 
     def publish_material_document(
         self,

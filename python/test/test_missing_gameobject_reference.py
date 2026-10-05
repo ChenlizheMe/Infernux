@@ -12,10 +12,13 @@ import pytest
 
 @pytest.mark.parametrize("deleted", [False, True])
 def test_scene_roundtrip_preserves_missing_object_reference(tmp_path, deleted):
+    import infernux
+
+    package_root = Path(infernux.__file__).resolve().parent.parent
     for phase in ("author", "reopen"):
         result = subprocess.run(
             [sys.executable, str(Path(__file__).resolve()), str(tmp_path), phase, str(int(deleted))],
-            env=dict(os.environ), capture_output=True, text=True, encoding="utf-8",
+            env=dict(os.environ, PYTHONPATH=str(package_root)), capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=60,
         )
         assert result.returncode == 0, result.stdout + result.stderr
