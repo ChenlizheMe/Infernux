@@ -101,7 +101,7 @@ When a scene starts, Infernux first runs `awake` and `on_enable` across active o
 
 An inactive GameObject defers `awake` until it first becomes active. `start` runs once, immediately before that component's first simulation update. Regular `update`, `fixed_update`, and `late_update` callbacks run in Play mode.
 
-Edit-mode execution is a separate opt-in. The native component proxy reads the class attribute set by `@execute_in_edit_mode` and mirrors it onto the instance as `_execute_in_edit_mode`; both the native proxy (`PyComponentProxy`) and the Python scheduler check that instance attribute before running edit-mode callbacks. In a pure Python test context without a native proxy, the mirror step does not happen, so set the instance attribute directly when such a context needs edit-mode updates.
+Edit-mode execution is a separate opt-in with `@inx.execute_in_edit_mode`. You can add or remove this decorator while the component is attached: a successful script reload updates its edit-mode execution setting without replacing the component or losing serialized values. If the candidate fails to publish, the previous setting remains active. Play-mode callbacks continue to run regardless of this decorator.
 
 For opted-in Python components, the editor runs all `update` callbacks before all `late_update` callbacks in the same frame. This supports camera-follow and reflection previews without entering Play. It does not start fixed-step physics; ordinary gameplay components remain inactive.
 
@@ -221,7 +221,7 @@ class HelloComponent(inx.InxComponent):
 
 非活动 GameObject 会把 `awake` 推迟到第一次激活。`start` 只运行一次，位置在该组件第一次模拟更新之前。普通的 `update`、`fixed_update` 与 `late_update` 只在 Play 模式运行。
 
-编辑模式执行需要单独选择加入。原生组件代理读取 `@execute_in_edit_mode` 装饰器设置的类属性，并把它镜像到实例的 `_execute_in_edit_mode` 上；原生代理（`PyComponentProxy`）与 Python 调度器在运行编辑模式回调前都会检查这个实例属性。没有原生代理的纯 Python 测试环境不会发生镜像，如果这类环境需要编辑模式更新，请直接设置实例属性。
+编辑模式执行需要通过 `@inx.execute_in_edit_mode` 单独选择加入。组件挂载后仍可以添加或移除这个装饰器：脚本成功热重载时会更新编辑模式执行设置，不替换组件，也不丢失序列化值。如果候选脚本发布失败，之前的设置仍然生效。Play 模式下的回调不受这个装饰器限制。
 
 对选择加入的 Python 组件，编辑器在同一帧先执行所有 `update`，再执行所有 `late_update`。跟随相机和反射预览因此不必进入 Play 才能更新。这不会启动固定步物理，普通游戏逻辑也不会跟着执行。
 

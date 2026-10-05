@@ -216,6 +216,119 @@ def _overwrite_preserving_pyc_fingerprint(path, source: str) -> None:
     )
 
 
+@pytest.mark.parametrize("edit_mode", [False, True])
+@pytest.mark.parametrize("rollback", [False, True])
+@pytest.mark.parametrize("playing", [False, True])
+def test_reload_publishes_edit_mode_flag_to_live_native_mirror(
+    component_script, monkeypatch, scene, edit_mode, rollback, playing,
+):
+    from infernux.components._component_lifecycle import RuntimeExecutionScheduler
+    from infernux.engine.candidate_import import CandidateImportTransaction
+
+    source = '''
+        import infernux as inx
+        DECORATOR
+        class EditModeReloadProbe(inx.InxComponent):
+            marker: int = inx.serialized_field(default=41)
+            def update(self, delta_time):
+                self.marker += 1
+    '''
+    before = not edit_mode
+    guid = f"edit-mode-reload-{edit_mode}-{rollback}-{playing}"
+    path, (component_type,) = component_script(
+        "EditModeReloadProbe.py",
+        source.replace("DECORATOR", "@inx.execute_in_edit_mode" if before else ""),
+        guid,
+    )
+    component = component_type()
+    component._script_guid = guid
+    owner = scene.create_game_object("EditModeReloadOwner")
+    owner.add_py_component(component)
+    component.marker = 73
+    component_id = component.component_id
+    native = component._cpp_component
+    scheduler = RuntimeExecutionScheduler(name="edit-mode-reload")
+    scheduler.register_component(component)
+    manager = _play_manager(monkeypatch, path, guid, (component,))
+    if not playing:
+        manager._state = PlayModeState.EDIT
+    path.write_text(textwrap.dedent(source.replace(
+        "DECORATOR", "@inx.execute_in_edit_mode" if edit_mode else "",
+    )), encoding="utf-8")
+
+    with monkeypatch.context() as patch:
+        if rollback:
+            def reject(_transaction):
+                raise RuntimeError("edit-mode module publication rejected")
+            patch.setattr(CandidateImportTransaction, "commit", reject)
+        result = manager.reload_components_from_script_result(str(path))
+    assert result.success is not rollback, result.error
+    if rollback:
+        assert "edit-mode module publication rejected" in result.error
+    expected = before if rollback else edit_mode
+    assert component_type._execute_in_edit_mode_ is expected
+    assert component._execute_in_edit_mode is expected
+    assert component.component_id == component_id
+    assert component._cpp_component is native
+    assert component.marker == 73
+
+    # The native refresh must republish its cached gate, rather than relying
+    # only on a Python assignment made by the reload transaction.
+    component._execute_in_edit_mode = None
+    native.refresh_python_lifecycle_dispatch()
+    assert component._execute_in_edit_mode is expected
+    scheduler.begin_native_frame()
+    try:
+        scheduler.execute_native_editor_update(0.016)
+    finally:
+        scheduler.end_native_frame()
+    assert component.marker == 73 + int(expected)
+
+
+@pytest.mark.parametrize("edit_mode", [False, True])
+@pytest.mark.parametrize("rollback", [False, True])
+def test_direct_body_patch_updates_edit_mode_gate_and_rolls_it_back(
+    component_script, monkeypatch, scene, edit_mode, rollback,
+):
+    from infernux.engine.runtime_dispatch import RuntimeDispatchPublication
+
+    source = '''
+        import infernux as inx
+        DECORATOR
+        class DirectEditModeProbe(inx.InxComponent):
+            def update(self, delta_time): pass
+    '''
+    before = not edit_mode
+    _, (component_type,) = component_script(
+        "DirectEditModeProbe.py",
+        source.replace("DECORATOR", "@inx.execute_in_edit_mode" if before else ""),
+        "direct-edit-mode-target-guid",
+    )
+    _, (candidate_type,) = component_script(
+        "DirectEditModeCandidate.py",
+        source.replace("DECORATOR", "@inx.execute_in_edit_mode" if edit_mode else ""),
+        "direct-edit-mode-candidate-guid",
+    )
+    component = component_type()
+    scene.create_game_object("DirectEditModeOwner").add_py_component(component)
+    native = component._cpp_component
+    with monkeypatch.context() as patch:
+        if rollback:
+            def reject(_publication):
+                raise RuntimeError("direct edit-mode publication rejected")
+            patch.setattr(RuntimeDispatchPublication, "commit", reject)
+            with pytest.raises(RuntimeError, match="direct edit-mode publication rejected"):
+                script_loader.patch_component_class_body(component_type, candidate_type)
+        else:
+            script_loader.patch_component_class_body(component_type, candidate_type)
+    expected = before if rollback else edit_mode
+    assert component_type._execute_in_edit_mode_ is expected
+    assert component._execute_in_edit_mode is expected
+    component._execute_in_edit_mode = None
+    native.refresh_python_lifecycle_dispatch()
+    assert component._execute_in_edit_mode is expected
+
+
 @pytest.mark.parametrize("uses_cds", [False, True])
 @pytest.mark.parametrize("body_edit", [False, True])
 @pytest.mark.parametrize("reject_publication", [False, True])

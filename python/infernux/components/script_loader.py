@@ -184,7 +184,7 @@ class ComponentBodyReloadTransaction:
             with self._candidate_import.serializable_type_scope():
                 _prepare_transaction_schema_state(self)
             self._result = _apply_component_body_patch_plans(self.plans)
-            _refresh_transaction_type_names(self)
+            _refresh_transaction_component_metadata(self)
             if self._cds_publication is not None:
                 self._cds_publication.commit()
             _publish_transaction_instance_schemas(self)
@@ -271,7 +271,7 @@ class ComponentBodyReloadTransaction:
             self._candidate_import.rollback()
             for target_type, snapshot in self._class_snapshots:
                 _restore_object_attributes(target_type, snapshot)
-            _refresh_transaction_type_names(self)
+            _refresh_transaction_component_metadata(self)
             if self._dispatch_publication is not None:
                 self._dispatch_publication.rollback()
             _invalidate_serialized_field_caches(
@@ -350,16 +350,22 @@ def _transaction_instances(
     return tuple(values)
 
 
-def _refresh_transaction_type_names(transaction: ComponentBodyReloadTransaction) -> None:
+_BODY_PATCH_NATIVE_METADATA_KEYS = frozenset({
+    "__name__", "__qualname__", "_type_guid_", "_execute_in_edit_mode_",
+})
+
+
+def _refresh_transaction_component_metadata(transaction: ComponentBodyReloadTransaction) -> None:
     for target_type, operations in transaction.plans:
-        if not any(name in {"__name__", "__qualname__", "_type_guid_"} for name, _, _ in operations):
+        if not any(name in _BODY_PATCH_NATIVE_METADATA_KEYS for name, _, _ in operations):
             continue
-        _refresh_component_type_names(target_type, _transaction_instances(transaction, target_type))
+        _refresh_component_metadata(target_type, _transaction_instances(transaction, target_type))
 
 
-def _refresh_component_type_names(target_type: type, instances: Iterable[object]) -> None:
+def _refresh_component_metadata(target_type: type, instances: Iterable[object]) -> None:
     for instance in instances:
         instance._component_name = target_type.__name__
+        instance._execute_in_edit_mode = bool(getattr(target_type, "_execute_in_edit_mode_", False))
         native = instance._get_bound_native_component()
         if native is not None:
             native.refresh_python_lifecycle_dispatch()
@@ -1172,7 +1178,6 @@ _BODY_PATCH_CONTRACT_KEYS = frozenset({
     "_component_intrinsic_",
     "_component_menu_path_",
     "_component_category_",
-    "_execute_in_edit_mode_",
     "_uses_component_data_store",
     "_uses_component_data_store_",
 })
@@ -1375,8 +1380,8 @@ def patch_component_class_body(target_type: type, candidate_type: type) -> tuple
     publication = None
     try:
         result = _apply_component_body_patch_plans(((target_type, plan),))
-        if any(name in {"__name__", "__qualname__"} for name, _, _ in plan):
-            _refresh_component_type_names(target_type, collect_live_instances(target_type))
+        if any(name in _BODY_PATCH_NATIVE_METADATA_KEYS for name, _, _ in plan):
+            _refresh_component_metadata(target_type, collect_live_instances(target_type))
         from infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
 
         publication = publish_runtime_dispatch_epoch(
@@ -1389,8 +1394,8 @@ def patch_component_class_body(target_type: type, candidate_type: type) -> tuple
         if publication is not None:
             publication.rollback()
         _restore_object_attributes(target_type, body_snapshot)
-        if any(name in {"__name__", "__qualname__"} for name, _, _ in plan):
-            _refresh_component_type_names(target_type, collect_live_instances(target_type))
+        if any(name in _BODY_PATCH_NATIVE_METADATA_KEYS for name, _, _ in plan):
+            _refresh_component_metadata(target_type, collect_live_instances(target_type))
         _invalidate_serialized_field_caches((target_type,))
         raise
 

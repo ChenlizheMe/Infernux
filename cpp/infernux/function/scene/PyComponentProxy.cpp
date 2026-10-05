@@ -347,6 +347,11 @@ void PyComponentProxy::RefreshPythonLifecycleDispatch()
         m_qualifiedName = pyType.attr("__qualname__").cast<std::string>();
         m_typeGuid = pyType.attr("_get_type_guid")().cast<std::string>();
         m_pyComponent.attr("_component_name") = py::str(m_typeName);
+        // Edit-mode execution is editable script metadata. Refresh both the
+        // native lifecycle gate and the scheduler's mirror at the reload
+        // publication boundary; rollback calls this with the restored class.
+        m_executeInEditMode = pyType.attr("_execute_in_edit_mode_").cast<bool>();
+        m_pyComponent.attr("_execute_in_edit_mode") = py::bool_(m_executeInEditMode);
         RefreshConstraintTypeId();
     }
     RefreshPythonLifecycleDispatchPlan();
