@@ -107,7 +107,7 @@ class ScopeProbePipeline(inx.renderstack.RenderPipeline):
         pipeline.screen_ui()
 ```
 
-Save this Python file under `Assets`, select **Scope Probe**, and place test objects in Material Queues `1000`, `1100`, and `1200`. Mount the Edge Fade asset from the previous chapter in one probe list at a time:
+Save this Python file under `Assets`, select **Scope Probe**, and place test objects in Material Queues `1000`, `1100`, and `1200`. The Inspector also includes `after_camera_ui` and `after_screen_ui`, which the standard frame tail declares automatically; the four named probes below are the scope experiment. Mount the Edge Fade asset from the previous chapter in one probe list at a time:
 
 Set each queue through the Material Inspector's **Render Queue** control, which records an explicit override of the shader's default. If you author the `.mat` JSON directly, set the Render Queue bit (`64`) in `renderStateOverrides` as well as `renderState.renderQueue`. Place the objects near the edges of the Game view, keep them visible, and set Edge Fade's intensity to `1.0` for this comparison. The shader barely changes pixels near the center, so a centered object is a poor visibility check.
 
@@ -308,7 +308,7 @@ class ScopeProbePipeline(inx.renderstack.RenderPipeline):
         pipeline.screen_ui()
 ```
 
-把这份 Python 文件保存到 `Assets`，选择 **Scope Probe**，再让测试物体分别使用 Material Queue `1000`、`1100`、`1200`。每次只把上一章的 Edge Fade 资产挂入一个 Probe 列表：
+把这份 Python 文件保存到 `Assets`，选择 **Scope Probe**，再让测试物体分别使用 Material Queue `1000`、`1100`、`1200`。Inspector 还会显示标准帧尾自动声明的 `after_camera_ui` 和 `after_screen_ui`；这里比较的是下表中的四个自定义 Probe。每次只把上一章的 Edge Fade 资产挂入一个 Probe 列表：
 
 通过 Material Inspector 的 **Render Queue** 控件设置各个队列，这会显式覆盖 Shader 默认值。如果直接编写 `.mat` JSON，除了 `renderState.renderQueue`，还要在 `renderStateOverrides` 中设置 Render Queue 位（`64`）。比较时把物体放到 Game 视图边缘附近，保持完整可见，并将 Edge Fade 的 intensity 设为 `1.0`。这个 Shader 对画面中心的像素几乎没有影响，居中的物体不适合用来判断效果是否执行。
 
