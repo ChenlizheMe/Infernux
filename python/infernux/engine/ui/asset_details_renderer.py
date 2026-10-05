@@ -4437,9 +4437,10 @@ def _render_material_body(ctx: InxGUIContext, panel, state: _State):
 
 def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
     del panel
+    from infernux.core.assets import AssetManager
     from .inspector_utils import render_compact_section_header
     from .render_effect_inspector import render_render_effect_parameters
-    from infernux.renderstack.render_effect import RenderEffect
+    from infernux.renderstack.render_effect import EditableRenderEffectGroup, RenderEffect
 
     def linked_effect_controller(effect):
         from infernux.engine.interaction import (
@@ -4624,6 +4625,10 @@ def _render_render_effect_body(ctx: InxGUIContext, panel, state: _State):
         effect = reference.resolve()
         if effect is None:
             ctx.label(entry_path or entry.asset.guid)
+            continue
+        if isinstance(effect, EditableRenderEffectGroup):
+            # A nested group owns references, not a feature parameter schema.
+            # Edit its entries through the referenced group's own Inspector.
             continue
         if not entry.enabled:
             ctx.begin_disabled(True)
