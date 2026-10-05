@@ -67,6 +67,18 @@ class CollisionEnterOnlyProbe(InxComponent):
     assert(!collisionProxy.WantsTriggerStayCallbacks());
     assert(!collisionProxy.WantsTriggerExitCallbacks());
 
+    // Script publication can add or remove edit-mode execution without
+    // replacing the native proxy. Both native gates and the Python mirror
+    // must describe the refreshed class, including a restored old revision.
+    for (const bool editMode : {false, true, false}) {
+        collisionProbe.attr("__class__").attr("_execute_in_edit_mode_") = py::bool_(editMode);
+        collisionProxy.RefreshPythonLifecycleDispatch();
+        assert(collisionProxy.WantsEditModeLifecycle() == editMode);
+        assert(collisionProxy.WantsEditModeUpdate() == editMode);
+        assert(collisionProbe.attr("_execute_in_edit_mode").cast<bool>() == editMode);
+        assert(collisionProxy.WantsCollisionEnterCallbacks());
+    }
+
     // Python work availability controls only Python callbacks. Native
     // components remain on the native Scene traversal.
     auto &sceneManager = infernux::SceneManager::Instance();
