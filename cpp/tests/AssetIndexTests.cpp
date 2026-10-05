@@ -1,4 +1,5 @@
 #include "function/resources/AssetDatabase/AssetIndex.h"
+#include "function/resources/InxMesh/ModelMeshIdentity.h"
 #include "platform/filesystem/DocumentStore.h"
 #include "platform/filesystem/InxPath.h"
 
@@ -24,6 +25,33 @@ void Require(bool condition, const char *message)
 {
     if (!condition)
         throw std::runtime_error(message);
+}
+
+void TestModelMeshIdentityResolution()
+{
+    using Json = nlohmann::json;
+    const Json original = {{"subresource_id", "mesh-id"}, {"path", {"Assembly", "Upper"}}};
+    const Json valid = Json::array({original});
+    Require(infernux::ResolveModelMeshIdentityPath(valid, "mesh-id") == std::vector<std::string>({"Assembly", "Upper"}),
+            "Model mesh identity did not resolve its authoritative path");
+
+    auto duplicate = original;
+    duplicate["path"] = {"Assembly", "Duplicate identity"};
+    const auto rejects = [](const Json &manifest, const std::string &identity, const char *diagnostic) {
+        try {
+            infernux::ResolveModelMeshIdentityPath(manifest, identity);
+        } catch (const std::invalid_argument &error) {
+            Require(std::string(error.what()) == diagnostic, "Model mesh identity produced the wrong diagnostic");
+            return;
+        }
+        throw std::runtime_error("Model mesh identity accepted an invalid manifest");
+    };
+    rejects(Json::array({original, duplicate}), "mesh-id", "Model mesh identity is ambiguous");
+    rejects(valid, "missing-id", "Model mesh identity no longer exists");
+    rejects(Json::object(), "mesh-id", "Model mesh identity manifest must be an array");
+    rejects(Json::array({Json{{"subresource_id", "mesh-id"}}}), "mesh-id", "Model mesh identity has no node path");
+    rejects(Json::array({Json{{"subresource_id", "mesh-id"}, {"path", Json::array()}}}),
+            "mesh-id", "Model mesh identity has no node path");
 }
 
 AssetIndexEntry MakeEntry(size_t index)
@@ -243,6 +271,7 @@ void TestScaleAndStrictRoundTrip()
 int main()
 {
     try {
+        TestModelMeshIdentityResolution();
         TestResourceTypeMetadataRoundTrip();
         TestSpriteFramesStructuredMetadata();
         TestMetadataFilePathCanonicalization();

@@ -216,21 +216,26 @@ def test_mesh_renderer_cold_load_resolves_stable_identity_after_cross_parent_mov
     path_only_stale['modelNodePath'] = old_path
     assert renderer.deserialize_document(path_only_stale) is False
 
-    # Corrupt/ambiguous identity manifests are rejected instead of selecting
-    # an arbitrary candidate or falling back to the serialized path.
+    # A modified sidecar cannot publish corrupt derived identity data. The
+    # importer rebuilds this manifest from the source; native resolver tests
+    # separately reject duplicate identities without mutable query backdoors.
     metadata = database.get_meta_by_guid(guid)
-    meta_document = metadata.serialize_document()
+    meta_document = metadata.serialize_document_portable(database.project_root)
     duplicate_manifest = list(manifest)
     duplicate = dict(current)
     duplicate['path'] = ['Assembly', 'Duplicate identity']
     duplicate_manifest.append(duplicate)
     meta_document['metadata']['model_meshes']['value'] = json.dumps(duplicate_manifest, separators=(',', ':'))
-    metadata.deserialize_document(meta_document)
+    # Published metadata queries are immutable. Exercise the persisted input
+    # boundary rather than mutating a database-owned snapshot from Python.
+    source.with_name(source.name + '.meta').write_text(json.dumps(meta_document), encoding='utf-8')
+    database.refresh()
     refreshed_manifest = json.loads(database.get_meta_by_guid(guid).get_string('model_meshes'))
-    assert sum(item['subresource_id'] == stable_id for item in refreshed_manifest) == 2
+    assert sum(item['subresource_id'] == stable_id for item in refreshed_manifest) == 1
     duplicate_identity = dict(old_document)
     duplicate_identity['modelNodePath'] = current_path
-    assert renderer.deserialize_document(duplicate_identity) is False
+    assert renderer.deserialize_document(duplicate_identity)
+    assert renderer.serialize_document()['modelNodePath'] == current_path
 
 
 def test_identical_node_geometry_has_same_signature(hierarchy_asset):

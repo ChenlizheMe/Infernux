@@ -12,6 +12,7 @@
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/MaterialDocumentValidation.h>
+#include <function/resources/InxMesh/ModelMeshIdentity.h>
 #include <function/scene/PrimitiveMeshes.h>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -125,23 +126,7 @@ std::vector<std::string> ResolveModelNodePathBySubresourceId(const std::string &
         throw std::invalid_argument("Model mesh identity manifest is unavailable");
 
     const auto manifest = nlohmann::json::parse(meta->GetDataAs<std::string>("model_meshes"));
-    if (!manifest.is_array())
-        throw std::invalid_argument("Model mesh identity manifest must be an array");
-
-    std::vector<std::string> resolvedPath;
-    size_t matches = 0;
-    for (const auto &entry : manifest) {
-        if (!entry.is_object() || entry.value("subresource_id", std::string{}) != subresourceId)
-            continue;
-        if (!entry.contains("path") || !entry["path"].is_array())
-            throw std::invalid_argument("Model mesh identity has no node path");
-        resolvedPath = entry["path"].get<std::vector<std::string>>();
-        ++matches;
-    }
-    if (matches != 1 || resolvedPath.empty())
-        throw std::invalid_argument(matches == 0 ? "Model mesh identity no longer exists"
-                                                 : "Model mesh identity is ambiguous");
-    return resolvedPath;
+    return ResolveModelMeshIdentityPath(manifest, subresourceId);
 }
 
 std::string FindMatchingMeshAssetGuid(const std::vector<Vertex> &vertices, const std::vector<uint32_t> &indices,
