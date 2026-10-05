@@ -22,6 +22,7 @@ from typing import Optional, List
 
 from infernux.math.coerce import coerce_quat, coerce_vec3
 from infernux.lib import Physics as _CppPhysics
+from infernux.lib import _wrap_native_builtin_component
 
 
 def _gpu_state_output(out, names, *, flush: bool = True):
@@ -527,7 +528,8 @@ class Physics(metaclass=_PhysicsMeta):
             A list of ``Collider`` objects overlapping the sphere.
         """
         c = coerce_vec3(center)
-        return _CppPhysics.overlap_sphere(c, float(radius), int(layer_mask), bool(query_triggers))
+        return [_wrap_native_builtin_component(collider) for collider in
+                _CppPhysics.overlap_sphere(c, float(radius), int(layer_mask), bool(query_triggers))]
 
     @staticmethod
     def overlap_box(center, half_extents, orientation=None, layer_mask: int = (0xFFFFFFFF & ~(1 << 2)),
@@ -545,15 +547,16 @@ class Physics(metaclass=_PhysicsMeta):
         """
         c = coerce_vec3(center)
         he = coerce_vec3(half_extents)
-        return _CppPhysics.overlap_box(c, he, coerce_quat(orientation), int(layer_mask), bool(query_triggers))
+        return [_wrap_native_builtin_component(collider) for collider in
+                _CppPhysics.overlap_box(c, he, coerce_quat(orientation), int(layer_mask), bool(query_triggers))]
 
     @staticmethod
     def overlap_capsule(point0, point1, radius: float, layer_mask: int = (0xFFFFFFFF & ~(1 << 2)),
                         query_triggers: bool = True):
         """Find all colliders within a capsule defined by two segment endpoints."""
-        return _CppPhysics.overlap_capsule(
+        return [_wrap_native_builtin_component(collider) for collider in _CppPhysics.overlap_capsule(
             coerce_vec3(point0), coerce_vec3(point1), float(radius), int(layer_mask), bool(query_triggers)
-        )
+        )]
 
     # ------------------------------------------------------------------
     # Shape casts

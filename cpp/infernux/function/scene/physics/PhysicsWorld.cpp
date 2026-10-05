@@ -1248,14 +1248,16 @@ size_t PhysicsWorld::DispatchContactEvents()
         infoForA.collider = colB;
         infoForA.gameObject = goB;
         infoForA.contactPoint = evt.contactPoint;
-        infoForA.contactNormal = evt.contactNormal;
+        // Jolt's manifold normal points A -> B. Public CollisionInfo uses
+        // the surface normal from the other collider towards its receiver.
+        infoForA.contactNormal = -evt.contactNormal;
         infoForA.relativeVelocity = evt.relativeVelocity;
 
         CollisionInfo infoForB;
         infoForB.collider = colA;
         infoForB.gameObject = goA;
         infoForB.contactPoint = evt.contactPoint;
-        infoForB.contactNormal = -evt.contactNormal; // flip for B
+        infoForB.contactNormal = evt.contactNormal;
         infoForB.relativeVelocity = -evt.relativeVelocity;
 
         // Dispatch to all components on both GameObjects

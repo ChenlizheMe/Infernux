@@ -1067,6 +1067,32 @@ def _wrap_builtin_component_list(game_object, wrapper_cls, cpp_components):
     return [wrapper_cls._get_or_create_wrapper(component, game_object) for component in cpp_components]
 
 
+def _wrap_native_builtin_component(component):
+    """Expose one native result through the authoritative public wrapper cache."""
+    if component is None:
+        return None
+    wrapper_cls = _resolve_builtin_wrapper(type(component))
+    if wrapper_cls is None:
+        raise TypeError(f"No public builtin wrapper for {type(component).__name__}")
+    return wrapper_cls._get_or_create_wrapper(component, component.game_object)
+
+
+_native_collision_collider = CollisionInfo.collider
+_native_raycast_collider = RaycastHit.collider
+
+
+def _collision_collider(self):
+    return _wrap_native_builtin_component(_native_collision_collider.__get__(self))
+
+
+def _raycast_collider(self):
+    return _wrap_native_builtin_component(_native_raycast_collider.__get__(self))
+
+
+CollisionInfo.collider = property(_collision_collider, doc="The public Collider involved in this contact")
+RaycastHit.collider = property(_raycast_collider, doc="The public Collider hit by this query")
+
+
 def _resolve_public_component(component):
     if component is None:
         return None

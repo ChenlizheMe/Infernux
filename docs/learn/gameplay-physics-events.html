@@ -236,7 +236,8 @@
 </tr>
 </tbody>
 </table>
-<p>The two parameter types are intentionally different. Contact points and normals belong to <code>CollisionInfo</code>; Trigger callbacks use <code>other.game_object</code> when they need the overlapping object. The current public <code>CollisionInfo</code> has no <code>impulse</code> property.</p>
+<p>The two parameter types are intentionally different. Contact points and normals belong to <code>CollisionInfo</code>; Trigger callbacks use <code>other.game_object</code> when they need the overlapping object. The contact normal points from the other collider towards the object receiving the callback: on a horizontal floor, the Probe receives an upward normal. The current public <code>CollisionInfo</code> has no <code>impulse</code> property.</p>
+<p>Trigger arguments and <code>collision.collider</code> use the public Python Collider types. <code>isinstance(other, inx.Collider)</code> works, and the component is the same object returned by <code>get_component()</code> for that collider. Physics query hits and overlap results use the same component identities.</p>
 <p><code>Stay</code> callbacks can run many times. The example counts them and logs only the first stay step for each interaction, keeping the Console readable while still proving that the phase occurred.</p>
 <h2 id="verify-physics">Verify the result</h2>
 <ol>
@@ -461,7 +462,8 @@
 </tr>
 </tbody>
 </table>
-<p>这两组参数类型不同。接触点与法线位于 <code>CollisionInfo</code>；Trigger 回调可以通过 <code>other.game_object</code> 取得重叠物体。当前公开的 <code>CollisionInfo</code> 没有 <code>impulse</code> 属性。</p>
+<p>这两组参数类型不同。接触点与法线位于 <code>CollisionInfo</code>；Trigger 回调可以通过 <code>other.game_object</code> 取得重叠物体。接触法线从另一个 Collider 指向接收回调的物体：在水平地面上，Probe 收到的法线朝上。当前公开的 <code>CollisionInfo</code> 没有 <code>impulse</code> 属性。</p>
+<p>Trigger 参数与 <code>collision.collider</code> 使用公开的 Python Collider 类型。<code>isinstance(other, inx.Collider)</code> 可以正确判断类型，它与 <code>get_component()</code> 返回的对应 Collider 是同一个组件对象。物理查询命中结果和重叠查询也使用相同的组件身份。</p>
 <p><code>Stay</code> 回调可能连续运行很多次。本例只记录每次交互的第一个 Stay 固定步，既能验证阶段，又能保持 Console 清晰。</p>
 <h2 id="verify-physics_1">验证结果</h2>
 <ol>

@@ -16,6 +16,8 @@ Provides IDE auto-completion and type checking for:
 
 from __future__ import annotations
 
+from infernux.components.builtin.collider import Collider as _PublicCollider
+
 from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional, Sequence, Tuple, Union, overload
 from enum import IntEnum
 
@@ -3925,7 +3927,7 @@ class CollisionInfo:
     """Collision event data passed to on_collision callbacks."""
 
     @property
-    def collider(self) -> Collider: ...
+    def collider(self) -> Optional[_PublicCollider]: ...
     @property
     def game_object(self) -> GameObject: ...
     @property
@@ -3952,7 +3954,7 @@ class RaycastHit:
     @property
     def game_object(self) -> GameObject: ...
     @property
-    def collider(self) -> Collider: ...
+    def collider(self) -> Optional[_PublicCollider]: ...
 
 
 class PhysicsMaterialCombine:

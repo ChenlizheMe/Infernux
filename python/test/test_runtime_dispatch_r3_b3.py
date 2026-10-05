@@ -30,16 +30,18 @@ class _PhysicsProbe(InxComponent):
         self.events = []
 
 
-def test_physics_callbacks_resolve_the_published_body():
+def test_physics_callbacks_resolve_the_published_body(scene):
     probe = _PhysicsProbe()
     probe.events = []
     initial = publish_runtime_dispatch_epoch((_PhysicsProbe,))
     initial.commit()
     old_collision = _PhysicsProbe.on_collision_stay
     old_trigger = _PhysicsProbe.on_trigger_enter
+    collider = scene.create_game_object("DispatchCollider").add_component("BoxCollider")
+    native_collider = collider._require_cpp_component()
     try:
         probe._call_on_collision_stay("first")
-        probe._call_on_trigger_enter("first-trigger")
+        probe._call_on_trigger_enter(native_collider)
 
         def new_collision(self, collision) -> None:
             self.events.append(("new", collision))
@@ -53,12 +55,12 @@ def test_physics_callbacks_resolve_the_published_body():
         publication.commit()
         try:
             probe._call_on_collision_stay("second")
-            probe._call_on_trigger_enter("second-trigger")
+            probe._call_on_trigger_enter(native_collider)
             assert probe.events == [
                 ("old", "first"),
-                ("trigger-old", "first-trigger"),
+                ("trigger-old", collider),
                 ("new", "second"),
-                ("trigger-new", "second-trigger"),
+                ("trigger-new", collider),
             ]
         finally:
             publication.rollback()

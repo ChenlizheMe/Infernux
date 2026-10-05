@@ -8,7 +8,9 @@ from infernux.lib._Infernux import (
     GameObject,
     MeshRenderer,
     Transform,
+    CollisionInfo,
 )
+from infernux.components.builtin.collider import Collider
 from infernux.coroutine import Coroutine
 
 
@@ -145,22 +147,22 @@ class InxComponent:
     # Physics collision / trigger callbacks
     # =========================================================================
 
-    def on_collision_enter(self, collision: Any) -> None:
+    def on_collision_enter(self, collision: CollisionInfo) -> None:
         """Called when this collider starts touching another collider."""
         ...
-    def on_collision_stay(self, collision: Any) -> None:
+    def on_collision_stay(self, collision: CollisionInfo) -> None:
         """Called every fixed-update while two colliders remain in contact."""
         ...
-    def on_collision_exit(self, collision: Any) -> None:
+    def on_collision_exit(self, collision: CollisionInfo) -> None:
         """Called when two colliders stop touching."""
         ...
-    def on_trigger_enter(self, other: Any) -> None:
+    def on_trigger_enter(self, other: Collider) -> None:
         """Called when another collider enters this trigger volume."""
         ...
-    def on_trigger_stay(self, other: Any) -> None:
+    def on_trigger_stay(self, other: Collider) -> None:
         """Called every fixed-update while another collider is inside this trigger."""
         ...
-    def on_trigger_exit(self, other: Any) -> None:
+    def on_trigger_exit(self, other: Collider) -> None:
         """Called when another collider exits this trigger volume."""
         ...
 

@@ -107,7 +107,7 @@ struct ContactEvent
     uint32_t subShapeIdA = 0;
     uint32_t subShapeIdB = 0;
     glm::vec3 contactPoint{0.0f};
-    glm::vec3 contactNormal{0.0f};
+    glm::vec3 contactNormal{0.0f}; ///< Raw Jolt manifold normal, body A -> body B
     glm::vec3 relativeVelocity{0.0f};
 };
 

@@ -144,7 +144,9 @@ Trigger overlaps receive the other `Collider` directly:
 | `on_trigger_stay(other)` | Each fixed step while the overlap remains |
 | `on_trigger_exit(other)` | The other collider leaves the Trigger |
 
-The two parameter types are intentionally different. Contact points and normals belong to `CollisionInfo`; Trigger callbacks use `other.game_object` when they need the overlapping object. The current public `CollisionInfo` has no `impulse` property.
+The two parameter types are intentionally different. Contact points and normals belong to `CollisionInfo`; Trigger callbacks use `other.game_object` when they need the overlapping object. The contact normal points from the other collider towards the object receiving the callback: on a horizontal floor, the Probe receives an upward normal. The current public `CollisionInfo` has no `impulse` property.
+
+Trigger arguments and `collision.collider` use the public Python Collider types. `isinstance(other, inx.Collider)` works, and the component is the same object returned by `get_component()` for that collider. Physics query hits and overlap results use the same component identities.
 
 `Stay` callbacks can run many times. The example counts them and logs only the first stay step for each interaction, keeping the Console readable while still proving that the phase occurred.
 
@@ -325,7 +327,9 @@ Trigger 重叠会直接收到另一个 `Collider`：
 | `on_trigger_stay(other)` | 保持重叠期间的每个固定步 |
 | `on_trigger_exit(other)` | 另一个 Collider 离开 Trigger |
 
-这两组参数类型不同。接触点与法线位于 `CollisionInfo`；Trigger 回调可以通过 `other.game_object` 取得重叠物体。当前公开的 `CollisionInfo` 没有 `impulse` 属性。
+这两组参数类型不同。接触点与法线位于 `CollisionInfo`；Trigger 回调可以通过 `other.game_object` 取得重叠物体。接触法线从另一个 Collider 指向接收回调的物体：在水平地面上，Probe 收到的法线朝上。当前公开的 `CollisionInfo` 没有 `impulse` 属性。
+
+Trigger 参数与 `collision.collider` 使用公开的 Python Collider 类型。`isinstance(other, inx.Collider)` 可以正确判断类型，它与 `get_component()` 返回的对应 Collider 是同一个组件对象。物理查询命中结果和重叠查询也使用相同的组件身份。
 
 `Stay` 回调可能连续运行很多次。本例只记录每次交互的第一个 Stay 固定步，既能验证阶段，又能保持 Console 清晰。
 

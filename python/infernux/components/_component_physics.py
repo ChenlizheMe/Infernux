@@ -26,7 +26,7 @@ import copy
 import threading
 import weakref
 
-from infernux.lib import GameObject
+from infernux.lib import GameObject, _wrap_native_builtin_component
 from infernux.engine.runtime_dispatch import current_runtime_epoch
 
 
@@ -57,15 +57,15 @@ class ComponentPhysicsMixin:
 
     def _call_on_trigger_enter(self, other):
         """Internal: Trigger on_trigger_enter lifecycle."""
-        self._dispatch_runtime_event("on_trigger_enter", other)
+        self._dispatch_runtime_event("on_trigger_enter", _wrap_native_builtin_component(other))
 
     def _call_on_trigger_stay(self, other):
         """Internal: Trigger on_trigger_stay lifecycle."""
-        self._dispatch_runtime_event("on_trigger_stay", other)
+        self._dispatch_runtime_event("on_trigger_stay", _wrap_native_builtin_component(other))
 
     def _call_on_trigger_exit(self, other):
         """Internal: Trigger on_trigger_exit lifecycle."""
-        self._dispatch_runtime_event("on_trigger_exit", other)
+        self._dispatch_runtime_event("on_trigger_exit", _wrap_native_builtin_component(other))
 
     def _call_on_draw_gizmos(self):
         """Internal: Trigger on_draw_gizmos lifecycle (editor only)."""
