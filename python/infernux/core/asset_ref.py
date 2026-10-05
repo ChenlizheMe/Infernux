@@ -522,7 +522,8 @@ class MaterialRef(AssetRefBase):
     Lazily loads the Material through ``AssetManager.load_by_guid`` on first
     access and caches the result. GUID is the only asset identity; a ref
     without a GUID can only be a runtime-created material kept alive through
-    the cached object.
+    the cached object. Native input is converted to the same canonical Python
+    Material proxy returned by renderer and asset queries.
 
     Supports attribute forwarding to the underlying Material::
 
@@ -542,39 +543,26 @@ class MaterialRef(AssetRefBase):
                 super().__init__(guid=token, path_hint=path_hint)
             return
         if material is not None:
-            extracted_guid = self._extract_guid(material)
-            native = getattr(material, "native", material)
-            hint = path_hint or getattr(native, "file_path", "") or ""
-            super().__init__(guid=extracted_guid, path_hint=hint)
+            from infernux.core.material import Material
+            from infernux.lib import InxMaterial
+
+            if isinstance(material, InxMaterial):
+                material = Material.from_native(material)
+            elif not isinstance(material, Material):
+                raise TypeError("MaterialRef requires a Material, native InxMaterial, string, or None")
+            super().__init__(guid=material.guid, path_hint=path_hint or material.file_path or "")
             self._cached = material
         else:
             super().__init__(guid=guid, path_hint=path_hint)
 
-    @staticmethod
-    def _extract_guid(material) -> str:
-        """Extract the GUID for a Material wrapper or native InxMaterial."""
-        if hasattr(material, "guid") and material.guid:
-            return material.guid
-        native = getattr(material, "native", material)
-        if hasattr(native, "guid") and native.guid:
-            return native.guid
-        return ""
-
     def resolve(self):
         """Return the loaded Material, or ``None`` if missing."""
-        from infernux.core.material import Material
-
         mat = self._cached
         if mat is not None:
-            if isinstance(mat, Material) and mat._disposed:
+            if mat._disposed:
                 self._cached = None
                 return self._do_resolve()
-            try:
-                native = getattr(mat, "native", mat)
-                _ = native.name
-                return mat
-            except (RuntimeError, AttributeError):
-                self._cached = None
+            return mat
         return self._do_resolve()
 
     def _do_resolve(self):

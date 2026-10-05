@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from infernux.core.material import Material
+from infernux.lib import InxMaterial
+
 
 class AssetRefBase:
     """Base class for GUID-based asset references."""
@@ -97,10 +100,10 @@ class MaterialRef(AssetRefBase):
     """GUID-based reference to a Material asset."""
 
     def __init__(
-        self, material: Any = ..., *, guid: str = ..., path_hint: str = ...
+        self, material: Material | InxMaterial | str | None = ..., *, guid: str = ..., path_hint: str = ...
     ) -> None: ...
-    def resolve(self) -> Any:
-        """Return the loaded Material, or ``None`` if missing."""
+    def resolve(self) -> Material | None:
+        """Return the canonical Python Material proxy, or None if missing."""
         ...
     def __getattr__(self, name: str) -> Any: ...
     def __copy__(self) -> MaterialRef: ...
