@@ -1318,22 +1318,15 @@ class AssetManager:
         """Schedule a debounced save by category strategy, without exposing save callback to caller."""
         if asset_category == "material" and key and "::submat:" in key:
             return
-        # Fast path: if a record already exists for this key, just bump the
-        # deadline.  This avoids creating a new lambda + dict lookup through
-        # the strategy registry on every slider-drag frame.
-        record = cls._scheduled_saves.get(key)
-        if record is not None:
-            if float(debounce_sec) > 0.0:
-                record["deadline"] = time.perf_counter() + float(debounce_sec)
-                record["wait_one_flush"] = False
-            return
-
         cls._ensure_execution_strategies()
 
         save_handler = cls._save_handlers.get(asset_category)
         if save_handler is None:
             return
 
+        # schedule_save owns debounce timing and replaces the pending callback.
+        # Always supply the current resource/strategy; the same path can have
+        # a new authoring object while its previous save is still queued.
         if asset_category == "material":
             # The document controller owns the durable target.  Python
             # Material wrappers intentionally expose data rather than relying

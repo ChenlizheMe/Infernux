@@ -337,17 +337,21 @@ class AssetTypeRegistry:
             raise ValueError("asset reference type id must not be empty")
         if type_id in self._types and not replace:
             raise ValueError(f"asset reference type already registered: {type_id}")
-        if replace and type_id in self._types:
-            previous = self._types[type_id]
-            for alias in self._descriptor_aliases(previous):
-                self._aliases.pop(alias, None)
-        self._types[type_id] = descriptor
-        for alias in self._descriptor_aliases(descriptor):
+        aliases = tuple(self._descriptor_aliases(descriptor))
+        # Validate the entire candidate before removing any previous names or
+        # exposing the descriptor. Failed plug-in registration is a no-op.
+        for alias in aliases:
             owner = self._aliases.get(alias)
             if owner is not None and owner != type_id:
                 raise ValueError(
                     f"asset reference alias '{alias}' belongs to both {owner} and {type_id}"
                 )
+        if replace and type_id in self._types:
+            previous = self._types[type_id]
+            for alias in self._descriptor_aliases(previous):
+                self._aliases.pop(alias, None)
+        self._types[type_id] = descriptor
+        for alias in aliases:
             self._aliases[alias] = type_id
 
     def get(self, type_or_alias: str) -> Optional[AssetReferenceType]:
