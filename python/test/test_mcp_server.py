@@ -778,6 +778,95 @@ def test_schema_gateway_can_edit_real_material_document(engine):
         Path(str(path) + ".meta").unlink(missing_ok=True)
 
 
+def test_schema_gateway_repeated_material_slot_assignment_is_success(engine, scene):
+    from infernux.core.assets import AssetManager
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui import project_file_ops
+    from infernux.engine.undo import UndoManager
+    from infernux.host import MainThreadCommandQueue
+    from infernux.plugins import PluginManager
+
+    database = engine.get_asset_database()
+    project_root = Path(database.project_root)
+    assets = project_root / "Assets"
+    assets.mkdir(exist_ok=True)
+    paths = []
+    guids = []
+    for _ in range(2):
+        name = f"McpSlot_{uuid.uuid4().hex}"
+        path = assets / f"{name}.mat"
+        created, error = project_file_ops.create_material(str(assets), name, database)
+        assert created, error
+        paths.append(path)
+        guids.append(database.get_guid_from_path(str(path)))
+    assert all(guids)
+    owner = scene.create_game_object("MCP Material Slot")
+    renderer = owner.add_component("MeshRenderer")
+    previous_plugins = PluginManager._instance
+    previous_database = AssetManager._asset_database
+    previous_undo = UndoManager._instance
+    core = EditorInteractionCore()
+    core.project_assets.configure(str(project_root), database)
+    undo = UndoManager(core.action_journal)
+    manager = PluginManager(str(project_root), engine=engine)
+    PluginManager._instance = manager
+    AssetManager._asset_database = database
+    queue = MainThreadCommandQueue.instance()
+    queue.drain()
+    mcp = _FakeMCP()
+    try:
+        register_gateways(mcp, str(project_root), {})
+        arguments = {
+            "object_id": owner.id,
+            "component_id": renderer.component_id,
+            "slot": 0,
+            "material_guid": guids[0],
+        }
+        changed = mcp.tools["operation_command_execute"](
+            "infernux.material.slot.assign", arguments
+        )
+        assert changed["ok"], changed
+        assert renderer.get_material_guids()[0] == guids[0]
+        before = owner.serialize_document()
+        revision = core.action_journal.revision
+        entries = core.action_journal.applied_entries()
+        assert len(entries) == 1
+        repeated = mcp.tools["operation_command_execute"](
+            "infernux.material.slot.assign", arguments
+        )
+        assert repeated["ok"], repeated
+        assert repeated["data"]["result"]["material_guid"] == guids[0]
+        assert owner.serialize_document() == before
+        assert core.action_journal.revision == revision
+        assert core.action_journal.applied_entries() == entries
+
+        undo.enabled = False
+        rejected = mcp.tools["operation_command_execute"](
+            "infernux.material.slot.assign", {**arguments, "material_guid": guids[1]}
+        )
+        assert not rejected["ok"], rejected
+        invalid = mcp.tools["operation_command_execute"](
+            "infernux.material.slot.assign", {**arguments, "material_guid": uuid.uuid4().hex}
+        )
+        assert not invalid["ok"], invalid
+        assert renderer.get_material_guids()[0] == guids[0]
+        assert owner.serialize_document() == before
+        assert core.action_journal.revision == revision
+        assert core.action_journal.applied_entries() == entries
+    finally:
+        shutdown_adapter()
+        manager.shutdown()
+        core.shutdown()
+        UndoManager._instance = previous_undo
+        PluginManager._instance = previous_plugins
+        AssetManager._asset_database = previous_database
+        queue.release_owner("MCP repeated material slot test finished")
+        for path in paths:
+            database.delete_asset(str(path))
+            path.unlink(missing_ok=True)
+            Path(str(path) + ".meta").unlink(missing_ok=True)
+
+
 def test_schema_gateway_can_edit_real_data_asset_document(engine):
     from infernux.components import serialized_field
     from infernux.core import AssetManager, DataAsset
