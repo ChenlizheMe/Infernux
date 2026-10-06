@@ -38,7 +38,7 @@ def read_model_frame():
         _presentation.frame = None
 
 
-def _stamp(path: str):
+def file_stamp(path: str):
     try:
         value = os.stat(path)
     except (FileNotFoundError, NotADirectoryError):
@@ -48,7 +48,7 @@ def _stamp(path: str):
 
 
 if os.name == "nt":
-    from ._windows_file_observation import file_stamp as _stamp
+    from ._windows_file_observation import file_stamp
 
 
 class FileObservations:
@@ -60,7 +60,7 @@ class FileObservations:
     def watch(self, path: str | os.PathLike[str]) -> None:
         path = lexical_path(path)
         if path not in self._files:
-            self._files[path] = _stamp(path)
+            self._files[path] = file_stamp(path)
 
     def watch_tree(
         self, root: str | os.PathLike[str], *, suffixes: frozenset[str] | None = None,
@@ -82,7 +82,7 @@ class FileObservations:
                     self.watch(os.path.join(directory, name))
 
     def unchanged(self) -> bool:
-        return all(_stamp(path) == stamp for path, stamp in self._files.items())
+        return all(file_stamp(path) == stamp for path, stamp in self._files.items())
 
 
 class FileReadCache:
