@@ -156,7 +156,7 @@ The current editing rules are authoritative:
 - A direct `.effect` mount has one shared loaded `RenderEffect` document. Asset Inspector and Slot Inspector send edits to that same document, so the most recently accepted edit is immediately visible in both views and in every direct mount of the asset. A direct slot has no private parameter override.
 - Every accepted Inspector edit enters the global Undo history as a document edit. Undo reverses the latest accepted edit regardless of which view made it, republishes the restored in-memory document, and schedules persistence again. An external file reload is a filesystem consequence and creates no Undo entry.
 - The `.effect` document autosaves through a 0.5-second debounced snapshot. Saving the scene persists Slot identity, stage, order, asset reference, and enabled state; it does not replace the separate asset autosave. Closing or changing scenes drains pending autosave work through the resource-document lifecycle.
-- Watcher notifications that exactly match an Editor write are acknowledged. A notification arriving while that local write is pending is deferred. Once a different durable revision is confirmed, this non-scene asset follows the disk revision automatically: queued local asset persistence is cancelled, the loaded resource is refreshed, and both views update.
+- Watcher notifications that exactly match an Editor write are acknowledged. While an accepted local edit is waiting for its debounced save or disk write, the local edit has priority: notifications are deferred, and the pending save can replace an intervening external disk edit. After local persistence completes, a later external revision is imported automatically; the shared resource and its Inspector views follow that disk revision. To keep an external edit, make it after the local save has finished.
 - External schema changes receive no automatic parameter migration. Removing or renaming a serialized field makes old source parameters or group overrides unknown; compilation is rejected until the JSON is updated. Existing Slots keep their GUID reference. If external reimport or compilation fails, the loaded source and artifact stay on the last successfully published revision and the document enters a diagnostic/conflict state.
 
 ## Declare what the effect reads and writes {#resource-contract}
@@ -392,7 +392,7 @@ Assets/
 - 直接挂载的 `.effect` 只有一份共享的已加载 `RenderEffect` 文档。资产 Inspector 与 Slot Inspector 都把修改提交给这份文档，因此最后一次被接受的修改会立即出现在两个视图和该资产的所有直接挂载中。直接 Slot 没有私有参数 Override。
 - 每次被接受的 Inspector 修改都会作为文档操作进入全局 Undo 历史。Undo 会撤销最后一次被接受的修改，不受修改入口影响；恢复后的内存文档会再次发布，并重新安排持久化。外部文件重载属于文件系统结果，不会新增 Undo 条目。
 - `.effect` 文档通过 0.5 秒防抖快照自动保存。保存场景会持久化 Slot 身份、Stage、顺序、资产引用与启用状态；`.effect` 资产仍由自己的自动保存负责。关闭场景或切换场景时，资源文档生命周期会排空待完成的自动保存。
-- 与 Editor 写入内容完全相同的 Watcher 通知会被确认并忽略。通知在本地写入尚未完成时会被延后。系统确认磁盘上出现另一份持久 Revision 后，这类非 Scene 资产会自动跟随磁盘内容：排队中的本地资产持久化会取消，已加载资源会刷新，两个视图也会更新。
+- 与 Editor 写入内容完全相同的 Watcher 通知会被确认并忽略。已接受的本地修改还在等待防抖保存或磁盘写入时，本地修改优先：通知会被延后，待完成的保存可能覆盖这期间发生的外部磁盘修改。本地持久化完成后，后续外部版本会自动导入，共享资源与 Inspector 视图都会跟随磁盘内容。要保留外部修改，应等本地保存完成后再修改文件。
 - 外部 Schema 变化没有自动参数迁移。删除或重命名序列化字段后，旧 Source 参数或 Group Override 会成为未知参数；更新 JSON 后才能通过编译。现有 Slot 继续保留 GUID 引用。外部重新导入或编译失败时，已加载 Source 与 Artifact 会保持最后一次成功发布的 Revision，文档进入诊断或冲突状态。
 
 ## 声明读写资源 {#resource-contract_1}
