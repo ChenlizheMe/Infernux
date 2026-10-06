@@ -2140,7 +2140,7 @@ class ResourcesManager:
         # The catalog belongs to the project, not to whichever scenes currently
         # contain a RenderStack. Invalidate once before notifying consumers.
         if script_may_affect_pipeline_catalog(file_path, event_type):
-            invalidate_discovery_cache()
+            invalidate_discovery_cache(file_path)
         for cb in list(self._script_catalog_callbacks):
             try:
                 cb(file_path, event_type)

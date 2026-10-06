@@ -7,7 +7,9 @@ import copy
 import hashlib
 import inspect
 import os
-from dataclasses import dataclass
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, TYPE_CHECKING
 from weakref import WeakValueDictionary
@@ -508,6 +510,12 @@ class RenderEffectFeature:
     effect_class: type
     topology_parameters: frozenset[str] = frozenset()
     route_policy: RoutePolicy = RoutePolicy.ISOLATE_AND_COMPOSITE
+    source_identity: tuple[str, str] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        # Module namespaces can later be replaced or retired. Freeze the
+        # declaration's provenance while its defining namespace is available.
+        object.__setattr__(self, "source_identity", _effect_class_identity(self.effect_class))
 
     def validate_parameters(self, parameters: Mapping[str, Any]) -> None:
         from infernux.components.fields import get_serialized_fields
@@ -536,6 +544,9 @@ class RenderEffectFeature:
 
 _FEATURES: dict[str, RenderEffectFeature] = {}
 _BUILTINS_REGISTERED = False
+_FEATURE_REGISTRATION_SCOPE: ContextVar[tuple[str, dict[str, RenderEffectFeature]] | None] = ContextVar(
+    "render_effect_feature_registration_scope", default=None
+)
 
 
 def _effect_class_identity(effect_class: type) -> tuple[str, str]:
@@ -551,6 +562,50 @@ def _effect_class_identity(effect_class: type) -> tuple[str, str]:
     return source_identity, str(getattr(effect_class, "__qualname__", ""))
 
 
+def _validate_feature_replacement(existing, feature) -> None:
+    if existing is not None and existing != feature:
+        if existing.source_identity != feature.source_identity:
+            raise ValueError(f"render effect feature {feature.type_id!r} is already registered")
+
+
+def _publish_effect_features(features, *, source_key: str = "") -> None:
+    features = tuple(features)
+    # Validate the complete set before publishing any of it.
+    for feature in features:
+        _validate_feature_replacement(_FEATURES.get(feature.type_id), feature)
+    changed = [feature.type_id for feature in features if _FEATURES.get(feature.type_id) != feature]
+    declared = {feature.type_id for feature in features}
+    retired = [type_id for type_id, feature in _FEATURES.items()
+               if source_key and feature.source_identity[0] == source_key and type_id not in declared]
+    _FEATURES.update((feature.type_id, feature) for feature in features)
+    for type_id in retired:
+        del _FEATURES[type_id]
+    for type_id in (*changed, *retired):
+        RenderEffectArtifactRegistry.invalidate_feature(type_id)
+
+
+def _registered_effect_source_paths() -> set[str]:
+    return {feature.source_identity[0] for feature in _FEATURES.values() if feature.source_identity[0]}
+
+
+def _retire_source_effect_features(source_path: str) -> None:
+    _publish_effect_features((), source_key=path_key(resolved_path(source_path)))
+
+
+@contextmanager
+def _stage_source_effect_features(source_path: str):
+    """Publish a discovered source's declarations only after it executes."""
+    _register_builtin_features()
+    pending = {}
+    source_key = path_key(resolved_path(source_path))
+    token = _FEATURE_REGISTRATION_SCOPE.set((source_key, pending))
+    try:
+        yield
+        _publish_effect_features(pending.values(), source_key=source_key)
+    finally:
+        _FEATURE_REGISTRATION_SCOPE.reset(token)
+
+
 def register_render_effect_feature(
     type_id: str,
     effect_class: type,
@@ -562,21 +617,21 @@ def register_render_effect_feature(
     normalized = str(type_id or "").strip()
     if not normalized:
         raise ValueError("render effect feature type id cannot be empty")
-    existing = _FEATURES.get(normalized)
     feature = RenderEffectFeature(
         type_id=normalized,
         effect_class=effect_class,
         topology_parameters=frozenset(str(name) for name in topology_parameters),
         route_policy=RoutePolicy(route_policy or RoutePolicy.ISOLATE_AND_COMPOSITE),
     )
-    if existing is not None and existing != feature:
-        existing_identity = _effect_class_identity(existing.effect_class)
-        replacement_identity = _effect_class_identity(effect_class)
-        if existing_identity != replacement_identity:
-            raise ValueError(f"render effect feature {normalized!r} is already registered")
-    _FEATURES[normalized] = feature
-    if existing is not None and existing != feature:
-        RenderEffectArtifactRegistry.invalidate_feature(normalized)
+    scope = _FEATURE_REGISTRATION_SCOPE.get()
+    if scope is not None and feature.source_identity[0] == scope[0]:
+        pending = scope[1]
+        _validate_feature_replacement(pending.get(normalized, _FEATURES.get(normalized)), feature)
+        pending[normalized] = feature
+    else:
+        # A successfully imported dependency owns its own declarations. Do
+        # not defer its registrations into the importing source's transaction.
+        _publish_effect_features((feature,))
     return feature
 
 
@@ -616,6 +671,15 @@ def render_effect_feature(
 
 def get_render_effect_feature(type_id: str) -> RenderEffectFeature:
     _register_builtin_features()
+    scope = _FEATURE_REGISTRATION_SCOPE.get()
+    if scope is not None and str(type_id) in scope[1]:
+        return scope[1][str(type_id)]
+    if scope is None:
+        # Discovery is event-cached. Reconcile edits/removals once after
+        # invalidation before accepting an already registered project type.
+        from infernux.renderstack.discovery import discover_effect_features
+
+        discover_effect_features()
     feature = _FEATURES.get(str(type_id))
     if feature is None:
         from infernux.renderstack.discovery import discover_effect_features

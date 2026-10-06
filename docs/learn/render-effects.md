@@ -181,7 +181,7 @@ Additive and color-replacement effects can share one route. Their policies merge
 
 Failure recovery has three concrete boundaries:
 
-1. Feature registration is replaceable only by the same source identity. A second source registering `game.post.edge_fade` raises `already registered`; the first registration remains active.
+1. Feature registration is replaceable only by the same source identity. A second source registering `game.post.edge_fade` raises `already registered`; the first registration remains active. Discovery publishes a source's registrations only after the entire module succeeds. A rejected edit preserves its accepted registrations; successfully removing a declaration or deleting its source retires that registration. Existing assets and Slots retain their references and report an unknown feature until its declaration is restored.
 2. Effect/group import is compile-then-publish. A malformed document, missing dependency, group cycle, unknown override, or feature failure leaves the previous artifact and loaded asset active. If creation wrote the new source file before its first import failed, that source file remains in `Assets`; fix it and reimport it or remove it explicitly.
 3. During Stage compilation, each effect starts with snapshots of the graph pass/texture/topology lists and local bus. If its `setup_passes()` raises, only additions from that effect are removed and its bus snapshot is restored. **Effect Compile Errors** records `<stage_id>/<slot_id>: <error>`; other slots can still compile. If a broader pipeline rebuild raises, RenderStack keeps its last valid graph when one exists. With no accepted graph, both Editor and Player fail explicitly instead of substituting a default pipeline.
 
@@ -421,7 +421,7 @@ Assets/
 
 失败恢复有三个明确边界：
 
-1. Feature 注册只允许相同 Source 身份更新。另一份 Source 注册 `game.post.edge_fade` 时会抛出 `already registered`，首次注册项继续生效。
+1. Feature 注册只允许相同 Source 身份更新。另一份 Source 注册 `game.post.edge_fade` 时会抛出 `already registered`，首次注册项继续生效。发现器会等整个模块执行成功后才发布该源码的注册项。被拒绝的修改保留已接受的注册项；成功移除声明或删除源码后，对应注册项会被注销。现有资产和 Slot 继续保留引用，并报告未知 Feature，直到声明恢复。
 2. Effect/Group 导入采用“编译完成后发布”。文档格式错误、依赖缺失、Group 循环、未知 Override 或 Feature 失败时，上一份 Artifact 与已加载资产继续生效。如果创建流程已经写入新 Source，首次导入随后失败，这个 Source 文件会留在 `Assets` 中；修复后重新导入，或显式移除该文件。
 3. 编译 Stage 时，每个 Effect 都会先保存图的 Pass、Texture、Topology 列表和局部 Bus 快照。`setup_passes()` 抛出异常后，只移除该 Effect 添加的内容，并恢复其 Bus 快照。**Effect Compile Errors** 记录 `<stage_id>/<slot_id>: <error>`，其它 Slot 仍可继续编译。更大范围的 Pipeline 重建抛出异常时，RenderStack 会保留已有的上一份有效图。没有已接受的图时，Editor 和 Player 都明确报告失败，不会替换成默认管线。
 

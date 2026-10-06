@@ -42,7 +42,9 @@ These names have different jobs:
 
 There is currently no separate stable-ID field for a pipeline. Despite the serialized field name `pipeline_class_name`, RenderStack stores the pipeline's `name` value.
 
-If a candidate module fails to import, Editor discovery keeps the rest of the catalog available and omits the broken class until the script is fixed. Saving, creating, moving, or deleting a pipeline script invalidates the catalog; the active pipeline source is also watched for reload in the Editor.
+A new source enters the catalog only after its module executes successfully. If an edit fails to import, Editor keeps that source's last accepted namespace and effect registrations and reports the import error; a first import failure contributes no class. Saving, creating, moving, or deleting a pipeline script invalidates the catalog; the active pipeline source is also watched for reload in the Editor.
+
+Files with the same filename in different directories have independent module identities. Editor compiles the current Python source on a source change, so a rapid save with the same byte count cannot reuse stale timestamp-based bytecode. Standard source encoding declarations and Python decorators such as `dataclass` work during discovery. Packaged Player loads its cooked `.pyc` files.
 
 Use the Editor Console to separate import failures from catalog problems. This diagnostic reads the same discovery functions used by RenderStack:
 
@@ -275,7 +277,9 @@ class SimpleForwardPipeline(inx.renderstack.RenderPipeline):
 
 当前管线本身没有另一套 stable ID。虽然序列化字段名叫 `pipeline_class_name`，RenderStack 实际保存的是管线 `name`。
 
-候选模块导入失败时，Editor 仍会保留其它可用管线，只暂时不列出出错的类。修好脚本后再次保存即可重新发现。创建、保存、移动或删除管线脚本都会使目录缓存失效；Editor 也会监听当前管线源码并重新加载。
+新源码只有在模块完整执行成功后才会进入目录。修改后的模块导入失败时，Editor 保留该源码最后一次接受的命名空间与效果注册项，并报告导入错误；首次导入失败则不会贡献任何类。创建、保存、移动或删除管线脚本都会使目录缓存失效；Editor 也会监听当前管线源码并重新加载。
+
+不同目录中的同名文件拥有独立的模块身份。源码变化时，Editor 编译当前 Python 源码；即使快速保存前后的字节数相同，也不会复用基于时间戳判断的旧字节码。标准源码编码声明以及 `dataclass` 等 Python 装饰器可以在发现过程中正常使用。打包后的 Player 加载烘焙出的 `.pyc` 文件。
 
 可以在 Editor Console 中运行下列代码，把导入失败与目录问题分开检查。这些函数也由 RenderStack 的发现流程使用：
 

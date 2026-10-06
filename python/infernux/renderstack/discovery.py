@@ -110,7 +110,7 @@ def _read_source_inheritance(file_path: str) -> _SourceInheritance:
     if cached is not None and cached[:2] == signature:
         return cached[2]
     try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as stream:
+        with open(file_path, "rb") as stream:
             tree = ast.parse(stream.read(), filename=file_path)
     except (OSError, SyntaxError, ValueError):
         result = _SourceInheritance()
@@ -187,12 +187,16 @@ def _candidate_source_paths(search_root: str, roots: set[str]) -> list[str]:
     return selected
 
 
-def invalidate_discovery_cache() -> None:
+def invalidate_discovery_cache(source_path: str | None = None) -> None:
     """Clear cached pipeline/pass discovery results."""
     global _pipeline_cache, _pass_cache, _effect_feature_scripts_loaded
     _pipeline_cache = None
     _pass_cache = None
     _effect_feature_scripts_loaded = False
+    if source_path:
+        # A published source event is authoritative even when a filesystem
+        # preserves timestamp and size. Retire only that source's import stamp.
+        _loaded_script_stamps.pop(path_key(source_path), None)
     for conflicts in _catalog_name_conflicts.values():
         conflicts.clear()
 
@@ -241,7 +245,9 @@ def script_may_affect_pipeline_catalog(file_path: str, event_type: str = "modifi
     if not normalized:
         return False
     _refresh_catalog_class_names()
-    if normalized in _loaded_scripts:
+    from infernux.renderstack.render_effect_compiler import _registered_effect_source_paths
+
+    if normalized in _loaded_script_modules or normalized in _registered_effect_source_paths():
         # A deleted or moved pipeline source can no longer be inspected, but
         # the discovery cache still remembers that it previously contributed.
         return True
@@ -364,7 +370,7 @@ def discover_effect_features() -> None:
                         candidates.append(full)
             except OSError:
                 continue
-    _import_source_paths(candidates)
+    _import_source_paths(dict.fromkeys((*candidates, *_known_project_sources(search_root))))
     _effect_feature_scripts_loaded = True
 
 
@@ -372,7 +378,8 @@ def discover_effect_features() -> None:
 
 _loaded_scripts: Set[str] = set()
 _loaded_script_modules: Dict[str, str] = {}
-_loaded_script_mtime: Dict[str, float] = {}
+_loaded_script_stamps: Dict[str, tuple[int, int]] = {}
+_loading_script_paths: Set[str] = set()
 
 
 def _ensure_user_scripts_loaded(*keywords: str) -> None:
@@ -387,11 +394,15 @@ def _ensure_user_scripts_loaded(*keywords: str) -> None:
         return
 
     candidates = _candidate_source_paths(search_root, set(keywords))
-    known_sources = sorted(
-        path for path in _loaded_script_modules
-        if is_path_within(path, search_root) and os.path.isfile(path)
-    )
+    known_sources = _known_project_sources(search_root)
     _import_source_paths(dict.fromkeys((*candidates, *known_sources)))
+
+
+def _known_project_sources(search_root: str) -> list[str]:
+    from infernux.renderstack.render_effect_compiler import _registered_effect_source_paths
+
+    return sorted(path for path in set(_loaded_script_modules) | _registered_effect_source_paths()
+                  if is_path_within(path, search_root) and os.path.isfile(path))
 
 
 def _import_source_paths(paths) -> None:
@@ -401,43 +412,79 @@ def _import_source_paths(paths) -> None:
         fn = os.path.basename(full)
         is_pyc = fn.endswith(".pyc")
         norm = path_key(full)
+        if norm in _loading_script_paths:
+            continue
         try:
-            mtime = os.path.getmtime(full)
+            stat = os.stat(full)
         except OSError:
-            mtime = 0.0
+            continue
+        stamp = (stat.st_mtime_ns, stat.st_size)
 
-        if norm in _loaded_scripts and _loaded_script_mtime.get(norm) == mtime:
+        if norm in _loaded_scripts and _loaded_script_stamps.get(norm) == stamp:
             continue
 
-        _loaded_scripts.add(norm)
         mod_name = _loaded_script_modules.get(norm)
         if not mod_name:
-            stem = fn[:-4] if is_pyc else fn[:-3]
-            mod_name = f"_infernux_disc_{stem}_{id(full) & 0xFFFF:04x}"
+            # A reversible path encoding is stable and collision-free; neither
+            # process addresses nor truncated hashes are source identities.
+            mod_name = "_infernux_disc_" + norm.encode("utf-8").hex()
         spec = importlib.util.spec_from_file_location(mod_name, full)
         if spec and spec.loader:
             mod = importlib.util.module_from_spec(spec)
+            previous = sys.modules.get(mod_name)
+            _loading_script_paths.add(norm)
             try:
-                with temporary_script_import_paths(full):
-                    spec.loader.exec_module(mod)
+                from infernux.renderstack.render_effect_compiler import _stage_source_effect_features
+
+                # Python decorators (including dataclasses) require the module
+                # namespace during execution. Catalog collection excludes this
+                # in-flight namespace; failed candidates restore the old one.
+                sys.modules[mod_name] = mod
+                with _stage_source_effect_features(full), temporary_script_import_paths(full):
+                    if is_pyc:
+                        spec.loader.exec_module(mod)
+                    else:
+                        # Source is authoritative in the Editor. SourceFileLoader
+                        # may accept a stale .pyc for same-second, same-size saves.
+                        with open(full, "rb") as stream:
+                            code = compile(stream.read(), full, "exec", dont_inherit=True)
+                        exec(code, mod.__dict__)
             except Exception as exc:
+                if previous is None:
+                    sys.modules.pop(mod_name, None)
+                else:
+                    sys.modules[mod_name] = previous
                 _loaded_scripts.discard(norm)
                 _script_import_failures[norm] = f"{type(exc).__name__}: {exc}"
                 continue
-            sys.modules[mod_name] = mod
+            finally:
+                _loading_script_paths.discard(norm)
+                # A module may query discovery while executing. Those views
+                # exclude the in-flight source and cannot outlive acceptance
+                # or restoration of its previous published namespace.
+                invalidate_discovery_cache()
+            _loaded_scripts.add(norm)
             _loaded_script_modules[norm] = mod_name
-            _loaded_script_mtime[norm] = mtime
+            _loaded_script_stamps[norm] = stamp
             _script_import_failures.pop(norm, None)
 
 
 def _prune_deleted_loaded_scripts() -> None:
     """Drop cache entries for scripts removed from disk."""
-    for norm in set(_loaded_scripts) | set(_loaded_script_modules) | set(_script_import_failures):
+    from infernux.renderstack.render_effect_compiler import (
+        _registered_effect_source_paths, _retire_source_effect_features,
+    )
+
+    assets_root = get_assets_root()
+    registered_sources = {path for path in _registered_effect_source_paths()
+                          if assets_root and is_path_within(path, assets_root)}
+    for norm in set(_loaded_scripts) | set(_loaded_script_modules) | set(_script_import_failures) | registered_sources:
         if os.path.exists(norm):
             continue
         _loaded_scripts.discard(norm)
-        _loaded_script_mtime.pop(norm, None)
+        _loaded_script_stamps.pop(norm, None)
         _script_import_failures.pop(norm, None)
+        _retire_source_effect_features(norm)
         mod_name = _loaded_script_modules.pop(norm, "")
         if mod_name:
             sys.modules.pop(mod_name, None)
@@ -486,6 +533,8 @@ def _is_live_class(cls: type) -> bool:
         return False
     src = getattr(mod, "__file__", "")
     source_key = path_key(src) if src else ""
+    if source_key in _loading_script_paths:
+        return False
     published_module = _loaded_script_modules.get(source_key)
     if published_module:
         # Discovery owns one namespace for each project source. Alias imports
