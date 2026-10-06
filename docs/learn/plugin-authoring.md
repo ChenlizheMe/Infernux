@@ -43,7 +43,7 @@ Use lowercase, snake_case Python filenames. Set `package/inx_package.json` to:
   "reference": "my_studio/hello_plugin",
   "name": "Hello Plugin",
   "version": "0.1.0",
-  "engine": ">=0.4,<0.5",
+  "engine": ">=0.4.1,<0.5",
   "intro": "A component that reads its packaged text resource."
 }
 ```
@@ -398,7 +398,7 @@ Python 文件名采用小写 snake_case。将 `package/inx_package.json` 改为�
   "reference": "my_studio/hello_plugin",
   "name": "Hello Plugin",
   "version": "0.1.0",
-  "engine": ">=0.4,<0.5",
+  "engine": ">=0.4.1,<0.5",
   "intro": "读取插件内文本资源的示例组件。"
 }
 ```
