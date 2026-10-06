@@ -121,6 +121,7 @@ int main()
                         [leftCube](const DrawCall &draw) { return draw.objectId == leftCube->GetID(); }));
     const auto untouchedRight = bridge.CullAndBuildForCamera(rightCamera, false);
     assert(untouchedRight.visibleListRevision == rightResult.visibleListRevision);
+
     auto clonedLeft = leftCamera->Clone();
     const auto *clonedCamera = static_cast<const Camera *>(clonedLeft.get());
     assert(clonedCamera->HasCustomProjectionMatrix());
@@ -461,6 +462,29 @@ int main()
     skinnedRenderer->GetWorldBounds(farMin, farMax);
     assert(glm::length(farMin - nearMin) > 1.0f);
     assert(glm::length(farMax - nearMax) > 1.0f);
+
+    // A camera-masked, offscreen caster must remain available to the light's
+    // shadow frustum, including when the camera's visible list is cached.
+    GameObject *offscreenCaster = createCube("MaskedOffscreenShadowCaster", glm::vec3(-3.0f, 3.0f, -2.5f));
+    offscreenCaster->SetLayer(2);
+    leftCamera->SetCullingMask(1u);
+    bridge.PrepareFrame(false);
+    const auto maskedShadows = bridge.CullAndBuildForCamera(leftCamera, true);
+    assert(maskedShadows.visibleDrawCallsRef && maskedShadows.shadowDrawCallsRef);
+    assert(std::none_of(maskedShadows.visibleDrawCallsRef->begin(), maskedShadows.visibleDrawCallsRef->end(),
+                        [offscreenCaster](const DrawCall &draw) { return draw.objectId == offscreenCaster->GetID(); }));
+    assert(std::any_of(maskedShadows.shadowDrawCallsRef->begin(), maskedShadows.shadowDrawCallsRef->end(),
+                       [offscreenCaster](const DrawCall &draw) { return draw.objectId == offscreenCaster->GetID(); }));
+    const auto cachedMaskedShadows = bridge.CullAndBuildForCamera(leftCamera, true);
+    assert(cachedMaskedShadows.visibleListRevision == maskedShadows.visibleListRevision);
+    assert(cachedMaskedShadows.shadowDrawCallsRef == maskedShadows.shadowDrawCallsRef);
+    assert(cachedMaskedShadows.shadowListRevision == maskedShadows.shadowListRevision);
+    assert(cachedMaskedShadows.shadowListRevision != 0);
+    const auto withoutShadows = bridge.CullAndBuildForCamera(leftCamera, false);
+    assert(!withoutShadows.shadowDrawCallsRef && withoutShadows.shadowDrawCalls.empty());
+    leftCamera->SetCullingMask(0xFFFFFFFFu);
+    scene->DestroyGameObject(offscreenCaster);
+    bridge.PrepareFrame(false);
 
     manager.UnloadAllScenes();
     registry.DestroyRuntimeMesh(twoSlotMeshGuid);
