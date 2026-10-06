@@ -444,6 +444,8 @@ class Scene
 
     void RegisterAuthoringComponent(uint64_t componentId);
     void CopySubtreeAuthoringIdentity(const GameObject &object, const Scene &source);
+    /// Shared ownership transfer for root moves and cross-Scene reparenting.
+    bool TransferObjectTo(GameObject *gameObject, Scene &destination, GameObject *destinationParent);
 
     static uint64_t GenerateWorldId();
 

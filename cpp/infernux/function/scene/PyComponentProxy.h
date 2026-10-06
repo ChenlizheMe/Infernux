@@ -6,6 +6,7 @@
 #include <optional>
 #include <pybind11/pybind11.h>
 #include <string>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -192,6 +193,8 @@ class PyComponentProxy : public Component
     /// Bind a newly published Python mirror and copy the preserved native
     /// lifecycle state into it without invoking user lifecycle methods.
     void RebindPythonMirror();
+    /// Refresh already-created builtin wrappers after native ownership moves.
+    static void RebindBuiltinComponentMirrors(const std::vector<Component *> &components);
     /// Prepare a fresh scripting-domain instance for the next Play lifecycle.
     /// Runtime hot reload must not call this because it intentionally keeps
     /// Awake/Start state alive while only replacing executable method bodies.

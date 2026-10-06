@@ -438,16 +438,31 @@ void Scene::AttachRootObject(std::unique_ptr<GameObject> gameObject)
 
 bool Scene::TransferRootObjectTo(GameObject *gameObject, Scene &destination)
 {
-    if (!gameObject || gameObject->GetParent() || gameObject->GetScene() != this || &destination == this)
-        return false;
+    return gameObject && !gameObject->GetParent() && TransferObjectTo(gameObject, destination, nullptr);
+}
 
-    auto rootIt =
-        std::find_if(m_rootObjects.begin(), m_rootObjects.end(),
-                     [gameObject](const std::unique_ptr<GameObject> &root) { return root.get() == gameObject; });
-    if (rootIt == m_rootObjects.end() || IsPendingDestroy(gameObject))
+bool Scene::TransferObjectTo(GameObject *gameObject, Scene &destination, GameObject *destinationParent)
+{
+    if (!gameObject || gameObject->GetScene() != this || &destination == this || IsPreview() || destination.IsPreview())
+        return false;
+    if (destinationParent &&
+        (destinationParent->GetScene() != &destination || destination.IsPendingDestroy(destinationParent)))
+        return false;
+    for (GameObject *ancestor = gameObject; ancestor; ancestor = ancestor->GetParent())
+        if (ancestor->IsDestroying())
+            return false;
+    for (GameObject *ancestor = destinationParent; ancestor; ancestor = ancestor->GetParent())
+        if (ancestor->IsDestroying())
+            return false;
+
+    auto &sourceSiblings = gameObject->GetParent() ? gameObject->GetParent()->m_children : m_rootObjects;
+    const auto sourceIt = std::find_if(sourceSiblings.begin(), sourceSiblings.end(),
+                                       [gameObject](const auto &owned) { return owned.get() == gameObject; });
+    if (sourceIt == sourceSiblings.end() || IsPendingDestroy(gameObject))
         return false;
 
     std::vector<GameObject *> objects;
+    std::vector<Component *> components;
     std::vector<PyComponentProxy *> pythonComponents;
     std::unordered_set<uint64_t> componentIds;
     const auto collect = [&](const auto &self, GameObject *object) -> void {
@@ -456,11 +471,13 @@ bool Scene::TransferRootObjectTo(GameObject *gameObject, Scene &destination)
         objects.push_back(object);
         if (Transform *transform = object->GetTransform()) {
             componentIds.insert(transform->GetComponentID());
+            components.push_back(transform);
         }
         for (const auto &owned : object->GetAllComponents()) {
             if (!owned)
                 continue;
             componentIds.insert(owned->GetComponentID());
+            components.push_back(owned.get());
             if (auto *proxy = dynamic_cast<PyComponentProxy *>(owned.get()))
                 pythonComponents.push_back(proxy);
         }
@@ -470,12 +487,22 @@ bool Scene::TransferRootObjectTo(GameObject *gameObject, Scene &destination)
     collect(collect, gameObject);
 
     for (GameObject *object : objects) {
-        if (IsPendingDestroy(object))
+        if (object->IsDestroying() || IsPendingDestroy(object))
             return false;
         const auto collision = destination.m_objectsById.find(object->GetID());
         if (collision != destination.m_objectsById.end() && collision->second != object)
             return false;
     }
+
+    // All ownership/identity rejection happens before retiring source state.
+    auto &destinationSiblings = destinationParent ? destinationParent->m_children : destination.m_rootObjects;
+    destinationSiblings.reserve(destinationSiblings.size() + 1);
+    destination.m_objectsById.reserve(destination.m_objectsById.size() + objects.size());
+    destination.m_pendingStartComponentIds.reserve(destination.m_pendingStartComponentIds.size() +
+                                                   m_pendingStartComponentIds.size());
+    destination.m_pendingStartComponentIdSet.reserve(destination.m_pendingStartComponentIdSet.size() +
+                                                     m_pendingStartComponentIds.size());
+    destination.CopySubtreeAuthoringIdentity(*gameObject, *this);
 
     std::vector<uint64_t> migratedStarts;
     migratedStarts.reserve(m_pendingStartComponentIds.size());
@@ -498,16 +525,15 @@ bool Scene::TransferRootObjectTo(GameObject *gameObject, Scene &destination)
         }
     }
 
-    destination.CopySubtreeAuthoringIdentity(*gameObject, *this);
-    std::unique_ptr<GameObject> owned = std::move(*rootIt);
-    m_rootObjects.erase(rootIt);
+    std::unique_ptr<GameObject> owned = std::move(*sourceIt);
+    sourceSiblings.erase(sourceIt);
     for (GameObject *object : objects)
-        m_objectsById.erase(object->GetID());
+        UnregisterGameObject(object->GetID());
 
+    owned->m_parent = destinationParent;
     owned->SetScene(&destination);
-    for (GameObject *object : objects)
-        destination.m_objectsById[object->GetID()] = object;
-    destination.m_rootObjects.push_back(std::move(owned));
+    destination.RegisterObjectSubtree(owned.get());
+    destinationSiblings.push_back(std::move(owned));
     if (!destination.m_mainCamera && migratedMainCamera)
         destination.m_mainCamera = migratedMainCamera;
     for (uint64_t id : migratedStarts) {
@@ -521,13 +547,9 @@ bool Scene::TransferRootObjectTo(GameObject *gameObject, Scene &destination)
     // Component and GameObject handles include the owning Scene world ID.
     // Rebind the existing Python object to the same native proxy so the move
     // does not turn an otherwise-live script component into a stale wrapper.
-    for (PyComponentProxy *proxy : pythonComponents) {
-        try {
-            proxy->RebindPythonMirror();
-        } catch (const std::exception &error) {
-            INXLOG_ERROR("Failed to refresh persistent Python component binding: ", error.what());
-        }
-    }
+    PyComponentProxy::RebindBuiltinComponentMirrors(components);
+    for (PyComponentProxy *proxy : pythonComponents)
+        proxy->RebindPythonMirror();
     return true;
 }
 

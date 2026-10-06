@@ -324,22 +324,19 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
         savedWorldScale = m_transform.GetWorldScale();
     }
 
-    if (newParent && previousScene && newParent->m_scene && newParent->m_scene != previousScene) {
-        newParent->m_scene->CopySubtreeAuthoringIdentity(*this, *previousScene);
-    }
-
+    const bool crossesScenes = newParent && previousScene && newParent->m_scene && newParent->m_scene != previousScene;
     std::unique_ptr<GameObject> selfPtr;
-
-    // 1. Detach from current owner
-    if (m_parent) {
-        selfPtr = m_parent->DetachChild(this);
-    } else if (m_scene) {
-        selfPtr = m_scene->DetachRootObject(this);
-    }
-
-    if (!selfPtr) {
-        // Should not happen unless object is in limbo state
-        return;
+    if (crossesScenes) {
+        if (!previousScene->TransferObjectTo(this, *newParent->m_scene, newParent))
+            throw std::invalid_argument(
+                "Cannot reparent hierarchy across Scenes: ownership or pending destruction conflict");
+    } else {
+        if (m_parent)
+            selfPtr = m_parent->DetachChild(this);
+        else if (m_scene)
+            selfPtr = m_scene->DetachRootObject(this);
+        if (!selfPtr)
+            return;
     }
 
     if (changesPrefabScope) {
@@ -366,37 +363,15 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
     }
 
     // 2. Attach to new owner
-    if (newParent) {
+    if (!crossesScenes && newParent) {
         m_parent = newParent;
         // Ensure scene matches new parent
         newParent->AttachChild(std::move(selfPtr));
-    } else {
+    } else if (!crossesScenes) {
         m_parent = nullptr;
         // Attached to root
         if (m_scene) {
             m_scene->AttachRootObject(std::move(selfPtr));
-        }
-    }
-
-    if (previousScene && previousScene != m_scene) {
-        const auto retireLookup = [&](const auto &self, GameObject *object) -> void {
-            previousScene->UnregisterGameObject(object->GetID());
-            for (const auto &child : object->m_children)
-                self(self, child.get());
-        };
-        retireLookup(retireLookup, this);
-        if (m_scene) {
-            m_scene->RegisterObjectSubtree(this);
-            // Mirrors contain a World-qualified handle. Refresh them after
-            // publishing the destination lookup, before lifecycle callbacks.
-            const auto rebind = [&](const auto &self, GameObject *object) -> void {
-                for (const auto &component : object->m_components)
-                    if (auto *proxy = dynamic_cast<PyComponentProxy *>(component.get()))
-                        proxy->RebindPythonMirror();
-                for (const auto &child : object->m_children)
-                    self(self, child.get());
-            };
-            rebind(rebind, this);
         }
     }
 
@@ -410,14 +385,12 @@ void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
         m_transform.InvalidateWorldMatrix(true);
     }
 
+    // Child-to-child moves do not pass through Scene's root attach/detach
+    // methods. Publish ancestry before callbacks can unload either Scene.
+    if (!crossesScenes && m_scene)
+        m_scene->BumpStructureVersion();
     bool isActiveInHierarchy = IsActiveInHierarchy();
     HandleActiveStateChanged(wasActiveInHierarchy, isActiveInHierarchy);
-    // Child-to-child moves do not pass through Scene's root attach/detach
-    // methods. Publish the new ancestry/order for every hierarchy consumer.
-    if (m_scene)
-        m_scene->BumpStructureVersion();
-    if (previousScene && previousScene != m_scene)
-        previousScene->BumpStructureVersion();
 }
 
 std::vector<std::string> GameObject::GetAttachmentBlockers(const std::string &constraintTypeId,

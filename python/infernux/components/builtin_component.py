@@ -403,6 +403,23 @@ class BuiltinComponent(InxComponent):
         )
 
     @classmethod
+    def _rebind_moved_components(cls, native_components) -> None:
+        """Follow an explicit native Scene transfer without reviving replacements."""
+        for native in native_components:
+            handle = native.handle
+            wrapper = BuiltinComponent._wrapper_cache.get(handle.id)
+            if wrapper is None:
+                continue
+            previous = wrapper.__dict__.get("_native_handle")
+            if (
+                previous is not None
+                and previous.id == handle.id
+                and previous.generation == handle.generation
+                and not wrapper._is_destroyed
+            ):
+                wrapper._bind_cpp(native, native.game_object)
+
+    @classmethod
     def _clear_cache(cls) -> None:
         """Clear the wrapper cache (call on scene change / play-mode stop)."""
         for wrapper in list(BuiltinComponent._wrapper_cache.values()):

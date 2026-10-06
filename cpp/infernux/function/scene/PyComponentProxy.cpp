@@ -317,6 +317,23 @@ void PyComponentProxy::SyncPythonMirror() const
     SyncPythonMirrorState(m_pyComponent, this);
 }
 
+void PyComponentProxy::RebindBuiltinComponentMirrors(const std::vector<Component *> &components)
+{
+    if (!Py_IsInitialized())
+        return;
+    PythonLifecyclePhaseScope acquire;
+    const auto modules = py::reinterpret_borrow<py::dict>(PyImport_GetModuleDict());
+    const py::str moduleName("infernux.components.builtin_component");
+    // A native-only host has no Python builtin mirrors to update. Do not load
+    // the gameplay package merely because a native hierarchy changed Scenes.
+    if (!modules.contains(moduleName))
+        return;
+    py::list moved;
+    for (Component *component : components)
+        moved.append(py::cast(component, py::return_value_policy::reference));
+    modules[moduleName].attr("BuiltinComponent").attr("_rebind_moved_components")(moved);
+}
+
 void PyComponentProxy::RebindPythonMirror()
 {
     py::gil_scoped_acquire acquire;
