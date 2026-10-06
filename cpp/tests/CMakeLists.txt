@@ -1466,6 +1466,21 @@ if(INFERNUX_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
         )
     endforeach()
+    foreach(_shared_camera_pipeline forward forward_plus deferred)
+        set(_shared_camera_test "infernux.shared_camera_${_shared_camera_pipeline}_gpu")
+        add_test(NAME ${_shared_camera_test}
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/python/infernux/test/shared_camera_gpu_test.py
+                --pipeline ${_shared_camera_pipeline}
+        )
+        set_tests_properties(${_shared_camera_test} PROPERTIES
+            ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+            LABELS "requires_vulkan_device"
+            TIMEOUT 60
+            RUN_SERIAL TRUE
+            FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
+        )
+    endforeach()
     foreach(_outline_check background deformation multiple reload game-alpha gizmo properties)
         set(_outline_test "infernux.selection_outline_${_outline_check}_gpu")
         add_test(NAME ${_outline_test}
