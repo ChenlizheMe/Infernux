@@ -176,24 +176,30 @@ class TestProjectPanelCreation:
             f"mat|{normalized}", normalized, '{"name":"Fresh"}', 0, True,
         )]
 
-    def test_create_prefab_links_the_saved_source(self, tmp_path, monkeypatch):
+    def test_create_prefab_links_the_saved_source(self, engine, scene, tmp_path, monkeypatch):
         from infernux.engine import prefab_manager
 
-        source = type("GameObject", (), {"name": "CheckpointGate"})()
+        database = engine.get_asset_database()
+        directory = Path(database.assets_root) / tmp_path.name
+        directory.mkdir()
+        source = scene.create_game_object("CheckpointGate")
         linked = []
-        monkeypatch.setattr(prefab_manager, "save_prefab", lambda *args, **kwargs: True)
-        monkeypatch.setattr(
-            prefab_manager,
-            "_link_created_prefab_source",
-            lambda game_object, path, database: linked.append((game_object, path, database)) or True,
-        )
-        database = object()
+        original_link = prefab_manager._link_created_prefab_source
 
-        ok, path = create_prefab_from_gameobject(source, str(tmp_path), database)
+        def link_saved_source(game_object, path, owner):
+            assert Path(path).is_file()
+            assert owner.get_guid_from_path(path)
+            linked.append((game_object, path, owner))
+            return original_link(game_object, path, owner)
+
+        monkeypatch.setattr(prefab_manager, "_link_created_prefab_source", link_saved_source)
+        result = create_prefab_from_gameobject(source, str(directory), database)
+        ok, path = result
 
         assert ok is True
-        assert path == str(tmp_path / "CheckpointGate.prefab")
+        assert path == str(directory / "CheckpointGate.prefab") == result.created_path
         assert linked == [(source, path, database)]
+        assert source.prefab_guid == database.get_guid_from_path(path)
 
 
 class TestProjectPanelPaths:

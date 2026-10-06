@@ -156,7 +156,7 @@ def test_asset_creation_rejects_nonportable_names_before_writing(tmp_path, creat
 
 
 def test_script_template_uses_explicit_serialization_and_valid_class_names(tmp_path):
-    assert not ops.create_script(str(tmp_path), "class.py")[0]
+    assert not ops.create_script(str(tmp_path), "class.py").success
     success, error = ops.create_script(str(tmp_path), "新组件.py")
     assert success, error
     source = (tmp_path / "新组件.py").read_text(encoding="utf-8")

@@ -343,7 +343,8 @@ def wire_project_callbacks(bs: EditorBootstrap) -> None:
         }
         spec = creators.get(str(kind or "").strip())
         if spec is None:
-            return False, f"Unknown asset kind: {kind}"
+            from infernux.engine.asset_creation import AssetCreationResult
+            return AssetCreationResult(False, f"Unknown asset kind: {kind}")
         _description, callback, args = spec
         return callback(*args)
 

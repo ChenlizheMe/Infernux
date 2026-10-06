@@ -67,7 +67,7 @@ def test_physic_material_asset_queries_and_deletion_follow_current_guid_owner(en
     monkeypatch.setattr(Application, 'data_path', staticmethod(lambda: str(Path(database.assets_root).parent)))
     directory = Path(database.assets_root)/tmp_path.name
     directory.mkdir()
-    assert create_physic_material(str(directory), 'SharedPhysics') == (True, '')
+    assert create_physic_material(str(directory), 'SharedPhysics').success
     path = directory/'SharedPhysics.physicMaterial'
     imported = AssetManager.import_asset(str(path), database=database)
     assert imported, imported.error

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from collections.abc import Callable
 from typing import Any, Optional
 
+from infernux.engine.asset_creation import AssetCreationResult
 from infernux.engine.path_utils import (
     is_case_only_rename,
     resolve_destination_path,
@@ -214,7 +215,7 @@ class ProjectAssetCreateCommand(UndoCommand):
     def __init__(
         self,
         current_path: str,
-        creator: Callable[[], Any],
+        creator: Callable[[], AssetCreationResult],
         *,
         project_root: str = "",
         backup_root: str = "",
@@ -234,57 +235,40 @@ class ProjectAssetCreateCommand(UndoCommand):
         self._delete_fn = delete_fn
         self._import_fn = import_fn
         self._created_path = ""
-        self._result: Any = (False, "Asset creation has not run")
+        self._result = AssetCreationResult(False, "Asset creation has not run")
         self._delete_command: Optional[ProjectAssetDeleteCommand] = None
 
     @property
-    def result(self) -> Any:
+    def result(self) -> AssetCreationResult:
         return self._result
 
     @property
     def created_path(self) -> str:
         return self._created_path
 
-    def _children(self) -> dict[str, str]:
-        if not os.path.isdir(self._current_path):
-            return {}
-        result: dict[str, str] = {}
-        with os.scandir(self._current_path) as entries:
-            for entry in entries:
-                if entry.name.lower().endswith(".meta"):
-                    continue
-                path = resolved_path(entry.path)
-                result[path_key(path)] = path
-        return result
-
-    @staticmethod
-    def _succeeded(result: Any) -> bool:
-        if isinstance(result, tuple):
-            return bool(result and result[0])
-        return bool(result)
-
     def execute(self) -> None:
         if self._delete_command is not None:
             raise RuntimeError("asset creation is already active; use redo to restore it")
-        before = self._children()
         self._result = self._creator()
-        after = self._children()
-        created = [path for key, path in after.items() if key not in before]
-        if not self._succeeded(self._result) or len(created) != 1:
+        if not isinstance(self._result, AssetCreationResult):
+            raise TypeError("Project asset creators must return an AssetCreationResult with explicit ownership")
+        created_path = resolved_path(self._result.created_path) if self._result.created_path else ""
+        if created_path and (
+            not same_path(os.path.dirname(created_path), self._current_path)
+            or created_path.lower().endswith(".meta")
+        ):
+            raise RuntimeError("Asset creator returned an item outside its Project directory")
+        if not self._result.success:
             from infernux.engine.ui import project_file_ops
 
-            for path in created:
-                try:
-                    project_file_ops.delete_item(path, self._asset_database)
-                except Exception:
-                    pass
-            if not self._succeeded(self._result):
-                detail = self._result[1] if isinstance(self._result, tuple) and len(self._result) > 1 else ""
-                raise RuntimeError(str(detail or "asset creation failed"))
-            raise RuntimeError(
-                "asset creation must produce exactly one top-level Project item"
-            )
-        self._created_path = created[0]
+            if created_path and os.path.exists(created_path):
+                delete = self._delete_fn or project_file_ops.delete_item
+                if not delete(created_path, self._asset_database):
+                    raise RuntimeError(f"Asset creation failed and its owned item could not be removed: {created_path}")
+            raise RuntimeError(self._result.detail or "asset creation failed")
+        if not created_path or not os.path.exists(created_path):
+            raise RuntimeError("Asset creator did not publish its declared Project item")
+        self._created_path = created_path
         self._delete_command = ProjectAssetDeleteCommand(
             [self._created_path],
             project_root=self._project_root,

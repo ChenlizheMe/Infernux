@@ -127,9 +127,10 @@ class PrefabCommandService:
             restore_linkage,
             origin=origin,
         )
-        if not isinstance(result, tuple) or len(result) < 2 or not result[0]:
+        from infernux.engine.asset_creation import AssetCreationResult
+        if not isinstance(result, AssetCreationResult) or not result.success:
             raise RuntimeError(f"Prefab creation failed: {result!r}")
-        return resolved_path(result[1])
+        return resolved_path(result.created_path)
 
     def locate(
         self,

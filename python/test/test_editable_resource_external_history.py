@@ -31,7 +31,7 @@ def material_editor(engine, scene, tmp_path, monkeypatch):
     core.project_assets.configure(database.project_root, database)
     folder = Path(database.assets_root) / tmp_path.name
     folder.mkdir()
-    assert project_file_ops.create_material(str(folder), "Material", database)[0]
+    assert project_file_ops.create_material(str(folder), "Material", database).success
     path = folder / "Material.mat"
     material = Material.load(str(path))
     controller = ensure_editable_resource_document(

@@ -13,6 +13,7 @@ import shutil
 import time
 
 from infernux.debug import Debug
+from infernux.engine.asset_creation import AssetCreationResult
 from infernux.engine.path_utils import (
     is_case_only_rename,
     is_path_within,
@@ -577,80 +578,80 @@ def _import_new_asset(path: str, asset_database) -> str:
 def create_folder(current_path: str, folder_name: str):
     """Create a folder and return ``(True, "")`` or ``(False, error_msg)``."""
     if not folder_name or not current_path:
-        return False, "Invalid folder name"
+        return AssetCreationResult(False, "Invalid folder name")
 
     folder_name = folder_name.strip()
     if error := _asset_name_error(folder_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not folder_name:
-        return False, "Folder name cannot be empty"
+        return AssetCreationResult(False, "Folder name cannot be empty")
+    if folder_name.lower().endswith(".meta"):
+        return AssetCreationResult(False, "Folder names cannot use the reserved .meta suffix")
 
     new_path = os.path.join(current_path, folder_name)
     if os.path.exists(new_path):
-        return False, f"'{folder_name}' already exists"
+        return AssetCreationResult(False, f"'{folder_name}' already exists")
 
     try:
-        os.makedirs(new_path)
+        os.mkdir(new_path)
     except OSError as exc:
-        return False, str(exc)
-    return True, ""
+        return AssetCreationResult(False, str(exc))
+    return AssetCreationResult(True, "", new_path)
 
 
 def create_script(current_path: str, script_name: str, asset_database=None):
     """Create a Python script from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
     if not script_name or not current_path:
-        return False, "Invalid script name"
+        return AssetCreationResult(False, "Invalid script name")
 
     script_name = script_name.strip()
     if not script_name:
-        return False, "Script name cannot be empty"
+        return AssetCreationResult(False, "Script name cannot be empty")
 
     class_name = script_name
     if class_name.endswith('.py'):
         class_name = class_name[:-3]
 
     if not class_name.isidentifier() or keyword.iskeyword(class_name) or _asset_name_error(class_name):
-        return False, "Invalid script name (must be valid Python identifier)"
+        return AssetCreationResult(False, "Invalid script name (must be valid Python identifier)")
 
     if not script_name.endswith('.py'):
         script_name = script_name + '.py'
 
     file_path = os.path.join(current_path, script_name)
     if os.path.exists(file_path):
-        return False, f"'{script_name}' already exists"
+        return AssetCreationResult(False, f"'{script_name}' already exists")
 
     content = SCRIPT_TEMPLATE.format(class_name=class_name)
     written, error = _write_new_text_asset(file_path, content)
     if not written:
-        return False, error
+        return AssetCreationResult(False, error)
 
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except Exception as exc:
-            return False, str(exc)
+            return AssetCreationResult(False, str(exc), file_path)
 
-    return True, ""
+    return AssetCreationResult(True, "", file_path)
 
 
 def create_shader(current_path: str, shader_name: str, shader_type: str,
                    asset_database=None):
     """Create a shader file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
     if not shader_name or not current_path:
-        return False, "Invalid shader name"
+        return AssetCreationResult(False, "Invalid shader name")
 
     shader_name = shader_name.strip()
     if error := _asset_name_error(shader_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not shader_name:
-        return False, "Shader name cannot be empty"
+        return AssetCreationResult(False, "Shader name cannot be empty")
 
     shader_type = str(shader_type).strip().lower()
     if shader_type not in {"vert", "frag"}:
-        return False, (
-            "Shader type must be 'vert' or 'frag'. Compute shaders are not supported; "
-            "use an external parallel backend."
-        )
+        return AssetCreationResult(False, "Shader type must be 'vert' or 'frag'. Compute shaders are not supported; "
+            "use an external parallel backend.")
 
     for ext in ['.vert', '.frag']:
         if shader_name.endswith(ext):
@@ -666,7 +667,7 @@ def create_shader(current_path: str, shader_name: str, shader_type: str,
     file_path = os.path.join(current_path, file_name)
 
     if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
+        return AssetCreationResult(False, f"'{file_name}' already exists")
 
     if shader_type == 'vert':
         content = VERTEX_SHADER_TEMPLATE.format(shader_id=shader_id)
@@ -675,27 +676,27 @@ def create_shader(current_path: str, shader_name: str, shader_type: str,
 
     written, error = _write_new_text_asset(file_path, content)
     if not written:
-        return False, error
+        return AssetCreationResult(False, error)
 
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except Exception as exc:
-            return False, str(exc)
+            return AssetCreationResult(False, str(exc), file_path)
 
-    return True, ""
+    return AssetCreationResult(True, "", file_path)
 
 
 def create_scene(current_path: str, scene_name: str, asset_database=None):
     """Create a ``.scene`` file from template. Returns ``(True, path)`` or ``(False, error_msg)``."""
     if not scene_name or not current_path:
-        return False, "Invalid scene name"
+        return AssetCreationResult(False, "Invalid scene name")
 
     scene_name = scene_name.strip()
     if error := _asset_name_error(scene_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not scene_name:
-        return False, "Scene name cannot be empty"
+        return AssetCreationResult(False, "Scene name cannot be empty")
 
     if scene_name.endswith('.scene'):
         scene_name = scene_name[:-6]
@@ -704,7 +705,7 @@ def create_scene(current_path: str, scene_name: str, asset_database=None):
     file_path = os.path.join(current_path, file_name)
 
     if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
+        return AssetCreationResult(False, f"'{file_name}' already exists")
 
     content = _document_text({
         "name": scene_name, "isPlaying": False, "objects": [],
@@ -712,27 +713,27 @@ def create_scene(current_path: str, scene_name: str, asset_database=None):
     })
     written, error = _write_new_text_asset(file_path, content)
     if not written:
-        return False, error
+        return AssetCreationResult(False, error)
 
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except Exception as exc:
-            return False, str(exc)
+            return AssetCreationResult(False, str(exc), file_path)
 
-    return True, file_path
+    return AssetCreationResult(True, file_path, file_path)
 
 
 def create_material(current_path: str, material_name: str, asset_database=None):
     """Create a ``.mat`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
     if not material_name or not current_path:
-        return False, "Invalid material name"
+        return AssetCreationResult(False, "Invalid material name")
 
     material_name = material_name.strip()
     if error := _asset_name_error(material_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not material_name:
-        return False, "Material name cannot be empty"
+        return AssetCreationResult(False, "Material name cannot be empty")
 
     if material_name.endswith('.mat'):
         material_name = material_name[:-4]
@@ -741,55 +742,55 @@ def create_material(current_path: str, material_name: str, asset_database=None):
     file_path = os.path.join(current_path, file_name)
 
     if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
+        return AssetCreationResult(False, f"'{file_name}' already exists")
 
     content = _document_text(_new_material_document(material_name))
     written, error = _write_new_text_asset(file_path, content)
     if not written:
-        return False, error
+        return AssetCreationResult(False, error)
 
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except Exception as exc:
-            return False, str(exc)
+            return AssetCreationResult(False, str(exc), file_path)
 
     # Publish the exact document already in memory. The Project panel can show
     # this preview before filesystem polling or a later material save completes.
     from infernux.core.assets import AssetManager
     AssetManager._prime_material_preview(file_path, content)
 
-    return True, ""
+    return AssetCreationResult(True, "", file_path)
 
 
 def create_physic_material(current_path: str, material_name: str, asset_database=None):
     """Create and import a strict ``.physicMaterial`` asset."""
     if not current_path or not material_name:
-        return False, "Invalid PhysicMaterial name"
+        return AssetCreationResult(False, "Invalid PhysicMaterial name")
     material_name = material_name.strip()
     if error := _asset_name_error(material_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not material_name:
-        return False, "PhysicMaterial name cannot be empty"
+        return AssetCreationResult(False, "PhysicMaterial name cannot be empty")
     extension = ".physicMaterial"
     if material_name.lower().endswith(extension.lower()):
         material_name = material_name[:-len(extension)]
     file_name = material_name + extension
     file_path = os.path.join(current_path, file_name)
     if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
+        return AssetCreationResult(False, f"'{file_name}' already exists")
 
     from infernux.core.physic_material import PhysicMaterial
 
     written, error = _write_new_text_asset(file_path, _document_text(PhysicMaterial().serialize_document()))
     if not written:
-        return False, error
+        return AssetCreationResult(False, error)
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except (OSError, RuntimeError, ValueError) as exc:
-            return False, str(exc)
-    return True, ""
+            return AssetCreationResult(False, str(exc), file_path)
+    return AssetCreationResult(True, "", file_path)
 
 
 def create_render_texture(current_path: str, asset_name: str, asset_database=None):
@@ -797,18 +798,18 @@ def create_render_texture(current_path: str, asset_name: str, asset_database=Non
     from infernux.lib import _Infernux
 
     if not current_path or not asset_name.strip():
-        return False, "RenderTexture name cannot be empty"
+        return AssetCreationResult(False, "RenderTexture name cannot be empty")
     extension = ".rendertexture"
     name = asset_name.strip()
     if error := _asset_name_error(name):
-        return False, error
+        return AssetCreationResult(False, error)
     if name.casefold().endswith(extension):
         name = name[:-len(extension)]
     if not name:
-        return False, "RenderTexture name cannot be empty"
+        return AssetCreationResult(False, "RenderTexture name cannot be empty")
     path = os.path.join(current_path, name + extension)
     if os.path.exists(path):
-        return False, f"'{name + extension}' already exists"
+        return AssetCreationResult(False, f"'{name + extension}' already exists")
     description = _Infernux._RenderTextureDesc()
     # Project assets are ready for Camera assignment; compute-only targets may
     # explicitly disable depth in the Inspector. Low-level defaults stay color-only.
@@ -816,56 +817,66 @@ def create_render_texture(current_path: str, asset_name: str, asset_database=Non
     content = _document_text(json.loads(_Infernux._render_texture_description_to_json(description)))
     written, error = _write_new_text_asset(path, content)
     if not written:
-        return False, error
+        return AssetCreationResult(False, error)
     if asset_database is not None:
         try:
             _import_new_asset(path, asset_database)
         except (OSError, RuntimeError, ValueError) as exc:
-            return False, str(exc)
-    return True, ""
+            return AssetCreationResult(False, str(exc), path)
+    return AssetCreationResult(True, "", path)
 
 
 def create_data_asset(current_path: str, asset_name: str, type_id: str, asset_database=None, *, value=None):
     """Create one typed ``.inxdata`` asset from its published DataAsset class."""
     if not current_path or not asset_name:
-        return False, "Invalid DataAsset name"
+        return AssetCreationResult(False, "Invalid DataAsset name")
     asset_name = asset_name.strip()
     if error := _asset_name_error(asset_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not asset_name:
-        return False, "DataAsset name cannot be empty"
+        return AssetCreationResult(False, "DataAsset name cannot be empty")
     if asset_name.lower().endswith(".inxdata"):
         asset_name = asset_name[:-len(".inxdata")]
     if not asset_name or os.path.basename(asset_name) != asset_name:
-        return False, "Invalid DataAsset name"
+        return AssetCreationResult(False, "Invalid DataAsset name")
 
     from infernux.components.serializable_object import get_serializable_class, get_serializable_type_id
     from infernux.core.data_asset import DataAsset
 
     asset_type = get_serializable_class(str(type_id or "").strip())
     if asset_type is None or asset_type is DataAsset or not issubclass(asset_type, DataAsset):
-        return False, f"Unknown DataAsset type: {type_id}"
+        return AssetCreationResult(False, f"Unknown DataAsset type: {type_id}")
     if value is not None and (
         not isinstance(value, DataAsset)
         or get_serializable_type_id(value) != get_serializable_type_id(asset_type)
     ):
-        return False, "Initial value must have the requested DataAsset type"
+        return AssetCreationResult(False, "Initial value must have the requested DataAsset type")
 
     file_name = asset_name + ".inxdata"
     file_path = os.path.join(current_path, file_name)
     if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
+        return AssetCreationResult(False, f"'{file_name}' already exists")
     try:
         # Preloads can retain a value from before a script type publication.
         # Materialize its document with the current authoritative schema.
         initial = asset_type() if value is None else asset_type.from_document(value.serialize_document())
-        from infernux.lib import DocumentFileState
-        initial.save_to(
-            file_path, database=asset_database, expected_file_state=DocumentFileState(),
-        )
+        initial._require_authoring_write()
+        file_path, asset_database = initial._resolve_project_path(file_path, asset_database)
+        content = _document_text(initial.serialize_document())
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        return False, str(exc)
-    return True, ""
+        return AssetCreationResult(False, str(exc))
+    written, error = _write_new_text_asset(file_path, content)
+    if not written:
+        return AssetCreationResult(False, error)
+    try:
+        from infernux.core.assets import AssetManager
+        guid = _import_new_asset(file_path, asset_database)
+        initial._bind_asset(file_path, guid)
+        AssetManager.invalidate(guid)
+        AssetManager._put_cache(guid, initial)
+    except Exception as exc:
+        return AssetCreationResult(False, str(exc), file_path)
+    return AssetCreationResult(True, "", file_path)
 
 
 def create_prefab_from_gameobject(game_object, current_path: str,
@@ -876,38 +887,48 @@ def create_prefab_from_gameobject(game_object, current_path: str,
     Returns ``(True, file_path)`` or ``(False, error_msg)``.
     """
     if game_object is None or not current_path:
-        return False, "Invalid parameters"
+        return AssetCreationResult(False, "Invalid parameters")
 
     from infernux.engine.prefab_manager import (
         PREFAB_EXTENSION,
         _link_created_prefab_source,
-        save_prefab,
+        _invalidate_prefab_template_cache,
+        serialize_prefab_document,
     )
 
     prefab_name = get_unique_name(current_path, game_object.name, PREFAB_EXTENSION)
     if error := _asset_name_error(prefab_name):
-        return False, error
+        return AssetCreationResult(False, error)
     file_path = os.path.join(current_path, prefab_name + PREFAB_EXTENSION)
 
-    from infernux.lib import DocumentFileState
-    if save_prefab(game_object, file_path, asset_database=asset_database,
-                   source_canvas_name=source_canvas_name, expected_file_state=DocumentFileState()):
+    try:
+        document = serialize_prefab_document(game_object, source_canvas_name=source_canvas_name)
+        content = json.dumps(document, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    except Exception as exc:
+        return AssetCreationResult(False, str(exc))
+    written, error = _write_new_text_asset(file_path, content)
+    if not written:
+        return AssetCreationResult(False, error)
+    try:
+        guid = _import_new_asset(file_path, asset_database) if asset_database else ""
+        _invalidate_prefab_template_cache(file_path, guid)
         if not _link_created_prefab_source(game_object, file_path, asset_database):
-            return False, "Prefab asset was saved, but its source hierarchy could not be linked"
-        return True, file_path
-    return False, "Failed to save prefab"
+            return AssetCreationResult(False, "Prefab asset was saved, but its source hierarchy could not be linked", file_path)
+        return AssetCreationResult(True, file_path, file_path)
+    except Exception as exc:
+        return AssetCreationResult(False, str(exc), file_path)
 
 
 def create_animclip(current_path: str, clip_name: str, asset_database=None):
     """Create a ``.animclip2d`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
     if not clip_name or not current_path:
-        return False, "Invalid animation clip name"
+        return AssetCreationResult(False, "Invalid animation clip name")
 
     clip_name = clip_name.strip()
     if error := _asset_name_error(clip_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not clip_name:
-        return False, "Animation clip name cannot be empty"
+        return AssetCreationResult(False, "Animation clip name cannot be empty")
 
     if clip_name.endswith('.animclip2d'):
         clip_name = clip_name[:-11]
@@ -916,34 +937,34 @@ def create_animclip(current_path: str, clip_name: str, asset_database=None):
     file_path = os.path.join(current_path, file_name)
 
     if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
+        return AssetCreationResult(False, f"'{file_name}' already exists")
 
     from infernux.core.animation_clip import AnimationClip
 
     content = _document_text(AnimationClip(name=clip_name).to_dict())
     written, error = _write_new_text_asset(file_path, content)
     if not written:
-        return False, error
+        return AssetCreationResult(False, error)
 
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except Exception as exc:
-            return False, str(exc)
+            return AssetCreationResult(False, str(exc), file_path)
 
-    return True, ""
+    return AssetCreationResult(True, "", file_path)
 
 
 def create_animclip3d(current_path: str, clip_name: str, asset_database=None):
     """Create a ``.animclip3d`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
     if not clip_name or not current_path:
-        return False, "Invalid 3D animation clip name"
+        return AssetCreationResult(False, "Invalid 3D animation clip name")
 
     clip_name = clip_name.strip()
     if error := _asset_name_error(clip_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not clip_name:
-        return False, "3D animation clip name cannot be empty"
+        return AssetCreationResult(False, "3D animation clip name cannot be empty")
 
     if clip_name.endswith('.animclip3d'):
         clip_name = clip_name[:-11]
@@ -952,34 +973,34 @@ def create_animclip3d(current_path: str, clip_name: str, asset_database=None):
     file_path = os.path.join(current_path, file_name)
 
     if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
+        return AssetCreationResult(False, f"'{file_name}' already exists")
 
     from infernux.core.animation_clip3d import AnimationClip3D
 
     content = _document_text(AnimationClip3D(name=clip_name).to_dict())
     written, error = _write_new_text_asset(file_path, content)
     if not written:
-        return False, error
+        return AssetCreationResult(False, error)
 
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except Exception as exc:
-            return False, str(exc)
+            return AssetCreationResult(False, str(exc), file_path)
 
-    return True, ""
+    return AssetCreationResult(True, "", file_path)
 
 
 def create_animfsm(current_path: str, fsm_name: str, asset_database=None):
     """Create a ``.animfsm`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
     if not fsm_name or not current_path:
-        return False, "Invalid state machine name"
+        return AssetCreationResult(False, "Invalid state machine name")
 
     fsm_name = fsm_name.strip()
     if error := _asset_name_error(fsm_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not fsm_name:
-        return False, "State machine name cannot be empty"
+        return AssetCreationResult(False, "State machine name cannot be empty")
 
     if fsm_name.endswith('.animfsm'):
         fsm_name = fsm_name[:-8]
@@ -988,41 +1009,41 @@ def create_animfsm(current_path: str, fsm_name: str, asset_database=None):
     file_path = os.path.join(current_path, file_name)
 
     if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
+        return AssetCreationResult(False, f"'{file_name}' already exists")
 
     from infernux.core.anim_state_machine import AnimStateMachine
 
     content = _document_text(AnimStateMachine(name=fsm_name).to_dict())
     written, error = _write_new_text_asset(file_path, content)
     if not written:
-        return False, error
+        return AssetCreationResult(False, error)
 
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except Exception as exc:
-            return False, str(exc)
+            return AssetCreationResult(False, str(exc), file_path)
 
-    return True, ""
+    return AssetCreationResult(True, "", file_path)
 
 
 def create_particlegraph(current_path: str, graph_name: str, asset_database=None):
     """Create and AOT-compile a strict ``.particlegraph`` authoring asset."""
     if not graph_name or not current_path:
-        return False, "Invalid Particle Graph name"
+        return AssetCreationResult(False, "Invalid Particle Graph name")
 
     graph_name = graph_name.strip()
     if error := _asset_name_error(graph_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not graph_name:
-        return False, "Particle Graph name cannot be empty"
+        return AssetCreationResult(False, "Particle Graph name cannot be empty")
     if graph_name.lower().endswith(".particlegraph"):
         graph_name = graph_name[: -len(".particlegraph")]
 
     file_name = graph_name + ".particlegraph"
     file_path = os.path.join(current_path, file_name)
     if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
+        return AssetCreationResult(False, f"'{file_name}' already exists")
 
     from infernux.particle.asset import ParticleGraphAsset
 
@@ -1030,14 +1051,14 @@ def create_particlegraph(current_path: str, graph_name: str, asset_database=None
         from infernux.lib import DocumentFileState
         ParticleGraphAsset(name=graph_name).save(file_path, expected_file_state=DocumentFileState())
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        return False, str(exc)
+        return AssetCreationResult(False, str(exc))
 
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except Exception as exc:
-            return False, str(exc)
-    return True, ""
+            return AssetCreationResult(False, str(exc), file_path)
+    return AssetCreationResult(True, "", file_path)
 
 
 def create_render_effect(
@@ -1048,12 +1069,12 @@ def create_render_effect(
 ):
     """Create and import one strict reusable ``.effect`` source asset."""
     if not current_path or not effect_name:
-        return False, "Invalid Render Effect name"
+        return AssetCreationResult(False, "Invalid Render Effect name")
     effect_name = effect_name.strip()
     if error := _asset_name_error(effect_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not effect_name:
-        return False, "Render Effect name cannot be empty"
+        return AssetCreationResult(False, "Render Effect name cannot be empty")
     if effect_name.lower().endswith(".effect"):
         effect_name = effect_name[:-len(".effect")]
 
@@ -1067,32 +1088,32 @@ def create_render_effect(
         get_render_effect_feature(feature_type)
         content = dump_render_effect_document(RenderEffectAsset(feature_type=feature_type))
     except (TypeError, ValueError) as exc:
-        return False, str(exc)
+        return AssetCreationResult(False, str(exc))
 
     file_name = effect_name + ".effect"
     file_path = os.path.join(current_path, file_name)
     if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
+        return AssetCreationResult(False, f"'{file_name}' already exists")
     written, error = _write_new_text_asset(file_path, content)
     if not written:
-        return False, error
+        return AssetCreationResult(False, error)
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except Exception as exc:
-            return False, str(exc)
-    return True, ""
+            return AssetCreationResult(False, str(exc), file_path)
+    return AssetCreationResult(True, "", file_path)
 
 
 def create_render_effect_group(current_path: str, group_name: str, asset_database=None):
     """Create and import one empty strict ``.effectgroup`` source asset."""
     if not current_path or not group_name:
-        return False, "Invalid Render Effect Group name"
+        return AssetCreationResult(False, "Invalid Render Effect Group name")
     group_name = group_name.strip()
     if error := _asset_name_error(group_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not group_name:
-        return False, "Render Effect Group name cannot be empty"
+        return AssetCreationResult(False, "Render Effect Group name cannot be empty")
     if group_name.lower().endswith(".effectgroup"):
         group_name = group_name[:-len(".effectgroup")]
 
@@ -1104,29 +1125,29 @@ def create_render_effect_group(current_path: str, group_name: str, asset_databas
     file_name = group_name + ".effectgroup"
     file_path = os.path.join(current_path, file_name)
     if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
+        return AssetCreationResult(False, f"'{file_name}' already exists")
     content = dump_render_effect_document(RenderEffectGroupAsset())
     written, error = _write_new_text_asset(file_path, content)
     if not written:
-        return False, error
+        return AssetCreationResult(False, error)
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except Exception as exc:
-            return False, str(exc)
-    return True, ""
+            return AssetCreationResult(False, str(exc), file_path)
+    return AssetCreationResult(True, "", file_path)
 
 
 def create_animtimeline(current_path: str, timeline_name: str, asset_database=None):
     """Create a ``.animtimeline`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
     if not timeline_name or not current_path:
-        return False, "Invalid timeline name"
+        return AssetCreationResult(False, "Invalid timeline name")
 
     timeline_name = timeline_name.strip()
     if error := _asset_name_error(timeline_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not timeline_name:
-        return False, "Timeline name cannot be empty"
+        return AssetCreationResult(False, "Timeline name cannot be empty")
 
     if timeline_name.endswith('.animtimeline'):
         timeline_name = timeline_name[:-13]
@@ -1135,34 +1156,34 @@ def create_animtimeline(current_path: str, timeline_name: str, asset_database=No
     file_path = os.path.join(current_path, file_name)
 
     if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
+        return AssetCreationResult(False, f"'{file_name}' already exists")
 
     from infernux.core.animation_timeline import AnimationTimeline
 
     content = _document_text(AnimationTimeline(name=timeline_name).to_dict())
     written, error = _write_new_text_asset(file_path, content)
     if not written:
-        return False, error
+        return AssetCreationResult(False, error)
 
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except Exception as exc:
-            return False, str(exc)
+            return AssetCreationResult(False, str(exc), file_path)
 
-    return True, ""
+    return AssetCreationResult(True, "", file_path)
 
 
 def create_timelinefsm(current_path: str, fsm_name: str, asset_database=None):
     """Create a ``.timelinefsm`` file from template. Returns ``(True, "")`` or ``(False, error_msg)``."""
     if not fsm_name or not current_path:
-        return False, "Invalid timeline FSM name"
+        return AssetCreationResult(False, "Invalid timeline FSM name")
 
     fsm_name = fsm_name.strip()
     if error := _asset_name_error(fsm_name):
-        return False, error
+        return AssetCreationResult(False, error)
     if not fsm_name:
-        return False, "Timeline FSM name cannot be empty"
+        return AssetCreationResult(False, "Timeline FSM name cannot be empty")
 
     if fsm_name.endswith('.timelinefsm'):
         fsm_name = fsm_name[:-12]
@@ -1171,22 +1192,22 @@ def create_timelinefsm(current_path: str, fsm_name: str, asset_database=None):
     file_path = os.path.join(current_path, file_name)
 
     if os.path.exists(file_path):
-        return False, f"'{file_name}' already exists"
+        return AssetCreationResult(False, f"'{file_name}' already exists")
 
     from infernux.core.anim_state_machine import AnimStateMachine
 
     content = _document_text(AnimStateMachine(name=fsm_name, mode="timeline").to_dict())
     written, error = _write_new_text_asset(file_path, content)
     if not written:
-        return False, error
+        return AssetCreationResult(False, error)
 
     if asset_database:
         try:
             _import_new_asset(file_path, asset_database)
         except Exception as exc:
-            return False, str(exc)
+            return AssetCreationResult(False, str(exc), file_path)
 
-    return True, ""
+    return AssetCreationResult(True, "", file_path)
 
 
 # ---------------------------------------------------------------------------

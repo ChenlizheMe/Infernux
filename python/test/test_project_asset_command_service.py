@@ -6,6 +6,7 @@ import tempfile
 
 import pytest
 
+from infernux.engine.asset_creation import AssetCreationResult
 from infernux.engine.interaction import (
     ActionOrigin,
     ClipboardService,
@@ -237,7 +238,7 @@ def test_project_asset_interactions_create_open_and_reveal_without_panel_busines
         path = os.path.join(directory, f"{name}.txt")
         with open(path, "w", encoding="utf-8") as stream:
             stream.write("created")
-        return True, ""
+        return AssetCreationResult(True, "", path)
 
     interactions.configure(
         unique_name=lambda _directory, base, _extension: base,
@@ -292,13 +293,13 @@ def test_project_asset_service_create_and_delete_share_global_history(project_as
 
     def creator():
         created.write_text("created", encoding="utf-8")
-        return True, ""
+        return AssetCreationResult(True, "", str(created))
 
     assert service.create(
         str(assets),
         creator,
         origin=ActionOrigin.AUTOMATION,
-    ) == (True, "")
+    ) == AssetCreationResult(True, "", str(created))
     assert created.exists()
 
     service.delete((str(created),), origin=ActionOrigin.AUTOMATION)

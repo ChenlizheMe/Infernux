@@ -75,7 +75,7 @@ def _exercise(project: Path, mode: str) -> None:
             (ops.create_animclip3d, ".animclip3d", "ANIMCLIP3D_FILE") if mode != "3d"
             else (ops.create_animclip, ".animclip2d", "ANIMCLIP_FILE")
         )
-        assert other_creator(str(project / "Assets"), "Incompatible", database)[0]
+        assert other_creator(str(project / "Assets"), "Incompatible", database).success
         incompatible = str(project / "Assets" / ("Incompatible" + other_ext))
         drop(other_payload, incompatible, 500.0, 500.0)
         assert panel._fsm.to_dict() == before and not manager.can_undo

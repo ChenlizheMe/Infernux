@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Iterable, Optional
 
+from infernux.engine.asset_creation import AssetCreationResult
 from infernux.engine.path_utils import (
     is_case_only_rename,
     is_path_within,
@@ -75,12 +76,12 @@ class ProjectAssetCommandService:
     def create(
         self,
         current_path: str,
-        creator: Callable[[], Any],
+        creator: Callable[[], AssetCreationResult],
         *,
         description: str = "Create Asset",
         origin: ActionOrigin = ActionOrigin.USER,
         replace_path: str = "",
-    ) -> Any:
+    ) -> AssetCreationResult:
         command = self._create_command(current_path, creator, description=description)
         if replace_path:
             from infernux.engine.undo import (
@@ -115,12 +116,12 @@ class ProjectAssetCommandService:
     def create_with_path(
         self,
         current_path: str,
-        creator: Callable[[], Any],
+        creator: Callable[[], AssetCreationResult],
         *,
         description: str = "Create Asset",
         origin: ActionOrigin = ActionOrigin.USER,
     ) -> str:
-        """Create one asset and return its authoritative discovered path."""
+        """Create one asset and return the creator's authoritative owned path."""
         command = self._create_command(
             current_path,
             creator,
@@ -132,12 +133,12 @@ class ProjectAssetCommandService:
     def create_prefab(
         self,
         current_path: str,
-        creator: Callable[[], Any],
+        creator: Callable[[], AssetCreationResult],
         capture_linkage: Callable[[], Any],
         restore_linkage: Callable[[Any], None],
         *,
         origin: ActionOrigin = ActionOrigin.USER,
-    ) -> Any:
+    ) -> AssetCreationResult:
         from infernux.engine.undo import ProjectPrefabCreateCommand
 
         asset_command = self._create_command(
@@ -204,9 +205,9 @@ class ProjectAssetCommandService:
             DocumentStore.instance().write_and_wait(target, content, options)
             try:
                 _import_new_asset(target, self._asset_database)
-                return True, ""
+                return AssetCreationResult(True, "", target)
             except (OSError, RuntimeError, ValueError) as exc:
-                return False, str(exc)
+                return AssetCreationResult(False, str(exc), target)
 
         return self.create_with_path(os.path.dirname(target), create_copy,
                                      description=description, origin=origin)
@@ -668,7 +669,7 @@ class ProjectAssetCommandService:
     def _create_command(
         self,
         current_path: str,
-        creator: Callable[[], Any],
+        creator: Callable[[], AssetCreationResult],
         *,
         description: str,
     ) -> Any:

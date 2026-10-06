@@ -201,7 +201,8 @@ def test_create_from_object_delegates_to_project_asset_service(
         creator_calls.append(
             (game_object, destination, asset_database, source_canvas_name)
         )
-        return True, str(created_path)
+        from infernux.engine.asset_creation import AssetCreationResult
+        return AssetCreationResult(True, str(created_path), str(created_path))
 
     monkeypatch.setattr(project_file_ops, "create_prefab_from_gameobject", _create)
 

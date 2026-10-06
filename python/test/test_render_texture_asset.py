@@ -351,7 +351,7 @@ def test_load_path_guid_reference_and_camera_share_owner(imported_target, scene)
 def test_new_project_asset_assigns_to_camera_without_depth_setup(imported_target, scene, engine, tmp_path):
     from infernux.engine.ui.project_file_ops import create_render_texture
     _, _, _, database = imported_target
-    assert create_render_texture(str(tmp_path), 'NewCameraTarget') == (True, '')
+    assert create_render_texture(str(tmp_path), 'NewCameraTarget').success
     source = tmp_path / 'NewCameraTarget.rendertexture'
     imported = database.import_asset(str(source))
     assert imported.succeeded, imported.error

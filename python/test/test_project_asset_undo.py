@@ -7,6 +7,7 @@ import wave
 import pytest
 
 from infernux.lib import InxMaterial
+from infernux.engine.asset_creation import AssetCreationResult
 from infernux.engine.interaction import EditorActionJournal
 from infernux.engine.undo import (
     ProjectAssetCreateCommand,
@@ -87,7 +88,7 @@ def test_project_asset_create_preserves_file_and_meta_identity(tmp_path):
     def create():
         asset.write_text("material", encoding="utf-8")
         meta.write_text("stable-guid", encoding="utf-8")
-        return True, ""
+        return AssetCreationResult(True, "", str(asset))
 
     command = ProjectAssetCreateCommand(
         str(assets),
@@ -100,7 +101,7 @@ def test_project_asset_create_preserves_file_and_meta_identity(tmp_path):
 
     command.execute()
     assert command.created_path == str(asset.resolve())
-    assert command.result == (True, "")
+    assert tuple(command.result) == (True, "")
     assert asset.read_text(encoding="utf-8") == "material"
     assert meta.read_text(encoding="utf-8") == "stable-guid"
 
@@ -121,7 +122,7 @@ def test_project_asset_create_redo_refuses_external_destination(tmp_path):
 
     def create():
         asset.write_text("created", encoding="utf-8")
-        return True, ""
+        return AssetCreationResult(True, "", str(asset))
 
     command = ProjectAssetCreateCommand(
         str(assets),
@@ -150,7 +151,7 @@ def test_project_prefab_create_owns_asset_and_source_linkage(tmp_path):
     def create():
         prefab.write_text("prefab", encoding="utf-8")
         linkage.update(guid="prefab-guid", is_root=True)
-        return True, str(prefab)
+        return AssetCreationResult(True, str(prefab), str(prefab))
 
     asset_command = ProjectAssetCreateCommand(
         str(assets),

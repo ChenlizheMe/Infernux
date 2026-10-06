@@ -77,7 +77,7 @@ def test_project_creation_is_camera_ready_and_never_overwrites(tmp_path):
     from infernux.host.asset_operations import _CREATE_KINDS
 
     assert _CREATE_KINDS["render_texture"] == ".rendertexture"
-    assert create_render_texture(str(tmp_path), "Monitor") == (True, "")
+    assert create_render_texture(str(tmp_path), "Monitor").success
     path = tmp_path / "Monitor.rendertexture"
     description = native._render_texture_description_from_json(path.read_text(encoding="utf-8"))
     assert description.width == description.height == 256
@@ -85,6 +85,6 @@ def test_project_creation_is_camera_ready_and_never_overwrites(tmp_path):
     assert description.color_format == native.PixelFormat.RGBA8_UNORM
     assert native._RenderTextureDesc().depth_format == native.PixelFormat.UNDEFINED
     original = path.read_bytes()
-    assert not create_render_texture(str(tmp_path), "Monitor.rendertexture")[0]
+    assert not create_render_texture(str(tmp_path), "Monitor.rendertexture").success
     assert path.read_bytes() == original
-    assert not create_render_texture(str(tmp_path), ".rendertexture")[0]
+    assert not create_render_texture(str(tmp_path), ".rendertexture").success
