@@ -63,6 +63,19 @@ class AffineEffect(inx.renderstack.FullScreenEffect):
         self.apply_single_source_effect(graph,bus,output_name='offset',pass_name='Offset',shader_name='Group Order Offset',format=inx.rendergraph.Format.RGBA16_SFLOAT,params={'bias':float(self.bias)})
 
 
+@inx.renderstack.render_effect_feature('audit.group_order.scale')
+class ScaleEffect(AffineEffect):
+    # Opposing legacy metadata must not reorder authored stage/slot mounts.
+    default_order = 300
+    injection_point = 'after_post_process'
+
+
+@inx.renderstack.render_effect_feature('audit.group_order.offset')
+class OffsetEffect(AffineEffect):
+    default_order = -300
+    injection_point = 'before_post_process'
+
+
 class OrderingPipeline(inx.renderstack.RenderPipeline):
     name='Group Order Pipeline'
     builds=0
@@ -110,7 +123,7 @@ def main():
             effects={}
             for name,multiplier,bias in (('Scale',2.,0.),('Offset',1.,.05),('Affine',2.,.05)):
                 path=project/'Assets'/(name+'.effect')
-                path.write_text(json.dumps({'$schema':'infernux.render_effect','feature_type':'audit.group_order.affine','parameters':{'multiplier':multiplier,'bias':bias},'dependencies':dependencies}),encoding='utf-8')
+                path.write_text(json.dumps({'$schema':'infernux.render_effect','feature_type':'audit.group_order.'+name.lower(),'parameters':{'multiplier':multiplier,'bias':bias},'dependencies':dependencies}),encoding='utf-8')
                 result=AssetManager.import_asset(str(path),database=database)
                 assert result,result.error
                 effects[name]=result.guid
