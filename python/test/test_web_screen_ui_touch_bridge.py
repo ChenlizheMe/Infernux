@@ -46,6 +46,8 @@ def test_web_screen_ui_forwards_same_frame_touch_and_mouse(monkeypatch):
     bootstrap["_player_scene_manager"] = SimpleNamespace(
         get_active_scene=lambda: scene,
         get_runtime_persistent_scene=lambda: None,
+        scene_count=1,
+        get_scene_at=lambda index: scene if index == 0 else None,
     )
     bootstrap["_screen_width"] = 1280
     bootstrap["_screen_height"] = 720
@@ -64,7 +66,7 @@ def test_web_screen_ui_forwards_same_frame_touch_and_mouse(monkeypatch):
     monkeypatch.setattr(
         canvas_snapshot,
         "collect_sorted_runtime_canvas_snapshot",
-        lambda active, persistent: (canvas,),
+        lambda *scenes: (canvas,),
     )
     monkeypatch.setattr(
         runtime_screen_ui, "_canvas_metrics", lambda *_: (2.0, 2.0, 0.0, 640, 360)
@@ -72,7 +74,7 @@ def test_web_screen_ui_forwards_same_frame_touch_and_mouse(monkeypatch):
     monkeypatch.setattr(
         runtime_screen_ui,
         "collect_runtime_ui_input_surfaces",
-        lambda active, persistent: (canvas,),
+        lambda *scenes: (canvas,),
     )
 
     touch = SimpleNamespace(

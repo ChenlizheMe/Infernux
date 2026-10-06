@@ -276,18 +276,9 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         from infernux.lib import SceneManager
 
         scene_manager = SceneManager.instance()
-        scene = scene_manager.get_active_scene()
-        persistent_getter = getattr(
-            scene_manager,
-            "get_runtime_persistent_scene",
-            None,
-        )
-        persistent_scene = persistent_getter() if callable(persistent_getter) else None
-        scenes = tuple(
-            candidate
-            for candidate in (scene, persistent_scene)
-            if candidate is not None
-        )
+        from infernux.ui.ui_canvas_utils import runtime_ui_scenes
+
+        scenes = runtime_ui_scenes(scene_manager)
         scene_key = tuple(scene_canvas_cache_key(candidate) for candidate in scenes)
         cached_component = getattr(self, "_selected_element_cache", None)
         if (

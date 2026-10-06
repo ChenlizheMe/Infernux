@@ -449,7 +449,7 @@ def _runtime_command_epoch():
 
 def runtime_ui_revision(scene, canvases, width: int, height: int,
                         texture_generation: int = 0, world_elements=(),
-                        persistent_scene=None) -> int:
+                        persistent_scene=None, runtime_scenes=None) -> int:
     """Build the content revision for native command-list reuse.
 
     UI components increment a shared generation on visual mutation. Scene
@@ -459,15 +459,12 @@ def runtime_ui_revision(scene, canvases, width: int, height: int,
     canvases = tuple(canvases)
     world_elements = tuple(world_elements)
     visual_revision = get_runtime_ui_revision()
+    scenes = (scene, persistent_scene) if runtime_scenes is None else runtime_scenes
     membership = (
-        id(scene),
-        int(getattr(scene, "world_id", 0)),
-        int(getattr(scene, "structure_version", 0)),
-        int(getattr(scene, "temporal_discontinuity_revision", 0)),
-        id(persistent_scene),
-        int(getattr(persistent_scene, "world_id", 0)),
-        int(getattr(persistent_scene, "structure_version", 0)),
-        int(getattr(persistent_scene, "temporal_discontinuity_revision", 0)),
+        tuple((id(world), int(getattr(world, "world_id", 0)),
+               int(getattr(world, "structure_version", 0)),
+               int(getattr(world, "temporal_discontinuity_revision", 0)))
+              for world in scenes if world is not None),
         canvases, world_elements,
     )
     dependencies = _runtime_dependencies.revision(

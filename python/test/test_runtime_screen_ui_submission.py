@@ -99,6 +99,8 @@ def _install_scene_manager(monkeypatch, scene, persistent_scene=None) -> None:
             instance=lambda: SimpleNamespace(
                 get_active_scene=lambda: scene,
                 get_runtime_persistent_scene=lambda: persistent_scene,
+                scene_count=int(scene is not None),
+                get_scene_at=lambda index: scene if index == 0 else None,
             )
         ),
     )

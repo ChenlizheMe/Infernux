@@ -54,8 +54,8 @@ def _registered_canvas_entries(*scenes) -> list[tuple]:
     RTTI-scanning every native component each frame boundary is both wasteful
     and unsafe while a scene transaction retires the previous graph. Python
     component publication already owns an exact live-instance registry. Scene
-    world IDs make that registry a deterministic query for active and
-    DontDestroyOnLoad worlds, including nested Canvases.
+    world IDs make that registry a deterministic query for resident worlds,
+    including nested Canvases.
     """
     from infernux.components import InxComponent
     from infernux.ui import UICanvas
@@ -188,27 +188,30 @@ def collect_sorted_canvases(scene, *, allow_stale_empty: bool = False) -> list:
     return _canvas_sorted_cache
 
 
+def runtime_ui_scenes(scene_manager) -> tuple:
+    """Return loaded worlds in native order, then the persistent world.
+
+    Active selection does not change UI membership or equal-order stacking.
+    Preview worlds are intentionally absent from the native loaded-scene list.
+    """
+    scenes = tuple(
+        scene_manager.get_scene_at(index)
+        for index in range(scene_manager.scene_count)
+    )
+    persistent = scene_manager.get_runtime_persistent_scene()
+    return scenes + (persistent,) if persistent is not None else scenes
+
+
 def collect_sorted_runtime_canvases(
-    active_scene,
-    persistent_scene=None,
-    *,
+    *scenes,
     allow_stale_empty: bool = False,
 ) -> list:
-    """Return sorted canvases from both runtime-owned scenes.
-
-    ``DontDestroyOnLoad`` transfers roots into a separate native Scene. Runtime
-    UI remains one visual/input domain, so the active and persistent scenes
-    must be collected as one cached snapshot.
-    """
+    """Return one sorted snapshot for the supplied resident UI worlds."""
     global _runtime_canvas_cache, _runtime_canvas_cache_key
     global _runtime_canvas_with_go_cache
     global _runtime_canvas_sort_signature
 
-    scenes = []
-    for scene in (active_scene, persistent_scene):
-        if scene is not None and all(scene is not existing for existing in scenes):
-            scenes.append(scene)
-    scenes = tuple(scenes)
+    scenes = tuple({id(scene): scene for scene in scenes if scene is not None}.values())
     key = (
         tuple(scene_canvas_cache_key(scene) for scene in scenes),
         _canvas_membership_revision,
@@ -237,9 +240,7 @@ def collect_sorted_runtime_canvases(
 
 
 def collect_runtime_canvases_with_go(
-    active_scene,
-    persistent_scene=None,
-    *,
+    *scenes,
     allow_stale_empty: bool = False,
 ) -> List[Tuple]:
     """Return canvases from the complete runtime world with their owners.
@@ -248,8 +249,7 @@ def collect_runtime_canvases_with_go(
     ``DontDestroyOnLoad`` roots live in a separate native Scene.
     """
     collect_sorted_runtime_canvases(
-        active_scene,
-        persistent_scene,
+        *scenes,
         allow_stale_empty=allow_stale_empty,
     )
     return _runtime_canvas_with_go_cache

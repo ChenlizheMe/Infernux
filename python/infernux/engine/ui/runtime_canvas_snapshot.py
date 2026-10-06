@@ -10,36 +10,30 @@ from infernux.ui.ui_canvas_utils import (
 )
 
 
-def _runtime_scene_key(active_scene, persistent_scene) -> tuple:
-    scenes = []
-    for scene in (active_scene, persistent_scene):
-        if scene is not None and all(scene is not existing for existing in scenes):
-            scenes.append(scene)
+def _runtime_scene_key(scenes) -> tuple:
+    scenes = tuple({id(scene): scene for scene in scenes if scene is not None}.values())
     return tuple(_scene_canvas_cache_key(scene) for scene in scenes)
 
 
-def runtime_canvas_snapshot_token(active_scene, persistent_scene=None) -> tuple:
+def runtime_canvas_snapshot_token(*scenes) -> tuple:
     """Return the scene epoch plus the dedicated Canvas membership revision."""
     return (
-        _runtime_scene_key(active_scene, persistent_scene),
+        _runtime_scene_key(scenes),
         canvas_membership_revision(),
     )
 
 
-def collect_sorted_runtime_canvas_snapshot(active_scene, persistent_scene=None):
+def collect_sorted_runtime_canvas_snapshot(*scenes):
     """Return the current sorted Canvas snapshot without unrelated scene scans."""
     return _collect_sorted_runtime_canvases(
-        active_scene,
-        persistent_scene,
+        *scenes,
         allow_stale_empty=False,
     )
 
 
-def collect_runtime_canvas_snapshot_with_go(active_scene, persistent_scene=None):
+def collect_runtime_canvas_snapshot_with_go(*scenes):
     """Return the shared runtime Canvas snapshot with owning GameObjects."""
-    collect_sorted_runtime_canvas_snapshot(active_scene, persistent_scene)
     return _collect_runtime_canvases_with_go(
-        active_scene,
-        persistent_scene,
+        *scenes,
         allow_stale_empty=False,
     )

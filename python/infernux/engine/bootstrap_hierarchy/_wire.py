@@ -54,10 +54,10 @@ def _wire_canvas_queries(ctx):
             collect_runtime_canvas_snapshot_with_go,
         )
         from infernux.lib import SceneManager as _SM
+        from infernux.ui.ui_canvas_utils import runtime_ui_scenes
 
         canvases_with_go = collect_runtime_canvas_snapshot_with_go(
-            scene,
-            _SM.instance().get_runtime_persistent_scene(),
+            *runtime_ui_scenes(_SM.instance()),
         )
         canvas_list_token = id(canvases_with_go)
         scene_structure_version = int(getattr(scene, "structure_version", -1))

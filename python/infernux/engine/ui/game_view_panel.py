@@ -33,6 +33,7 @@ from infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
 from infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
 from infernux.ui.ui_event_system import UIEventProcessor
 from infernux.ui.ui_button import UIButton
+from infernux.ui.ui_canvas_utils import runtime_ui_scenes
 from infernux.engine.runtime_mouse_events import MouseEventDispatcher
 from infernux.ui.inx_ui_screen_component import clear_rect_cache
 from .game_input_policy import should_process_game_ui_events, should_route_game_input
@@ -529,10 +530,10 @@ class GameViewPanel(EditorPanel):
         return self._cached_game_texture_id
 
     def _get_scene_and_canvases(self):
-        """Return the active scene and its sorted screen-space canvases.
+        """Return the camera scene and all resident screen-space canvases.
 
         Game View is rebuilt at the editor UI cadence, while canvas discovery
-        only changes with the active scene epoch or Canvas membership revision.
+        only changes with resident scene epochs or Canvas membership revision.
         Keeping this snapshot at the panel boundary avoids repeated scene and
         canvas queries without hiding any UI updates: property changes are
         still observed by the runtime UI revision and input uses the current
@@ -540,24 +541,19 @@ class GameViewPanel(EditorPanel):
         """
         scene_manager = _SM.instance()
         scene = scene_manager.get_active_scene()
-        get_persistent_scene = getattr(
-            scene_manager, "get_runtime_persistent_scene", None
-        )
-        persistent_scene = (
-            get_persistent_scene() if callable(get_persistent_scene) else None
-        )
+        scenes = runtime_ui_scenes(scene_manager)
         if scene is None:
             if self._cached_ui_scene is not None:
                 self._invalidate_ui_scene_cache()
             return None, ()
 
-        scene_identity = (scene, persistent_scene)
-        snapshot_token = runtime_canvas_snapshot_token(scene, persistent_scene)
+        scene_identity = scenes
+        snapshot_token = runtime_canvas_snapshot_token(*scenes)
         if (
             scene_identity != self._cached_ui_scene
             or snapshot_token != self._cached_ui_snapshot_token
         ):
-            canvases = collect_sorted_runtime_canvas_snapshot(scene, persistent_scene)
+            canvases = collect_sorted_runtime_canvas_snapshot(*scenes)
             # Rectangles are retained by the UI components themselves.  Only
             # clear them when the scene snapshot changes; doing this every GUI
             # build defeats the cache and needlessly invalidates layout work.
@@ -947,12 +943,8 @@ class GameViewPanel(EditorPanel):
 
         if canvases is None:
             scene_manager = _SM.instance()
-            get_persistent_scene = getattr(
-                scene_manager, "get_runtime_persistent_scene", None
-            )
             canvases = collect_sorted_runtime_canvas_snapshot(
-                scene,
-                get_persistent_scene() if callable(get_persistent_scene) else None,
+                *runtime_ui_scenes(scene_manager),
             )
         if not canvases:
             return
@@ -1064,16 +1056,10 @@ class GameViewPanel(EditorPanel):
         if scene is None:
             self._reset_pointer_input()
             return
-        get_persistent_scene = getattr(
-            scene_manager, "get_runtime_persistent_scene", None
-        )
-        persistent_scene = (
-            get_persistent_scene() if callable(get_persistent_scene) else None
-        )
         from infernux.engine.runtime_screen_ui import (
             collect_runtime_ui_input_surfaces,
         )
-        surfaces = collect_runtime_ui_input_surfaces(scene, persistent_scene)
+        surfaces = collect_runtime_ui_input_surfaces(*runtime_ui_scenes(scene_manager))
         if not surfaces:
             # 3D mouse callbacks must still run in scenes without any UI
             # surface. Reset only the UI path and continue to the shared

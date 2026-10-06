@@ -171,7 +171,10 @@ def ui(scene, monkeypatch, request):
         def get_screen_ui_renderer(self):
             return renderer
     engine = Engine()
-    manager = SimpleNamespace(get_active_scene=lambda: scene, get_runtime_persistent_scene=lambda: None)
+    manager = SimpleNamespace(
+        get_active_scene=lambda: scene, get_runtime_persistent_scene=lambda: None,
+        scene_count=1, get_scene_at=lambda index: scene if index == 0 else None,
+    )
     monkeypatch.setattr(lib, 'SceneManager', SimpleNamespace(instance=lambda: manager))
     texture_cache = SimpleNamespace(has_pending=False, generation=0, texture_id=71)
     texture_cache.get_bound = lambda _: lambda source: texture_cache.texture_id + getattr(source, 'revision', 0)

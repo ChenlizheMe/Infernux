@@ -28,6 +28,15 @@ class _Engine:
         return 1
 
 
+def _scene_manager(scene):
+    return SimpleNamespace(
+        get_active_scene=lambda: scene,
+        scene_count=int(scene is not None),
+        get_scene_at=lambda index: scene if index == 0 else None,
+        get_runtime_persistent_scene=lambda: None,
+    )
+
+
 def test_mouse_route_uses_live_play_manager_and_newly_focused_panel(monkeypatch):
     import infernux.lib as lib
     import infernux.engine.ui.game_view_panel as module
@@ -43,8 +52,7 @@ def test_mouse_route_uses_live_play_manager_and_newly_focused_panel(monkeypatch)
         world_id=17,
         temporal_discontinuity_revision=1,
     )
-    monkeypatch.setattr(lib, 'SceneManager', SimpleNamespace(instance=lambda: SimpleNamespace(
-        get_active_scene=lambda: scene)))
+    monkeypatch.setattr(lib, 'SceneManager', SimpleNamespace(instance=lambda: _scene_manager(scene)))
     monkeypatch.setattr(ui, 'collect_runtime_ui_input_surfaces', lambda *args: ())
     panel = GameViewPanel(engine=_Engine())
     panel.set_play_mode_manager(SimpleNamespace(is_playing=True))
@@ -215,7 +223,7 @@ def test_game_ui_button_is_exposed_as_a_play_only_semantic_target(monkeypatch):
 def test_game_viewport_is_exposed_as_a_semantic_click_target(monkeypatch):
     import infernux.engine.ui.game_view_panel as module
 
-    monkeypatch.setattr(module, "_SM", SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: None)))
+    monkeypatch.setattr(module, "_SM", SimpleNamespace(instance=lambda: _scene_manager(None)))
     monkeypatch.setattr(
         module, "collect_sorted_runtime_canvas_snapshot", lambda *_args, **_kwargs: []
     )
@@ -250,7 +258,7 @@ def test_game_viewport_is_exposed_as_a_semantic_click_target(monkeypatch):
 def test_game_viewport_does_not_steal_clicks_through_a_floating_window(monkeypatch):
     import infernux.engine.ui.game_view_panel as module
 
-    monkeypatch.setattr(module, "_SM", SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: None)))
+    monkeypatch.setattr(module, "_SM", SimpleNamespace(instance=lambda: _scene_manager(None)))
     monkeypatch.setattr(
         module, "collect_sorted_runtime_canvas_snapshot", lambda *_args, **_kwargs: []
     )
@@ -283,7 +291,7 @@ def test_game_viewport_does_not_steal_clicks_through_a_floating_window(monkeypat
 def test_game_viewport_activates_on_mouse_down_before_imgui_button_release(monkeypatch):
     import infernux.engine.ui.game_view_panel as module
 
-    monkeypatch.setattr(module, "_SM", SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: None)))
+    monkeypatch.setattr(module, "_SM", SimpleNamespace(instance=lambda: _scene_manager(None)))
     monkeypatch.setattr(
         module, "collect_sorted_runtime_canvas_snapshot", lambda *_args, **_kwargs: []
     )
@@ -535,7 +543,7 @@ def test_game_view_canvas_snapshot_ignores_unrelated_scene_structure_changes(mon
     monkeypatch.setattr(
         module,
         "_SM",
-        SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: scene)),
+        SimpleNamespace(instance=lambda: _scene_manager(scene)),
     )
     monkeypatch.setattr(
         module,
@@ -586,7 +594,7 @@ def test_game_view_invalidates_canvas_snapshot_when_scene_is_cleared(monkeypatch
         module,
         "_SM",
         SimpleNamespace(
-            instance=lambda: SimpleNamespace(get_active_scene=lambda: active_scene[0])
+            instance=lambda: _scene_manager(active_scene[0])
         ),
     )
     monkeypatch.setattr(
@@ -619,7 +627,7 @@ def test_game_view_refreshes_empty_canvas_snapshot_on_membership_revision(monkey
     monkeypatch.setattr(
         module,
         "_SM",
-        SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: scene)),
+        SimpleNamespace(instance=lambda: _scene_manager(scene)),
     )
 
     def _collect(_scene, _persistent=None):
@@ -656,7 +664,7 @@ def test_game_view_reorders_retained_canvases_when_sort_order_changes(monkeypatc
     monkeypatch.setattr(
         module,
         "_SM",
-        SimpleNamespace(instance=lambda: SimpleNamespace(get_active_scene=lambda: scene)),
+        SimpleNamespace(instance=lambda: _scene_manager(scene)),
     )
     monkeypatch.setattr(
         module,

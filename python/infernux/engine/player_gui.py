@@ -30,6 +30,7 @@ from infernux.engine.runtime_screen_ui import (
     map_runtime_ui_pointers,
 )
 from infernux.engine.runtime_mouse_events import MouseEventDispatcher
+from infernux.ui.ui_canvas_utils import runtime_ui_scenes
 
 
 def _player_render_scale() -> float:
@@ -372,12 +373,7 @@ class PlayerGUI(InxGUIRenderable):
         self._touch_scene_frame = self._primary_touch_scene_frame(touches, game_w, game_h)
         self._touch_scene_hit = None
         self._touch_scene_query_shared = False
-        if scene is None:
-            self._has_shared_scene_query = False
-            return None
-
-        persistent_scene = SceneManager.instance().get_runtime_persistent_scene()
-        surfaces = collect_runtime_ui_input_surfaces(scene, persistent_scene)
+        surfaces = collect_runtime_ui_input_surfaces(*runtime_ui_scenes(SceneManager.instance()))
         if not surfaces:
             self._ui_event_processor.reset()
             # With no world UI there is no second consumer to share a ray
@@ -385,7 +381,7 @@ class PlayerGUI(InxGUIRenderable):
             self._has_shared_scene_query = False
             return None
 
-        camera = scene.effective_game_camera
+        camera = scene.effective_game_camera if scene is not None else None
 
         gx, gy, scroll_x, scroll_y, mouse_held, mouse_down, mouse_up = (
             Input.get_game_mouse_frame_state(0) if mouse_frame is None else mouse_frame

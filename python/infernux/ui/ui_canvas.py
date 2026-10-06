@@ -127,10 +127,10 @@ class UICanvas(InxUIComponent):
         invalidate_canvas_cache()
 
     def _set_game_object(self, game_object):
-        previous = self.__dict__.get("_game_object")
         super()._set_game_object(game_object)
-        if previous is not game_object:
-            self._publish_canvas_membership_change()
+        # Rebinding the same owner after a Scene move changes world membership.
+        # Publish at that lifecycle boundary, not through per-frame polling.
+        self._publish_canvas_membership_change()
 
     def _invalidate_native_binding(self, *, release_fields: bool = True):
         was_bound = self.__dict__.get("_game_object") is not None
@@ -149,6 +149,8 @@ class UICanvas(InxUIComponent):
         super().__setattr__(name, value)
         if not name.startswith("_") and not unchanged:
             mark_runtime_ui_dirty()
+            if name == "sort_order":
+                self._publish_canvas_membership_change()
 
     # ------------------------------------------------------------------
     # Scaling helpers (Unity CanvasScaler-aligned)

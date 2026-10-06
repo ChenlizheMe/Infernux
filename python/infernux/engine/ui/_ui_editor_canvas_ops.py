@@ -23,7 +23,7 @@ from infernux.ui.enums import TextResizeMode
 from infernux.ui.inx_ui_screen_component import clear_rect_cache
 from infernux.ui.ui_texture_cache import get_shared_cache as _get_tex_cache
 from infernux.ui.ui_render_dispatch import dispatch as _ui_dispatch
-from infernux.ui.ui_canvas_utils import collect_runtime_canvases_with_go
+from infernux.ui.ui_canvas_utils import collect_runtime_canvases_with_go, runtime_ui_scenes
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
 from .editor_icons import EditorIcons
@@ -39,27 +39,10 @@ class UIEditorCanvasOps:
     """UIEditorCanvasOps method group for UIEditorPanel."""
 
     def _get_all_canvases(self):
-        """Return every Canvas in the active and persistent runtime scenes."""
+        """Return every Canvas in resident authored and persistent scenes."""
         from infernux.lib import SceneManager
         scene_manager = SceneManager.instance()
-        scene = scene_manager.get_active_scene()
-        persistent_getter = getattr(
-            scene_manager,
-            "get_runtime_persistent_scene",
-            None,
-        )
-        persistent_scene = persistent_getter() if callable(persistent_getter) else None
-        if scene is None and persistent_scene is None:
-            return []
-        # A Canvas can move into the persistent Scene during the first Play
-        # frames without changing the active Scene identity. Retry a cached
-        # empty snapshot briefly so opening UI Editor during that transfer
-        # cannot pin the workspace to "no canvas".
-        return collect_runtime_canvases_with_go(
-            scene,
-            persistent_scene,
-            allow_stale_empty=True,
-        )
+        return collect_runtime_canvases_with_go(*runtime_ui_scenes(scene_manager))
 
     def _get_active_canvas(self):
         """Return (go, UICanvas) for the first canvas, or (None, None)."""

@@ -14,6 +14,7 @@ from infernux.engine.ui.runtime_canvas_snapshot import (
     collect_sorted_runtime_canvas_snapshot,
     runtime_canvas_snapshot_token,
 )
+from infernux.ui.ui_canvas_utils import runtime_ui_scenes
 from infernux.ui.inx_ui_screen_component import (
     WORLD_UI_PIXELS_PER_UNIT,
     clear_rect_cache,
@@ -297,13 +298,13 @@ def pick_world_ui_object_ids(scene, ray_origin, ray_direction, persistent_scene=
     return tuple(object_id for _depth_policy, _distance, object_id in hits)
 
 
-def collect_runtime_ui_input_surfaces(scene, persistent_scene=None):
+def collect_runtime_ui_input_surfaces(*scenes):
     """Return world element targets followed by sorted screen/camera canvases."""
     global _input_world_elements, _input_canvases, _input_canvas_token, _input_surfaces
-    elements = _collect_world_ui_elements(scene, persistent_scene)
-    canvas_token = runtime_canvas_snapshot_token(scene, persistent_scene)
+    elements = _collect_world_ui_elements(*scenes)
+    canvas_token = runtime_canvas_snapshot_token(*scenes)
     if canvas_token != _input_canvas_token:
-        canvases = tuple(collect_sorted_runtime_canvas_snapshot(scene, persistent_scene))
+        canvases = tuple(collect_sorted_runtime_canvas_snapshot(*scenes))
     else:
         canvases = _input_canvases or ()
     if (
@@ -765,37 +766,23 @@ class RuntimeScreenUISubmission:
 
         width, height = self.target_size
         scene_manager = SceneManager.instance()
-        scene = scene_manager.get_active_scene()
-        persistent_scene = scene_manager.get_runtime_persistent_scene()
-        if scene is None:
-            self._scene = None
-            self._scene_structure_version = -1
-            self._canvas_snapshot_token = None
-            self._canvas_snapshot = ()
-            canvases = ()
-        else:
-            scene_identity = (scene, persistent_scene)
-            structure_version = (
-                int(getattr(scene, "structure_version", 0)),
-                int(getattr(persistent_scene, "structure_version", 0)),
-            )
-            if scene_identity != self._scene or structure_version != self._scene_structure_version:
-                clear_rect_cache((id(scene), id(persistent_scene), structure_version))
-                self._scene = scene_identity
-                self._scene_structure_version = structure_version
-            canvas_token = runtime_canvas_snapshot_token(scene, persistent_scene)
-            if canvas_token != self._canvas_snapshot_token:
-                self._canvas_snapshot = tuple(
-                    collect_sorted_runtime_canvas_snapshot(scene, persistent_scene)
-                )
-                self._canvas_snapshot_token = canvas_token
-            canvases = self._canvas_snapshot
-        world_elements = _collect_world_ui_elements(scene, persistent_scene)
+        scenes = runtime_ui_scenes(scene_manager)
+        structure_version = tuple(int(world.structure_version) for world in scenes)
+        if scenes != self._scene or structure_version != self._scene_structure_version:
+            clear_rect_cache((tuple(id(world) for world in scenes), structure_version))
+            self._scene = scenes
+            self._scene_structure_version = structure_version
+        canvas_token = runtime_canvas_snapshot_token(*scenes)
+        if canvas_token != self._canvas_snapshot_token:
+            self._canvas_snapshot = tuple(collect_sorted_runtime_canvas_snapshot(*scenes))
+            self._canvas_snapshot_token = canvas_token
+        canvases = self._canvas_snapshot
+        world_elements = _collect_world_ui_elements(*scenes)
 
         texture_cache = _get_tex_cache()
         revision = _runtime_ui_revision(
-            scene, canvases, width, height, texture_cache.generation,
-            world_elements, persistent_scene,
+            None, canvases, width, height, texture_cache.generation,
+            world_elements, None, scenes,
         )
         packets = self._command_packets
         if texture_cache.has_pending:
