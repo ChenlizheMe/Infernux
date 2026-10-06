@@ -2299,9 +2299,7 @@ class _StageCompiler:
             expression = _glsl_literal(immediate["value"], result_type)
         elif opcode == "load_attribute":
             value_type, field = self._field(immediate["attribute"])
-            expression = f"state.{field}"
-            if value_type.value_type is ValueType.BOOL:
-                expression = f"({expression} != 0u)"
+            expression = _storage_decode(f"state.{field}", value_type)
         elif opcode == "load_uniform":
             if immediate["name"] != "delta_time":
                 raise GpuParticleCompileError(
@@ -2353,8 +2351,9 @@ class _StageCompiler:
                 payload_field = self._field(
                     _event_payload_state_id(event_index, slot, field_id)
                 )[1]
+                payload = _storage_decode(f"state.{payload_field}", result_type)
                 expression = (
-                    f"(state.{head_field} == {slot}u ? state.{payload_field} : {expression})"
+                    f"(state.{head_field} == {slot}u ? {payload} : {expression})"
                 )
         elif opcode == "event_begin":
             event_index = int(immediate["event_type_index"])
@@ -2403,7 +2402,8 @@ class _StageCompiler:
                     payload_field = self._field(
                         _event_payload_state_id(event_index, slot, field.stable_id)
                     )[1]
-                    self._lines.append(f"            state.{payload_field} = {value};")
+                    encoded = _storage_encode(value, field.value_type)
+                    self._lines.append(f"            state.{payload_field} = {encoded};")
                 self._lines.append("        }")
             self._lines.extend(
                 (
@@ -2655,9 +2655,7 @@ class _StageCompiler:
             expression = _space_conversion(operands[0], result_type, immediate)
         elif opcode == "store_attribute":
             value_type, field = self._field(immediate["attribute"])
-            value = operands[0]
-            if value_type.value_type is ValueType.BOOL:
-                value = f"({value} ? 1u : 0u)"
+            value = _storage_encode(operands[0], value_type)
             self._lines.append(f"state.{field} = {value};")
             return
         elif opcode == "kill_if":
@@ -2792,11 +2790,7 @@ class _StageCompiler:
                     raise GpuParticleCompileError(
                         f"Emitter collider collision {key} requires {expected_type}"
                     )
-                encoded = (
-                    f"({value_name} ? 1u : 0u)"
-                    if expected_type.value_type is ValueType.BOOL
-                    else value_name
-                )
+                encoded = _storage_encode(value_name, expected_type)
                 self._lines.append(f"if ({hit_name}) state.{field} = {encoded};")
             for key, component in (
                 ("collider_id_low_attribute", "x"),
@@ -7886,6 +7880,15 @@ def _storage_type(value_type: TypeRef) -> str:
         if value_type.value_type is ValueType.BOOL
         else _glsl_type(value_type)
     )
+
+
+def _storage_encode(expression: str, value_type: TypeRef) -> str:
+    """Encode a logical value for the fixed std430 particle state ABI."""
+    return f"({expression} ? 1u : 0u)" if value_type.value_type is ValueType.BOOL else expression
+
+
+def _storage_decode(expression: str, value_type: TypeRef) -> str:
+    return f"({expression} != 0u)" if value_type.value_type is ValueType.BOOL else expression
 
 
 def _value_name(value_id: str, prefix: str = "") -> str:
