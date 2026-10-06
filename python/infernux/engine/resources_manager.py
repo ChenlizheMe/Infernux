@@ -1389,7 +1389,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
         if script_change:
             if is_project_component_script(path, self._dependency_graph.project_root):
                 self._check_script(path, catalog_event="modified")
-            elif package_script_role(path, self._dependency_graph.project_root) == "editor":
+            elif (
+                not metadata_only
+                and package_script_role(path, self._dependency_graph.project_root) == "editor"
+            ):
+                # Import-sidecar publication does not replace editor Python
+                # source. Package preload identities come from the installed
+                # file ledger; restarting their services here can cancel the
+                # very build that refreshed the asset catalog.
                 manager = ResourcesManager.instance()
                 if manager is not None:
                     manager.notify_script_catalog_changed(path, "modified")

@@ -1347,3 +1347,28 @@ def test_server_async_retirement_releases_owner_before_next_generation(tmp_path)
         assert server.is_running() is True
     finally:
         server.stop_server()
+
+
+def test_failed_transport_retirement_does_not_publish_successful_unload(monkeypatch, tmp_path):
+    from infernux.runtime_services import get_runtime_service, install_runtime_service, remove_runtime_service
+
+    failure = RuntimeError("active build job did not stop")
+
+    def reject_shutdown():
+        raise failure
+
+    state = server._ServerState(
+        project_path=str(tmp_path), host="127.0.0.1", port=9713,
+        mcp=object(), transport=object(), adapter_shutdown=reject_shutdown,
+    )
+    messages = []
+    monkeypatch.setattr(server.Debug, "log_error", staticmethod(messages.append))
+    install_runtime_service(server._RUNTIME_SERVICE_NAME, state)
+    try:
+        server._reap_state(state)
+        assert state.error is failure
+        assert get_runtime_service(server._RUNTIME_SERVICE_NAME) is state
+        assert not state.stopped.is_set(), "Failed cleanup cannot acknowledge unload to PluginManager"
+        assert len(messages) == 1
+    finally:
+        remove_runtime_service(server._RUNTIME_SERVICE_NAME, state)
