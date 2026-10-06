@@ -22,6 +22,7 @@
 #include <function/renderer/gui/InxResourcePreviewer.h>
 #include <function/renderer/gui/InxScreenUIRenderer.h>
 #include <function/renderer/particle/ParticleGpuSystemManager.h>
+#include <function/renderer/particle/ParticleSceneSources.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/scene/EditorCameraController.h>
@@ -286,9 +287,9 @@ particle::GpuParticleEmitterProgram DecodeGpuParticleProgram(const py::dict &val
                 if (!renderer || !renderer->HasRuntimeSkinnedMesh())
                     throw std::invalid_argument("GPU Mesh Data SkinnedMeshRenderer source is invalid");
                 decoded.mesh = renderer->GetMeshAssetRef().Get();
-                decoded.skinnedRenderer = renderer->GetHandle();
-                if (!decoded.mesh || !decoded.skinnedRenderer.IsValid())
+                if (!decoded.mesh || !renderer->GetHandle().IsValid())
                     throw std::invalid_argument("GPU Mesh Data SkinnedMeshRenderer source is not scene-resident");
+                decoded.skinnedRendererHandle = particle::BindSceneSkinnedMeshSource(*renderer);
             } else {
                 throw std::invalid_argument("GPU Mesh Data source_kind is invalid");
             }

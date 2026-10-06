@@ -10,6 +10,53 @@
 namespace infernux::particle
 {
 
+// Registered only while a graph borrows this component. Scene transfers keep
+// its native lifetime; destruction retires the observer before storage is
+// freed. No scene search, Python callback, or per-frame allocation is needed.
+class SceneSkinnedMeshBinding final
+{
+    struct Observer final : NativeLifetimeObserver
+    {
+        explicit Observer(SkinnedMeshRenderer &source) : renderer(&source), generation(source.GetLifetimeGeneration())
+        {
+        }
+        void RetireNativeObject() noexcept override
+        {
+            renderer = nullptr;
+        }
+        SkinnedMeshRenderer *renderer;
+        const uint64_t generation;
+    };
+
+  public:
+    explicit SceneSkinnedMeshBinding(SkinnedMeshRenderer &renderer) : m_observer(std::make_shared<Observer>(renderer))
+    {
+        renderer.ObserveNativeLifetime(m_observer);
+    }
+    ~SceneSkinnedMeshBinding()
+    {
+        if (m_observer->renderer)
+            m_observer->renderer->ForgetNativeLifetimeObserver(m_observer.get());
+    }
+    SceneSkinnedMeshBinding(const SceneSkinnedMeshBinding &) = delete;
+    SceneSkinnedMeshBinding &operator=(const SceneSkinnedMeshBinding &) = delete;
+
+    [[nodiscard]] ObjectHandle GetHandle() const
+    {
+        const auto *renderer = m_observer->renderer;
+        return renderer && renderer->GetLifetimeGeneration() == m_observer->generation ? renderer->GetHandle()
+                                                                                       : ObjectHandle{};
+    }
+
+  private:
+    std::shared_ptr<Observer> m_observer;
+};
+
+inline std::function<ObjectHandle()> BindSceneSkinnedMeshSource(SkinnedMeshRenderer &renderer)
+{
+    return [binding = std::make_shared<SceneSkinnedMeshBinding>(renderer)] { return binding->GetHandle(); };
+}
+
 // Scene ownership and lifetime checks stay at the scene-to-particle boundary;
 // the GPU manager only consumes immutable mesh and pose snapshots.
 inline std::optional<GpuParticleSkinnedMeshSnapshot> ResolveSceneSkinnedMeshSource(const ObjectHandle &handle)

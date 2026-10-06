@@ -965,12 +965,12 @@ struct ParticleGpuSystemManager::Impl
             runtimeMesh.edgeCount = meshResources->samplingEdgeCount;
             runtimeMesh.vertices = meshResources->vertices->GetBuffer();
             runtimeMesh.triangles = meshResources->samplingTriangles->GetBuffer();
-            if (mesh.skinnedRenderer.IsValid()) {
+            if (mesh.skinnedRendererHandle) {
                 if (!skinnedMeshResolver) {
                     SetError(error, "GPU particle SkinnedMeshRenderer resolver is unavailable");
                     return false;
                 }
-                const auto snapshot = skinnedMeshResolver(mesh.skinnedRenderer);
+                const auto snapshot = skinnedMeshResolver(mesh.skinnedRendererHandle());
                 if (!snapshot || !snapshot->mesh || snapshot->mesh.get() != mesh.mesh.get() || !snapshot->model ||
                     !snapshot->currentPalette || snapshot->currentPalette->empty() ||
                     snapshot->currentPalette->size() != snapshot->model->skeleton.bones.size() ||
@@ -2446,11 +2446,11 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
     for (const auto &entry : prepared) {
         std::vector<GpuSkinnedMeshFrameData> skinnedSources;
         for (const auto &mesh : entry.emitter->sourceProgram.meshInterfaces) {
-            if (!mesh.skinnedRenderer.IsValid())
+            if (!mesh.skinnedRendererHandle)
                 continue;
             if (!m_impl->skinnedMeshResolver)
                 return false;
-            const auto snapshot = m_impl->skinnedMeshResolver(mesh.skinnedRenderer);
+            const auto snapshot = m_impl->skinnedMeshResolver(mesh.skinnedRendererHandle());
             // A scene object may be destroyed between authoring and this frame.
             // Retain the last valid pose until the graph parameter is changed;
             // never invalidate a resident bind group mid-frame.

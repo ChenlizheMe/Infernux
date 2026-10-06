@@ -255,7 +255,7 @@ void main() { outputColor = snapshot + color; }
     GpuParticleMeshInterfaceProgram meshInterface;
     meshInterface.stableId = "moving-source";
     meshInterface.mesh = mesh;
-    meshInterface.skinnedRenderer = skin->GetHandle();
+    meshInterface.skinnedRendererHandle = BindSceneSkinnedMeshSource(*skin);
     program.meshInterfaces = {meshInterface};
     GpuParticleGraphProgram graph;
     graph.graphInstanceId = program.graphInstanceId;

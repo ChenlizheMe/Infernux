@@ -177,7 +177,7 @@ void main() { result = snapshot; }
     GpuParticleMeshInterfaceProgram meshInterface;
     meshInterface.stableId = "scene-source";
     meshInterface.mesh = mesh;
-    meshInterface.skinnedRenderer = initialHandle;
+    meshInterface.skinnedRendererHandle = BindSceneSkinnedMeshSource(*source);
     program.meshInterfaces = {meshInterface};
     const auto publish = [&] {
         GpuParticleGraphProgram graph;
@@ -327,6 +327,14 @@ void main() { result = snapshot; }
                      !ResolveSceneSkinnedMeshSource(object->GetTransform()->GetHandle()),
                  "Invalid world, generation or component type bypassed source validation"))
         return false;
+    scenes.MoveGameObjectToScene(object, sceneA);
+    source->SetRuntimeAnimationTime(0.875f);
+    object->GetTransform()->SetPosition({35, 0, 0});
+    if (!Require(meshInterface.skinnedRendererHandle() == source->GetHandle() &&
+                     !ResolveSceneSkinnedMeshSource(initialHandle),
+                 "Bound component did not follow an explicit Scene move") ||
+        !sample(0.875f, 35.0f))
+        return false;
     scenes.Play();
     scenes.DontDestroyOnLoad(object);
     scenes.PrepareActiveSceneReplacement();
@@ -335,21 +343,39 @@ void main() { result = snapshot; }
                      ResolveSceneSkinnedMeshSource(source->GetHandle()),
                  "Persistent migration did not enforce the new owning world identity"))
         return false;
-    // A world move invalidates the old scene-scoped handle. Republish its new
-    // authoritative identity; never search other worlds with an expired handle.
-    program.meshInterfaces[0].skinnedRenderer = source->GetHandle();
-    if (!publish())
-        return false;
+    // Residency changes must not require a graph publication or reset.
     source->SetRuntimeAnimationTime(1.0f);
-    if (!sample(1.0f, 30.0f))
+    if (!sample(1.0f, 35.0f))
         return false;
     const auto persistentHandle = source->GetHandle();
     scenes.UnloadAllScenes();
     source->SetRuntimeAnimationTime(1.25f);
-    if (!sample(1.25f, 30.0f))
+    if (!sample(1.25f, 35.0f))
         return false;
     scenes.Stop();
-    return Require(!ResolveSceneSkinnedMeshSource(persistentHandle), "Destroyed persistent source remained resolvable");
+    if (!Require(!ResolveSceneSkinnedMeshSource(persistentHandle) && !meshInterface.skinnedRendererHandle().IsValid(),
+                 "Destroyed persistent source remained bound"))
+        return false;
+    // Reusing an authored ID must never revive a binding to a destroyed native
+    // instance, even while the old graph and callback copies remain resident.
+    auto *replacementScene = scenes.CreateScene("ReplacementSkin");
+    auto *replacementObject = replacementScene->CreateGameObject("Replacement");
+    auto *replacementSource = replacementObject->AddComponent<SkinnedMeshRenderer>();
+    replacementSource->SetComponentID(persistentHandle.id);
+    replacementSource->SetSourceModelGuid(mesh->GetGuid());
+    replacementSource->SetActiveTakeName("Move");
+    replacementSource->SetRuntimeAnimationTime(1.5f);
+    if (!Require(!meshInterface.skinnedRendererHandle().IsValid(), "Retired binding attached to a replacement"))
+        return false;
+    // Also release the graph's borrower before its source, the opposite order
+    // to the persistent-source destruction above.
+    auto temporaryBinding = BindSceneSkinnedMeshSource(*replacementSource);
+    if (!Require(temporaryBinding() == replacementSource->GetHandle(), "Replacement could not be bound explicitly"))
+        return false;
+    temporaryBinding = {};
+    replacementScene->DestroyGameObject(replacementObject);
+    std::cout << "Particle scene source: samples=6 publications=1 explicit_move=1 persistent_move=1 retired=1\n";
+    return true;
 } catch (const std::exception &error) {
     std::cerr << "FAILED: Scene source fixture: " << error.what() << std::endl;
     return false;

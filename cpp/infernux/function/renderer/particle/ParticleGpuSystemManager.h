@@ -81,7 +81,9 @@ struct GpuParticleMeshInterfaceProgram
     bool worldSpace = false;
     std::array<float, 16> meshToSpace{};
     std::shared_ptr<InxMesh> mesh;
-    ObjectHandle skinnedRenderer;
+    // Non-owning, lifetime-aware source identity. A live component may change
+    // its Scene world without changing its instance or rebuilding this graph.
+    std::function<ObjectHandle()> skinnedRendererHandle;
 };
 
 struct GpuParticleSkinnedMeshSnapshot
