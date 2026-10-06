@@ -143,6 +143,7 @@ struct ParticleGpuRuntime::DataInterfaceState
     std::vector<rhi::BufferHandle> ownedBuffers;
     std::vector<GpuMeshInterfaceDesc> meshInterfaces;
     std::vector<uint32_t> metadataWords;
+    bool metadataDirty = true;
 };
 
 struct ParticleGpuRuntime::VectorFieldState
@@ -211,6 +212,10 @@ bool ParticleGpuRuntime::AdoptCompatibleRevision(ParticleGpuRuntime &replacement
     std::swap(m_supportsFusedUpdateRendering, replacement.m_supportsFusedUpdateRendering);
     std::swap(m_continuation, replacement.m_continuation);
     std::swap(m_contacts, replacement.m_contacts);
+    // Metadata belongs to the exchanged interfaces, while transforms may have
+    // been prepared independently on either runtime before publication.
+    m_hasCachedTransforms = false;
+    replacement.m_hasCachedTransforms = false;
     return true;
 }
 
@@ -903,8 +908,11 @@ bool ParticleGpuRuntime::UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMe
         if (found == m_dataInterfaces->meshInterfaces.end() || found->boneCount == 0 ||
             source.currentPalette->size() != found->boneCount || !found->palette.IsValid())
             return false;
-        found->worldSpace = true;
-        found->meshToSpace = source.sourceToWorld;
+        if (!found->worldSpace || found->meshToSpace != source.sourceToWorld) {
+            found->worldSpace = true;
+            found->meshToSpace = source.sourceToWorld;
+            m_dataInterfaces->metadataDirty = true;
+        }
         if (found->poseRevision == source.poseRevision)
             continue;
         const uint64_t byteSize = source.currentPalette->size() * sizeof(glm::mat4);
@@ -917,12 +925,25 @@ bool ParticleGpuRuntime::UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMe
 
 bool ParticleGpuRuntime::UpdateTransforms(const GpuParticleTransforms &transforms)
 {
-    if (m_hasCachedTransforms && std::memcmp(&m_cachedTransforms, &transforms, sizeof(GpuParticleTransforms)) == 0)
+    const bool transformsChanged = !m_hasCachedTransforms ||
+        std::memcmp(&m_cachedTransforms, &transforms, sizeof(GpuParticleTransforms)) != 0;
+    const bool meshChanged = m_dataInterfaces && m_dataInterfaces->metadataDirty;
+    if (!transformsChanged && !meshChanged)
         return true;
-    if (!m_device || !m_device->WriteBuffer(TransformBuffer(), 0, &transforms, sizeof(transforms)))
+    if (!m_device)
         return false;
-    if (!UpdateMeshInterfaceMetadata(transforms) || !UpdateVectorFieldMetadata(transforms))
+    if (transformsChanged) {
+        // A failed upload must not leave the old cache claiming that the
+        // partially updated GPU resources still contain the previous values.
+        m_hasCachedTransforms = false;
+        if (!m_device->WriteBuffer(TransformBuffer(), 0, &transforms, sizeof(transforms)))
+            return false;
+    }
+    if (!UpdateMeshInterfaceMetadata(transforms) ||
+        (transformsChanged && !UpdateVectorFieldMetadata(transforms)))
         return false;
+    if (m_dataInterfaces)
+        m_dataInterfaces->metadataDirty = false;
     m_cachedTransforms = transforms;
     m_hasCachedTransforms = true;
     return true;

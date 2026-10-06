@@ -699,6 +699,7 @@ void main() {
 }
 
 #include "ParticleCullConservationTests.h"
+#include "ParticleMeshMetadataTests.h"
 
 bool Run(const std::filesystem::path &computePath, const std::filesystem::path &vertexPath,
          const std::filesystem::path &fragmentPath, const std::filesystem::path &reflectionPath,
@@ -848,6 +849,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         {spawnCode[1].data(), spawnCode[1].size()},
     };
     if (!VerifyGpuParticleMigration(resources, migrationProgram))
+        return false;
+    if (!VerifyParticleMeshMetadata(resources, sortCompiler, spawnProgram))
         return false;
     auto initialLinkedParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>();
     initialLinkedParticleProgram->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 10};

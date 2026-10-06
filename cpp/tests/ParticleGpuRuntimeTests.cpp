@@ -89,6 +89,7 @@ struct FakeDevice final : rhi::Device
     uint32_t graphicsPipelineReleases = 0;
     uint32_t pipelineReleases = 0;
     uint32_t writes = 0;
+    bool rejectNextWrite = false;
     uint32_t readbacks = 0;
     bool bindlessEnabled = false;
     uint32_t bindlessPublishes = 0;
@@ -201,6 +202,10 @@ struct FakeDevice final : rhi::Device
     bool WriteBuffer(rhi::BufferHandle handle, uint64_t offset, const void *data, uint64_t byteSize) override
     {
         assert(handle.IsValid() && data && byteSize > 0);
+        if (rejectNextWrite) {
+            rejectNextWrite = false;
+            return false;
+        }
         const auto *begin = static_cast<const uint8_t *>(data);
         writtenBytes.emplace_back(begin, begin + byteSize);
         writtenOffsets.push_back(offset);
@@ -1387,6 +1392,72 @@ int main()
         assert(NearlyEqual(FloatFromBits(metadata[20]), -0.5f));
         assert(NearlyEqual(FloatFromBits(metadata[25]), 1.0f / 3.0f));
         assert(NearlyEqual(FloatFromBits(metadata[30]), 0.25f));
+
+        const auto metadataBuffer = meshInterfaceDevice.writtenBuffers.back();
+        auto writesBeforeChange = meshInterfaceDevice.writes;
+        assert(meshInterfaceRuntime.UpdateSkinnedMeshSources({{1u, 5u, movedSource, updatedPalette}}));
+        assert(meshInterfaceRuntime.UpdateTransforms(transforms));
+        assert(meshInterfaceDevice.writes == writesBeforeChange);
+
+        // The emitter and pose revision remain fixed while the source moves,
+        // rotates and scales. Only its metadata needs another upload.
+        movedSource = {0, -3, 0, 8, 2, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 1};
+        assert(meshInterfaceRuntime.UpdateSkinnedMeshSources({{1u, 5u, movedSource, updatedPalette}}));
+        assert(meshInterfaceRuntime.UpdateTransforms(transforms));
+        assert(meshInterfaceDevice.writes == writesBeforeChange + 1);
+        assert(meshInterfaceDevice.writtenBuffers.back() == metadataBuffer);
+        std::memcpy(metadata.data(), meshInterfaceDevice.writtenBytes.back().data(), sizeof(metadata));
+        assert(NearlyEqual(FloatFromBits(metadata[32 + 4 + 12]), 8.0f));
+        assert(NearlyEqual(FloatFromBits(metadata[32 + 4 + 1]), 2.0f));
+        assert(NearlyEqual(FloatFromBits(metadata[32 + 4 + 4]), -3.0f));
+        assert(NearlyEqual(FloatFromBits(metadata[32 + 20 + 1]), 0.5f));
+        assert(NearlyEqual(FloatFromBits(metadata[32 + 20 + 4]), -1.0f / 3.0f));
+        assert(NearlyEqual(FloatFromBits(metadata[32 + 20 + 10]), 0.25f));
+
+        // Emitter-local and scene-owned sources use distinct coordinate bases.
+        transforms.emitterToWorld[12] = 10.0f;
+        transforms.worldToEmitter[12] = -10.0f;
+        transforms.simulationToWorld[12] = 4.0f;
+        transforms.worldToSimulation[12] = -4.0f;
+        assert(meshInterfaceRuntime.UpdateTransforms(transforms));
+        std::memcpy(metadata.data(), meshInterfaceDevice.writtenBytes.back().data(), sizeof(metadata));
+        assert(NearlyEqual(FloatFromBits(metadata[4 + 12]), 6.0f));
+        assert(NearlyEqual(FloatFromBits(metadata[32 + 4 + 12]), 4.0f));
+        writesBeforeChange = meshInterfaceDevice.writes;
+        assert(meshInterfaceRuntime.UpdateSkinnedMeshSources({{1u, 6u, movedSource, updatedPalette}}));
+        assert(meshInterfaceRuntime.UpdateTransforms(transforms));
+        assert(meshInterfaceDevice.writes == writesBeforeChange + 1);
+        assert(meshInterfaceDevice.writtenBuffers.back() != metadataBuffer);
+
+        movedSource[3] = 9.0f;
+        assert(meshInterfaceRuntime.UpdateSkinnedMeshSources({{1u, 6u, movedSource, updatedPalette}}));
+        meshInterfaceDevice.rejectNextWrite = true;
+        assert(!meshInterfaceRuntime.UpdateTransforms(transforms));
+        assert(meshInterfaceRuntime.UpdateTransforms(transforms));
+        assert(meshInterfaceDevice.writtenBuffers.back() == metadataBuffer);
+        std::memcpy(metadata.data(), meshInterfaceDevice.writtenBytes.back().data(), sizeof(metadata));
+        assert(NearlyEqual(FloatFromBits(metadata[32 + 4 + 12]), 5.0f));
+        writesBeforeChange = meshInterfaceDevice.writes;
+        assert(meshInterfaceRuntime.UpdateTransforms(transforms));
+        assert(meshInterfaceDevice.writes == writesBeforeChange);
+
+        // A precomputed replacement owns a different metadata coordinate basis.
+        // Adopting it cannot reuse the receiving runtime's old cache decision.
+        auto replacementDesc = meshInterfaceDesc;
+        replacementDesc.meshInterfaces[0].meshToSpace[3] = 11.0f;
+        particle::ParticleGpuRuntime replacement;
+        assert(replacement.CreateCompatible(meshInterfaceDevice, replacementDesc, meshInterfaceRuntime));
+        auto replacementTransforms = transforms;
+        replacementTransforms.worldToSimulation = identity;
+        replacementTransforms.simulationToWorld = identity;
+        assert(replacement.UpdateTransforms(replacementTransforms));
+        assert(meshInterfaceRuntime.AdoptCompatibleRevision(replacement));
+        assert(meshInterfaceRuntime.UpdateTransforms(transforms));
+        std::memcpy(metadata.data(), meshInterfaceDevice.writtenBytes.back().data(), sizeof(metadata));
+        assert(NearlyEqual(FloatFromBits(metadata[4 + 12]), 17.0f));
+        writesBeforeChange = meshInterfaceDevice.writes;
+        assert(meshInterfaceRuntime.UpdateTransforms(transforms));
+        assert(meshInterfaceDevice.writes == writesBeforeChange);
         meshInterfaceRuntime.Destroy();
 
         auto invalidMeshDesc = meshInterfaceDesc;
