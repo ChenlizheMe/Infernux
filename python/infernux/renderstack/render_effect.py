@@ -190,7 +190,7 @@ class RenderEffect:
         self.set_param(name, number)
 
     def get_float(self, name: str, default: float = 0.0) -> float:
-        value = self._parameters.get(str(name))
+        value = self.get_param(name)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return float(default)
         return float(value)
@@ -201,7 +201,7 @@ class RenderEffect:
         self.set_param(name, int(value))
 
     def get_int(self, name: str, default: int = 0) -> int:
-        value = self._parameters.get(str(name))
+        value = self.get_param(name)
         if isinstance(value, bool) or not isinstance(value, int):
             return int(default)
         return value
@@ -212,7 +212,7 @@ class RenderEffect:
         self.set_param(name, value)
 
     def get_bool(self, name: str, default: bool = False) -> bool:
-        value = self._parameters.get(str(name))
+        value = self.get_param(name)
         return value if isinstance(value, bool) else bool(default)
 
     def set_vector2(self, name: str, x: float, y: float) -> None:
@@ -384,7 +384,7 @@ class RenderEffect:
         return result
 
     def _get_vector(self, name: str, size: int, default):
-        value = self._parameters.get(str(name))
+        value = self.get_param(name)
         if not isinstance(value, (list, tuple)) or len(value) != size:
             return default
         try:

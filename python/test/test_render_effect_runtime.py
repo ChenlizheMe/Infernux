@@ -1572,6 +1572,70 @@ def test_effect_group_parameter_publication_reaches_compiled_render_stack(tmp_pa
     )
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_group_reimport_updates_every_mounted_projection_without_rebuilding(tmp_path, effect_catalog, nested):
+    RenderEffectArtifactRegistry.clear()
+    effect_path = tmp_path / "Bloom.effect"
+    effect_path.write_text(dump_render_effect_document(RenderEffectAsset(
+        feature_type="infernux.post.bloom", parameters={"intensity": 0.5, "max_iterations": 2},
+    )), encoding="utf-8")
+    group_path = tmp_path / "Shared.effectgroup"
+
+    def document(overrides):
+        return RenderEffectGroupAsset(entries=(RenderEffectGroupEntry(
+            "bloom", effect_catalog.asset(effect_path), overrides=overrides,
+        ),))
+
+    original = document({"intensity": 0.75})
+    group_path.write_text(dump_render_effect_document(original), encoding="utf-8")
+    group_guid = effect_catalog.register(group_path)
+    RenderEffectArtifactRegistry.compile_and_publish(str(group_path), guid=group_guid)
+    mounted_path = group_path
+    if nested:
+        mounted_path = tmp_path / "Outer.effectgroup"
+        mounted_path.write_text(dump_render_effect_document(RenderEffectGroupAsset(entries=(
+            RenderEffectGroupEntry("shared", effect_catalog.asset(group_path)),
+        ))), encoding="utf-8")
+
+    stack = RenderStack()
+    stack.add_effect_slot("after_opaque", effect_catalog.ref(mounted_path))
+    stack.add_effect_slot("final", effect_catalog.ref(mounted_path))
+    stack._graph_state.description = stack.build_graph()
+    accepted_graph = stack._graph_state.description
+    mounted_sources = tuple(binding.source for binding in stack._graph_state.bindings)
+    assert len(mounted_sources) == 2
+
+    class Context:
+        graph_instance_id = 41
+
+    assert stack._collect_effect_parameter_updates(Context())[0] is False
+    assert stack._collect_effect_parameter_updates(Context()) == (False, [])
+
+    # A rejected candidate must not mutate either live projection.
+    group_path.write_text(dump_render_effect_document(document({"unknown": 1.5})), encoding="utf-8")
+    with pytest.raises(RenderEffectCompileError, match="unknown parameter"):
+        RenderEffectArtifactRegistry.compile_and_publish(str(group_path), guid=group_guid)
+    assert all(source.get_float("intensity") == pytest.approx(0.75) for source in mounted_sources)
+    assert stack._collect_effect_parameter_updates(Context()) == (False, [])
+
+    edited = document({"intensity": 1.5})
+    group_path.write_text(dump_render_effect_document(edited), encoding="utf-8")
+    RenderEffectArtifactRegistry.compile_and_publish(str(group_path), guid=group_guid)
+    requires_rebuild, updates = stack._collect_effect_parameter_updates(Context())
+
+    assert requires_rebuild is False
+    assert stack._graph_state.description is accepted_graph
+    assert all(source.get_float("intensity") == pytest.approx(1.5) for source in mounted_sources)
+    intensity_blocks = [update for update in updates if "intensity" in dict(update.values)]
+    assert len(intensity_blocks) == 2
+    assert all(dict(update.values)["intensity"] == pytest.approx(1.5) for update in intensity_blocks)
+    for source in mounted_sources:
+        group_view = source._source if nested else source
+        assert group_view.group_resource.to_asset().entries[0].overrides["intensity"] == 1.5
+    assert stack._collect_effect_parameter_updates(Context()) == (False, [])
+    stack.on_destroy()
+
+
 def test_pixelation_group_parameter_publication_reaches_compiled_render_stack(tmp_path, effect_catalog):
     RenderEffectArtifactRegistry.clear()
     pixelation_path = tmp_path / "Pixelation.effect"

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import copy
 import hashlib
 import inspect
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+from weakref import WeakValueDictionary
 
 from infernux.core.asset_ref import RenderEffectRef
 from infernux.engine.path_utils import path_key, resolved_path
@@ -29,6 +31,7 @@ _ARTIFACT_SCHEMA = "infernux.render_effect_artifact"
 _EFFECT_GROUP_EXPANSIONS: dict[str, tuple[RenderEffect, ...]] = {}
 _EFFECT_GROUP_EXPANSION_GENERATION = 0
 _LIVE_EFFECT_GROUP_DOCUMENTS: dict[str, RenderEffectGroupAsset] = {}
+_LIVE_EFFECT_GROUP_VIEWS: WeakValueDictionary[int, RenderEffect] = WeakValueDictionary()
 _RUNTIME_DEPENDENCY_STAMPS: dict[str, tuple[int, int]] = {}
 
 
@@ -76,15 +79,15 @@ def publish_live_effect_group_document(path: str, document) -> None:
         overrides_by_entry = {
             entry.entry_id: entry.overrides for entry in source.entries
         }
-        for expansion in tuple(_EFFECT_GROUP_EXPANSIONS.values()):
-            for effect in expansion:
-                if (
-                    isinstance(effect, _OverriddenRenderEffect)
-                    and effect.group_path_key == source_key
-                ):
-                    effect.publish_group_overrides(
-                        overrides_by_entry.get(effect.group_entry_id, {})
-                    )
+        # Compiled bindings outlive the expansion cache used by candidate
+        # validation. Publish to the live projections themselves, including
+        # those retained by nested groups and multiple mounted stages.
+        for effect in tuple(_LIVE_EFFECT_GROUP_VIEWS.values()):
+            if effect.group_path_key == source_key:
+                effect.group_resource.deserialize_document(source)
+                effect.publish_group_overrides(
+                    overrides_by_entry.get(effect.group_entry_id, {})
+                )
         return
 
     _clear_effect_group_expansions()
@@ -293,7 +296,7 @@ class RenderEffectArtifactRegistry:
             and (features is None or existing.features == features)
         ):
             if group_sources is not None:
-                _LIVE_EFFECT_GROUP_DOCUMENTS[path_key(source_path)] = document
+                publish_live_effect_group_document(source_path, document)
                 _EFFECT_GROUP_EXPANSIONS[path_key(source_path)] = tuple(group_sources)
             return existing, document
 
@@ -309,7 +312,7 @@ class RenderEffectArtifactRegistry:
                 cls._revision = max(cls._revision, persisted.revision)
                 cls._topology_generation += 1
                 if group_sources is not None:
-                    _LIVE_EFFECT_GROUP_DOCUMENTS[path_key(source_path)] = document
+                    publish_live_effect_group_document(source_path, document)
                     _EFFECT_GROUP_EXPANSIONS[path_key(source_path)] = tuple(group_sources)
                 return persisted, document
 
@@ -351,7 +354,7 @@ class RenderEffectArtifactRegistry:
         if existing is None or existing.structural_hash != structural_hash:
             cls._topology_generation += 1
         if group_sources is not None:
-            _LIVE_EFFECT_GROUP_DOCUMENTS[path_key(source_path)] = document
+            publish_live_effect_group_document(source_path, document)
             _EFFECT_GROUP_EXPANSIONS[path_key(source_path)] = tuple(group_sources)
         return artifact, document
 
@@ -1042,6 +1045,9 @@ class _OverriddenRenderEffect(RenderEffect):
                 dependencies=source_asset.dependencies,
             )
         )
+        # RenderEffect equality follows asset identity. Group projections can
+        # share that GUID while owning different entries and must stay distinct.
+        _LIVE_EFFECT_GROUP_VIEWS[id(self)] = self
 
     @property
     def feature_type(self) -> str:
@@ -1074,6 +1080,15 @@ class _OverriddenRenderEffect(RenderEffect):
     @property
     def group_path_key(self) -> str:
         return path_key(str(getattr(self._group_resource, "file_path", "") or ""))
+
+    def has_parameter(self, name: str) -> bool:
+        return self._source.has_parameter(name)
+
+    def get_param(self, name: str, default: Any = None) -> Any:
+        key = str(name)
+        if key in self._overrides:
+            return copy.deepcopy(self._overrides[key])
+        return self._source.get_param(key, default)
 
     def publish_group_overrides(self, overrides: Mapping[str, Any]) -> None:
         applicable = {
