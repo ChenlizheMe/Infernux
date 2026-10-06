@@ -214,9 +214,13 @@ class ProjectAssetCommandService:
 
     def read_text(self, path: str) -> str:
         """Read one registered project text asset as UTF-8."""
+        from infernux.core.document_store import read_document_text_snapshot
+
         target = self._registered_file(path)
-        with open(target, "r", encoding="utf-8") as stream:
-            return stream.read()
+        content, _state = read_document_text_snapshot(target)
+        if content is None:
+            raise FileNotFoundError(target)
+        return content
 
     def set_text(
         self,
@@ -226,11 +230,13 @@ class ProjectAssetCommandService:
         origin: ActionOrigin = ActionOrigin.USER,
     ) -> str:
         """Replace one registered UTF-8 asset through global Project history."""
+        from infernux.core.document_store import read_document_text_snapshot
         from infernux.engine.undo import ProjectAssetTextCommand
 
         target = self._registered_file(path)
-        with open(target, "r", encoding="utf-8") as stream:
-            previous = stream.read()
+        previous, _state = read_document_text_snapshot(target)
+        if previous is None:
+            raise FileNotFoundError(target)
         value = str(content)
         if value == previous:
             return target

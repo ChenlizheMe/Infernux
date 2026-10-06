@@ -312,7 +312,6 @@ class ProjectAssetTextCommand(UndoCommand):
         *,
         asset_database: Any = None,
         on_changed: Optional[Callable[[], None]] = None,
-        apply_fn: Optional[Callable[[str, str, Any], None]] = None,
         description: str = "Edit Text Asset",
     ) -> None:
         super().__init__(description)
@@ -321,19 +320,44 @@ class ProjectAssetTextCommand(UndoCommand):
         self._new_content = str(new_content)
         self._asset_database = asset_database
         self._on_changed = on_changed
-        self._apply_fn = apply_fn
+        if asset_database is None:
+            raise ValueError("Text asset history requires an AssetDatabase")
+        self._guid = str(asset_database.get_guid_from_path(self._path) or "")
+        if not self._guid:
+            raise ValueError(f"Text asset history requires a registered identity: {self._path}")
+        self._project_root = resolved_path(asset_database.project_root)
+        self._resource_type = asset_database.get_resource_type(self._path)
 
-    def _publish(self, content: str) -> None:
-        if self._apply_fn is not None:
-            self._apply_fn(self._path, content, self._asset_database)
-            return
+    def _current_path(self) -> str:
+        database = self._asset_database
+        path = str(database.get_path_from_guid(self._guid) or "")
+        if (
+            not path
+            or not os.path.isfile(path)
+            or str(database.get_guid_from_path(path)) != self._guid
+        ):
+            raise RuntimeError(f"Text asset history identity is no longer available: {self._guid}")
+        if database.get_resource_type(path) != self._resource_type:
+            raise RuntimeError(f"Text asset history identity changed resource type: {self._guid}")
+        path = resolved_path(path)
+        if not is_path_within(path, self._project_root, allow_root=False):
+            raise RuntimeError(f"Text asset history identity moved outside the project: {self._guid}")
+        return path
 
+    def _write_current(self, content: str, expected_content: str) -> None:
+        from infernux.core.document_store import read_document_text_snapshot, write_document_text
+
+        path = self._current_path()
+        current, state = read_document_text_snapshot(path)
+        if current != expected_content:
+            raise RuntimeError(f"Text asset history cannot overwrite an external content revision: {self._guid}")
+        write_document_text(path, content, expected_file_state=state)
+
+    def _reimport(self) -> None:
         from infernux.core.assets import AssetManager
-        from infernux.core.document_store import write_document_text
 
-        write_document_text(self._path, content)
         result = AssetManager.reimport_asset(
-            self._path,
+            self._current_path(),
             database=self._asset_database,
         )
         if not result or not bool(getattr(result, "succeeded", True)):
@@ -341,12 +365,22 @@ class ProjectAssetTextCommand(UndoCommand):
             raise RuntimeError(detail)
 
     def _apply(self, content: str, rollback_content: str) -> None:
-        if not os.path.isfile(self._path):
-            raise RuntimeError(f"text asset no longer exists: {self._path}")
+        # A rejected conditional write has changed nothing and must never
+        # trigger rollback over somebody else's file revision.
+        self._write_current(content, rollback_content)
         try:
-            self._publish(content)
-        except Exception:
-            self._publish(rollback_content)
+            self._reimport()
+        except Exception as import_error:
+            try:
+                # Import callbacks can relocate/delete assets. Re-resolve the
+                # same identity and only undo the bytes this action wrote.
+                self._write_current(rollback_content, content)
+                self._reimport()
+            except Exception as rollback_error:
+                raise ExceptionGroup(
+                    "Text asset import failed and its owned edit could not be rolled back",
+                    [import_error, rollback_error],
+                ) from import_error
             raise
         if self._on_changed is not None:
             self._on_changed()

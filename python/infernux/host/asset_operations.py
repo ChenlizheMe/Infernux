@@ -304,7 +304,7 @@ def _set_text_asset(asset_guid: str, content: str) -> dict[str, object]:
     def publish():
         path = asset_path(asset_guid)
         EditorAutomationHost.instance().set_project_asset_text(path, content)
-        return {"asset": asset_identity(path), "content": str(content)}
+        return {"asset": asset_identity(asset_path(asset_guid)), "content": str(content)}
 
     return on_editor("infernux.asset.text.set", publish)
 

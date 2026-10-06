@@ -74,9 +74,20 @@ def project_asset_commands(tmp_path, monkeypatch):
     )
 
     class _Database:
+        project_root = str(tmp_path)
+
         @staticmethod
         def get_guid_from_path(path):
             return "registered-guid" if os.path.isfile(path) else ""
+
+        @staticmethod
+        def get_path_from_guid(guid):
+            assert guid == "registered-guid"
+            return str(next(path for path in assets.rglob("*") if path.is_file() and path.suffix != ".meta"))
+
+        @staticmethod
+        def get_resource_type(path):
+            return os.path.splitext(path)[1]
 
     journal = EditorActionJournal()
     manager = UndoManager(journal)
@@ -116,7 +127,7 @@ def test_project_asset_service_reads_and_replaces_registered_text_with_undo(
 ):
     service, manager, journal, assets = project_asset_commands
     source = assets / "Authored.py"
-    source.write_text("value = 1\n", encoding="utf-8")
+    source.write_text("value = 1\n", encoding="utf-8", newline="\n")
 
     assert service.read_text(str(source)) == "value = 1\n"
     assert service.set_text(
