@@ -389,6 +389,7 @@ class PluginRegistry:
         transaction_id: str = "",
         python_requirements: Iterable[Mapping[str, object]] = (),
         python_changes: Iterable[Mapping[str, object]] = (),
+        python_environment: Mapping[str, str] | None = None,
         python_install: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         reference = validate_reference(str(metadata.get("reference", "")))
@@ -433,6 +434,7 @@ class PluginRegistry:
             reference,
             normalized_python_requirements,
             normalized_python_changes,
+            python_environment,
         )
         if python_install:
             evidence = dict(python_install)
@@ -500,6 +502,7 @@ class PluginRegistry:
         dependency_requirements: Iterable[Mapping[str, object]] = (),
         changes: Iterable[Mapping[str, object]] = (),
         owner: str = "",
+        python_environment: Mapping[str, str] | None = None,
     ) -> dict[str, object]:
         document = self.load()
         normalized_requirements = _normalize_python_requirements(
@@ -523,6 +526,7 @@ class PluginRegistry:
                 owner,
                 normalized_requirements,
                 normalized_changes,
+                python_environment,
             )
         self.save(document)
         return item
@@ -533,6 +537,7 @@ class PluginRegistry:
         requirements: Iterable[str],
         changes: Iterable[Mapping[str, object]],
         owners: Mapping[str, Iterable[Mapping[str, object]]] | None = None,
+        python_environment: Mapping[str, str],
     ) -> dict[str, object]:
         """Record dependency repair in the active project Python environment."""
 
@@ -563,6 +568,7 @@ class PluginRegistry:
                 reference,
                 normalized_requirements,
                 normalized_changes,
+                python_environment,
             )
             installed = installed_by_reference.get(str(reference).casefold())
             if installed is not None:
@@ -831,6 +837,7 @@ def _register_python_dependency_owner(
     owner: str,
     requirements: list[dict[str, str]],
     changes: list[dict[str, str]],
+    environment: Mapping[str, str] | None,
 ) -> None:
     dependencies = document.setdefault("python_dependencies", [])
     if not isinstance(dependencies, list):
@@ -852,12 +859,23 @@ def _register_python_dependency_owner(
             None,
         )
         change = changes_by_name.get(name)
+        # Resolution is independent of installation ownership. A satisfied
+        # distribution still needs a portable exact version, but must not be
+        # marked managed (and later uninstalled) merely because we reused it.
+        # Without a new installation, retain the existing pin for asset-only
+        # package updates that explicitly leave dependencies untouched.
+        version = (
+            environment.get(name) if environment is not None
+            else entry.get("installed_version") if entry is not None else None
+        )
+        if not isinstance(version, str) or not version.strip():
+            raise ValueError(f"Resolved Python dependency version is missing: {name}")
         if entry is None:
             entry = {
                 "name": name,
                 "managed": bool(change),
                 "baseline_version": str(change.get("before", "")) if change else "",
-                "installed_version": str(change.get("after", "")) if change else "",
+                "installed_version": version,
                 "owners": [],
             }
             dependencies.append(entry)
@@ -865,7 +883,7 @@ def _register_python_dependency_owner(
             if not bool(entry.get("managed", False)):
                 entry["managed"] = True
                 entry["baseline_version"] = str(change.get("before", ""))
-            entry["installed_version"] = str(change.get("after", ""))
+        entry["installed_version"] = version
         owners = [
             dict(item)
             for item in entry.get("owners", [])

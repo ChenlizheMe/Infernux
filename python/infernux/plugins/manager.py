@@ -675,6 +675,7 @@ class PluginManager:
                         if update and not install_dependencies else ()
                     ),
                     python_changes=(pip_effect.changes if pip_effect else ()),
+                    python_environment=(pip_effect.after if pip_effect else None),
                     python_install=(
                         {
                             "syntax": "requirements.txt",
@@ -1164,6 +1165,9 @@ class PluginManager:
             _report_progress(progress, "verify_python_environment", 0.86)
             after = self._python_environment_snapshot(executable)
             requirements = _pip_requirement_targets(arguments)
+            requested = tuple(item["requirement"] for item in requirements)
+            if not _requirements_satisfied(requested, after):
+                raise RuntimeError("pip completed but requested Python requirements remain unresolved")
             changes = _python_environment_changes(before, after)
             self.registry.record_python_install(
                 syntax=raw,
@@ -1173,6 +1177,7 @@ class PluginManager:
                 dependency_requirements=requirements,
                 changes=changes,
                 owner="@project",
+                python_environment=after,
             )
             self._activate_installed_python_paths(before, after, executable=executable)
         except BaseException as install_error:
@@ -1278,6 +1283,7 @@ class PluginManager:
             self.registry.record_python_reconciliation(
                 requirements=missing,
                 changes=changes,
+                python_environment=after,
                 owners={
                     reference: _pip_requirement_targets(requirements)
                     for reference, requirements in requirements_by_plugin.items()
@@ -1319,6 +1325,8 @@ class PluginManager:
                 command = (executable, "-m", "pip", "install", "-r", filtered)
                 result = self._run_process(list(command), cwd=self.project_root)
             after = self._python_environment_snapshot(executable)
+            if not _requirements_satisfied(requested, after):
+                raise RuntimeError("pip completed but requested Python requirements remain unresolved")
             self._activate_installed_python_paths(before, after, executable=executable)
             return _PipInstallEffect(
                 before,

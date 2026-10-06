@@ -358,6 +358,7 @@ def test_clone_restores_project_pip_requirements_without_another_users_baseline(
         output="local diagnostic", owner="@project", requirements=["demo>=2"],
         dependency_requirements=[{"name": "demo", "requirement": "demo>=2"}],
         changes=[{"name": "demo", "before": "1", "after": "2"}],
+        python_environment={"demo": "2"},
     )
     clone = tmp_path / "collaborator"
     shutil.copytree(manager.project_root, clone, ignore=shutil.ignore_patterns("Library", "Cache", ".runtime"))

@@ -2652,8 +2652,9 @@ def test_shared_pip_distribution_is_removed_only_after_last_plugin_owner(
     assert manager.registry.load()["python_dependencies"] == []
 
 
+@pytest.mark.parametrize("preinstalled", (False, True))
 def test_startup_restores_installed_plugin_requirements_in_new_environment(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, preinstalled
 ):
     source = _source(tmp_path / "source", "vendor/portable-python")
     (source / "requirements.txt").write_text(
@@ -2663,7 +2664,7 @@ def test_startup_restores_installed_plugin_requirements_in_new_environment(
     package = _export(source, tmp_path / "portable-python.inxpkg")
     project = _project(tmp_path / "project")
     manager = PluginManager(str(project))
-    environment: dict[str, str] = {}
+    environment: dict[str, str] = {"shared-wheel": "1.5"} if preinstalled else {}
     commands: list[list[str]] = []
     restored_files = []
     next_available_version = "1.5"
@@ -2692,6 +2693,11 @@ def test_startup_restores_installed_plugin_requirements_in_new_environment(
     monkeypatch.setattr(manager, "_project_python_executable", lambda: "project-python")
     monkeypatch.setattr(manager, "_run_process", run)
     manager.install_package(str(package))
+    installed_dependency = manager.registry.load()["python_dependencies"][0]
+    assert installed_dependency["installed_version"] == "1.5"
+    assert installed_dependency["managed"] is not preinstalled
+    if preinstalled:
+        assert not any(command[2:4] == ["pip", "install"] for command in commands)
     shared_registry = Path(manager.registry.path).read_bytes()
     shared_lock = Path(manager.registry.lock_path).read_bytes()
     next_available_version = "1.8"
@@ -2726,6 +2732,25 @@ def test_startup_restores_installed_plugin_requirements_in_new_environment(
     environment["shared-wheel"] = "1.8"
     assert manager._reconcile_python_requirements_for_startup() == ("vendor/portable-python",)
     assert environment == {"shared-wheel": "1.5"}
+
+
+@pytest.mark.parametrize("observed", ({}, {"shared-wheel": "2.0"}))
+@pytest.mark.parametrize("project_install", (False, True))
+def test_pip_success_without_a_satisfied_requirement_cannot_publish(tmp_path, monkeypatch, observed, project_install):
+    manager = PluginManager(str(_project(tmp_path / "project")))
+    monkeypatch.setattr(manager, "_project_python_executable", lambda: "project-python")
+    snapshots = iter(({}, observed))
+    monkeypatch.setattr(manager, "_python_environment_snapshot", lambda _executable=None: next(snapshots))
+    monkeypatch.setattr(manager, "_run_process", lambda *_args, **_kwargs: SimpleNamespace(stdout="ok"))
+    restored = []
+    monkeypatch.setattr(manager, "_restore_python_environment", lambda before, **_kwargs: restored.append(before))
+    with pytest.raises(RuntimeError, match="requested Python requirements remain unresolved"):
+        if project_install:
+            manager.install_pip("pip install shared-wheel>=1,<2")
+        else:
+            manager._install_pip_lines(("shared-wheel>=1,<2",))
+    assert restored == [{}]
+    assert manager.registry.load()["python_dependencies"] == []
 
 
 def test_install_reuses_satisfied_project_python_requirement_without_running_pip(
@@ -4138,16 +4163,17 @@ def test_requirements_choose_official_inxpackage_before_pip(tmp_path, monkeypatc
     manager = PluginManager(str(project))
     calls = []
     monkeypatch.setattr(manager, "_project_python_executable", lambda: "project-python")
-    monkeypatch.setattr(
-        manager,
-        "_run_process",
-        lambda command, cwd=None: calls.append((command, cwd))
-        or type(
-            "Result",
-            (),
-            {"stdout": "[]" if command[2:5] == ["pip", "list", "--format=json"] else ""},
-        )(),
-    )
+    environment = {}
+
+    def run(command, cwd=None):
+        calls.append((command, cwd))
+        if command[2:4] == ["pip", "install"]:
+            environment["third-party-wheel"] = "1.0"
+        return SimpleNamespace(stdout=json.dumps([
+            {"name": name, "version": version} for name, version in environment.items()
+        ]) if command[2:5] == ["pip", "list", "--format=json"] else "")
+
+    monkeypatch.setattr(manager, "_run_process", run)
     manager.install_package(str(parent_package))
     assert {item["reference"] for item in manager.registry.installed()} == {
         "vendor/dependency",
