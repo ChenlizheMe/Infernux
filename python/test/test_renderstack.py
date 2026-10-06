@@ -232,6 +232,40 @@ def test_removed_pipeline_keeps_selection_and_invalidates_for_transactional_rebu
     assert subject.invalidations == 1
 
 
+@pytest.mark.parametrize('name', ['Authored Pipeline', 'Default Forward'])
+def test_restored_catalog_selection_retries_failed_build_once(name):
+    from infernux.renderstack._render_pipeline_reload import PipelineReloadMixin
+
+    class Subject(PipelineReloadMixin):
+        DEFAULT_PIPELINE_NAME = 'Default Forward'
+
+        def __init__(self):
+            self.pipeline_class_name = name
+            self._pipeline_catalog_signature = ()
+            self._pipeline = None
+            self._cached_ips = object()
+            self.names = {name: object()}
+            self.invalidations = 0
+            self.build_failed = True
+
+        def discover_pipelines(self):
+            return self.names
+
+        def invalidate_graph(self):
+            self.invalidations += 1
+            self.build_failed = False
+
+    subject = Subject()
+    subject._sync_pipeline_catalog()
+    assert subject.pipeline_class_name == name and subject._pipeline is None
+    assert subject._cached_ips is None
+    assert subject.invalidations == 1 and not subject.build_failed
+    subject._sync_pipeline_catalog()
+    subject.names['Unrelated New Pipeline'] = object()
+    subject._sync_pipeline_catalog()
+    assert subject.invalidations == 1
+
+
 def test_set_pipeline_replaces_runtime_pipeline_and_invalidates_graph_once(monkeypatch):
     from infernux.renderstack.render_stack import RenderStack
 

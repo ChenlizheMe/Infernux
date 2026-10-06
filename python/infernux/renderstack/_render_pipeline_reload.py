@@ -71,6 +71,7 @@ class PipelineReloadMixin:
         if signature == self._pipeline_catalog_signature:
             return
 
+        previous_names = self._pipeline_catalog_signature
         self._pipeline_catalog_signature = signature
 
         current = self.pipeline_class_name
@@ -91,6 +92,11 @@ class PipelineReloadMixin:
         if self._pipeline is not None:
             self._save_current_pipeline_params()
             self._pipeline = None
+            self._cached_ips = None
+            self.invalidate_graph()
+        elif current in names and current not in previous_names:
+            # A missing/ambiguous selection has no instance to refresh, but
+            # its failed graph must retry once when the name becomes usable.
             self._cached_ips = None
             self.invalidate_graph()
 
