@@ -308,6 +308,8 @@ MaterialCompareOp ParseDepthCompareOpString(const std::string &value, MaterialCo
 {
     if (value == "on" || value == "true" || value == "less")
         return MaterialCompareOp::Less;
+    if (value == "equal")
+        return MaterialCompareOp::Equal;
     if (value == "less_equal")
         return MaterialCompareOp::LessOrEqual;
     if (value == "always")
@@ -316,6 +318,8 @@ MaterialCompareOp ParseDepthCompareOpString(const std::string &value, MaterialCo
         return MaterialCompareOp::Never;
     if (value == "greater")
         return MaterialCompareOp::Greater;
+    if (value == "not_equal")
+        return MaterialCompareOp::NotEqual;
     if (value == "greater_equal")
         return MaterialCompareOp::GreaterOrEqual;
     return fallback;

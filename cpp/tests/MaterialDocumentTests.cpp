@@ -1,10 +1,12 @@
 #include <core/types/ShaderProgramArtifact.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
+#include <array>
 #include <cassert>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <utility>
 
 namespace
 {
@@ -21,6 +23,39 @@ using infernux::ShaderAssetReference;
 using infernux::ShaderProgramArtifact;
 using infernux::ShaderProgramPropertyBinding;
 using infernux::ShaderProgramStageMask;
+
+void VerifyEveryAuthoredDepthAndStencilComparison()
+{
+    const std::array<std::pair<const char *, MaterialCompareOp>, 8> comparisons{{
+        {"never", MaterialCompareOp::Never},
+        {"less", MaterialCompareOp::Less},
+        {"equal", MaterialCompareOp::Equal},
+        {"less_equal", MaterialCompareOp::LessOrEqual},
+        {"greater", MaterialCompareOp::Greater},
+        {"not_equal", MaterialCompareOp::NotEqual},
+        {"greater_equal", MaterialCompareOp::GreaterOrEqual},
+        {"always", MaterialCompareOp::Always},
+    }};
+    for (const auto &[name, expected] : comparisons) {
+        InxMaterial depth("Depth Comparison", "Unlit");
+        depth.ApplyShaderRenderMeta("", "", name, "", 2000, "");
+        assert(depth.GetRenderState().depthTestEnable);
+        assert(depth.GetRenderState().depthCompareOp == expected);
+
+        InxMaterial stencil("Stencil Comparison", "Unlit");
+        stencil.ApplyShaderRenderMeta("", "", "", "", 2000, "",
+                                     std::string(name) + ",1,replace,keep,keep");
+        const auto &state = stencil.GetRenderState();
+        assert(state.stencilTestEnable);
+        assert(state.stencilFront.compareOp == expected);
+        assert(state.stencilBack.compareOp == expected);
+        assert(state.stencilFront.reference == 1 && state.stencilBack.reference == 1);
+        InxMaterial restored;
+        assert(restored.DeserializeDocument(stencil.SerializeDocument()));
+        assert(restored.GetRenderState().stencilFront == state.stencilFront);
+        assert(restored.GetRenderState().stencilBack == state.stencilBack);
+    }
+}
 
 void VerifyRetiredFieldsAreIgnored()
 {
@@ -518,6 +553,7 @@ void VerifyReflectedArrayRoundTripAndLengthAuthority()
 
 int main()
 {
+    VerifyEveryAuthoredDepthAndStencilComparison();
     VerifyGizmoIconPreservesAuthoredAlpha();
     VerifyRetiredFieldsAreIgnored();
     VerifyStableReferencesAndClone();
