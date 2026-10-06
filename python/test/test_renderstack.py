@@ -448,8 +448,11 @@ class TestFullScreenEffect:
             modifies = {"color"}
 
         class RecordingPass:
-            def set_textures(self, bindings):
-                self.bindings = bindings
+            def __init__(self):
+                self.bindings = {}
+
+            def set_texture(self, name, handle):
+                self.bindings[name] = handle
 
         render_pass = RecordingPass()
         bus = ResourceBus(

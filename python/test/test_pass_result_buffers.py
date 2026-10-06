@@ -230,8 +230,11 @@ def test_forward_pass_buffers_have_current_view_producers_and_resolved_inputs(pi
             assert producer._write_colors[0] == result.sample(semantic).name
 
     class RecordingPass:
-        def set_textures(self, bindings):
-            self.bindings = bindings
+        def __init__(self):
+            self.bindings = {}
+
+        def set_texture(self, name, handle):
+            self.bindings[name] = handle
 
     class PassBufferEffect(FullScreenEffect):
         name = "pass_buffer_effect"
@@ -263,19 +266,42 @@ def test_light_list_is_a_view_owned_read_only_buffer(pipeline_type):
     assert light_list.view_light_list is True
     assert light_list.compute_buffer is None
 
-    class RecordingPass:
-        def set_textures(self, bindings):
-            self.bindings = bindings
-
     class LightEffect(FullScreenEffect):
         name = "light_list_effect"
         injection_point = "after_opaque"
         requires = {"light_list"}
         modifies = set()
 
-    render_pass = RecordingPass()
-    LightEffect().bind_buffers(render_pass, ResourceBus(result.snapshot))
-    assert render_pass.bindings == {"lightList": light_list}
+    render_pass = graph.add_pass("Read Light List")
+    LightEffect().bind_buffers(render_pass, ResourceBus(result.snapshot, graph=graph))
+    assert render_pass._input_bindings == {"lightList": light_list.name}
+    assert render_pass._buffer_accesses == [(light_list.name, "storage_read")]
+
+
+def test_fullscreen_effect_binds_textures_and_extra_buffers_with_typed_apis():
+    graph = RenderGraph("Mixed Effect Inputs")
+    color = graph.create_texture("color")
+    depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
+    lights = graph.create_view_light_list()
+    extra = graph.create_buffer("extra_values", 16)
+    bus = ResourceBus({"color": color, "depth": depth, "light_list": lights}, graph=graph)
+
+    class MixedEffect(FullScreenEffect):
+        name = "Mixed Effect"
+        injection_point = "before_post_process"
+        requires = {"depth", "light_list"}
+
+    render_pass = graph.add_pass("Read Mixed Inputs")
+    MixedEffect().bind_buffers(render_pass, bus, extra_bindings={"values": extra})
+
+    assert render_pass._input_bindings == {
+        "_InxPassColor": color.name,
+        "_InxPassDepth": depth.name,
+        "lightList": lights.name,
+        "values": extra.name,
+    }
+    assert render_pass._buffer_accesses == [(lights.name, "storage_read"), (extra.name, "storage_read")]
+    assert set(render_pass._reads) == {color.name, depth.name}
 
 
 @pytest.mark.parametrize(
@@ -349,8 +375,11 @@ def test_fullscreen_effect_shadow_binding_reports_missing_source():
         modifies = set()
 
     class RecordingPass:
-        def set_textures(self, bindings):
-            self.bindings = bindings
+        def __init__(self):
+            self.bindings = {}
+
+        def set_texture(self, name, handle):
+            self.bindings[name] = handle
 
     shadow = object()
     render_pass = RecordingPass()

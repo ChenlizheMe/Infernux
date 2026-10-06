@@ -228,11 +228,16 @@ class FullScreenEffect(SerializedFieldCollectorMixin, RenderPass):
                 "effect requires unavailable buffers from its PassResult: "
                 + ", ".join(missing)
             )
-        render_pass.set_textures(
-            {shader_name: bus.get(semantic) for shader_name, semantic in selected}
-        )
+        from infernux.rendergraph.graph import BufferHandle
+
+        bindings = {shader_name: bus.get(semantic) for shader_name, semantic in selected}
         if extra_bindings:
-            render_pass.set_textures(extra_bindings)
+            bindings.update(extra_bindings)
+        for shader_name, handle in bindings.items():
+            if isinstance(handle, BufferHandle):
+                render_pass.set_buffer(shader_name, handle)
+            else:
+                render_pass.set_texture(shader_name, handle)
 
     # ==================================================================
     # Core interface — subclasses implement these
