@@ -295,6 +295,12 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.editor_text_input COMMAND infernux_editor_text_input_tests)
 
+    add_executable(infernux_material_preview_latitude_tests cpp/tests/MaterialPreviewLatitudeTests.cpp)
+    target_include_directories(infernux_material_preview_latitude_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_material_preview_latitude_tests PRIVATE infernux_runtime_test_support)
+    add_test(NAME infernux.material_preview_latitude COMMAND infernux_material_preview_latitude_tests)
+
     add_executable(infernux_editor_tools_tests
         cpp/tests/EditorToolsTests.cpp
     )
