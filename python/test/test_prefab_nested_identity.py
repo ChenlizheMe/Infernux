@@ -20,6 +20,133 @@ class _NestedReferences(InxComponent):
     target = serialized_field(default=None, field_type=FieldType.COMPONENT)
 
 
+@pytest.fixture
+def copy_commands():
+    from types import SimpleNamespace
+    from infernux.engine.interaction import ClipboardService, SelectionService, SceneObjectCommandService
+    from infernux.engine.undo import UndoManager
+
+    previous = UndoManager._instance
+    history = UndoManager()
+    selection = SelectionService()
+    commands = SceneObjectCommandService(selection, ClipboardService())
+
+    def copy_object(source, *, duplicate, cut=False):
+        source_scene = source.scene
+        selection.replace_scene_objects([source.id], owner_id="hierarchy", record_history=False)
+        context = SimpleNamespace(
+            selection=selection.snapshot,
+            focus=SimpleNamespace(active_view_id="hierarchy", active_panel_id="hierarchy"),
+        )
+        if duplicate:
+            assert commands.duplicate(context)
+        else:
+            assert commands.copy(context, cut=cut)
+            assert commands.paste(context)
+        return source_scene.find_by_id(selection.primary_scene_object_id())
+
+    try:
+        yield copy_object, history
+    finally:
+        history.clear()
+        UndoManager._instance = previous
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_editor_copy_linked_child_retires_outer_sources_and_preserves_history(
+    scene, tmp_path, copy_commands, duplicate,
+):
+    from infernux.components.fields import get_raw_field_value
+
+    root = scene.create_game_object("Prefab")
+    child = scene.create_game_object("Linked child")
+    child.set_parent(root)
+    child.add_component("BoxCollider")
+    second = child.add_component("BoxCollider")
+    second.is_trigger = True
+    child.add_py_component(_NestedReferences()).target = ComponentRef(second)
+    path = str(tmp_path / "source.prefab")
+    assert save_prefab(root, path)
+    instance = _instantiate_prefab(file_path=path, guid="copy-child-guid", scene=scene)
+    original = instance.get_child(0)
+    original_document = original.serialize_document()
+    copy_object, history = copy_commands
+    copied = copy_object(original, duplicate=duplicate)
+    copied_id = copied.id
+    assert copied.get_parent() is instance
+    assert copied.prefab_guid == "" and copied.prefab_source_id == 0
+    assert all(not entry.get("prefab_source_id") for entry in copied.serialize_document()["components"])
+    assert original.serialize_document() == original_document
+    assert serialize_prefab_document(instance)
+
+    history.undo()
+    assert scene.find_by_id(copied_id) is None
+    assert len(instance.get_children()) == 1
+    history.redo()
+    copied = scene.find_by_id(copied_id)
+    target = copied.get_py_component(_NestedReferences).target
+    assert target.game_object is copied and target.is_trigger
+    assert target.component_id == copied.get_components("BoxCollider")[1].component_id
+    assert original.serialize_document() == original_document
+    assert apply_overrides_to_prefab(instance, path)
+    original, copied = scene.find_by_id(instance.id).get_children()
+    assert original.prefab_source_id != copied.prefab_source_id
+    assert original.prefab_source_id == original_document["prefab_source_id"]
+    assert get_raw_field_value(copied.get_py_component(_NestedReferences), "target").resolve().game_object is copied
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_editor_copy_nested_root_keeps_inner_namespace_but_retires_outer_occurrence(
+    scene, tmp_path, copy_commands, duplicate,
+):
+    outer, _, path = _make_nested(scene, tmp_path)
+    assert save_prefab(outer, path)
+    instance = instantiate_prefab(file_path=path, guid="outer-guid", scene=scene)
+    original = instance.get_child(0)
+    original_outer_id = original._prefab_source_document["outer_source_id"]
+    original_document = original.serialize_document()
+    copy_object, history = copy_commands
+    copied = copy_object(original, duplicate=duplicate)
+    copied_id = copied.id
+    assert copied.prefab_root and copied.prefab_guid == "inner-guid"
+    assert "outer_source_id" not in copied._prefab_source_document
+    assert copied.prefab_source_id == original.prefab_source_id
+    assert copied.get_child(0).prefab_source_id == original.get_child(0).prefab_source_id
+    assert copied.get_py_component(_NestedReferences).target.game_object is copied.get_child(0)
+    assert original.serialize_document() == original_document
+    assert serialize_prefab_document(instance)
+    history.undo()
+    assert scene.find_by_id(copied_id) is None
+    history.redo()
+    copied = scene.find_by_id(copied_id)
+    assert "outer_source_id" not in copied._prefab_source_document
+    assert copied.get_py_component(_NestedReferences).target.game_object is copied.get_child(0)
+    assert apply_overrides_to_prefab(instance, path)
+    children = scene.find_by_id(instance.id).get_children()
+    assert len({child._prefab_source_document["outer_source_id"] for child in children}) == 3
+    assert scene.find_by_id(original_document["id"])._prefab_source_document["outer_source_id"] == original_outer_id
+
+
+def test_cut_paste_within_prefab_retains_existing_source_occurrence(scene, tmp_path, copy_commands):
+    root = scene.create_game_object("Cut owner")
+    child = scene.create_game_object("Cut member")
+    child.set_parent(root)
+    child.add_component("BoxCollider")
+    path = str(tmp_path / "cut.prefab")
+    assert save_prefab(root, path)
+    instance = _instantiate_prefab(file_path=path, guid="cut-guid", scene=scene)
+    original = instance.get_child(0)
+    original_source_id = original.prefab_source_id
+    original_component_source = original.serialize_document()["components"][0]["prefab_source_id"]
+    copy_object, history = copy_commands
+    moved = copy_object(original, duplicate=False, cut=True)
+    assert moved.prefab_guid == "cut-guid"
+    assert moved.prefab_source_id == original_source_id
+    assert moved.serialize_document()["components"][0]["prefab_source_id"] == original_component_source
+    assert len(instance.get_children()) == 1
+    assert serialize_prefab_document(instance)
+
+
 def instantiate_prefab(*, file_path, guid, scene, parent=None):
     from pathlib import Path
     from types import SimpleNamespace

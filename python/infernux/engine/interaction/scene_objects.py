@@ -276,6 +276,7 @@ class SceneObjectCommandService:
 
     def paste(self, context: CommandContext) -> bool:
         from infernux.engine.component_restore import (
+            _retire_copied_prefab_links,
             instantiate_prepared_game_object_documents,
             preflight_game_object_python_components,
         )
@@ -319,6 +320,8 @@ class SceneObjectCommandService:
         try:
             for entry in entries:
                 document = copy.deepcopy(entry["document"])
+                if payload.operation is ClipboardOperation.COPY:
+                    _retire_copied_prefab_links(document)
                 prepared = preflight_game_object_python_components(
                     document,
                     asset_database=asset_database,

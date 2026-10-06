@@ -1220,6 +1220,29 @@ def instantiate_prepared_game_object_documents(
         raise
 
 
+def _retire_copied_prefab_links(document: dict, *, linked_subtree: bool = False) -> None:
+    """Make a copied subtree a new occurrence in its enclosing Prefab.
+
+    This operates on an owned snapshot, never the source instance. Nested
+    roots retain their complete inner namespace; only their outer occurrence
+    retires. Runtime object/component IDs stay in place until batch remapping.
+    """
+    if document.get("prefab_root"):
+        baseline = document.get("prefab_source")
+        if baseline is not None:
+            baseline.pop("outer_source_id", None)
+        return
+    linked_subtree = linked_subtree or bool(document.get("prefab_guid") or document.get("prefab_source_id"))
+    if linked_subtree:
+        document.pop("prefab_guid", None)
+        document.pop("prefab_source_id", None)
+        document.pop("prefab_source", None)
+        for component in document["components"]:
+            component.pop("prefab_source_id", None)
+    for child in document["children"]:
+        _retire_copied_prefab_links(child, linked_subtree=linked_subtree)
+
+
 def clone_game_object_transactionally(
     scene,
     source,
@@ -1232,15 +1255,7 @@ def clone_game_object_transactionally(
     """Preflight a source snapshot before native subtree clone/publish."""
     _require_clean_pending_queue(scene)
     source_document = serialize_game_object_document_authoritatively(source)
-    if not source.prefab_root and (source.prefab_guid or source.prefab_source_id):
-        def clear_component_links(node):
-            if node.get("prefab_root"):
-                return
-            for component in node["components"]:
-                component.pop("prefab_source_id", None)
-            for child in node["children"]:
-                clear_component_links(child)
-        clear_component_links(source_document)
+    _retire_copied_prefab_links(source_document)
     prepared = preflight_game_object_python_components(
         source_document,
         asset_database,
