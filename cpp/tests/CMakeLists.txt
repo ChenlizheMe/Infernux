@@ -1448,7 +1448,7 @@ if(INFERNUX_BUILD_TESTS)
         RUN_SERIAL TRUE
         FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
     )
-    foreach(_surface_contract lit_surface_contract surface_gbuffer_scalars unlit_hdr_render_paths deformed_tangent_frame deformed_shadow vertex_time_shadow)
+    foreach(_surface_contract lit_surface_contract surface_gbuffer_scalars unlit_hdr_render_paths deformed_tangent_frame deformed_shadow vertex_time_shadow motion_blur)
         set(_surface_test "infernux.${_surface_contract}_gpu")
         add_test(NAME ${_surface_test}
             COMMAND ${Python3_EXECUTABLE}
@@ -1471,7 +1471,7 @@ if(INFERNUX_BUILD_TESTS)
         TIMEOUT 60
         RUN_SERIAL TRUE
         FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD")
-    foreach(_skinned_contract deformed_tangent_frame deformed_shadow)
+    foreach(_skinned_contract deformed_tangent_frame deformed_shadow motion_blur)
         set(_skinned_args --skinned)
         if(_skinned_contract STREQUAL "deformed_shadow")
             list(APPEND _skinned_args --shading pbr)

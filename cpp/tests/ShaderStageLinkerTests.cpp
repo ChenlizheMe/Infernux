@@ -1218,6 +1218,25 @@ void main() { }
     assert(!brokenArtifact.IsValid());
     assert(HasDiagnostic(brokenArtifact, infernux::ShaderLinkDiagnosticCode::MissingVertexOutput));
 
+    const std::array<std::pair<const char *, infernux::ShaderLinkDiagnosticCode>, 4> invalidVaryings = {{
+        {"Smooth Float3 waveUV Semantic(TexCoord7)",
+         infernux::ShaderLinkDiagnosticCode::VaryingTypeMismatch},
+        {"Smooth Float2 waveUV Semantic(TexCoord6)",
+         infernux::ShaderLinkDiagnosticCode::SemanticMismatch},
+        {"Smooth Float2 waveUV Semantic(TexCoord7) Smooth Float2 waveUV Semantic(TexCoord8)",
+         infernux::ShaderLinkDiagnosticCode::DuplicateVarying},
+        {"Smooth Float2 waveUV Semantic(TexCoord7) Smooth Float waveHeight Semantic(TexCoord7) Space(World)",
+         infernux::ShaderLinkDiagnosticCode::DuplicateSemantic},
+    }};
+    for (const auto &[declarations, expectedDiagnostic] : invalidVaryings) {
+        const std::string source = "ShaderInfo { Name \"Tests/InvalidVaryings\" Inputs { " +
+                                   std::string(declarations) + " } } void main() { }";
+        const auto invalidFragment = compiler.ParseShaderSource(source, "InvalidVaryings.frag");
+        const auto rejected = infernux::ShaderStageLinker::Link(vertex, invalidFragment);
+        assert(!rejected.IsValid());
+        assert(HasDiagnostic(rejected, expectedDiagnostic));
+    }
+
     const std::string mismatchedInput = R"(
 ShaderInfo
 {
