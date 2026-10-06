@@ -191,6 +191,7 @@ class Controller:
     domain = inx.buffer(shape=4, dtype=np.int32, device='gpu')
     out = inx.buffer(shape=4, dtype=np.int32, device='gpu')
     try:
+        assert namespace['Controller'].solve._cpu_vectorized
         inx.compute.launch(namespace['Controller'].solve, (domain, out, 3))
         np.testing.assert_array_equal(out.numpy(), [10, 10, 0, 0])
     finally:
