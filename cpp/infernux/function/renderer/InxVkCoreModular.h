@@ -60,6 +60,7 @@
 
 #include <array>
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -936,6 +937,8 @@ class InxVkCoreModular
     /// @brief Refresh a material's pipeline using its vertex and fragment shader names.
     bool RefreshMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
                                  const std::string &fragShaderName);
+    /// Resolve one committed Mesh generation for filtering and draw recording.
+    MaterialRenderData *ResolveMeshMaterial(const std::shared_ptr<InxMaterial> &material);
     bool RefreshPreviewMaterialPipeline(std::shared_ptr<InxMaterial> material, const std::string &vertShaderName,
                                         const std::string &fragShaderName, bool reportDomainMismatch = true);
 
@@ -1605,6 +1608,9 @@ class InxVkCoreModular
     [[nodiscard]] std::vector<GpuAssetResidencyRecord> GetAssetMeshGpuResidency() const;
 
     // Render callbacks (RenderGraph-based)
+    // An acquired image and recorded simulation cannot be replayed after an
+    // uncertain submission. Only a new renderer instance starts a new session.
+    std::exception_ptr m_frameFailure;
     std::function<void(VkCommandBuffer cmdBuf)> m_renderGraphExecutor;
     FrameSubmissionBuildCallback m_frameSubmissionBuilder;
     FramePreSetupCallback m_framePreSetupBuilder;

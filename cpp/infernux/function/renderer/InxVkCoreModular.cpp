@@ -691,7 +691,7 @@ InxVkCoreModular::ResolveShaderProgramArtifact(const std::shared_ptr<InxMaterial
         artifact = m_shaderCache.FindProgramArtifact(stages);
     }
     if (artifact && artifact->domain != expectedDomain)
-        throw std::runtime_error("Material shader domain mismatch before non-UI resolution");
+        throw ShaderProgramDomainMismatch(expectedDomain, artifact->domain);
     return artifact;
 }
 
@@ -717,6 +717,9 @@ void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId, const 
 {
     if (shaderId.empty())
         throw std::invalid_argument("Shader cache invalidation requires a non-empty shader identifier");
+    // A source edit can change its declared domain without changing stage IDs.
+    // Reconsider rejected geometry selections after the authoring publication.
+    m_rejectedGeometryMaterialPrograms.clear();
     // Clear every CPU-visible raw ShaderProgram/pipeline handle before moving
     // the owning Vulkan objects into the frame-safe retirement queue.
     if (m_materialPipelineManagerInitialized) {
@@ -1199,6 +1202,8 @@ bool InxVkCoreModular::RecordPresentationReadback(VkCommandBuffer commandBuffer,
 
 void InxVkCoreModular::WaitForCurrentFrame()
 {
+    if (m_frameFailure)
+        std::rethrow_exception(m_frameFailure);
     const uint32_t frameSlot = GetCurrentFrameSlot();
 #if INFERNUX_FRAME_PROFILE
     const auto waitStarted = std::chrono::high_resolution_clock::now();
@@ -1214,6 +1219,10 @@ void InxVkCoreModular::WaitForCurrentFrame()
     if (completed) {
         m_submissionExecutor.CompleteFrame(frameSlot);
         (void)m_backend.Queues().CompleteFrameSlot(frameSlot);
+    } else {
+        m_frameFailure = std::make_exception_ptr(
+            std::runtime_error("Failed to wait for graphics frame slot " + std::to_string(frameSlot)));
+        std::rethrow_exception(m_frameFailure);
     }
 }
 

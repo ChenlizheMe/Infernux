@@ -1,5 +1,8 @@
 #pragma once
 
+#include <stdexcept>
+#include <string>
+
 namespace infernux
 {
 
@@ -9,6 +12,7 @@ enum class ShaderProgramDomain : unsigned char
     ParticleSprite,
     ScreenUI,
     WorldUI,
+    Fullscreen,
 
     Count,
 };
@@ -24,11 +28,28 @@ enum class ShaderProgramDomain : unsigned char
         return "ScreenUI";
     case ShaderProgramDomain::WorldUI:
         return "WorldUI";
+    case ShaderProgramDomain::Fullscreen:
+        return "Fullscreen";
     case ShaderProgramDomain::Count:
         return "Count";
     }
     return "Unknown";
 }
+
+class ShaderProgramDomainMismatch : public std::runtime_error
+{
+  public:
+    ShaderProgramDomainMismatch(ShaderProgramDomain expected, ShaderProgramDomain actual)
+        : std::runtime_error("Material shader domain mismatch: expected " +
+                             std::string(ShaderProgramDomainName(expected)) + ", got " +
+                             ShaderProgramDomainName(actual)),
+          expected(expected), actual(actual)
+    {
+    }
+
+    const ShaderProgramDomain expected;
+    const ShaderProgramDomain actual;
+};
 
 // ============================================================================
 // ShaderCompileTarget — identifies which rendering pass variant to compile for.

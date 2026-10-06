@@ -2274,12 +2274,9 @@ void SceneRenderGraph::RefreshMaterialTextureReads()
                  (!overrideMaterial && !tag.empty() && tag != command->passTag)))
                 return;
             if (command->materialFilter != GraphMaterialFilter::All) {
-                ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
-                if (const auto *committed =
-                        m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
-                    stages = committed->programKey.stages;
-                const auto *artifact =
-                    m_vkCore->ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
+                const auto *committed = m_vkCore->ResolveMeshMaterial(material);
+                const auto artifact =
+                    committed ? m_vkCore->ShareShaderProgramArtifact(committed->programKey.stages) : nullptr;
                 const bool deferred = artifact && artifact->FindVariant(ShaderCompileTarget::GBuffer);
                 if ((command->materialFilter == GraphMaterialFilter::DeferredCompatible && !deferred) ||
                     (command->materialFilter == GraphMaterialFilter::DeferredUnsupported && deferred))
@@ -2430,20 +2427,9 @@ void SceneRenderGraph::EnsureGraphBuilt()
                 const auto &state = material->GetRenderState();
                 if (!state.depthWriteEnable)
                     continue;
-                ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
-                if (const auto *committed =
-                        m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
-                    stages = committed->programKey.stages;
-                const auto *artifact =
-                    m_vkCore->ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
-                if (!artifact) {
-                    m_vkCore->RefreshMaterialPipeline(material, material->GetVertShaderName(),
-                                                      material->GetFragShaderName());
-                    if (const auto *committed =
-                            m_vkCore->GetMaterialPipelineManager().GetRenderData(material->GetMaterialKey()))
-                        stages = committed->programKey.stages;
-                    artifact = m_vkCore->ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
-                }
+                const auto *committed = m_vkCore->ResolveMeshMaterial(material);
+                const auto artifact =
+                    committed ? m_vkCore->ShareShaderProgramArtifact(committed->programKey.stages) : nullptr;
                 if (!state.depthTestEnable || state.stencilTestEnable || !artifact ||
                     !artifact->FindVariant(ShaderCompileTarget::Depth)) {
                     INXLOG_ERROR("Selective World UI occlusion cannot replay depth-writing material '",

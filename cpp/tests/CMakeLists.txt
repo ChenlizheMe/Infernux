@@ -1462,6 +1462,40 @@ if(INFERNUX_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
         )
     endforeach()
+    foreach(_mesh_rejected_domain Fullscreen ParticleSprite)
+        foreach(_mesh_domain_pipeline forward forward_plus deferred)
+            set(_mesh_domain_test "infernux.mesh_reject_${_mesh_rejected_domain}_${_mesh_domain_pipeline}_gpu")
+            add_test(NAME ${_mesh_domain_test}
+                COMMAND ${Python3_EXECUTABLE}
+                    ${CMAKE_SOURCE_DIR}/python/infernux/test/mesh_shader_domain_gpu_test.py
+                    --domain ${_mesh_rejected_domain} --pipeline ${_mesh_domain_pipeline}
+            )
+            set_tests_properties(${_mesh_domain_test} PROPERTIES
+                ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+                LABELS "requires_vulkan_device"
+                TIMEOUT 60
+                RUN_SERIAL TRUE
+                FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
+            )
+        endforeach()
+    endforeach()
+    foreach(_mesh_reload_mode cold warm)
+        set(_mesh_reload_args)
+        if(_mesh_reload_mode STREQUAL "warm")
+            list(APPEND _mesh_reload_args --start-mesh)
+        endif()
+        set(_mesh_reload_test "infernux.mesh_domain_reload_${_mesh_reload_mode}_gpu")
+        add_test(NAME ${_mesh_reload_test}
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/python/infernux/test/mesh_shader_domain_reload_gpu_test.py
+                ${_mesh_reload_args}
+        )
+        set_tests_properties(${_mesh_reload_test} PROPERTIES
+            ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+            LABELS "requires_vulkan_device" TIMEOUT 60 RUN_SERIAL TRUE
+            FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
+        )
+    endforeach()
     add_test(NAME infernux.deformed_pbr_lighting_gpu
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/python/infernux/test/deformed_shadow_gpu_test.py --shading pbr)

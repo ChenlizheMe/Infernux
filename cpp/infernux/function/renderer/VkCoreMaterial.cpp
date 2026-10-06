@@ -830,6 +830,49 @@ void InxVkCoreModular::ReleaseGpuPreviews()
     m_gpuMaterialPreview.reset();
 }
 
+MaterialRenderData *InxVkCoreModular::ResolveMeshMaterial(const std::shared_ptr<InxMaterial> &material)
+{
+    if (!material)
+        return nullptr;
+    const std::string materialKey = material->GetMaterialKey();
+    auto *forward = m_materialPipelineManager.GetRenderData(materialKey);
+    if (forward && forward->descriptorSet != VK_NULL_HANDLE &&
+        !m_materialPipelineManager.IsDescriptorSetLive(forward->descriptorSet)) {
+        m_materialPipelineManager.RemoveRenderData(materialKey);
+        forward = nullptr;
+    }
+
+    const ShaderStagePair requestedStages{material->GetVertShaderName(), material->GetFragShaderName()};
+    const std::string rejectionKey = materialKey + "|" + requestedStages.ToString() + "|Mesh";
+    const auto *requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
+    bool domainRejected = m_rejectedGeometryMaterialPrograms.find(rejectionKey) !=
+                          m_rejectedGeometryMaterialPrograms.end();
+    if (!domainRejected && !requestedArtifact && m_shaderProgramArtifactResolver) {
+        try {
+            m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
+            requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
+        } catch (const ShaderProgramDomainMismatch &) {
+            domainRejected = true;
+        }
+        forward = m_materialPipelineManager.GetRenderData(materialKey);
+    }
+    if (domainRejected || (requestedArtifact && requestedArtifact->domain != ShaderProgramDomain::Mesh)) {
+        if (m_rejectedGeometryMaterialPrograms.insert(rejectionKey).second)
+            RefreshMaterialPipeline(material, requestedStages.vertexShaderId, requestedStages.fragmentShaderId);
+        // A rejected edit cannot replace an already committed geometry ABI.
+        material->ClearPipelineDirty();
+    } else if (!forward || material->IsPipelineDirty()) {
+        if (requestedStages.fragmentShaderId.empty() ||
+            !RefreshMaterialPipeline(material, requestedStages.vertexShaderId, requestedStages.fragmentShaderId))
+            return nullptr;
+        forward = m_materialPipelineManager.GetRenderData(materialKey);
+    }
+    if (!forward || !forward->isValid || forward->descriptorSet == VK_NULL_HANDLE ||
+        !m_materialPipelineManager.IsDescriptorSetLive(forward->descriptorSet))
+        return nullptr;
+    return forward;
+}
+
 bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMaterial> material,
                                                       const std::string &vertShaderName,
                                                       const std::string &fragShaderName, bool reportDomainMismatch)
@@ -840,8 +883,17 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
     PrepareMaterialTextureAssets(material);
 
     const ShaderStagePair stages{vertShaderName, fragShaderName};
-    const auto *artifact = m_shaderCache.FindProgramArtifact(stages);
-    if (artifact && artifact->domain != ShaderProgramDomain::Mesh) {
+    const ShaderProgramArtifact *artifact = nullptr;
+    try {
+        // Direct Fullscreen stages have no linked artifact. Resolve the declared
+        // domain before constructing a geometry layout, including on first use.
+        // A hot edit can also change domain while an older Mesh artifact exists.
+        if (m_shaderCache.FindProgramArtifact(stages) && m_shaderProgramArtifactResolver)
+            m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
+        artifact = ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
+    } catch (const ShaderProgramDomainMismatch &error) {
+        if (reportDomainMismatch)
+            m_rejectedGeometryMaterialPrograms.insert(material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh");
         MaterialRenderData *previous = m_materialPipelineManager.GetRenderData(material->GetMaterialKey());
         const bool hasLastKnownGood = previous && previous->isValid && previous->pipeline != VK_NULL_HANDLE &&
                                       previous->pipelineLayout != VK_NULL_HANDLE &&
@@ -854,10 +906,10 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
                 material->GetName().empty() ? material->GetMaterialKey() : material->GetName();
             const std::string failureKey = material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh";
             if (reportedDomainMismatches.insert(failureKey).second) {
-                INXLOG_ERROR("Material shader domain mismatch: material '", materialName, "' uses shader program '",
-                             stages.ToString(), "' with domain '", ShaderProgramDomainName(artifact->domain),
+                INXLOG_ERROR("Material shader domain mismatch: material '", materialName, "' uses domain '",
+                             ShaderProgramDomainName(error.actual),
                              "', but MeshRenderer geometry requires domain 'Mesh'. Use a Mesh-domain vertex/fragment "
-                             "shader pair, or use this material through ParticleSystem. ",
+                             "shader pair. ",
                              hasLastKnownGood ? "The rejected rebuild did not replace the previous valid GPU pipeline."
                                               : "This material cannot be rendered by MeshRenderer.");
             }
@@ -899,6 +951,8 @@ bool InxVkCoreModular::RefreshPreviewMaterialPipeline(std::shared_ptr<InxMateria
             m_materialPipelineManager.GetOrCreateRenderDataWithReflection(material, *vertCode, *fragCode, programKey);
 
         bool forwardOk = renderData && renderData->isValid;
+        if (forwardOk)
+            m_rejectedGeometryMaterialPrograms.erase(material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh");
 
         if (forwardOk && artifact) {
             // Optional programs are materialized by their first real pass.
@@ -1508,7 +1562,10 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
         materialKey = material->GetName();
     }
 
-    const ShaderStagePair stagePair{vertShaderName, fragShaderName};
+    MaterialRenderData *forwardRenderData = ResolveMeshMaterial(material);
+    if (!forwardRenderData)
+        return VK_NULL_HANDLE;
+    const ShaderStagePair stagePair = forwardRenderData->programKey.stages;
     const ShaderProgramArtifact *linkedArtifact = m_shaderCache.FindProgramArtifact(stagePair);
     // A shadow pass can be the first consumer of a material after a fresh
     // scene is opened.  The Forward pipeline may already be valid while the
@@ -1516,7 +1573,8 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     // artifact here instead of reporting an initialization error.  The
     // resolver is cached and deterministic; this does not introduce a
     // fallback shader or a second publication path.
-    if ((!linkedArtifact || !linkedArtifact->FindVariant(ShaderCompileTarget::Shadow)) &&
+    if (stagePair == ShaderStagePair{vertShaderName, fragShaderName} &&
+        (!linkedArtifact || !linkedArtifact->FindVariant(ShaderCompileTarget::Shadow)) &&
         m_shaderProgramArtifactResolver) {
         m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
         linkedArtifact = m_shaderCache.FindProgramArtifact(stagePair);
@@ -1533,10 +1591,9 @@ VkDescriptorSet InxVkCoreModular::EnsureMaterialShadowPipeline(const std::shared
     // resources. A newly selected stage pair has no cached Forward code until
     // that publication; preparing descriptors earlier skips its first shadow
     // draw even though the Shadow variant itself is subsequently available.
-    MaterialRenderData *forwardRenderData = m_materialPipelineManager.GetRenderData(materialKey);
     MaterialDescriptorSet *forwardMaterialDesc = forwardRenderData ? forwardRenderData->materialDescSet : nullptr;
     if ((!forwardRenderData || !forwardRenderData->isValid || !forwardMaterialDesc || !forwardMaterialDesc->isValid) &&
-        RefreshMaterialPipeline(material, vertShaderName, fragShaderName)) {
+        RefreshMaterialPipeline(material, stagePair.vertexShaderId, stagePair.fragmentShaderId)) {
         forwardRenderData = m_materialPipelineManager.GetRenderData(materialKey);
         forwardMaterialDesc = forwardRenderData ? forwardRenderData->materialDescSet : nullptr;
     }

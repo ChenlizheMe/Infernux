@@ -929,9 +929,10 @@ Infernux::Infernux(std::string dllPath, RuntimeMode mode) : m_runtimeMode(mode),
         m_renderer->SetShaderProgramArtifactResolver([this](const std::shared_ptr<InxMaterial> &material,
                                                             std::optional<ShaderProgramDomain> expectedDomain) {
             const auto declaredDomain = InspectMaterialShaderDomain(material);
+            if (declaredDomain && expectedDomain && *declaredDomain != *expectedDomain)
+                throw ShaderProgramDomainMismatch(*expectedDomain, *declaredDomain);
             if (declaredDomain &&
-                (*declaredDomain == ShaderProgramDomain::ScreenUI || *declaredDomain == ShaderProgramDomain::WorldUI ||
-                 (expectedDomain && *declaredDomain != *expectedDomain))) {
+                (*declaredDomain == ShaderProgramDomain::ScreenUI || *declaredDomain == ShaderProgramDomain::WorldUI)) {
                 throw std::runtime_error(
                     "Material shader domain mismatch before publication: expected " +
                     std::string(expectedDomain ? ShaderProgramDomainName(*expectedDomain) : "Mesh/ParticleSprite") +
@@ -4065,7 +4066,7 @@ Infernux::InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &materi
 {
     auto *database = GetAssetDatabase();
     if (!database || !material)
-        throw std::runtime_error("UI material shader classification requires a material and AssetDatabase");
+        throw std::runtime_error("Material shader classification requires a material and AssetDatabase");
 
     InxShaderLoader parser(true, false, false, false, false, true, false, false, false, false);
     unsigned int sourceCount = 0;
@@ -4077,12 +4078,12 @@ Infernux::InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &materi
             path = database->FindShaderPathById(reference.shaderId, stage);
         if (path.empty()) {
             if (!reference.guid.empty())
-                throw std::runtime_error("UI material shader GUID cannot be resolved: " + reference.guid);
+                throw std::runtime_error("Material shader GUID cannot be resolved: " + reference.guid);
             return 0u;
         }
         std::vector<char> bytes;
         if (!database->ReadFile(path, bytes) || bytes.empty())
-            throw std::runtime_error("UI material shader source cannot be read: " + path);
+            throw std::runtime_error("Material shader source cannot be read: " + path);
         ++sourceCount;
         if (bytes.back() == '\0')
             bytes.pop_back();
@@ -4097,20 +4098,24 @@ Infernux::InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &materi
                 flags |= 2u;
             else if (capability == "particlesprite")
                 flags |= 4u;
+            else if (capability == "fullscreen")
+                flags |= 8u;
         }
         return flags;
     };
     const unsigned int vertexFlags = stageFlags(material->GetVertShaderReference(), "vertex");
     const unsigned int fragmentFlags = stageFlags(material->GetFragShaderReference(), "fragment");
     const unsigned int flags = vertexFlags | fragmentFlags;
-    if ((flags & 3u) == 1u && (flags & 4u) == 0)
+    if ((flags & (flags - 1u)) != 0)
+        throw std::runtime_error("Material shader stages declare conflicting geometry domains");
+    if (flags == 1u)
         return ShaderProgramDomain::ScreenUI;
-    if ((flags & 3u) == 2u && (flags & 4u) == 0)
+    if (flags == 2u)
         return ShaderProgramDomain::WorldUI;
-    if ((flags & 3u) != 0)
-        throw std::runtime_error("UI material shader stages declare conflicting UI or particle domains");
-    if (vertexFlags & 4u)
+    if (flags == 4u)
         return ShaderProgramDomain::ParticleSprite;
+    if (flags == 8u)
+        return ShaderProgramDomain::Fullscreen;
     if (sourceCount == 2)
         return ShaderProgramDomain::Mesh;
     return std::nullopt;
