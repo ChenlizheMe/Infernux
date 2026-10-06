@@ -1542,23 +1542,26 @@ def _load_script_module(
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     try:
-        if code is not None:
-            exec(code, module.__dict__)
-        elif source_only or source is not None:
-            if not file_path.endswith(".py"):
-                raise ScriptLoadError(
-                    f"Source-only script reload requires a .py file: {file_path}"
-                )
-            # Play-mode candidates must reflect the bytes just saved to disk.
-            # SourceFileLoader.exec_module() may reuse a timestamp-based .pyc
-            # when a same-second edit also preserves the file size.
-            if source is None:
-                with tokenize.open(file_path) as source_file:
-                    source = source_file.read()
-            code = compile(source, file_path, "exec", dont_inherit=True)
-            exec(code, module.__dict__)
-        else:
-            spec.loader.exec_module(module)
+        from infernux.renderstack.render_effect_compiler import _stage_source_effect_features
+
+        with _stage_source_effect_features(file_path):
+            if code is not None:
+                exec(code, module.__dict__)
+            elif source_only or source is not None:
+                if not file_path.endswith(".py"):
+                    raise ScriptLoadError(
+                        f"Source-only script reload requires a .py file: {file_path}"
+                    )
+                # Play-mode candidates must reflect the bytes just saved to disk.
+                # SourceFileLoader.exec_module() may reuse a timestamp-based .pyc
+                # when a same-second edit also preserves the file size.
+                if source is None:
+                    with tokenize.open(file_path) as source_file:
+                        source = source_file.read()
+                code = compile(source, file_path, "exec", dont_inherit=True)
+                exec(code, module.__dict__)
+            else:
+                spec.loader.exec_module(module)
     except Exception:
         if sys.modules.get(module_name) is module:
             sys.modules.pop(module_name, None)

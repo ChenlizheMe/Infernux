@@ -22,7 +22,7 @@ import types
 from dataclasses import dataclass
 from typing import Iterable
 
-from .path_utils import is_path_within, resolved_path
+from .path_utils import is_path_within, path_key, resolved_path
 from .module_classification import is_stdlib_module
 from .project_context import (
     get_project_script_roots,
@@ -67,6 +67,10 @@ class CandidateImportTransaction:
         self._before: dict[str, object] = {}
         self._serializable_types: dict[str, type] = {}
         self._serializable_before: dict[str, type | None] = {}
+        self._effect_features = {}
+        self._effect_module_sources: dict[str, str] = {}
+        self._effect_sources: set[str] = set()
+        self._effect_before = {}
         self._committed = False
         self._rolled_back = False
 
@@ -104,6 +108,7 @@ class CandidateImportTransaction:
         if not path or not os.path.isfile(path):
             raise CandidateImportError(f"candidate module file not found: {file_path}")
         self._specs[name] = CandidateModuleSpec(name, path, source, code)
+        self._effect_module_sources[name] = path_key(path)
 
     def module_for(self, name: str) -> types.ModuleType | None:
         return self._modules.get(name)
@@ -400,15 +405,22 @@ class CandidateImportTransaction:
                     raise CandidateImportError(f"candidate loader returned no code: {spec.file_path}")
                 code = loaded_code
             from infernux.components.serializable_object import _candidate_serializable_scope
+            from infernux.renderstack.render_effect_compiler import _capture_source_effect_features
 
-            with _candidate_serializable_scope(self._serializable_types, spec.name):
+            with _candidate_serializable_scope(self._serializable_types, spec.name), _capture_source_effect_features(
+                spec.file_path, self._effect_features, self._effect_module_sources,
+            ):
                 exec(code, module.__dict__)
         except Exception:
             self._modules.pop(spec.name, None)
             for identity, cls in tuple(self._serializable_types.items()):
                 if cls.__module__ == spec.name:
                     del self._serializable_types[identity]
+            for type_id, feature in tuple(self._effect_features.items()):
+                if feature.source_identity[0] == path_key(spec.file_path):
+                    del self._effect_features[type_id]
             raise
+        self._effect_sources.add(path_key(spec.file_path))
         self._attach_child(spec.name, module)
         return module
 
@@ -540,6 +552,12 @@ class CandidateImportTransaction:
                     )
                     self._parent_before_keys.add(key)
                 setattr(parent, child_name, self._modules[name])
+            from infernux.renderstack.render_effect_compiler import (
+                _publish_effect_features, _snapshot_effect_features,
+            )
+
+            self._effect_before = _snapshot_effect_features(self._effect_features, self._effect_sources)
+            _publish_effect_features(self._effect_features.values(), source_keys=self._effect_sources)
             self._committed = True
         except Exception:
             self.rollback()
@@ -568,6 +586,12 @@ class CandidateImportTransaction:
         from infernux.components.serializable_object import _restore_serializable_types
 
         _restore_serializable_types(self._serializable_before)
+        from infernux.renderstack.render_effect_compiler import _restore_effect_features
+
+        _restore_effect_features(self._effect_before)
+        self._effect_features.clear()
+        self._effect_sources.clear()
+        self._effect_before.clear()
         self._serializable_types.clear()
         self._serializable_before.clear()
         self._modules.clear()

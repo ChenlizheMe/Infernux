@@ -544,7 +544,19 @@ class RenderEffectFeature:
 
 _FEATURES: dict[str, RenderEffectFeature] = {}
 _BUILTINS_REGISTERED = False
-_FEATURE_REGISTRATION_SCOPE: ContextVar[tuple[str, dict[str, RenderEffectFeature]] | None] = ContextVar(
+
+
+@dataclass
+class _EffectFeatureScope:
+    source_key: str
+    pending: dict[str, RenderEffectFeature]
+    module_sources: dict[str, str]
+
+    def owns(self, source_key: str) -> bool:
+        return source_key == self.source_key or source_key in self.module_sources.values()
+
+
+_FEATURE_REGISTRATION_SCOPE: ContextVar[_EffectFeatureScope | None] = ContextVar(
     "render_effect_feature_registration_scope", default=None
 )
 
@@ -553,6 +565,10 @@ def _effect_class_identity(effect_class: type) -> tuple[str, str]:
     source_file = str(
         getattr(effect_class, "__infernux_effect_source_file__", "") or ""
     )
+    if not source_file:
+        scope = _FEATURE_REGISTRATION_SCOPE.get()
+        if scope is not None:
+            source_file = scope.module_sources.get(effect_class.__module__, "")
     if not source_file:
         try:
             source_file = inspect.getsourcefile(effect_class) or ""
@@ -568,19 +584,44 @@ def _validate_feature_replacement(existing, feature) -> None:
             raise ValueError(f"render effect feature {feature.type_id!r} is already registered")
 
 
-def _publish_effect_features(features, *, source_key: str = "") -> None:
+def _publish_effect_features(features, *, source_key: str = "", source_keys=()) -> None:
     features = tuple(features)
     # Validate the complete set before publishing any of it.
     for feature in features:
         _validate_feature_replacement(_FEATURES.get(feature.type_id), feature)
     changed = [feature.type_id for feature in features if _FEATURES.get(feature.type_id) != feature]
     declared = {feature.type_id for feature in features}
+    owners = set(source_keys)
+    if source_key:
+        owners.add(source_key)
     retired = [type_id for type_id, feature in _FEATURES.items()
-               if source_key and feature.source_identity[0] == source_key and type_id not in declared]
+               if feature.source_identity[0] in owners and type_id not in declared]
     _FEATURES.update((feature.type_id, feature) for feature in features)
     for type_id in retired:
         del _FEATURES[type_id]
     for type_id in (*changed, *retired):
+        RenderEffectArtifactRegistry.invalidate_feature(type_id)
+
+
+def _snapshot_effect_features(type_ids, source_keys) -> dict[str, RenderEffectFeature | None]:
+    before = {type_id: feature for type_id, feature in _FEATURES.items()
+              if feature.source_identity[0] in source_keys}
+    for type_id in type_ids:
+        before.setdefault(type_id, _FEATURES.get(type_id))
+    return before
+
+
+def _restore_effect_features(before: Mapping[str, RenderEffectFeature | None]) -> None:
+    for type_id, feature in before.items():
+        current = _FEATURES.get(type_id)
+        if current is feature:
+            continue
+        if feature is None:
+            _FEATURES.pop(type_id, None)
+        else:
+            _FEATURES[type_id] = feature
+        # Invalidation generations remain monotonic. An owner-side rollback
+        # must retire artifacts/graphs built against the rejected publication.
         RenderEffectArtifactRegistry.invalidate_feature(type_id)
 
 
@@ -598,10 +639,22 @@ def _stage_source_effect_features(source_path: str):
     _register_builtin_features()
     pending = {}
     source_key = path_key(resolved_path(source_path))
-    token = _FEATURE_REGISTRATION_SCOPE.set((source_key, pending))
+    token = _FEATURE_REGISTRATION_SCOPE.set(_EffectFeatureScope(source_key, pending, {}))
     try:
         yield
         _publish_effect_features(pending.values(), source_key=source_key)
+    finally:
+        _FEATURE_REGISTRATION_SCOPE.reset(token)
+
+
+@contextmanager
+def _capture_source_effect_features(source_path: str, pending, module_sources):
+    """Capture declarations in a private importer, without publishing them."""
+    _register_builtin_features()
+    scope = _EffectFeatureScope(path_key(resolved_path(source_path)), pending, module_sources)
+    token = _FEATURE_REGISTRATION_SCOPE.set(scope)
+    try:
+        yield
     finally:
         _FEATURE_REGISTRATION_SCOPE.reset(token)
 
@@ -624,8 +677,8 @@ def register_render_effect_feature(
         route_policy=RoutePolicy(route_policy or RoutePolicy.ISOLATE_AND_COMPOSITE),
     )
     scope = _FEATURE_REGISTRATION_SCOPE.get()
-    if scope is not None and feature.source_identity[0] == scope[0]:
-        pending = scope[1]
+    if scope is not None and scope.owns(feature.source_identity[0]):
+        pending = scope.pending
         _validate_feature_replacement(pending.get(normalized, _FEATURES.get(normalized)), feature)
         pending[normalized] = feature
     else:
@@ -672,8 +725,8 @@ def render_effect_feature(
 def get_render_effect_feature(type_id: str) -> RenderEffectFeature:
     _register_builtin_features()
     scope = _FEATURE_REGISTRATION_SCOPE.get()
-    if scope is not None and str(type_id) in scope[1]:
-        return scope[1][str(type_id)]
+    if scope is not None and str(type_id) in scope.pending:
+        return scope.pending[str(type_id)]
     if scope is None:
         # Discovery is event-cached. Reconcile edits/removals once after
         # invalidation before accepting an already registered project type.
@@ -681,7 +734,7 @@ def get_render_effect_feature(type_id: str) -> RenderEffectFeature:
 
         discover_effect_features()
     feature = _FEATURES.get(str(type_id))
-    if feature is None:
+    if feature is None and scope is None:
         from infernux.renderstack.discovery import discover_effect_features
 
         discover_effect_features()
