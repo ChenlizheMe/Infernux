@@ -8,6 +8,7 @@
 #include <function/renderer/particle/ParticleGpuMigrator.h>
 #include <function/renderer/particle/ParticleGpuSystemManager.h>
 #include <function/renderer/particle/ParticleRenderGraph.h>
+#include <function/renderer/particle/ParticleSceneSources.h>
 #include <function/renderer/shader/ShaderReflection.h>
 #include <function/renderer/vk/RenderGraph.h>
 #include <function/renderer/vk/RhiVulkanTypes.h>
@@ -18,8 +19,11 @@
 #include <function/renderer/vk/VulkanQueueManager.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/renderer/vk/VulkanSubmissionExecutor.h>
+#include <function/resources/AssetDatabase/AssetDatabase.h>
+#include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxMesh/MeshLoader.h>
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -710,6 +714,7 @@ void main() {
 #include "ParticleDomainRetentionTests.h"
 #include "ParticleMeshMetadataTests.h"
 #include "ParticleRuntimeUploadTests.h"
+#include "ParticleSceneSourceTests.h"
 #include "ParticleSpawnInputTests.h"
 #include "ParticleSurfaceSnapshotTests.h"
 #include "RhiBufferUpdateTests.h"
@@ -946,6 +951,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     managedProgram.outputs.push_back(primaryOutput);
     if (!VerifyParticleDomainRetention(resources, sortCompiler, managedProgram, sortProgram, cullProgram, boundsProgram,
                                        migrationProgram, spawnProgram))
+        return false;
+    if (!VerifyParticleSceneSources(resources, sortCompiler, managedProgram, sortProgram, cullProgram, boundsProgram,
+                                   migrationProgram, spawnProgram))
         return false;
     std::string managedError;
     auto publishManagedGraph = [&](std::vector<infernux::particle::GpuParticleEmitterProgram> emitters,

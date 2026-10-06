@@ -28,6 +28,7 @@
 #include "particle/ParticleGpuRibbonTopology.h"
 #include "particle/ParticleGpuSorter.h"
 #include "particle/ParticleGpuSystemManager.h"
+#include "particle/ParticleSceneSources.h"
 #include "rhi/RhiComputeHost.h"
 #include "rhi/RhiRenderTexture.h"
 #include "vk/RenderGraph.h"
@@ -3920,34 +3921,10 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
         INXLOG_ERROR("Failed to compile one or more GPU particle support programs");
         return nullptr;
     }
-    const auto particleSkinnedMeshResolver =
-        [](const ObjectHandle &handle) -> std::optional<particle::GpuParticleSkinnedMeshSnapshot> {
-        Scene *scene = SceneManager::Instance().GetActiveScene();
-        auto *renderer = scene ? dynamic_cast<SkinnedMeshRenderer *>(scene->ResolveComponent(handle)) : nullptr;
-        if (!renderer || !renderer->GetGameObject() || !renderer->GetGameObject()->GetTransform())
-            return std::nullopt;
-        const auto pose = renderer->GetRuntimeSkinPoseSnapshot();
-        auto mesh = renderer->GetMeshAssetRef().Get();
-        auto model = renderer->GetRuntimeModelSnapshot();
-        if (!pose || !pose->IsValid() || !mesh || !model)
-            return std::nullopt;
-        particle::GpuParticleSkinnedMeshSnapshot snapshot;
-        snapshot.mesh = std::move(mesh);
-        snapshot.model = std::move(model);
-        snapshot.currentPalette = pose->current;
-        snapshot.previousPalette = pose->previous;
-        snapshot.revision = pose->revision;
-        const glm::mat4 &world = renderer->GetGameObject()->GetTransform()->GetWorldMatrix();
-        for (uint32_t row = 0; row < 4; ++row) {
-            for (uint32_t column = 0; column < 4; ++column)
-                snapshot.sourceToWorld[row * 4 + column] = world[column][row];
-        }
-        return snapshot;
-    };
     if (!manager->Initialize(m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(),
                              m_vkCore->GetResourceManager(), m_vkCore->GetRetirementQueue(), *m_particleGpuDrawRegistry,
                              std::move(particleTextureResolver), std::move(particleVectorFieldTextureResolver),
-                             std::move(particleSkinnedMeshResolver), programs.sort.View(), programs.cull.View(),
+                             particle::ResolveSceneSkinnedMeshSource, programs.sort.View(), programs.cull.View(),
                              programs.bounds.View(), programs.migration.View(), programs.spawn.View(),
                              programs.ribbonTopology.View(), programs.ribbonRender.View())) {
         INXLOG_ERROR("Failed to initialize the GPU particle system manager");
