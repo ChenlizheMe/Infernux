@@ -52,14 +52,15 @@ The hook edits `VertexInput`, but that public struct sits on top of a fixed engi
 | 4 | `texCoord` | `texCoord` | `vec2` | Primary UV set |
 | 5 | `boneIndices` | Engine-owned | `uvec4` | GPU skinning palette indices |
 | 6 | `boneWeights` | Engine-owned | `vec4` | GPU skinning weights |
+| 7 | `texCoord1` | `texCoord1` | `vec2` | Secondary/lightmap UV set; defaults to the origin |
 
-For example, location 0 is stored as `pos` in the C++ `Vertex` structure, then presented to user code as `v.position`. Shader code never accesses `v.pos`. The generated builtins mirror locations 0-6 and construct the public `VertexInput` contract from them. Bone attributes stay engine-owned because skinning runs after the hook. The hook sees pre-skin local data, and exposing bone values would invite per-instance logic that the current contract does not support.
+For example, location 0 is stored as `pos` in the C++ `Vertex` structure, then presented to user code as `v.position`. Shader code never accesses `v.pos`. The generated builtins mirror locations 0-7 and construct the public `VertexInput` contract from them. Bone attributes stay engine-owned because skinning runs after the hook. The hook sees pre-skin local data, and exposing bone values would invite per-instance logic that the current contract does not support.
 
-Vulkan pipelines do not bind all seven attributes blindly. After SPIR-V compilation, `FilterVertexAttributesForReflection()` (`VertexInputFilter.h`) keeps only the locations the vertex shader actually reads, so a shader that never samples skinning does not create unused attribute descriptors; `MaterialPipelineManager.cpp` calls it during pipeline creation. The CPU-side buffer layout never changes.
+Vulkan pipelines do not bind all eight attributes blindly. After SPIR-V compilation, `FilterVertexAttributesForReflection()` (`VertexInputFilter.h`) keeps only the locations the vertex shader actually reads, so a shader that never samples skinning does not create unused attribute descriptors; `MaterialPipelineManager.cpp` calls it during pipeline creation. The CPU-side buffer layout never changes.
 
 Different geometry domains reuse or replace this layout:
 
-- **Mesh** is the default domain: the seven-attribute buffer, the generated builtins, and the optional `vertex()` hook.
+- **Mesh** is the default domain: the eight-attribute buffer, the generated builtins, and the optional `vertex()` hook.
 - **Sprite** renders a quad through the same mesh path (`SpriteRenderer` attaches an inline quad mesh), so it uses the identical layout and hooks.
 - **Standalone** programs such as `gizmo.vert`, `grid.vert`, and `flat.vert` write their own `main()` under `Capabilities [Standalone]`. Gizmos still feed them the standard `Vertex` structure, but the author owns the whole vertex stage.
 - **ParticleSprite** is a separate domain with no vertex buffer at all. The particle sprite stage declares `Capabilities [ParticleSprite]`, and the engine builds six billboard corners from instance storage buffers inside `main()`. Selecting a ParticleSprite or Fullscreen stage on a mesh Material fails with a domain error.
@@ -91,13 +92,13 @@ Choose the coordinate space intentionally. Object-space deformation follows obje
 
 ### Generated mesh-path boundary
 
-For ordinary mesh variants, Infernux calls `vertex()` on unskinned object-local data, records the post-hook local position, then applies current skinning and the current per-instance model transform. `VertexInput` exposes `position`, `normal`, `tangent`, `color`, and `texCoord`; it does not expose bone indices/weights, an instance ID, or custom per-instance payload. One Material hook therefore runs identically for every instance before each instance transform.
+For ordinary mesh variants, Infernux calls `vertex()` on unskinned object-local data, records the post-hook local position, then applies current skinning and the current per-instance model transform. `VertexInput` exposes `position`, `normal`, `tangent`, `color`, `texCoord`, and `texCoord1`; it does not expose bone indices/weights, an instance ID, or custom per-instance payload. One Material hook therefore runs identically for every instance before each instance transform.
 
 This order has concrete consequences:
 
 - A skinned mesh carries the deformed local position through the generated bone palette. The hook cannot branch on bone data through the current `VertexInput` contract.
 - Instanced meshes receive a generated current instance transform; the Motion variant also receives its previous transform. The hook has no public per-instance selector, so it cannot express instance-specific deformation. Split renderer/material configurations when instances need different hook behavior.
-- The generated model normal transform uses an inverse-transpose matrix, so non-uniform object or instance scale is handled after the hook. It cannot reconstruct a normal or tangent left stale by the deformation. Skinned directions use the bone matrix's `mat3`; non-uniform scale inside bone matrices needs asset-specific visual verification.
+- The generated model transform applies the inverse-transpose matrix to normals and the model matrix to tangent directions. Mirrored object or instance scale also reverses the tangent handedness. These transforms run after the hook. It cannot reconstruct a normal or tangent left stale by the deformation. Skinned directions use the bone matrix's `mat3`; non-uniform scale inside bone matrices needs asset-specific visual verification.
 
 <div class="learn-warning"><strong>Deformed geometry has more than one consumer.</strong><p>If an effect changes the visible silhouette, verify the Scene camera, Game camera, shadow caster, object picking, and motion-vector path. The generated variants reuse the hook, but bounds and previous-frame procedural deformation still have separate limits described below.</p></div>
 
@@ -153,7 +154,7 @@ Create or open a Material, select `Wind Bent` under **Vertex** and `Wind Surface
 
 Names, types, interpolation, semantics, and declared spaces form one contract. `Float4` to `Float3` and `Smooth` to `Flat` both produce link errors. A missing or mismatched member is reported before Vulkan pipeline creation.
 
-Location assignment is engine-owned as well. The built-in varyings occupy locations 0-6 (`v_WorldPos`, `v_Normal`, `v_Tangent`, `v_Color`, `v_TexCoord`, `v_ViewDepth`, and the internal LineRenderer tint). Authored varyings start at location 7. The linker sorts them by semantic first, then by name, so the declaration order in the file does not decide the layout; a `mat4` consumes four consecutive locations. The ceiling is location 15, and location 15 itself is reserved for engine pass data such as the picking ID. `ShaderStageLinker` applies these rules when the stages link at import time.
+Location assignment is engine-owned as well. The built-in varyings occupy locations 0-7 (`v_WorldPos`, `v_Normal`, `v_Tangent`, `v_Color`, `v_TexCoord`, `v_ViewDepth`, the internal LineRenderer tint, and `v_TexCoord1`). Authored varyings start at location 8. The linker sorts them by semantic first, then by name, so the declaration order in the file does not decide the layout; a `mat4` consumes four consecutive locations. The ceiling is location 15, and location 15 itself is reserved for engine pass data such as the picking ID. `ShaderStageLinker` applies these rules when the stages link at import time.
 
 Two checks enforce the contract. At import time, the stage linker pairs every fragment `Inputs` member with a vertex `Outputs` member by name and compares type, interpolation, semantic, and space. Its diagnostics cover a missing vertex output, a type mismatch, an interpolation mismatch, a semantic mismatch, a space mismatch, duplicate varyings, duplicate semantics, and the location ceiling. At runtime, when the linked program is created, `ShaderProgram::ValidateStageInterface()` reflects the compiled SPIR-V and compares each fragment input with the vertex output at the same location, including the vector width. A stage pair that passes the source-level link but disagrees in reflection fails program creation before any Vulkan pipeline is built.
 
@@ -263,14 +264,15 @@ Hook 编辑的是公开结构 `VertexInput`，它建立在固定的引擎顶点�
 | 4 | `texCoord` | `texCoord` | `vec2` | 主 UV 集 |
 | 5 | `boneIndices` | 引擎内部使用 | `uvec4` | GPU 蒙皮骨骼调色板索引 |
 | 6 | `boneWeights` | 引擎内部使用 | `vec4` | GPU 蒙皮权重 |
+| 7 | `texCoord1` | `texCoord1` | `vec2` | 第二套/光照贴图 UV；缺省为原点 |
 
-以 Location 0 为例，C++ `Vertex` 结构把它存为 `pos`，生成代码再把它映射成用户接口里的 `v.position`；用户 Shader 不应写 `v.pos`。生成的 Builtin 会镜像 Location 0 到 6，并据此构造公开的 `VertexInput`。骨骼属性保留给引擎，因为蒙皮在 Hook 之后执行。Hook 看到的是蒙皮前的局部数据，暴露骨骼值只会引出当前契约不支持的逐实例逻辑。
+以 Location 0 为例，C++ `Vertex` 结构把它存为 `pos`，生成代码再把它映射成用户接口里的 `v.position`；用户 Shader 不应写 `v.pos`。生成的 Builtin 会镜像 Location 0 到 7，并据此构造公开的 `VertexInput`。骨骼属性保留给引擎，因为蒙皮在 Hook 之后执行。Hook 看到的是蒙皮前的局部数据，暴露骨骼值只会引出当前契约不支持的逐实例逻辑。
 
-Vulkan Pipeline 不会盲目绑定全部七项属性。SPIR-V 编译完成后，`FilterVertexAttributesForReflection()`（`VertexInputFilter.h`）只保留顶点着色器真正读取的 Location，从不采样蒙皮的 Shader 因此不会产生未使用的属性描述符；`MaterialPipelineManager.cpp` 在创建管线时调用它。CPU 侧缓冲布局始终不变。
+Vulkan Pipeline 不会盲目绑定全部八项属性。SPIR-V 编译完成后，`FilterVertexAttributesForReflection()`（`VertexInputFilter.h`）只保留顶点着色器真正读取的 Location，从不采样蒙皮的 Shader 因此不会产生未使用的属性描述符；`MaterialPipelineManager.cpp` 在创建管线时调用它。CPU 侧缓冲布局始终不变。
 
 不同几何域复用或替换这份布局：
 
-- **Mesh** 是默认域：七属性缓冲、生成的 Builtin，以及可选的 `vertex()` Hook。
+- **Mesh** 是默认域：八属性缓冲、生成的 Builtin，以及可选的 `vertex()` Hook。
 - **Sprite** 通过同一条 Mesh 路径渲染四边形（`SpriteRenderer` 会挂载内联 Quad Mesh），使用的布局和 Hook 完全相同。
 - **Standalone** 程序（`gizmo.vert`、`grid.vert`、`flat.vert` 等）在 `Capabilities [Standalone]` 下自行编写 `main()`。Gizmo 仍然把标准 `Vertex` 结构喂给它们，整个顶点阶段由作者掌控。
 - **ParticleSprite** 是独立域，完全没有顶点缓冲。粒子 Sprite 阶段声明 `Capabilities [ParticleSprite]`，引擎在 `main()` 内从实例存储缓冲生成公告板的六个角点。给 Mesh Material 选择 ParticleSprite 或 Fullscreen 阶段会以域错误拒绝。
@@ -302,13 +304,13 @@ void vertex(inout VertexInput v) {
 
 ### 生成 Mesh 路径的边界
 
-对常规 Mesh 变体，Infernux 先在未蒙皮的物体空间数据上调用 `vertex()`，记录 Hook 处理后的局部位置，再应用当前骨骼蒙皮与当前实例 Model 变换。`VertexInput` 公开 `position`、`normal`、`tangent`、`color` 和 `texCoord`，不包含骨骼索引/权重、实例 ID 或自定义实例数据。因此，同一 Material Hook 会在各实例变换之前以相同逻辑运行。
+对常规 Mesh 变体，Infernux 先在未蒙皮的物体空间数据上调用 `vertex()`，记录 Hook 处理后的局部位置，再应用当前骨骼蒙皮与当前实例 Model 变换。`VertexInput` 公开 `position`、`normal`、`tangent`、`color`、`texCoord` 和 `texCoord1`，不包含骨骼索引/权重、实例 ID 或自定义实例数据。因此，同一 Material Hook 会在各实例变换之前以相同逻辑运行。
 
 这套顺序带来几项明确限制：
 
 - 蒙皮 Mesh 会让形变后的局部位置继续经过生成的骨骼调色板；当前 `VertexInput` 契约无法让 Hook 按骨骼数据分支。
 - 实例化 Mesh 会获得生成的当前实例变换；Motion 变体也会获得上一帧实例变换。Hook 没有公共的逐实例选择值，无法表达实例间不同的形变。实例需要不同 Hook 行为时，应拆分 Renderer/Material 配置。
-- 生成的 Model 法线变换使用逆转置矩阵，因此 Hook 之后的非均匀物体或实例缩放可以被处理；它无法修复形变后仍然过期的 Normal 或 Tangent。蒙皮方向使用骨骼矩阵的 `mat3`，骨骼矩阵含非均匀缩放时需要针对资产做视觉验证。
+- 生成的 Model 变换用逆转置矩阵处理法线，用 Model 矩阵处理切线方向；物体或实例的镜像缩放也会翻转切线手性。这些变换都在 Hook 之后执行；它无法修复形变后仍然过期的 Normal 或 Tangent。蒙皮方向使用骨骼矩阵的 `mat3`，骨骼矩阵含非均匀缩放时需要针对资产做视觉验证。
 
 <div class="learn-warning"><strong>形变后的几何体会进入多条路径。</strong><p>只要效果改变了轮廓，就应同时验证 Scene 相机、Game 相机、阴影投射、点击拾取和运动向量路径。生成变体会复用 Hook；Bounds 与上一帧程序化形变仍有各自限制，详见下文。</p></div>
 
@@ -364,7 +366,7 @@ void surface(out SurfaceData s) {
 
 名称、类型、插值方式、Semantic 与声明空间共同组成契约。`Float4` 不能接到 `Float3`，`Smooth` 也不能接到 `Flat`；缺项或不匹配会在 Vulkan Pipeline 创建前给出诊断。
 
-Location 分配同样归引擎。内置 Varying 固定占 location 0 到 5（`v_WorldPos`、`v_Normal`、`v_Tangent`、`v_Color`、`v_TexCoord`、`v_ViewDepth`），自定义 Varying 从 location 6 开始。链接器先按 Semantic 排序、再按名字排序，文件里的声明顺序不决定布局；`mat4` 连续占用 4 个 location。上限是 location 15，location 15 本身保留给拾取 ID 等引擎 Pass 数据。`ShaderStageLinker` 在导入期链接阶段时应用这些规则。
+Location 分配同样归引擎。内置 Varying 固定占 location 0 到 7（`v_WorldPos`、`v_Normal`、`v_Tangent`、`v_Color`、`v_TexCoord`、`v_ViewDepth`、内部 LineRenderer 色调和 `v_TexCoord1`），自定义 Varying 从 location 8 开始。链接器先按 Semantic 排序、再按名字排序，文件里的声明顺序不决定布局；`mat4` 连续占用 4 个 location。上限是 location 15，location 15 本身保留给拾取 ID 等引擎 Pass 数据。`ShaderStageLinker` 在导入期链接阶段时应用这些规则。
 
 这套契约有两道检查。导入期，阶段链接器按名字把每个片元 `Inputs` 成员配对到顶点 `Outputs` 成员，再比较类型、插值方式、Semantic 与空间；它的诊断覆盖缺失顶点输出、类型不匹配、插值不匹配、Semantic 不匹配、空间不匹配、重复 Varying、重复 Semantic 以及 Location 上限。运行期创建链接程序时，`ShaderProgram::ValidateStageInterface()` 反射编译后的 SPIR-V，按 Location 逐项比较片元输入与顶点输出，包括向量宽度。源级链接通过但反射不一致的阶段组合，会在程序创建阶段失败，此时任何 Vulkan Pipeline 都还没有开始构建。
 

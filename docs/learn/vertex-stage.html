@@ -120,13 +120,20 @@
 <td><code>vec4</code></td>
 <td>GPU skinning weights</td>
 </tr>
+<tr>
+<td>7</td>
+<td><code>texCoord1</code></td>
+<td><code>texCoord1</code></td>
+<td><code>vec2</code></td>
+<td>Secondary/lightmap UV set; defaults to the origin</td>
+</tr>
 </tbody>
 </table>
-<p>For example, location 0 is stored as <code>pos</code> in the C++ <code>Vertex</code> structure, then presented to user code as <code>v.position</code>. Shader code never accesses <code>v.pos</code>. The generated builtins mirror locations 0-6 and construct the public <code>VertexInput</code> contract from them. Bone attributes stay engine-owned because skinning runs after the hook. The hook sees pre-skin local data, and exposing bone values would invite per-instance logic that the current contract does not support.</p>
-<p>Vulkan pipelines do not bind all seven attributes blindly. After SPIR-V compilation, <code>FilterVertexAttributesForReflection()</code> (<code>VertexInputFilter.h</code>) keeps only the locations the vertex shader actually reads, so a shader that never samples skinning does not create unused attribute descriptors; <code>MaterialPipelineManager.cpp</code> calls it during pipeline creation. The CPU-side buffer layout never changes.</p>
+<p>For example, location 0 is stored as <code>pos</code> in the C++ <code>Vertex</code> structure, then presented to user code as <code>v.position</code>. Shader code never accesses <code>v.pos</code>. The generated builtins mirror locations 0-7 and construct the public <code>VertexInput</code> contract from them. Bone attributes stay engine-owned because skinning runs after the hook. The hook sees pre-skin local data, and exposing bone values would invite per-instance logic that the current contract does not support.</p>
+<p>Vulkan pipelines do not bind all eight attributes blindly. After SPIR-V compilation, <code>FilterVertexAttributesForReflection()</code> (<code>VertexInputFilter.h</code>) keeps only the locations the vertex shader actually reads, so a shader that never samples skinning does not create unused attribute descriptors; <code>MaterialPipelineManager.cpp</code> calls it during pipeline creation. The CPU-side buffer layout never changes.</p>
 <p>Different geometry domains reuse or replace this layout:</p>
 <ul>
-<li><strong>Mesh</strong> is the default domain: the seven-attribute buffer, the generated builtins, and the optional <code>vertex()</code> hook.</li>
+<li><strong>Mesh</strong> is the default domain: the eight-attribute buffer, the generated builtins, and the optional <code>vertex()</code> hook.</li>
 <li><strong>Sprite</strong> renders a quad through the same mesh path (<code>SpriteRenderer</code> attaches an inline quad mesh), so it uses the identical layout and hooks.</li>
 <li><strong>Standalone</strong> programs such as <code>gizmo.vert</code>, <code>grid.vert</code>, and <code>flat.vert</code> write their own <code>main()</code> under <code>Capabilities [Standalone]</code>. Gizmos still feed them the standard <code>Vertex</code> structure, but the author owns the whole vertex stage.</li>
 <li><strong>ParticleSprite</strong> is a separate domain with no vertex buffer at all. The particle sprite stage declares <code>Capabilities [ParticleSprite]</code>, and the engine builds six billboard corners from instance storage buffers inside <code>main()</code>. Selecting a ParticleSprite or Fullscreen stage on a mesh Material fails with a domain error.</li>
@@ -150,12 +157,12 @@
 <p>Choose the coordinate space intentionally. Object-space deformation follows object rotation and scale. World-space behavior needs an explicit calculation through the generated world transform or an imported helper.</p>
 <p><code>_Globals._Time</code> follows one source-defined convention: <code>.x</code> is unscaled seconds accumulated by the renderer, <code>.y</code> is <code>sin(x)</code>, <code>.z</code> is <code>cos(x)</code>, and <code>.w</code> is the current render-frame delta in seconds. The clock starts when the renderer is initialized, advances in Edit Mode and while gameplay is paused, does not reset on Play/Stop, and is unaffected by <code>Time.time_scale</code>; one unusually long frame contributes at most <code>1/3</code> second. <code>Time.shader_time</code> is the public CPU-side value that mirrors <code>_Globals._Time.x</code>. Restarting the renderer starts a new clock, so do not use <code>_Time.x</code> as saved gameplay time or a deterministic simulation tick.</p>
 <h3 id="generated-mesh-path-boundary">Generated mesh-path boundary</h3>
-<p>For ordinary mesh variants, Infernux calls <code>vertex()</code> on unskinned object-local data, records the post-hook local position, then applies current skinning and the current per-instance model transform. <code>VertexInput</code> exposes <code>position</code>, <code>normal</code>, <code>tangent</code>, <code>color</code>, and <code>texCoord</code>; it does not expose bone indices/weights, an instance ID, or custom per-instance payload. One Material hook therefore runs identically for every instance before each instance transform.</p>
+<p>For ordinary mesh variants, Infernux calls <code>vertex()</code> on unskinned object-local data, records the post-hook local position, then applies current skinning and the current per-instance model transform. <code>VertexInput</code> exposes <code>position</code>, <code>normal</code>, <code>tangent</code>, <code>color</code>, <code>texCoord</code>, and <code>texCoord1</code>; it does not expose bone indices/weights, an instance ID, or custom per-instance payload. One Material hook therefore runs identically for every instance before each instance transform.</p>
 <p>This order has concrete consequences:</p>
 <ul>
 <li>A skinned mesh carries the deformed local position through the generated bone palette. The hook cannot branch on bone data through the current <code>VertexInput</code> contract.</li>
 <li>Instanced meshes receive a generated current instance transform; the Motion variant also receives its previous transform. The hook has no public per-instance selector, so it cannot express instance-specific deformation. Split renderer/material configurations when instances need different hook behavior.</li>
-<li>The generated model normal transform uses an inverse-transpose matrix, so non-uniform object or instance scale is handled after the hook. It cannot reconstruct a normal or tangent left stale by the deformation. Skinned directions use the bone matrix's <code>mat3</code>; non-uniform scale inside bone matrices needs asset-specific visual verification.</li>
+<li>The generated model transform applies the inverse-transpose matrix to normals and the model matrix to tangent directions. Mirrored object or instance scale also reverses the tangent handedness. These transforms run after the hook. It cannot reconstruct a normal or tangent left stale by the deformation. Skinned directions use the bone matrix's <code>mat3</code>; non-uniform scale inside bone matrices needs asset-specific visual verification.</li>
 </ul>
 <div class="learn-warning"><strong>Deformed geometry has more than one consumer.</strong><p>If an effect changes the visible silhouette, verify the Scene camera, Game camera, shadow caster, object picking, and motion-vector path. The generated variants reuse the hook, but bounds and previous-frame procedural deformation still have separate limits described below.</p></div>
 
@@ -203,7 +210,7 @@
 
 <p>Create or open a Material, select <code>Wind Bent</code> under <strong>Vertex</strong> and <code>Wind Surface</code> under <strong>Fragment</strong>, then assign it to a MeshRenderer. The producer writes both members of <code>VertexOutput</code>; the consumer reads those same members from <code>fragmentInput</code>.</p>
 <p>Names, types, interpolation, semantics, and declared spaces form one contract. <code>Float4</code> to <code>Float3</code> and <code>Smooth</code> to <code>Flat</code> both produce link errors. A missing or mismatched member is reported before Vulkan pipeline creation.</p>
-<p>Location assignment is engine-owned as well. The built-in varyings occupy locations 0-6 (<code>v_WorldPos</code>, <code>v_Normal</code>, <code>v_Tangent</code>, <code>v_Color</code>, <code>v_TexCoord</code>, <code>v_ViewDepth</code>, and the internal LineRenderer tint). Authored varyings start at location 7. The linker sorts them by semantic first, then by name, so the declaration order in the file does not decide the layout; a <code>mat4</code> consumes four consecutive locations. The ceiling is location 15, and location 15 itself is reserved for engine pass data such as the picking ID. <code>ShaderStageLinker</code> applies these rules when the stages link at import time.</p>
+<p>Location assignment is engine-owned as well. The built-in varyings occupy locations 0-7 (<code>v_WorldPos</code>, <code>v_Normal</code>, <code>v_Tangent</code>, <code>v_Color</code>, <code>v_TexCoord</code>, <code>v_ViewDepth</code>, the internal LineRenderer tint, and <code>v_TexCoord1</code>). Authored varyings start at location 8. The linker sorts them by semantic first, then by name, so the declaration order in the file does not decide the layout; a <code>mat4</code> consumes four consecutive locations. The ceiling is location 15, and location 15 itself is reserved for engine pass data such as the picking ID. <code>ShaderStageLinker</code> applies these rules when the stages link at import time.</p>
 <p>Two checks enforce the contract. At import time, the stage linker pairs every fragment <code>Inputs</code> member with a vertex <code>Outputs</code> member by name and compares type, interpolation, semantic, and space. Its diagnostics cover a missing vertex output, a type mismatch, an interpolation mismatch, a semantic mismatch, a space mismatch, duplicate varyings, duplicate semantics, and the location ceiling. At runtime, when the linked program is created, <code>ShaderProgram::ValidateStageInterface()</code> reflects the compiled SPIR-V and compares each fragment input with the vertex output at the same location, including the vector width. A stage pair that passes the source-level link but disagrees in reflection fails program creation before any Vulkan pipeline is built.</p>
 <p>Custom varyings are only needed when the fragment stage needs data beyond the standard contract. Built-in surface helpers already expose standard UVs, vertex color, world normal, and related mesh data.</p>
 <p><code>Space(World)</code> is a checked label with no transform behavior. The linker verifies that producer and consumer use the same label; object-to-world multiplication remains author code. Compute a value in world space first with the transform or helper available to that geometry domain, then declare it <code>Space(World)</code> on both sides. Tagging object-space <code>v.position</code> as world space creates a consistently mislabeled varying.</p>
@@ -337,13 +344,20 @@
 <td><code>vec4</code></td>
 <td>GPU 蒙皮权重</td>
 </tr>
+<tr>
+<td>7</td>
+<td><code>texCoord1</code></td>
+<td><code>texCoord1</code></td>
+<td><code>vec2</code></td>
+<td>第二套/光照贴图 UV；缺省为原点</td>
+</tr>
 </tbody>
 </table>
-<p>以 Location 0 为例，C++ <code>Vertex</code> 结构把它存为 <code>pos</code>，生成代码再把它映射成用户接口里的 <code>v.position</code>；用户 Shader 不应写 <code>v.pos</code>。生成的 Builtin 会镜像 Location 0 到 6，并据此构造公开的 <code>VertexInput</code>。骨骼属性保留给引擎，因为蒙皮在 Hook 之后执行。Hook 看到的是蒙皮前的局部数据，暴露骨骼值只会引出当前契约不支持的逐实例逻辑。</p>
-<p>Vulkan Pipeline 不会盲目绑定全部七项属性。SPIR-V 编译完成后，<code>FilterVertexAttributesForReflection()</code>（<code>VertexInputFilter.h</code>）只保留顶点着色器真正读取的 Location，从不采样蒙皮的 Shader 因此不会产生未使用的属性描述符；<code>MaterialPipelineManager.cpp</code> 在创建管线时调用它。CPU 侧缓冲布局始终不变。</p>
+<p>以 Location 0 为例，C++ <code>Vertex</code> 结构把它存为 <code>pos</code>，生成代码再把它映射成用户接口里的 <code>v.position</code>；用户 Shader 不应写 <code>v.pos</code>。生成的 Builtin 会镜像 Location 0 到 7，并据此构造公开的 <code>VertexInput</code>。骨骼属性保留给引擎，因为蒙皮在 Hook 之后执行。Hook 看到的是蒙皮前的局部数据，暴露骨骼值只会引出当前契约不支持的逐实例逻辑。</p>
+<p>Vulkan Pipeline 不会盲目绑定全部八项属性。SPIR-V 编译完成后，<code>FilterVertexAttributesForReflection()</code>（<code>VertexInputFilter.h</code>）只保留顶点着色器真正读取的 Location，从不采样蒙皮的 Shader 因此不会产生未使用的属性描述符；<code>MaterialPipelineManager.cpp</code> 在创建管线时调用它。CPU 侧缓冲布局始终不变。</p>
 <p>不同几何域复用或替换这份布局：</p>
 <ul>
-<li><strong>Mesh</strong> 是默认域：七属性缓冲、生成的 Builtin，以及可选的 <code>vertex()</code> Hook。</li>
+<li><strong>Mesh</strong> 是默认域：八属性缓冲、生成的 Builtin，以及可选的 <code>vertex()</code> Hook。</li>
 <li><strong>Sprite</strong> 通过同一条 Mesh 路径渲染四边形（<code>SpriteRenderer</code> 会挂载内联 Quad Mesh），使用的布局和 Hook 完全相同。</li>
 <li><strong>Standalone</strong> 程序（<code>gizmo.vert</code>、<code>grid.vert</code>、<code>flat.vert</code> 等）在 <code>Capabilities [Standalone]</code> 下自行编写 <code>main()</code>。Gizmo 仍然把标准 <code>Vertex</code> 结构喂给它们，整个顶点阶段由作者掌控。</li>
 <li><strong>ParticleSprite</strong> 是独立域，完全没有顶点缓冲。粒子 Sprite 阶段声明 <code>Capabilities [ParticleSprite]</code>，引擎在 <code>main()</code> 内从实例存储缓冲生成公告板的六个角点。给 Mesh Material 选择 ParticleSprite 或 Fullscreen 阶段会以域错误拒绝。</li>
@@ -367,12 +381,12 @@
 <p>要明确选择坐标空间。物体空间形变会跟随物体的旋转与缩放；世界空间行为需要通过生成的世界变换或导入函数显式计算。</p>
 <p><code>_Globals._Time</code> 采用源码定义的固定约定：<code>.x</code> 是渲染器累计的未缩放秒数，<code>.y</code> 是 <code>sin(x)</code>，<code>.z</code> 是 <code>cos(x)</code>，<code>.w</code> 是当前渲染帧的秒级 Delta。时钟在渲染器初始化时开始，Edit Mode 与游戏暂停期间仍会推进，Play/Stop 不会重置它，<code>Time.time_scale</code> 也不会影响它；异常长的一帧最多累计 <code>1/3</code> 秒。<code>Time.shader_time</code> 是与 <code>_Globals._Time.x</code> 对齐的公共 CPU 侧值。重启渲染器会启动新时钟，因此 <code>_Time.x</code> 不适合充当存档游戏时间或确定性模拟 Tick。</p>
 <h3 id="mesh">生成 Mesh 路径的边界</h3>
-<p>对常规 Mesh 变体，Infernux 先在未蒙皮的物体空间数据上调用 <code>vertex()</code>，记录 Hook 处理后的局部位置，再应用当前骨骼蒙皮与当前实例 Model 变换。<code>VertexInput</code> 公开 <code>position</code>、<code>normal</code>、<code>tangent</code>、<code>color</code> 和 <code>texCoord</code>，不包含骨骼索引/权重、实例 ID 或自定义实例数据。因此，同一 Material Hook 会在各实例变换之前以相同逻辑运行。</p>
+<p>对常规 Mesh 变体，Infernux 先在未蒙皮的物体空间数据上调用 <code>vertex()</code>，记录 Hook 处理后的局部位置，再应用当前骨骼蒙皮与当前实例 Model 变换。<code>VertexInput</code> 公开 <code>position</code>、<code>normal</code>、<code>tangent</code>、<code>color</code>、<code>texCoord</code> 和 <code>texCoord1</code>，不包含骨骼索引/权重、实例 ID 或自定义实例数据。因此，同一 Material Hook 会在各实例变换之前以相同逻辑运行。</p>
 <p>这套顺序带来几项明确限制：</p>
 <ul>
 <li>蒙皮 Mesh 会让形变后的局部位置继续经过生成的骨骼调色板；当前 <code>VertexInput</code> 契约无法让 Hook 按骨骼数据分支。</li>
 <li>实例化 Mesh 会获得生成的当前实例变换；Motion 变体也会获得上一帧实例变换。Hook 没有公共的逐实例选择值，无法表达实例间不同的形变。实例需要不同 Hook 行为时，应拆分 Renderer/Material 配置。</li>
-<li>生成的 Model 法线变换使用逆转置矩阵，因此 Hook 之后的非均匀物体或实例缩放可以被处理；它无法修复形变后仍然过期的 Normal 或 Tangent。蒙皮方向使用骨骼矩阵的 <code>mat3</code>，骨骼矩阵含非均匀缩放时需要针对资产做视觉验证。</li>
+<li>生成的 Model 变换用逆转置矩阵处理法线，用 Model 矩阵处理切线方向；物体或实例的镜像缩放也会翻转切线手性。这些变换都在 Hook 之后执行；它无法修复形变后仍然过期的 Normal 或 Tangent。蒙皮方向使用骨骼矩阵的 <code>mat3</code>，骨骼矩阵含非均匀缩放时需要针对资产做视觉验证。</li>
 </ul>
 <div class="learn-warning"><strong>形变后的几何体会进入多条路径。</strong><p>只要效果改变了轮廓，就应同时验证 Scene 相机、Game 相机、阴影投射、点击拾取和运动向量路径。生成变体会复用 Hook；Bounds 与上一帧程序化形变仍有各自限制，详见下文。</p></div>
 
@@ -420,7 +434,7 @@
 
 <p>打开 Material，在 <strong>Vertex</strong> 里选 <code>Wind Bent</code>，在 <strong>Fragment</strong> 里选 <code>Wind Surface</code>，再赋给 MeshRenderer。生产端填写 <code>VertexOutput</code> 的两个成员，消费端从 <code>fragmentInput</code> 读取同名成员，这才是一条完整 Varying 链路。</p>
 <p>名称、类型、插值方式、Semantic 与声明空间共同组成契约。<code>Float4</code> 不能接到 <code>Float3</code>，<code>Smooth</code> 也不能接到 <code>Flat</code>；缺项或不匹配会在 Vulkan Pipeline 创建前给出诊断。</p>
-<p>Location 分配同样归引擎。内置 Varying 固定占 location 0 到 5（<code>v_WorldPos</code>、<code>v_Normal</code>、<code>v_Tangent</code>、<code>v_Color</code>、<code>v_TexCoord</code>、<code>v_ViewDepth</code>），自定义 Varying 从 location 6 开始。链接器先按 Semantic 排序、再按名字排序，文件里的声明顺序不决定布局；<code>mat4</code> 连续占用 4 个 location。上限是 location 15，location 15 本身保留给拾取 ID 等引擎 Pass 数据。<code>ShaderStageLinker</code> 在导入期链接阶段时应用这些规则。</p>
+<p>Location 分配同样归引擎。内置 Varying 固定占 location 0 到 7（<code>v_WorldPos</code>、<code>v_Normal</code>、<code>v_Tangent</code>、<code>v_Color</code>、<code>v_TexCoord</code>、<code>v_ViewDepth</code>、内部 LineRenderer 色调和 <code>v_TexCoord1</code>），自定义 Varying 从 location 8 开始。链接器先按 Semantic 排序、再按名字排序，文件里的声明顺序不决定布局；<code>mat4</code> 连续占用 4 个 location。上限是 location 15，location 15 本身保留给拾取 ID 等引擎 Pass 数据。<code>ShaderStageLinker</code> 在导入期链接阶段时应用这些规则。</p>
 <p>这套契约有两道检查。导入期，阶段链接器按名字把每个片元 <code>Inputs</code> 成员配对到顶点 <code>Outputs</code> 成员，再比较类型、插值方式、Semantic 与空间；它的诊断覆盖缺失顶点输出、类型不匹配、插值不匹配、Semantic 不匹配、空间不匹配、重复 Varying、重复 Semantic 以及 Location 上限。运行期创建链接程序时，<code>ShaderProgram::ValidateStageInterface()</code> 反射编译后的 SPIR-V，按 Location 逐项比较片元输入与顶点输出，包括向量宽度。源级链接通过但反射不一致的阶段组合，会在程序创建阶段失败，此时任何 Vulkan Pipeline 都还没有开始构建。</p>
 <p>多数材质用不到自定义 Varying。内置 Surface Helper 已经提供常规 UV、顶点色、世界法线等网格数据；只有标准契约没带上 Frag 真正需要的值时，才值得增加接口。</p>
 <p><code>Space(World)</code> 只是一枚会被校验的标签，本身没有变换能力。链接器确认生产端和消费端使用同一个 Space；object-to-world 乘法仍由作者编写。先用当前几何域提供的变换或 Helper 算出真正的世界空间值，再在两端都标记 <code>Space(World)</code>。给物体空间的 <code>v.position</code> 直接贴上这个标签，会得到一条“双方一致、内容错误”的 Varying。</p>
