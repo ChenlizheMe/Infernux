@@ -35,13 +35,14 @@ def test_contact_dispatch_resolves_live_receivers(tmp_path, kind, phase, action)
 
 
 @pytest.mark.parametrize("phase", ["enter", "stay", "exit"])
-@pytest.mark.parametrize("action", ["keep", "remove", "replace"])
-def test_contact_batch_retains_compound_member_identity(tmp_path, phase, action):
+@pytest.mark.parametrize("action", ["keep", "remove", "replace", "ignore_box", "ignore_sphere", "ignore_both"])
+@pytest.mark.parametrize("kind", ["trigger", "collision"])
+def test_contact_batch_retains_compound_member_identity(tmp_path, phase, action, kind):
     import infernux
 
     result = subprocess.run(
         [sys.executable, "-X", "utf8", "-B", str(Path(__file__).resolve()),
-         str(tmp_path), "compound", phase, action],
+         str(tmp_path), "compound_" + kind, phase, action],
         env={**os.environ, "PYTHONPATH": str(Path(infernux.__file__).resolve().parent.parent)},
         capture_output=True, text=True, encoding="utf-8", timeout=60,
     )
@@ -212,7 +213,7 @@ def exercise_contact_dispatch(project, kind, phase, action):
         engine.exit()
 
 
-def exercise_compound_batch(project, phase, action):
+def exercise_compound_batch(project, phase, action, kind):
     from infernux.components import InxComponent
     from infernux.engine.engine import Engine
     from infernux.engine.preferences_store import PreferencesStore
@@ -233,7 +234,7 @@ def exercise_compound_batch(project, phase, action):
             try:
                 handle = other._cpp_component.handle
                 seen.append(handle.id)
-                if len(seen) != 1 or action == "keep":
+                if len(seen) != 1 or action not in ("remove", "replace"):
                     return
                 target_id = next(identity for identity in members if identity != handle.id)
                 victim = members[target_id]
@@ -242,7 +243,7 @@ def exercise_compound_batch(project, phase, action):
                 assert compound.remove_component(victim)
                 if action == "replace":
                     replacement = compound.add_component(victim_type)
-                    replacement.is_trigger = True
+                    replacement.is_trigger = kind == "trigger"
                     replacement._set_component_id(target_id)
                 assert scene.resolve_component(removed[0]) is None
             except Exception as error:
@@ -257,6 +258,15 @@ def exercise_compound_batch(project, phase, action):
         def on_trigger_exit(self, other):
             self.receive("exit", other)
 
+        def on_collision_enter(self, collision):
+            self.receive("enter", collision.collider)
+
+        def on_collision_stay(self, collision):
+            self.receive("stay", collision.collider)
+
+        def on_collision_exit(self, collision):
+            self.receive("exit", collision.collider)
+
     try:
         engine.init_headless(str(project))
         manager = SceneManager.instance()
@@ -264,20 +274,29 @@ def exercise_compound_batch(project, phase, action):
         compound = scene.create_game_object("Compound")
         box = compound.add_component("BoxCollider")
         box.center = Vector3(-2, 0, 0)
-        box.is_trigger = True
+        box.is_trigger = kind == "trigger"
         sphere = compound.add_component("SphereCollider")
         sphere.center = Vector3(2, 0, 0)
-        sphere.is_trigger = True
+        sphere.is_trigger = kind == "trigger"
         members = {member.component_id: member for member in (box, sphere)}
         mover = scene.create_game_object("Mover")
         mover.transform.position = Vector3(20, 0, 0)
-        mover.add_component("BoxCollider").size = Vector3(8, 2, 2)
-        mover.add_component("Rigidbody").is_kinematic = True
+        mover_collider = mover.add_component("BoxCollider")
+        mover_collider.size = Vector3(8, 1, 1)
+        ignored = set()
+        for member, selected in ((box, "ignore_box"), (sphere, "ignore_sphere")):
+            if action in (selected, "ignore_both"):
+                Physics.ignore_collision(member, mover_collider)
+                assert Physics.get_ignore_collision(member, mover_collider)
+                ignored.add(member.component_id)
+        body = mover.add_component("Rigidbody")
+        body.is_kinematic = kind == "trigger"
+        body.use_gravity = False
         mover.add_component(CompoundProbe)
         manager.play()
         manager.pause()
         manager.step()
-        mover.transform.position = Vector3(0, 0, 0)
+        mover.transform.position = Vector3(0, 0.75 if kind == "collision" else 0, 0)
         Physics.sync_transforms()
         manager.step()
         if phase != "enter":
@@ -287,12 +306,13 @@ def exercise_compound_batch(project, phase, action):
             Physics.sync_transforms()
             manager.step()
         assert not errors, errors
-        if action == "keep":
-            assert len(seen) == 2 and set(seen) == set(members), seen
+        if action == "keep" or action.startswith("ignore_"):
+            expected = set(members) - ignored
+            assert len(seen) == len(expected) and set(seen) == expected, (seen, expected)
         else:
             assert len(seen) == 1 and len(removed) == 1, seen
         (project / "contact-evidence.json").write_text(json.dumps(dict(
-            status="passed", phase=phase, action=action, seen=seen,
+            status="passed", kind=kind, phase=phase, action=action, seen=seen,
             removed=[item.id for item in removed], errors=errors,
         ), indent=2), encoding="utf-8")
     finally:
@@ -300,7 +320,7 @@ def exercise_compound_batch(project, phase, action):
 
 
 if __name__ == "__main__":
-    if sys.argv[2] == "compound":
-        exercise_compound_batch(Path(sys.argv[1]), *sys.argv[3:5])
+    if sys.argv[2].startswith("compound_"):
+        exercise_compound_batch(Path(sys.argv[1]), *sys.argv[3:5], sys.argv[2].removeprefix("compound_"))
     else:
         exercise_contact_dispatch(Path(sys.argv[1]), *sys.argv[2:5])
