@@ -170,3 +170,36 @@ def test_identical_registration_and_rejected_owner_do_not_invalidate_graphs(tmp_
         declare_feature(tmp_path / "another_effect.py")
     assert compiler.RenderEffectArtifactRegistry.topology_generation() == generation
     assert compiler.get_render_effect_feature("tests.post.reload").effect_class is effect_class
+
+
+def test_topology_parameter_rebuilds_effect_without_parameter_blocks(feature_reload_catalog):
+    import infernux as inx
+
+    @compiler.render_effect_feature("tests.post.copies", topology_parameters={"copies"})
+    class CopyEffect(inx.renderstack.FullScreenEffect):
+        name = "Copy Effect"
+        injection_point = "before_post_process"
+        default_order = 200
+        copies: int = inx.serialized_field(default=1, range=(1, 4))
+
+        def setup_passes(self, graph, bus):
+            for index in range(self.copies):
+                self.apply_single_source_effect(
+                    graph, bus, output_name=f"copy_out_{index}", pass_name=f"Copy_{index}",
+                    shader_name="Fullscreen Blit", format=inx.rendergraph.Format.RGBA16_SFLOAT,
+                )
+
+    effect = RenderEffect(RenderEffectAsset("tests.post.copies", parameters={"copies": 1}))
+    stack = RenderStack()
+    stack.add_effect_slot("final", RenderEffectRef(effect=effect))
+    context = RenderContext()
+    stack.render(context, object())
+    assert sum("/Copy_" in p.name for p in context.applied[-1].passes) == 1
+
+    effect.set_int("copies", 2)
+    stack.render(context, object())
+
+    assert len(context.applied) == 2
+    assert sum("/Copy_" in p.name for p in context.applied[-1].passes) == 2
+    stack.render(context, object())
+    assert len(context.applied) == 2

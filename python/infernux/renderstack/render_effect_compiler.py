@@ -808,7 +808,7 @@ def compile_effect_slots(stage, slots, graph, bus):
                     bus,
                     binding_id=f"{stage.stable_id}/{slot.slot_id}/{source_index}",
                 )
-                if binding.blocks:
+                if binding.blocks or binding.feature.topology_parameters:
                     bindings.append(binding)
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             errors.append(f"{stage.stable_id}/{slot.slot_id}: {exc}")
