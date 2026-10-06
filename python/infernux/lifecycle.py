@@ -96,9 +96,11 @@ class PreloadContext:
     def add_cleanup(self, callback: Callable[[], None]) -> None:
         """Register one reversible resource cleanup for this preload.
 
-        Cleanups run once in reverse registration order after ``unload()`` and
-        also run when ``preload()`` fails partway through. This is the preferred
-        owner for HTTP servers, worker threads, file watches, and callbacks.
+        Cleanups run in reverse registration order after ``unload()`` and also
+        when ``preload()`` fails partway through. Successful cleanups retire
+        once; failed cleanups remain owned and run on an explicit unload retry.
+        This is the preferred owner for HTTP servers, worker threads, file
+        watches, and callbacks.
         """
         if not callable(callback):
             raise TypeError("Preload cleanup must be callable")

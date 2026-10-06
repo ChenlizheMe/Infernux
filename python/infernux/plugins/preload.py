@@ -70,6 +70,7 @@ class PreloadState:
     contribution_owner: str = ""
     instance: InxPreload | None = field(default=None, repr=False)
     cleanup_callbacks: list[Any] = field(default_factory=list, repr=False)
+    unload_completed: bool = field(default=False, repr=False)
 
     def snapshot(self) -> dict[str, object]:
         return {
@@ -955,8 +956,9 @@ class PreloadManager:
                 except Exception as cleanup_exc:
                     state.error += f"; contribution cleanup failed: {cleanup_exc}"
                     _mark_restart_required(state, state.error)
-                from infernux.engine.project_context import release_preload_python_libraries
-                release_preload_python_libraries(f"{self.project_root}:{identity}")
+                if not state.cleanup_callbacks:
+                    from infernux.engine.project_context import release_preload_python_libraries
+                    release_preload_python_libraries(f"{self.project_root}:{identity}")
                 Debug.log_error(
                     f"InxPreload.preload failed [{path}:{preload_type.__qualname__}]: {exc}"
                 )
@@ -1036,16 +1038,26 @@ class PreloadManager:
     @staticmethod
     def _run_cleanup_callbacks(state: PreloadState) -> str:
         failures: list[str] = []
-        while state.cleanup_callbacks:
-            callback = state.cleanup_callbacks.pop()
-            try:
-                callback()
-            except Exception as exc:
-                failures.append(f"{type(exc).__name__}: {exc}")
+        pending: list[Any] = []
+        try:
+            while state.cleanup_callbacks:
+                callback = state.cleanup_callbacks.pop()
+                try:
+                    callback()
+                except BaseException as exc:
+                    # Failure never relinquishes ownership. Keep unfinished
+                    # callbacks for an explicit later unload, including when
+                    # this attempt is interrupted rather than returning errors.
+                    pending.append(callback)
+                    if not isinstance(exc, Exception):
+                        raise
+                    failures.append(f"{type(exc).__name__}: {exc}")
+        finally:
+            state.cleanup_callbacks.extend(reversed(pending))
         return "; ".join(failures)
 
     def _unload_state(self, state: PreloadState) -> bool:
-        if state.instance is not None:
+        if state.instance is not None and not state.unload_completed:
             started = time.perf_counter()
             try:
                 with _temporary_import_paths(
@@ -1064,6 +1076,7 @@ class PreloadManager:
                 state.unload_ms = (time.perf_counter() - started) * 1000.0
                 return False
             state.unload_ms = (time.perf_counter() - started) * 1000.0
+            state.unload_completed = True
         cleanup_error = self._run_cleanup_callbacks(state)
         if cleanup_error:
             state.error = f"unload cleanup failed: {cleanup_error}"
