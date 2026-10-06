@@ -47,11 +47,12 @@
 <div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
 
 <span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Standard</span><span class="err">"</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Standard</span><span class="err">"</span>
 <span class="p">}</span>
 </code></pre></div>
 
 <p>With no authored hook, Infernux supplies the normal mesh inputs and performs the standard object-to-world-to-view-to-clip transform. This is deliberate: ordinary materials should not repeat matrix boilerplate, descriptor layouts, or vertex locations.</p>
+<p>Save this example as <code>Assets/Shaders/learn_standard.vert</code> and select it in the Material's Vertex picker. Its unique name keeps it separate from the built-in <code>Standard</code> stage. To use the built-in stage, select <code>Standard</code> directly; no project file is needed.</p>
 <p><code>Name</code> is the case-sensitive stage identifier displayed in the Material's bound field. The Project asset picker displays the file name: choose <code>wave_bent.vert</code>, and the <strong>Vertex</strong> field displays <code>Wave</code> when the file declares <code>Name "Wave"</code>.</p>
 <h3 id="how-the-material-finds-it">How the Material finds it</h3>
 <p>Import a <code>.vert</code> or <code>.frag</code> inside the project's <code>Assets</code> tree, then open the corresponding <strong>Vertex</strong> or <strong>Fragment</strong> asset picker in the Material Inspector. Select the shader file by its file name. The Material stores the selected project asset's GUID and displays its current <code>ShaderInfo Name</code>; the file name and displayed stage name need not match. Built-in stages such as <code>Standard</code> and <code>Lit</code> use symbolic stage identifiers rather than project asset GUIDs.</p>
@@ -263,11 +264,12 @@
 <div class="highlight"><pre><span></span><code><span class="cp">#version 450</span>
 
 <span class="n">ShaderInfo</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Standard</span><span class="err">"</span>
+<span class="w">    </span><span class="n">Name</span><span class="w"> </span><span class="err">"</span><span class="n">Learn</span><span class="w"> </span><span class="n">Standard</span><span class="err">"</span>
 <span class="p">}</span>
 </code></pre></div>
 
 <p>没有自定义 Hook 时，Infernux 会提供常规网格输入，并完成物体空间到世界、观察和裁剪空间的标准变换。普通材质不需要重复矩阵样板、描述符布局或顶点 Location，这是有意设计的结果。</p>
+<p>把这个示例保存为 <code>Assets/Shaders/learn_standard.vert</code>，再从 Material 的 Vertex 选择弹窗中选中它。唯一的名称让它与内置 <code>Standard</code> 阶段保持独立。要使用内置阶段，直接选择 <code>Standard</code> 即可，不需要创建项目文件。</p>
 <p><code>Name</code> 是 Material 已绑定字段显示的阶段标识符，并且区分大小写。Project 资产选择弹窗显示的是文件名：选择 <code>wave_bent.vert</code> 后，若文件声明 <code>Name "Wave"</code>，<strong>Vertex</strong> 字段会显示 <code>Wave</code>。</p>
 <h3 id="material">Material 怎样找到它</h3>
 <p>把 <code>.vert</code> 或 <code>.frag</code> 放入项目 <code>Assets</code> 目录并完成导入，再打开 Material Inspector 中对应的 <strong>Vertex</strong> 或 <strong>Fragment</strong> 资产选择弹窗，按文件名选择 Shader。Material 保存所选项目资产的 GUID，并显示它当前的 <code>ShaderInfo Name</code>；文件名与显示的阶段名不必一致。<code>Standard</code>、<code>Lit</code> 等内置阶段使用符号化阶段标识符，不使用项目资产 GUID。</p>

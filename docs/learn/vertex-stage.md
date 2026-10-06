@@ -21,11 +21,13 @@ The standard mesh path needs only a name:
 #version 450
 
 ShaderInfo {
-    Name "Standard"
+    Name "Learn Standard"
 }
 ```
 
 With no authored hook, Infernux supplies the normal mesh inputs and performs the standard object-to-world-to-view-to-clip transform. This is deliberate: ordinary materials should not repeat matrix boilerplate, descriptor layouts, or vertex locations.
+
+Save this example as `Assets/Shaders/learn_standard.vert` and select it in the Material's Vertex picker. Its unique name keeps it separate from the built-in `Standard` stage. To use the built-in stage, select `Standard` directly; no project file is needed.
 
 `Name` is the case-sensitive stage identifier displayed in the Material's bound field. The Project asset picker displays the file name: choose `wave_bent.vert`, and the **Vertex** field displays `Wave` when the file declares `Name "Wave"`.
 
@@ -230,11 +232,13 @@ The next chapter keeps this geometry stage and changes only what the surface is 
 #version 450
 
 ShaderInfo {
-    Name "Standard"
+    Name "Learn Standard"
 }
 ```
 
 没有自定义 Hook 时，Infernux 会提供常规网格输入，并完成物体空间到世界、观察和裁剪空间的标准变换。普通材质不需要重复矩阵样板、描述符布局或顶点 Location，这是有意设计的结果。
+
+把这个示例保存为 `Assets/Shaders/learn_standard.vert`，再从 Material 的 Vertex 选择弹窗中选中它。唯一的名称让它与内置 `Standard` 阶段保持独立。要使用内置阶段，直接选择 `Standard` 即可，不需要创建项目文件。
 
 `Name` 是 Material 已绑定字段显示的阶段标识符，并且区分大小写。Project 资产选择弹窗显示的是文件名：选择 `wave_bent.vert` 后，若文件声明 `Name "Wave"`，**Vertex** 字段会显示 `Wave`。
 
