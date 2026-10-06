@@ -24,6 +24,7 @@ def _host_id() -> str:
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows native architecture query")
 def test_windows_host_query_avoids_wmi_and_environment_guesses(monkeypatch):
+    import sys
     from infernux.plugins import platform_support as support
 
     expected = "windows-x64" if platform.machine().casefold() in {"amd64", "x86_64"} else ""
@@ -34,6 +35,7 @@ def test_windows_host_query_avoids_wmi_and_environment_guesses(monkeypatch):
 
     monkeypatch.setattr(platform, "machine", forbidden)
     monkeypatch.setattr(platform, "_wmi_query", forbidden)
+    monkeypatch.setattr(sys, "getwindowsversion", forbidden)
     monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "ARM64")
     monkeypatch.setenv("PROCESSOR_ARCHITEW6432", "ARM64")
     try:
@@ -96,16 +98,13 @@ def test_host_query_failure_is_not_cached_as_success(monkeypatch):
         support._host_id.cache_clear()
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows platform-kit OS floor")
-def test_older_windows_does_not_probe_an_unavailable_api(monkeypatch):
+@pytest.mark.skipif(os.name != "nt", reason="Windows platform-kit API availability")
+def test_windows_without_native_host_query_is_unsupported(monkeypatch):
     import ctypes
+    from types import SimpleNamespace
     from infernux.plugins import platform_support as support
 
-    def forbidden(*args, **kwargs):
-        pytest.fail("Unsupported Windows version queried platform APIs")
-
-    monkeypatch.setattr(support.sys, "getwindowsversion", lambda: (10, 0, 15063))
-    monkeypatch.setattr(ctypes, "WinDLL", forbidden)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: SimpleNamespace())
     support._host_id.cache_clear()
     try:
         assert support._host_id() == ""
@@ -255,6 +254,25 @@ def test_unknown_host_cannot_validate_a_manifest_with_empty_host(tmp_path, monke
     environment = {"INFERNUX_ANDROID_SUPPORT_ROOT": str(root)}
     assert not android_support_available(environment)
     assert support.android_support_environment(environment) == {}
+    assert plugin_install_block_reason("infernux/platform-android", environment) == support.ANDROID_SUPPORT_UNSUPPORTED_HOST_MESSAGE
+    with pytest.raises(RuntimeError, match="Windows 10"):
+        require_plugin_support("infernux/platform-android", environment)
+
+
+def test_android_install_block_reasons_have_matching_editor_translations(monkeypatch):
+    from infernux.engine import i18n
+    from infernux.plugins import platform_support as support
+
+    monkeypatch.setattr(i18n, "_tables", {})
+    i18n._load_all_locales()
+    for locale in ("en", "zh"):
+        monkeypatch.setattr(i18n, "_current_locale", locale)
+        for message in (support.ANDROID_SUPPORT_REQUIRED_MESSAGE, support.ANDROID_SUPPORT_UNSUPPORTED_HOST_MESSAGE):
+            assert i18n.has_translation(message)
+            translated = i18n.t(message)
+            assert translated
+            if locale == "zh":
+                assert translated != message
 
 
 def test_support_layout_reuses_parsing_but_checks_every_required_file(tmp_path, monkeypatch):

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path, PurePosixPath
@@ -23,6 +22,9 @@ ANDROID_SUPPORT_REQUIRED_MESSAGE = (
     "Install Android compatibility from Infernux Hub before importing the "
     "Android platform plugin."
 )
+ANDROID_SUPPORT_UNSUPPORTED_HOST_MESSAGE = (
+    "Android compatibility requires Windows 10 1709 or later on x64, or Linux x64."
+)
 _manifest_reads = FileReadCache(capacity=8)
 
 
@@ -34,15 +36,15 @@ def _host_id() -> str:
     queries OS details through WMI, blocking the first visible plugin panel.
     """
     if os.name == "nt":
-        # IsWow64Process2 and this platform-kit host check require Windows 10
-        # 1709+. This kit probe does not advertise support on older hosts.
-        if sys.getwindowsversion() < (10, 0, 16299):
-            return ""
         import ctypes
         from ctypes import wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        query = kernel32.IsWow64Process2
+        # Test the required API, not a manifest/compatibility-dependent OS
+        # version. An unavailable API means this platform kit is unsupported.
+        query = getattr(kernel32, "IsWow64Process2", None)
+        if query is None:
+            return ""
         query.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.USHORT), ctypes.POINTER(wintypes.USHORT)]
         query.restype = wintypes.BOOL
         process_machine, native_machine = wintypes.USHORT(), wintypes.USHORT()
@@ -231,6 +233,8 @@ def plugin_install_block_reason(
 ) -> str:
     if str(reference or "").strip().casefold() != ANDROID_PLUGIN_REFERENCE:
         return ""
+    if not _host_id():
+        return ANDROID_SUPPORT_UNSUPPORTED_HOST_MESSAGE
     return "" if android_support_available(environ) else ANDROID_SUPPORT_REQUIRED_MESSAGE
 
 
@@ -246,6 +250,7 @@ def require_plugin_support(
 __all__ = [
     "ANDROID_PLUGIN_REFERENCE",
     "ANDROID_SUPPORT_REQUIRED_MESSAGE",
+    "ANDROID_SUPPORT_UNSUPPORTED_HOST_MESSAGE",
     "android_support_available",
     "android_support_environment",
     "android_support_root",
