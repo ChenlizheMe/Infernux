@@ -21,8 +21,13 @@ def main():
     from infernux.lib import _Infernux
     parser = argparse.ArgumentParser()
     parser.add_argument('--proof', type=Path)
+    parser.add_argument('--shading', choices=('unlit', 'pbr'), default='unlit')
     args = parser.parse_args()
-    proof = {'package': inx.__file__, 'native': _Infernux.__file__, 'phases': [], 'scope': 'Public vertex hook and alpha-clip shadow basis compared to separately authored equivalent CPU mesh. Unit, nonuniform and mirrored model scale, Forward/Forward+/Deferred, MSAA1/4.'}
+    proof = {'package': inx.__file__, 'native': _Infernux.__file__, 'shading': args.shading, 'phases': [], 'scope': 'Public vertex hook and alpha-clip shadow basis compared to separately authored equivalent CPU mesh. Unit, nonuniform and mirrored model scale, Forward/Forward+/Deferred, MSAA1/4.'}
+    def visible_mask(rgb):
+        if args.shading == 'pbr':
+            return (rgb[...,0] > rgb[...,1]*1.2) & (rgb[...,1] > rgb[...,2]*1.2) & (rgb[...,0] > .1)
+        return (rgb[...,0]>.95) & (rgb[...,1]<.5) & (rgb[...,2]>.95)
     plans = [(inx.renderstack.DefaultForwardPipeline, 1), (inx.renderstack.DefaultForwardPipeline, 4),
              (inx.renderstack.DefaultForwardPlusPipeline, 1), (inx.renderstack.DefaultForwardPlusPipeline, 4),
              (inx.renderstack.DefaultDeferredPipeline, 1)]
@@ -49,6 +54,10 @@ def main():
         fragment = FRAGMENT.replace('ShadingModel Unlit Cull Off', 'ShadingModel Unlit Cull Off AlphaClip 0.5')
         fragment = fragment.replace('s.albedo = normalOK && tangentOK && basisOK && mappedOK ? vec3(0,1,0) : vec3(1,0,1);',
                                     's.alpha = normalOK && tangentOK && basisOK && mappedOK ? 1.0 : 0.0;\n    s.albedo = vec3(1,0,1);')
+        if args.shading == 'pbr':
+            fragment = fragment.replace('ShadingModel Unlit', 'ShadingModel PBR')
+            fragment = fragment.replace('s.albedo = vec3(1,0,1);',
+                's.albedo = vec3(.5,.15,.04); s.smoothness = 0.0;\n    s.normalWS = normalFromTangentSpace(normalize(vec3(.35,-.25,.9)), getWorldNormal(), getWorldTangent());')
         for name, source in [('Quad.obj', quad), ('Probe.vert', vertex), ('Probe.frag', fragment), ('Receiver.frag', RECEIVER)]:
             (project / 'Assets' / name).write_text(source, encoding='ascii')
         frontend = inx.Engine()
@@ -137,12 +146,12 @@ def main():
                         assert not issues, issues
                         if phase == 3:
                             rgb = images['cpu_reference'][...,:3]
-                            visible = (rgb[...,0]>.95) & (rgb[...,1]<.5) & (rgb[...,2]>.95)
+                            visible = visible_mask(rgb)
                             shadow = (images['baseline'][...,0] - rgb[...,0] > .08) & ~visible
                             record = {'pipeline': plans[plan][0].name, 'samples': plans[plan][1], 'scale': scales[scale_index], 'visible_pixels': int(visible.sum()), 'shadow_pixels': int(shadow.sum())}
                             assert visible.sum()>200 and shadow.sum()>100, record
                             gpu = images['gpu_hook'][...,:3]
-                            gpu_visible = (gpu[...,0]>.95) & (gpu[...,1]<.5) & (gpu[...,2]>.95)
+                            gpu_visible = visible_mask(gpu)
                             gpu_shadow = (images['baseline'][...,0] - gpu[...,0] > .08) & ~gpu_visible
                             record['visible_mismatch'] = int((visible != gpu_visible).sum())
                             record['shadow_union'] = int((shadow | gpu_shadow).sum())
