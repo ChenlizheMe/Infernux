@@ -202,6 +202,7 @@ class RenderEffectArtifactRegistry:
     _compiling: set[str] = set()
     _revision = 0
     _topology_generation = 0
+    _invalidated_sources: set[str] = set()
 
     @classmethod
     def topology_generation(cls) -> int:
@@ -217,7 +218,20 @@ class RenderEffectArtifactRegistry:
         cls._compiling.clear()
         cls._revision = 0
         cls._topology_generation = 0
+        cls._invalidated_sources.clear()
         _LIVE_EFFECT_GROUP_DOCUMENTS.clear()
+        _clear_effect_group_expansions()
+
+    @classmethod
+    def invalidate_feature(cls, type_id: str) -> None:
+        """Recompile mounted graphs and products owned by a replaced feature."""
+        for key, artifact in cls._artifacts.items():
+            if any(record["feature_type"] == type_id for record in artifact.features):
+                cls._invalidated_sources.add(key)
+        # This event is independent of parameter/document revisions. In
+        # particular, a schema edit must reach bindings whose values did not
+        # change, and cached group projections must be revalidated as well.
+        cls._topology_generation += 1
         _clear_effect_group_expansions()
 
     @classmethod
@@ -252,6 +266,7 @@ class RenderEffectArtifactRegistry:
         features = None
         if isinstance(document, RenderEffectAsset):
             _validate_declared_effect_dependencies(document)
+            get_render_effect_feature(document.feature_type).validate_parameters(document.parameters)
         else:
             # A group's unchanged JSON does not establish that its referenced
             # effects are unchanged or still valid. Resolve and compile the
@@ -270,8 +285,10 @@ class RenderEffectArtifactRegistry:
         source_hash = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
         key = cls._source_key(source_path, guid)
         existing = cls._artifacts.get(key)
+        cache_current = key not in cls._invalidated_sources
         if (
             existing is not None
+            and cache_current
             and existing.source_hash == source_hash
             and (features is None or existing.features == features)
         ):
@@ -281,7 +298,7 @@ class RenderEffectArtifactRegistry:
             return existing, document
 
         artifact_path = cls._artifact_path(source_path, guid)
-        if existing is None and artifact_path:
+        if existing is None and artifact_path and cache_current:
             persisted = cls._load_persisted(
                 artifact_path,
                 key=key,
@@ -330,6 +347,7 @@ class RenderEffectArtifactRegistry:
         )
         cls._revision = next_revision
         cls._artifacts[key] = artifact
+        cls._invalidated_sources.discard(key)
         if existing is None or existing.structural_hash != structural_hash:
             cls._topology_generation += 1
         if group_sources is not None:
@@ -492,18 +510,20 @@ class RenderEffectFeature:
     topology_parameters: frozenset[str] = frozenset()
     route_policy: RoutePolicy = RoutePolicy.ISOLATE_AND_COMPOSITE
 
-    def instantiate(self, source: RenderEffect):
+    def validate_parameters(self, parameters: Mapping[str, Any]) -> None:
         from infernux.components.fields import get_serialized_fields
 
-        instance = self.effect_class()
         fields = get_serialized_fields(self.effect_class)
-        parameters = dict(source.to_asset().parameters)
-
         unknown = sorted(set(parameters) - set(fields))
         if unknown:
             raise RenderEffectCompileError(
                 f"effect feature {self.type_id!r} has unknown parameters: {unknown}"
             )
+
+    def instantiate(self, source: RenderEffect):
+        parameters = dict(source.to_asset().parameters)
+        self.validate_parameters(parameters)
+        instance = self.effect_class()
         instance.set_params_dict(parameters)
         return instance
 
@@ -556,6 +576,8 @@ def register_render_effect_feature(
         if existing_identity != replacement_identity:
             raise ValueError(f"render effect feature {normalized!r} is already registered")
     _FEATURES[normalized] = feature
+    if existing is not None and existing != feature:
+        RenderEffectArtifactRegistry.invalidate_feature(normalized)
     return feature
 
 
