@@ -203,7 +203,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeli
         None,
     )
     if pipeline is not None:
-        requested = set(graph.geometry_buffer_requirements)
+        requested = pipeline._required_geometry_buffers(graph)
         if opaque_domain is not None and requested - {"depth", "color"}:
             with graph.add_pass("GeometryDepthPrepass") as render_pass:
                 render_pass.write_depth(depth)
@@ -213,7 +213,7 @@ def compile_pipeline_definition(definition: PipelineDefinition, graph, *, pipeli
                     material_pass="depth",
                 )
         geometry_buffers = {"color": camera_color, "depth": depth}
-        if graph.needs_geometry_buffer("light_list"):
+        if "light_list" in requested:
             geometry_buffers["light_list"] = graph.create_view_light_list()
         geometry_result = pipeline.geometry_stage(
             graph,

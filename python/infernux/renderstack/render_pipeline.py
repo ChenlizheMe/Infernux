@@ -152,12 +152,7 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
         graph = getattr(self, "_defining_graph", None)
         if graph is None:
             raise RuntimeError("require_buffer() is only valid while defining a pipeline")
-        specs = provider_specs(type(self))
-        requirements = requirement_closure(
-            set(graph.geometry_buffer_requirements) | {handle.name},
-            specs,
-        )
-        graph.set_geometry_buffer_requirements(requirements)
+        graph.require_geometry_buffers({handle.name})
         return handle
 
     def sample_buffer(
@@ -236,6 +231,14 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
             msaa_samples=context.msaa_samples,
         )
 
+    def _required_geometry_buffers(
+        self, graph, *, phase: GeometryStagePhase | str = GeometryStagePhase.OPAQUE,
+    ) -> frozenset[str]:
+        """Plan this phase's inputs before declaring built-in producers."""
+        return requirement_closure(
+            graph.geometry_buffer_requirements, provider_specs(type(self)), phase=phase,
+        )
+
     def geometry_stage(
         self,
         graph,
@@ -252,8 +255,11 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
 
         normalized_phase = GeometryStagePhase(phase)
         specs = provider_specs(type(self))
-        requirements = requirement_closure(graph.geometry_buffer_requirements, specs)
-        graph.set_geometry_buffer_requirements(requirements)
+        # Dependencies are resolved from this result's seeds and phase by
+        # materialize(). Only explicit demand belongs to the graph: expanding
+        # it here would leak another phase's inputs and run providers whose
+        # semantic is already supplied by the caller.
+        requirements = graph.geometry_buffer_requirements
         result: PassResult | None = None
 
         def materialize(_result: PassResult, semantic: str):

@@ -138,7 +138,7 @@ class DefaultForwardPipeline(RenderPipeline):
             "depth": graph.get_texture("depth"),
             "shadow_map": graph.get_texture(SHADOW_MAP_TEXTURE),
         }
-        if graph.needs_geometry_buffer(LIGHT_LIST_BUFFER):
+        if LIGHT_LIST_BUFFER in self._required_geometry_buffers(graph):
             geometry_buffers[LIGHT_LIST_BUFFER] = graph.create_view_light_list()
         current = self.geometry_stage(
             graph,

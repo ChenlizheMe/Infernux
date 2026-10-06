@@ -192,7 +192,7 @@ class DefaultDeferredPipeline(RenderPipeline):
             "emission": graph.get_texture(GBUFFER_EMISSION_TEXTURE),
             "object": graph.get_texture(GBUFFER_OBJECT_TEXTURE),
         }
-        if graph.needs_geometry_buffer(LIGHT_LIST_BUFFER):
+        if LIGHT_LIST_BUFFER in self._required_geometry_buffers(graph):
             geometry_buffers[LIGHT_LIST_BUFFER] = graph.create_view_light_list()
         current = self.geometry_stage(
             graph,

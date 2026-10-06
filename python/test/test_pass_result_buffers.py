@@ -449,6 +449,118 @@ def test_geometry_buffer_cycle_reports_source_and_dependency_chain():
         )
 
 
+@pytest.mark.parametrize("declaration", ["graph", "pipeline"])
+@pytest.mark.parametrize("phases", [("opaque", "transparent"), ("transparent", "opaque")])
+def test_geometry_provider_dependencies_stay_in_their_phase(declaration, phases):
+    calls = []
+
+    class PhasePipeline(RenderPipeline):
+        @geometry_buffer("phase_color", phase="opaque", dependencies={"opaque_input"})
+        def opaque_provider(self, context):
+            raise AssertionError("the derived opaque provider must replace this one")
+
+        @geometry_buffer("phase_color", phase="transparent", dependencies={"transparent_input"})
+        def transparent_provider(self, context):
+            calls.append(("transparent", context.phase.value))
+            return context.sample("transparent_input")
+
+        @geometry_buffer("unused")
+        def unused_provider(self, context):
+            raise AssertionError("unrequested providers must remain lazy")
+
+    class DerivedPipeline(PhasePipeline):
+        @geometry_buffer("phase_color", phase="opaque", dependencies={"derived_input"})
+        def derived_provider(self, context):
+            calls.append(("derived", context.phase.value))
+            return context.sample("derived_input")
+
+    graph = RenderGraph("Phase Local Dependencies")
+    pipeline = DerivedPipeline()
+    pipeline._defining_graph = graph
+    if declaration == "pipeline":
+        requested = pipeline.require_buffer("phase_color")
+    else:
+        graph.require_geometry_buffers({"phase_color"})
+        requested = "phase_color"
+    for phase in phases:
+        dependency = "derived_input" if phase == "opaque" else "transparent_input"
+        handle = graph.create_texture(dependency, format=Format.RGBA16_SFLOAT)
+        result = pipeline.geometry_stage(
+            graph, phase, phase=phase, buffers={dependency: handle}, queue_range=(0, 2500),
+        )
+        assert result.sample(requested) is handle
+        assert set(result.snapshot) == {dependency, "phase_color"}
+    assert calls == [("derived" if phase == "opaque" else "transparent", phase) for phase in phases]
+    assert graph.geometry_buffer_requirements == frozenset({"phase_color"})
+
+
+def test_available_geometry_semantic_does_not_demand_its_provider_dependencies():
+    class SeededPipeline(RenderPipeline):
+        @geometry_buffer("provided", dependencies={"not_needed"})
+        def provider(self, context):
+            raise AssertionError("an already provided semantic must not run its provider")
+
+    graph = RenderGraph("Supplied Geometry Semantic")
+    graph.require_geometry_buffers({"provided"})
+    texture = graph.create_texture("supplied", format=Format.RGBA16_SFLOAT)
+    result = SeededPipeline().geometry_stage(
+        graph, "opaque", buffers={"provided": texture}, queue_range=(0, 2500),
+    )
+    assert result.sample("provided") is texture
+    assert not result.has("not_needed")
+
+
+@pytest.mark.parametrize("pipeline_type", [DefaultForwardPipeline, DefaultForwardPlusPipeline, DefaultDeferredPipeline, RenderPipeline])
+def test_nested_geometry_requirement_supplies_view_light_list(pipeline_type):
+    calls = []
+
+    class DependentPipeline(pipeline_type):
+        def define(self, pipeline):
+            pipeline.opaque().forward()
+
+        @geometry_buffer("dependent_probe", dependencies={"light_list"})
+        def probe(self, context):
+            light_list = context.sample("light_list")
+            calls.append(light_list)
+            target = context.graph.create_texture("dependent_probe", format=Format.RGBA16_SFLOAT)
+            with context.graph.add_pass("DependentProbe") as render_pass:
+                render_pass.read_buffer(light_list)
+                render_pass.write_color(target)
+                render_pass.set_clear(color=(0, 1, 0, 1))
+            return target
+
+    graph = RenderGraph("Nested View Light List")
+    graph.require_geometry_buffers({"dependent_probe"})
+    pipeline = DependentPipeline()
+    pipeline.define_topology(graph)
+    assert len(calls) == 1
+    source = (
+        "geometry" if pipeline_type is RenderPipeline
+        else "gbuffer" if pipeline_type is DefaultDeferredPipeline else "opaque"
+    )
+    assert graph.get_pass_result(source).sample("light_list") is calls[0]
+    assert graph.geometry_buffer_requirements == frozenset({"dependent_probe"})
+
+
+def test_opaque_geometry_planning_does_not_create_transparent_view_dependencies():
+    class PhasePipeline(DefaultForwardPipeline):
+        @geometry_buffer("phase_color", phase="opaque")
+        def opaque_color(self, context):
+            return context.sample("color")
+
+        @geometry_buffer("phase_color", phase="transparent", dependencies={"light_list"})
+        def transparent_color(self, context):
+            raise AssertionError("an opaque stage must not execute transparent providers")
+
+    graph = RenderGraph("Opaque Without Transparent Dependencies")
+    graph.require_geometry_buffers({"phase_color"})
+    PhasePipeline().define_topology(graph)
+    result = graph.get_pass_result("opaque")
+    assert result.sample("phase_color") is result.sample("color")
+    assert not result.has("light_list")
+    assert graph.geometry_buffer_requirements == frozenset({"phase_color"})
+
+
 def test_builtin_geometry_stage_only_materializes_requested_buffers():
     graph = RenderGraph("Demand Driven Geometry")
     pipeline = RenderPipeline.__new__(RenderPipeline)

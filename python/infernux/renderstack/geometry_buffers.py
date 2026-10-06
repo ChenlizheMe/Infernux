@@ -162,14 +162,17 @@ def provider_specs(
 def requirement_closure(
     requested: Iterable[str],
     providers: Mapping[tuple[str, GeometryStagePhase], GeometryBufferProviderSpec],
+    *,
+    phase: GeometryStagePhase | str,
 ) -> frozenset[str]:
+    """Plan dependencies for one phase without changing graph-wide demand."""
+    normalized_phase = GeometryStagePhase(phase)
     result = {_semantic(value) for value in requested if str(value or "").strip()}
     pending = list(result)
     while pending:
         semantic = pending.pop()
-        for (candidate, _phase), provider in providers.items():
-            if candidate != semantic:
-                continue
+        provider = providers.get((semantic, normalized_phase))
+        if provider is not None:
             for dependency in provider.dependencies:
                 if dependency not in result:
                     result.add(dependency)
