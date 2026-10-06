@@ -712,6 +712,7 @@ void main() {
 #include "ParticleCollisionUploadTests.h"
 #include "ParticleCullConservationTests.h"
 #include "ParticleDomainRetentionTests.h"
+#include "ParticleFrameSnapshotTests.h"
 #include "ParticleMeshMetadataTests.h"
 #include "ParticleRuntimeUploadTests.h"
 #include "ParticleSceneSourceTests.h"
@@ -954,6 +955,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     if (!VerifyParticleSceneSources(resources, sortCompiler, managedProgram, sortProgram, cullProgram, boundsProgram,
                                    migrationProgram, spawnProgram))
+        return false;
+    if (!VerifyParticleFrameSnapshots(resources, sortCompiler, managedProgram, sortProgram, cullProgram, boundsProgram,
+                                     migrationProgram, spawnProgram))
         return false;
     std::string managedError;
     auto publishManagedGraph = [&](std::vector<infernux::particle::GpuParticleEmitterProgram> emitters,
