@@ -6,6 +6,7 @@ import ast
 import copy
 
 from infernux._compiler.source_metadata import compute_decorator_names
+from infernux._compiler.kernel_contract import execution_domain
 
 
 def _attribute_name(node: ast.expr) -> str:
@@ -364,23 +365,38 @@ class _ComputeFunctionCook(ast.NodeTransformer):
         self.atomics = atomics
         self.indices = indices
         self.vectorized = False
+        self.rewrote = False
+        self.direct_decorator = False
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
         is_kernel = any(
             _attribute_name(item.func if isinstance(item, ast.Call) else item) in self.kernels
             for item in node.decorator_list
         )
-        if not is_kernel or not _can_vectorize(node, self.atomics):
+        if not is_kernel:
             return self.generic_visit(node)
-        for decorator in node.decorator_list:
+        domain_parameter = execution_domain(node, self.indices)[3]
+        # Keep direct imported decorators on their existing sequential path.
+        vectorized = _can_vectorize(node, self.atomics) and not any(
+            isinstance(item.func if isinstance(item, ast.Call) else item, ast.Name)
+            for item in node.decorator_list
+        )
+        for position, decorator in enumerate(node.decorator_list):
             target = decorator.func if isinstance(decorator, ast.Call) else decorator
             if _attribute_name(target) not in self.kernels:
                 continue
             if isinstance(target, ast.Attribute):
                 target.attr = "_cpu_kernel"
             elif isinstance(target, ast.Name):
-                # Direct imported decorators have no stable owner to retarget.
-                return self.generic_visit(node)
+                target = ast.Attribute(ast.Name("__inx_cpu_compute", ast.Load()), "_cpu_kernel", ast.Load())
+                self.direct_decorator = True
+            node.decorator_list[position] = ast.Call(target, [], [
+                ast.keyword("domain_parameter", ast.Constant(domain_parameter)),
+                ast.keyword("vectorized", ast.Constant(vectorized)),
+            ])
+        self.rewrote = True
+        if not vectorized:
+            return self.generic_visit(node)
         lowering = _VectorKernelLowering(self.indices, self.atomics)
         body = [item for statement in node.body for item in _statement_list(lowering.visit(statement))]
         if not lowering.work_index:
@@ -416,12 +432,12 @@ def build_cpu_compute_source(source: str) -> str:
     """
     tree = ast.parse(source)
     kernels, atomics = _compute_names(tree)
-    indices = {name.rsplit(".", 1)[0] + ".index" for name in kernels}
+    indices = compute_decorator_names(tree, kinds=("index",))
     vector = _ComputeFunctionCook(kernels, atomics, indices)
     tree = vector.visit(tree)
     lowering = _CpuComputeLowering(kernels, atomics)
     tree = lowering.visit(tree)
-    if not lowering.rewrote and not vector.vectorized:
+    if not lowering.rewrote and not vector.rewrote:
         return source
     insertion = 0
     if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(
@@ -432,6 +448,8 @@ def build_cpu_compute_source(source: str) -> str:
             and tree.body[insertion].module == "__future__":
         insertion += 1
     tree.body.insert(insertion, ast.Import(names=[ast.alias("numpy", "__inx_np")]))
+    if vector.direct_decorator:
+        tree.body.insert(insertion, ast.Import(names=[ast.alias("infernux.compute", "__inx_cpu_compute")]))
     ast.fix_missing_locations(tree)
     cooked = ast.unparse(tree) + "\n"
     compile(cooked, "<web-cpu-compute>", "exec")

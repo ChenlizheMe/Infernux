@@ -1328,9 +1328,18 @@ class _CpuKernelExecutable:
 
     host = None
 
-    def __init__(self, function, *, vectorized: bool = False) -> None:
+    def __init__(self, function, *, vectorized: bool = False, domain_parameter: int | None = None) -> None:
         self.function = function
         self.vectorized = bool(vectorized)
+        if domain_parameter is None:
+            # Uncooked engine declarations are analyzed once on preparation.
+            # Cooked project kernels carry the same slot explicitly.
+            import ast
+            from infernux._compiler.kernel_contract import execution_domain
+            from infernux._compiler.taichi.frontend import _function_source
+
+            domain_parameter = execution_domain(ast.parse(_function_source(function)).body[0])[3]
+        self.domain_parameter = domain_parameter
         self._last_params = None
         self._last_buffers = ()
         self._last_mapped = ()
@@ -1354,7 +1363,11 @@ class _CpuKernelExecutable:
                 raise TypeError(
                     "Web CPU compute requires build-mapped device='gpu' buffers"
                 )
-            domain = buffers[0]
+            if not 0 <= self.domain_parameter < len(params):
+                raise TypeError("Compute kernel execution-domain parameter is missing")
+            domain = params[self.domain_parameter]
+            if not isinstance(domain, Buffer) or len(domain.shape) != 1:
+                raise TypeError("inx.compute.index currently requires a one-dimensional GPU inx.buffer")
             mapped = tuple(
                 value._array if isinstance(value, Buffer) else value
                 for value in params
@@ -1422,11 +1435,12 @@ def _cpu_atomic_add(target, indices, values, mask=None) -> None:
 class Kernel:
     """A GPU single-work-item declaration prepared or compiled on first launch."""
 
-    def __init__(self, function, *, cpu_vectorized: bool = False) -> None:
+    def __init__(self, function, *, cpu_vectorized: bool = False, cpu_domain_parameter: int | None = None) -> None:
         if not callable(function):
             raise TypeError("inx.compute.kernel requires a callable")
         self.function = function
         self._cpu_vectorized = bool(cpu_vectorized)
+        self._cpu_domain_parameter = cpu_domain_parameter
         self._executables = OrderedDict()
         self._lock = threading.RLock()
         # Receiver source analysis is a declaration property.  Bound launches
@@ -1462,7 +1476,8 @@ class Kernel:
                 raise TypeError("A compute launch cannot mix Web CPU and native GPU buffers")
             if self._cpu_executable is None:
                 self._cpu_executable = _CpuKernelExecutable(
-                    self.function, vectorized=self._cpu_vectorized
+                    self.function, vectorized=self._cpu_vectorized,
+                    domain_parameter=self._cpu_domain_parameter,
                 )
             return self._cpu_executable
         if any(value.device != "gpu" for value in buffers):
@@ -1625,9 +1640,11 @@ def kernel(function) -> Kernel:
     return Kernel(function)
 
 
-def _cpu_kernel(function) -> Kernel:
-    """Internal decorator emitted only by the Web compute cook."""
-    return Kernel(function, cpu_vectorized=True)
+def _cpu_kernel(*, domain_parameter: int, vectorized: bool):
+    """Internal decorator carrying the cook-selected execution contract."""
+    def decorate(function):
+        return Kernel(function, cpu_vectorized=vectorized, cpu_domain_parameter=domain_parameter)
+    return decorate
 
 
 def function(value) -> Function:

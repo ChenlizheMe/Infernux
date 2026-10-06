@@ -121,7 +121,7 @@ def accumulate(domain, bins, totals):
 
 
 def test_gpu_index_declaration_accepts_public_and_imported_spellings():
-    from infernux._compiler.taichi.frontend import _index_declaration
+    from infernux._compiler.kernel_contract import index_declaration as _index_declaration
 
     for source in (
         "i = inx.compute.index(domain)",

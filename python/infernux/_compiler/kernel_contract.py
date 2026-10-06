@@ -24,6 +24,35 @@ def attribute_name(node: ast.expr) -> str:
     return ""
 
 
+_INDEX_NAMES = frozenset({"index", "inx.compute.index", "infernux.compute.index", "compute.index"})
+
+
+def index_declaration(statement: ast.stmt, names=_INDEX_NAMES) -> tuple[str, str] | None:
+    if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+        return None
+    target, call = statement.targets[0], statement.value
+    if not isinstance(target, ast.Name) or not isinstance(call, ast.Call) or len(call.args) != 1 or call.keywords:
+        return None
+    if attribute_name(call.func) not in names:
+        return None
+    if not isinstance(call.args[0], ast.Name):
+        raise TypeError("inx.compute.index requires a buffer parameter name")
+    return target.id, call.args[0].id
+
+
+def execution_domain(definition: ast.FunctionDef, names=_INDEX_NAMES) -> tuple[int, str, str, int]:
+    """Return declaration position, work index, domain name and parameter slot."""
+    declarations = [(position, found) for position, statement in enumerate(definition.body)
+                    if (found := index_declaration(statement, names)) is not None]
+    if len(declarations) != 1:
+        raise TypeError("GPU kernel must declare exactly one execution domain with inx.compute.index(buffer)")
+    position, (index_name, domain_name) = declarations[0]
+    parameters = tuple(argument.arg for argument in (*definition.args.posonlyargs, *definition.args.args))
+    if domain_name not in parameters:
+        raise TypeError("inx.compute.index must refer to an inx.buffer parameter")
+    return position, index_name, domain_name, parameters.index(domain_name)
+
+
 def has_decorator(node: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
     return any(
         attribute_name(item.func if isinstance(item, ast.Call) else item) == name

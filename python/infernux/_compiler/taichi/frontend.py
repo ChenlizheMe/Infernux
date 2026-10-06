@@ -28,6 +28,7 @@ import numpy as np
 from . import CompilerInstallationError, _vendor_dir, load_native
 from ..kernel_contract import (
     attribute_name,
+    execution_domain,
     implicit_receiver_attribute,
     implicit_receiver_name,
     receiver_field_names,
@@ -462,21 +463,6 @@ def _attribute_name(node: ast.expr) -> str | None:
     return value or None
 
 
-def _index_declaration(statement: ast.stmt) -> tuple[str, str] | None:
-    if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
-        return None
-    target = statement.targets[0]
-    call = statement.value
-    if not isinstance(target, ast.Name) or not isinstance(call, ast.Call) or len(call.args) != 1 or call.keywords:
-        return None
-    name = _attribute_name(call.func)
-    if name not in {"index", "inx.compute.index", "infernux.compute.index", "compute.index"}:
-        return None
-    if not isinstance(call.args[0], ast.Name):
-        raise TypeError("inx.compute.index requires a buffer parameter name")
-    return target.id, call.args[0].id
-
-
 def _buffer_annotation(ti, value):
     scalar = {
         np.dtype(np.float32): ti.f32,
@@ -843,17 +829,7 @@ def prepare_kernel(function, params, *, receiver_fields: tuple[tuple[str, object
     if any(isinstance(node, (ast.Return, ast.Yield, ast.YieldFrom, ast.Await)) for node in ast.walk(definition)):
         raise TypeError("GPU kernels write inx.buffer values in place and cannot return or yield")
 
-    declarations = [(position, found) for position, statement in enumerate(definition.body)
-                    if (found := _index_declaration(statement)) is not None]
-    if len(declarations) != 1:
-        raise TypeError("GPU kernel must declare exactly one execution domain with inx.compute.index(buffer)")
-    declaration_position, (index_name, domain_name) = declarations[0]
-    parameter_names = tuple(
-        argument.arg for argument in (*definition.args.posonlyargs, *definition.args.args)
-    )
-    if domain_name not in parameter_names:
-        raise TypeError("inx.compute.index must refer to an inx.buffer parameter")
-    domain_parameter = parameter_names.index(domain_name)
+    declaration_position, index_name, domain_name, domain_parameter = execution_domain(definition)
     domain = params[domain_parameter]
     if not isinstance(domain, Buffer) or domain.device != "gpu" or len(domain.shape) != 1:
         raise TypeError("inx.compute.index currently requires a one-dimensional GPU inx.buffer")
