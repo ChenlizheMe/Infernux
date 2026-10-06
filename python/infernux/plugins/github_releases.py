@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import shutil
 import tarfile
@@ -230,6 +231,19 @@ def _download_file(
             pass
 
 
+def _source_path_parts(value: str, *, directory: bool = False) -> tuple[str, ...]:
+    """Accept canonical POSIX archive names that keep their identity on Windows."""
+    if directory and value.endswith("/"):
+        value = value[:-1]
+    parts = tuple(value.split("/"))
+    if any(
+        part in {"", ".", ".."} or "\\" in part or ":" in part or ntpath.isreserved(part)
+        for part in parts
+    ):
+        raise ValueError(f"Unsafe GitHub source snapshot path: {value!r}")
+    return parts
+
+
 def download_github_source(
     location: str,
     destination_root: str,
@@ -240,6 +254,8 @@ def download_github_source(
 ) -> GitHubSourceSnapshot:
     """Download one exact GitHub source snapshot after Release resolution fails."""
 
+    selected_text = str(subdirectory).replace("\\", "/")
+    selected = _source_path_parts(selected_text, directory=True) if selected_text else ()
     owner, repository = _repository_coordinates(location)
     requested_revision = str(revision).strip() or "HEAD"
     commit_url = (
@@ -267,13 +283,24 @@ def download_github_source(
     )
 
     checkout = destination / "checkout"
-    checkout.mkdir(parents=False, exist_ok=False)
-    selected = tuple(part for part in str(subdirectory).replace("\\", "/").strip("/").split("/") if part)
     extracted = 0
     with tarfile.open(archive_path, "r:gz") as archive:
+        # Preflight the selected tree before creating any checkout content.
+        # No host Path parsing until every archive name has a portable identity.
+        planned = []
+        archive_root = None
+        spellings = {}
+        directories = set()
+        entries = {}
         for member in archive:
-            parts = tuple(part for part in Path(member.name).parts if part not in {"", "."})
-            if len(parts) < 2 or any(part == ".." for part in parts):
+            parts = _source_path_parts(member.name, directory=member.isdir())
+            if archive_root is None:
+                archive_root = parts[0]
+            elif parts[0] != archive_root:
+                raise ValueError("GitHub source snapshot must contain exactly one repository root")
+            if len(parts) == 1:
+                if not member.isdir():
+                    raise ValueError("GitHub source snapshot repository root must be a directory")
                 continue
             relative_parts = parts[1:]
             if selected:
@@ -281,15 +308,36 @@ def download_github_source(
                     continue
                 relative_parts = relative_parts[len(selected) :]
             if not relative_parts:
+                if not member.isdir():
+                    raise ValueError("GitHub source snapshot selected root must be a directory")
                 continue
+            if not (member.isdir() or member.isfile()):
+                raise RuntimeError(
+                    f"GitHub source snapshot contains an unsupported entry: {member.name}"
+                )
+            for length in range(1, len(relative_parts) + 1):
+                prefix = relative_parts[:length]
+                key = tuple(part.casefold() for part in prefix)
+                previous = spellings.setdefault(key, prefix)
+                if previous != prefix:
+                    raise ValueError(f"GitHub source snapshot has case-alias paths: {member.name}")
+                is_directory = length < len(relative_parts) or member.isdir()
+                if key in entries and not entries[key]:
+                    raise ValueError(f"GitHub source snapshot repeats a file path: {member.name}")
+                if is_directory:
+                    directories.add(key)
+                elif key in directories:
+                    raise ValueError(f"GitHub source snapshot path is both file and directory: {member.name}")
+            if key in entries:
+                raise ValueError(f"GitHub source snapshot repeats an entry: {member.name}")
+            entries[key] = member.isdir()
+            planned.append((member, relative_parts))
+        checkout.mkdir(parents=False, exist_ok=False)
+        for member, relative_parts in planned:
             target = checkout.joinpath(*relative_parts)
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
                 continue
-            if not member.isfile():
-                raise RuntimeError(
-                    f"GitHub source snapshot contains an unsupported entry: {member.name}"
-                )
             target.parent.mkdir(parents=True, exist_ok=True)
             stream = archive.extractfile(member)
             if stream is None:
