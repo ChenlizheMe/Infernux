@@ -106,6 +106,27 @@ def test_android_plugin_is_unblocked_only_by_a_complete_hub_support_root(
     assert not android_support_available(environment)
 
 
+def test_support_install_gate_rechecks_manifest_inside_a_panel_frame(tmp_path):
+    from infernux.core.file_read_cache import read_model_frame
+
+    root = tmp_path / "android"
+    root.mkdir()
+    _support_root(root)
+    environment = {"INFERNUX_ANDROID_SUPPORT_ROOT": str(root)}
+    manifest = root / "infernux-android-support.json"
+    original = manifest.read_bytes()
+    with read_model_frame():
+        assert plugin_install_block_reason("infernux/platform-android", environment) == ""
+        manifest.unlink()
+        with pytest.raises(RuntimeError, match="Infernux Hub"):
+            require_plugin_support("infernux/platform-android", environment)
+        manifest.write_bytes(original)
+        require_plugin_support("infernux/platform-android", environment)
+        manifest.write_text("{broken", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="Infernux Hub"):
+            require_plugin_support("infernux/platform-android", environment)
+
+
 def test_plugin_manager_cannot_bypass_the_hub_android_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

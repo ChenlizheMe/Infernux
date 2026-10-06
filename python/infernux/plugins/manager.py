@@ -24,6 +24,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import Version
 
+from infernux.core.file_read_cache import FileReadCache
 from infernux.debug import Debug
 from infernux.engine.path_utils import (
     is_path_within,
@@ -38,6 +39,7 @@ from infernux.engine.python_abi import PYTHON_RUNTIME_DIRECTORY
 from infernux.version import ENGINE_VERSION
 
 from .content import (
+    PAGE_EXTENSIONS,
     discover_plugin_pages,
     localized_intro as select_plugin_intro,
     read_plugin_pages,
@@ -222,8 +224,10 @@ class PluginManager:
         self._installing: set[str] = set()
         self._deferred_catalog_changes: set[str] = set()
         self._page_workspaces = ExitStack()
-        self._cached_page_roots: dict[tuple[str, int, int], str] = {}
+        self._cached_page_roots: dict[tuple[str, int, int, int, int, int], str] = {}
         self._shared_package_cache: SharedPackageCache | None = None
+        self._content_reads = FileReadCache()
+        self._archive_reads = FileReadCache()
 
     def _package_cache(self) -> SharedPackageCache:
         if self._shared_package_cache is None:
@@ -298,6 +302,8 @@ class PluginManager:
         return manager
 
     def shutdown(self) -> None:
+        self._content_reads.clear()
+        self._archive_reads.clear()
         self._page_workspaces.close()
         self._cached_page_roots.clear()
         if self._resource_manager is not None:
@@ -356,7 +362,8 @@ class PluginManager:
         if not archive:
             return package_control_root(self.project_root, reference)
         stat = os.stat(archive)
-        key = (archive, stat.st_mtime_ns, stat.st_size)
+        key = (archive, stat.st_dev, stat.st_ino, stat.st_mtime_ns,
+               stat.st_ctime_ns, stat.st_size)
         if key in self._cached_page_roots:
             return self._cached_page_roots[key]
 
@@ -403,20 +410,37 @@ class PluginManager:
                 selected_locale = "en"
         else:
             selected_locale = locale
-        try:
+        installed = self.registry.installed_record(reference) is not None
+        archive = "" if installed else self.cached_reference_path(reference)
+        declared_pages = record.get("pages", [])
+
+        def prepare(observed):
+            # Observe the lexical project location as well as any extracted
+            # preview. Replacing a package directory or retargeting a junction
+            # must not keep an old, already-resolved content root alive.
+            observed.watch(os.path.join(self.project_root, "Packages", *reference.split("/")))
+            if archive:
+                observed.watch(archive)
             control_root = self._content_root(reference)
+            observed.watch_tree(os.path.join(control_root, "plugin_pages"), suffixes=PAGE_EXTENSIONS)
             descriptors = record.get("pages", [])
             if not descriptors:
                 descriptors = list(discover_plugin_pages(control_root))
-            pages = read_plugin_pages(
+            return read_plugin_pages(
                 control_root,
                 descriptors,
                 locale=selected_locale,
             )
+
+        try:
+            pages = self._content_reads.get(
+                (reference, installed, archive, selected_locale,
+                 json.dumps(declared_pages, sort_keys=True)), prepare,
+            )
         except (OSError, ValueError):
             pages = ()
         if pages:
-            return pages
+            return tuple(dict(page) for page in pages)
         intro = select_plugin_intro(record, selected_locale)
         if not intro:
             return ()
@@ -953,17 +977,26 @@ class PluginManager:
             return ""
         cache = self._package_cache()
         source = record.get("source")
+        location = ""
         if isinstance(source, Mapping):
             location = str(source.get("cache_location", ""))
             if location:
                 location = SharedPackageCache.validate_location(location)
-                candidate = resolved_path(
-                    os.path.join(cache.root, *location.split("/"))
-                )
-                if os.path.isfile(candidate):
-                    return candidate
         version = str(record.get("version", "")).strip()
-        return cache.resolve(reference, version) if version else ""
+
+        def prepare(observed):
+            candidates = []
+            if location:
+                candidates.append(os.path.join(cache.root, *location.split("/")))
+            if version:
+                candidates.append(os.path.join(cache.root, *cache.relative_path(reference, version).split("/")))
+            for candidate in dict.fromkeys(candidates):
+                observed.watch(candidate)
+                if os.path.isfile(candidate):
+                    return resolved_path(candidate)
+            return ""
+
+        return self._archive_reads.get((reference, location, version), prepare)
 
     def _installed_archive_path(self, record: Mapping[str, object]) -> str:
         source = record.get("source", {})

@@ -8,7 +8,8 @@ import platform
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
-from infernux.engine.path_utils import resolved_path
+from infernux.core.file_read_cache import FileReadCache
+from infernux.engine.path_utils import lexical_path, resolved_path
 
 
 ANDROID_PLUGIN_REFERENCE = "infernux/platform-android"
@@ -20,6 +21,7 @@ ANDROID_SUPPORT_REQUIRED_MESSAGE = (
     "Install Android compatibility from Infernux Hub before importing the "
     "Android platform plugin."
 )
+_manifest_reads = FileReadCache(capacity=8)
 
 
 def _host_id() -> str:
@@ -36,24 +38,29 @@ def _host_id() -> str:
 def android_support_root(
     environ: Mapping[str, str] | None = None,
 ) -> Path | None:
+    location = _android_support_location(environ)
+    return Path(resolved_path(location)) if location is not None else None
+
+
+def _android_support_location(environ: Mapping[str, str] | None) -> Path | None:
     values = os.environ if environ is None else environ
     explicit = str(values.get("INFERNUX_ANDROID_SUPPORT_ROOT", "") or "").strip()
     if explicit:
-        return Path(resolved_path(os.path.expandvars(os.path.expanduser(explicit))))
+        return Path(lexical_path(os.path.expandvars(os.path.expanduser(explicit))))
     data_root = str(values.get("INFERNUX_SHARED_DATA_ROOT", "") or "").strip()
     if not data_root:
         data_root = str(values.get("INFERNUX_DATA_ROOT", "") or "").strip()
     if data_root:
-        base = Path(resolved_path(os.path.expandvars(os.path.expanduser(data_root))))
+        base = Path(lexical_path(os.path.expandvars(os.path.expanduser(data_root))))
     elif os.name == "nt":
         local_app_data = str(values.get("LOCALAPPDATA", "") or "").strip()
         if not local_app_data:
             return None
-        base = Path(resolved_path(local_app_data)) / "InfernuxHub"
+        base = Path(lexical_path(local_app_data)) / "InfernuxHub"
     else:
         xdg_data = str(values.get("XDG_DATA_HOME", "") or "").strip()
         base = (
-            Path(resolved_path(Path(xdg_data).expanduser())) / "InfernuxHub"
+            Path(lexical_path(Path(xdg_data).expanduser())) / "InfernuxHub"
             if xdg_data
             else Path.home() / ".local/share/InfernuxHub"
         )
@@ -79,13 +86,21 @@ def _relative(value: object) -> Path:
 def android_support_available(
     environ: Mapping[str, str] | None = None,
 ) -> bool:
-    root = android_support_root(environ)
+    # File IO already follows aliases. Canonicalize only when returning a path
+    # to a caller, not every time a panel asks whether support is installed.
+    root = _android_support_location(environ)
     if root is None:
         return False
     try:
-        document = json.loads(
-            (root / ANDROID_SUPPORT_MANIFEST).read_text(encoding="utf-8")
-        )
+        manifest = root / ANDROID_SUPPORT_MANIFEST
+
+        def prepare(observed):
+            observed.watch(manifest)
+            return json.loads(manifest.read_text(encoding="utf-8"))
+
+        # This gate is also called by installation commands, including commands
+        # issued from a panel. Always observe the current manifest there.
+        document = _manifest_reads.get(str(manifest), prepare, current=True)
         paths = document["paths"]
         python_paths = paths["python"]
     except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError):

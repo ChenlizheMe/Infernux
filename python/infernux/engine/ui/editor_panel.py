@@ -43,6 +43,7 @@ from __future__ import annotations
 
 from typing import List, Optional, TYPE_CHECKING
 
+from infernux.core.file_read_cache import read_model_frame
 from infernux.engine.interaction import PanelViewStateSchema
 
 from .closable_panel import ClosablePanel
@@ -451,7 +452,8 @@ class EditorPanel(ClosablePanel):
                 if visible:
                     self._on_visible_pre(ctx)
                     try:
-                        self.on_render_content(ctx)
+                        with read_model_frame():
+                            self.on_render_content(ctx)
                     except Exception as exc:
                         # A scripting error in one panel must not abort the
                         # complete ImGui frame. ImGui's native error recovery

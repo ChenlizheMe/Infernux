@@ -93,8 +93,7 @@ class PluginPanel(EditorPanel):
         if manager is None:
             ctx.text_wrapped(t("plugins.unavailable"))
             return
-        with manager.registry.presentation_reads():
-            self._render_browser(ctx, manager)
+        self._render_browser(ctx, manager)
 
     def _render_browser(self, ctx, manager: PluginManager) -> None:
         self._render_toolbar(ctx, manager)
