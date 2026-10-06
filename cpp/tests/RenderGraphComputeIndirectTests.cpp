@@ -713,6 +713,7 @@ void main() {
 #include "ParticleSpawnInputTests.h"
 #include "ParticleSurfaceSnapshotTests.h"
 #include "RhiBufferUpdateTests.h"
+#include "RenderGraphTransientBufferTests.h"
 
 bool Run(const std::filesystem::path &computePath, const std::filesystem::path &vertexPath,
          const std::filesystem::path &fragmentPath, const std::filesystem::path &reflectionPath,
@@ -739,6 +740,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!VerifyRhiBufferUpload(resources))
         return false;
     if (!VerifyRhiBufferUpdateSnapshots(resources))
+        return false;
+    if (!VerifyTransientBufferIsolation(resources))
         return false;
 
     const VkDevice device = resources.context.GetDevice();
@@ -2539,8 +2542,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                          bufferAliasGraph.ResolveBuffer(secondAliasVersion),
                  "Aliased transient buffers did not retain distinct Vulkan handles"))
         return false;
-    if (!Require(bufferAliasGraph.GetTransientAllocationCount() == 2,
-                 "Non-overlapping transient buffers did not reuse one allocation"))
+    if (!Require(bufferAliasGraph.GetTransientAllocationCount() == 3,
+                 "Transient buffers reused an allocation without a compiled alias dependency"))
         return false;
 
     infernux::GpuRetirementQueue graphDeletionQueue;

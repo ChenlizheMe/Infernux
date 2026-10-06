@@ -306,7 +306,7 @@ class SceneRenderGraph
      * @param width Texture width
      * @param height Texture height
      * @param format Vulkan format
-     * @param isTransient If true, resource can be aliased
+     * @param isTransient Transient usage hint; graph-owned storage remains independent
      * @return Resource handle for use in pass configuration
      */
     vk::ResourceHandle CreateTransientTexture(const std::string &name, uint32_t width, uint32_t height, VkFormat format,

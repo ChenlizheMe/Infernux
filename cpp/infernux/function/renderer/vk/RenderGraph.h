@@ -141,7 +141,7 @@ struct TextureDesc
     uint32_t arrayLayers = 1;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
-    bool isTransient = true; // Can be aliased with other resources
+    bool isTransient = true; // Graph-owned transient usage; storage remains independent.
 };
 
 /**
@@ -888,7 +888,7 @@ class RenderGraph
      * @param height     Texture height
      * @param format     Vulkan format
      * @param samples    MSAA sample count
-     * @param isTransient If true, the resource can be memory-aliased
+     * @param isTransient Transient usage hint; graph-owned storage remains independent
      * @return ResourceHandle with a valid id
      */
     ResourceHandle RegisterTransientTexture(const std::string &name, uint32_t width, uint32_t height, VkFormat format,

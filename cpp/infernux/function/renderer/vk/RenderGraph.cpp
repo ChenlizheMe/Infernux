@@ -1587,8 +1587,7 @@ bool RenderGraph::Compile()
             return false;
         }
 
-        // Step 3: Compute lifetimes in final execution order so transient
-        // aliasing does not depend on declaration order.
+        // Step 3: Compute resource lifetimes in the final execution order.
         ComputeResourceLifetimes();
         StoreStructuralCompilation(structuralSignature);
     }

@@ -879,7 +879,7 @@ bool RenderGraph::IsResourceUsedAfter(uint32_t resourceId, uint32_t passIndex) c
 }
 
 // ============================================================================
-// Resource Allocation (with Memory Aliasing)
+// Independently Backed Resource Allocation
 // ============================================================================
 
 bool RenderGraph::AllocateResources()
@@ -889,7 +889,6 @@ bool RenderGraph::AllocateResources()
     }
 
     VkDevice device = m_context->GetDevice();
-    VkPhysicalDevice physDevice = m_context->GetPhysicalDevice();
 
     // ========================================================================
     // Create VkImages/VkBuffers and gather memory requirements
@@ -899,11 +898,9 @@ bool RenderGraph::AllocateResources()
     {
         uint32_t resourceIndex;
         VkMemoryRequirements memReqs;
-        uint32_t memoryTypeIndex;
     };
 
     std::vector<AllocationRequest> imageAllocRequests;
-    std::vector<AllocationRequest> bufferAllocRequests;
 
     for (uint32_t ri = 0; ri < static_cast<uint32_t>(m_resources.size()); ++ri) {
         auto &resource = m_resources[ri];
@@ -998,14 +995,7 @@ bool RenderGraph::AllocateResources()
             VkMemoryRequirements memReqs;
             vkGetImageMemoryRequirements(device, resource.allocatedImage, &memReqs);
 
-            // Use VMA to find the memory type index for aliasing grouping
-            VmaAllocationCreateInfo probeAllocInfo{};
-            probeAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-            uint32_t memTypeIndex = 0;
-            vmaFindMemoryTypeIndexForImageInfo(m_context->GetVmaAllocator(), &imageInfo, &probeAllocInfo,
-                                               &memTypeIndex);
-
-            imageAllocRequests.push_back({ri, memReqs, memTypeIndex});
+            imageAllocRequests.push_back({ri, memReqs});
 
         } else if (resource.type == ResourceType::Buffer) {
             VkBufferCreateInfo bufferInfo{};
@@ -1014,24 +1004,21 @@ bool RenderGraph::AllocateResources()
             bufferInfo.usage = resource.bufferDesc.usage;
             bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-            if (vkCreateBuffer(device, &bufferInfo, nullptr, &resource.allocatedBuffer) != VK_SUCCESS) {
-                resource.allocatedBuffer = VK_NULL_HANDLE;
-                INXLOG_ERROR("Failed to create buffer resource '", resource.name, "'");
+            // Linear lifetime intervals do not establish an execution or
+            // memory dependency between independent graph branches. Each
+            // buffer therefore owns a disjoint VMA allocation until graph
+            // retirement. VMA can suballocate a memory block without aliasing
+            // live ranges and binds the correct offset for each buffer.
+            VmaAllocationCreateInfo allocationInfo{};
+            allocationInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+            if (vmaCreateBuffer(m_context->GetVmaAllocator(), &bufferInfo, &allocationInfo, &resource.allocatedBuffer,
+                                &resource.allocatedMemory, nullptr) != VK_SUCCESS) {
+                INXLOG_ERROR("Failed to allocate buffer resource '", resource.name, "'");
                 return false;
             }
-
-            VkMemoryRequirements memReqs{};
-            vkGetBufferMemoryRequirements(device, resource.allocatedBuffer, &memReqs);
-
-            VmaAllocationCreateInfo probeAllocInfo{};
-            probeAllocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-            uint32_t memTypeIndex = 0;
-            if (vmaFindMemoryTypeIndexForBufferInfo(m_context->GetVmaAllocator(), &bufferInfo, &probeAllocInfo,
-                                                    &memTypeIndex) != VK_SUCCESS) {
-                INXLOG_ERROR("Failed to select memory for buffer resource '", resource.name, "'");
-                return false;
-            }
-            bufferAllocRequests.push_back({ri, memReqs, memTypeIndex});
+            resource.rhiBuffer = m_rhiDevice
+                                     ? m_rhiDevice->RegisterBuffer(resource.allocatedBuffer, resource.bufferDesc.size)
+                                     : rhi::BufferHandle{};
         }
     }
 
@@ -1084,86 +1071,6 @@ bool RenderGraph::AllocateResources()
             m_rhiDevice ? m_rhiDevice->RegisterTextureView(resource.allocatedView) : rhi::TextureViewHandle{};
         resource.rhiTexture =
             m_rhiDevice ? m_rhiDevice->RegisterTexture(resource.allocatedImage) : rhi::TextureHandle{};
-    }
-
-    // Transient buffers retain interval-based allocation reuse. Unlike tiled
-    // images they have no image-layout metadata, and the graph already emits
-    // the storage/indirect access barriers represented by their passes.
-    std::sort(bufferAllocRequests.begin(), bufferAllocRequests.end(),
-              [](const AllocationRequest &a, const AllocationRequest &b) { return a.memReqs.size > b.memReqs.size; });
-
-    const auto lifetimesOverlap = [](uint32_t aFirst, uint32_t aLast, uint32_t bFirst, uint32_t bLast) {
-        return aFirst <= bLast && bFirst <= aLast;
-    };
-
-    struct BufferMemoryHeap
-    {
-        VmaAllocation allocation = VK_NULL_HANDLE;
-        VkDeviceMemory memory = VK_NULL_HANDLE;
-        VkDeviceSize size = 0;
-        uint32_t memoryTypeIndex = 0;
-        std::vector<std::pair<uint32_t, uint32_t>> occupants;
-    };
-    std::vector<BufferMemoryHeap> bufferHeaps;
-
-    for (const auto &req : bufferAllocRequests) {
-        auto &resource = m_resources[req.resourceIndex];
-        bool placed = false;
-
-        if (resource.bufferDesc.isTransient && resource.firstPass <= resource.lastPass) {
-            for (auto &heap : bufferHeaps) {
-                if (heap.memoryTypeIndex != req.memoryTypeIndex || req.memReqs.size > heap.size)
-                    continue;
-
-                const bool overlaps = std::any_of(heap.occupants.begin(), heap.occupants.end(), [&](const auto &life) {
-                    return lifetimesOverlap(resource.firstPass, resource.lastPass, life.first, life.second);
-                });
-                if (overlaps)
-                    continue;
-
-                if (vkBindBufferMemory(device, resource.allocatedBuffer, heap.memory, 0) != VK_SUCCESS)
-                    continue;
-
-                resource.allocatedMemory = VK_NULL_HANDLE;
-                heap.occupants.push_back({resource.firstPass, resource.lastPass});
-                placed = true;
-                break;
-            }
-        }
-
-        if (!placed) {
-            VmaAllocationCreateInfo allocCreateInfo{};
-            allocCreateInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-            allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-
-            VmaAllocation allocation = VK_NULL_HANDLE;
-            VmaAllocationInfo allocationInfo{};
-            if (vmaAllocateMemory(m_context->GetVmaAllocator(), &req.memReqs, &allocCreateInfo, &allocation,
-                                  &allocationInfo) != VK_SUCCESS) {
-                INXLOG_ERROR("Failed to allocate memory for buffer resource: ", resource.name);
-                return false;
-            }
-            if (vkBindBufferMemory(device, resource.allocatedBuffer, allocationInfo.deviceMemory, 0) != VK_SUCCESS) {
-                vmaFreeMemory(m_context->GetVmaAllocator(), allocation);
-                INXLOG_ERROR("Failed to bind memory for buffer resource: ", resource.name);
-                return false;
-            }
-
-            resource.allocatedMemory = allocation;
-            if (resource.bufferDesc.isTransient && resource.firstPass <= resource.lastPass) {
-                BufferMemoryHeap heap;
-                heap.allocation = allocation;
-                heap.memory = allocationInfo.deviceMemory;
-                heap.size = req.memReqs.size;
-                heap.memoryTypeIndex = req.memoryTypeIndex;
-                heap.occupants.push_back({resource.firstPass, resource.lastPass});
-                bufferHeaps.push_back(std::move(heap));
-            }
-        }
-
-        resource.rhiBuffer = m_rhiDevice
-                                 ? m_rhiDevice->RegisterBuffer(resource.allocatedBuffer, resource.bufferDesc.size)
-                                 : rhi::BufferHandle{};
     }
 
     return true;
