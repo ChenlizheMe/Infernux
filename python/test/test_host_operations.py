@@ -5,6 +5,7 @@ import time
 from dataclasses import replace
 
 import pytest
+from infernux.host.commands import CommandOwner, command_owner_scope
 
 from infernux.host import (
     MainThreadCommandQueue,
@@ -25,6 +26,70 @@ def test_capability_grants_accept_exact_names_and_fnmatch_patterns():
     assert capability_granted("scene.write", ("*.write",))
     assert not capability_granted("scene.write", ("*.read", "material.write"))
     assert not capability_granted("scene.write", ())
+
+
+def test_retiring_command_owner_cancels_its_pending_work_only():
+    queue = MainThreadCommandQueue()
+    owner = CommandOwner('MCP')
+    calls = []
+    with command_owner_scope(owner):
+        cancelled = queue.submit('owned', lambda: calls.append('owned'))
+    unrelated = queue.submit('other service', lambda: calls.append('other'))
+    assert cancelled.can_execute()
+    owner.close()
+    with pytest.raises(TimeoutError, match='Host service stopped: MCP'):
+        cancelled.result(0)
+    with command_owner_scope(owner):
+        rejected = queue.submit('after shutdown', lambda: calls.append('late'))
+    with pytest.raises(TimeoutError, match='Host service stopped: MCP'):
+        rejected.result(0)
+    queue.drain()
+    assert unrelated.result(0) is None
+    assert calls == ['other']
+
+
+def test_retiring_command_owner_allows_started_authoring_to_finish():
+    queue = MainThreadCommandQueue()
+    queue.drain(0)
+    owner = CommandOwner('MCP')
+    calls = []
+
+    def transaction():
+        owner.close()
+        calls.append('committed')
+        return 42
+
+    with command_owner_scope(owner):
+        future = queue.submit('started transaction', transaction)
+    assert future.result(0) == 42
+    assert calls == ['committed']
+
+
+def test_operation_jobs_keep_the_submitting_service_command_owner():
+    queue = MainThreadCommandQueue()
+    registry = OperationRegistry()
+    calls = []
+    registry.register(Operation(_schema(), lambda left, right: queue.run_sync(
+        'job editor transaction', lambda: calls.append(left + right)), 'owner'))
+    jobs = OperationJobRegistry(registry, max_workers=1)
+    owner = CommandOwner('MCP')
+    try:
+        with command_owner_scope(owner):
+            job_id = jobs.submit('test.math.add', {'left': 2, 'right': 3}, capabilities=('*',))
+        deadline = time.monotonic() + 2
+        while queue._queue.empty() and time.monotonic() < deadline:
+            time.sleep(.005)
+        assert not queue._queue.empty()
+        owner.close()
+        assert jobs.shutdown(timeout=2) == 0
+        result = jobs.status(job_id)
+        assert result['done'] and result['ok'] is False
+        assert 'Host service stopped: MCP' in result['error']['message']
+        queue.drain()
+        assert calls == []
+    finally:
+        owner.close()
+        jobs.shutdown(timeout=2)
     # Non-pattern grants never match other capabilities partially.
     assert not capability_granted("scene.write", ("scene",))
 

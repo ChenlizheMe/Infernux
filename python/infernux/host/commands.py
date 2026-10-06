@@ -5,7 +5,10 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Callable
+from weakref import WeakSet
 
 
 class CommandFuture:
@@ -16,6 +19,7 @@ class CommandFuture:
         self._error: BaseException | None = None
         self._lock = threading.Lock()
         self._cancelled = False
+        self._running = False
         self._deadline = time.monotonic() + max(int(timeout_ms), 1) / 1000.0
 
     def set_result(self, value: Any) -> None:
@@ -33,8 +37,11 @@ class CommandFuture:
             self._event.set()
 
     def cancel(self, reason: str = "Host command timed out before execution.") -> bool:
+        return self._cancel(reason, pending_only=False)
+
+    def _cancel(self, reason: str, *, pending_only: bool) -> bool:
         with self._lock:
-            if self._event.is_set():
+            if self._event.is_set() or (pending_only and self._running):
                 return False
             self._cancelled = True
             self._error = TimeoutError(f"{reason} ({self.name})")
@@ -43,16 +50,24 @@ class CommandFuture:
 
     def can_execute(self) -> bool:
         with self._lock:
-            if self._cancelled or self._event.is_set():
+            return self._can_execute_locked()
+
+    def _begin_execute(self) -> bool:
+        with self._lock:
+            if not self._can_execute_locked():
                 return False
-            if time.monotonic() >= self._deadline:
-                self._cancelled = True
-                self._error = TimeoutError(
-                    f"Host command expired before execution: {self.name}"
-                )
-                self._event.set()
-                return False
+            self._running = True
             return True
+
+    def _can_execute_locked(self) -> bool:
+        if self._cancelled or self._event.is_set():
+            return False
+        if time.monotonic() >= self._deadline:
+            self._cancelled = True
+            self._error = TimeoutError(f"Host command expired before execution: {self.name}")
+            self._event.set()
+            return False
+        return True
 
     def result(self, timeout: float | None = None) -> Any:
         if not self._event.wait(timeout):
@@ -61,6 +76,43 @@ class CommandFuture:
         if self._error is not None:
             raise self._error
         return self._result
+
+
+class CommandOwner:
+    """A service lifetime owns only the commands submitted in its scope."""
+
+    def __init__(self, name: str) -> None:
+        self.name = str(name)
+        self._lock = threading.Lock()
+        self._closed = False
+        self._futures: WeakSet[CommandFuture] = WeakSet()
+
+    def _accept(self, future: CommandFuture) -> bool:
+        with self._lock:
+            if not self._closed:
+                self._futures.add(future)
+                return True
+        future.cancel(f"Host service stopped: {self.name}")
+        return False
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            futures = tuple(self._futures)
+        for future in futures:
+            future._cancel(f"Host service stopped: {self.name}", pending_only=True)
+
+
+_COMMAND_OWNER: ContextVar[CommandOwner | None] = ContextVar("host_command_owner", default=None)
+
+
+@contextmanager
+def command_owner_scope(owner: CommandOwner):
+    token = _COMMAND_OWNER.set(owner)
+    try:
+        yield
+    finally:
+        _COMMAND_OWNER.reset(token)
 
 
 class MainThreadCommandQueue:
@@ -86,10 +138,15 @@ class MainThreadCommandQueue:
         self, name: str, fn: Callable[[], Any], *, timeout_ms: int = 30000
     ) -> CommandFuture:
         future = CommandFuture(name, timeout_ms=timeout_ms)
+        command_owner = _COMMAND_OWNER.get()
+        if command_owner is not None and not command_owner._accept(future):
+            return future
         with self._owner_lock:
             owner_thread_id = self._main_thread_id
             wake_callback = self._wake_callback
         if owner_thread_id == threading.get_ident():
+            if not future._begin_execute():
+                return future
             try:
                 future.set_result(fn())
             except BaseException as exc:
@@ -126,7 +183,7 @@ class MainThreadCommandQueue:
                 _name, fn, future = self._queue.get_nowait()
             except queue.Empty:
                 break
-            if future.can_execute():
+            if future._begin_execute():
                 try:
                     future.set_result(fn())
                 except BaseException as exc:

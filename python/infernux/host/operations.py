@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, Callable, Iterable, Mapping
@@ -367,6 +368,7 @@ class OperationJobRegistry:
                 )
             job_id = uuid.uuid4().hex
             future = self._executor.submit(
+                copy_context().run,
                 self.registry.execute,
                 operation_id,
                 dict(arguments or {}),

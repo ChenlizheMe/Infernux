@@ -1112,7 +1112,8 @@ def test_schema_gateway_can_validate_and_edit_real_particle_graph(engine):
         Path(str(path) + ".meta").unlink(missing_ok=True)
 
 
-def test_schema_gateway_reads_and_replaces_guid_text_asset_with_undo(engine):
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+def test_schema_gateway_reads_and_replaces_guid_text_asset_with_undo(engine, newline):
     from infernux.core.assets import AssetManager
     from infernux.engine.interaction import EditorInteractionCore
     from infernux.engine.undo import UndoManager
@@ -1124,7 +1125,8 @@ def test_schema_gateway_reads_and_replaces_guid_text_asset_with_undo(engine):
     assets = project_root / "Assets"
     assets.mkdir(exist_ok=True)
     path = assets / f"McpText_{uuid.uuid4().hex}.txt"
-    path.write_text("before\n", encoding="utf-8")
+    original = ('before' + newline).encode('utf-8')
+    path.write_bytes(original)
     guid = AssetManager.import_asset(str(path), database=database).guid
 
     previous_plugins = PluginManager._instance
@@ -1145,18 +1147,18 @@ def test_schema_gateway_reads_and_replaces_guid_text_asset_with_undo(engine):
             "infernux.asset.text.read", {"asset_guid": guid}
         )
         assert read["ok"] is True
-        assert read["data"]["result"]["content"] == "before\n"
+        assert read["data"]["result"]["content"] == original.decode('utf-8')
 
         changed = mcp.tools["operation_command_execute"](
             "infernux.asset.text.set",
             {"asset_guid": guid, "content": "after\n"},
         )
         assert changed["ok"] is True, changed
-        assert path.read_text(encoding="utf-8") == "after\n"
+        assert path.read_bytes() == b"after\n"
         assert len(undo.action_journal.applied_entries()) == 1
 
         undo.undo()
-        assert path.read_text(encoding="utf-8") == "before\n"
+        assert path.read_bytes() == original
     finally:
         shutdown_adapter()
         manager.shutdown()
@@ -1347,6 +1349,78 @@ def test_server_async_retirement_releases_owner_before_next_generation(tmp_path)
         assert server.start_server(str(tmp_path), port=port) is True
         assert server.is_running() is True
     finally:
+        server.stop_server()
+
+
+def test_server_shutdown_closes_connected_streamable_http_session(tmp_path):
+    import asyncio
+    from infernux_mcp.client import create_loopback_client
+
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    async def connected_shutdown():
+        async with create_loopback_client(server.endpoint_url(port=port), timeout_seconds=20) as client:
+            state = server._active_state()
+            ping = await client.call_tool("mcp_ping")
+            assert ping.data['ok']
+            assert ping.data['data']['message'] == 'pong'
+            await asyncio.to_thread(server.stop_server)
+            assert not server.is_running()
+            assert state.error is None
+            assert not (tmp_path / 'mcp.json').exists()
+
+    try:
+        assert server.start_server(str(tmp_path), port=port)
+        asyncio.run(connected_shutdown())
+        assert server.start_server(str(tmp_path), port=port)
+        assert server.is_running()
+    finally:
+        server.stop_server()
+
+
+def test_server_shutdown_does_not_wait_for_queued_editor_query(tmp_path, monkeypatch):
+    import asyncio
+    from infernux.host import MainThreadCommandQueue
+    from infernux_mcp.client import create_loopback_client
+
+    (tmp_path / "Assets").mkdir()
+    (tmp_path / "ProjectSettings").mkdir()
+    command_queue = MainThreadCommandQueue()
+    command_queue.drain()
+    monkeypatch.setattr(MainThreadCommandQueue, '_instance', command_queue)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    async def queued_shutdown():
+        async with create_loopback_client(server.endpoint_url(port=port), timeout_seconds=20) as client:
+            query = asyncio.create_task(client.call_tool('operation_query_execute', {'operation': 'infernux.project.info'}))
+            try:
+                for _ in range(100):
+                    if command_queue._queue.qsize():
+                        break
+                    await asyncio.sleep(.01)
+                assert command_queue._queue.qsize() == 1
+                state = server._active_state()
+                await asyncio.to_thread(server.stop_server)
+                assert not server.is_running()
+                assert state.error is None
+                pending = list(command_queue._queue.queue)
+                assert not any(future.can_execute() for _name, _fn, future in pending)
+            finally:
+                command_queue.cancel_pending('test cleanup')
+                result, = await asyncio.gather(query, return_exceptions=True)
+                assert isinstance(result, BaseException) or not result.data['ok']
+
+    try:
+        assert server.start_server(str(tmp_path), port=port)
+        asyncio.run(queued_shutdown())
+    finally:
+        command_queue.cancel_pending('test cleanup')
         server.stop_server()
 
 
