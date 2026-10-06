@@ -3163,6 +3163,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         )
 
     def capture_authoring_save_snapshot(self, target: str):
+        from functools import partial
         from infernux.engine.interaction import (
             AuthoringAssetSnapshot,
             document_content_token,
@@ -3192,6 +3193,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             document_content_token(asset.to_dict()),
             title,
             prepared,
+            submit_write=partial(ParticleArtifactRegistry.submit_prepared_graph, prepared),
         )
 
     def publish_authoring_save_snapshot(self, snapshot) -> str:
@@ -3199,7 +3201,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         if not isinstance(prepared, PreparedParticleGraphArtifact):
             raise TypeError("Particle Graph save snapshot has no prepared AOT artifact")
 
-        ParticleArtifactRegistry.publish_prepared_graph(prepared)
+        ParticleArtifactRegistry.require_current_graph_publication(prepared)
         self._asset = replace(self._asset, name=snapshot.title)
         self._file_path = snapshot.target_path
         self._draft_compile_error = ""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from concurrent.futures import Future as _Future, ThreadPoolExecutor as _ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -51,6 +52,10 @@ class ParticleArtifactError(ValueError):
     pass
 
 
+class ParticleArtifactSuperseded(ParticleArtifactError):
+    """The prepared save no longer owns its source publication."""
+
+
 @dataclass(frozen=True)
 class ParticleArtifact:
     source_key: str
@@ -93,6 +98,51 @@ class PreparedParticleGraphArtifact:
     guid: str = ""
 
 
+@dataclass(frozen=True)
+class _ParticlePublication:
+    artifact: ParticleArtifact
+    source_write: Any = None
+
+
+class ParticleGraphWriteTicket:
+    """Completion of the entire source/artifact/index commit, not just source IO."""
+
+    def __init__(self, future: _Future, prepared: PreparedParticleGraphArtifact):
+        self._future = future
+        self.path = prepared.source_path
+        self.generation = prepared.request_generation
+
+    @property
+    def is_complete(self) -> bool:
+        return self._future.done()
+
+    @property
+    def status(self) -> str:
+        if self._future.cancelled():
+            return "cancelled"
+        if not self.is_complete:
+            return "pending"
+        error = self._future.exception()
+        if isinstance(error, ParticleArtifactSuperseded):
+            return "superseded"
+        return "failed" if error is not None else "succeeded"
+
+    @property
+    def error(self) -> str:
+        if self._future.cancelled():
+            return "particle graph save was cancelled"
+        return str(self._future.exception() or "") if self.is_complete else ""
+
+    @property
+    def committed_file_state(self):
+        if self.status != "succeeded":
+            return None
+        return self._future.result().source_write.committed_file_state
+
+    def wait(self) -> None:
+        self._future.result()
+
+
 class ParticleArtifactRegistry:
     _artifacts: dict[str, ParticleArtifact] = {}
     # Runtime decoding is immutable and shared by every component referencing
@@ -104,11 +154,17 @@ class ParticleArtifactRegistry:
     ] = {}
     _revision = 0
     _request_generation: dict[str, int] = {}
+    _next_request_generation = 0
     _lock = threading.RLock()
+    # Serialize durable publications without holding the runtime-reader lock
+    # while waiting for disk. Request acceptance uses this same commit gate.
+    _publication_lock = threading.RLock()
+    # Workers are created on first submission, not at import or per frame.
+    _save_executor = _ThreadPoolExecutor(max_workers=1, thread_name_prefix="particle-save")
 
     @classmethod
     def clear(cls) -> None:
-        with cls._lock:
+        with cls._publication_lock, cls._lock:
             cls._artifacts.clear()
             cls._runtime_decode_cache.clear()
             cls._request_generation.clear()
@@ -164,6 +220,11 @@ class ParticleArtifactRegistry:
     @classmethod
     def remap_source(cls, source_path: str, destination_path: str, *, guid: str = "") -> None:
         """Rekey live and shipped AOT lookup state after a GUID-stable move."""
+        with cls._publication_lock:
+            cls._remap_source_under_publication_lock(source_path, destination_path, guid=guid)
+
+    @classmethod
+    def _remap_source_under_publication_lock(cls, source_path, destination_path, *, guid):
         source = resolved_path(source_path)
         destination = resolved_path(destination_path)
         source_key = cls._source_key(source)
@@ -176,12 +237,11 @@ class ParticleArtifactRegistry:
                 else None
             ) or cls._artifacts.get(source_key)
             cls._artifacts.pop(source_key, None)
-            generation = cls._request_generation.pop(source_key, None)
-            if generation is not None:
-                cls._request_generation[destination_key] = max(
-                    generation,
-                    cls._request_generation.get(destination_key, 0),
-                )
+            # Prepared writes still contain their original target path. A move
+            # retires pending writes at both names instead of lending the old
+            # path's authority to a different source or destination occupant.
+            cls._request_generation.pop(source_key, None)
+            cls._request_generation.pop(destination_key, None)
             if artifact is not None:
                 next_key = guid_key or destination_key
                 moved = replace(artifact, source_key=next_key)
@@ -474,15 +534,9 @@ class ParticleArtifactRegistry:
         guid: str = "",
         expected_file_state=None,
     ) -> ParticleArtifact:
-        """Compile, atomically save, and publish one exact graph snapshot."""
+        """Compile and commit one graph snapshot under its request ownership."""
         prepared = cls.prepare_graph_asset(asset, path, guid=guid)
-        from infernux.core.document_store import write_document_text
-
-        os.makedirs(os.path.dirname(prepared.source_path), exist_ok=True)
-        write_document_text(
-            prepared.source_path, prepared.source_text, expected_file_state=expected_file_state,
-        )
-        return cls.publish_prepared_graph(prepared)
+        return cls._commit_prepared_graph(prepared, expected_file_state=expected_file_state).artifact
 
     @classmethod
     def prepare_graph_asset(
@@ -533,13 +587,29 @@ class ParticleArtifactRegistry:
         )
 
     @classmethod
-    def publish_prepared_graph(
+    def submit_prepared_graph(
         cls,
         prepared: PreparedParticleGraphArtifact,
-    ) -> ParticleArtifact:
-        """Publish a prepared graph after its source file reached durable storage."""
+        *,
+        expected_file_state=None,
+    ) -> ParticleGraphWriteTicket:
+        """Commit a compiled editor snapshot in the background with the same save gate."""
         if not isinstance(prepared, PreparedParticleGraphArtifact):
             raise TypeError("prepared particle graph artifact has an invalid type")
+        future = cls._save_executor.submit(
+            cls._commit_prepared_graph, prepared, expected_file_state=expected_file_state,
+        )
+        return ParticleGraphWriteTicket(future, prepared)
+
+    @classmethod
+    def require_current_graph_publication(cls, prepared: PreparedParticleGraphArtifact) -> None:
+        """Reject stale editor completion before updating its view or save point."""
+        with cls._lock:
+            if cls._request_generation.get(prepared.path_identity) != prepared.request_generation:
+                raise ParticleArtifactSuperseded("particle graph save was superseded before editor publication")
+
+    @classmethod
+    def _commit_prepared_graph(cls, prepared, *, expected_file_state=None) -> _ParticlePublication:
         return cls._publish_compiled(
             prepared.compiled,
             source_path=prepared.source_path,
@@ -547,6 +617,8 @@ class ParticleArtifactRegistry:
             path_identity=prepared.path_identity,
             ticket=prepared.request_generation,
             artifact_path=prepared.artifact_path,
+            source_text=prepared.source_text,
+            expected_file_state=expected_file_state,
             guid=prepared.guid,
         )
 
@@ -647,7 +719,7 @@ class ParticleArtifactRegistry:
             ticket=ticket,
             artifact_path=publish_path,
             guid=owner,
-        )
+        ).artifact
 
     @classmethod
     def _compile_graph_asset(
@@ -726,17 +798,23 @@ class ParticleArtifactRegistry:
         ticket: int,
         artifact_path: str,
         source_text: str | None = None,
+        expected_file_state=None,
         guid: str = "",
-    ) -> ParticleArtifact:
-        with cls._lock:
-            if cls._request_generation.get(path_identity) != ticket:
-                return cls._superseded_unlocked(source_path, key)
+    ) -> _ParticlePublication:
+        with cls._publication_lock:
+            with cls._lock:
+                if cls._request_generation.get(path_identity) != ticket:
+                    if source_text is not None:
+                        raise ParticleArtifactSuperseded(
+                            f"particle graph save for {source_path!r} was superseded by a newer request"
+                        )
+                    return _ParticlePublication(cls._superseded_unlocked(source_path, key))
 
-            current = cls._artifacts.get(key) or cls._artifacts.get(path_identity)
-            if current is not None and current.source_hash == compiled.source_hash:
-                revision = current.revision
-            else:
-                revision = cls._revision + 1
+                current = cls._artifacts.get(key) or cls._artifacts.get(path_identity)
+                if current is not None and current.source_hash == compiled.source_hash:
+                    revision = current.revision
+                else:
+                    revision = cls._revision + 1
 
             artifact = ParticleArtifact(
                 key,
@@ -752,11 +830,15 @@ class ParticleArtifactRegistry:
                 compiled.gpu_spirv,
             )
 
-            from infernux.core.document_store import write_document_text
+            from infernux.core.document_store import submit_document_text, write_document_text
 
+            source_write = None
             if source_text is not None:
                 os.makedirs(os.path.dirname(source_path), exist_ok=True)
-                write_document_text(source_path, source_text)
+                source_write = submit_document_text(
+                    source_path, source_text, expected_file_state=expected_file_state,
+                )
+                source_write.wait()
             if artifact_path:
                 os.makedirs(os.path.dirname(artifact_path), exist_ok=True)
                 write_document_text(
@@ -776,9 +858,10 @@ class ParticleArtifactRegistry:
                     guid=guid,
                 )
 
-            cls._revision = max(cls._revision, revision)
-            cls._register_unlocked(artifact, key, path_identity)
-            return artifact
+            with cls._lock:
+                cls._revision = max(cls._revision, revision)
+                cls._register_unlocked(artifact, key, path_identity)
+            return _ParticlePublication(artifact, source_write)
 
     @staticmethod
     def _publish_runtime_index_entry(
@@ -846,8 +929,10 @@ class ParticleArtifactRegistry:
 
     @classmethod
     def _begin_request(cls, path_identity: str) -> int:
-        with cls._lock:
-            ticket = cls._request_generation.get(path_identity, 0) + 1
+        with cls._publication_lock, cls._lock:
+            # clear/remap must never recycle a ticket held by an in-flight compile.
+            cls._next_request_generation += 1
+            ticket = cls._next_request_generation
             cls._request_generation[path_identity] = ticket
             return ticket
 
@@ -1251,7 +1336,9 @@ __all__ = [
     "PARTICLE_ARTIFACT_SCHEMA",
     "ParticleArtifact",
     "ParticleArtifactError",
+    "ParticleArtifactSuperseded",
     "ParticleArtifactRegistry",
+    "ParticleGraphWriteTicket",
     "PreparedParticleGraphArtifact",
     "particle_artifact_filename",
 ]

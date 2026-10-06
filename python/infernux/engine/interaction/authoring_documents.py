@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 import weakref
 from typing import Any
 
@@ -27,6 +28,7 @@ class AuthoringAssetSnapshot:
     content_token: str
     title: str
     payload: Any = None
+    submit_write: Callable[..., Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,11 +129,14 @@ class AuthoringDocumentController:
                 ticket.ticket_id,
                 snapshot.target_path,
             )
-            io_ticket = submit_document_text(
-                snapshot.target_path,
-                snapshot.source_text,
-                expected_file_state=expected_file_state,
-            )
+            if snapshot.submit_write is None:
+                io_ticket = submit_document_text(
+                    snapshot.target_path,
+                    snapshot.source_text,
+                    expected_file_state=expected_file_state,
+                )
+            else:
+                io_ticket = snapshot.submit_write(expected_file_state=expected_file_state)
         except Exception as exc:
             registry.complete_save(
                 ticket.ticket_id,

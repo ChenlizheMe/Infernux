@@ -30,6 +30,7 @@ from infernux.particle import (
     ParticleScriptCompiler,
     ParticleScriptError,
     ParticleArtifactError,
+    ParticleArtifactSuperseded,
     ParticleArtifactRegistry,
     ParticleBurst,
     ParticleRuntimeMetadataError,
@@ -5752,11 +5753,12 @@ def test_particle_graph_latest_request_wins_out_of_order_compilation(
         classmethod(controlled_compile),
     )
     ParticleArtifactRegistry.clear()
-    old_thread = threading.Thread(
-        target=lambda: old_results.append(
+    def save_older():
+        with pytest.raises(ParticleArtifactSuperseded, match="superseded") as rejected:
             ParticleArtifactRegistry.save_graph_asset(older, path)
-        )
-    )
+        old_results.append(rejected.value)
+
+    old_thread = threading.Thread(target=save_older)
     old_thread.start()
     assert old_started.wait(timeout=5.0)
     latest = ParticleArtifactRegistry.save_graph_asset(newer, path)
@@ -5764,9 +5766,11 @@ def test_particle_graph_latest_request_wins_out_of_order_compilation(
     old_thread.join(timeout=5.0)
 
     assert not old_thread.is_alive()
-    assert old_results == [latest]
+    assert len(old_results) == 1
     assert ParticleArtifactRegistry.get(path) is latest
     assert latest.hir["name"] == "Newer"
+    assert ParticleGraphAsset.load(path).name == "Newer"
+    assert json.loads(Path(latest.artifact_path).read_text(encoding="utf-8"))["hir"]["name"] == "Newer"
 
 
 def test_failed_newer_particle_compile_invalidates_older_in_flight_result(
@@ -5799,11 +5803,12 @@ def test_failed_newer_particle_compile_invalidates_older_in_flight_result(
         "_compile_graph_asset",
         classmethod(controlled_compile),
     )
-    old_thread = threading.Thread(
-        target=lambda: old_results.append(
+    def save_older():
+        with pytest.raises(ParticleArtifactSuperseded, match="superseded") as rejected:
             ParticleArtifactRegistry.save_graph_asset(older, path)
-        )
-    )
+        old_results.append(rejected.value)
+
+    old_thread = threading.Thread(target=save_older)
     old_thread.start()
     assert old_started.wait(timeout=5.0)
     with pytest.raises(ParticleArtifactError, match="intentional latest revision failure"):
@@ -5812,9 +5817,11 @@ def test_failed_newer_particle_compile_invalidates_older_in_flight_result(
     old_thread.join(timeout=5.0)
 
     assert not old_thread.is_alive()
-    assert old_results == [published]
+    assert len(old_results) == 1
     assert ParticleArtifactRegistry.get(path) is published
     assert published.hir["name"] == "Baseline"
+    assert ParticleGraphAsset.load(path).name == "Baseline"
+    assert json.loads(Path(published.artifact_path).read_text(encoding="utf-8"))["hir"]["name"] == "Baseline"
 
 
 def test_particle_aot_failure_preserves_last_known_good_and_cache_hit(tmp_path, monkeypatch):

@@ -1,4 +1,5 @@
 from typing import Any
+from collections.abc import Callable
 
 class AuthoringAssetSnapshot:
     target_path: str
@@ -6,7 +7,8 @@ class AuthoringAssetSnapshot:
     content_token: str
     title: str
     payload: Any
-    def __init__(self, target_path: str, source_text: str, content_token: str, title: str, payload: Any = ...) -> None: ...
+    submit_write: Callable[..., Any] | None
+    def __init__(self, target_path: str, source_text: str, content_token: str, title: str, payload: Any = ..., submit_write: Callable[..., Any] | None = ...) -> None: ...
 
 class AuthoringDocumentController:
     def __init__(self, view: Any) -> None: ...

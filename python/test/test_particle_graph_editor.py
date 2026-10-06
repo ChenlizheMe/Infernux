@@ -103,9 +103,8 @@ def _stage_model(document):
 
 
 def _finish_particle_graph_save(panel, path) -> None:
-    from infernux.core.document_store import DocumentStore
-
-    DocumentStore.flush(str(path))
+    for pending in tuple(panel._authoring_document_controller._pending_writes.values()):
+        pending.io_ticket.wait()
     panel._authoring_document_controller.poll_pending_writes()
 
 
