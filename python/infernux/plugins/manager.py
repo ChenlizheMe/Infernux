@@ -24,7 +24,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import Version
 
-from infernux.core.file_read_cache import FileReadCache
+from infernux.core.file_read_cache import FileReadCache, file_stamp
 from infernux.debug import Debug
 from infernux.engine.path_utils import (
     is_path_within,
@@ -224,7 +224,7 @@ class PluginManager:
         self._installing: set[str] = set()
         self._deferred_catalog_changes: set[str] = set()
         self._page_workspaces = ExitStack()
-        self._cached_page_roots: dict[tuple[str, int, int, int, int, int], str] = {}
+        self._cached_page_roots: dict[tuple[str, tuple[int, ...]], str] = {}
         self._shared_package_cache: SharedPackageCache | None = None
         self._content_reads = FileReadCache()
         self._archive_reads = FileReadCache()
@@ -361,9 +361,10 @@ class PluginManager:
         archive = self.cached_reference_path(reference)
         if not archive:
             return package_control_root(self.project_root, reference)
-        stat = os.stat(archive)
-        key = (archive, stat.st_dev, stat.st_ino, stat.st_mtime_ns,
-               stat.st_ctime_ns, stat.st_size)
+        stamp = file_stamp(archive)
+        if stamp is None:
+            raise FileNotFoundError(archive)
+        key = (archive, stamp)
         if key in self._cached_page_roots:
             return self._cached_page_roots[key]
 

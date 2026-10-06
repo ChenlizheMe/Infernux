@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
 
 from infernux.core.file_read_cache import FileReadCache, read_model_frame
-from infernux.plugins import PluginManager
+from infernux.plugins import InxPackage, PluginManager
 from infernux.plugins.registry import PluginRegistry
 
 
@@ -233,5 +234,36 @@ def test_unchanged_documents_are_not_rediscovered_or_read(tmp_path, monkeypatch)
         monkeypatch.setattr(module, "discover_plugin_pages", unexpected)
         for _ in range(5):
             assert manager.content_pages(record, locale="en")[0]["title"] == "Guide"
+    finally:
+        manager.shutdown()
+
+
+def test_archive_preview_observes_in_place_copy_preserving_time(tmp_path, monkeypatch):
+    monkeypatch.setenv("INFERNUX_PACKAGE_CACHE_ROOT", str(tmp_path / "cache"))
+    manager = PluginManager(str(tmp_path / "project"), runtime=True)
+    source = tmp_path / "source"
+    pages = source / "plugin_pages"
+    pages.mkdir(parents=True)
+    (source / "inx_package.json").write_text(json.dumps({
+        "reference": "team/docs", "name": "Docs", "version": "1.0.0",
+    }), encoding="utf-8")
+    guide = pages / "guide.md"
+    guide.write_text("# Guide\naaaaa", encoding="utf-8")
+    archive = Path(manager._package_cache().path("team/docs", "1.0.0"))
+    archive.parent.mkdir(parents=True)
+    InxPackage.export_source(str(source), str(archive))
+    record = manager.registry.add_package(
+        "team/docs", version="1.0.0", source={"type": "local", "location": str(archive)},
+    )
+    try:
+        assert manager.content_pages(record, locale="en")[0]["content"] == "# Guide\naaaaa"
+        stamp = archive.stat()
+        guide.write_text("# Guide\nbbbbb", encoding="utf-8")
+        replacement = tmp_path / "replacement.inxpkg"
+        InxPackage.export_source(str(source), str(replacement))
+        assert replacement.stat().st_size == stamp.st_size
+        shutil.copyfile(replacement, archive)
+        os.utime(archive, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        assert manager.content_pages(record, locale="en")[0]["content"] == "# Guide\nbbbbb"
     finally:
         manager.shutdown()
