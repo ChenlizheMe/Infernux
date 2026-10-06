@@ -243,6 +243,8 @@ class AudioSource : public Component
     void SetPlayOnAwake(bool playOnAwake)
     {
         m_playOnAwake = playOnAwake;
+        if (!playOnAwake)
+            m_deferredPlayOnAwake = false;
     }
 
     /// @brief Get whether play-on-awake is enabled
@@ -344,6 +346,9 @@ class AudioSource : public Component
     /// @brief Called by AudioEngine during shutdown to invalidate raw stream handles safely
     void NotifyAudioEngineShutdown();
 
+    /// Consume a Start request deferred until the device and component are active.
+    void NotifyAudioEngineInitialized();
+
   private:
     void AssignTrackClipReference(int trackIndex, const std::string &guid, std::shared_ptr<AudioClip> clip);
 
@@ -378,6 +383,7 @@ class AudioSource : public Component
     float m_pitch = 1.0f;
     bool m_loop = false;
     bool m_playOnAwake = true;
+    bool m_deferredPlayOnAwake = false; // Runtime-only, never recreated on device restart.
     bool m_mute = false;
     float m_minDistance = 1.0f;
     float m_maxDistance = 500.0f;

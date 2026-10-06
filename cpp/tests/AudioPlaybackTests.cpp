@@ -461,6 +461,47 @@ int main()
     WaitFor([&] { return std::abs(engine.GetOutputPeak() - 3000.0f / 32768) < .001; });
     engine.DestroyVoice(music);
     engine.DestroyVoice(otherMusic);
+
+    // Voice ownership is independent of spatial registration. A disabled
+    // source (or a standalone source never attached to a scene) must release
+    // every track and one-shot handle before the device destroys its streams.
+    for (bool disabled : {false, true}) {
+        infernux::AudioSource deviceOwner;
+        deviceOwner.SetPlayOnAwake(false);
+        deviceOwner.SetLoop(true);
+        deviceOwner.SetTrackCount(2);
+        deviceOwner.SetTrackClip(0, clip);
+        deviceOwner.SetTrackClip(1, clip);
+        for (int cycle = 0; cycle < 2; ++cycle) {
+            deviceOwner.Play(0);
+            deviceOwner.Play(1);
+            deviceOwner.Pause(0);
+            deviceOwner.PlayOneShot(clip);
+            assert(deviceOwner.GetActiveStreams().size() == 3);
+            if (disabled)
+                deviceOwner.OnDisable();
+            engine.Shutdown();
+            assert(deviceOwner.GetActiveStreams().empty());
+            assert(!deviceOwner.IsTrackPaused(0));
+            assert(!deviceOwner.IsTrackPaused(1));
+            assert(engine.GetActiveVoiceCount() == 0);
+            assert(engine.Initialize());
+        }
+        deviceOwner.PlayOneShot(clip);
+        assert(engine.GetActiveVoiceCount() == 1);
+        deviceOwner.StopAll();
+        assert(engine.GetActiveVoiceCount() == 0);
+    }
+    // Only engine-owned handles may be passed through to SDL destruction.
+    auto *retired = engine.CreateVoice(nullptr, clip.get());
+    assert(retired);
+    engine.DestroyVoice(retired);
+    engine.DestroyVoice(retired);
+    retired = engine.CreateVoice(nullptr, clip.get());
+    assert(retired);
+    engine.Shutdown();
+    engine.DestroyVoice(retired);
+    assert(engine.GetActiveVoiceCount() == 0);
     std::filesystem::remove(infernux::ToFsPath(metaPath));
     engine.Shutdown();
     std::filesystem::remove(path);

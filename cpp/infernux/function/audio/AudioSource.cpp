@@ -94,11 +94,10 @@ void AudioSource::Start()
 {
     const auto clip = m_tracks.empty() ? nullptr : m_tracks[0].GetClip();
     // The Web host cannot open its audio device until a trusted user gesture.
-    // Awake() has already registered this source, so AudioEngine::Initialize()
-    // owns the one authoritative deferred play-on-awake transition.
-    if (AudioEngine::Instance().IsInitialized() && m_playOnAwake && !IsPlaying() && clip && clip->IsLoaded()) {
-        Play(0);
-    }
+    // Preserve this specific request until the device is ready. Paused tracks
+    // already own playback and must not be restarted by Start().
+    m_deferredPlayOnAwake = m_playOnAwake && clip && clip->IsLoaded() && !m_tracks[0].isPlaying;
+    NotifyAudioEngineInitialized();
 }
 
 void AudioSource::OnEnable()
@@ -124,6 +123,7 @@ void AudioSource::OnEnable()
             ApplyOneShotGain(i);
         }
     }
+    NotifyAudioEngineInitialized();
 }
 
 void AudioSource::OnDisable()
@@ -292,7 +292,7 @@ bool AudioSource::DeserializeDocument(const nlohmann::json &j)
         m_priority = j.value("priority", 128);
         m_pitch = j["pitch"].get<float>();
         m_loop = j["loop"].get<bool>();
-        m_playOnAwake = j["play_on_awake"].get<bool>();
+        SetPlayOnAwake(j["play_on_awake"].get<bool>());
         m_mute = j["mute"].get<bool>();
         m_spatialBlend = j.value("spatial_blend", 1.0f);
         m_minDistance = j["min_distance"].get<float>();
@@ -475,6 +475,9 @@ void AudioSource::Play(int trackIndex)
         return;
     }
 
+    if (trackIndex == 0)
+        m_deferredPlayOnAwake = false;
+
     auto &track = m_tracks[trackIndex];
     const auto clip = track.GetClip();
     if (!clip || !clip->IsLoaded()) {
@@ -496,6 +499,8 @@ void AudioSource::Stop(int trackIndex)
     if (trackIndex < 0 || trackIndex >= static_cast<int>(m_tracks.size())) {
         return;
     }
+    if (trackIndex == 0)
+        m_deferredPlayOnAwake = false;
     StopVoice(trackIndex);
 }
 
@@ -504,6 +509,8 @@ void AudioSource::Pause(int trackIndex)
     if (trackIndex < 0 || trackIndex >= static_cast<int>(m_tracks.size())) {
         return;
     }
+    if (trackIndex == 0)
+        m_deferredPlayOnAwake = false;
     auto &track = m_tracks[trackIndex];
     if (track.isPlaying && !track.isPaused && track.stream) {
         track.isPaused = true;
@@ -528,6 +535,7 @@ void AudioSource::UnPause(int trackIndex)
 
 void AudioSource::StopAll()
 {
+    m_deferredPlayOnAwake = false;
     for (int i = 0; i < static_cast<int>(m_tracks.size()); ++i) {
         StopVoice(i);
     }
@@ -916,6 +924,19 @@ void AudioSource::StopOneShotVoice(int voiceIndex)
 void AudioSource::CheckLooping(int trackIndex)
 {
     (void)trackIndex;
+}
+
+void AudioSource::NotifyAudioEngineInitialized()
+{
+    if (!m_deferredPlayOnAwake || !AudioEngine::Instance().IsInitialized() || !IsEnabled())
+        return;
+    const auto *owner = GetGameObject();
+    if (owner && !owner->IsActiveInHierarchy())
+        return;
+    m_deferredPlayOnAwake = false;
+    const auto clip = GetClip();
+    if (clip && clip->IsLoaded())
+        Play(0);
 }
 
 void AudioSource::NotifyAudioEngineShutdown()
