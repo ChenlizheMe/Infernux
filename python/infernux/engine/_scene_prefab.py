@@ -63,7 +63,6 @@ class ScenePrefabMixin:
 
         from infernux.lib import SceneManager
         from infernux.engine.component_restore import (
-            deserialize_scene_document_transactionally,
             instantiate_prepared_game_object_document,
             preflight_game_object_python_components,
             serialize_game_object_document_authoritatively,
@@ -74,9 +73,13 @@ class ScenePrefabMixin:
         )
         from infernux.engine.interaction import SelectionService
 
-        active_scene = SceneManager.instance().get_active_scene()
+        sm = SceneManager.instance()
+        active_scene = sm.get_active_scene()
         if active_scene is None:
             Debug.log_warning("No active scene available for Prefab Mode.")
+            return False
+        if sm.get_scene(PREFAB_MODE_SCENE_NAME) is not None:
+            Debug.log_error("Cannot enter Prefab Mode: its reserved scene is already resident.")
             return False
 
         try:
@@ -88,6 +91,11 @@ class ScenePrefabMixin:
         root_obj_data = _load_prefab_template_payload(prefab_path, "", self._asset_database)
         if root_obj_data is None:
             return False
+        previous_document = active_scene.serialize_document()
+        previous_document["objects"] = [
+            serialize_game_object_document_authoritatively(obj)
+            for obj in _get_scene_root_objects(active_scene)
+        ]
         try:
             prepared_prefab = preflight_game_object_python_components(
                 root_obj_data,
@@ -98,78 +106,37 @@ class ScenePrefabMixin:
             Debug.log_error(f"Failed to preflight prefab for Prefab Mode: {exc}")
             return False
 
-        self._previous_scene_document = active_scene.serialize_document()
-        self._previous_scene = active_scene
-        self._previous_scene_document["objects"] = [
-            serialize_game_object_document_authoritatively(obj)
-            for obj in _get_scene_root_objects(active_scene)
-        ]
-        self._previous_scene_path = self._current_scene_path
-        self._previous_scene_document_id = self._scene_document_id
-        self.prefab_envelope = prefab_data
-        self._prefab_variant_overrides = copy.deepcopy(prefab_data.get("variant", {}).get("property_overrides", []))
-        self._prefab_entry_document = copy.deepcopy(prefab_data)
+        new_scene = None
 
-        # Clear the RenderStack singleton before the swap — matches the
-        # pattern in _do_open_scene / _do_new_scene to avoid stale refs.
-        from infernux.renderstack.render_stack import RenderStack
-        RenderStack.clear_active_instance(active_scene)
-
-        self._prepare_native_scene_swap()
-
-        # Destroy ALL objects in the original scene so their physics bodies
-        # are removed from the global PhysicsWorld.  Without this, invisible
-        # colliders from the main scene interfere with the prefab scene.
-        if not deserialize_scene_document_transactionally(
-            active_scene,
-            _empty_scene_document(active_scene.name),
-            asset_database=self._asset_database,
-            clear_registries=True,
-        ):
-            prepared_prefab.discard()
-            Debug.log_error("Failed to clear the previous scene for Prefab Mode.")
-            return False
-
-        sm = SceneManager.instance()
-        new_scene = sm.get_scene(PREFAB_MODE_SCENE_NAME)
-        if new_scene is None:
+        def publish_prefab():
+            nonlocal new_scene
             new_scene = sm.create_scene(PREFAB_MODE_SCENE_NAME)
-        # Always deserialize empty JSON to clear old objects and component
-        # registries (MeshRenderer, physics, etc.) — prevents the previous
-        # scene's renderers from leaking into Prefab Mode.
-        if not deserialize_scene_document_transactionally(
-            new_scene,
-            _empty_scene_document(PREFAB_MODE_SCENE_NAME),
-            asset_database=self._asset_database,
-            clear_registries=True,
-        ):
-            prepared_prefab.discard()
-            Debug.log_error("Failed to initialize the Prefab Mode scene.")
-            return False
-        sm.set_active_scene(new_scene)
-
-        try:
+            sm.set_active_scene(new_scene)
             root_obj = instantiate_prepared_game_object_document(
                 new_scene,
                 root_obj_data,
                 prepared_prefab,
             )
-        except RuntimeError as exc:
-            Debug.log_error(f"Failed to preflight prefab for Prefab Mode: {exc}")
-            return False
-        if root_obj is None:
-            Debug.log_error("Failed to instantiate prefab in Prefab Mode.")
-            return False
+            if root_obj is None:
+                raise RuntimeError("Failed to instantiate prefab in Prefab Mode.")
 
-        roots = _get_scene_root_objects(new_scene)
-        if roots:
-            SelectionService.instance().select_scene_object(
-                roots[0].id,
-                owner_id="hierarchy",
-                reason="enter_prefab_mode",
-                record_history=False,
-            )
+        try:
+            self._commit_prefab_mode_transition(active_scene, publish_prefab)
+        except Exception as exc:
+            if new_scene is not None:
+                sm.unload_scene(new_scene)
+            Debug.log_error(f"Failed to publish prefab for Prefab Mode: {exc}")
+            return False
+        finally:
+            prepared_prefab.discard()
 
+        self._previous_scene_document = previous_document
+        self._previous_scene = active_scene
+        self._previous_scene_path = self._current_scene_path
+        self._previous_scene_document_id = self._scene_document_id
+        self.prefab_envelope = prefab_data
+        self._prefab_variant_overrides = copy.deepcopy(prefab_data.get("variant", {}).get("property_overrides", []))
+        self._prefab_entry_document = copy.deepcopy(prefab_data)
         self.is_prefab_mode = True
         self._prefab_mode_scene = new_scene
         self.prefab_mode_guid = guid
@@ -184,12 +151,50 @@ class ScenePrefabMixin:
             preserve_previous=True,
             key_override=DocumentKey.asset(DocumentKind.PREFAB, guid),
         )
+        roots = _get_scene_root_objects(new_scene)
+        if roots:
+            SelectionService.instance().select_scene_object(
+                roots[0].id,
+                owner_id="hierarchy",
+                reason="enter_prefab_mode",
+                record_history=False,
+            )
         if not preserve_undo_history:
             self._reset_undo_history()
 
         if self._on_scene_changed:
             self._on_scene_changed()
         return True
+
+    def _commit_prefab_mode_transition(self, outgoing_scene, publish):
+        """Retain the outgoing native world until the incoming graph is published.
+
+        Scene retention detaches its component/physics residency without destroying
+        objects. Failure restores those same objects; no author callbacks are run
+        a second time to reconstruct the old world.
+        """
+        from infernux.lib import SceneManager
+        from infernux.engine.component_restore import deserialize_scene_document_transactionally
+        from infernux.renderstack.render_stack import RenderStack
+
+        sm = SceneManager.instance()
+        previous_stack = RenderStack.instance(outgoing_scene)
+        self._prepare_native_scene_swap()
+        RenderStack.clear_active_instance(outgoing_scene)
+        try:
+            if not deserialize_scene_document_transactionally(
+                outgoing_scene,
+                _empty_scene_document(outgoing_scene.name),
+                asset_database=self._asset_database,
+                clear_registries=True,
+                after_publish=publish,
+            ):
+                raise RuntimeError("Prefab Mode scene transition was rejected.")
+        except Exception:
+            sm.set_active_scene(outgoing_scene)
+            if previous_stack is not None:
+                RenderStack.activate_instance(previous_stack, outgoing_scene)
+            raise
 
     def capture_prefab_mode_document(self):
         """Capture live values and draft inheritance intent in one source domain."""
@@ -312,60 +317,28 @@ class ScenePrefabMixin:
         from infernux.lib import SceneManager
         from infernux.engine.component_restore import deserialize_scene_document_transactionally
 
-        # Clear the RenderStack singleton before the swap — matches the
-        # pattern in _do_open_scene / _do_new_scene to avoid stale refs.
-        from infernux.renderstack.render_stack import RenderStack
         sm = SceneManager.instance()
-        RenderStack.clear_active_instance(sm.get_active_scene())
-
-        self._prepare_native_scene_swap()
-
-        # Destroy all objects in the prefab scene FIRST so their physics
-        # bodies (Colliders, Rigidbodies) are removed from the global
-        # PhysicsWorld before we restore the main scene.
-        prefab_scene = sm.get_scene(PREFAB_MODE_SCENE_NAME)
-        if prefab_scene is not None:
-            if not deserialize_scene_document_transactionally(
-                prefab_scene,
-                _empty_scene_document(PREFAB_MODE_SCENE_NAME),
-                asset_database=self._asset_database,
-                clear_registries=True,
-            ):
-                Debug.log_error("Cannot exit Prefab Mode: failed to clear prefab scene.")
-                return False
-
-        # Keep the native Scene bound to the existing editor document. Creating
-        # a replacement Scene leaves additive/save routing pointing at the
-        # emptied original Scene even when the viewport looks restored.
+        prefab_scene = self._prefab_mode_scene
         scene = self._previous_scene
-        sm.set_active_scene(scene)
-        if prefab_scene is not None:
-            sm.unload_scene(prefab_scene)
-            self._prefab_mode_scene = None
+        if prefab_scene is None or scene is None or self._previous_scene_document is None:
+            raise RuntimeError("Cannot exit Prefab Mode: its scene or restore document is unavailable.")
 
-        if self._previous_scene_document:
+        def publish_previous_scene():
+            # Keep the Scene bound to its existing authoring document. Source
+            # synchronization belongs to this publication too: its component
+            # callbacks must succeed before either old world can be retired.
+            sm.set_active_scene(scene)
             if not deserialize_scene_document_transactionally(
                 scene,
                 self._previous_scene_document,
                 asset_database=self._asset_database,
                 clear_registries=True,
+                after_publish=lambda: self.sync_all_prefab_instances(scene),
             ):
-                Debug.log_error("Cannot exit Prefab Mode: previous scene transaction failed.")
-                return False
-        elif not deserialize_scene_document_transactionally(
-            scene,
-            _empty_scene_document(scene.name),
-            asset_database=self._asset_database,
-            clear_registries=True,
-        ):
-            Debug.log_error("Cannot exit Prefab Mode: failed to initialize restore scene.")
-            return False
+                raise RuntimeError("Cannot exit Prefab Mode: previous scene transaction failed.")
 
-        # The suspended world may contain derived Variants and nested sources,
-        # not only direct instances of the asset opened in Prefab Mode. Use the
-        # same baseline-aware resolver as scene loading, preserving overrides
-        # and runtime identities, and marking only actually changed documents.
-        self.sync_all_prefab_instances(scene)
+        self._commit_prefab_mode_transition(prefab_scene, publish_previous_scene)
+        sm.unload_scene(prefab_scene)
 
         from infernux.engine.interaction import DocumentRegistry
 
