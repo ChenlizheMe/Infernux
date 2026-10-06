@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterable, Mapping
 from urllib.parse import unquote, urlsplit
 
-from infernux.engine.path_utils import is_path_within, portable_path, resolved_path
+from infernux.engine.path_utils import is_path_within, lexical_path, portable_path, resolved_path
 
 
 PLUGIN_PAGES_DIRECTORY = "plugin_pages"
@@ -287,7 +287,7 @@ def parse_markdown_blocks(value: str) -> tuple[dict[str, object], ...]:
 
 
 def resolve_plugin_page_asset(
-    plugin_root: str, page_path: str, source: str, *, require_file: bool = True
+    plugin_root: str, page_path: str, source: str, *, require_file: bool = True, observations=None
 ) -> str:
     """Resolve a local Markdown asset while confining it to the plugin root."""
     value = str(source).strip()
@@ -300,7 +300,19 @@ def resolve_plugin_page_asset(
     if not relative:
         return ""
     base = "" if root_relative else portable_path(str(Path(page_path).parent))
-    candidate = resolved_path(os.path.join(plugin_root, *(part for part in f"{base}/{relative}".split("/") if part)))
+    raw = lexical_path(os.path.join(plugin_root, *(part for part in f"{base}/{relative}".split("/") if part)))
+    if observations is not None:
+        # Observe the authored path, including intermediate aliases. Watching
+        # only the resolved file would miss a directory link being retargeted.
+        root = lexical_path(plugin_root)
+        observations.watch(root)
+        observations.watch(raw)
+        if raw != root and os.path.commonpath((raw, root)) == root:
+            parent = os.path.dirname(raw)
+            while parent != root:
+                observations.watch(parent)
+                parent = os.path.dirname(parent)
+    candidate = resolved_path(raw)
     if not is_path_within(candidate, plugin_root, allow_root=False):
         return ""
     if require_file and not os.path.isfile(candidate):

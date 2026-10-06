@@ -201,6 +201,26 @@ class PluginRegistry:
             copy.deepcopy(item) for item in self._query_document()["installed"] if isinstance(item, dict)
         )
 
+    def installed_metadata(self) -> tuple[dict[str, object], ...]:
+        """Detached presentation records without the asset ownership ledger."""
+        return tuple(
+            copy.deepcopy({key: value for key, value in item.items() if key not in {"files", "control"}})
+            for item in self._query_document()["installed"] if isinstance(item, dict)
+        )
+
+    def is_installed(self, reference: str) -> bool:
+        """Query presence without copying the installed package's files."""
+        key = validate_reference(reference).casefold()
+        return any(
+            isinstance(item, dict) and str(item.get("reference", "")).casefold() == key
+            for item in self._query_document()["installed"]
+        )
+
+    def catalog_counts(self) -> dict[str, int]:
+        document = self._query_document()
+        return {name: sum(isinstance(item, dict) for item in document[field])
+                for name, field in (("available", "packages"), ("installed", "installed"))}
+
     def find(self, reference: str) -> dict[str, object] | None:
         key = validate_reference(reference).casefold()
         return next(

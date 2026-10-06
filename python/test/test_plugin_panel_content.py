@@ -46,7 +46,7 @@ def test_plugin_panel_filters_by_stable_category_key():
                 "source": {"official": True},
             },
         ),
-        installed=lambda: (),
+        installed_metadata=lambda: (),
     )
     manager = SimpleNamespace(
         registry=registry,

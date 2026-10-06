@@ -230,7 +230,7 @@ class PluginPanel(EditorPanel):
     def _visible_rows(self, manager: PluginManager) -> list[dict[str, object]]:
         installed = {
             str(item.get("reference", "")).casefold(): dict(item)
-            for item in manager.registry.installed()
+            for item in manager.registry.installed_metadata()
         }
         rows: list[dict[str, object]] = []
         known: set[str] = set()
@@ -401,8 +401,7 @@ class PluginPanel(EditorPanel):
             ctx.push_style_color(ImGuiCol.Text, *Theme.TEXT_DIM)
             ctx.label(
                 t("plugins.stats").format(
-                    available=len(manager.registry.available()),
-                    installed=len(manager.registry.installed()),
+                    **manager.registry.catalog_counts(),
                 )
             )
             ctx.pop_style_color()

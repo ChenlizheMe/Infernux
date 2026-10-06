@@ -227,6 +227,7 @@ class PluginManager:
         self._cached_page_roots: dict[tuple[str, tuple[int, ...]], str] = {}
         self._shared_package_cache: SharedPackageCache | None = None
         self._content_reads = FileReadCache()
+        self._content_asset_reads = FileReadCache()
         self._archive_reads = FileReadCache()
 
     def _package_cache(self) -> SharedPackageCache:
@@ -356,7 +357,7 @@ class PluginManager:
         return loaded
 
     def _content_root(self, reference: str) -> str:
-        if self.registry.installed_record(reference) is not None:
+        if self.registry.is_installed(reference):
             return package_control_root(self.project_root, reference)
         archive = self.cached_reference_path(reference)
         if not archive:
@@ -411,7 +412,7 @@ class PluginManager:
                 selected_locale = "en"
         else:
             selected_locale = locale
-        installed = self.registry.installed_record(reference) is not None
+        installed = self.registry.is_installed(reference)
         archive = "" if installed else self.cached_reference_path(reference)
         declared_pages = record.get("pages", [])
 
@@ -462,24 +463,30 @@ class PluginManager:
         source: str,
     ) -> str:
         reference = str(record.get("reference", ""))
-        try:
-            control_root = self._content_root(reference)
-            path = resolve_plugin_page_asset(
-                control_root, str(page.get("path", "")), source
-            )
-            if path:
-                return path
-        except ValueError:
-            pass
-        if self.registry.installed_record(reference) is None:
-            return ""
-        content_root = os.path.join(self.project_root, "Assets", "Plugins")
-        try:
-            return resolve_plugin_page_asset(
-                content_root, str(page.get("path", "")), source
-            )
-        except ValueError:
-            return ""
+        installed = self.registry.is_installed(reference)
+        archive = "" if installed else self.cached_reference_path(reference)
+        page_path = str(page.get("path", ""))
+
+        def prepare(observed):
+            observed.watch(os.path.join(self.project_root, "Packages", *reference.split("/")))
+            if archive:
+                observed.watch(archive)
+            try:
+                control_root = self._content_root(reference)
+                path = resolve_plugin_page_asset(control_root, page_path, source, observations=observed)
+                if path:
+                    return path
+            except ValueError:
+                pass
+            if not installed:
+                return ""
+            content_root = os.path.join(self.project_root, "Assets", "Plugins")
+            try:
+                return resolve_plugin_page_asset(content_root, page_path, source, observations=observed)
+            except ValueError:
+                return ""
+
+        return self._content_asset_reads.get((reference, installed, archive, page_path, source), prepare)
 
     def install_package(
         self,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import os
+import subprocess
 
 import pytest
 
@@ -122,5 +124,146 @@ def test_manager_reuses_cache_owner_but_observes_new_downloads(tmp_path, monkeyp
         assert manager.cached_reference_path("team/plugin") == str(archive)
         archive.unlink()
         assert manager.cached_reference_path("team/plugin") == ""
+    finally:
+        manager.shutdown()
+
+
+def test_installed_metadata_projection_avoids_ownership_and_is_detached(tmp_path, monkeypatch):
+    class OwnershipLedger(list):
+        def __deepcopy__(self, memo):
+            raise AssertionError("Presentation copied the asset ownership ledger")
+
+    registry = PluginRegistry(str(tmp_path))
+    record = {"reference": "team/plugin", "version": "1.0", "enabled": True,
+              "pages": [{"id": "intro", "path": "plugin_pages/intro.md"}],
+              "source": {"type": "local"}, "files": OwnershipLedger(), "control": {"guid": "control"}}
+    document = {"packages": [], "installed": [record]}
+    monkeypatch.setattr(registry, "_query_document", lambda: document)
+    row, = registry.installed_metadata()
+    assert "files" not in row and "control" not in row
+    assert registry.is_installed("TEAM/PLUGIN")
+    assert not registry.is_installed("team/missing")
+    assert registry.catalog_counts() == {"available": 0, "installed": 1}
+    row["source"]["type"] = "changed"
+    row["pages"][0]["path"] = "changed"
+    assert registry.installed_metadata()[0]["source"] == {"type": "local"}
+    assert registry.installed_metadata()[0]["pages"][0]["path"] == "plugin_pages/intro.md"
+
+
+def test_lightweight_catalog_queries_follow_external_publication(tmp_path):
+    registry = PluginRegistry(str(tmp_path))
+    peer = PluginRegistry(str(tmp_path))
+    document = registry.load()
+    document["packages"] = [{"reference": "team/plugin"}]
+    document["installed"] = [{"reference": "team/plugin", "version": "1.0", "files": [],
+                              "control": {"guid": "control-guid"}}]
+    registry.save(document)
+    with read_model_frame():
+        assert registry.is_installed("team/plugin")
+        assert registry.catalog_counts() == {"available": 1, "installed": 1}
+        new = peer.load()
+        new["installed"] = []
+        new["packages"] = []
+        peer.save(new)
+        assert registry.is_installed("team/plugin")
+        assert registry.installed_metadata()[0]["version"] == "1.0"
+        assert registry.load()["installed"] == []
+    with read_model_frame():
+        assert not registry.is_installed("team/plugin")
+        assert registry.installed_metadata() == ()
+        assert registry.catalog_counts() == {"available": 0, "installed": 0}
+
+
+def _installed_page_manager(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    root = project / "Packages/team/plugin"
+    root.mkdir(parents=True)
+    manager = PluginManager(str(project), runtime=True)
+    document = manager.registry.load()
+    document["installed"] = [{"reference": "team/plugin", "version": "1.0", "files": [],
+                              "control": {"guid": "control-guid"}}]
+    manager.registry.save(document)
+    return manager, root
+
+
+def test_page_asset_resolution_reuses_paths_and_observes_creation_deletion(tmp_path, monkeypatch):
+    from infernux.plugins import manager as manager_module
+    manager, root = _installed_page_manager(tmp_path)
+    (root / "images").mkdir()
+    image = root / "images/preview.png"
+    original = manager_module.resolve_plugin_page_asset
+    calls = []
+
+    def resolve(*args, **kwargs):
+        calls.append(args[0])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(manager_module, "resolve_plugin_page_asset", resolve)
+    record, page = {"reference": "team/plugin"}, {"path": "plugin_pages/guide.md"}
+    try:
+        assert manager.content_asset_path(record, page, "../images/preview.png") == ""
+        # Both project layouts are initially missing. Unchanged queries must
+        # not repeat their physical resolution or containment checks.
+        count = len(calls)
+        assert manager.content_asset_path(record, page, "../images/preview.png") == ""
+        assert len(calls) == count
+        image.write_bytes(b"new image")
+        assert manager.content_asset_path(record, page, "../images/preview.png") == str(image)
+        count = len(calls)
+        assert manager.content_asset_path(record, page, "../images/preview.png") == str(image)
+        assert len(calls) == count
+        image.unlink()
+        assert manager.content_asset_path(record, page, "../images/preview.png") == ""
+    finally:
+        manager.shutdown()
+
+
+def test_page_asset_cached_path_rejects_retargeted_directory_link(tmp_path):
+    manager, root = _installed_page_manager(tmp_path)
+    inside, outside = root / "local_images", tmp_path / "outside_images"
+    inside.mkdir()
+    outside.mkdir()
+    for folder in (inside, outside):
+        (folder / "preview.png").write_bytes(b"same bytes")
+    link = root / "images"
+
+    def create_link(target):
+        if os.name == "nt":
+            quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+            command = ("New-Item -ItemType Junction -Path " + quote(link) + " -Target " + quote(target)
+                       + " -ErrorAction Stop | Out-Null")
+            subprocess.run(["powershell", "-NoProfile", "-Command", command], capture_output=True, check=True)
+            assert link.is_junction()
+        else:
+            os.symlink(target, link, target_is_directory=True)
+
+    def remove_link():
+        if os.name == "nt":
+            assert link.is_junction()
+            os.rmdir(link)
+        else:
+            link.unlink()
+
+    try:
+        create_link(inside)
+        record, page = {"reference": "team/plugin"}, {"path": "plugin_pages/guide.md"}
+        assert manager.content_asset_path(record, page, "../images/preview.png") == str(inside / "preview.png")
+        remove_link()
+        create_link(outside)
+        assert manager.content_asset_path(record, page, "../images/preview.png") == ""
+        remove_link()
+        create_link(inside)
+        assert manager.content_asset_path(record, page, "../images/preview.png") == str(inside / "preview.png")
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.parametrize("source", ["..", "../", "../images", "/", "https://example.com/image.png"])
+def test_page_asset_cache_rejects_non_file_sources(tmp_path, source):
+    manager, root = _installed_page_manager(tmp_path)
+    (root / "images").mkdir()
+    try:
+        assert manager.content_asset_path({"reference": "team/plugin"}, {"path": "plugin_pages/guide.md"}, source) == ""
     finally:
         manager.shutdown()
