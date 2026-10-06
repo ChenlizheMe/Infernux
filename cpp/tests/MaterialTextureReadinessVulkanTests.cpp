@@ -5,6 +5,7 @@
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/scene/SpriteRenderer.h>
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -162,6 +163,47 @@ int main(int argc, char **argv)
            rendererDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
     assert(rendererDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[1]);
     assert(defaultDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[0]);
+
+    {
+        // Sprite-derived values exist before material/shader linking. Each
+        // sprite publishes its own descriptor without authoring the material.
+        auto shared = std::make_shared<InxMaterial>("shared-sprites", "Gizmo Icon");
+        const auto authored = shared->SerializeDocument();
+        SpriteRenderer left;
+        SpriteRenderer right;
+        left.SetMaterial(0, shared);
+        right.SetMaterial(0, shared);
+        left.SetSpriteGuid("normal");
+        right.SetSpriteGuid("black");
+        left.PublishSpriteTexture();
+        right.PublishSpriteTexture();
+        left.SetColor({1.0f, 0.0f, 0.0f, 1.0f});
+        left.PublishSpriteColor();
+        left.PublishSpriteUV({0.0f, 1.0f, 0.5f, -1.0f}, {1.0f, 0.5f, 0.0f, 0.0f});
+        const auto stable = left.GetParameterBlock();
+        left.PublishSpriteColor();
+        left.PublishSpriteUV({0.0f, 1.0f, 0.5f, -1.0f}, {1.0f, 0.5f, 0.0f, 0.0f});
+        assert(left.GetParameterBlock() == stable);
+        bool rejected = false;
+        try {
+            left.PublishSpriteUV({0.5f, 1.0f, 0.5f, -1.0f},
+                                 {1.0f, std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f});
+        } catch (const std::invalid_argument &) {
+            rejected = true;
+        }
+        assert(rejected && left.GetParameterBlock() == stable);
+        auto *leftDescriptor = descriptors.GetOrCreateRendererDescriptorSet(*shared, program, stable);
+        auto *rightDescriptor =
+            descriptors.GetOrCreateRendererDescriptorSet(*shared, program, right.GetParameterBlock());
+        auto *sharedDescriptor = descriptors.GetOrCreateDescriptorSet(*shared, program);
+        assert(leftDescriptor && rightDescriptor && sharedDescriptor);
+        assert(leftDescriptor != rightDescriptor);
+        assert(leftDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[1]);
+        assert(rightDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[3]);
+        assert(sharedDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[0]);
+        assert(shared->SerializeDocument() == authored);
+        assert(!left.SerializeDocument().contains("parameterOverrides"));
+    }
 
     InxMaterial material("texture-readiness", "Gizmo Icon");
     auto document = material.SerializeDocument();

@@ -1070,40 +1070,48 @@ void MeshRenderer::SetParameter(uint32_t slot, const std::string &name, Material
     if (declaration->type == MaterialPropertyType::Texture2D)
         value = InxMaterial::RequireTextureGuid(std::get<std::string>(value));
 
-    EnsureParameterSlot(slot);
     MaterialProperty property{name, declaration->type, std::move(value), declaration->hdr, declaration->range};
     if (persistent) {
+        EnsureParameterSlot(slot);
         const auto existing = m_persistentParameters[slot].find(name);
         if (existing != m_persistentParameters[slot].end() && RendererParameterEquals(existing->second, property))
             return;
         m_persistentParameters[slot][name] = std::move(property);
     } else {
-        if (owner.empty())
-            throw std::invalid_argument("runtime renderer parameter owner cannot be empty");
-        auto &owners = m_runtimeParameters[slot];
-        auto ownerLayer = owners.find(owner);
-        if (ownerLayer != owners.end()) {
-            const auto existing = ownerLayer->second.find(name);
-            if (existing != ownerLayer->second.end() && RendererParameterEquals(existing->second.property, property)) {
-                // A repeated write is a true no-op only while this owner still
-                // supplies the effective value. If a later owner wrote the
-                // field, writing the same value again must regain precedence.
-                const RuntimeParameterEntry *newest = nullptr;
-                for (const auto &[layerOwner, layer] : owners) {
-                    (void)layerOwner;
-                    const auto candidate = layer.find(name);
-                    if (candidate != layer.end() &&
-                        (!newest || newest->writeRevision < candidate->second.writeRevision))
-                        newest = &candidate->second;
-                }
-                if (newest == &existing->second)
-                    return;
-            }
-        }
-        if (m_runtimeParameterWriteRevision == std::numeric_limits<uint64_t>::max())
-            throw std::overflow_error("runtime renderer parameter write revision overflow");
-        owners[owner][name] = RuntimeParameterEntry{std::move(property), ++m_runtimeParameterWriteRevision};
+        SetRuntimeParameterProperty(slot, std::move(property), owner);
+        return;
     }
+    PublishParameterSlot(slot);
+}
+
+void MeshRenderer::SetRuntimeParameterProperty(uint32_t slot, MaterialProperty property, const std::string &owner)
+{
+    if (owner.empty())
+        throw std::invalid_argument("runtime renderer parameter owner cannot be empty");
+    EnsureParameterSlot(slot);
+    const std::string name = property.name;
+    auto &owners = m_runtimeParameters[slot];
+    auto ownerLayer = owners.find(owner);
+    if (ownerLayer != owners.end()) {
+        const auto existing = ownerLayer->second.find(name);
+        if (existing != ownerLayer->second.end() && RendererParameterEquals(existing->second.property, property)) {
+            // A repeated write is a true no-op only while this owner still
+            // supplies the effective value. If a later owner wrote the
+            // field, writing the same value again must regain precedence.
+            const RuntimeParameterEntry *newest = nullptr;
+            for (const auto &[layerOwner, layer] : owners) {
+                (void)layerOwner;
+                const auto candidate = layer.find(name);
+                if (candidate != layer.end() && (!newest || newest->writeRevision < candidate->second.writeRevision))
+                    newest = &candidate->second;
+            }
+            if (newest == &existing->second)
+                return;
+        }
+    }
+    if (m_runtimeParameterWriteRevision == std::numeric_limits<uint64_t>::max())
+        throw std::overflow_error("runtime renderer parameter write revision overflow");
+    owners[owner][name] = RuntimeParameterEntry{std::move(property), ++m_runtimeParameterWriteRevision};
     PublishParameterSlot(slot);
 }
 

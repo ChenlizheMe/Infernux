@@ -468,9 +468,10 @@ bool SkinnedMeshRenderer::DeserializeDocument(const nlohmann::json &j)
 std::unique_ptr<Component> SkinnedMeshRenderer::Clone() const
 {
     auto clone = std::make_unique<SkinnedMeshRenderer>();
-    const uint64_t newId = clone->GetComponentID();
-    clone->DeserializeDocument(SerializeDocument());
-    clone->SetComponentID(newId);
+    auto document = SerializeDocument();
+    document.erase("component_id");
+    if (!clone->DeserializeDocument(document))
+        throw std::runtime_error("SkinnedMeshRenderer clone could not restore its authored state");
     return clone;
 }
 

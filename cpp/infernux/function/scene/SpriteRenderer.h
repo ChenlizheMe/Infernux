@@ -85,6 +85,10 @@ class SpriteRenderer : public MeshRenderer
 
     [[nodiscard]] std::shared_ptr<InxMaterial> GetEffectiveMaterial(uint32_t slot = 0) const override;
 
+    void PublishSpriteTexture();
+    void PublishSpriteColor();
+    void PublishSpriteUV(const glm::vec4 &uvRect, const glm::vec4 &displayScale);
+
     // ====================================================================
     // Serialization
     // ====================================================================

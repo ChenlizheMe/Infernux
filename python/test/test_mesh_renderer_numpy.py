@@ -8,6 +8,29 @@ from infernux.components.builtin.mesh_renderer import MeshRenderer
 from infernux import vector3
 
 
+@pytest.mark.parametrize("type_name", ["MeshRenderer", "SpriteRenderer", "LineRenderer", "SkinnedMeshRenderer"])
+def test_renderer_clone_keeps_fresh_identity_and_source_references(scene, type_name):
+    from infernux.engine.component_restore import clone_game_object_transactionally
+
+    source = scene.create_game_object("Renderer source")
+    original = source.add_component(type_name)
+    original_id = original.component_id
+    original.enabled = False
+    copied = clone_game_object_transactionally(scene, source)
+    clone = copied.get_component(type_name)
+    assert clone.component_id != original_id
+    assert clone.game_object.id == copied.id
+    assert original.component_id == original_id
+    assert original.game_object.id == source.id
+    assert not clone.enabled
+    clone.enabled = True
+    assert not original.enabled
+    scene._remove_game_object_immediately(copied)
+    assert original.is_valid
+    original.enabled = True
+    assert source.get_component(type_name).enabled
+
+
 def test_renderer_parameters_layer_over_shared_material_without_mutation(scene):
     first = scene.create_game_object("parameter override A").add_component("MeshRenderer")
     second = scene.create_game_object("parameter override B").add_component("MeshRenderer")

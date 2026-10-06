@@ -3,7 +3,7 @@ SpriteRenderer — renders a single frame from a sprite-sheet texture.
 
 Wraps the C++ ``SpriteRenderer`` component (which inherits from
 ``MeshRenderer`` for rendering pipeline compatibility) and manages the
-``sprite_unlit`` material, UV rect, and texture binding from Python.
+``sprite_unlit`` material and renderer-owned UV/texture parameters from Python.
 
 This component is completely independent of the Python ``MeshRenderer``
 wrapper — the two are parallel, same-level renderer types.
@@ -131,6 +131,7 @@ class SpriteRenderer(BuiltinComponent):
     _last_color: tuple = None
     _last_sprite: str = ""
     _material_ready: bool = False
+    _last_material_version: int = -1
     # ── Binding hook ────────────────────────────────────────────────
 
     def _bind_cpp(self, cpp_component, game_object):
@@ -148,6 +149,7 @@ class SpriteRenderer(BuiltinComponent):
         self._last_sprite = ""
         self._material_ready = False
         self._sprite_material = None
+        self._last_material_version = -1
         self._ensure_material()
         self._subscribe_asset_events()
 
@@ -205,8 +207,8 @@ class SpriteRenderer(BuiltinComponent):
     def init_all_in_scene(scene=None):
         """Force wrapper creation for all SpriteRenderers in the scene.
 
-        This ensures each SpriteRenderer gets its own material with the
-        correct texture binding *before* the first render frame, avoiding
+        This ensures each SpriteRenderer publishes its own texture/UV/color
+        parameters *before* the first render frame, avoiding
         the white-quad-until-clicked problem.
         """
         if scene is None:
@@ -338,6 +340,7 @@ class SpriteRenderer(BuiltinComponent):
         cpp = self._cpp_component
         if cpp is not None:
             cpp.set_material(0, _to_native_material(value))
+            self._ensure_material()
 
     @property
     def shared_material(self):
@@ -604,9 +607,23 @@ class SpriteRenderer(BuiltinComponent):
 
     def sync_visual(self):
         """Public API: push the current C++ properties (frame, flip, color)
-        to the material.  Called by external drivers like SpiritAnimator
+        to this renderer. Called by external drivers like SpiritAnimator
         after they update ``frame_id`` from Python."""
         self._sync_material_if_dirty()
+
+    def deserialize_document(self, document: dict) -> bool:
+        restored = super().deserialize_document(document)
+        if restored:
+            # Derived runtime parameters are intentionally absent from the
+            # document. Restore them even if the authored values are unchanged.
+            self._ensure_material()
+        return restored
+
+    def deserialize(self, json_str: str) -> bool:
+        restored = super().deserialize(json_str)
+        if restored:
+            self._ensure_material()
+        return restored
 
     def _is_driven_by_animator(self) -> bool:
         """Return True if a SpiritAnimator is attached to this GameObject."""
@@ -617,9 +634,18 @@ class SpriteRenderer(BuiltinComponent):
         return go.get_component(SpiritAnimator) is not None
 
     def _sync_material_if_dirty(self):
-        """Push changed CppProperty values to the material (called per Inspector frame)."""
+        """Publish changed sprite fields without modifying the shared material."""
         cpp = self._cpp_component
         if cpp is None:
+            return
+
+        material = cpp.get_material(0)
+        if (
+            material is not self._sprite_material
+            or material is None
+            or material.get_version() != self._last_material_version
+        ):
+            self._ensure_material()
             return
 
         guid = self.sprite
@@ -688,6 +714,7 @@ class SpriteRenderer(BuiltinComponent):
             self._load_sprite_data()
             self._apply_uv_rect()
             self._apply_color()
+            self._last_material_version = existing.get_version()
             return
         from infernux.core.material import Material
         mat = Material.create_unlit()
@@ -704,6 +731,7 @@ class SpriteRenderer(BuiltinComponent):
         self._load_sprite_data()
         self._apply_uv_rect()
         self._apply_color()
+        self._last_material_version = mat._native.get_version()
 
     def _load_sprite_data(self):
         """Load sprite frame list and texture dimensions from the asset .meta."""
@@ -751,15 +779,10 @@ class SpriteRenderer(BuiltinComponent):
         self._apply_texture_to_material()
 
     def _apply_texture_to_material(self):
-        """Pass the sprite texture to texSampler (sprite_unlit shader slot)."""
-        guid = self.sprite
-        mat = self._get_material()
-        if mat is None:
-            return
-        if guid:
-            mat.set_texture("texSampler", guid)
-        else:
-            mat.clear_texture("texSampler")
+        """Bind this sprite's texSampler without modifying the shared asset."""
+        cpp = self._cpp_component
+        if cpp is not None:
+            cpp._publish_sprite_texture()
 
     def _apply_uv_rect(self):
         """Compute and apply UV rect and display scale from the current frame."""
@@ -770,15 +793,6 @@ class SpriteRenderer(BuiltinComponent):
         frame_id = cpp.frame_id
         fx = cpp.flip_x
         fy = cpp.flip_y
-        self._last_frame_id = frame_id
-        self._last_flip_x = fx
-        self._last_flip_y = fy
-        self._last_sprite = self.sprite
-
-        mat = self._get_material()
-        if mat is None:
-            return
-
         # Default: full texture
         u, v, su, sv = 0.0, 0.0, 1.0, 1.0
         ds_x, ds_y = 1.0, 1.0  # displayScale for aspect-fit centering
@@ -824,14 +838,16 @@ class SpriteRenderer(BuiltinComponent):
             v = v + sv
             sv = -sv
 
-        mat.set_vector4("uvRect", u, v, su, sv)
-
         # displayScale tells the shader what fraction of the quad the sprite
         # occupies.  The shader centers the image and discards outside pixels.
-        mat.set_vector4("displayScale", ds_x, ds_y, 0.0, 0.0)
+        cpp._publish_sprite_uv((u, v, su, sv), (ds_x, ds_y, 0.0, 0.0))
+        self._last_frame_id = frame_id
+        self._last_flip_x = fx
+        self._last_flip_y = fy
+        self._last_sprite = self.sprite
 
     def _apply_color(self):
-        """Apply tint color to the material."""
+        """Publish this sprite's tint in its own runtime parameter layer."""
         cpp = self._cpp_component
         if cpp is None:
             return
@@ -839,9 +855,5 @@ class SpriteRenderer(BuiltinComponent):
         c = cpp.sprite_color
         c = (c[0], c[1], c[2], c[3])
 
+        cpp._publish_sprite_color()
         self._last_color = c
-        mat = self._get_material()
-        if mat is None:
-            return
-
-        mat.set_color("baseColor", c[0], c[1], c[2], c[3])

@@ -441,6 +441,11 @@ class MeshRenderer : public Component
   protected:
     static void ValidateSerializedDocumentForType(const nlohmann::json &document, std::string_view expectedType);
 
+    // Engine-derived parameters have a component-defined type before a shader
+    // is linked. Callers validate their value; publication shares the same
+    // owner/precedence/dependency path as the public reflected parameter API.
+    void SetRuntimeParameterProperty(uint32_t slot, MaterialProperty property, const std::string &owner);
+
     /// Derived renderers may generate their inline mesh entirely from their
     /// authored fields and omit that cache from scene documents.
     [[nodiscard]] virtual bool ShouldSerializeInlineMeshData() const

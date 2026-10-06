@@ -43,6 +43,7 @@
 #include "function/scene/Transform.h"
 #include "function/scene/UITransformDependencies.h"
 #include "function/scene/physics/PhysicsECSStore.h"
+#include <array>
 #include <cctype>
 #include <cstring>
 #include <function/resources/InxMesh/ModelMeshReference.h>
@@ -1767,7 +1768,15 @@ void RegisterSceneBindings(py::module_ &m)
             },
             "Sprite tint color (r, g, b, a)")
         .def_property("flip_x", &SpriteRenderer::GetFlipX, &SpriteRenderer::SetFlipX, "Flip sprite horizontally")
-        .def_property("flip_y", &SpriteRenderer::GetFlipY, &SpriteRenderer::SetFlipY, "Flip sprite vertically");
+        .def_property("flip_y", &SpriteRenderer::GetFlipY, &SpriteRenderer::SetFlipY, "Flip sprite vertically")
+        .def("_publish_sprite_texture", &SpriteRenderer::PublishSpriteTexture)
+        .def("_publish_sprite_color", &SpriteRenderer::PublishSpriteColor)
+        .def("_publish_sprite_uv",
+             [](py::object renderer, const std::array<float, 4> &uvRect, const std::array<float, 4> &displayScale) {
+                 renderer.cast<SpriteRenderer &>().PublishSpriteUV(
+                     glm::vec4(uvRect[0], uvRect[1], uvRect[2], uvRect[3]),
+                     glm::vec4(displayScale[0], displayScale[1], displayScale[2], displayScale[3]));
+             });
 
     // ========================================================================
     // LightType enum (matches Unity)

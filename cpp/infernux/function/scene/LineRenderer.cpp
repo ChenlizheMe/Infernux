@@ -877,7 +877,10 @@ bool LineRenderer::DeserializeDocument(const nlohmann::json &document)
 std::unique_ptr<Component> LineRenderer::Clone() const
 {
     auto clone = std::make_unique<LineRenderer>();
-    clone->DeserializeDocument(SerializeDocument());
+    auto document = SerializeDocument();
+    document.erase("component_id");
+    if (!clone->DeserializeDocument(document))
+        throw std::runtime_error("LineRenderer clone could not restore its authored state");
     return clone;
 }
 

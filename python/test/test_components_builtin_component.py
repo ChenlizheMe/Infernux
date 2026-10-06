@@ -468,13 +468,6 @@ class TestBuiltinComponent:
         from infernux.components.builtin.sprite_renderer import SpriteRenderer
         from infernux.core.asset_types import SpriteFrame
 
-        class _Material:
-            def __init__(self):
-                self.values = {}
-
-            def set_vector4(self, name, *value):
-                self.values[name] = value
-
         existing = SpriteFrame(
             stable_id="1" * 32,
             name="existing",
@@ -482,23 +475,22 @@ class TestBuiltinComponent:
             h=32,
         )
         wrapper = SpriteRenderer()
+        values = {}
         wrapper._cpp_component = SimpleNamespace(
             sprite_guid="texture-guid",
             frame_id="2" * 32,
             flip_x=False,
             flip_y=True,
+            _publish_sprite_uv=lambda uv, scale: values.update(uvRect=uv, displayScale=scale),
         )
         wrapper._sprite_frames = [existing]
         wrapper._sprite_frames_by_id = {existing.stable_id: existing}
         wrapper._tex_w = 32
         wrapper._tex_h = 32
-        material = _Material()
-        wrapper._get_material = lambda: material
-
         wrapper._apply_uv_rect()
 
-        assert material.values["uvRect"] == (0.0, 0.0, 0.0, 0.0)
-        assert material.values["displayScale"] == (0.0, 0.0, 0.0, 0.0)
+        assert values["uvRect"] == (0.0, 0.0, 0.0, 0.0)
+        assert values["displayScale"] == (0.0, 0.0, 0.0, 0.0)
 
     def test_sprite_renderer_asset_database_failure_is_not_suppressed(
         self,
@@ -557,25 +549,16 @@ class TestBuiltinComponent:
         from infernux.core import asset_types
         monkeypatch.setattr(asset_types, "_published_asset_database", lambda: database)
 
-        class _Material:
-            def __init__(self):
-                self.values = {}
-
-            def set_texture(self, name, value):
-                self.values[name] = value
-
-            def set_vector4(self, name, *value):
-                self.values[name] = value
-
         wrapper = SpriteRenderer()
+        values = {}
         wrapper._cpp_component = SimpleNamespace(
             sprite_guid="texture-guid",
             frame_id=frame_id,
             flip_x=False,
             flip_y=True,
+            _publish_sprite_texture=lambda: values.update(texSampler=wrapper.sprite),
+            _publish_sprite_uv=lambda uv, scale: values.update(uvRect=uv, displayScale=scale),
         )
-        material = _Material()
-        wrapper._get_material = lambda: material
 
         wrapper._load_sprite_data()
         wrapper._apply_uv_rect()
@@ -583,9 +566,9 @@ class TestBuiltinComponent:
         assert wrapper._tex_w == 128
         assert wrapper._tex_h == 64
         assert [frame.stable_id for frame in wrapper._sprite_frames] == [frame_id]
-        assert material.values["texSampler"] == "texture-guid"
-        assert material.values["uvRect"] == (0.25, 0.25, 0.25, 0.25)
-        assert material.values["displayScale"] == (1.0, 0.5, 0.0, 0.0)
+        assert values["texSampler"] == "texture-guid"
+        assert values["uvRect"] == (0.25, 0.25, 0.25, 0.25)
+        assert values["displayScale"] == (1.0, 0.5, 0.0, 0.0)
 
     def test_native_sprite_renderer_scene_document_uses_stable_frame_id(self):
         from infernux.lib import SpriteRenderer as NativeSpriteRenderer
