@@ -1,3 +1,4 @@
+#include <function/renderer/InxVkCoreModular.h>
 #include <function/renderer/RendererList.h>
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
 #include <function/renderer/particle/ParticleGpuBounds.h>
@@ -21,6 +22,7 @@
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_vulkan.h>
 
 #include <algorithm>
 #include <array>
@@ -702,6 +704,7 @@ void main() {
     return Require(matches, "Vector Field GPU samples diverged from the CPU sampling contract");
 }
 
+#include "FrameSubmissionFailureTests.h"
 #include "ParticleCollisionUploadTests.h"
 #include "ParticleCullConservationTests.h"
 #include "ParticleDomainRetentionTests.h"
@@ -2844,7 +2847,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return [](RenderContext &) {};
     });
     invalidVersionGraph.SetOutput(invalidOutput);
-    return Require(!invalidVersionGraph.Compile(), "An unschedulable multi-version alias was not rejected");
+    return Require(!invalidVersionGraph.Compile(), "An unschedulable multi-version alias was not rejected") &&
+           VerifyFrameSubmissionFailureIsTerminal();
 }
 } // namespace
 
