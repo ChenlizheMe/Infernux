@@ -1448,7 +1448,7 @@ if(INFERNUX_BUILD_TESTS)
         RUN_SERIAL TRUE
         FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
     )
-    foreach(_surface_contract lit_surface_contract surface_gbuffer_scalars unlit_hdr_render_paths deformed_tangent_frame deformed_shadow)
+    foreach(_surface_contract lit_surface_contract surface_gbuffer_scalars unlit_hdr_render_paths deformed_tangent_frame deformed_shadow vertex_time_shadow)
         set(_surface_test "infernux.${_surface_contract}_gpu")
         add_test(NAME ${_surface_test}
             COMMAND ${Python3_EXECUTABLE}

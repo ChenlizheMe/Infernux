@@ -3,7 +3,7 @@ SkeletalAnimator — runtime 3D animation state machine controller.
 
 Mirrors :class:`SpiritAnimator` (2D) for skeletal assets: bridge from
 ``.animfsm`` / ``.animclip3d`` to :class:`SkinnedMeshRenderer`, advancing FSM
-state and pushing playback time to native code for an upcoming skinning path.
+state and publishing animation poses to the native GPU skinning path.
 """
 
 from __future__ import annotations
