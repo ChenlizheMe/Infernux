@@ -3226,12 +3226,18 @@ bool SceneRenderGraph::RegisterTransientTextures(uint32_t width, uint32_t height
         switch (tex.attachment) {
         case GraphTextureAttachment::Color:
             customRTHandles[tex.name] = attachments.color;
+            m_graphTextureSamplers[tex.name] = generation->ColorAttachment().GetSampler();
+            m_graphTextureFormats[tex.name] = generation->ColorAttachment().GetFormat();
             break;
         case GraphTextureAttachment::Depth:
             customRTHandles[tex.name] = attachments.depth;
+            m_graphTextureSamplers[tex.name] = generation->depth->GetSampler();
+            m_graphTextureFormats[tex.name] = generation->depth->GetFormat();
             break;
         case GraphTextureAttachment::Resolve:
             customRTHandles[tex.name] = attachments.resolve;
+            m_graphTextureSamplers[tex.name] = generation->color->GetSampler();
+            m_graphTextureFormats[tex.name] = generation->color->GetFormat();
             break;
         }
         m_persistentTextureRevisions[tex.renderTexture.get()] = generation->revision;
@@ -4676,10 +4682,12 @@ void SceneRenderGraph::BuildRenderGraph()
                                          "' to an incompatible shader resource dimension at binding ", binding);
                             return;
                         }
+                    }
+                    if (texture.role == GraphTextureRole::Asset || texture.role == GraphTextureRole::Persistent) {
                         const auto formatIt = m_graphTextureFormats.find(name);
                         const auto samplerIt = m_graphTextureSamplers.find(name);
                         if (formatIt == m_graphTextureFormats.end() || samplerIt == m_graphTextureSamplers.end()) {
-                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' Texture asset '", name,
+                            INXLOG_ERROR("Fullscreen pass '", passDesc.name, "' imported texture '", name,
                                          "' has no resident GPU publication");
                             return;
                         }
