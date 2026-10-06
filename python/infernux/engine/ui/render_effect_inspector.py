@@ -46,11 +46,14 @@ def apply_render_effect_parameter_edit(
     current_value = getattr(instance, field_name, metadata.default)
     if not has_field_changed(metadata.field_type, current_value, value):
         return False
-    setattr(instance, field_name, value)
+    # The revision-keyed view represents the published resource. Normalize an
+    # actual edit separately so rejected/failed submissions cannot change it.
+    candidate = feature.instantiate(effect)
+    setattr(candidate, field_name, value)
 
     old_document = effect.to_dict()
     new_document = copy.deepcopy(old_document)
-    new_document["parameters"][field_name] = instance.get_params_dict()[field_name]
+    new_document["parameters"][field_name] = candidate.get_params_dict()[field_name]
 
     group_edit = getattr(effect, "apply_group_parameter_edit", None)
     if callable(group_edit):
