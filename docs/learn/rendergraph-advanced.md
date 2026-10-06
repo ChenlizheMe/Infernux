@@ -510,6 +510,8 @@ RenderStack rejects a failed topology edit and retains the last accepted graph w
 
 Standalone `RenderPipeline.render()` has no last-valid or Default Forward recovery. A failed `define_topology()` or `build()` leaves `_standalone_desc` unset, so the exception remains visible and a later render call retries. After an accepted code replacement, `dispose()` clears an older standalone description when the pipeline is retired.
 
+For per-camera dynamic parameters, apply the graph before calling `context.update_parameter_blocks()`, then call `context.submit_culling(culling)`. Submission freezes the parameter values alongside that camera's renderer list; updates after submission belong to a later submission. An overridden `render_camera()` must preserve this order instead of calling the base submission before updating its values.
+
 There is currently no graphical RenderGraph debugger in the Editor. Use `graph.get_debug_string()` for a text summary of resources, pass actions, reads, writes, resolves, and output, then confirm behavior in both Editor and a build. This string describes one topology artifact, so it cannot distinguish camera-local native instances. For multi-camera runtime logs, include the camera identity available to your host, `context.graph_instance_id`, and `RenderGraphDescription.source_revision`; `graph_instance_id` distinguishes native graph instances while the source revision identifies the shared Python topology.
 
 Before shipping a low-level pipeline, check these points:
@@ -1035,6 +1037,8 @@ with graph.add_pass("CommitGrade") as render_pass:
 拓扑编辑失败时，RenderStack 拒绝这次修改，保留该输出采样配置上最后一次成功的图及其配套效果绑定；Inspector 在保留已有拓扑视图的同时报告错误。如果从未构建成功，Editor 和 Player 都明确报错，不会换成 Default Forward。修复被监听的管线文件或修改管线参数会清除失败状态。这是作者编辑事务的处理，不代表允许读取未写入的纹理，也不代表可以偷偷拿旧相机画面充当本帧输出。
 
 Standalone `RenderPipeline.render()` 没有上一份有效图或 Default Forward 恢复。`define_topology()` 或 `build()` 失败后，`_standalone_desc` 保持为空，异常继续可见，后续 Render 调用会重试。管线被替换时，`dispose()` 会清除旧的 Standalone Description。
+
+更新相机专属的动态参数时，先应用 Graph，再调用 `context.update_parameter_blocks()`，最后调用 `context.submit_culling(culling)`。提交会同时冻结该相机的参数值和 Renderer List；提交后的参数更新属于后续提交。覆盖 `render_camera()` 时应保持这个顺序，不能先调用基类完成提交，再修改本次绘制所需的参数。
 
 当前 Editor 没有图形化 RenderGraph Debugger。可使用 `graph.get_debug_string()` 查看资源、Pass Action、读写、Resolve 与输出的文本摘要，再到 Editor 和真实构建中确认行为。这段文本描述一份 Topology Artifact，无法区分每台相机的 Native 实例。多相机运行日志应同时包含 Host 可取得的 Camera 身份、`context.graph_instance_id` 与 `RenderGraphDescription.source_revision`；Graph Instance ID 用于区分 Native Graph 实例，Source Revision 标识共享的 Python 拓扑。
 
