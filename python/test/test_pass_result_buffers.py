@@ -474,24 +474,25 @@ def test_geometry_provider_dependencies_stay_in_their_phase(declaration, phases)
             calls.append(("derived", context.phase.value))
             return context.sample("derived_input")
 
-    graph = RenderGraph("Phase Local Dependencies")
     pipeline = DerivedPipeline()
-    pipeline._defining_graph = graph
-    if declaration == "pipeline":
-        requested = pipeline.require_buffer("phase_color")
-    else:
-        graph.require_geometry_buffers({"phase_color"})
-        requested = "phase_color"
-    for phase in phases:
-        dependency = "derived_input" if phase == "opaque" else "transparent_input"
-        handle = graph.create_texture(dependency, format=Format.RGBA16_SFLOAT)
-        result = pipeline.geometry_stage(
-            graph, phase, phase=phase, buffers={dependency: handle}, queue_range=(0, 2500),
-        )
-        assert result.sample(requested) is handle
-        assert set(result.snapshot) == {dependency, "phase_color"}
-    assert calls == [("derived" if phase == "opaque" else "transparent", phase) for phase in phases]
-    assert graph.geometry_buffer_requirements == frozenset({"phase_color"})
+    for build in range(2):
+        graph = RenderGraph(f"Phase Local Dependencies {build}")
+        pipeline._defining_graph = graph
+        if declaration == "pipeline":
+            requested = pipeline.require_buffer("phase_color")
+        else:
+            graph.require_geometry_buffers({"phase_color"})
+            requested = "phase_color"
+        for phase in phases:
+            dependency = "derived_input" if phase == "opaque" else "transparent_input"
+            handle = graph.create_texture(dependency, format=Format.RGBA16_SFLOAT)
+            result = pipeline.geometry_stage(
+                graph, phase, phase=phase, buffers={dependency: handle}, queue_range=(0, 2500),
+            )
+            assert result.sample(requested) is handle
+            assert set(result.snapshot) == {dependency, "phase_color"}
+        assert graph.geometry_buffer_requirements == frozenset({"phase_color"})
+    assert calls == [("derived" if phase == "opaque" else "transparent", phase) for phase in phases] * 2
 
 
 def test_available_geometry_semantic_does_not_demand_its_provider_dependencies():
