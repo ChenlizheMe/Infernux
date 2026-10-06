@@ -8,6 +8,8 @@
  * and raycast queries. Integrated with SceneManager::FixedUpdate.
  */
 
+#include "PhysicsTargetReference.h"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -100,6 +102,7 @@ struct RaycastHit
     uint32_t triangleIndex = 0xFFFFFFFF; ///< Cooked triangle index for non-convex mesh hits
     GameObject *gameObject = nullptr;    ///< Hit GameObject
     Collider *collider = nullptr;        ///< Hit Collider component
+    PhysicsTargetReference target;       ///< Safe identity for retained query values
     // Stable numeric identities captured while the published query epoch
     // is held.  Batch bindings must use these rather than dereferencing the
     // raw convenience pointers after the native query boundary has ended.
@@ -537,6 +540,7 @@ class PhysicsWorld
         GameObject *gameObject = nullptr;
         uint64_t colliderId = 0;
         uint64_t gameObjectId = 0;
+        PhysicsTargetReference target;
         bool isTrigger = false;
     };
 

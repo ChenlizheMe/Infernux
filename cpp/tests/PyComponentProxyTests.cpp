@@ -1,18 +1,63 @@
+#include <function/scene/BoxCollider.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/PyComponentProxy.h>
 #include <function/scene/Scene.h>
 #include <function/scene/SceneManager.h>
+#include <function/scene/physics/PhysicsWorld.h>
 
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <new>
 #include <pybind11/embed.h>
 
 namespace py = pybind11;
 
 namespace
 {
+void TestRetainedPhysicsTargets()
+{
+    // Force exact address AND serialized-ID reuse. The retained value must not
+    // resolve the replacement, even if an allocator would usually avoid reuse.
+    alignas(infernux::BoxCollider) unsigned char colliderStorage[sizeof(infernux::BoxCollider)];
+    auto *first = new (colliderStorage) infernux::BoxCollider();
+    const uint64_t id = first->GetComponentID();
+    const infernux::PhysicsTargetReference retiredCollider(first);
+    assert(retiredCollider.GetCollider() == first);
+    first->~BoxCollider();
+    auto *second = new (colliderStorage) infernux::BoxCollider();
+    second->SetComponentID(id);
+    assert(retiredCollider.GetCollider() == nullptr);
+    const infernux::PhysicsTargetReference replacementCollider(second);
+    assert(replacementCollider.GetCollider() == second);
+    second->~BoxCollider();
+    assert(replacementCollider.GetCollider() == nullptr);
+
+    alignas(infernux::GameObject) unsigned char ownerStorage[sizeof(infernux::GameObject)];
+    auto *owner = new (ownerStorage) infernux::GameObject("NativeRecordOwner");
+    auto *collider = owner->AddComponent<infernux::BoxCollider>();
+    const uint64_t transformId = owner->GetTransform()->GetComponentID();
+    infernux::RaycastHit hit;
+    hit.target = infernux::PhysicsTargetReference(collider);
+    hit.distance = 7.5f;
+    // Conversion executes getters in the extension, while the object and its
+    // registry live in this executable. It must preserve the publishing owner.
+    const py::object retained = py::cast(hit);
+    assert(retained.attr("game_object").cast<infernux::GameObject *>() == owner);
+    owner->~GameObject();
+    assert(hit.target.GetGameObject() == nullptr);
+    assert(retained.attr("game_object").is_none());
+    auto *replacement = new (ownerStorage) infernux::GameObject("ReplacementRecordOwner");
+    replacement->GetTransform()->SetComponentID(transformId);
+    replacement->AddComponent<infernux::BoxCollider>();
+    assert(hit.target.GetGameObject() == nullptr);
+    assert(retained.attr("game_object").is_none());
+    assert(retained.attr("collider").is_none());
+    assert(retained.attr("distance").cast<float>() == 7.5f);
+    replacement->~GameObject();
+}
+
 class NativeUpdateProbe final : public infernux::Component
 {
   public:
@@ -56,6 +101,8 @@ class CollisionEnterOnlyProbe(InxComponent):
     def on_collision_enter(self, collision):
         pass
 )PY");
+
+    TestRetainedPhysicsTargets();
 
     const py::object collisionProbe = py::globals()["CollisionEnterOnlyProbe"]();
     infernux::PyComponentProxy collisionProxy(collisionProbe);

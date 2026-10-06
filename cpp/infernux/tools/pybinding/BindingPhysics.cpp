@@ -825,10 +825,12 @@ void RegisterPhysicsBindings(py::module_ &m)
     py::class_<CollisionInfo>(m, "CollisionInfo")
         .def(py::init<>())
         .def_property_readonly(
-            "collider", [](const CollisionInfo &c) { return c.collider; }, py::return_value_policy::reference,
+            "collider", [](const CollisionInfo &c) { return c.target.GetCollider(); },
+            py::return_value_policy::reference,
             "The other Collider involved in the collision")
         .def_property_readonly(
-            "game_object", [](const CollisionInfo &c) { return c.gameObject; }, py::return_value_policy::reference,
+            "game_object", [](const CollisionInfo &c) { return c.target.GetGameObject(); },
+            py::return_value_policy::reference,
             "The other GameObject involved in the collision")
         .def_property_readonly(
             "contact_point", [](const CollisionInfo &c) { return c.contactPoint; }, "World-space contact point")
@@ -839,7 +841,8 @@ void RegisterPhysicsBindings(py::module_ &m)
             "relative_velocity", [](const CollisionInfo &c) { return c.relativeVelocity; },
             "Relative velocity between the two bodies")
         .def("__repr__", [](const CollisionInfo &c) {
-            std::string goName = c.gameObject ? c.gameObject->GetName() : "null";
+            GameObject *owner = c.target.GetGameObject();
+            std::string goName = owner ? owner->GetName() : "null";
             return "<CollisionInfo other='" + goName + "'>";
         });
 
@@ -873,27 +876,11 @@ void RegisterPhysicsBindings(py::module_ &m)
             "Cooked triangle index for a non-convex MeshCollider hit, otherwise None")
         .def_property_readonly(
             "game_object",
-            [](const RaycastHit &h) -> GameObject * {
-                if (h.gameObject)
-                    return h.gameObject;
-                if (h.collider)
-                    return h.collider->GetGameObject();
-                if (h.bodyId == 0xFFFFFFFF)
-                    return nullptr;
-                if (Collider *col = PhysicsWorld::Instance().FindColliderByBodyId(h.bodyId))
-                    return col->GetGameObject();
-                return nullptr;
-            },
+            [](const RaycastHit &h) { return h.target.GetGameObject(); },
             py::return_value_policy::reference, "Hit GameObject")
         .def_property_readonly(
             "collider",
-            [](const RaycastHit &h) -> Collider * {
-                if (h.collider)
-                    return h.collider;
-                if (h.bodyId == 0xFFFFFFFF)
-                    return nullptr;
-                return PhysicsWorld::Instance().FindColliderByBodyId(h.bodyId);
-            },
+            [](const RaycastHit &h) { return h.target.GetCollider(); },
             py::return_value_policy::reference, "Hit Collider component")
         .def("__repr__", [](const RaycastHit &h) { return "<RaycastHit dist=" + std::to_string(h.distance) + ">"; });
 

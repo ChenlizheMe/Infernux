@@ -1255,6 +1255,7 @@ size_t PhysicsWorld::DispatchContactEvents()
                 CollisionInfo info;
                 info.collider = sideA ? b : a;
                 info.gameObject = info.collider->GetGameObject();
+                info.target = PhysicsTargetReference(info.collider);
                 info.contactPoint = evt.contactPoint;
                 // Jolt's normal points A -> B; the public normal points from
                 // the other collider towards the receiving component.
@@ -2538,6 +2539,7 @@ bool PhysicsWorld::RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &dire
         outHit.gameObject = nullptr;
         outHit.colliderId = 0;
         outHit.gameObjectId = 0;
+        outHit.target = PhysicsTargetReference{};
 
         // Resolve application identity from the immutable data published
         // with this query epoch. Collider properties are owner-authored
@@ -2550,6 +2552,7 @@ bool PhysicsWorld::RaycastCurrent(const glm::vec3 &origin, const glm::vec3 &dire
         outHit.gameObject = identity ? identity->gameObject : nullptr;
         outHit.colliderId = identity ? identity->colliderId : 0;
         outHit.gameObjectId = identity ? identity->gameObjectId : 0;
+        outHit.target = identity ? identity->target : PhysicsTargetReference{};
         const JPH::Vec3 normal = body.GetWorldSpaceSurfaceNormal(
             result.mSubShapeID2, JPH::RVec3(outHit.point.x, outHit.point.y, outHit.point.z));
         outHit.normal = glm::vec3(normal.GetX(), normal.GetY(), normal.GetZ());
@@ -2669,6 +2672,7 @@ bool PhysicsWorld::RaycastCollider(const Collider &collider, const glm::vec3 &or
         outHit.gameObject = collider.GetGameObject();
         outHit.colliderId = collider.GetComponentID();
         outHit.gameObjectId = outHit.gameObject ? outHit.gameObject->GetID() : 0;
+        outHit.target = PhysicsTargetReference(&collider);
         const JPH::Vec3 normal = transformedShape.GetWorldSpaceSurfaceNormal(
             result.mSubShapeID2, JPH::RVec3(outHit.point.x, outHit.point.y, outHit.point.z));
         outHit.normal = glm::vec3(normal.GetX(), normal.GetY(), normal.GetZ());
@@ -2801,6 +2805,7 @@ std::vector<RaycastHit> PhysicsWorld::RaycastAll(const glm::vec3 &origin, const 
         }
         hit.colliderId = hit.collider ? hit.collider->GetComponentID() : 0;
         hit.gameObjectId = hit.gameObject ? hit.gameObject->GetID() : 0;
+        hit.target = PhysicsTargetReference(hit.collider);
 
         JPH::BodyLockRead lock(m_physicsSystem->GetBodyLockInterface(), result.mBodyID);
         if (lock.Succeeded()) {
@@ -2930,6 +2935,7 @@ bool PhysicsWorld::ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origi
         outHit.gameObject = outHit.collider->GetGameObject();
     outHit.colliderId = outHit.collider ? outHit.collider->GetComponentID() : 0;
     outHit.gameObjectId = outHit.gameObject ? outHit.gameObject->GetID() : 0;
+    outHit.target = PhysicsTargetReference(outHit.collider);
 
     return true;
 }
@@ -3081,6 +3087,7 @@ void PhysicsWorld::PublishBodyQueryIdentitiesUnlocked(uint32_t bodyId)
         identity.gameObject = gameObject;
         identity.colliderId = collider->GetComponentID();
         identity.gameObjectId = gameObject ? gameObject->GetID() : 0;
+        identity.target = PhysicsTargetReference(collider);
         identity.isTrigger = collider->IsTrigger();
         published.push_back(identity);
     };
