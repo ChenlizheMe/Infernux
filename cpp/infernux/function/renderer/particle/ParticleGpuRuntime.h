@@ -238,6 +238,11 @@ class ParticleGpuRuntime
     /// Refresh scene-owned skinned Mesh parameters without rebuilding the
     /// particle graph or re-uploading immutable geometry.
     [[nodiscard]] bool UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMeshFrameData> &sources);
+    /// Capture prepared CPU inputs before simulation; acknowledge the actual
+    /// submission result separately so rejected recordings retain their data.
+    [[nodiscard]] bool HasPendingUploads() const noexcept;
+    [[nodiscard]] bool RecordPendingUploads(const rhi::TransferCommandEncoder &encoder);
+    void NotifySubmission(bool submitted) noexcept;
 
     [[nodiscard]] bool RecordBootstrap(const rhi::ComputeCommandEncoder &encoder, uint32_t systemSeed,
                                        rhi::BindGroupHandle graphSpawnGroup);
@@ -350,6 +355,7 @@ class ParticleGpuRuntime
                                       const ParticleGpuContactRuntime *previousContacts);
     [[nodiscard]] bool UpdateVectorFieldMetadata(const GpuParticleTransforms &transforms);
     [[nodiscard]] bool UpdateMeshInterfaceMetadata(const GpuParticleTransforms &transforms);
+    void PrepareUpload(rhi::BufferHandle buffer, const void *data, size_t byteSize);
     bool Record(const rhi::ComputeCommandEncoder &encoder, GpuKernelStage stage,
                 const GpuParticlePushConstants &constants, uint32_t invocationCount,
                 rhi::BindGroupHandle graphSpawnGroup, rhi::BufferHandle indirectArguments = {},
@@ -380,6 +386,15 @@ class ParticleGpuRuntime
     std::array<rhi::ComputePipelineHandle, static_cast<size_t>(GpuKernelStage::Count)> m_pipelines{};
     GpuParticleTransforms m_cachedTransforms{};
     bool m_hasCachedTransforms = false;
+    struct PendingUpload
+    {
+        rhi::BufferHandle buffer;
+        std::vector<uint8_t> bytes;
+        uint64_t revision = 0;
+        uint64_t recordedRevision = 0;
+        uint64_t submittedRevision = 0;
+    };
+    std::vector<PendingUpload> m_pendingUploads;
 };
 
 static_assert(sizeof(GpuParticleTransforms) == 256);

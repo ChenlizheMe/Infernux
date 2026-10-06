@@ -361,26 +361,35 @@ struct ParticleGpuSystemManager::Impl
         return true;
     }
 
-    [[nodiscard]] bool RecordCollisionUpload(VkCommandBuffer commandBuffer)
+    [[nodiscard]] bool RecordPendingUploads(VkCommandBuffer commandBuffer)
     {
-        if (!requiresCollisionScene || !collisionScene || !collisionScene->HasPendingUpload())
+        const bool collisionPending = requiresCollisionScene && collisionScene && collisionScene->HasPendingUpload();
+        const bool runtimePending = std::any_of(emitters.begin(), emitters.end(), [](const auto &entry) {
+            return entry.second->runtime->HasPendingUploads();
+        });
+        if (!collisionPending && !runtimePending)
             return true;
         vk::VulkanTransferCommandContext transferContext;
         const auto transfer = context->GetRhiDevice().MakeTransferCommandEncoder(transferContext, commandBuffer);
-        // The shared table may still contain a previous frame's upload, even
-        // when that frame did not dispatch a collision consumer.
+        // Mutable simulation inputs are read only by Compute. Handle prior
+        // readers and uploads even if the prior frame skipped simulation.
         VkMemoryBarrier before{};
         before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        before.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        before.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
         before.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
-        if (!collisionScene->RecordPendingUpload(transfer))
+        if (collisionPending && !collisionScene->RecordPendingUpload(transfer))
             return false;
+        for (const auto &[id, emitter] : emitters) {
+            (void)id;
+            if (emitter->runtime->HasPendingUploads() && !emitter->runtime->RecordPendingUploads(transfer))
+                return false;
+        }
         VkMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
         vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                              &barrier, 0, nullptr, 0, nullptr);
         return true;
@@ -2137,8 +2146,14 @@ bool ParticleGpuSystemManager::UpdateGraphParameters(uint64_t graphInstanceId,
 
 void ParticleGpuSystemManager::NotifySubmission(bool submitted) noexcept
 {
-    if (m_impl && m_impl->collisionScene)
+    if (!m_impl)
+        return;
+    if (m_impl->collisionScene)
         m_impl->collisionScene->NotifySubmission(submitted);
+    for (const auto &[id, emitter] : m_impl->emitters) {
+        (void)id;
+        emitter->runtime->NotifySubmission(submitted);
+    }
 }
 
 bool ParticleGpuSystemManager::PublishCollisionScene(const GpuParticleCollisionSceneSnapshot &snapshot,
@@ -2495,8 +2510,8 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
 {
     if (!m_impl || !m_impl->graphState || !m_impl->graphState->graph || commandBuffer == VK_NULL_HANDLE)
         return;
-    if (!m_impl->RecordCollisionUpload(commandBuffer))
-        throw std::runtime_error("GPU particle collision scene upload failed");
+    if (!m_impl->RecordPendingUploads(commandBuffer))
+        throw std::runtime_error("GPU particle input upload failed");
     bool hasPendingEmitter = std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
                                          [](const auto &scheduler) { return scheduler->HasPendingFrame(); });
     uint32_t recordedSteps = 0;
@@ -2553,6 +2568,9 @@ bool ParticleGpuSystemManager::HasPendingGpuWork() const noexcept
         return true;
     if (!m_impl->pendingDiagnostics.empty() || m_impl->HasQueuedFrameRequests())
         return true;
+    if (std::any_of(m_impl->emitters.begin(), m_impl->emitters.end(),
+                    [](const auto &entry) { return entry.second->runtime->HasPendingUploads(); }))
+        return true;
 
     return std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
                        [](const auto &scheduler) { return scheduler && scheduler->HasPendingFrame(); });
@@ -2569,8 +2587,8 @@ bool ParticleGpuSystemManager::RecordAsyncSimulation(VkCommandBuffer commandBuff
         return false;
     if (m_impl->graphState->asyncRecordingActive)
         m_impl->AbortAsyncRecording();
-    if (!m_impl->RecordCollisionUpload(commandBuffer)) {
-        INXLOG_ERROR("GPU particle collision scene upload failed during async simulation");
+    if (!m_impl->RecordPendingUploads(commandBuffer)) {
+        INXLOG_ERROR("GPU particle input upload failed during async simulation");
         return false;
     }
     auto &state = *m_impl->graphState;

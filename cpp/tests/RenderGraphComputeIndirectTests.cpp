@@ -9,6 +9,7 @@
 #include <function/renderer/particle/ParticleRenderGraph.h>
 #include <function/renderer/shader/ShaderReflection.h>
 #include <function/renderer/vk/RenderGraph.h>
+#include <function/renderer/vk/RhiVulkanTypes.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkPipelineManager.h>
 #include <function/renderer/vk/VkResourceManager.h>
@@ -704,6 +705,8 @@ void main() {
 #include "ParticleCollisionUploadTests.h"
 #include "ParticleCullConservationTests.h"
 #include "ParticleMeshMetadataTests.h"
+#include "ParticleRuntimeUploadTests.h"
+#include "ParticleSurfaceSnapshotTests.h"
 #include "RhiBufferUpdateTests.h"
 
 bool Run(const std::filesystem::path &computePath, const std::filesystem::path &vertexPath,
@@ -858,6 +861,10 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!VerifyGpuParticleMigration(resources, migrationProgram))
         return false;
     if (!VerifyParticleMeshMetadata(resources, sortCompiler, spawnProgram))
+        return false;
+    if (!VerifyParticleRuntimeInputSnapshots(resources, sortCompiler, spawnProgram))
+        return false;
+    if (!VerifyParticleSurfaceSnapshots(resources, sortCompiler))
         return false;
     if (!VerifyParticleCollisionUploads(resources, sortCompiler))
         return false;
@@ -2108,6 +2115,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
     const VkResult submitResult = vkQueueSubmit(resources.context.GetGraphicsQueue(), 1, &submitInfo, fence);
+    particleSystems.NotifySubmission(submitResult == VK_SUCCESS);
     const VkResult waitResult =
         submitResult == VK_SUCCESS ? vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) : submitResult;
     vkDestroyFence(device, fence, nullptr);
@@ -2156,6 +2164,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         managerSubmitInfo.pCommandBuffers = &commandBuffer;
         const VkResult managerSubmit =
             vkQueueSubmit(resources.context.GetGraphicsQueue(), 1, &managerSubmitInfo, managerFence);
+        particleSystems.NotifySubmission(managerSubmit == VK_SUCCESS);
         const VkResult managerWait = managerSubmit == VK_SUCCESS
                                          ? vkWaitForFences(device, 1, &managerFence, VK_TRUE, UINT64_MAX)
                                          : managerSubmit;

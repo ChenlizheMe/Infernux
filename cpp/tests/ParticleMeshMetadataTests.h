@@ -105,6 +105,19 @@ void main() {
             return false;
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         if (!Require(vkBeginCommandBuffer(command, &begin) == VK_SUCCESS, "Particle metadata begin failed")) return false;
+        VkMemoryBarrier inputs{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        inputs.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        inputs.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &inputs, 0, nullptr, 0, nullptr);
+        vk::VulkanTransferCommandContext transferContext;
+        const auto transfer = device.MakeTransferCommandEncoder(transferContext, command);
+        if (!Require(runtime.RecordPendingUploads(transfer), "Particle metadata input recording failed"))
+            return false;
+        inputs.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        inputs.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                             &inputs, 0, nullptr, 0, nullptr);
         graph.Execute(command);
         VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -127,6 +140,7 @@ void main() {
         submit.pCommandBuffers = &command;
         const auto queue = resources.context.GetGraphicsQueue();
         const auto submitted = vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE);
+        runtime.NotifySubmission(submitted == VK_SUCCESS);
         const auto waited = vkQueueWaitIdle(queue);
         if (!Require(submitted == VK_SUCCESS && waited == VK_SUCCESS, "Particle metadata submit failed") ||
             !Require(vmaInvalidateAllocation(readback.allocator, readback.allocation, 0, 128) == VK_SUCCESS,

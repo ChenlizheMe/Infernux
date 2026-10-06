@@ -33,6 +33,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace
@@ -90,8 +91,11 @@ struct FakeDevice final : rhi::Device
     uint32_t pipelineReleases = 0;
     uint32_t writes = 0;
     bool rejectNextWrite = false;
+    bool rejectNextBuffer = false;
+    bool rejectNextGroup = false;
     uint32_t readbacks = 0;
     bool bindlessEnabled = false;
+    bool rejectNextBindlessPublication = false;
     uint32_t bindlessPublishes = 0;
     uint32_t bindlessMarks = 0;
     std::vector<rhi::ResourceIndex> markedBindlessResources;
@@ -110,7 +114,7 @@ struct FakeDevice final : rhi::Device
     rhi::ResourceIndex
     PublishBindlessTexture(const std::shared_ptr<const rhi::TextureGpuView> &texture) noexcept override
     {
-        if (!bindlessEnabled || !texture || !texture->IsValid())
+        if (std::exchange(rejectNextBindlessPublication, false) || !bindlessEnabled || !texture || !texture->IsValid())
             return {};
         return {++bindlessPublishes, 1};
     }
@@ -127,6 +131,8 @@ struct FakeDevice final : rhi::Device
 
     rhi::BufferHandle CreateBuffer(const rhi::BufferDesc &desc) override
     {
+        if (std::exchange(rejectNextBuffer, false))
+            return {};
         buffers.push_back(desc);
         const auto *begin = static_cast<const uint8_t *>(desc.initialData);
         initialBufferBytes.emplace_back();
@@ -171,6 +177,8 @@ struct FakeDevice final : rhi::Device
 
     rhi::BindGroupHandle CreateBindGroup(const rhi::BindGroupDesc &desc) override
     {
+        if (std::exchange(rejectNextGroup, false))
+            return {};
         assert(desc.layout.IsValid());
         bindGroups.push_back(desc);
         groupBufferCounts.push_back(desc.bufferCount);
@@ -1454,6 +1462,16 @@ int main()
         assert(std::find(meshInterfaceDevice.groupBufferCounts.begin(), meshInterfaceDevice.groupBufferCounts.end(),
                          9u) != meshInterfaceDevice.groupBufferCounts.end());
 
+        EventTransferTrace uploadTrace;
+        const rhi::TransferCommandEncoder::DispatchTable uploadDispatch{
+            &EventTransferTrace::CopyBuffer, &EventTransferTrace::CopyTexture, &EventTransferTrace::ResolveTexture,
+            nullptr, &EventTransferTrace::UpdateBuffer};
+        const rhi::TransferCommandEncoder uploadEncoder(&uploadTrace, &uploadDispatch);
+        const auto flush = [&] {
+            assert(meshInterfaceRuntime.RecordPendingUploads(uploadEncoder));
+            meshInterfaceRuntime.NotifySubmission(true);
+            assert(!meshInterfaceRuntime.HasPendingUploads() && meshInterfaceDevice.writes == 0);
+        };
         particle::GpuParticleTransforms transforms;
         const std::array<float, 16> identity = {
             1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
@@ -1468,10 +1486,18 @@ int main()
         movedSource[3] = 5.0f;
         assert(meshInterfaceRuntime.UpdateSkinnedMeshSources({{1u, 5u, movedSource, updatedPalette}}));
         assert(meshInterfaceRuntime.UpdateTransforms(transforms));
-        assert(meshInterfaceDevice.writes == 3);
-        assert(meshInterfaceDevice.writtenBytes.back().size() == 64u * sizeof(uint32_t));
+        flush();
+        assert(uploadTrace.updates.size() == 4);
+        auto metadataBuffer = uploadTrace.updates[2].destination;
+        const auto metadataBytes = [&]() -> const std::vector<uint8_t> & {
+            const auto found = std::find_if(uploadTrace.updates.rbegin(), uploadTrace.updates.rend(),
+                                            [&](const auto &update) { return update.destination == metadataBuffer; });
+            assert(found != uploadTrace.updates.rend());
+            return found->bytes;
+        };
+        assert(metadataBytes().size() == 64u * sizeof(uint32_t));
         std::array<uint32_t, 64> metadata{};
-        std::memcpy(metadata.data(), meshInterfaceDevice.writtenBytes.back().data(), sizeof(metadata));
+        std::memcpy(metadata.data(), metadataBytes().data(), sizeof(metadata));
         assert(metadata[0] == 24u && metadata[1] == 12u && metadata[2] == 30u);
         assert(metadata[32] == 36u && metadata[33] == 18u && metadata[34] == 48u && metadata[35] == 1u);
         assert(NearlyEqual(FloatFromBits(metadata[32 + 4 + 12]), 5.0f));
@@ -1482,20 +1508,21 @@ int main()
         assert(NearlyEqual(FloatFromBits(metadata[25]), 1.0f / 3.0f));
         assert(NearlyEqual(FloatFromBits(metadata[30]), 0.25f));
 
-        const auto metadataBuffer = meshInterfaceDevice.writtenBuffers.back();
-        auto writesBeforeChange = meshInterfaceDevice.writes;
+        auto writesBeforeChange = uploadTrace.updates.size();
         assert(meshInterfaceRuntime.UpdateSkinnedMeshSources({{1u, 5u, movedSource, updatedPalette}}));
         assert(meshInterfaceRuntime.UpdateTransforms(transforms));
-        assert(meshInterfaceDevice.writes == writesBeforeChange);
+        flush();
+        assert(uploadTrace.updates.size() == writesBeforeChange);
 
         // The emitter and pose revision remain fixed while the source moves,
         // rotates and scales. Only its metadata needs another upload.
         movedSource = {0, -3, 0, 8, 2, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 1};
         assert(meshInterfaceRuntime.UpdateSkinnedMeshSources({{1u, 5u, movedSource, updatedPalette}}));
         assert(meshInterfaceRuntime.UpdateTransforms(transforms));
-        assert(meshInterfaceDevice.writes == writesBeforeChange + 1);
-        assert(meshInterfaceDevice.writtenBuffers.back() == metadataBuffer);
-        std::memcpy(metadata.data(), meshInterfaceDevice.writtenBytes.back().data(), sizeof(metadata));
+        flush();
+        assert(uploadTrace.updates.size() == writesBeforeChange + 1);
+        assert(uploadTrace.updates.back().destination == metadataBuffer);
+        std::memcpy(metadata.data(), metadataBytes().data(), sizeof(metadata));
         assert(NearlyEqual(FloatFromBits(metadata[32 + 4 + 12]), 8.0f));
         assert(NearlyEqual(FloatFromBits(metadata[32 + 4 + 1]), 2.0f));
         assert(NearlyEqual(FloatFromBits(metadata[32 + 4 + 4]), -3.0f));
@@ -1509,26 +1536,34 @@ int main()
         transforms.simulationToWorld[12] = 4.0f;
         transforms.worldToSimulation[12] = -4.0f;
         assert(meshInterfaceRuntime.UpdateTransforms(transforms));
-        std::memcpy(metadata.data(), meshInterfaceDevice.writtenBytes.back().data(), sizeof(metadata));
+        flush();
+        std::memcpy(metadata.data(), metadataBytes().data(), sizeof(metadata));
         assert(NearlyEqual(FloatFromBits(metadata[4 + 12]), 6.0f));
         assert(NearlyEqual(FloatFromBits(metadata[32 + 4 + 12]), 4.0f));
-        writesBeforeChange = meshInterfaceDevice.writes;
+        writesBeforeChange = uploadTrace.updates.size();
         assert(meshInterfaceRuntime.UpdateSkinnedMeshSources({{1u, 6u, movedSource, updatedPalette}}));
         assert(meshInterfaceRuntime.UpdateTransforms(transforms));
-        assert(meshInterfaceDevice.writes == writesBeforeChange + 1);
-        assert(meshInterfaceDevice.writtenBuffers.back() != metadataBuffer);
+        flush();
+        assert(uploadTrace.updates.size() == writesBeforeChange + 1);
+        assert(uploadTrace.updates.back().destination != metadataBuffer);
 
         movedSource[3] = 9.0f;
         assert(meshInterfaceRuntime.UpdateSkinnedMeshSources({{1u, 6u, movedSource, updatedPalette}}));
-        meshInterfaceDevice.rejectNextWrite = true;
-        assert(!meshInterfaceRuntime.UpdateTransforms(transforms));
         assert(meshInterfaceRuntime.UpdateTransforms(transforms));
-        assert(meshInterfaceDevice.writtenBuffers.back() == metadataBuffer);
-        std::memcpy(metadata.data(), meshInterfaceDevice.writtenBytes.back().data(), sizeof(metadata));
+        uploadTrace.rejectUpdateAt = uploadTrace.updates.size();
+        assert(!meshInterfaceRuntime.RecordPendingUploads(uploadEncoder));
+        meshInterfaceRuntime.NotifySubmission(false);
+        assert(meshInterfaceRuntime.HasPendingUploads());
+        uploadTrace.rejectUpdateAt = std::numeric_limits<size_t>::max();
+        assert(meshInterfaceRuntime.UpdateTransforms(transforms));
+        flush();
+        assert(uploadTrace.updates.back().destination == metadataBuffer);
+        std::memcpy(metadata.data(), metadataBytes().data(), sizeof(metadata));
         assert(NearlyEqual(FloatFromBits(metadata[32 + 4 + 12]), 5.0f));
-        writesBeforeChange = meshInterfaceDevice.writes;
+        writesBeforeChange = uploadTrace.updates.size();
         assert(meshInterfaceRuntime.UpdateTransforms(transforms));
-        assert(meshInterfaceDevice.writes == writesBeforeChange);
+        flush();
+        assert(uploadTrace.updates.size() == writesBeforeChange);
 
         // A precomputed replacement owns a different metadata coordinate basis.
         // Adopting it cannot reuse the receiving runtime's old cache decision.
@@ -1541,12 +1576,17 @@ int main()
         replacementTransforms.simulationToWorld = identity;
         assert(replacement.UpdateTransforms(replacementTransforms));
         assert(meshInterfaceRuntime.AdoptCompatibleRevision(replacement));
+        // Two palettes precede this revision's metadata in its prepared batch.
+        const auto replacementStart = uploadTrace.updates.size();
         assert(meshInterfaceRuntime.UpdateTransforms(transforms));
-        std::memcpy(metadata.data(), meshInterfaceDevice.writtenBytes.back().data(), sizeof(metadata));
+        flush();
+        metadataBuffer = uploadTrace.updates[replacementStart + 2].destination;
+        std::memcpy(metadata.data(), metadataBytes().data(), sizeof(metadata));
         assert(NearlyEqual(FloatFromBits(metadata[4 + 12]), 17.0f));
-        writesBeforeChange = meshInterfaceDevice.writes;
+        writesBeforeChange = uploadTrace.updates.size();
         assert(meshInterfaceRuntime.UpdateTransforms(transforms));
-        assert(meshInterfaceDevice.writes == writesBeforeChange);
+        flush();
+        assert(uploadTrace.updates.size() == writesBeforeChange);
         meshInterfaceRuntime.Destroy();
 
         auto invalidMeshDesc = meshInterfaceDesc;
@@ -1601,7 +1641,7 @@ int main()
            device.buffers[9].usage == (rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect));
     assert(device.buffers[10].byteSize == 16 && device.buffers[10].usage == rhi::BufferUsageFlags::Storage);
     assert(device.buffers[11].byteSize == sizeof(particle::GpuParticleTransforms) &&
-           device.buffers[11].memory == rhi::BufferMemory::Upload &&
+           device.buffers[11].memory == rhi::BufferMemory::DeviceLocal &&
            device.buffers[11].queueAccess == (rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute));
     assert(device.buffers[12].byteSize == sizeof(particle::GpuParticleSimulationControl) &&
            device.buffers[12].usage == (rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::TransferSource) &&
@@ -1619,7 +1659,75 @@ int main()
 
     particle::GpuParticleTransforms transforms;
     assert(runtime.UpdateTransforms(transforms));
-    assert(device.writes == 1);
+    assert(device.writes == 0 && runtime.HasPendingUploads());
+    {
+        const rhi::TransferCommandEncoder::DispatchTable uploads{
+            &EventTransferTrace::CopyBuffer, &EventTransferTrace::CopyTexture, &EventTransferTrace::ResolveTexture,
+            nullptr, &EventTransferTrace::UpdateBuffer};
+        EventTransferTrace first;
+        assert(runtime.RecordPendingUploads({&first, &uploads}) && first.updates.size() == 1);
+        assert(runtime.HasPendingUploads());
+        transforms.emitterToWorld[12] = 7.0f;
+        assert(runtime.UpdateTransforms(transforms));
+        runtime.NotifySubmission(true);
+        assert(runtime.HasPendingUploads());
+        EventTransferTrace second;
+        assert(runtime.RecordPendingUploads({&second, &uploads}) && second.updates.size() == 1);
+        assert(first.updates[0].bytes != second.updates[0].bytes);
+        runtime.NotifySubmission(false);
+        assert(runtime.HasPendingUploads());
+        EventTransferTrace retry;
+        assert(runtime.RecordPendingUploads({&retry, &uploads}));
+        assert(retry.updates[0].bytes == second.updates[0].bytes);
+        runtime.NotifySubmission(true);
+        assert(!runtime.HasPendingUploads());
+        assert(runtime.UpdateTransforms(transforms));
+        assert(runtime.RecordPendingUploads({&retry, &uploads}) && retry.updates.size() == 1);
+
+        FakeDevice fieldDevice;
+        auto fieldDesc = desc;
+        particle::GpuVectorFieldDesc field;
+        field.textureBinding = 1;
+        field.worldSpace = false;
+        field.texture = {0xab01, 1};
+        field.sampler = {0xab02, 1};
+        field.keepAlive = std::make_shared<int>(1);
+        field.vectorScale = 1.5f;
+        auto sdf = field;
+        sdf.kind = particle::GpuVectorFieldDesc::Kind::SignedDistanceField;
+        sdf.interfaceIndex = 1;
+        sdf.textureBinding = 2;
+        fieldDesc.vectorFields.vectorFields = {field, sdf};
+        particle::ParticleGpuRuntime fieldRuntime;
+        assert(fieldRuntime.Create(fieldDevice, fieldDesc));
+        particle::GpuParticleTransforms fieldTransforms{field.fieldToSpace, field.fieldToSpace, field.fieldToSpace,
+                                                        field.fieldToSpace};
+        fieldTransforms.emitterToWorld[0] = 2;
+        fieldTransforms.emitterToWorld[5] = 3;
+        fieldTransforms.emitterToWorld[10] = 4;
+        fieldTransforms.emitterToWorld[12] = 10;
+        fieldTransforms.worldToSimulation[12] = -4;
+        assert(fieldRuntime.UpdateTransforms(fieldTransforms));
+        EventTransferTrace fieldTrace;
+        assert(fieldRuntime.RecordPendingUploads({&fieldTrace, &uploads}));
+        fieldRuntime.NotifySubmission(true);
+        assert(fieldTrace.updates.size() == 2 && fieldDevice.writes == 0);
+        std::array<float, 64> fieldMetadata{};
+        assert(fieldTrace.updates[0].bytes.size() == sizeof(fieldMetadata));
+        std::memcpy(fieldMetadata.data(), fieldTrace.updates[0].bytes.data(), sizeof(fieldMetadata));
+        assert(NearlyEqual(fieldMetadata[0], 0.5f) && NearlyEqual(fieldMetadata[12], -3.0f));
+        assert(NearlyEqual(fieldMetadata[16], 2.0f) && NearlyEqual(fieldMetadata[21], 3.0f));
+        assert(NearlyEqual(fieldMetadata[28], 1.5f));
+        assert(NearlyEqual(fieldMetadata[32 + 16], 0.5f) && NearlyEqual(fieldMetadata[32 + 21], 1.0f / 3.0f));
+        assert(NearlyEqual(fieldMetadata[32 + 28], 3.0f));
+        assert(fieldRuntime.UpdateTransforms(fieldTransforms));
+        assert(fieldRuntime.RecordPendingUploads({&fieldTrace, &uploads}) && fieldTrace.updates.size() == 2);
+        auto singular = fieldTransforms;
+        singular.emitterToWorld[0] = 0;
+        assert(!fieldRuntime.UpdateTransforms(singular));
+        assert(!fieldRuntime.HasPendingUploads());
+        assert(fieldRuntime.RecordPendingUploads({&fieldTrace, &uploads}) && fieldTrace.updates.size() == 2);
+    }
 
     CommandTrace trace;
     const rhi::ComputeCommandEncoder::DispatchTable dispatch = {&CommandTrace::BindPipeline, &CommandTrace::BindGroup,
@@ -2124,9 +2232,9 @@ int main()
     particle::ParticleGpuRibbonRenderer ribbonRenderer;
     const uint32_t ribbonWritesBeforeCreate = ribbonDevice.writes;
     assert(ribbonRenderer.Create(ribbonDevice, ribbonRendererDesc));
-    assert(ribbonDevice.writes == ribbonWritesBeforeCreate + 1 && ribbonDevice.writtenBytes.back().size() == 16);
+    assert(ribbonDevice.writes == ribbonWritesBeforeCreate && ribbonDevice.initialBufferBytes.back().size() == 16);
     float uploadedRibbonOpacity = 0.0f;
-    std::memcpy(&uploadedRibbonOpacity, ribbonDevice.writtenBytes.back().data(), sizeof(uploadedRibbonOpacity));
+    std::memcpy(&uploadedRibbonOpacity, ribbonDevice.initialBufferBytes.back().data(), sizeof(uploadedRibbonOpacity));
     assert(uploadedRibbonOpacity == 0.625f);
     assert(ribbonRenderer.IsValid() && !ribbonRenderer.CanCastShadows() &&
            ribbonRenderer.InstanceBuffer() == runtime.InstanceBuffer() &&
@@ -2525,13 +2633,14 @@ int main()
            linkedDevice.bindGroups[2].buffers[1].buffer == renderIndexBuffer);
     assert(linkedDevice.bindGroups[1].textures[0].binding == 2 && linkedDevice.bindGroups[1].textures[1].binding == 3 &&
            linkedDevice.bindGroups[1].textures[2].binding == 15 && !linkedDevice.bindGroups[1].textures[2].depthRead);
-    assert(linkedTextureResolves == 2 && linkedDevice.writes == 1 && linkedDevice.writtenBytes[0].size() == 32);
+    assert(linkedTextureResolves == 2 && linkedDevice.writes == 0 && linkedDevice.initialBufferBytes[0].size() == 32);
     glm::vec4 packedColor{};
     float packedIntensity = 0.0f;
     float packedAlphaClipThreshold = -1.0f;
-    std::memcpy(&packedColor, linkedDevice.writtenBytes[0].data(), sizeof(packedColor));
-    std::memcpy(&packedIntensity, linkedDevice.writtenBytes[0].data() + 16, sizeof(packedIntensity));
-    std::memcpy(&packedAlphaClipThreshold, linkedDevice.writtenBytes[0].data() + 20, sizeof(packedAlphaClipThreshold));
+    std::memcpy(&packedColor, linkedDevice.initialBufferBytes[0].data(), sizeof(packedColor));
+    std::memcpy(&packedIntensity, linkedDevice.initialBufferBytes[0].data() + 16, sizeof(packedIntensity));
+    std::memcpy(&packedAlphaClipThreshold, linkedDevice.initialBufferBytes[0].data() + 20,
+                sizeof(packedAlphaClipThreshold));
     assert(packedColor == inx::color::SrgbToLinear(glm::vec4(0.2f, 0.4f, 0.6f, 0.8f)) && packedIntensity == 3.5f &&
            packedAlphaClipThreshold == 0.0f);
 
@@ -2539,7 +2648,7 @@ int main()
     const rhi::GraphicsCommandEncoder linkedGraphicsEncoder(&linkedGraphicsTrace, &graphicsDispatch);
     assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
     assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(linkedDevice.writes == 1 && linkedDevice.groupCreates == 3 && linkedDevice.graphicsPipelineCreates == 1 &&
+    assert(linkedDevice.writes == 0 && linkedDevice.groupCreates == 3 && linkedDevice.graphicsPipelineCreates == 1 &&
            linkedTextureResolves == 2);
     assert(linkedGraphicsTrace.constants.back().materialTint == (std::array<float, 4>{1.0f, 1.0f, 1.0f, 1.0f}));
 
@@ -2556,37 +2665,38 @@ int main()
 
     linkedDesc.material->SetFloat("intensity", 8.0f);
     assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(linkedDevice.writes == 2 && linkedDevice.groupCreates == 5 && linkedDevice.graphicsPipelineCreates == 1 &&
-           linkedTextureResolves == 2);
-    std::memcpy(&packedIntensity, linkedDevice.writtenBytes.back().data() + 16, sizeof(packedIntensity));
+    assert(linkedDevice.writes == 0 && linkedDevice.buffers.size() == 2 && linkedDevice.groupCreates == 6 &&
+           linkedDevice.graphicsPipelineCreates == 1 && linkedTextureResolves == 2);
+    std::memcpy(&packedIntensity, linkedDevice.initialBufferBytes.back().data() + 16, sizeof(packedIntensity));
     assert(packedIntensity == 8.0f);
 
     linkedDesc.material->SetTextureGuid("albedo", "black");
     assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    assert(linkedDevice.writes == 3 && linkedDevice.groupCreates == 6 && linkedDevice.graphicsPipelineCreates == 1 &&
-           linkedTextureResolves == 3);
+    assert(linkedDevice.writes == 0 && linkedDevice.buffers.size() == 2 && linkedDevice.groupCreates == 7 &&
+           linkedDevice.graphicsPipelineCreates == 1 && linkedTextureResolves == 3);
     (void)linkedDeletionQueue.Collect(1);
-    assert(linkedDevice.groupReleases == 1 && linkedDevice.textureReleases == 0 && linkedDevice.samplerReleases == 0);
+    assert(linkedDevice.groupReleases == 2 && linkedDevice.textureReleases == 0 && linkedDevice.samplerReleases == 0);
 
     auto linkedMaterialState = linkedDesc.material->GetRenderState();
     linkedMaterialState.alphaClipEnabled = true;
     linkedMaterialState.alphaClipThreshold = 0.35f;
     linkedDesc.material->SetRenderState(linkedMaterialState);
     assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    std::memcpy(&packedAlphaClipThreshold, linkedDevice.writtenBytes.back().data() + 20,
+    std::memcpy(&packedAlphaClipThreshold, linkedDevice.initialBufferBytes.back().data() + 20,
                 sizeof(packedAlphaClipThreshold));
     assert(packedAlphaClipThreshold == 0.35f);
 
     linkedMaterialState.alphaClipEnabled = false;
     linkedDesc.material->SetRenderState(linkedMaterialState);
     assert(linkedBillboard.RecordDraw(linkedGraphicsEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-    std::memcpy(&packedAlphaClipThreshold, linkedDevice.writtenBytes.back().data() + 20,
+    std::memcpy(&packedAlphaClipThreshold, linkedDevice.initialBufferBytes.back().data() + 20,
                 sizeof(packedAlphaClipThreshold));
     assert(packedAlphaClipThreshold == 0.0f);
 
     linkedBillboard.Destroy();
-    assert(linkedDevice.bufferReleases == 1 && linkedDevice.groupReleases == 2 && linkedDevice.textureReleases == 0 &&
-           linkedDevice.samplerReleases == 0);
+    (void)linkedDeletionQueue.Collect(1);
+    assert(linkedDevice.bufferReleases == 4 && linkedDevice.groupReleases == linkedDevice.groupCreates &&
+           linkedDevice.textureReleases == 0 && linkedDevice.samplerReleases == 0);
 
     {
         FakeDevice bindlessDevice;
@@ -2653,11 +2763,79 @@ int main()
         const uint32_t groupsBeforeTextureChange = bindlessDevice.groupCreates;
         bindlessDesc.material->SetTextureGuid("albedo", "black");
         assert(bindlessBillboard.RecordDraw(bindlessEncoder, forwardPass, indirectBuffer, view, {}, {}, true, perView));
-        assert(bindlessDevice.bindlessPublishes == 3 && bindlessDevice.groupCreates == groupsBeforeTextureChange &&
+        assert(bindlessDevice.bindlessPublishes == 3 && bindlessDevice.groupCreates == groupsBeforeTextureChange + 1 &&
                bindlessDevice.bindlessMarks == 3 &&
                bindlessDevice.markedBindlessResources == std::vector<rhi::ResourceIndex>({{3, 1}, {2, 1}}));
         bindlessBillboard.Destroy();
         bindlessTextureSlots.clear();
+    }
+
+    {
+        FakeDevice snapshotDevice;
+        snapshotDevice.bindlessEnabled = true;
+        GpuRetirementQueue retirement;
+        retirement.BindSerialSource([] { return rhi::SubmissionSerial{7}; });
+        auto artifact = std::make_shared<ShaderProgramArtifact>(*linkedArtifact);
+        artifact->usesBindlessTextureABI = true;
+        auto material = std::make_shared<InxMaterial>("surface-snapshot");
+        material->SetFloat("intensity", 2);
+        material->SetTextureGuid("albedo", "white");
+        material->SetTextureGuid("detail", "normal");
+        TestTextureSlots slots;
+        particle::ParticleGpuSurfaceBinding surface;
+        const auto resolver = [&](const std::string &guid, const std::string &name,
+                                  particle::GpuParticleTextureRequest) {
+            const uint32_t identity = name == "albedo" ? 1u : 2u;
+            return AcquireTestTexture(snapshotDevice, slots, guid, guid == "black" ? 2u : 1u, {800u + identity, 1},
+                                      {850u + identity, 1});
+        };
+        assert(surface.Create(snapshotDevice, artifact, material, {}, {}, resolver, &retirement));
+        const auto originalGroup = surface.ResolveBindGroup();
+        const auto originalViewGroup = surface.ResolveBindGroup({999, 1});
+        const auto originalBuffers = snapshotDevice.bindGroups.back().buffers;
+        const auto originalMaterialBytes = snapshotDevice.initialBufferBytes[0];
+        const auto originalIndexBytes = snapshotDevice.initialBufferBytes[1];
+        const auto unchangedAllocations = snapshotDevice.buffers.size();
+        assert(surface.RefreshMaterialBuffer(false) && surface.RefreshTextureBindings(false));
+        assert(snapshotDevice.buffers.size() == unchangedAllocations && snapshotDevice.writes == 0);
+        material->SetFloat("intensity", 9);
+        snapshotDevice.rejectNextBuffer = true;
+        assert(!surface.RefreshMaterialBuffer(false));
+        assert(surface.ResolveBindGroup() == originalGroup && surface.ResolveBindGroup({999, 1}) == originalViewGroup);
+        snapshotDevice.rejectNextGroup = true;
+        assert(!surface.RefreshMaterialBuffer(false));
+        assert(snapshotDevice.bufferReleases == 1 && retirement.GetStats().pending == 0);
+        assert(surface.ResolveBindGroup() == originalGroup && surface.ResolveBindGroup({999, 1}) == originalViewGroup);
+        assert(surface.RefreshMaterialBuffer(false));
+        const auto changedMaterialGroup = surface.ResolveBindGroup();
+        assert(changedMaterialGroup != originalGroup && surface.ResolveBindGroup({999, 1}) != originalViewGroup);
+        const auto materialView = snapshotDevice.bindGroups.back();
+        assert(materialView.buffers[0].buffer != originalBuffers[0].buffer);
+        assert(materialView.buffers[1].buffer == originalBuffers[1].buffer);
+        assert(retirement.Collect(6) == 0 && snapshotDevice.bufferReleases == 1);
+        material->SetTextureGuid("albedo", "black");
+        const auto materialAllocations = snapshotDevice.buffers.size();
+        assert(surface.RefreshMaterialBuffer(false) && snapshotDevice.buffers.size() == materialAllocations);
+        snapshotDevice.rejectNextBindlessPublication = true;
+        assert(!surface.RefreshTextureBindings(false));
+        assert(surface.ResolveBindGroup() == changedMaterialGroup);
+        snapshotDevice.rejectNextBuffer = true;
+        assert(!surface.RefreshTextureBindings(false));
+        assert(surface.ResolveBindGroup() == changedMaterialGroup);
+        assert(surface.RefreshTextureBindings(false));
+        assert(surface.ResolveBindGroup() != changedMaterialGroup);
+        (void)surface.ResolveBindGroup({999, 1});
+        const auto textureView = snapshotDevice.bindGroups.back();
+        assert(textureView.buffers[0].buffer == materialView.buffers[0].buffer);
+        assert(textureView.buffers[1].buffer != materialView.buffers[1].buffer);
+        assert(snapshotDevice.initialBufferBytes[0] == originalMaterialBytes);
+        assert(snapshotDevice.initialBufferBytes[1] == originalIndexBytes && snapshotDevice.writes == 0);
+        assert(retirement.Collect(6) == 0);
+        surface.Destroy();
+        assert(snapshotDevice.bufferReleases == 1);
+        (void)retirement.Collect(7);
+        assert(snapshotDevice.bufferReleases == snapshotDevice.buffers.size());
+        assert(snapshotDevice.groupReleases == snapshotDevice.groupCreates);
     }
 
     auto linkedForwardPlusArtifact = std::make_shared<ShaderProgramArtifact>(*linkedArtifact);
