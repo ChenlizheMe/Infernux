@@ -30,7 +30,9 @@ from ._inspector_undo import (
     _record_generic_component, _record_python_component_document_edit,
 )
 from ._inspector_references import (
-    _create_component_ref_from_go,
+    _create_reference_value_from_payload,
+    _reference_owner_scene,
+    _scene_reference_object,
     _picker_scene_gameobjects,
     _portable_asset_path_hint,
     render_asset_reference_field,
@@ -294,8 +296,9 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
                 _stable_id=stable_id,
                 _parameter_name=str(parameter["name"]),
             ):
-                reference_value = _create_component_ref_from_go(
-                    game_object, "SkinnedMeshRenderer"
+                reference_value = _create_reference_value_from_payload(
+                    FieldType.COMPONENT, game_object, "SkinnedMeshRenderer",
+                    scene=_reference_owner_scene(comp),
                 )
                 if reference_value is None:
                     Debug.log_warning(
@@ -315,13 +318,7 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
 
             def _assign_resource(payload):
                 if is_mesh and isinstance(payload, int):
-                    try:
-                        from infernux.lib import SceneManager
-
-                        scene = SceneManager.instance().get_active_scene()
-                        game_object = scene.find_by_id(payload) if scene else None
-                    except (AttributeError, RuntimeError):
-                        game_object = None
+                    game_object = _scene_reference_object(payload, scene=_reference_owner_scene(comp))
                     if game_object is not None:
                         _set_skinned_source(game_object)
                     return
@@ -331,17 +328,9 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
                 _set_resource(payload)
 
             def _mesh_scene_compatibility(candidate):
-                game_object = candidate
-                if isinstance(candidate, int):
-                    try:
-                        from infernux.lib import SceneManager
-
-                        scene = SceneManager.instance().get_active_scene()
-                        game_object = scene.find_by_id(candidate) if scene else None
-                    except (AttributeError, RuntimeError):
-                        game_object = None
-                if game_object is not None and _create_component_ref_from_go(
-                    game_object, "SkinnedMeshRenderer"
+                if _create_reference_value_from_payload(
+                    FieldType.COMPONENT, candidate, "SkinnedMeshRenderer",
+                    scene=_reference_owner_scene(comp),
                 ) is not None:
                     return ""
                 return "Mesh scene reference requires a SkinnedMeshRenderer"
@@ -387,7 +376,7 @@ def _render_particle_system_parameters(ctx: InxGUIContext, comp) -> None:
                 on_assign=_assign_resource,
                 picker_scene_items=(
                     lambda query: _picker_scene_gameobjects(
-                        query, required_component="SkinnedMeshRenderer"
+                        query, required_component="SkinnedMeshRenderer", scene=_reference_owner_scene(comp),
                     )
                 ) if is_mesh else None,
                 additional_asset_items=(lambda query: (

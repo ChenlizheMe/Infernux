@@ -13,9 +13,9 @@ from .theme import Theme
 from ._inspector_undo import _record_property
 from ._inspector_references import (
     _create_reference_value_from_payload,
+    _reference_owner_scene,
     _get_reference_display_name,
     _game_object_has_required_component,
-    _create_component_ref_from_go,
     _picker_scene_gameobjects,
     _picker_scene_components,
     render_asset_reference_field,
@@ -145,14 +145,17 @@ def _list_type_hint(element_type, metadata):
     return "Element"
 
 
-def _make_list_picker_providers(element_type, metadata):
+def _make_list_picker_providers(element_type, metadata, *, comp):
     """Return ``(scene_items_fn_or_None, asset_items_fn_or_None)`` for a list element type."""
     from infernux.components.fields import FieldType
 
     if element_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT):
         _rc = metadata.component_type if element_type == FieldType.COMPONENT else metadata.required_component
         provider = _picker_scene_components if element_type == FieldType.COMPONENT else _picker_scene_gameobjects
-        return (lambda filt, _rc=_rc: provider(filt, required_component=_rc), None)
+        return (
+            lambda filt, _rc=_rc: provider(filt, required_component=_rc, scene=_reference_owner_scene(comp)),
+            None,
+        )
 
     if element_type in {
         FieldType.MATERIAL,
@@ -164,16 +167,14 @@ def _make_list_picker_providers(element_type, metadata):
     return (None, None)
 
 
-def _create_list_pick_ref(element_type, value, required_component=None, metadata=None):
+def _create_list_pick_ref(element_type, value, required_component=None, metadata=None, *, scene=None):
     """Create a reference wrapper from a picker selection for a list element."""
     from infernux.components.fields import FieldType
 
-    if element_type == FieldType.GAME_OBJECT:
-        from infernux.components.ref_wrappers import GameObjectRef
-        return GameObjectRef(value) if value is not None else None
-
-    if element_type == FieldType.COMPONENT:
-        return _create_component_ref_from_go(value, required_component or '')
+    if element_type in (FieldType.GAME_OBJECT, FieldType.COMPONENT):
+        return _create_reference_value_from_payload(
+            element_type, value, required_component, scene=scene,
+        )
 
     # Asset types: value is a file path
     if element_type == FieldType.MATERIAL:
@@ -187,7 +188,7 @@ def _create_list_pick_ref(element_type, value, required_component=None, metadata
     return None
 
 
-def _render_reference_list_item(ctx, field_name, index, item, items, metadata, element_type):
+def _render_reference_list_item(ctx, field_name, index, item, items, metadata, element_type, *, comp):
     """Render a single reference-type list element (GameObject, Material, etc.).
 
     Mutates *items* in-place on drop/pick/clear. Returns True if changed.
@@ -199,16 +200,20 @@ def _render_reference_list_item(ctx, field_name, index, item, items, metadata, e
 
     def _replace_item(payload, _index=index, _req=_req, _meta=metadata):
         nonlocal changed
-        value = _create_reference_value_from_payload(element_type, payload, _req, metadata=_meta)
+        value = _create_reference_value_from_payload(
+            element_type, payload, _req, metadata=_meta, scene=_reference_owner_scene(comp),
+        )
         if value is not None:
             items[_index] = value
             changed = True
 
-    _li_scene, _li_assets = _make_list_picker_providers(element_type, metadata)
+    _li_scene, _li_assets = _make_list_picker_providers(
+        element_type, metadata, comp=comp,
+    )
 
     def _li_on_pick(value, _index=index, _et=element_type, _req=_req, _meta=metadata):
         nonlocal changed
-        ref = _create_list_pick_ref(_et, value, _req, metadata=_meta)
+        ref = _create_list_pick_ref(_et, value, _req, metadata=_meta, scene=_reference_owner_scene(comp))
         if ref is not None:
             items[_index] = ref
             changed = True
@@ -456,7 +461,7 @@ def _render_list_items_body(
             ctx.end_drag_drop_source()
 
         if element_type in reference_types:
-            if _render_reference_list_item(ctx, field_name, index, item, items, metadata, element_type):
+            if _render_reference_list_item(ctx, field_name, index, item, items, metadata, element_type, comp=comp):
                 changed = True
         elif element_type == FieldType.SERIALIZABLE_OBJECT:
             if _render_serializable_list_item(
@@ -564,6 +569,7 @@ def _render_list_field(
         else:
             value = _create_reference_value_from_payload(
                 element_type, payload, _hdr_req, metadata=metadata,
+                scene=_reference_owner_scene(comp),
             )
         if value is not None:
             items.append(value)

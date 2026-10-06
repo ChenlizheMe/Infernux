@@ -41,6 +41,7 @@ from ._inspector_undo import (  # noqa: F401
 from ._inspector_references import (  # noqa: F401
     _tooltip_and_info, _asset_guid_from_path, _resolve_guid_and_path,
     _create_reference_value_from_payload, _get_reference_display_name,
+    _reference_owner_scene,
     _render_serializable_object_field, _render_nested_so,
     _get_asset_ref_config, _render_asset_reference_field,
     _render_component_ref_inline, _render_gameobject_ref_inline,
@@ -629,13 +630,16 @@ def _render_builtin_component_reference(
             _record_builtin_property(comp, cpp_attr, current_value, target, f"Set {field_name}")
 
     def _pick(game_object) -> None:
-        reference = _create_component_ref_from_go(game_object, component_type)
+        reference = _create_reference_value_from_payload(
+            FieldType.COMPONENT, game_object, component_type, scene=_reference_owner_scene(comp),
+        )
         if reference is not None:
             _assign(reference)
 
     def _drop(payload) -> None:
         reference = _create_reference_value_from_payload(
             FieldType.COMPONENT, payload, component_type,
+            scene=_reference_owner_scene(comp),
         )
         if reference is not None:
             _assign(reference)
@@ -650,6 +654,7 @@ def _render_builtin_component_reference(
         on_drop_callback=_drop,
         picker_scene_items=lambda filt: _picker_scene_components(
             filt, required_component=component_type,
+            scene=_reference_owner_scene(comp),
         ),
         on_pick=_pick,
         on_clear=lambda: _record_builtin_property(

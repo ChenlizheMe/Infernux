@@ -128,8 +128,40 @@ def _resolve_guid_and_path(payload):
 # ── Reference value creation ──
 
 
-def _create_reference_value_from_payload(element_type, payload, required_component: str = None, metadata=None):
+def _reference_owner_scene(component):
+    """References authored by an Inspector belong to its component's document."""
+    game_object = getattr(component, "game_object", None)
+    return game_object.scene if game_object is not None else None
+
+
+def _scene_reference_object(payload, *, scene):
+    """Resolve live hierarchy IDs or picker objects within an explicit scene."""
+    from infernux.lib import GameObject
+
+    if scene is None:
+        return None
+    if isinstance(payload, GameObject):
+        return payload if payload.scene is scene else None
+    if type(payload) is int and payload > 0:
+        return scene.find_by_id(payload)
+    return None
+
+
+def _create_reference_value_from_payload(element_type, payload, required_component: str = None,
+                                         metadata=None, *, scene=None):
     from infernux.components.fields import FieldType
+
+    if element_type == FieldType.COMPONENT:
+        from infernux.components.ref_wrappers import ComponentRef
+
+        if isinstance(payload, ComponentRef):
+            component = payload.resolve()
+            game_object = getattr(component, "game_object", None)
+            if _scene_reference_object(game_object, scene=scene) is None:
+                return None
+            return _create_component_ref_from_go(payload, required_component or "")
+        game_object = _scene_reference_object(payload, scene=scene)
+        return _create_component_ref_from_go(game_object, required_component or "")
 
     if element_type == FieldType.GAME_OBJECT:
         # String payload = prefab drag (GUID or file path)
@@ -139,15 +171,9 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
             return PrefabRef(guid=guid, path_hint=path_hint)
 
         # Int payload = scene hierarchy drag
-        from infernux.lib import SceneManager as _SM
         from infernux.components.ref_wrappers import GameObjectRef
 
-        scene = _SM.instance().get_active_scene()
-        if scene is None:
-            return None
-
-        obj_id = int(payload) if not isinstance(payload, int) else payload
-        game_object = scene.find_by_id(obj_id)
+        game_object = _scene_reference_object(payload, scene=scene)
         if game_object is None:
             return None
         if required_component and not _game_object_has_required_component(game_object, required_component):
@@ -194,19 +220,6 @@ def _create_reference_value_from_payload(element_type, payload, required_compone
             guid=guid,
             path_hint=_portable_asset_path_hint(file_path),
         )
-
-    if element_type == FieldType.COMPONENT:
-        from infernux.lib import SceneManager as _SM
-
-        scene = _SM.instance().get_active_scene()
-        if scene is None:
-            return None
-        obj_id = int(payload) if not isinstance(payload, int) else payload
-        game_object = scene.find_by_id(obj_id)
-        if game_object is None:
-            return None
-
-        return _create_component_ref_from_go(game_object, required_component or "")
 
     return None
 
@@ -516,10 +529,12 @@ def _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw):
     _ct = metadata.component_type
 
     def _comp_scene(filt, _ct=_ct):
-        return _picker_scene_components(filt, required_component=_ct)
+        return _picker_scene_components(filt, required_component=_ct, scene=_reference_owner_scene(py_comp))
 
     def _comp_on_pick(go, _fn=field_name, _comp=py_comp, _ct=_ct):
-        ref = _create_component_ref_from_go(go, _ct)
+        ref = _create_reference_value_from_payload(
+            FieldType.COMPONENT, go, _ct, scene=_reference_owner_scene(_comp),
+        )
         if ref is not None:
             old = get_raw_field_value(_comp, _fn)
             _record_property(_comp, _fn, old, ref, f"Set {_fn}")
@@ -531,7 +546,7 @@ def _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw):
     field_label(ctx, pretty_field_name(field_name), lw)
     render_object_field(
         ctx, f"comp_ref_{field_name}", _display, _type_hint,
-        accept_drag_type=["HIERARCHY_GAMEOBJECT", "PREFAB_GUID", "PREFAB_FILE"],
+        accept_drag_type="HIERARCHY_GAMEOBJECT",
         on_drop_callback=lambda payload, _fn=field_name, _comp=py_comp, _ct=metadata.component_type: _apply_reference_drop(FieldType.COMPONENT, _comp, _fn, payload, _ct),
         picker_scene_items=_comp_scene,
         on_pick=_comp_on_pick,
@@ -545,7 +560,8 @@ def _render_component_ref_inline(ctx, py_comp, field_name, metadata, lw):
 
 def _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_value, lw):
     """Render a FieldType.GAME_OBJECT reference field."""
-    from infernux.components.ref_wrappers import PrefabRef, GameObjectRef
+    from infernux.components.ref_wrappers import PrefabRef
+    from infernux.components.fields import FieldType
     if isinstance(current_value, PrefabRef):
         display = current_value.name
         _type_hint_prefix = "Prefab"
@@ -572,10 +588,14 @@ def _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_va
         _type_hint = f"{_type_hint_prefix}:{_req_comp}"
 
     def _go_scene(filt, _rc=_req_comp):
-        return _picker_scene_gameobjects(filt, required_component=_rc)
+        return _picker_scene_gameobjects(filt, required_component=_rc, scene=_reference_owner_scene(py_comp))
 
     def _go_on_pick(go, _fn=field_name, _comp=py_comp):
-        ref = GameObjectRef(go)
+        ref = _create_reference_value_from_payload(
+            FieldType.GAME_OBJECT, go, _req_comp, scene=_reference_owner_scene(_comp),
+        )
+        if ref is None:
+            return
         old = getattr(_comp, _fn, None)
         _record_property(_comp, _fn, old, ref, f"Set {_fn}")
 
@@ -603,7 +623,9 @@ def _render_gameobject_ref_inline(ctx, py_comp, field_name, metadata, current_va
 def _apply_reference_drop(field_type, comp, field_name: str, payload, required_component: str = None):
     """Generic handler for reference-type drag-drop onto a field."""
     try:
-        ref = _create_reference_value_from_payload(field_type, payload, required_component)
+        ref = _create_reference_value_from_payload(
+            field_type, payload, required_component, scene=_reference_owner_scene(comp),
+        )
         if ref is None:
             return
         from infernux.components.fields import FieldType
@@ -689,11 +711,9 @@ def _create_component_ref_from_go(game_object, component_type: str = ""):
     return ComponentRef(component) if component is not None else None
 
 
-def _picker_scene_components(filter_text: str, required_component: str = None):
+def _picker_scene_components(filter_text: str, required_component: str = None, *, scene):
     """Offer individual components, including repeated types on the same object."""
     from infernux.components.ref_wrappers import ComponentRef
-    from infernux.lib import SceneManager
-    scene = SceneManager.instance().get_active_scene()
     if scene is None:
         return []
     items = []
@@ -711,10 +731,8 @@ def _picker_scene_components(filter_text: str, required_component: str = None):
     return items
 
 
-def _picker_scene_gameobjects(filter_text: str, required_component: str = None):
+def _picker_scene_gameobjects(filter_text: str, required_component: str = None, *, scene):
     """Return ``[(name, go), ...]`` for all scene GameObjects matching *filter_text*."""
-    from infernux.lib import SceneManager
-    scene = SceneManager.instance().get_active_scene()
     if not scene:
         return []
     items = []

@@ -120,7 +120,7 @@ def test_python_forward_reference_survives_prefab_projection(scene, tmp_path):
 def test_inspector_picker_offers_exact_same_type_components(scene):
     from infernux.engine.ui._inspector_references import _picker_scene_components, _create_component_ref_from_go
     root, _, identity = _source(scene)
-    choices = _picker_scene_components("Exact reference", "BoxCollider")
+    choices = _picker_scene_components("Exact reference", "BoxCollider", scene=scene)
     assert len(choices) == 2
     assert choices[0][0] != choices[1][0]
     ref = _create_component_ref_from_go(choices[1][1], "BoxCollider")

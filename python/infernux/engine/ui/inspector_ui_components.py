@@ -1102,7 +1102,7 @@ def _render_onclick_arg_go(ctx, btn_comp, entries, i, arg_index, arg, lw, label,
                            clone_entries_fn, resolve_go_fn):
     """Render a game_object On-Click argument field."""
     from infernux.components.ref_wrappers import GameObjectRef
-    from .inspector_components import render_object_field, _picker_scene_gameobjects
+    from .inspector_components import render_object_field, _picker_scene_gameobjects, _reference_owner_scene
 
     target_ref = _get_serializable_raw_field(arg, "game_object")
     resolved_arg_go = target_ref.resolve() if hasattr(target_ref, "resolve") else None
@@ -1120,7 +1120,7 @@ def _render_onclick_arg_go(ctx, btn_comp, entries, i, arg_index, arg, lw, label,
                 _set(GameObjectRef(go))
 
         return (_on_drop,
-                lambda go: _set(GameObjectRef(go)),
+                _on_drop,
                 lambda: _set(GameObjectRef(persistent_id=0)))
 
     go_drop, go_pick, go_clear = _make_cbs()
@@ -1131,7 +1131,7 @@ def _render_onclick_arg_go(ctx, btn_comp, entries, i, arg_index, arg, lw, label,
         clickable=False,
         accept_drag_type="HIERARCHY_GAMEOBJECT",
         on_drop_callback=go_drop,
-        picker_scene_items=lambda filt: _picker_scene_gameobjects(filt),
+        picker_scene_items=lambda filt: _picker_scene_gameobjects(filt, scene=_reference_owner_scene(btn_comp)),
         on_pick=go_pick,
         on_clear=go_clear,
         on_ping=(
@@ -1144,7 +1144,11 @@ def _render_onclick_arg_comp(ctx, btn_comp, entries, i, arg_index, spec, arg, lw
                              clone_entries_fn, resolve_go_fn):
     """Render a component On-Click argument field."""
     from infernux.components.ref_wrappers import ComponentRef
-    from .inspector_components import render_object_field, _picker_scene_components, _create_component_ref_from_go
+    from infernux.components.fields import FieldType
+    from .inspector_components import (
+        render_object_field, _picker_scene_components, _create_component_ref_from_go,
+        _create_reference_value_from_payload, _reference_owner_scene,
+    )
 
     comp_ref = _get_serializable_raw_field(arg, "component")
     display = comp_ref.display_name if isinstance(comp_ref, ComponentRef) else t("igui.none")
@@ -1165,7 +1169,9 @@ def _render_onclick_arg_comp(ctx, btn_comp, entries, i, arg_index, spec, arg, lw
                 _set(ref)
 
         def _on_pick(go):
-            ref = _create_component_ref_from_go(go, _comp_type)
+            ref = _create_reference_value_from_payload(
+                FieldType.COMPONENT, go, _comp_type, scene=_reference_owner_scene(btn_comp),
+            )
             if ref is not None:
                 _set(ref)
 
@@ -1180,7 +1186,9 @@ def _render_onclick_arg_comp(ctx, btn_comp, entries, i, arg_index, spec, arg, lw
         clickable=False,
         accept_drag_type="HIERARCHY_GAMEOBJECT",
         on_drop_callback=comp_drop,
-        picker_scene_items=lambda filt, _ct=spec.component_type: _picker_scene_components(filt, required_component=_ct),
+        picker_scene_items=lambda filt, _ct=spec.component_type: _picker_scene_components(
+            filt, required_component=_ct, scene=_reference_owner_scene(btn_comp),
+        ),
         on_pick=comp_pick,
         on_clear=comp_clear,
         on_ping=(
@@ -1286,16 +1294,11 @@ def _persistent_event_combo_options(current: str, available, none_label: str):
     return labels, values
 
 
-def _resolve_onclick_go(payload):
+def _resolve_onclick_go(payload, *, component):
     """Resolve a hierarchy drag payload to a GameObject."""
-    from infernux.lib import SceneManager
-    scene = SceneManager.instance().get_active_scene()
-    if not scene:
-        return None
-    obj_id = int(payload) if isinstance(payload, (int, float)) else None
-    if obj_id is None:
-        return None
-    return scene.find_by_id(obj_id)
+    from ._inspector_references import _reference_owner_scene, _scene_reference_object
+
+    return _scene_reference_object(payload, scene=_reference_owner_scene(component))
 
 
 def _ping_scene_object(object_id: int) -> None:
@@ -1310,7 +1313,7 @@ def _render_onclick_target_field(ctx, btn_comp, entries, i, entry, lw):
     Returns ``(on_drop, on_pick, on_clear, resolved_go)``.
     """
     from infernux.components.ref_wrappers import GameObjectRef
-    from .inspector_components import render_object_field, _picker_scene_gameobjects
+    from .inspector_components import render_object_field, _picker_scene_gameobjects, _reference_owner_scene
 
     target_ref = _get_serializable_raw_field(entry, "target")
     resolved_go = target_ref.resolve() if hasattr(target_ref, "resolve") else None
@@ -1329,12 +1332,12 @@ def _render_onclick_target_field(ctx, btn_comp, entries, i, entry, lw):
                              old_entries, new_entries, "Set on_click_entries")
 
         def _on_drop(payload):
-            go = _resolve_onclick_go(payload)
+            go = _resolve_onclick_go(payload, component=btn_comp)
             if go is not None:
                 _set(GameObjectRef(go))
 
         return (_on_drop,
-                lambda go: _set(GameObjectRef(go)),
+                _on_drop,
                 lambda: _set(GameObjectRef(persistent_id=0)))
 
     on_drop, on_pick, on_clear = _make_target_cbs()
@@ -1346,7 +1349,7 @@ def _render_onclick_target_field(ctx, btn_comp, entries, i, entry, lw):
         clickable=False,
         accept_drag_type="HIERARCHY_GAMEOBJECT",
         on_drop_callback=on_drop,
-        picker_scene_items=lambda filt: _picker_scene_gameobjects(filt),
+        picker_scene_items=lambda filt: _picker_scene_gameobjects(filt, scene=_reference_owner_scene(btn_comp)),
         on_pick=on_pick,
         on_clear=on_clear,
         on_ping=(
@@ -1391,7 +1394,8 @@ def _render_onclick_arguments(ctx, btn_comp, entries, i, entry, lw,
                 ctx.push_id(arg_index)
                 entries, _upd, _ch = _render_onclick_argument_field(
                     ctx, btn_comp, entries, i, arg_index, spec, arg, lw,
-                    _clone_onclick_entries, _resolve_onclick_go,
+                    _clone_onclick_entries,
+                    lambda payload: _resolve_onclick_go(payload, component=btn_comp),
                 )
                 if _ch:
                     current_args = _upd
