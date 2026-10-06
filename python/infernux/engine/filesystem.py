@@ -4,6 +4,8 @@ import shutil
 import sys
 import time
 
+from infernux.engine.path_utils import lexical_path
+
 
 def remove_directory_tree(path: str | os.PathLike[str]) -> None:
     """Delete one owned tree with literal paths and observable failure.
@@ -14,7 +16,7 @@ def remove_directory_tree(path: str | os.PathLike[str]) -> None:
     """
     if not path:
         raise ValueError("Directory cleanup requires an explicit path")
-    target = os.path.abspath(path)
+    target = lexical_path(path)
     if target == os.path.dirname(target):
         raise ValueError("Directory cleanup cannot remove a filesystem root")
     try:
