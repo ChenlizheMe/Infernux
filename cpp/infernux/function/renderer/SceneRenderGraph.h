@@ -989,7 +989,9 @@ class SceneRenderGraph
         VkImageView imageView = VK_NULL_HANDLE;
         VkSampler sampler = VK_NULL_HANDLE;
         VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-        bool usesDefaultTexture = true;
+        // A reset invalidates the descriptor's publication proof. Each frame
+        // slot must bind its default texture after its own fence has passed.
+        bool usesDefaultTexture = false;
     };
 
     struct PerViewFrameState

@@ -1801,6 +1801,18 @@ if(INFERNUX_BUILD_TESTS)
         FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
     )
 
+    add_test(NAME infernux.shadow_topology_transition_gpu
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/python/infernux/test/shadow_topology_transition_gpu_test.py
+    )
+    set_tests_properties(infernux.shadow_topology_transition_gpu PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+        LABELS "requires_vulkan_device"
+        TIMEOUT 30
+        RUN_SERIAL TRUE
+        FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
+    )
+
     foreach(_queue_case live asset)
         set(_queue_arguments)
         if(_queue_case STREQUAL "asset")
