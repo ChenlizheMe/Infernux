@@ -37,7 +37,7 @@ class _FakeMCP:
         return decorate
 
 
-def test_capability_config_discards_unknown_schema_fields(tmp_path):
+def test_capability_config_ignores_unknown_schema_fields_without_rewriting(tmp_path):
     settings = tmp_path / "ProjectSettings"
     settings.mkdir()
     path = settings / "mcp_capabilities.json"
@@ -52,12 +52,13 @@ def test_capability_config_discards_unknown_schema_fields(tmp_path):
         encoding="utf-8",
     )
 
+    original = path.read_bytes()
     loaded = capabilities.configure(str(tmp_path), write_default=True)
     persisted = json.loads(path.read_text(encoding="utf-8"))
 
     assert "unknown_section" not in loaded
-    assert "unknown_section" not in persisted
-    assert "unknown_limit" not in persisted["limits"]
+    assert "unknown_limit" not in loaded["limits"]
+    assert path.read_bytes() == original
     assert persisted["limits"]["batch_max_steps"] == 12
 
 
