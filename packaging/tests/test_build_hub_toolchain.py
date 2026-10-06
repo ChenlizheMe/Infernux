@@ -153,6 +153,8 @@ def test_hub_build_embeds_the_private_runtime_bundle(
     monkeypatch.setattr(build_hub, "_write_toolchain_receipt", lambda *args, **kwargs: None)
 
     def _fake_run(command, **_kwargs):
+        assert _kwargs["env"]["PYTHONPATH"].split(build_hub.os.pathsep)[0] == str(source_root / "python")
+        assert "--nofollow-import-to=infernux,numpy,scipy,pandas,matplotlib,cv2,PIL,tkinter" in command
         captured.append(command)
         output = build_dir / "nuitka" / "launcher.dist"
         output.mkdir(parents=True)

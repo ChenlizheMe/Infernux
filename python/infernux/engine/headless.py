@@ -44,13 +44,13 @@ def run_headless(
     from .project_version import validate_project_engine_version
 
     validate_project_engine_version(project)
-    sync_resources(project)
-    engine_resources.activate_library(project)
     lock_path, lock_token = _acquire_project_lock(project, "headless")
     engine = None
     plugin_manager = None
     frames = 0
     try:
+        sync_resources(project)
+        engine_resources.activate_library(project)
         engine = Engine(engine_log_level, RuntimeMode.Headless)
         engine.init_headless(project)
         from infernux.plugins import PluginManager

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import os
 import time
 import io
 import subprocess
@@ -39,6 +40,31 @@ def _app():
     return QApplication.instance() or QApplication([])
 
 
+def test_hub_can_import_without_an_installed_engine():
+    script = """
+import importlib.abc
+import sys
+attempts = []
+class NoEngine(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'infernux' or fullname.startswith('infernux.'):
+            attempts.append(fullname)
+            raise ImportError('No engine installed')
+sys.meta_path.insert(0, NoEngine())
+import launcher
+import hub_utils
+assert not attempts, attempts
+assert 'infernux_project_lock' in sys.modules
+assert hasattr(launcher, 'GameEngineLauncher')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "QT_QPA_PLATFORM": "offscreen"},
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_stderr_reader_reaps_editor_after_successful_startup():
     process = subprocess.Popen(
         [sys.executable, "-c", "import sys; sys.stderr.buffer.write(b'editor stopped')"],
@@ -47,7 +73,7 @@ def test_stderr_reader_reaps_editor_after_successful_startup():
     )
     owner = SimpleNamespace(_process=process, _stderr_chunks=[])
     try:
-        EngineSplashScreen._drain_stderr(owner)
+        EngineSplashScreen._drain_stderr(owner, process, owner._stderr_chunks)
         assert process.returncode == 0
         assert owner._stderr_chunks == [b"editor stopped"]
         assert process.stderr.closed
@@ -107,7 +133,7 @@ def test_launch_failure_keeps_traceback_in_scrollable_details(monkeypatch):
         splash.close()
 
 
-def test_launch_lock_tracks_engine_pid_not_hub_pid(tmp_path: Path, monkeypatch):
+def test_launch_reserves_hub_preparation_then_transfers_to_engine_pid(tmp_path: Path, monkeypatch):
     _app()
     (tmp_path / "ProjectSettings").mkdir()
 
@@ -139,9 +165,106 @@ def test_launch_lock_tracks_engine_pid_not_hub_pid(tmp_path: Path, monkeypatch):
 
     splash.launch(sys.executable, "pass", str(tmp_path), detached=True)
 
-    assert captured == [(str(tmp_path), 424242, "launching")]
+    assert captured == [(str(tmp_path), os.getpid(), "preparing"), (str(tmp_path), 424242, "launching")]
     splash._poll_timer.stop()
     splash._spin_timer.stop()
+
+
+def test_failed_handoff_reaps_child_and_closes_stderr(tmp_path, monkeypatch):
+    _app()
+    splash = EngineSplashScreen("", "Failed handoff")
+    original_write = splash_screen.write_project_lock
+    failures = []
+
+    def transfer(project, pid, token, mode, state):
+        if state == "launching":
+            raise PermissionError("handoff publication failed")
+        return original_write(project, pid, token, mode, state)
+
+    monkeypatch.setattr(splash_screen, "write_project_lock", transfer)
+    monkeypatch.setattr(splash_screen.QTimer, "singleShot", lambda _, callback: callback())
+    monkeypatch.setattr(splash, "_show_failure", lambda *args: failures.append(args))
+    try:
+        splash.launch(sys.executable, "import time; time.sleep(20)", str(tmp_path))
+        splash._stderr_thread.join(10)
+        assert not splash._stderr_thread.is_alive()
+        assert splash._process.poll() is not None
+        assert splash._process.stderr.closed
+        assert len(failures) == 1 and "handoff publication failed" in failures[0][1]
+        assert not Path(splash_screen.get_project_lock_path(str(tmp_path))).exists()
+    finally:
+        if splash._process is not None and splash._process.poll() is None:
+            splash._process.terminate()
+            splash._process.wait(timeout=10)
+        splash._spin_timer.stop()
+        splash.close()
+
+
+@pytest.mark.parametrize("damaged", [False, True])
+def test_failed_preparation_preserves_other_owners_and_reports_errors(tmp_path, monkeypatch, damaged):
+    from hub_utils import get_project_lock_path, write_project_lock, remove_project_lock
+    _app()
+    path = Path(get_project_lock_path(str(tmp_path)))
+    if damaged:
+        path.parent.mkdir()
+        path.write_text("{broken", encoding="utf-8")
+    else:
+        write_project_lock(str(tmp_path), os.getpid(), "other-request", "editor", "preparing")
+    before = path.read_bytes()
+    worker = LaunchPreparationWorker(None, None, str(tmp_path), HubLaunchContext.INSTALLED)
+    errors, completed = [], []
+    worker.error.connect(errors.append)
+    worker.finished.connect(completed.append)
+    worker.run()
+    assert len(errors) == 1 and not completed
+    assert path.read_bytes() == before
+    if not damaged:
+        remove_project_lock(str(tmp_path), "other-request")
+
+
+def test_preparation_owns_runtime_changes_and_retires_reservation_on_failure(tmp_path, monkeypatch):
+    from hub_utils import read_project_lock
+    import infernux_project_lock as locks
+    _app()
+
+    class Model:
+        def _create_vscode_workspace(self, project):
+            lease = read_project_lock(project)
+            assert lease["pid"] == os.getpid() and lease["state"] == "preparing"
+            with pytest.raises(RuntimeError, match="already open"):
+                locks.claim(project, "competing", "headless")
+            raise RuntimeError("workspace write failed")
+
+    version = "same-source-version"
+    versions = SimpleNamespace(read_project_version=lambda _: version)
+    monkeypatch.setattr(control_pane_viewmodel, "source_engine_version", lambda: version)
+    monkeypatch.setattr(control_pane_viewmodel.ProjectModel, "get_project_python_version", lambda _: "3.13")
+    worker = LaunchPreparationWorker(Model(), versions, str(tmp_path), HubLaunchContext.SOURCE)
+    errors = []
+    worker.error.connect(errors.append)
+    worker.run()
+    assert errors == ["workspace write failed"]
+    assert read_project_lock(str(tmp_path)) is None
+
+
+def test_retry_launch_waits_for_old_process_exit_before_reserving_again(monkeypatch):
+    _app()
+    splash = EngineSplashScreen("", "Test")
+    process = SimpleNamespace(poll=lambda: None, terminate=lambda: None)
+    splash._process = process
+    splash._launch_args = (sys.executable, "pass", "project", True, None)
+    pending, launches = [], []
+    monkeypatch.setattr(splash_screen.QTimer, "singleShot", lambda delay, callback: pending.append(callback))
+    monkeypatch.setattr(splash, "launch", lambda *args, **kwargs: launches.append(args))
+    try:
+        splash._retry_launch()
+        assert not launches and len(pending) == 1
+        process.poll = lambda: 0
+        pending.pop()()
+        assert len(launches) == 1
+    finally:
+        splash._spin_timer.stop()
+        splash._poll_timer.stop()
 
 
 def test_frozen_launch_preparation_does_not_cold_start_python_twice(

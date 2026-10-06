@@ -22,7 +22,8 @@
 /Exports/
 
 # Per-machine engine state and process locks
-/ProjectSettings/.infernux-engine-lock.json
+/.infernux-engine-lock.guard
+/ProjectSettings/.infernux-engine-lock.*
 # Obsolete editor preferences are private and no longer read by the engine.
 /ProjectSettings/EditorSettings.json
 /ProjectSettings/GameView.ini

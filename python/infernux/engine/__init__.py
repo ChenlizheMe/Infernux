@@ -7,7 +7,6 @@ import importlib
 import json
 import os
 import sys
-import time
 import uuid
 
 # ── Player mode detection ───────────────────────────────────────────
@@ -69,114 +68,28 @@ def _signal_engine_loaded() -> None:
 
 
 def _is_pid_running(pid: int) -> bool:
-    if pid <= 0:
-        return False
-
-    if os.name == "nt":
-        import ctypes
-
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        STILL_ACTIVE = 259
-        ERROR_INVALID_PARAMETER = 87
-        handle = ctypes.windll.kernel32.OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION,
-            False,
-            pid,
-        )
-        if not handle:
-            error_code = ctypes.windll.kernel32.GetLastError()
-            if error_code == ERROR_INVALID_PARAMETER:
-                return False
-            raise ctypes.WinError(error_code)
-        try:
-            exit_code = ctypes.c_ulong()
-            if not ctypes.windll.kernel32.GetExitCodeProcess(
-                handle,
-                ctypes.byref(exit_code),
-            ):
-                raise ctypes.WinError(ctypes.windll.kernel32.GetLastError())
-            return exit_code.value == STILL_ACTIVE
-        finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
-
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    from infernux_project_lock import is_pid_running
+    return is_pid_running(pid)
 
 
 def _default_lock_path(project_path: str) -> str:
-    return os.path.join(project_path, "ProjectSettings", ".infernux-engine-lock.json")
+    from infernux_project_lock import lock_path
+    return lock_path(project_path)
 
 
 def _remove_project_lock(lock_path: str, token: str) -> None:
-    if not lock_path or not os.path.isfile(lock_path):
-        return
-    with open(lock_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError(f"project lock must contain a JSON object: {lock_path}")
-    if data.get("token") != token:
-        return
-    last_error = None
-    for attempt in range(20):
-        try:
-            os.remove(lock_path)
-            return
-        except FileNotFoundError:
-            return
-        except PermissionError as exc:
-            last_error = exc
-            if attempt < 19:
-                time.sleep(0.05)
-        except OSError as exc:
-            last_error = exc
-            break
-    if last_error is not None:
-        raise last_error
+    from infernux_project_lock import remove_lock
+    remove_lock(lock_path, token, probe=_is_pid_running)
 
 
 def _acquire_project_lock(project_path: str, mode: str) -> tuple[str, str]:
-    lock_path = os.environ.get("_INFERNUX_PROJECT_LOCK_PATH", "").strip() or _default_lock_path(project_path)
+    from infernux_project_lock import claim
+    expected_path = _default_lock_path(project_path)
+    configured = os.environ.get("_INFERNUX_PROJECT_LOCK_PATH", "").strip()
+    if configured and os.path.normcase(os.path.realpath(configured)) != os.path.normcase(expected_path):
+        raise ValueError("Project lock path must identify this project's canonical lock file")
     token = os.environ.get("_INFERNUX_PROJECT_LOCK_TOKEN", "").strip() or uuid.uuid4().hex
-
-    if os.path.isfile(lock_path):
-        with open(lock_path, "r", encoding="utf-8") as f:
-            current = json.load(f)
-        if not isinstance(current, dict):
-            raise ValueError(f"project lock must contain a JSON object: {lock_path}")
-        current_pid = current.get("pid")
-        current_token = current.get("token")
-        if (
-            isinstance(current_pid, bool)
-            or not isinstance(current_pid, int)
-            or current_pid <= 0
-            or not isinstance(current_token, str)
-            or not current_token
-        ):
-            raise ValueError(f"project lock has invalid process identity: {lock_path}")
-        if _is_pid_running(current_pid):
-            if current_token != token:
-                raise RuntimeError(
-                    f"Project is already open in another Infernux process:\n{project_path}"
-                )
-        else:
-            _remove_project_lock(lock_path, current_token)
-
-    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
-    payload = {
-        "pid": os.getpid(),
-        "token": token,
-        "mode": mode,
-        "state": "running",
-        "project_path": resolved_path(project_path),
-    }
-    with open(lock_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-
+    lock_path = claim(project_path, token, mode, probe=_is_pid_running, require_reservation=bool(configured))
     atexit.register(_remove_project_lock, lock_path, token)
     return lock_path, token
 
@@ -196,12 +109,11 @@ def release_engine(project_path: str, engine_log_level=LogLevel.Info):
     # which may touch many files on a cold machine.  Previously the first
     # progress message arrived only after this work had already blocked.
     _signal_progress(0, 13, "Synchronizing engine resources…")
-    sync_resources(project_path)
-    _resources.activate_library(project_path)
-
     lock_path, lock_token = _acquire_project_lock(project_path, "editor")
     bootstrap = None
     try:
+        sync_resources(project_path)
+        _resources.activate_library(project_path)
         bootstrap = EditorBootstrap(project_path, engine_log_level)
         bootstrap.run()
 

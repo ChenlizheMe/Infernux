@@ -102,6 +102,11 @@ def test_supervisor_checkpoint_restores_project_ledger_but_preserves_derived_sta
     )
     editor_settings.write_text('{"lastOpenedScene": "Race.scene"}\n', encoding="utf-8")
     cache.write_bytes(b"derived-before")
+    guard = project / ".infernux-engine-lock.guard"
+    guard.touch()
+    guard_identity = guard.stat().st_ino
+    lease_temp = settings / ".infernux-engine-lock.interrupted.tmp"
+    lease_temp.write_text("incomplete local transaction", encoding="utf-8")
     supervisor = SupervisorSession(str(project), session_id="checkpoint-session")
     monkeypatch.setattr(supervisor_module, "_mcp_health_is_alive", lambda _endpoint: False)
 
@@ -116,6 +121,7 @@ def test_supervisor_checkpoint_restores_project_ledger_but_preserves_derived_sta
     build_settings.unlink()
     editor_settings.write_text('{"lastOpenedScene": "Results.scene"}\n', encoding="utf-8")
     cache.write_bytes(b"derived-after")
+    lease_temp.write_text("another incomplete transaction", encoding="utf-8")
     changed = supervisor.checkpoint_status("clean-race-001")
 
     assert changed["current_match"] is False
@@ -132,6 +138,8 @@ def test_supervisor_checkpoint_restores_project_ledger_but_preserves_derived_sta
     assert editor_settings.read_text(encoding="utf-8") == '{"lastOpenedScene": "Results.scene"}\n'
     assert not (assets / "Temporary.prefab").exists()
     assert cache.read_bytes() == b"derived-after"
+    assert guard.stat().st_ino == guard_identity
+    assert not lease_temp.exists()
 
 
 def test_checkpoint_restore_rolls_back_first_root_when_second_root_replace_fails(tmp_path, monkeypatch):

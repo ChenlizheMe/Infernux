@@ -457,12 +457,15 @@ def _build_hub(
             f"--include-data-file={packaging_dir / 'hub_uninstall.ps1'}="
             "InfernuxHubData/uninstaller/hub_uninstall.ps1"
         ),
-        "--nofollow-import-to=Infernux,numpy,scipy,pandas,matplotlib,cv2,PIL,tkinter",
+        "--nofollow-import-to=infernux,numpy,scipy,pandas,matplotlib,cv2,PIL,tkinter",
     ]
     if sys.platform == "darwin":
         command.append("--macos-create-app-bundle")
     command.append(str(packaging_dir / "launcher.py"))
     process_env = _nuitka_build_environment(build_env, build_dir)
+    process_env = dict(os.environ if process_env is None else process_env)
+    process_env["PYTHONPATH"] = os.pathsep.join(filter(None, (
+        str(source_root / "python"), process_env.get("PYTHONPATH", ""))))
     _run(command, cwd=packaging_dir, env=process_env)
     reports = _validate_msvc_reports(output_dir) if os.name == "nt" else []
 

@@ -7,14 +7,14 @@ _PYTHON_DIR = _REPO_ROOT / "python"
 if str(_PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(_PYTHON_DIR))
 
-try:
-    from infernux.runtime_utf8 import configure_process_utf8
-
-    configure_process_utf8()
-except Exception:
-    if sys.platform == "win32":
-        os.environ.setdefault("PYTHONUTF8", "1")
-        os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+# Hub runs before an engine is installed. Its startup must stay stdlib/Qt-only;
+# importing a submodule of infernux would execute the engine's native facade.
+if sys.platform == "win32":
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 sys.dont_write_bytecode = True
 

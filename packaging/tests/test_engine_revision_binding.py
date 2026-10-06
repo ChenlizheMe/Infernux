@@ -161,6 +161,7 @@ def test_setup_emits_the_runtime_revision_in_the_wheel_build_tag(tmp_path):
     package = source / "python/infernux"
     (package / "lib").mkdir(parents=True)
     shutil.copy2(root / "setup.py", source / "setup.py")
+    shutil.copy2(root / "python/infernux_project_lock.py", source / "python/infernux_project_lock.py")
     shutil.copy2(root / "python/infernux/version.py", package / "version.py")
     (package / "__init__.py").write_text("", encoding="utf-8")
     # Only the packaging identity contract is under test; no native code runs.
@@ -169,6 +170,7 @@ def test_setup_emits_the_runtime_revision_in_the_wheel_build_tag(tmp_path):
         '{"contract":"infernux.player-native","runtime_linkage":"static"}', encoding="utf-8")
     (source / "pyproject.toml").write_text(
         '[project]\nname = "infernux"\nversion = "0.4.1"\n'
+        '[tool.setuptools]\npy-modules = ["infernux_project_lock"]\n'
         '[tool.setuptools.packages.find]\nwhere = ["python"]\n', encoding="utf-8")
     subprocess.run([sys.executable, "setup.py", "bdist_wheel"], cwd=source,
                    env={**os.environ, "INFERNUX_STAGED_WHEEL_BUILD": "1"},
@@ -179,3 +181,4 @@ def test_setup_emits_the_runtime_revision_in_the_wheel_build_tag(tmp_path):
         metadata = next(name for name in archive.namelist() if name.endswith(".dist-info/WHEEL"))
         assert f"Build: {project_build_number(root)}\n" in archive.read(metadata).decode()
         assert archive.read("infernux/version.py") == (root / "python/infernux/version.py").read_bytes()
+        assert archive.read("infernux_project_lock.py") == (root / "python/infernux_project_lock.py").read_bytes()

@@ -210,6 +210,13 @@ install(
 
 install(
     FILES
+        "${CMAKE_SOURCE_DIR}/python/infernux_project_lock.py"
+    DESTINATION "python"
+    COMPONENT ${INFERNUX_PYTHON_INSTALL_COMPONENT}
+)
+
+install(
+    FILES
         "${CMAKE_SOURCE_DIR}/pyproject.toml"
         "${CMAKE_SOURCE_DIR}/setup.py"
         "${CMAKE_SOURCE_DIR}/MANIFEST.in"

@@ -4654,6 +4654,7 @@ def test_player_cook_excludes_editor_project_settings_before_archive(tmp_path):
     settings = project / "ProjectSettings"
     editor_files = (
         ".infernux-engine-lock.json",
+        ".infernux-engine-lock.interrupted.tmp",
         "agent_tools.json",
         "mcp_capabilities.json",
         "requirements.txt",
@@ -4668,6 +4669,7 @@ def test_player_cook_excludes_editor_project_settings_before_archive(tmp_path):
         "{}",
         encoding="utf-8",
     )
+    (project / ".infernux-engine-lock.guard").touch()
 
     final_dir = tmp_path / "dist"
     builder._copy_game_data(str(final_dir))
@@ -4677,6 +4679,7 @@ def test_player_cook_excludes_editor_project_settings_before_archive(tmp_path):
     assert (staged_settings / "PhysicsSettings.json").is_file()
     assert (staged_settings / "TagLayerSettings.json").is_file()
     assert not (staged_settings / "FutureEditorService.json").exists()
+    assert not (final_dir / "Data/.infernux-engine-lock.guard").exists()
     assert all(not (staged_settings / filename).exists() for filename in editor_files)
 
 
@@ -4693,6 +4696,7 @@ def test_content_archive_excludes_editor_settings_and_metadata(tmp_path):
     )
     editor_files = (
         ".infernux-engine-lock.json",
+        ".infernux-engine-lock.interrupted.tmp",
         "agent_tools.json",
         "mcp_capabilities.json",
         "requirements.txt",
@@ -4702,6 +4706,7 @@ def test_content_archive_excludes_editor_settings_and_metadata(tmp_path):
     for filename in editor_files:
         (settings / filename).write_text("editor-only", encoding="utf-8")
     (assets / "editor-only.meta").write_text("metadata", encoding="utf-8")
+    (data / ".infernux-engine-lock.guard").touch()
 
     builder._pack_content_archive(str(final_dir))
 
@@ -4710,6 +4715,7 @@ def test_content_archive_excludes_editor_settings_and_metadata(tmp_path):
         "ProjectSettings/BuildSettings.json",
     }
     assert not (assets / "editor-only.meta").exists()
+    assert not (data / ".infernux-engine-lock.guard").exists()
     assert all(not (settings / filename).exists() for filename in editor_files)
 
 

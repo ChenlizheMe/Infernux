@@ -86,7 +86,7 @@ def test_project_lock_replaces_a_stopped_owner(tmp_path, monkeypatch):
     engine_module._remove_project_lock(acquired_path, token)
 
 
-def test_project_lock_removal_reports_persistent_permission_failure(
+def test_project_lock_removal_reports_permission_failure_without_retry(
     tmp_path,
     monkeypatch,
 ):
@@ -102,9 +102,8 @@ def test_project_lock_removal_reports_persistent_permission_failure(
         raise PermissionError("lock is held")
 
     monkeypatch.setattr(engine_module.os, "remove", reject_remove)
-    monkeypatch.setattr(engine_module.time, "sleep", lambda _seconds: None)
 
     with pytest.raises(PermissionError, match="lock is held"):
         engine_module._remove_project_lock(str(lock_path), "owned")
 
-    assert len(attempts) == 20
+    assert len(attempts) == 1

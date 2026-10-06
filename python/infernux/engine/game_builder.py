@@ -285,6 +285,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
     _PLAYER_EXCLUDED_CONTENT_RELATIVE_PATHS = frozenset(
         {
             "ProjectSettings/.infernux-engine-lock.json",
+            ".infernux-engine-lock.guard",
             "ProjectSettings/agent_tools.json",
             "ProjectSettings/mcp_capabilities.json",
             "ProjectSettings/requirements.txt",
@@ -2036,9 +2037,11 @@ os._exit(_exit_code)
         normalized = str(relative).replace("\\", "/").lstrip("/").casefold()
         from infernux.engine.project_context import is_editor_asset_path
 
-        return is_editor_asset_path(normalized) or normalized in {
-            path.casefold() for path in cls._PLAYER_EXCLUDED_CONTENT_RELATIVE_PATHS
-        }
+        return (
+            normalized.startswith("projectsettings/.infernux-engine-lock.")
+            or is_editor_asset_path(normalized)
+            or normalized in {path.casefold() for path in cls._PLAYER_EXCLUDED_CONTENT_RELATIVE_PATHS}
+        )
 
     def _prune_player_editor_data(self, data_dir: str) -> None:
         """Remove known Editor services before any Player content is cooked."""
@@ -4924,6 +4927,7 @@ os._exit(_exit_code)
         }
         return (
             path_key in excluded
+            or path_key.startswith("projectsettings/.infernux-engine-lock.")
             or path_key.endswith(".meta")
             or path_key == "logs"
             or path_key.startswith("logs/")

@@ -35,7 +35,8 @@ REQUIRED_IGNORE = (
     "/Dist/",
     "/Export/",
     "/Exports/",
-    "/ProjectSettings/.infernux-engine-lock.json",
+    "/.infernux-engine-lock.guard",
+    "/ProjectSettings/.infernux-engine-lock.*",
     "/ProjectSettings/EditorSettings.json",
     "/ProjectSettings/GameView.ini",
     "/Packages/.staging/",
@@ -446,6 +447,7 @@ def _audit_git_index(project: Path, guids: dict[str, str], report: AuditReport) 
         "Packages/.cache/probe.bin", "Packages/.staging/probe.bin",
         ".infernux-backups/probe.zip", ".infernux-runtime-rollback-probe/probe.bin",
         ".vscode/settings.json", "pyrightconfig.json", "ProjectSettings/.infernux-engine-lock.json",
+        ".infernux-engine-lock.guard", "ProjectSettings/.infernux-engine-lock.probe.tmp",
         "ProjectSettings/EditorSettings.json", "ProjectSettings/GameView.ini",
     }
     probes = sorted(generated | inputs)

@@ -104,6 +104,7 @@ class EngineSplashScreen(QWidget):
         self._ready_file: str = ""
         self._project_path: str = ""
         self._lock_token: str = ""
+        self._owns_launch_reservation = False
         self._angle = 0  # spinner angle
         self._closing = False
         self._terminal_handled = False
@@ -259,7 +260,8 @@ class EngineSplashScreen(QWidget):
     # ── Process management ──
 
     def launch(self, python_exe: str, script: str, project_path: str,
-               *, detached: bool = True, extra_env: dict[str, str] | None = None):
+               *, detached: bool = True, extra_env: dict[str, str] | None = None,
+               lock_token: str | None = None):
         """Start the engine without blocking the UI and monitor readiness."""
         self._launch_args = (python_exe, script, project_path, detached, extra_env)
         self._terminal_handled = False
@@ -270,17 +272,18 @@ class EngineSplashScreen(QWidget):
             tempfile.gettempdir(), f"infernux_ready_{uuid.uuid4().hex}.flag"
         )
         self._project_path = project_path
-        self._lock_token = uuid.uuid4().hex
+        self._lock_token = lock_token or uuid.uuid4().hex
+        self._owns_launch_reservation = False
         self._process = None
         self._stderr_chunks = []
         self._status.setText(tr("Checking project..."))
         self._progress_bar.setValue(5)
         env = os.environ.copy()
         env["_INFERNUX_READY_FILE"] = self._ready_file
-        env["_INFERNUX_PROJECT_LOCK_PATH"] = get_project_lock_path(project_path)
-        env["_INFERNUX_PROJECT_LOCK_TOKEN"] = self._lock_token
         if extra_env:
             env.update(extra_env)
+        env["_INFERNUX_PROJECT_LOCK_PATH"] = get_project_lock_path(project_path)
+        env["_INFERNUX_PROJECT_LOCK_TOKEN"] = self._lock_token
         env = merge_child_env_utf8(env)
 
         popen_kwargs: dict = {"cwd": project_path, "env": env}
@@ -314,13 +317,16 @@ class EngineSplashScreen(QWidget):
         self._status.setText(tr("Starting engine process..."))
         self._progress_bar.setValue(10)
         try:
+            write_project_lock(project_path, os.getpid(), self._lock_token, "editor", "preparing")
+            self._owns_launch_reservation = True
             with _suppress_windows_error_dialogs():
                 self._process = subprocess.Popen(
                     [python_exe, "-u", "-c", script, project_path],
                     **popen_kwargs,
                 )
-        except OSError as exc:
-            remove_project_lock(project_path, self._lock_token)
+        except (OSError, RuntimeError, ValueError) as exc:
+            if self._owns_launch_reservation:
+                remove_project_lock(project_path, self._lock_token)
             self._status.setText(tr("Launch failed"))
             detail = f"The engine process could not be started.\n\n{exc}"
             QTimer.singleShot(
@@ -332,27 +338,33 @@ class EngineSplashScreen(QWidget):
             )
             return
 
-        # The lock must refer to the engine process, not the still-running Hub.
-        write_project_lock(
-            project_path, self._process.pid, self._lock_token, "editor", "launching",
-        )
-
-        # Drain stderr in a background thread so the pipe buffer never
-        # fills up (which would block the engine's sys.stderr.write).
+        # Own the pipe and child immediately, including a failed handoff.
+        # Bind this launch's objects before an explicit Retry can replace them.
         self._stderr_thread = threading.Thread(
-            target=self._drain_stderr, daemon=True
+            target=self._drain_stderr,
+            args=(self._process, self._stderr_chunks),
+            daemon=True,
         )
         self._stderr_thread.start()
+
+        # The lock must refer to the engine process, not the still-running Hub.
+        try:
+            write_project_lock(
+                project_path, self._process.pid, self._lock_token, "editor", "launching",
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            self._stop_process()
+            detail = f"The project launch reservation could not be transferred.\n\n{exc}"
+            QTimer.singleShot(0, lambda: self._show_failure(tr("Engine Launch Failed"), detail))
+            return
 
         self._launch_started_at = time.monotonic()
         self._status.setText(tr("Waiting for the editor..."))
         self._progress_bar.setValue(15)
         self._poll_timer.start(150)
 
-    def _drain_stderr(self):
+    def _drain_stderr(self, proc, chunks):
         """Drain the engine pipe, then reap it even after the splash has closed."""
-        proc = self._process
-        chunks = self._stderr_chunks
         if proc is None or proc.stderr is None:
             return
         try:
@@ -460,7 +472,8 @@ class EngineSplashScreen(QWidget):
         self._terminal_handled = True
         self._poll_timer.stop()
         self._status.setText(tr("Launch failed"))
-        remove_project_lock(self._project_path, self._lock_token or None)
+        if self._owns_launch_reservation:
+            remove_project_lock(self._project_path, self._lock_token)
         box = QMessageBox(QMessageBox.Critical, title, detail.split("\n", 1)[0])
         box.setDetailedText(detail)
         retry = box.addButton(tr("Retry"), QMessageBox.AcceptRole)
@@ -483,14 +496,22 @@ class EngineSplashScreen(QWidget):
         if args is None:
             self._fade_out_and_close()
             return
-        python_exe, script, project_path, detached, extra_env = args
-        self.launch(
-            python_exe,
-            script,
-            project_path,
-            detached=detached,
-            extra_env=extra_env,
-        )
+        deadline = time.monotonic() + 5.0
+
+        def launch_after_exit():
+            if self._process is not None and self._process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self._terminal_handled = False
+                    self._show_failure(tr("Engine Launch Failed"), "The previous editor process has not stopped.")
+                    return
+                QTimer.singleShot(50, launch_after_exit)
+                return
+            if self._owns_launch_reservation:
+                remove_project_lock(self._project_path, self._lock_token)
+            python_exe, script, project_path, detached, extra_env = args
+            self.launch(python_exe, script, project_path, detached=detached, extra_env=extra_env)
+
+        launch_after_exit()
 
     def _stop_process(self):
         process = self._process
@@ -499,8 +520,8 @@ class EngineSplashScreen(QWidget):
                 process.terminate()
             except OSError:
                 pass
-        if self._project_path:
-            remove_project_lock(self._project_path, self._lock_token or None)
+        if self._project_path and self._owns_launch_reservation:
+            remove_project_lock(self._project_path, self._lock_token)
 
     def _open_logs(self):
         if not self._project_path:
@@ -522,8 +543,9 @@ class EngineSplashScreen(QWidget):
         self._fade_out_and_close()
 
     def _finish_close(self):
-        if self._process is not None and self._process.poll() is not None and self._project_path:
-            remove_project_lock(self._project_path, self._lock_token or None)
+        if (self._process is not None and self._process.poll() is not None
+                and self._project_path and self._owns_launch_reservation):
+            remove_project_lock(self._project_path, self._lock_token)
         self._cleanup_ready_file()
         self.hide()
         super().close()

@@ -1,10 +1,11 @@
 import os
+import uuid
 from PySide6.QtWidgets import (
     QMessageBox, QDialog, QVBoxLayout, QLabel, QProgressBar, QFileDialog
 )
 from PySide6.QtCore import QThread, Signal, QObject, QTimer, Qt
 from model.project_model import ProjectModel, source_engine_version
-from hub_utils import HubLaunchContext, is_project_open
+from hub_utils import HubLaunchContext, is_project_open, write_project_lock, remove_project_lock
 from project_paths import ProjectPathError
 from i18n import tr
 import random
@@ -95,8 +96,10 @@ class LaunchPreparationWorker(QObject):
         self.version_manager = version_manager
         self.project_path = project_path
         self.launch_context = launch_context or HubLaunchContext.current()
+        self.lock_token = uuid.uuid4().hex
 
     def run(self):
+        reserved = False
         try:
             project_path = self.project_path
             if not os.path.isdir(project_path):
@@ -109,6 +112,11 @@ class LaunchPreparationWorker(QObject):
                     "The project is already open in Infernux and cannot be opened again:\n"
                     f"{project_path}"
                 )
+
+            # The pre-check is presentation only. This atomic reservation owns
+            # runtime preparation as well as the subsequent editor launch.
+            write_project_lock(project_path, os.getpid(), self.lock_token, "editor", "preparing")
+            reserved = True
 
             self.progress.emit("Checking engine version...", 4)
             python_version = ProjectModel.get_project_python_version(project_path)
@@ -198,7 +206,13 @@ class LaunchPreparationWorker(QObject):
                 self.model._create_vscode_workspace(project_path)
                 python_exe = sys.executable
         except Exception as exc:
-            self.error.emit(str(exc))
+            detail = str(exc)
+            if reserved:
+                try:
+                    remove_project_lock(self.project_path, self.lock_token)
+                except Exception as cleanup_error:
+                    detail += f"\nProject reservation release failed: {cleanup_error}"
+            self.error.emit(detail)
             return
         self.finished.emit(python_exe)
 
@@ -286,6 +300,7 @@ class ControlPaneViewModel:
                     script,
                     project_path,
                     detached=self.launch_context.uses_installed_versions,
+                    lock_token=worker.lock_token,
                 )
 
             if worker is not None:
