@@ -911,6 +911,13 @@ class NodeGraphEditorPanel(EditorPanel):
     ) -> dict:
         return payload
 
+    def _node_graph_clipboard_remappers(self):
+        """Create domain remappers whose reservations live for one paste batch."""
+        return (
+            self._node_graph_remap_clipboard_node,
+            self._node_graph_remap_clipboard_link,
+        )
+
     def _node_graph_copy(self) -> bool:
         """Publish one typed subgraph payload through the global clipboard."""
         graph = self._node_graph_authoring_model()
@@ -983,12 +990,13 @@ class NodeGraphEditorPanel(EditorPanel):
         node_identity = self._node_graph_clipboard_node_identity
         link_identity = self._node_graph_clipboard_link_identity
         try:
+            node_payload, link_payload = self._node_graph_clipboard_remappers()
             result = graph.paste_authoring_subgraph(
                 clipboard,
                 node_identity=node_identity,
                 link_identity=link_identity,
-                node_payload=self._node_graph_remap_clipboard_node,
-                link_payload=self._node_graph_remap_clipboard_link,
+                node_payload=node_payload,
+                link_payload=link_payload,
             )
         except (KeyError, RuntimeError, TypeError, ValueError) as exc:
             Debug.log_warning(f"Node Graph paste rejected: {exc}")

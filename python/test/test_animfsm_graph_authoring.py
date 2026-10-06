@@ -1,3 +1,8 @@
+import copy
+from dataclasses import replace
+
+import pytest
+
 from infernux.engine.interaction import (
     ClipboardDomain,
     ClipboardItem,
@@ -610,6 +615,137 @@ def test_animfsm_paste_rejects_another_graph_domain_payload():
 
     assert panel._fsm.to_dict() == baseline
     assert manager.can_undo is False
+
+
+@pytest.mark.parametrize("mode", ["2d", "3d", "timeline"])
+@pytest.mark.parametrize("target_count", [1, 2])
+def test_cross_document_paste_reserves_names_for_the_whole_batch(tmp_path, mode, target_count):
+    panel, manager = _panel_with_history()
+    panel._new_fsm_immediate(mode=mode)
+    first, second = AnimState(name="A"), AnimState(name=f"A {target_count}")
+    assert panel._insert_state(first, "First", make_default=True)
+    assert panel._insert_state(second, "Second", make_default=False)
+    assert panel._insert_transition(first, AnimTransition(target_state=second.name), "Connect")
+    panel._graph_selection.select(tuple(
+        GraphElementRef(GraphElementKind.NODE, state.stable_id) for state in (first, second)
+    ), record_history=False)
+    panel._on_graph_copy()
+    clipboard = ClipboardService.instance().peek(ClipboardDomain.GRAPH_ELEMENT)
+    clipboard_state = clipboard.items[0].data
+
+    panel._new_fsm_immediate(mode=mode)
+    for index in range(target_count):
+        assert panel._insert_state(AnimState(name="A" if index == 0 else "Existing"), "Target", make_default=index == 0)
+    before = panel._fsm.to_dict()
+    manager.clear()
+    assert panel._node_graph_paste()
+    names = [state.name for state in panel._fsm.states]
+    assert len(names) == len(set(names)) == target_count + 2
+    copied_first, copied_second = panel._fsm.states[-2:]
+    assert copied_first.transitions[0].target_state == copied_second.name
+    assert ClipboardService.instance().peek(ClipboardDomain.GRAPH_ELEMENT).items[0].data == clipboard_state
+    extension = ".timelinefsm" if mode == "timeline" else ".animfsm"
+    panel.capture_authoring_save_snapshot(str(tmp_path / ("Pasted" + extension)))
+    after = panel._fsm.to_dict()
+    manager.undo()
+    assert panel._fsm.to_dict() == before
+    manager.redo()
+    assert panel._fsm.to_dict() == after
+    panel.capture_authoring_save_snapshot(str(tmp_path / ("Replayed" + extension)))
+
+
+@pytest.mark.parametrize("mode", ["2d", "3d", "timeline"])
+@pytest.mark.parametrize("same_named_parameter", [False, True])
+def test_cross_document_paste_rejects_missing_parameter_identity_without_mutation(tmp_path, mode, same_named_parameter):
+    panel, manager = _panel_with_history()
+    panel._new_fsm_immediate(mode=mode)
+    first, second = AnimState(name="First"), AnimState(name="Second")
+    assert panel._insert_state(first, "First", make_default=True)
+    assert panel._insert_state(second, "Second", make_default=False)
+    assert panel._insert_parameter()
+    parameter = panel._fsm.parameters[0]
+    assert panel._insert_transition(first, AnimTransition(
+        target_state=second.name,
+        conditions=[AnimCondition(parameter_id=parameter.stable_id, operator=">", threshold=0.0)],
+    ), "Connect")
+    panel._graph_selection.select(tuple(
+        GraphElementRef(GraphElementKind.NODE, state.stable_id) for state in (first, second)
+    ), record_history=False)
+    panel._on_graph_copy()
+    panel._new_fsm_immediate(mode=mode)
+    if same_named_parameter:
+        assert panel._insert_parameter()
+        assert panel._fsm.parameters[0].name == parameter.name
+        assert panel._fsm.parameters[0].stable_id != parameter.stable_id
+    before = panel._fsm.to_dict()
+    before_graph = panel._graph.capture_authoring_state()
+    before_revision = panel._fsm_document().revision
+    manager.clear()
+    assert not panel._node_graph_paste()
+    assert panel._fsm.to_dict() == before
+    assert panel._graph.capture_authoring_state() == before_graph
+    assert panel._fsm_document().revision == before_revision
+    assert not manager.can_undo
+    extension = ".timelinefsm" if mode == "timeline" else ".animfsm"
+    panel.capture_authoring_save_snapshot(str(tmp_path / ("Unchanged" + extension)))
+
+
+@pytest.mark.parametrize("mode", ["2d", "3d", "timeline"])
+def test_cross_document_paste_preserves_redo_and_can_retry_after_parameter_declaration(tmp_path, mode):
+    panel, manager = _panel_with_history()
+    panel._new_fsm_immediate(mode=mode)
+    source_states = [AnimState(name=name) for name in ("A", "A 1", "C")]
+    for index, state in enumerate(source_states):
+        assert panel._insert_state(state, state.name, make_default=index == 0)
+    assert panel._insert_parameter()
+    parameter = panel._fsm.parameters[0]
+    assert panel._insert_transition(source_states[0], AnimTransition(target_state="A 1"), "Unconditional")
+    assert panel._insert_transition(source_states[1], AnimTransition(
+        target_state="C", conditions=[AnimCondition(parameter_id=parameter.stable_id)],
+    ), "Conditional")
+    panel._graph_selection.select(tuple(
+        GraphElementRef(GraphElementKind.NODE, state.stable_id) for state in source_states
+    ), record_history=False)
+    panel._on_graph_copy()
+    clipboard = copy.deepcopy(ClipboardService.instance().peek(ClipboardDomain.GRAPH_ELEMENT))
+
+    panel._new_fsm_immediate(mode=mode)
+    assert panel._insert_state(AnimState(name="A"), "Resident", make_default=True)
+    manager.clear()
+    assert panel._insert_state(AnimState(name="Keep redo"), "Pending redo", make_default=False)
+    manager.undo()
+    before = panel._fsm.to_dict()
+    graph_before = panel._graph.capture_authoring_state()
+    selection_before = SelectionService.instance().snapshot
+    revision_before = panel._fsm_document().revision
+    for _ in range(2):
+        assert not panel._node_graph_paste()
+        assert panel._fsm.to_dict() == before
+        assert panel._graph.capture_authoring_state() == graph_before
+        assert SelectionService.instance().snapshot == selection_before
+        assert panel._fsm_document().revision == revision_before
+        assert manager.can_redo and not manager.can_undo
+        assert ClipboardService.instance().peek(ClipboardDomain.GRAPH_ELEMENT) == clipboard
+    manager.redo()
+    assert panel._fsm.get_state("Keep redo") is not None
+    manager.undo()
+
+    # Shared parameter identity remains valid even when its display name changes.
+    panel._fsm.parameters = [replace(parameter, name="Renamed shared parameter")]
+    assert panel._node_graph_paste()
+    assert [state.name for state in panel._fsm.states] == ["A", "A 1", "A 1 1", "C"]
+    copied_first, copied_second, copied_third = panel._fsm.states[-3:]
+    assert copied_first.transitions[0].target_state == copied_second.name
+    assert copied_second.transitions[0].target_state == copied_third.name
+    assert copied_second.transitions[0].conditions[0].parameter_id == parameter.stable_id
+    assert not manager.can_redo
+    after = panel._fsm.to_dict()
+    manager.undo()
+    assert [state.name for state in panel._fsm.states] == ["A"]
+    manager.redo()
+    assert panel._fsm.to_dict() == after
+    extension = ".timelinefsm" if mode == "timeline" else ".animfsm"
+    panel.capture_authoring_save_snapshot(str(tmp_path / ("Retried" + extension)))
 
 
 def test_animfsm_duplicate_and_cut_use_shared_graph_commands():

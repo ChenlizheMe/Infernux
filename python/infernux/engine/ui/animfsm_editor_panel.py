@@ -372,12 +372,33 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         self._graph.restore_authoring_state(graph_state)
         self._bind_node_graph_model(self._graph)
 
+    def _node_graph_clipboard_remappers(self):
+        if self._fsm is None:
+            raise ValueError("Animation FSM paste requires an open document")
+        reserved_names = {
+            self._graph_state_name(node.uid)
+            for node in self._graph.nodes
+            if node.type_id == FSM_STATE_NODE_TYPE_ID
+        }
+
+        def remap_node(old_id, new_id, payload, node_id_map):
+            result = self._node_graph_remap_clipboard_node(
+                old_id, new_id, payload, node_id_map,
+                reserved_names=reserved_names,
+            )
+            reserved_names.add(result["properties"]["fsm_state"]["name"])
+            return result
+
+        return remap_node, self._node_graph_remap_clipboard_link
+
     def _node_graph_remap_clipboard_node(
         self,
         _old_id: str,
         new_id: str,
         payload: dict,
         _node_id_map,
+        *,
+        reserved_names: Optional[set[str]] = None,
     ) -> dict:
         properties = payload.get("properties")
         if not isinstance(properties, dict):
@@ -388,7 +409,8 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         state_document = copy.deepcopy(state_document)
         state_document["stable_id"] = new_id
         state_document["name"] = self._unique_state_name(
-            str(state_document.get("name", "State"))
+            str(state_document.get("name", "State")),
+            reserved_names=reserved_names,
         )
         state_document["transitions"] = []
         properties = copy.deepcopy(properties)
@@ -413,6 +435,14 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
             raise ValueError("Animation FSM clipboard link has no transition payload")
         transition = copy.deepcopy(transition)
         transition["stable_id"] = new_id
+        decoded = AnimTransition.from_dict(transition)
+        parameter_ids = {parameter.stable_id for parameter in self._fsm.parameters}
+        for condition in decoded.conditions:
+            if condition.parameter_id not in parameter_ids:
+                raise ValueError(
+                    "Animation FSM paste references a parameter not declared in "
+                    f"the target document: {condition.parameter_id!r}"
+                )
         properties = copy.deepcopy(properties)
         properties["fsm_transition"] = transition
         payload = copy.deepcopy(payload)
@@ -2259,16 +2289,24 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
         self._uid_to_name = {state.stable_id: state.name for state in fsm.states}
         self._entry_uid = _FSM_ENTRY_NODE_ID
 
-    def _unique_state_name(self, want: str) -> str:
+    def _unique_state_name(
+        self, want: str, *, reserved_names: Optional[set[str]] = None
+    ) -> str:
+        if reserved_names is None:
+            reserved_names = {
+                self._graph_state_name(node.uid)
+                for node in self._graph.nodes
+                if node.type_id == FSM_STATE_NODE_TYPE_ID
+            }
         base = (want or "State").strip() or "State"
-        if not self._graph_state_uid_by_name(base):
+        if base not in reserved_names:
             return base
         n = sum(
             node.type_id == FSM_STATE_NODE_TYPE_ID for node in self._graph.nodes
         )
         while True:
             cand = f"{base} {n}"
-            if not self._graph_state_uid_by_name(cand):
+            if cand not in reserved_names:
                 return cand
             n += 1
 
