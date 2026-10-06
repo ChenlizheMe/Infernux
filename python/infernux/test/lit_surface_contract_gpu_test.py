@@ -6,7 +6,8 @@ import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.core.asset_types import TextureImportSettings,TextureType,TextureCompression,read_mesh_import_settings
 from infernux.lib import ConsolePanel, InxMaterial, SceneManager, Vector3
-ROOT=Path(__file__).resolve().parents[3]
+from infernux.engine.path_utils import resolved_path
+ROOT=Path(resolved_path(__file__)).parents[3]
 
 text=(ROOT/'docs/learn/fragment-materials.md').read_text(encoding='utf-8')
 functions=[block for block in re.findall(r'```glsl\n(.*?)```',text,re.S) if block.startswith('void surface(out SurfaceData s)')]

@@ -6,7 +6,8 @@ import numpy as np
 import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel,SceneManager,Vector3
-ROOT=Path(__file__).resolve().parents[3]
+from infernux.engine.path_utils import resolved_path
+ROOT=Path(resolved_path(__file__)).parents[3]
 
 blocks=re.findall(r'```python\n(.*?)```',(ROOT/'docs/learn/rendergraph-advanced.md').read_text(encoding='utf-8'),re.S)
 commit=[block for block in blocks if block.startswith('with graph.add_pass("CommitGrade")')]
