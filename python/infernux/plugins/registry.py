@@ -9,6 +9,7 @@ import time
 import uuid
 import threading
 import weakref
+from contextlib import contextmanager
 from typing import Iterable, Mapping
 
 from packaging.utils import canonicalize_name
@@ -42,6 +43,7 @@ class PluginRegistry:
         self.lock_path = os.path.join(self.project_root, LOCK_RELATIVE_PATH)
         self.environment_path = os.path.join(self.project_root, "Library", "Plugins", "PythonEnvironment.json")
         self._last_committed_state = None
+        self._presentation = threading.local()
         # UI, preload and build readers can have separate registry instances.
         # Serialize the shared ledger and local environment as one publication.
         with _registry_locks_guard:
@@ -54,6 +56,27 @@ class PluginRegistry:
     def load(self) -> dict[str, object]:
         with self._publication_lock:
             return self._load()
+
+    @contextmanager
+    def presentation_reads(self):
+        """Give one UI frame a coherent catalog; mutation reads remain fresh."""
+        if getattr(self._presentation, "active", False):
+            yield
+            return
+        self._presentation.active = True
+        self._presentation.document = None
+        try:
+            yield
+        finally:
+            self._presentation.document = None
+            self._presentation.active = False
+
+    def _query_document(self) -> dict[str, object]:
+        if not getattr(self._presentation, "active", False):
+            return self.load()
+        if self._presentation.document is None:
+            self._presentation.document = self.load()
+        return self._presentation.document
 
     def _load(self) -> dict[str, object]:
         file_state = capture_document_file_state(self.path)
@@ -142,6 +165,9 @@ class PluginRegistry:
         )
         ticket.wait()
         self._last_committed_state = ticket.committed_file_state
+        # A synchronous UI action may publish while a presentation is active.
+        # Its next query must observe the committed registry.
+        self._presentation.document = None
         if isinstance(value, _RegistrySnapshot):
             value.file_state = self._last_committed_state
         os.makedirs(os.path.dirname(self.environment_path), exist_ok=True)
@@ -181,12 +207,12 @@ class PluginRegistry:
 
     def available(self) -> tuple[dict[str, object], ...]:
         return tuple(
-            dict(item) for item in self.load()["packages"] if isinstance(item, dict)
+            dict(item) for item in self._query_document()["packages"] if isinstance(item, dict)
         )
 
     def installed(self) -> tuple[dict[str, object], ...]:
         return tuple(
-            dict(item) for item in self.load()["installed"] if isinstance(item, dict)
+            dict(item) for item in self._query_document()["installed"] if isinstance(item, dict)
         )
 
     def find(self, reference: str) -> dict[str, object] | None:

@@ -93,7 +93,8 @@ class PluginPanel(EditorPanel):
         if manager is None:
             ctx.text_wrapped(t("plugins.unavailable"))
             return
-        self._render_browser(ctx, manager)
+        with manager.registry.presentation_reads():
+            self._render_browser(ctx, manager)
 
     def _render_browser(self, ctx, manager: PluginManager) -> None:
         self._render_toolbar(ctx, manager)
@@ -361,35 +362,25 @@ class PluginPanel(EditorPanel):
                     if row.get("_official"):
                         name = f"{name}  [{t('plugins.official')}]"
                     selected = key == self._selected_reference.casefold()
+                    start_x = ctx.get_cursor_pos_x()
+                    width = ctx.get_content_region_avail_width()
+                    status_w = ctx.calc_text_width(status)
+                    status_x = start_x + width - status_w - _metric(ctx, 8.0)
+                    display_name = self._fit_text(
+                        ctx, name,
+                        max(0.0, status_x - start_x - _metric(ctx, Theme.INSPECTOR_TITLE_GAP)),
+                    )
+                    # Measure and render with the same editor font. Runtime UI
+                    # text uses em-normalized sizing and is not an editor label.
+                    ctx.align_text_to_frame_padding()
                     if ctx.selectable(
-                        f"##plugin_row_{key}", selected, 0, 0.0, _metric(ctx, 26.0)
+                        f"{display_name}###plugin_row_{key}", selected, 0, 0.0, _metric(ctx, 26.0)
                     ):
                         self._selected_reference = reference
-                    x0 = ctx.get_item_rect_min_x()
-                    y0 = ctx.get_item_rect_min_y()
-                    x1 = ctx.get_item_rect_max_x()
-                    y1 = ctx.get_item_rect_max_y()
-                    status_w = ctx.calc_text_width(status)
-                    name_right = max(
-                        x0 + _metric(ctx, 48.0),
-                        x1
-                        - status_w
-                        - _metric(ctx, Theme.INSPECTOR_TITLE_GAP)
-                        - _metric(ctx, 10.0),
-                    )
-                    display_name = self._fit_text(
-                        ctx,
-                        name,
-                        max(_metric(ctx, 24.0), name_right - x0 - _metric(ctx, 10.0)),
-                    )
-                    ctx.draw_text_aligned(
-                        x0 + _metric(ctx, 8.0), y0, name_right, y1,
-                        display_name, *Theme.TEXT, 0.0, 0.5, 0.0, True,
-                    )
-                    ctx.draw_text_aligned(
-                        name_right, y0, x1 - _metric(ctx, 8.0), y1,
-                        status, *status_color, 1.0, 0.5, 0.0, True,
-                    )
+                    ctx.same_line(status_x)
+                    ctx.push_style_color(ImGuiCol.Text, *status_color)
+                    ctx.label(status)
+                    ctx.pop_style_color()
                 ctx.pop_style_var(1)
         ctx.end_child()
         ctx.pop_style_var(1)

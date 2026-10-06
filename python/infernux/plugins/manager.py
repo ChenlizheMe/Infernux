@@ -223,13 +223,16 @@ class PluginManager:
         self._deferred_catalog_changes: set[str] = set()
         self._page_workspaces = ExitStack()
         self._cached_page_roots: dict[tuple[str, int, int], str] = {}
+        self._shared_package_cache: SharedPackageCache | None = None
 
     def _package_cache(self) -> SharedPackageCache:
-        return SharedPackageCache(
-            staging_root=os.path.join(
-                self.project_root, "Cache", "Plugins", ".staging"
+        if self._shared_package_cache is None:
+            self._shared_package_cache = SharedPackageCache(
+                staging_root=os.path.join(
+                    self.project_root, "Cache", "Plugins", ".staging"
+                )
             )
-        )
+        return self._shared_package_cache
 
     @classmethod
     def instance(cls) -> "PluginManager | None":
