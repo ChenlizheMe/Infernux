@@ -22,6 +22,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--proof', type=Path)
     parser.add_argument('--shading', choices=('unlit', 'pbr'), default='unlit')
+    parser.add_argument('--skinned', action='store_true')
     args = parser.parse_args()
     proof = {'package': inx.__file__, 'native': _Infernux.__file__, 'shading': args.shading, 'phases': [], 'scope': 'Public vertex hook and alpha-clip shadow basis compared to separately authored equivalent CPU mesh. Unit, nonuniform and mirrored model scale, Forward/Forward+/Deferred, MSAA1/4.'}
     def visible_mask(rgb):
@@ -60,6 +61,15 @@ def main():
                 's.albedo = vec3(.5,.15,.04); s.smoothness = 0.0;\n    s.normalWS = normalFromTangentSpace(normalize(vec3(.35,-.25,.9)), getWorldNormal(), getWorldTangent());')
         for name, source in [('Quad.obj', quad), ('Probe.vert', vertex), ('Probe.frag', fragment), ('Receiver.frag', RECEIVER)]:
             (project / 'Assets' / name).write_text(source, encoding='ascii')
+        if args.skinned:
+            from skinned_mesh_gpu_fixture import write_skinned_quad
+            write_skinned_quad(project / 'Assets/Quad.gltf', envelope=True)
+            # Match the hook's deliberately authored UV orientation in both
+            # paths. The CPU mesh has already applied the bone reflection.
+            vertex = vertex.replace('Float deform=1.0', 'Float deform=1.0 Float referenceW=1.0')
+            vertex = vertex.replace('v.tangent.w = material.handedness;', 'v.tangent.w = material.handedness * material.referenceW;')
+            (project / 'Assets/Probe.vert').write_text(vertex, encoding='ascii')
+            proof['scope'] += ' Imported bone scale animation after vertex hook compared with CPU positions and normal-mapped lighting.'
         frontend = inx.Engine()
         engine = frontend.get_native_engine()
         console = ConsolePanel()
@@ -73,7 +83,7 @@ def main():
             engine.set_editor_idle_fps(0)
             db = frontend.get_asset_database()
             imported = {}
-            for name in ('Quad.obj', 'Probe.vert', 'Probe.frag', 'Receiver.frag'):
+            for name in ('Quad.obj', 'Probe.vert', 'Probe.frag', 'Receiver.frag', *(('Quad.gltf',) if args.skinned else ())):
                 result = AssetManager.import_asset(str(project / 'Assets' / name), database=db)
                 assert result, result.error
                 imported[name] = result.guid
@@ -97,11 +107,20 @@ def main():
             receiver.set_material(0, receiver_material)
             obj = scene.create_game_object('Caster')
             obj.transform.position = Vector3(-.5,0,-1.5)
-            caster = obj.add_component('MeshRenderer')
+            caster = obj.add_component('SkinnedMeshRenderer' if args.skinned else 'MeshRenderer')
+            reference_obj = reference_renderer = None
+            if args.skinned:
+                caster.set_source_model_guid(imported['Quad.gltf'])
+                assert caster.get_animation_take_names() == ['Scale']
+                reference_obj = scene.create_game_object('CPU Skinned Reference')
+                reference_obj.transform.position = obj.transform.position
+                reference_renderer = reference_obj.add_component('MeshRenderer')
             material = InxMaterial.create_default_unlit()
             material.vert_shader_name = 'Deformed Tangent Probe'
             material.frag_shader_name = 'Deformed Tangent Consumer'
             caster.set_material(0, material)
+            if reference_renderer is not None:
+                reference_renderer.set_material(0, material)
             plan = scale_index = phase = frame = changed = 0
             ticket = None
             images = {}
@@ -119,15 +138,33 @@ def main():
 
             def apply():
                 scale = scales[scale_index]
-                obj.transform.local_scale = Vector3(*scale)
+                if not args.skinned:
+                    obj.transform.local_scale = Vector3(*scale)
                 for key, value in zip(('scaleX', 'scaleY', 'scaleZ'), scale):
                     material.set_float(key, value)
-                caster.enabled = phase != 0
-                choice = int(phase == 2)
-                caster.set_inline_mesh_data(mesh_positions[choice], mesh_normals[choice], mesh_uvs,
-                                            mesh_indices, 'CPU Shadow Reference' if choice else 'GPU Hook Shadow',
-                                            mesh_tangents[choice])
+                if args.skinned:
+                    caster.enabled = phase in (1,3)
+                    reference_renderer.enabled = phase == 2
+                    pose_time = float(scale_index)
+                    caster.submit_animation_pose('Scale', pose_time, pose_time/3., loop=False)
+                    normals = mesh_normals[1] / np.array(scale, dtype=np.float32)
+                    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+                    tangents = mesh_tangents[1].copy()
+                    tangents[:,:3] *= np.array(scale, dtype=np.float32)
+                    tangents[:,:3] /= np.linalg.norm(tangents[:,:3], axis=1, keepdims=True)
+                    tangents[:,3] *= np.sign(np.prod(scale))
+                    reference_renderer.set_inline_mesh_data(mesh_positions[1] * np.array(scale, dtype=np.float32),
+                        normals, mesh_uvs, mesh_indices, 'CPU Bone Scale Reference', tangents)
+                    np.testing.assert_allclose(caster.get_world_bounds(), reference_renderer.get_world_bounds(), atol=1.e-5)
+                else:
+                    caster.enabled = phase != 0
+                    choice = int(phase == 2)
+                    caster.set_inline_mesh_data(mesh_positions[choice], mesh_normals[choice], mesh_uvs,
+                                                mesh_indices, 'CPU Shadow Reference' if choice else 'GPU Hook Shadow',
+                                                mesh_tangents[choice])
                 material.set_float('deform', 0. if phase == 2 else 1.)
+                if args.skinned:
+                    material.set_float('referenceW', float(np.sign(np.prod(scale))) if phase == 2 else 1.)
 
             set_pipeline()
             apply()

@@ -98,7 +98,7 @@ This order has concrete consequences:
 
 - A skinned mesh carries the deformed local position through the generated bone palette. The hook cannot branch on bone data through the current `VertexInput` contract.
 - Instanced meshes receive a generated current instance transform; the Motion variant also receives its previous transform. The hook has no public per-instance selector, so it cannot express instance-specific deformation. Split renderer/material configurations when instances need different hook behavior.
-- The generated model transform applies the inverse-transpose matrix to normals and the model matrix to tangent directions. Mirrored object or instance scale also reverses the tangent handedness. These transforms run after the hook. It cannot reconstruct a normal or tangent left stale by the deformation. Skinned directions use the bone matrix's `mat3`; non-uniform scale inside bone matrices needs asset-specific visual verification.
+- The generated model transform applies the inverse-transpose matrix to normals and the model matrix to tangent directions. Mirrored object or instance scale also reverses the tangent handedness. These transforms run after the hook and cannot reconstruct a normal or tangent left stale by the deformation. Skinning applies the same rule to the blended bone matrix: inverse transpose for normals, direction transform for tangents, and reversed handedness for a mirrored blend. Two reflections, one in the bone blend and one in the model transform, cancel.
 
 <div class="learn-warning"><strong>Deformed geometry has more than one consumer.</strong><p>If an effect changes the visible silhouette, verify the Scene camera, Game camera, shadow caster, object picking, and motion-vector path. The generated variants reuse the hook, but bounds and previous-frame procedural deformation still have separate limits described below.</p></div>
 
@@ -310,7 +310,7 @@ void vertex(inout VertexInput v) {
 
 - 蒙皮 Mesh 会让形变后的局部位置继续经过生成的骨骼调色板；当前 `VertexInput` 契约无法让 Hook 按骨骼数据分支。
 - 实例化 Mesh 会获得生成的当前实例变换；Motion 变体也会获得上一帧实例变换。Hook 没有公共的逐实例选择值，无法表达实例间不同的形变。实例需要不同 Hook 行为时，应拆分 Renderer/Material 配置。
-- 生成的 Model 变换用逆转置矩阵处理法线，用 Model 矩阵处理切线方向；物体或实例的镜像缩放也会翻转切线手性。这些变换都在 Hook 之后执行；它无法修复形变后仍然过期的 Normal 或 Tangent。蒙皮方向使用骨骼矩阵的 `mat3`，骨骼矩阵含非均匀缩放时需要针对资产做视觉验证。
+- 生成的 Model 变换用逆转置矩阵处理法线，用 Model 矩阵处理切线方向；物体或实例的镜像缩放也会翻转切线手性。这些变换都在 Hook 之后执行，无法修复形变后仍然过期的 Normal 或 Tangent。蒙皮对混合后的骨骼矩阵应用同样的规则：法线用逆转置矩阵，切线用方向变换，镜像骨骼混合翻转切线手性。骨骼混合和 Model 变换各发生一次镜像时，两次翻转会相互抵消。
 
 <div class="learn-warning"><strong>形变后的几何体会进入多条路径。</strong><p>只要效果改变了轮廓，就应同时验证 Scene 相机、Game 相机、阴影投射、点击拾取和运动向量路径。生成变体会复用 Hook；Bounds 与上一帧程序化形变仍有各自限制，详见下文。</p></div>
 

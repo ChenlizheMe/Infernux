@@ -47,12 +47,16 @@ void surface(out SurfaceData s) {
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--proof', type=Path)
+    parser.add_argument('--skinned', action='store_true')
     args = parser.parse_args()
     plans = [(inx.renderstack.DefaultForwardPipeline, 1), (inx.renderstack.DefaultForwardPipeline, 4),
              (inx.renderstack.DefaultForwardPlusPipeline, 1), (inx.renderstack.DefaultForwardPlusPipeline, 4),
              (inx.renderstack.DefaultDeferredPipeline, 1)]
     phases = [('unit', (1., 1., 1.), 1.), ('nonuniform', (2., .5, 1.), 1.),
               ('mirror', (-2., .5, 1.), 1.), ('uv_mirror', (2., .5, 1.), -1.), ('restored', (1., 1., 1.), 1.)]
+    if args.skinned:
+        phases[-1:-1] = [('bone_and_model_mirrors', (1.,1.,1.), 1.),
+                         ('bone_and_model_nonuniform', (1.,1.5,2.), 1.)]
     proof = {'package': inx.__file__, 'scope': 'Public vertex hook rotates positions, normals and tangents together. Shader checks analytical world normal/tangent, orientation, orthogonality, bitangent and tangent-space normal mapping. Two shared mesh/material renderers, five render-path/MSAA configurations, nonuniform/mirrored scales and both UV handedness signs.', 'phases': []}
     with tempfile.TemporaryDirectory(prefix='infernux-tangent-frame-') as folder:
         project = Path(folder)
@@ -60,8 +64,13 @@ def main():
             (project / name).mkdir()
         for name, source in (('Probe.vert', VERTEX), ('Probe.frag', FRAGMENT)):
             (project / 'Assets' / name).write_text(source, encoding='utf-8')
-        mesh = project / 'Assets/Quad.obj'
-        mesh.write_text('v -0.5 -0.5 0\nv 0.5 -0.5 0\nv 0.5 0.5 0\nv -0.5 0.5 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nvn 0 0 -1\nf 1/1/1 3/3/1 2/2/1\nf 1/1/1 4/4/1 3/3/1\n', encoding='ascii')
+        mesh = project / ('Assets/Quad.gltf' if args.skinned else 'Assets/Quad.obj')
+        if args.skinned:
+            from skinned_mesh_gpu_fixture import write_skinned_quad
+            write_skinned_quad(mesh)
+            proof['scope'] += ' Imported one-joint scale animation after vertex hook; additional combined bone/model scales and two mirrors canceling handedness.'
+        else:
+            mesh.write_text('v -0.5 -0.5 0\nv 0.5 -0.5 0\nv 0.5 0.5 0\nv -0.5 0.5 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nvn 0 0 -1\nf 1/1/1 3/3/1 2/2/1\nf 1/1/1 4/4/1 3/3/1\n', encoding='ascii')
         frontend = inx.Engine()
         native = frontend.get_native_engine()
         console = ConsolePanel()
@@ -93,8 +102,12 @@ def main():
             for x in (-1., 1.):
                 obj = scene.create_game_object(f'Tangent Quad {x}')
                 obj.transform.position = Vector3(x, 0, 0)
-                renderer = obj.add_component('MeshRenderer')
-                renderer.set_mesh_asset_guid(imported_mesh.guid)
+                renderer = obj.add_component('SkinnedMeshRenderer' if args.skinned else 'MeshRenderer')
+                if args.skinned:
+                    renderer.set_source_model_guid(imported_mesh.guid)
+                    assert renderer.get_animation_take_names() == ['Scale']
+                else:
+                    renderer.set_mesh_asset_guid(imported_mesh.guid)
                 renderer.set_material(0, material)
                 objects.append(obj)
             plan = phase = frame = changed = 0
@@ -108,7 +121,13 @@ def main():
                 # Alter UV orientation in the authored hook without replacing
                 # the mesh, so both renderers continue sharing the same asset.
                 for obj in objects:
-                    obj.transform.local_scale = Vector3(*scale)
+                    if args.skinned:
+                        model_scale = {4: (-.5,2.,1.), 5: (.5,3.,2.)}.get(phase, (1.,1.,1.))
+                        obj.transform.local_scale = Vector3(*model_scale)
+                        pose_time = (0.,1.,2.,1.,2.,1.,0.)[phase]
+                        obj.get_component('SkinnedMeshRenderer').submit_animation_pose('Scale', pose_time, pose_time/3., loop=False)
+                    else:
+                        obj.transform.local_scale = Vector3(*scale)
 
             def set_pipeline():
                 nonlocal pipeline
@@ -179,7 +198,7 @@ def main():
     proof['passed'] = True
     if args.proof:
         args.proof.write_text(json.dumps(proof, indent=2), encoding='utf-8')
-    print('PASS 25 deformed tangent-frame GPU phases', flush=True)
+    print(f'PASS {len(plans)*len(phases)} deformed tangent-frame GPU phases', flush=True)
 
 
 if __name__ == '__main__':

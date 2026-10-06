@@ -87,9 +87,10 @@ ${VERTEX_CALL}
                 inBoneWeights.z * skinBones[skin.boneOffset + min(inBoneIndices.z, skin.boneCount - 1u)] +
                 inBoneWeights.w * skinBones[skin.boneOffset + min(inBoneIndices.w, skin.boneCount - 1u)];
             v.position = (skinMat * vec4(v.position, 1.0)).xyz;
-            mat3 skinNormalMat = mat3(skinMat);
-            v.normal = normalize(skinNormalMat * v.normal);
-            v.tangent = vec4(normalize(skinNormalMat * v.tangent.xyz), v.tangent.w);
+            mat3 skinDirectionMat = mat3(skinMat);
+            v.normal = normalize(transpose(inverse(skinDirectionMat)) * v.normal);
+            v.tangent = vec4(normalize(skinDirectionMat * v.tangent.xyz),
+                             v.tangent.w * sign(determinant(skinDirectionMat)));
         }
         worldPos = instModel * vec4(v.position, 1.0);
         mat3 modelMatrix = mat3(instModel);
