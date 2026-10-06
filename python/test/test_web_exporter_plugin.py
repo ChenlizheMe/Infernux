@@ -551,6 +551,147 @@ def test_web_publish_html_switch_failure_keeps_previous_generation_complete(
     assert not list(output.glob(".*.tmp"))
 
 
+@pytest.mark.parametrize("had_template,failure", [
+    (had_template, failure)
+    for had_template in (False, True)
+    for failure in ("template_copy", "template_scan", "template_publish", "html_switch",
+                    "interrupt", "none", "remove_template", "remove_template_failure")
+] + [(True, "rollback")])
+def test_web_custom_template_failure_preserves_previous_publication(monkeypatch, tmp_path, had_template, failure):
+    _web_module(monkeypatch)
+    exporter = importlib.import_module("infernux_web.exporter")
+    capabilities = importlib.import_module("infernux_web.capabilities")
+    request = _request(tmp_path)
+    output = Path(request.output_dir)
+    output.mkdir(parents=True)
+    host = tmp_path / "host"
+    host.mkdir()
+    old_revision, revision = "a" * 24, "b" * 24
+    old_html = b"old publication"
+    (output / "infernux-player.html").write_bytes(old_html)
+    for suffix in ("js", "wasm", "data", "inxpkg"):
+        (output / f"infernux-player.{old_revision}.{suffix}").write_bytes(b"old resource")
+        (host / f"infernux-player.{revision}.{suffix}").write_bytes(b"new resource")
+    html = (
+        f"const assetRevision = '{revision}'; infernux-player.{revision}.js;"
+        "'infernux-runtime.wasm': `infernux-player.${assetRevision}.wasm`,"
+        "'infernux-runtime.data': `infernux-player.${assetRevision}.data`;"
+        '<link href="web-template/theme/site.css">'
+    )
+    if failure.startswith("remove_template"):
+        html = html.replace('<link href="web-template/theme/site.css">', '')
+    (host / "infernux-player.html").write_text(html, encoding="utf-8")
+    for name in ("infernux-logo.png", "infernux-favicon.png", "infernux-icon-192.png",
+                 "infernux-icon-512.png", "infernux.webmanifest", "infernux-branding.js"):
+        (host / name).write_bytes(b"branding")
+    (host / exporter.WEBGPU_CAPABILITY_FILENAME).write_text(
+        json.dumps(capabilities.webgpu_capability_inventory()), encoding="utf-8"
+    )
+    template = tmp_path / "custom-template"
+    (template / "theme").mkdir(parents=True)
+    (template / "shell.html").write_text("input shell", encoding="utf-8")
+    (template / "theme/site.css").write_bytes(b"new css")
+    published_template = output / "web-template"
+    if had_template:
+        (published_template / "theme").mkdir(parents=True)
+        (published_template / "theme/site.css").write_bytes(b"old css")
+    # This directory belongs to somebody else; publication must never sweep
+    # generic staging names it did not allocate.
+    foreign = output / ".web-template.tmp"
+    foreign.mkdir()
+    (foreign / "sentinel").write_bytes(b"unrelated")
+    copy = exporter.shutil.copy2
+    replace = exporter.os.replace
+    scandir = exporter.os.scandir
+
+    def fail_copy(source, destination, *args, **kwargs):
+        if failure == "template_copy" and Path(source).name == "site.css":
+            Path(destination).write_bytes(b"partial")
+            raise OSError("owned template copy failure")
+        return copy(source, destination, *args, **kwargs)
+
+    def fail_replace(source, destination, *args, **kwargs):
+        target, origin = Path(destination), Path(source)
+        if failure == "template_publish" and target == published_template and origin.name != "previous":
+            raise OSError("owned template publish failure")
+        if failure in {"html_switch", "rollback", "remove_template_failure"} and target == output / "infernux-player.html":
+            raise OSError("owned html switch failure")
+        if failure == "interrupt" and target == output / "infernux-player.html":
+            raise KeyboardInterrupt("owned build interruption")
+        if failure == "rollback" and origin.name == "previous":
+            raise OSError("owned rollback failure")
+        return replace(source, destination, *args, **kwargs)
+
+    def fail_scan(path):
+        if failure == "template_scan" and Path(path) == template / "theme":
+            raise PermissionError("owned template scan failure")
+        return scandir(path)
+
+    monkeypatch.setattr(exporter.shutil, "copy2", fail_copy)
+    monkeypatch.setattr(exporter.os, "replace", fail_replace)
+    if failure == "template_scan":
+        monkeypatch.setattr(exporter.os, "scandir", fail_scan)
+    selected_template = None if failure.startswith("remove_template") else template
+    if failure in {"none", "remove_template"}:
+        artifacts, actual_revision = exporter._publish_web_player(request, host, selected_template)
+        assert actual_revision == revision
+        assert all(Path(artifact.path).is_file() for artifact in artifacts)
+        assert (output / "infernux-player.html").read_text(encoding="utf-8") == html
+        if failure == "none":
+            assert (published_template / "theme/site.css").read_bytes() == b"new css"
+            assert not (published_template / "shell.html").exists()
+        else:
+            assert not published_template.exists()
+        assert not list(output.glob(f"infernux-player.{old_revision}.*"))
+        assert (foreign / "sentinel").read_bytes() == b"unrelated"
+        assert not [path for path in output.glob(".web-template.*") if path != foreign]
+        return
+    error_type = {"rollback": RuntimeError, "interrupt": KeyboardInterrupt}.get(failure, OSError)
+    error_message = "retained template workspace" if failure == "rollback" else "owned"
+    with pytest.raises(error_type, match=error_message):
+        exporter._publish_web_player(request, host, selected_template)
+    assert (output / "infernux-player.html").read_bytes() == old_html
+    for suffix in ("js", "wasm", "data", "inxpkg"):
+        assert (output / f"infernux-player.{old_revision}.{suffix}").read_bytes() == b"old resource"
+    if failure == "rollback":
+        workspaces = [path for path in output.glob(".web-template.*") if path != foreign]
+        assert len(workspaces) == 1
+        assert (workspaces[0] / "previous/theme/site.css").read_bytes() == b"old css"
+        assert (foreign / "sentinel").read_bytes() == b"unrelated"
+        return
+    if had_template:
+        assert (published_template / "theme/site.css").read_bytes() == b"old css"
+    else:
+        assert not published_template.exists()
+    assert (foreign / "sentinel").read_bytes() == b"unrelated"
+    assert not [path for path in output.glob(".web-template.*") if path != foreign]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows template junction boundaries")
+@pytest.mark.parametrize("placement", ["root", "child"])
+def test_web_template_staging_rejects_junctions_without_copying_external_files(monkeypatch, tmp_path, placement):
+    import _winapi
+    _web_module(monkeypatch)
+    exporter = importlib.import_module("infernux_web.exporter")
+    source = tmp_path / "source"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "private.txt"
+    sentinel.write_bytes(b"external content")
+    if placement == "child":
+        source.mkdir()
+    junction = source if placement == "root" else source / "linked"
+    _winapi.CreateJunction(str(outside), str(junction))
+    try:
+        with pytest.raises(RuntimeError, match="link.*junction"):
+            exporter._stage_project_web_template(source, tmp_path / "staged")
+        assert sentinel.read_bytes() == b"external content"
+        assert not list((tmp_path / "staged").rglob("private.txt"))
+    finally:
+        if os.path.isjunction(junction):
+            os.rmdir(junction)
+
+
 def test_web_publish_copy_failure_keeps_previous_generation_complete(
     monkeypatch, tmp_path
 ):
