@@ -29,10 +29,18 @@ def test_native_integer_batch_creation_refresh_and_render(engine, value, limits,
                 if opened:
                     plan = ctx.create_property_batch_plan([descriptor])
                     assert plan.size == 1
-                    assert ctx.render_property_batch_plan(plan, 12.) == {}
+                    ctx.push_id_str("create")
+                    try:
+                        assert ctx.render_property_batch_plan(plan, 12.) == {}
+                    finally:
+                        ctx.pop_id()
                     # A cached plan must also accept the same full-width value
                     # after its initial metadata/value decoding has completed.
-                    assert ctx.render_property_batch_plan_values(plan, [value], 12.) == {}
+                    ctx.push_id_str("refresh")
+                    try:
+                        assert ctx.render_property_batch_plan_values(plan, [value], 12.) == {}
+                    finally:
+                        ctx.pop_id()
                     observed["renders"] += 1
             except Exception as error:
                 observed["error"] = error

@@ -301,6 +301,15 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_material_preview_latitude_tests PRIVATE infernux_runtime_test_support)
     add_test(NAME infernux.material_preview_latitude COMMAND infernux_material_preview_latitude_tests)
 
+    add_executable(infernux_editor_drag_drop_tests cpp/tests/EditorDragDropTests.cpp)
+    target_include_directories(infernux_editor_drag_drop_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_editor_drag_drop_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_editor_drag_drop_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.editor_drag_drop COMMAND infernux_editor_drag_drop_tests)
+
     add_executable(infernux_editor_tools_tests
         cpp/tests/EditorToolsTests.cpp
     )

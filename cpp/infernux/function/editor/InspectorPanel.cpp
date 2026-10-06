@@ -406,12 +406,8 @@ void InspectorPanel::RenderPropertiesModule(InxGUIContext *ctx, float height)
 
     // Drag-drop target for scripts on the whole PropertiesModule
     if (m_selectedObjectId != 0 && ImGui::BeginDragDropTarget()) {
-        const ImGuiPayload *payload = ImGui::AcceptDragDropPayload("SCRIPT_FILE");
-        if (payload) {
-            std::string path(static_cast<const char *>(payload->Data), payload->DataSize);
-            // Remove trailing null if present
-            if (!path.empty() && path.back() == '\0')
-                path.pop_back();
+        std::string path;
+        if (ctx->AcceptDragDropPayload("SCRIPT_FILE", &path)) {
             ExecuteEditorCommand("component.add", MakeComponentAddCommandArgument("", false, path), "drag_drop");
         }
         ImGui::EndDragDropTarget();
@@ -1613,17 +1609,14 @@ InspectorPanel::ComponentHeaderResult InspectorPanel::RenderComponentHeader(
             }
         }
         if (targetComponentId != 0) {
-            if (const ImGuiPayload *payload =
-                    ImGui::AcceptDragDropPayload("SCRIPT_FILE", ImGuiDragDropFlags_AcceptBeforeDelivery)) {
+            std::string path;
+            if (ctx->AcceptDragDropPayload("SCRIPT_FILE", &path, ImGuiDragDropFlags_AcceptBeforeDelivery)) {
                 const bool insertAfter =
                     !allowComponentReorder || ImGui::GetMousePos().y >= (headerMin.y + headerMax.y) * 0.5f;
                 const float lineY = insertAfter ? headerMax.y : headerMin.y;
                 ImGui::GetWindowDrawList()->AddLine(ImVec2(headerMin.x, lineY), ImVec2(headerMax.x, lineY),
                                                     ImGui::GetColorU32(ImGuiCol_DragDropTarget), 2.0f * dpi);
-                if (payload->IsDelivery()) {
-                    std::string path(static_cast<const char *>(payload->Data), payload->DataSize);
-                    if (!path.empty() && path.back() == '\0')
-                        path.pop_back();
+                if (ImGui::GetDragDropPayload()->IsDelivery()) {
                     const uint64_t commandTargetId = allowComponentReorder ? targetComponentId : 0;
                     const bool insertAtStart = !allowComponentReorder;
                     if (!ExecuteEditorCommand("component.add",

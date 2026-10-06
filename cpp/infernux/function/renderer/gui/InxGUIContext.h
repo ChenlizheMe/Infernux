@@ -359,7 +359,7 @@ class InxGUIContext
     bool BeginDragDropTarget();
     bool BeginDragDropTargetRect(float minX, float minY, float maxX, float maxY, const std::string &targetId);
     bool AcceptDragDropPayload(const std::string &type, uint64_t *outData);
-    bool AcceptDragDropPayload(const std::string &type, std::string *outData);
+    bool AcceptDragDropPayload(const std::string &type, std::string *outData, int flags = 0);
     /// Accept whichever payload is being dragged (uses current ImGui payload ``DataType``).
     bool AcceptAnyDragDropPayload(std::string *outType, uint64_t *outU64, std::string *outStr, bool *outIsU64);
     void EndDragDropTarget();

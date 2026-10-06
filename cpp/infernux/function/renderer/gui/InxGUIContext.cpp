@@ -1733,6 +1733,44 @@ void InxGUIContext::EndDisabled()
 }
 
 /* Drag and Drop */
+namespace
+{
+// ImGui copies opaque bytes. A small explicit tag preserves the value kind
+// across native/Python panels without guessing from its length or source.
+enum class DragValueKind : unsigned char
+{
+    Unknown = 0,
+    UInt64 = 1,
+    String = 2
+};
+constexpr size_t DragValueHeaderSize = 4;
+
+DragValueKind GetDragValueKind(const ImGuiPayload *payload)
+{
+    if (!payload || !payload->Data || payload->DataSize < static_cast<int>(DragValueHeaderSize))
+        return DragValueKind::Unknown;
+    const auto *bytes = static_cast<const unsigned char *>(payload->Data);
+    if (bytes[0] != 'I' || bytes[1] != 'N' || bytes[2] != 'X')
+        return DragValueKind::Unknown;
+    const auto kind = static_cast<DragValueKind>(bytes[3]);
+    if (kind == DragValueKind::String)
+        return kind;
+    if (kind == DragValueKind::UInt64 && payload->DataSize == DragValueHeaderSize + sizeof(uint64_t))
+        return kind;
+    return DragValueKind::Unknown;
+}
+
+const char *DragValueData(const ImGuiPayload *payload)
+{
+    return static_cast<const char *>(payload->Data) + DragValueHeaderSize;
+}
+
+void ReadDragString(const ImGuiPayload *payload, std::string *value)
+{
+    value->assign(DragValueData(payload), payload->DataSize - DragValueHeaderSize);
+}
+} // namespace
+
 bool InxGUIContext::BeginDragDropSource(int flags)
 {
     return ImGui::BeginDragDropSource(static_cast<ImGuiDragDropFlags>(flags));
@@ -1740,12 +1778,17 @@ bool InxGUIContext::BeginDragDropSource(int flags)
 
 bool InxGUIContext::SetDragDropPayload(const std::string &type, uint64_t data)
 {
-    return ImGui::SetDragDropPayload(type.c_str(), &data, sizeof(data));
+    std::array<unsigned char, DragValueHeaderSize + sizeof(data)> bytes = {
+        'I', 'N', 'X', static_cast<unsigned char>(DragValueKind::UInt64)};
+    std::memcpy(bytes.data() + DragValueHeaderSize, &data, sizeof(data));
+    return ImGui::SetDragDropPayload(type.c_str(), bytes.data(), bytes.size());
 }
 
 bool InxGUIContext::SetDragDropPayload(const std::string &type, const std::string &data)
 {
-    return ImGui::SetDragDropPayload(type.c_str(), data.c_str(), data.size() + 1);
+    std::string bytes{'I', 'N', 'X', static_cast<char>(DragValueKind::String)};
+    bytes.append(data);
+    return ImGui::SetDragDropPayload(type.c_str(), bytes.data(), bytes.size());
 }
 
 void InxGUIContext::EndDragDropSource()
@@ -1769,19 +1812,25 @@ bool InxGUIContext::BeginDragDropTargetRect(float minX, float minY, float maxX, 
 
 bool InxGUIContext::AcceptDragDropPayload(const std::string &type, uint64_t *outData)
 {
+    const ImGuiPayload *preview = ImGui::GetDragDropPayload();
+    if (GetDragValueKind(preview) != DragValueKind::UInt64 || !preview->IsDataType(type.c_str()))
+        return false;
     const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(type.c_str());
-    if (payload && payload->DataSize == sizeof(uint64_t)) {
-        *outData = *static_cast<const uint64_t *>(payload->Data);
+    if (payload) {
+        std::memcpy(outData, DragValueData(payload), sizeof(*outData));
         return true;
     }
     return false;
 }
 
-bool InxGUIContext::AcceptDragDropPayload(const std::string &type, std::string *outData)
+bool InxGUIContext::AcceptDragDropPayload(const std::string &type, std::string *outData, int flags)
 {
-    const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(type.c_str());
-    if (payload && payload->DataSize > 0) {
-        *outData = std::string(static_cast<const char *>(payload->Data), payload->DataSize - 1);
+    const ImGuiPayload *preview = ImGui::GetDragDropPayload();
+    if (GetDragValueKind(preview) != DragValueKind::String || !preview->IsDataType(type.c_str()))
+        return false;
+    const ImGuiPayload *payload = ImGui::AcceptDragDropPayload(type.c_str(), flags);
+    if (payload) {
+        ReadDragString(payload, outData);
         return true;
     }
     return false;
@@ -1791,23 +1840,21 @@ bool InxGUIContext::AcceptAnyDragDropPayload(std::string *outType, uint64_t *out
                                              bool *outIsU64)
 {
     const ImGuiPayload *preview = ImGui::GetDragDropPayload();
-    if (!preview || preview->DataType[0] == '\0')
+    const DragValueKind kind = GetDragValueKind(preview);
+    if (kind == DragValueKind::Unknown)
         return false;
     const ImGuiPayload *acc = ImGui::AcceptDragDropPayload(preview->DataType);
     if (!acc)
         return false;
     outType->assign(preview->DataType);
-    if (acc->DataSize == sizeof(uint64_t)) {
+    if (kind == DragValueKind::UInt64) {
         *outIsU64 = true;
-        *outU64 = *reinterpret_cast<const uint64_t *>(acc->Data);
+        std::memcpy(outU64, DragValueData(acc), sizeof(*outU64));
         return true;
     }
     *outIsU64 = false;
-    if (acc->DataSize > 0) {
-        *outStr = std::string(static_cast<const char *>(acc->Data), acc->DataSize - 1);
-        return true;
-    }
-    return false;
+    ReadDragString(acc, outStr);
+    return true;
 }
 
 void InxGUIContext::EndDragDropTarget()
