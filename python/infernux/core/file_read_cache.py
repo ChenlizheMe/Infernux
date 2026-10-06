@@ -47,8 +47,12 @@ def file_stamp(path: str):
             value.st_mtime_ns, value.st_ctime_ns)
 
 
+def _file_probe(path: str):
+    return lambda: file_stamp(path)
+
+
 if os.name == "nt":
-    from ._windows_file_observation import file_stamp
+    from ._windows_file_observation import FileProbe as _file_probe, file_stamp
 
 
 class FileObservations:
@@ -60,7 +64,8 @@ class FileObservations:
     def watch(self, path: str | os.PathLike[str]) -> None:
         path = lexical_path(path)
         if path not in self._files:
-            self._files[path] = file_stamp(path)
+            probe = _file_probe(path)
+            self._files[path] = probe, probe()
 
     def watch_tree(
         self, root: str | os.PathLike[str], *, suffixes: frozenset[str] | None = None,
@@ -82,7 +87,7 @@ class FileObservations:
                     self.watch(os.path.join(directory, name))
 
     def unchanged(self) -> bool:
-        return all(file_stamp(path) == stamp for path, stamp in self._files.items())
+        return all(probe() == stamp for probe, stamp in self._files.values())
 
 
 class FileReadCache:

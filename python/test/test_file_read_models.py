@@ -140,6 +140,51 @@ def test_bounded_eviction_and_failed_reads_never_serve_previous_success(tmp_path
     assert cache.get("b", prepare) == "repaired"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows native query path reuse")
+def test_warm_file_observation_reuses_query_paths_but_requeries_state(tmp_path, monkeypatch):
+    from infernux.core import _windows_file_observation as windows
+
+    path = tmp_path / "每帧🧩.txt"
+    path.write_text("first", encoding="utf-8")
+    cache = FileReadCache()
+
+    def prepare(observed):
+        observed.watch(path)
+        return path.read_text(encoding="utf-8")
+
+    assert cache.get("doc", prepare) == "first"
+    create_buffer = windows.ctypes.create_unicode_buffer
+    allocations = []
+
+    def counted_buffer(*args, **kwargs):
+        allocations.append(1)
+        return create_buffer(*args, **kwargs)
+
+    monkeypatch.setattr(windows.ctypes, "create_unicode_buffer", counted_buffer)
+    for _ in range(20):
+        with read_model_frame():
+            assert cache.get("doc", prepare) == "first"
+    assert allocations == []
+    path.write_text("changed", encoding="utf-8")
+    assert cache.get("doc", prepare) == "changed"
+    assert len(allocations) == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows concurrent native metadata queries")
+def test_one_windows_query_path_can_be_observed_concurrently(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from infernux.core._windows_file_observation import FileProbe, file_stamp
+
+    path = tmp_path / "并发🧩.txt"
+    path.write_text("content", encoding="utf-8")
+    probe = FileProbe(str(path))
+    expected = file_stamp(str(path))
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        assert list(workers.map(lambda _: probe(), range(64))) == [expected] * 64
+    path.unlink()
+    assert probe() is None
+
+
 def test_current_query_and_publication_bypass_active_presentation(tmp_path):
     path = tmp_path / "value.txt"
     path.write_text("first", encoding="utf-8")

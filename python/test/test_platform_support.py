@@ -127,6 +127,78 @@ def test_support_install_gate_rechecks_manifest_inside_a_panel_frame(tmp_path):
             require_plugin_support("infernux/platform-android", environment)
 
 
+def test_support_layout_reuses_parsing_but_checks_every_required_file(tmp_path, monkeypatch):
+    from infernux.plugins import platform_support as support
+    from infernux.core.file_read_cache import read_model_frame
+
+    root = tmp_path / "android"
+    root.mkdir()
+    _support_root(root)
+    environment = {"INFERNUX_ANDROID_SUPPORT_ROOT": str(root)}
+    assert android_support_available(environment)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Unchanged support layout was parsed or constructed again")
+
+    monkeypatch.setattr(support, "_relative", unexpected)
+    layout = support._support_layout(root)
+    with read_model_frame():
+        assert android_support_available(environment)
+        # Installation decisions must not consume an earlier UI observation.
+        for path in layout.files:
+            contents = path.read_bytes()
+            path.unlink()
+            with pytest.raises(RuntimeError, match="Infernux Hub"):
+                require_plugin_support("infernux/platform-android", environment)
+            path.write_bytes(contents)
+            require_plugin_support("infernux/platform-android", environment)
+        for path in layout.directories:
+            path.rmdir()
+            assert not android_support_available(environment)
+            path.mkdir()
+            assert android_support_available(environment)
+
+
+def test_support_environment_uses_one_validated_manifest_revision(tmp_path, monkeypatch):
+    from infernux.plugins.platform_support import android_support_environment
+
+    root = tmp_path / "android"
+    root.mkdir()
+    _support_root(root)
+    environment = {"INFERNUX_ANDROID_SUPPORT_ROOT": str(root)}
+    manifest = root / "infernux-android-support.json"
+    read_text = Path.read_text
+    reads = []
+
+    def read_and_replace(path, *args, **kwargs):
+        value = read_text(path, *args, **kwargs)
+        if path == manifest:
+            reads.append(1)
+            manifest.write_text('{"paths": {"sdk": "unvalidated"}}', encoding="utf-8")
+        return value
+
+    monkeypatch.setattr(Path, "read_text", read_and_replace)
+    result = android_support_environment(environment)
+    assert result["ANDROID_SDK_ROOT"] == str(root / "sdk")
+    assert result["JAVA_HOME"] == str(root / "jdk")
+    assert len(reads) == 1
+    assert android_support_environment(environment) == {}
+
+
+@pytest.mark.parametrize("document", [[], None, {"paths": []}, {"paths": {"python": []}}])
+def test_malformed_support_manifest_never_produces_an_environment(tmp_path, document):
+    from infernux.plugins.platform_support import android_support_environment
+
+    root = tmp_path / "android"
+    root.mkdir()
+    _support_root(root)
+    environment = {"INFERNUX_ANDROID_SUPPORT_ROOT": str(root)}
+    assert android_support_available(environment)
+    (root / "infernux-android-support.json").write_text(json.dumps(document), encoding="utf-8")
+    assert not android_support_available(environment)
+    assert android_support_environment(environment) == {}
+
+
 def test_plugin_manager_cannot_bypass_the_hub_android_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -168,7 +240,7 @@ def test_plugin_panel_marks_android_import_unavailable_before_click(
 
     class _Registry:
         @staticmethod
-        def installed():
+        def installed_metadata():
             return []
 
         @staticmethod
