@@ -9,6 +9,7 @@
  * - Render graph topology definition from Python
  */
 
+#include "BindingRegistration.h"
 #include "Infernux.h"
 #include "function/renderer/RenderGraphDescription.h"
 #include "function/renderer/RendererSelection.h"

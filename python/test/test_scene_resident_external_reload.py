@@ -16,7 +16,7 @@ import pytest
 @pytest.mark.parametrize("valid", [True, False])
 def test_external_reload_uses_resident_document_owner(tmp_path, target_active, dirty, valid):
     child = subprocess.run(
-        [sys.executable, str(Path(__file__).resolve()), str(tmp_path),
+        [sys.executable, "-X", "faulthandler", str(Path(__file__).resolve()), str(tmp_path),
          str(int(target_active)), str(int(dirty)), str(int(valid))],
         env=dict(os.environ), capture_output=True, text=True, encoding="utf-8",
         errors="replace", timeout=60,
@@ -44,6 +44,7 @@ def _exercise(project: Path, target_active: bool, dirty: bool, valid: bool) -> N
     engine = Engine(LogLevel.Warn, RuntimeMode.Headless)
     try:
         engine.init_headless(str(project))
+        print("RESIDENT_SCENE_ENGINE_READY", flush=True)
         native = SceneManager.instance()
         database = engine.get_asset_database()
         manager = SceneFileManager.instance()
@@ -83,6 +84,7 @@ def _exercise(project: Path, target_active: bool, dirty: bool, valid: bool) -> N
         active_document_before = manager.document_id
         path_before = manager.current_scene_path
         doc_a_id, doc_b_id = doc_a.document_id, doc_b.document_id
+        print("RESIDENT_SCENE_WORLDS_READY", flush=True)
 
         external = json.loads(paths["A"].read_text(encoding="utf-8"))
         external["objects"][0]["name"] = "ExternalA"
@@ -92,6 +94,7 @@ def _exercise(project: Path, target_active: bool, dirty: bool, valid: bool) -> N
         handler.on_modified(SimpleNamespace(is_directory=False, src_path=str(paths["A"])))
         assert handler.process_pending_reloads(force=True) == 1
         assert handler.pending_count == 0
+        print("RESIDENT_SCENE_EVENT_PROCESSED", flush=True)
         if dirty:
             assert doc_a.state is DocumentState.CONFLICT
             conflicts = ExternalDocumentConflictService(registry)
@@ -99,6 +102,7 @@ def _exercise(project: Path, target_active: bool, dirty: bool, valid: bool) -> N
             assert conflicts.active is not None and conflicts.active.document_id == doc_a_id
             result = conflicts.reload(conflicts.active.conflict_id)
             assert result.accepted is valid, result.message
+            print("RESIDENT_SCENE_CONFLICT_RESOLVED", flush=True)
         if valid:
             assert scene_a.find("ExternalA") is not None
             assert doc_a.state is DocumentState.READY and not doc_a.is_dirty

@@ -82,4 +82,25 @@ inline nlohmann::json PythonToJson(py::handle value)
     throw py::type_error("document values must be dict, list, tuple, str, bool, int, float, or None");
 }
 
+// Argument conversion must finish before a native entity's caster resolves its
+// owner. Iterating Python list subclasses can execute arbitrary author code.
+struct PythonDocument
+{
+    nlohmann::json value;
+};
+
 } // namespace infernux
+
+namespace pybind11::detail
+{
+template <> struct type_caster<infernux::PythonDocument>
+{
+    PYBIND11_TYPE_CASTER(infernux::PythonDocument, const_name("object"));
+
+    bool load(handle source, bool)
+    {
+        value.value = infernux::PythonToJson(source);
+        return true;
+    }
+};
+} // namespace pybind11::detail

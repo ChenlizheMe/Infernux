@@ -10,8 +10,6 @@ import importlib.machinery
 import importlib.util
 import os
 import sys
-from inspect import isfunction, ismethoddescriptor
-from functools import wraps
 
 
 lib_dir = os.path.join(os.path.dirname(__file__))
@@ -365,118 +363,6 @@ for _internal_name in (
         globals()[_internal_name] = getattr(_native_module, _internal_name)
 
 
-_INVALID_NATIVE_LIFETIME_MARKERS = (
-    "access violation",
-    "rtti",
-    "null pointer",
-    "instance is null",
-    "has been destroyed",
-    "use after free",
-)
-
-
-def _is_native_lifetime_error(exc) -> bool:
-    """Return True when *exc* looks like a stale native-object access."""
-    if not isinstance(exc, RuntimeError):
-        return False
-    message = str(exc).strip().lower()
-    return any(marker in message for marker in _INVALID_NATIVE_LIFETIME_MARKERS)
-
-
-class InvalidNativeObjectError(RuntimeError):
-    """Raised when Python touches a native object that has been destroyed.
-
-    ``bool(obj)`` is the sanctioned liveness check (a destroyed object is
-    falsy, mirroring Unity's destroyed-object semantics). Any other access to
-    a stale handle is a caller bug and fails immediately instead of returning
-    a fabricated default.
-    """
-
-
-def _raise_invalid_native(obj, name: str, exc: RuntimeError):
-    raise InvalidNativeObjectError(
-        f"{type(obj).__name__}.{name}: native object has been destroyed "
-        f"(use `if obj:` to test liveness before access)"
-    ) from exc
-
-
-def _wrap_native_method(name: str, func):
-    @wraps(func)
-    def _guarded(obj, *args, **kwargs):
-        try:
-            return func(obj, *args, **kwargs)
-        except RuntimeError as exc:
-            if _is_native_lifetime_error(exc):
-                _raise_invalid_native(obj, name, exc)
-            raise
-
-    setattr(_guarded, "_infernux_native_guarded", True)
-    return _guarded
-
-
-def _install_native_lifetime_guard(cls, *, check_liveness: bool = True) -> None:
-    """Guard the native boundary once, not every Python method lookup.
-
-    Methods and properties use ordinary descriptor binding after installation.
-    Python fields need no interception: native accesses inside user methods
-    already cross this boundary. There is no per-object callable cache.
-    Query/callback records are values, not entities with an id. Guard their
-    native property access without replacing their Python truth value.
-    """
-    if cls.__dict__.get("_infernux_native_lifetime_guard_installed", False):
-        return
-
-    for name, method in tuple(vars(cls).items()):
-        if name.startswith("__"):
-            continue
-        if isinstance(method, property):
-            setattr(cls, name, property(
-                _wrap_native_method(name, method.fget) if method.fget else None,
-                _wrap_native_method(name, method.fset) if method.fset else None,
-                _wrap_native_method(name, method.fdel) if method.fdel else None,
-                doc=method.__doc__,
-            ))
-        elif (not isinstance(method, (staticmethod, classmethod))
-              and (isfunction(method) or ismethoddescriptor(method))):
-            setattr(cls, name, _wrap_native_method(name, method))
-
-    if not check_liveness or getattr(cls, "_infernux_native_lifetime_guard_installed", False):
-        cls._infernux_native_lifetime_guard_installed = True
-        return  # Inherit the native base's liveness check.
-
-    original_getattribute = cls.__getattribute__
-
-    def _guarded_bool(self):
-        for attr in ("id", "component_id"):
-            try:
-                identifier = original_getattribute(self, attr)
-            except AttributeError:
-                continue
-            except RuntimeError as exc:
-                if _is_native_lifetime_error(exc):
-                    return False
-                raise
-            if identifier:
-                return True
-        return False
-
-    cls.__bool__ = _guarded_bool
-    cls._infernux_native_lifetime_guard_installed = True
-
-
-def _install_native_lifetime_guards(cls):
-    _install_native_lifetime_guard(cls)
-    for child in cls.__subclasses__():
-        _install_native_lifetime_guards(child)
-
-
-for _native_cls in (GameObject, Component):
-    _install_native_lifetime_guards(_native_cls)
-
-for _native_cls in (RaycastHit, CollisionInfo):
-    _install_native_lifetime_guard(_native_cls, check_liveness=False)
-
-
 class _Vec3WritebackProxy:
     """Write-through proxy so ``transform.position.x += dt`` actually persists.
 
@@ -730,12 +616,7 @@ def _native_game_object_instantiate(
 
 
 def _call_native_game_object(method_name: str, native_method, game_object, *args):
-    try:
-        return native_method(game_object, *args)
-    except RuntimeError as exc:
-        if _is_native_lifetime_error(exc):
-            _raise_invalid_native(game_object, method_name, exc)
-        raise
+    return native_method(game_object, *args)
 
 
 def _is_vector3_like(value) -> bool:
@@ -1141,10 +1022,8 @@ def _resolve_public_component(component):
     if callable(py_component_getter):
         try:
             return py_component_getter()
-        except RuntimeError as exc:
-            if _is_native_lifetime_error(exc):
-                return None
-            raise
+        except InvalidNativeObjectError:
+            return None
 
     if _resolve_builtin_wrapper(type(component)) is not None:
         return _wrap_native_builtin_component(component)

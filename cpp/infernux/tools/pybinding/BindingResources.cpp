@@ -18,6 +18,8 @@
 #include <pybind11/stl.h>
 #include <stdexcept>
 
+#include "BindingRegistration.h"
+
 namespace py = pybind11;
 
 namespace infernux

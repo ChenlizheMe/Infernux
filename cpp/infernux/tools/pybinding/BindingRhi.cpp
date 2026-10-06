@@ -1,3 +1,4 @@
+#include "BindingRegistration.h"
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/renderer/rhi/RhiTypes.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>

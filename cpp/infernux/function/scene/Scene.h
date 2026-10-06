@@ -24,7 +24,7 @@ class InxMaterial;
  * The Scene is the root container for all GameObjects in the game world.
  * It manages object lifecycle, updates, and provides lookup functionality.
  */
-class Scene
+class Scene : public NativeLifetimeOwner
 {
   public:
     Scene() = default;
@@ -408,6 +408,9 @@ class Scene
     friend class GameObject;
     friend class SceneCommitToken;
 
+    void RequireWritableWorld() const;
+    void RetireRootObjects();
+
     void CollectAllObjects(GameObject *obj, std::vector<GameObject *> &result) const;
     void QueueStartObject(GameObject *obj);
     void StartObject(GameObject *obj);
@@ -485,6 +488,7 @@ class Scene
     bool m_isLoaded = false;
     bool m_isPlaying = false;
     bool m_hasStarted = false;
+    bool m_retiringObjects = false;
     bool m_runtimeLifecycleSchedulerEnabled = false;
 
     // Per-scene environment (skybox material + ambient) settings

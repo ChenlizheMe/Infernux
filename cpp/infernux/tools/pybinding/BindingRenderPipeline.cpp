@@ -1,3 +1,4 @@
+#include "BindingRegistration.h"
 #include <function/renderer/CommandBuffer.h>
 #include <function/renderer/RenderGraphDescription.h>
 #include <function/renderer/ScriptableRenderContext.h>

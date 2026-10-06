@@ -7,6 +7,7 @@
 
 // Jolt types are no longer exposed in collider headers — no Jolt include needed here
 
+#include "BindingRegistration.h"
 #include "ComponentBindingRegistry.h"
 #include "JsonPyBridge.h"
 #include "MatrixPyBridge.h"
@@ -417,8 +418,9 @@ class RendererRegistryTransaction final
 using FloatArray = py::array_t<float, py::array::c_style | py::array::forcecast>;
 
 static py::object InstantiateGameObjectsBatch(Scene &scene, GameObject *source, const FloatArray &positions,
-                                              const py::object &rotationsObject, const py::object &scalesObject,
-                                              GameObject *parent, bool instantiateInWorldSpace, bool returnObjects)
+                                              const std::optional<FloatArray> &rotations,
+                                              const std::optional<FloatArray> &scales, GameObject *parent,
+                                              bool instantiateInWorldSpace, bool returnObjects)
 {
     if (!source)
         throw std::invalid_argument("Instantiate batch requires a source GameObject");
@@ -428,24 +430,16 @@ static py::object InstantiateGameObjectsBatch(Scene &scene, GameObject *source, 
         throw std::invalid_argument("Instantiate positions must have shape (N, 3)");
 
     const py::ssize_t count = positions.shape(0);
-    FloatArray rotations;
-    FloatArray scales;
-    const bool hasRotations = !rotationsObject.is_none();
-    const bool hasScales = !scalesObject.is_none();
-    if (hasRotations) {
-        rotations = FloatArray::ensure(rotationsObject);
-        if (!rotations || rotations.ndim() != 2 || rotations.shape(0) != count || rotations.shape(1) != 4)
-            throw std::invalid_argument("Instantiate rotations must have shape (N, 4) in x, y, z, w order");
-    }
-    if (hasScales) {
-        scales = FloatArray::ensure(scalesObject);
-        if (!scales || scales.ndim() != 2 || scales.shape(0) != count || scales.shape(1) != 3)
-            throw std::invalid_argument("Instantiate scales must have shape (N, 3)");
-    }
+    const bool hasRotations = rotations.has_value();
+    const bool hasScales = scales.has_value();
+    if (hasRotations && (rotations->ndim() != 2 || rotations->shape(0) != count || rotations->shape(1) != 4))
+        throw std::invalid_argument("Instantiate rotations must have shape (N, 4) in x, y, z, w order");
+    if (hasScales && (scales->ndim() != 2 || scales->shape(0) != count || scales->shape(1) != 3))
+        throw std::invalid_argument("Instantiate scales must have shape (N, 3)");
 
     const float *positionData = positions.data();
-    const float *rotationData = hasRotations ? rotations.data() : nullptr;
-    const float *scaleData = hasScales ? scales.data() : nullptr;
+    const float *rotationData = hasRotations ? rotations->data() : nullptr;
+    const float *scaleData = hasScales ? scales->data() : nullptr;
 
     const size_t batchCount = static_cast<size_t>(count);
     try {
@@ -843,7 +837,7 @@ void RegisterSceneBindings(py::module_ &m)
     // ========================================================================
     // Component binding
     // ========================================================================
-    py::class_<Component>(m, "Component")
+    NativeClass<Component>(m, "Component")
         .def_property_readonly("type_name", &Component::GetTypeName)
         .def_property_readonly("component_id", &Component::GetComponentID)
         .def_property_readonly("handle", &Component::GetHandle)
@@ -863,14 +857,14 @@ void RegisterSceneBindings(py::module_ &m)
             "Serialize component to a Python document")
         .def(
             "validate_document",
-            [](const Component &component, py::handle document) {
-                ComponentFactory::ValidateDocument(component.GetTypeName(), PythonToJson(document));
+            [](const Component &component, const PythonDocument &document) {
+                ComponentFactory::ValidateDocument(component.GetTypeName(), document.value);
             },
             py::arg("document"), "Validate a complete candidate document without modifying the component")
         .def(
             "deserialize_document",
-            [](Component &component, py::handle document) {
-                return component.DeserializeDocument(PythonToJson(document));
+            [](Component &component, const PythonDocument &document) {
+                return component.DeserializeDocument(document.value);
             },
             py::arg("document"), "Deserialize component from a Python document")
         .def_property_readonly("required_component_types", &Component::GetRequiredComponentTypes,
@@ -883,7 +877,7 @@ void RegisterSceneBindings(py::module_ &m)
     //   position / euler_angles   → world space
     //   local_position / local_euler_angles / local_scale → local space
     // ========================================================================
-    py::class_<Transform, Component>(m, "Transform")
+    NativeClass<Transform, Component>(m, "Transform")
         // ---- World-space properties (Unity: transform.position) ----
         .def_property(
             "position", [](Transform *t) { return t->GetWorldPosition(); },
@@ -1077,7 +1071,7 @@ void RegisterSceneBindings(py::module_ &m)
     // ========================================================================
     // MeshRenderer binding
     // ========================================================================
-    py::class_<MeshRenderer, Component>(m, "MeshRenderer")
+    NativeClass<MeshRenderer, Component>(m, "MeshRenderer")
         .def("has_inline_mesh", &MeshRenderer::HasInlineMesh)
         .def_property("inline_mesh_name", &MeshRenderer::GetInlineMeshName, &MeshRenderer::SetInlineMeshName,
                       "Display name for inline (primitive) meshes, e.g. 'Cube', 'Sphere'")
@@ -1123,9 +1117,9 @@ void RegisterSceneBindings(py::module_ &m)
             py::arg("count"), "Set the number of material slots")
         .def(
             "set_parameter",
-            [](MeshRenderer &renderer, const std::string &name, py::object value, uint32_t materialSlot,
-               bool persistent, const std::string &owner) {
-                auto material = renderer.GetEffectiveMaterial(materialSlot);
+            [](py::object renderer, const std::string &name, py::object value, uint32_t materialSlot, bool persistent,
+               const std::string &owner) {
+                auto material = renderer.cast<MeshRenderer &>().GetEffectiveMaterial(materialSlot);
                 if (!material)
                     throw py::value_error("set_parameter requires an effective material");
                 const MaterialProperty *property = material->GetProperty(name);
@@ -1199,7 +1193,10 @@ void RegisterSceneBindings(py::module_ &m)
                     break;
                 }
                 }
-                renderer.SetParameter(materialSlot, name, std::move(nativeValue), persistent, owner);
+                // Custom sequence/texture conversion above can retire the
+                // renderer. Resolve the original wrapper immediately before use.
+                renderer.cast<MeshRenderer &>().SetParameter(materialSlot, name, std::move(nativeValue), persistent,
+                                                             owner);
             },
             py::arg("name"), py::arg("value"), py::arg("material_slot") = 0, py::arg("persistent") = false,
             py::arg("owner") = "script",
@@ -1275,16 +1272,17 @@ void RegisterSceneBindings(py::module_ &m)
         .def(
             "set_inline_mesh_data",
             [](MeshRenderer &mr, const py::array_t<float, py::array::c_style | py::array::forcecast> &positions,
-               const py::object &normals, const py::array_t<float, py::array::c_style | py::array::forcecast> &uvs,
+               const std::optional<FloatArray> &normals,
+               const py::array_t<float, py::array::c_style | py::array::forcecast> &uvs,
                const py::array_t<uint32_t, py::array::c_style | py::array::forcecast> &indices, const std::string &name,
-               const py::object &tangents) {
+               const std::optional<FloatArray> &tangents) {
                 if (positions.ndim() != 2 || positions.shape(1) != 3)
                     throw py::value_error("positions must have shape (N, 3)");
                 if (uvs.ndim() != 2 || uvs.shape(1) != 2 || uvs.shape(0) != positions.shape(0))
                     throw py::value_error("uvs must have shape (N, 2) and match positions");
                 if (indices.ndim() != 1)
                     throw py::value_error("indices must have shape (M,)");
-                if (normals.is_none() && indices.shape(0) % 3 != 0)
+                if (!normals && indices.shape(0) % 3 != 0)
                     throw py::value_error("Normal generation requires complete triangles");
 
                 const size_t vertexCount = static_cast<size_t>(positions.shape(0));
@@ -1298,9 +1296,8 @@ void RegisterSceneBindings(py::module_ &m)
                     vertex.normal = glm::vec3(0.0f);
                     vertex.texCoord = {uvData(row, 0), uvData(row, 1)};
                 }
-                if (!normals.is_none()) {
-                    const auto normalArray =
-                        normals.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+                if (normals) {
+                    const auto &normalArray = *normals;
                     if (normalArray.ndim() != 2 || normalArray.shape(1) != 3 ||
                         normalArray.shape(0) != positions.shape(0))
                         throw py::value_error("normals must have shape (N, 3) and match positions");
@@ -1308,9 +1305,8 @@ void RegisterSceneBindings(py::module_ &m)
                     for (py::ssize_t row = 0; row < normalArray.shape(0); ++row)
                         vertices[row].normal = {normalData(row, 0), normalData(row, 1), normalData(row, 2)};
                 }
-                if (!tangents.is_none()) {
-                    const auto tangentArray =
-                        tangents.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+                if (tangents) {
+                    const auto &tangentArray = *tangents;
                     if (tangentArray.ndim() != 2 || tangentArray.shape(1) != 4 ||
                         tangentArray.shape(0) != positions.shape(0))
                         throw py::value_error("tangents must have shape (N, 4) and match positions");
@@ -1329,9 +1325,9 @@ void RegisterSceneBindings(py::module_ &m)
                     encodedIndices[i] = index;
                 }
 
-                if (normals.is_none())
+                if (!normals)
                     RecalculateMeshNormals(vertices, encodedIndices);
-                if (tangents.is_none() && encodedIndices.size() % 3 == 0)
+                if (!tangents && encodedIndices.size() % 3 == 0)
                     RecalculateMeshTangents(vertices, encodedIndices);
 
                 mr.SetProceduralMesh(std::move(vertices), std::move(encodedIndices));
@@ -1600,7 +1596,7 @@ void RegisterSceneBindings(py::module_ &m)
         .def_readwrite("time", &LineColorKey::time)
         .def_readwrite("color", &LineColorKey::color);
 
-    py::class_<LineRenderer, MeshRenderer>(m, "LineRenderer")
+    NativeClass<LineRenderer, MeshRenderer>(m, "LineRenderer")
         .def(py::init<>())
         .def_property(
             "position_count", &LineRenderer::GetPositionCount,
@@ -1655,7 +1651,7 @@ void RegisterSceneBindings(py::module_ &m)
     // ========================================================================
     // SkinnedMeshRenderer — animated model placeholder, inherits MeshRenderer
     // ========================================================================
-    py::class_<SkinnedMeshRenderer, MeshRenderer>(m, "SkinnedMeshRenderer")
+    NativeClass<SkinnedMeshRenderer, MeshRenderer>(m, "SkinnedMeshRenderer")
         .def(py::init<>())
         .def_property_readonly("source_model_guid", &SkinnedMeshRenderer::GetSourceModelGuid,
                                "GUID of the animated source model asset")
@@ -1754,7 +1750,7 @@ void RegisterSceneBindings(py::module_ &m)
     // ========================================================================
     // SpriteRenderer — inherits MeshRenderer for rendering, adds sprite props
     // ========================================================================
-    py::class_<SpriteRenderer, MeshRenderer>(m, "SpriteRenderer")
+    NativeClass<SpriteRenderer, MeshRenderer>(m, "SpriteRenderer")
         .def(py::init<>())
         .def_property("sprite_guid", &SpriteRenderer::GetSpriteGuid, &SpriteRenderer::SetSpriteGuid,
                       "Asset GUID of the sprite texture")
@@ -1801,7 +1797,7 @@ void RegisterSceneBindings(py::module_ &m)
     // ========================================================================
     // Light component binding (Unity-like API)
     // ========================================================================
-    py::class_<Light, Component>(m, "Light")
+    NativeClass<Light, Component>(m, "Light")
         // Light type
         .def_property("light_type", &Light::GetLightType, &Light::SetLightType,
                       "Type of light (Directional, Point, Spot, Area)")
@@ -1856,7 +1852,7 @@ void RegisterSceneBindings(py::module_ &m)
     // ========================================================================
     // PyComponentProxy binding (for Python-defined components)
     // ========================================================================
-    py::class_<PyComponentProxy, Component>(m, "PyComponentProxy")
+    NativeClass<PyComponentProxy, Component>(m, "PyComponentProxy")
         .def("get_py_component", &PyComponentProxy::GetPyComponent, "Get the underlying Python component")
         .def("get_py_type_name", &PyComponentProxy::GetPyTypeName, "Get the Python type name")
         .def("is_valid", &PyComponentProxy::IsValid, "Check if this proxy holds a valid Python component")
@@ -1915,7 +1911,7 @@ void RegisterSceneBindings(py::module_ &m)
     // ========================================================================
     // Camera component binding (Unity-like API)
     // ========================================================================
-    py::class_<Camera, Component>(m, "Camera")
+    NativeClass<Camera, Component>(m, "Camera")
         .def_property("target_texture", &Camera::GetTargetTexture, &Camera::SetTargetTexture,
                       "Shared RenderTexture output owner")
         .def_property("target_texture_guid", &Camera::GetTargetTextureGuid, &Camera::SetTargetTextureGuid,
@@ -2092,7 +2088,7 @@ void RegisterSceneBindings(py::module_ &m)
     // ========================================================================
     // GameObject binding
     // ========================================================================
-    py::class_<GameObject>(m, "GameObject")
+    NativeClass<GameObject>(m, "GameObject")
         .def_property("name", &GameObject::GetName, &GameObject::SetName)
         .def_property("active", &GameObject::IsActive, &GameObject::SetActive)
         .def_property_readonly("active_self", &GameObject::GetActiveSelf,
@@ -2101,7 +2097,6 @@ void RegisterSceneBindings(py::module_ &m)
                                "Is active in hierarchy? (Unity: gameObject.activeInHierarchy)")
         .def_property_readonly("is_destroying", &GameObject::IsDestroying,
                                "True while the native GameObject is being retired")
-        .def("__bool__", [](const GameObject *obj) { return obj != nullptr && !obj->IsDestroying(); })
         .def_property_readonly("id", &GameObject::GetID)
         .def_property_readonly("handle", &GameObject::GetHandle)
         .def_property("tag", &GameObject::GetTag, &GameObject::SetTag, "Tag string for this GameObject")
@@ -2122,9 +2117,7 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property(
             "_prefab_source_document",
             [](const GameObject &object) { return JsonToPython(object.GetPrefabSourceDocument()); },
-            [](GameObject &object, const py::object &document) {
-                object.SetPrefabSourceDocument(PythonToJson(document));
-            })
+            [](GameObject &object, const PythonDocument &document) { object.SetPrefabSourceDocument(document.value); })
         .def_static("_reserve_document_ids",
                     [](size_t objectCount, size_t componentCount) {
                         std::vector<uint64_t> objects(objectCount), components(componentCount);
@@ -2538,8 +2531,8 @@ void RegisterSceneBindings(py::module_ &m)
             "Serialize GameObject to a Python document")
         .def(
             "_commit_document",
-            [](GameObject &object, py::handle document, bool preserveDocumentIds) {
-                return object.DeserializeDocument(PythonToJson(document), preserveDocumentIds);
+            [](GameObject &object, const PythonDocument &document, bool preserveDocumentIds) {
+                return object.DeserializeDocument(document.value, preserveDocumentIds);
             },
             py::arg("document"), py::arg("preserve_document_ids") = true,
             "Internal native subtree commit; Python callers must preflight first")
@@ -2704,8 +2697,8 @@ void RegisterSceneBindings(py::module_ &m)
           "Schedule scene file IO and structural validation on the native JobSystem");
     m.def(
         "_validate_resolved_scene_document",
-        [](py::handle document) { ValidateResolvedSceneDocument(PythonToJson(document)); },
-        py::arg("document"), "Validate a resolved Scene before publishing its cooked artifact");
+        [](py::handle document) { ValidateResolvedSceneDocument(PythonToJson(document)); }, py::arg("document"),
+        "Validate a resolved Scene before publishing its cooked artifact");
     m.def(
         "_encode_scene_authoring_document",
         [](py::handle document) {
@@ -2753,7 +2746,7 @@ void RegisterSceneBindings(py::module_ &m)
         .def("_preflight_resource_dependencies", &ScenePlayModeSnapshot::PreflightResourceDependencies)
         .def("_resource_dependencies", &ScenePlayModeSnapshot::ResourceDependencies);
 
-    py::class_<Scene>(m, "Scene")
+    NativeClass<Scene>(m, "Scene")
         .def_property("name", &Scene::GetName, &Scene::SetName)
         .def_property_readonly("is_preview", &Scene::IsPreview)
         .def(
@@ -2890,13 +2883,22 @@ void RegisterSceneBindings(py::module_ &m)
              py::arg("layer"), "Find all GameObjects in a given layer")
         .def("destroy_game_object", &Scene::DestroyGameObject, py::arg("game_object"),
              "Destroy a GameObject (will be removed at end of frame)")
+        .def(
+            "_remove_game_object_immediately",
+            [](Scene &scene, GameObject *object) {
+                if (!object || object->GetScene() != &scene)
+                    throw std::invalid_argument("Immediate removal requires an object owned by this Scene");
+                scene.RemoveGameObject(object);
+            },
+            py::arg("game_object"), "Remove one transaction-owned object without draining the Scene destroy queue")
         .def("_clone_game_object", &Scene::InstantiateGameObject, py::return_value_policy::reference, py::arg("source"),
              py::arg("parent") = nullptr, py::arg("instantiate_in_world_space") = false,
              "Internal native subtree clone; Python callers must preflight first")
         .def(
             "_clone_game_objects",
-            [](Scene &scene, GameObject *source, const FloatArray &positions, const py::object &rotations,
-               const py::object &scales, GameObject *parent, bool instantiateInWorldSpace, bool returnObjects) {
+            [](Scene &scene, GameObject *source, const FloatArray &positions,
+               const std::optional<FloatArray> &rotations, const std::optional<FloatArray> &scales, GameObject *parent,
+               bool instantiateInWorldSpace, bool returnObjects) {
                 return InstantiateGameObjectsBatch(scene, source, positions, rotations, scales, parent,
                                                    instantiateInWorldSpace, returnObjects);
             },
@@ -2905,8 +2907,8 @@ void RegisterSceneBindings(py::module_ &m)
             "Internal native bulk subtree clone used by the public Instantiate overload")
         .def(
             "_instantiate_document",
-            [](Scene &scene, py::handle document, GameObject *parent) {
-                return scene.InstantiateFromDocument(PythonToJson(document), parent);
+            [](Scene &scene, const PythonDocument &document, GameObject *parent) {
+                return scene.InstantiateFromDocument(document.value, parent);
             },
             py::return_value_policy::reference, py::arg("document"), py::arg("parent") = nullptr,
             "Internal native ObjectGraph instantiate; Python callers must preflight first")
@@ -2930,12 +2932,12 @@ void RegisterSceneBindings(py::module_ &m)
             "Capture an opaque native scene document for Play Mode restoration")
         .def(
             "_commit_document",
-            [](Scene &scene, py::handle document) { return scene.DeserializeDocument(PythonToJson(document)); },
+            [](Scene &scene, const PythonDocument &document) { return scene.DeserializeDocument(document.value); },
             py::arg("document"), "Internal native staging commit; Python callers must preflight first")
         .def(
             "_commit_document_retaining_world",
-            [](Scene &scene, py::handle document) {
-                return scene.CommitDocumentRetainingCurrentWorld(PythonToJson(document));
+            [](Scene &scene, const PythonDocument &document) {
+                return scene.CommitDocumentRetainingCurrentWorld(document.value);
             },
             py::arg("document"), "Commit a candidate and retain the previous native world until finalized")
         .def(

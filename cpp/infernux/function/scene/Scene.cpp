@@ -256,14 +256,7 @@ bool SceneCommitToken::Rollback()
     Scene &scene = *state.scene;
     try {
         SceneManager::Instance().ClearComponentRegistries(&scene);
-        scene.m_mainCamera = nullptr;
-        scene.m_rootObjects.clear();
-        scene.m_objectsById.clear();
-        scene.m_pendingDestroy.clear();
-        scene.m_pendingDestroySet.clear();
-        scene.m_pendingStartComponentIds.clear();
-        scene.m_pendingStartComponentIdSet.clear();
-        scene.m_pendingPyComponents.clear();
+        scene.RetireRootObjects();
 
         auto &registry = Component::GetInstanceRegistry();
         registry.reserve(registry.size() + state.componentRegistryNodes.size());
@@ -319,6 +312,7 @@ void SceneCommitToken::Finalize()
 
 std::shared_ptr<SceneCommitToken> Scene::CommitDocumentRetainingCurrentWorld(const nlohmann::json &document)
 {
+    RequireWritableWorld();
     // Reject bad headers before SceneCommitToken extracts the live world.
     // Otherwise a schema mismatch empties the scene, and a failed Rollback
     // Finalize() destroys the retained graph — save/load then crash.
@@ -335,12 +329,42 @@ std::shared_ptr<SceneCommitToken> Scene::CommitDocumentRetainingCurrentWorld(con
 
 Scene::~Scene()
 {
-    // Explicitly clear root objects to ensure destructors run while Scene members are valid
-    m_rootObjects.clear();
+    RetireRootObjects();
+}
+
+void Scene::RequireWritableWorld() const
+{
+    if (m_retiringObjects)
+        throw std::logic_error("Cannot add or replace objects while the Scene world is retiring");
+}
+
+void Scene::RetireRootObjects()
+{
+    // Publish an empty traversal before callbacks run. vector::clear keeps
+    // already deleted roots visible to OnDisable/OnDestroy scene queries.
+    // ID lookup remains valid until each object's own cleanup has finished.
+    m_retiringObjects = true;
+    std::vector<std::unique_ptr<GameObject>> retiring;
+    retiring.swap(m_rootObjects);
+    m_mainCamera = nullptr;
+    ++m_structureVersion;
+    m_lifecycleObjectCacheVersion = UINT64_MAX;
+    m_updateObjects.clear();
+    m_fixedUpdateObjects.clear();
+    m_lateUpdateObjects.clear();
+    retiring.clear();
+    m_objectsById.clear();
+    m_pendingDestroy.clear();
+    m_pendingDestroySet.clear();
+    m_pendingStartComponentIds.clear();
+    m_pendingStartComponentIdSet.clear();
+    m_pendingPyComponents.clear();
+    m_retiringObjects = false;
 }
 
 GameObject *Scene::CreateGameObject(const std::string &name)
 {
+    RequireWritableWorld();
     auto gameObject = std::make_unique<GameObject>(name);
     gameObject->m_scene = this;
 
@@ -362,6 +386,7 @@ void Scene::ReserveCapacity(size_t count)
 
 void Scene::AddGameObject(std::unique_ptr<GameObject> gameObject)
 {
+    RequireWritableWorld();
     if (!gameObject)
         return;
 
@@ -428,6 +453,7 @@ std::unique_ptr<GameObject> Scene::DetachRootObject(GameObject *gameObject)
 
 void Scene::AttachRootObject(std::unique_ptr<GameObject> gameObject)
 {
+    RequireWritableWorld();
     if (!gameObject)
         return;
     gameObject->SetScene(this); // Ensure scene is set
@@ -443,6 +469,8 @@ bool Scene::TransferRootObjectTo(GameObject *gameObject, Scene &destination)
 
 bool Scene::TransferObjectTo(GameObject *gameObject, Scene &destination, GameObject *destinationParent)
 {
+    RequireWritableWorld();
+    destination.RequireWritableWorld();
     if (!gameObject || gameObject->GetScene() != this || &destination == this || IsPreview() || destination.IsPreview())
         return false;
     if (destinationParent &&
@@ -588,6 +616,7 @@ void Scene::UnregisterGameObject(uint64_t id)
 
 void Scene::RegisterGameObject(GameObject *gameObject)
 {
+    RequireWritableWorld();
     if (!gameObject)
         return;
     m_objectsById[gameObject->GetID()] = gameObject;
@@ -1337,6 +1366,7 @@ Component *Scene::FindComponentByID(uint64_t componentId) const
 
 GameObject *Scene::InstantiateGameObject(GameObject *source, GameObject *parent, bool instantiateInWorldSpace)
 {
+    RequireWritableWorld();
     if (!source)
         return nullptr;
 
@@ -1421,6 +1451,7 @@ GameObject *Scene::InstantiateFromJson(const std::string &jsonStr, GameObject *p
 
 GameObject *Scene::InstantiateFromDocument(const nlohmann::json &document, GameObject *parent)
 {
+    RequireWritableWorld();
     const size_t firstPending = m_pendingPyComponents.size();
     auto clone = BuildGameObjectFromJsonImpl(document, /*preserveIds=*/false);
     if (!clone)
@@ -1581,6 +1612,7 @@ std::shared_ptr<InxMaterial> Scene::ResolveSkyboxMaterial() const
 bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint64_t, uint64_t> *objectIdRemap,
                                 std::unordered_map<uint64_t, uint64_t> *componentIdRemap)
 {
+    RequireWritableWorld();
     try {
         using ProfileClock = std::chrono::steady_clock;
         const auto profileStart = ProfileClock::now();
@@ -1953,12 +1985,7 @@ bool Scene::DeserializeDocument(const nlohmann::json &j, std::unordered_map<uint
         // Commit starts here. All schema/factory/component validation has completed.
         m_mainCamera = nullptr;
         SceneManager::Instance().ClearComponentRegistries(this);
-        m_rootObjects.clear();
-        m_objectsById.clear();
-        m_pendingDestroy.clear();
-        m_pendingDestroySet.clear();
-        m_pendingStartComponentIds.clear();
-        m_pendingPyComponents.clear();
+        RetireRootObjects();
         m_hasStarted = false;
 
         m_name = std::move(staging.m_name);

@@ -1,3 +1,4 @@
+#include "BindingRegistration.h"
 #include <platform/filesystem/InxPack.h>
 #include <platform/filesystem/InxPath.h>
 

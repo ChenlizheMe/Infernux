@@ -1,6 +1,6 @@
 #pragma once
 
-#include <pybind11/pybind11.h>
+#include <function/scene/PythonNativeLifetime.h>
 
 namespace infernux
 {

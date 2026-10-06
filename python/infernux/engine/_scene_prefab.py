@@ -341,6 +341,7 @@ class ScenePrefabMixin:
         sm.set_active_scene(scene)
         if prefab_scene is not None:
             sm.unload_scene(prefab_scene)
+            self._prefab_mode_scene = None
 
         if self._previous_scene_document:
             if not deserialize_scene_document_transactionally(

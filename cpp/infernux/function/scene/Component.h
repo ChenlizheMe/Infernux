@@ -1,5 +1,6 @@
 #pragma once
 
+#include "NativeLifetime.h"
 #include "ObjectHandle.h"
 #include <cstdint>
 #include <memory>
@@ -44,7 +45,7 @@ void InvalidateGameObjectLifecycleCaches(GameObject *gameObject);
  * - OnValidate(): Called in editor when inspector values change
  * - Reset(): Called when component is first added or reset
  */
-class Component
+class Component : public NativeLifetimeOwner
 {
   public:
     [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()

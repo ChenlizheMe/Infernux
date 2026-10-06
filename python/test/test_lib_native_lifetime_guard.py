@@ -8,59 +8,8 @@ from infernux.lib import (
     GameObject,
     InvalidNativeObjectError,
     Vector3,
-    _install_native_lifetime_guard,
-    _is_native_lifetime_error,
     _unwrap_vec3,
 )
-
-
-class _FakeDeadGameObject:
-    @property
-    def id(self):
-        raise RuntimeError("Access violation - no RTTI data!")
-
-    @property
-    def transform(self):
-        raise RuntimeError("Access violation - no RTTI data!")
-
-    def get_transform(self):
-        raise RuntimeError("Access violation - no RTTI data!")
-
-    def get_children(self):
-        raise RuntimeError("Access violation - no RTTI data!")
-
-    def set_parent(self, parent):
-        raise RuntimeError("Access violation - no RTTI data!")
-
-
-class _FakeDeadComponent:
-    @property
-    def component_id(self):
-        raise RuntimeError("Access violation - no RTTI data!")
-
-    @property
-    def enabled(self):
-        raise RuntimeError("Access violation - no RTTI data!")
-
-    @enabled.setter
-    def enabled(self, value):
-        raise RuntimeError("Access violation - no RTTI data!")
-
-    def serialize(self):
-        raise RuntimeError("Access violation - no RTTI data!")
-
-
-class _FakeDeadTransform(_FakeDeadComponent):
-    @property
-    def position(self):
-        raise RuntimeError("Access violation - no RTTI data!")
-
-    @position.setter
-    def position(self, value):
-        raise RuntimeError("Access violation - no RTTI data!")
-
-    def local_to_world_matrix(self):
-        raise RuntimeError("Access violation - no RTTI data!")
 
 
 class _FakeQuat:
@@ -89,36 +38,6 @@ class _FakeClone:
         self.parent_calls.append((parent, world_position_stays))
 
 
-for _cls in (_FakeDeadGameObject, _FakeDeadComponent, _FakeDeadTransform):
-    _install_native_lifetime_guard(_cls)
-
-
-class TestNativeLifetimeErrorClassifier:
-    def test_detects_access_violation(self):
-        assert _is_native_lifetime_error(RuntimeError("Access violation - no RTTI data!")) is True
-
-    def test_ignores_other_runtime_errors(self):
-        assert _is_native_lifetime_error(RuntimeError("some other runtime problem")) is False
-
-
-def test_value_record_guard_preserves_truth_and_protects_native_access():
-    class Record:
-        distance = 1.0
-
-        @property
-        def collider(self):
-            raise RuntimeError("native object has been destroyed")
-
-    _install_native_lifetime_guard(Record, check_liveness=False)
-    record = Record()
-    assert bool(record) and record.distance == 1.0
-    with pytest.raises(InvalidNativeObjectError):
-        _ = record.collider
-    # Repeated installation must not reintroduce an entity liveness check.
-    _install_native_lifetime_guard(Record)
-    assert bool(record)
-
-
 def test_query_and_contact_records_have_no_entity_bool_override():
     for cls in (lib_module.RaycastHit, lib_module.CollisionInfo):
         assert '__bool__' not in vars(cls)
@@ -135,134 +54,52 @@ class TestTransformVectorCoercion:
         assert value == (1, 2)
 
 
-class TestGuardedGameObject:
-    def test_invalid_id_raises(self):
-        with pytest.raises(InvalidNativeObjectError):
-            _FakeDeadGameObject().id
-
-    def test_invalid_transform_raises(self):
-        go = _FakeDeadGameObject()
-        with pytest.raises(InvalidNativeObjectError):
-            go.transform
-        with pytest.raises(InvalidNativeObjectError):
-            go.get_transform()
-
-    def test_invalid_children_raises(self):
-        with pytest.raises(InvalidNativeObjectError):
-            _FakeDeadGameObject().get_children()
-
-    def test_invalid_game_object_is_falsey(self):
-        assert bool(_FakeDeadGameObject()) is False
-
-
-class TestGuardedComponent:
-    def test_invalid_component_id_raises(self):
-        with pytest.raises(InvalidNativeObjectError):
-            _FakeDeadComponent().component_id
-
-    def test_invalid_enabled_raises(self):
-        with pytest.raises(InvalidNativeObjectError):
-            _FakeDeadComponent().enabled
-
-    def test_invalid_serialize_raises(self):
-        with pytest.raises(InvalidNativeObjectError):
-            _FakeDeadComponent().serialize()
-
-    def test_invalid_setattr_raises(self):
-        comp = _FakeDeadComponent()
-        with pytest.raises(InvalidNativeObjectError):
-            comp.enabled = True
-
-
-class TestGuardedTransform:
-    def test_invalid_position_raises(self):
-        with pytest.raises(InvalidNativeObjectError):
-            _FakeDeadTransform().position
-
-    def test_invalid_matrix_raises(self):
-        with pytest.raises(InvalidNativeObjectError):
-            _FakeDeadTransform().local_to_world_matrix()
-
-    def test_invalid_transform_is_falsey(self):
-        assert bool(_FakeDeadTransform()) is False
-
-
-def test_native_guard_binds_one_shared_function_and_preserves_signature():
-    import inspect
-
-    method = _FakeDeadGameObject().set_parent
-    assert method.__func__ is _FakeDeadGameObject.set_parent
-    assert str(inspect.signature(method)) == "(parent)"
-    assert method.__name__ == "set_parent"
-    assert _FakeDeadGameObject().set_parent.__func__ is method.__func__
-    with pytest.raises(InvalidNativeObjectError):
-        _FakeDeadGameObject.set_parent(_FakeDeadGameObject(), None)
-
-
-def test_guard_does_not_wrap_python_component_methods_on_lookup():
-    class UserComponent(_FakeDeadComponent):
-        def update(self):
-            return self.serialize()
-
-    component = UserComponent()
-    assert UserComponent.__getattribute__ is object.__getattribute__
-    assert UserComponent.__setattr__ is object.__setattr__
-    assert component.update.__func__ is UserComponent.update
-    with pytest.raises(InvalidNativeObjectError):
-        component.update()
-    # Hot replacement is normal Python binding; there is no stale callable cache.
-    replacement = lambda self: 42
-    UserComponent.update = replacement
-    assert component.update.__func__ is replacement
-    assert component.update() == 42
-
-
-def test_guard_wraps_property_accessors_once_without_changing_property_contract():
-    descriptor = vars(_FakeDeadTransform)["position"]
-    assert isinstance(descriptor, property)
-    assert descriptor.fget._infernux_native_guarded
-    assert descriptor.fset._infernux_native_guarded
-    with pytest.raises(InvalidNativeObjectError):
-        _FakeDeadTransform().position = Vector3(1, 2, 3)
-    with pytest.raises(AttributeError):
-        _FakeDeadGameObject().id = 2  # Read-only native properties remain read-only.
-
-
-def test_guard_preserves_static_class_methods_and_ordinary_errors():
-    class NativeFixture:
-        @staticmethod
-        def static(value):
-            return value
-
-        @classmethod
-        def kind(cls):
-            return cls
-
-        def fail(self):
-            raise RuntimeError("ordinary failure")
-
-    _install_native_lifetime_guard(NativeFixture)
-    first_method = NativeFixture.fail
-    _install_native_lifetime_guard(NativeFixture)
-    assert NativeFixture.fail is first_method
-    instance = NativeFixture()
-    assert instance.static(7) == NativeFixture.static(7) == 7
-    assert instance.kind() is NativeFixture
-    with pytest.raises(RuntimeError, match="^ordinary failure$") as error:
-        instance.fail()
-    assert type(error.value) is RuntimeError
-
-
-def test_guard_does_not_retain_native_owner():
+def test_native_guard_does_not_retain_python_wrapper(scene):
     import gc
     import weakref
 
-    instance = _FakeDeadGameObject()
-    reference = weakref.ref(instance)
-    instance.get_children
-    del instance
+    owner = scene.create_game_object("BorrowedPythonWrapper")
+    identity = owner.handle
+    reference = weakref.ref(owner)
+    del owner
     gc.collect()
     assert reference() is None
+    assert scene.resolve_game_object(identity).name == "BorrowedPythonWrapper"
+
+
+def test_ordinary_native_error_text_is_not_reclassified():
+    def fail(_owner):
+        raise RuntimeError("Access violation is just this test's message")
+
+    with pytest.raises(RuntimeError) as error:
+        lib_module._call_native_game_object("fail", fail, None)
+    assert type(error.value) is RuntimeError
+
+
+def test_native_guard_preserves_readonly_properties(scene):
+    owner = scene.create_game_object("ReadonlyIdentity")
+    with pytest.raises(AttributeError):
+        owner.id = 2
+
+
+@pytest.mark.parametrize("wrong", [None, 42, "text", object()])
+def test_native_liveness_rejects_non_native_self(wrong):
+    with pytest.raises(TypeError):
+        GameObject.__bool__(wrong)
+
+
+def test_native_guard_preserves_python_subclass_methods():
+    class UserCollider(lib_module._native_module.BoxCollider):
+        def update(self):
+            return self.serialize()
+
+    instance = UserCollider()
+    assert instance and instance.update()
+    assert instance.update.__func__ is UserCollider.update
+    replacement = lambda self: 42
+    UserCollider.update = replacement
+    assert instance.update.__func__ is replacement
+    assert instance.update() == 42
 
 
 class TestInstantiateOverloads:

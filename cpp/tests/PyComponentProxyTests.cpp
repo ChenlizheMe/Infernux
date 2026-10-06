@@ -9,6 +9,8 @@
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <functional>
+#include <iostream>
 #include <new>
 #include <pybind11/embed.h>
 
@@ -16,18 +18,136 @@ namespace py = pybind11;
 
 namespace
 {
+class TeardownQueryProbe final : public infernux::Component
+{
+  public:
+    explicit TeardownQueryProbe(std::function<void(infernux::GameObject *)> check) : m_check(std::move(check)) {}
+    void OnDestroy() override { m_check(GetGameObject()); }
+    const char *GetTypeName() const override { return "TeardownQueryProbe"; }
+    std::string GetConstraintTypeId() const override { return "test:teardown-query-probe"; }
+  private:
+    std::function<void(infernux::GameObject *)> m_check;
+};
+
+void TestSceneTeardownQueries()
+{
+    auto &manager = infernux::SceneManager::Instance();
+    for (int mode = 0; mode < 5; ++mode) {
+        auto *scene = mode == 4 ? manager.CreatePreviewScene("TeardownQueries")
+                                : manager.CreateScene("TeardownQueries");
+        const auto worldId = scene->GetWorldId();
+        const auto emptyDocument = scene->SerializeDocument();
+        std::shared_ptr<infernux::SceneCommitToken> token;
+        if (mode == 3)
+            token = scene->CommitDocumentRetainingCurrentWorld(emptyDocument);
+        auto *first = scene->CreateGameObject("EarlierRoot");
+        const auto firstId = first->GetID();
+        auto *parent = scene->CreateGameObject("LaterRoot");
+        auto *child = scene->CreateGameObject("LaterChild");
+        child->SetParent(parent, false);
+        int callbacks = 0;
+        const auto check = [&](infernux::GameObject *owner) {
+            ++callbacks;
+            assert(scene->GetRootObjects().empty());
+            assert(scene->GetAllObjects().empty());
+            assert(scene->FindByID(firstId) == nullptr);
+            assert(scene->FindByID(owner->GetID()) == owner);
+            if (owner->GetParent())
+                assert(owner->GetParent()->GetChildren().empty());
+            if (mode == 0 || mode == 1 || mode == 4)
+                assert(manager.GetSceneByWorldId(worldId) == nullptr);
+            bool rejected = false;
+            try {
+                scene->CreateGameObject("CannotResurrectRetiringWorld");
+            } catch (const std::logic_error &) {
+                rejected = true;
+            }
+            assert(rejected);
+            rejected = false;
+            try {
+                owner->AddComponent<infernux::BoxCollider>();
+            } catch (const std::logic_error &) {
+                rejected = true;
+            }
+            assert(rejected);
+        };
+        assert(parent->AddExistingComponent(std::make_unique<TeardownQueryProbe>(check)) != nullptr);
+        assert(child->AddExistingComponent(std::make_unique<TeardownQueryProbe>(check)) != nullptr);
+        if (mode == 0)
+            manager.UnloadScene(scene);
+        else if (mode == 1)
+            manager.UnloadAllScenes();
+        else if (mode == 2)
+            assert(scene->DeserializeDocument(emptyDocument));
+        else if (mode == 3)
+            assert(token && token->Rollback());
+        else {
+            // Preview scenes follow the same detached ownership contract.
+            manager.ClosePreviewScene(scene);
+        }
+        std::cout << "teardown mode=" << mode << " callbacks=" << callbacks << std::endl;
+        assert(callbacks == 2);
+        if (mode == 2 || mode == 3) {
+            assert(scene->GetAllObjects().empty());
+            assert(scene->CreateGameObject("NewWorldIsWritable") != nullptr);
+            manager.UnloadScene(scene);
+        }
+    }
+}
+
+void TestSubtreeReplacementTeardown()
+{
+    infernux::Scene scene("SubtreeReplacement");
+    auto *parent = scene.CreateGameObject("Parent");
+    const auto emptyDocument = parent->SerializeDocument();
+    assert(parent->AddComponent<infernux::BoxCollider>() != nullptr);
+    assert(parent->GetComponentsInExecutionOrder().size() == 1);
+    auto *first = scene.CreateGameObject("EarlierChild");
+    first->SetParent(parent, false);
+    auto *second = scene.CreateGameObject("LaterChild");
+    second->SetParent(parent, false);
+    int callbacks = 0;
+    assert(second->AddExistingComponent(std::make_unique<TeardownQueryProbe>([&](auto *owner) {
+        ++callbacks;
+        assert(owner->GetParent() == parent);
+        assert(parent->GetChildren().empty());
+        assert(parent->GetAllComponents().empty());
+        assert(parent->GetComponentsInExecutionOrder().empty());
+        const auto objects = scene.GetAllObjects();
+        assert(objects.size() == 1 && objects.front() == parent);
+    })) != nullptr);
+    assert(parent->DeserializeDocument(emptyDocument));
+    assert(callbacks == 1);
+    assert(parent->GetChildren().empty());
+    assert(parent->AddComponent<infernux::BoxCollider>() != nullptr);
+    std::cout << "subtree replacement teardown callbacks=" << callbacks << std::endl;
+}
+
 void TestRetainedPhysicsTargets()
 {
     // Force exact address AND serialized-ID reuse. The retained value must not
     // resolve the replacement, even if an allocator would usually avoid reuse.
     alignas(infernux::BoxCollider) unsigned char colliderStorage[sizeof(infernux::BoxCollider)];
     auto *first = new (colliderStorage) infernux::BoxCollider();
+    const py::object firstWrapper = py::cast(first, py::return_value_policy::reference);
     const uint64_t id = first->GetComponentID();
     const infernux::PhysicsTargetReference retiredCollider(first);
     assert(retiredCollider.GetCollider() == first);
     first->~BoxCollider();
+    assert(!firstWrapper.attr("__bool__")().cast<bool>());
+    bool argumentRejected = false;
+    try {
+        (void)firstWrapper.cast<infernux::Component *>();
+    } catch (const infernux::InvalidNativeObjectError &) {
+        argumentRejected = true;
+    }
+    assert(argumentRejected);
     auto *second = new (colliderStorage) infernux::BoxCollider();
     second->SetComponentID(id);
+    const py::object secondWrapper = py::cast(second, py::return_value_policy::reference);
+    assert(!firstWrapper.is(secondWrapper));
+    assert(!firstWrapper.attr("__bool__")().cast<bool>());
+    assert(secondWrapper.attr("__bool__")().cast<bool>());
     assert(retiredCollider.GetCollider() == nullptr);
     const infernux::PhysicsTargetReference replacementCollider(second);
     assert(replacementCollider.GetCollider() == second);
@@ -44,13 +164,35 @@ void TestRetainedPhysicsTargets()
     // Conversion executes getters in the extension, while the object and its
     // registry live in this executable. It must preserve the publishing owner.
     const py::object retained = py::cast(hit);
-    assert(retained.attr("game_object").cast<infernux::GameObject *>() == owner);
-    owner->~GameObject();
+    const py::object retainedOwner = retained.attr("game_object");
+    const py::object savedMethod = retainedOwner.attr("get_transform");
+    const py::object retainedTransform = savedMethod();
+    assert(retainedOwner.cast<infernux::GameObject *>() == owner);
+    {
+        // Engine.exit releases the GIL before native cleanup. Borrower state
+        // and weakref destruction must both reacquire it where necessary.
+        py::gil_scoped_release release;
+        owner->~GameObject();
+    }
+    assert(!retainedOwner.attr("__bool__")().cast<bool>());
+    assert(!retainedTransform.attr("__bool__")().cast<bool>());
+    bool methodRejected = false;
+    try {
+        (void)savedMethod();
+    } catch (const py::error_already_set &error) {
+        methodRejected = error.matches(py::module_::import("infernux.lib").attr("InvalidNativeObjectError"));
+    }
+    assert(methodRejected);
     assert(hit.target.GetGameObject() == nullptr);
     assert(retained.attr("game_object").is_none());
     auto *replacement = new (ownerStorage) infernux::GameObject("ReplacementRecordOwner");
     replacement->GetTransform()->SetComponentID(transformId);
     replacement->AddComponent<infernux::BoxCollider>();
+    const py::object replacementWrapper = py::cast(replacement, py::return_value_policy::reference);
+    assert(!replacementWrapper.is(retainedOwner));
+    assert(replacementWrapper.attr("__bool__")().cast<bool>());
+    assert(!retainedOwner.attr("__bool__")().cast<bool>());
+    assert(!retainedTransform.attr("__bool__")().cast<bool>());
     assert(hit.target.GetGameObject() == nullptr);
     assert(retained.attr("game_object").is_none());
     assert(retained.attr("collider").is_none());
@@ -103,6 +245,8 @@ class CollisionEnterOnlyProbe(InxComponent):
 )PY");
 
     TestRetainedPhysicsTargets();
+    TestSceneTeardownQueries();
+    TestSubtreeReplacementTeardown();
 
     const py::object collisionProbe = py::globals()["CollisionEnterOnlyProbe"]();
     infernux::PyComponentProxy collisionProxy(collisionProbe);

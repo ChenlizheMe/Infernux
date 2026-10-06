@@ -125,7 +125,15 @@ GameObject::~GameObject()
     // accidental GetComponents<>() call from a destructor returns [].
     auto dying = std::move(m_components);
     // m_components is now empty — safe for any destructor that reads it.
+    m_executionOrderCache.clear();
+    m_executionOrderCacheDirty = true;
     dying.clear(); // Destroy unique_ptrs; destructors see empty m_components.
+
+    // Child callbacks can query their parent and siblings. Detach the list
+    // before deleting children, while all of this parent's members still live.
+    std::vector<std::unique_ptr<GameObject>> dyingChildren;
+    dyingChildren.swap(m_children);
+    dyingChildren.clear();
 }
 
 bool GameObject::IsActiveInHierarchy() const
@@ -283,8 +291,19 @@ GameObject *GameObject::GetChild(size_t index) const
     return nullptr;
 }
 
+void GameObject::RequireWritableStructure() const
+{
+    if (m_isDestroying)
+        throw std::logic_error("Cannot modify GameObject structure during destruction or replacement");
+    if (m_scene)
+        m_scene->RequireWritableWorld();
+}
+
 void GameObject::SetParent(GameObject *newParent, bool worldPositionStays)
 {
+    RequireWritableStructure();
+    if (newParent)
+        newParent->RequireWritableStructure();
     if (newParent == m_parent)
         return;
 
@@ -543,6 +562,7 @@ std::vector<std::string> GameObject::GetComponentSetBlockers() const
 
 Component *GameObject::AttachComponent(std::unique_ptr<Component> component, bool enforceUserAddable)
 {
+    RequireWritableStructure();
     if (!component)
         return nullptr;
     if (dynamic_cast<PyComponentProxy *>(component.get()) != nullptr &&
@@ -599,6 +619,7 @@ std::vector<uint64_t> GameObject::GetComponentOrder() const
 
 bool GameObject::SetComponentOrder(const std::vector<uint64_t> &componentIds)
 {
+    RequireWritableStructure();
     if (componentIds.size() != m_components.size())
         return false;
 
@@ -657,6 +678,7 @@ nlohmann::json GameObject::GetDefaultComponentDocument(Component *component) con
 
 Component *GameObject::AddPreparedPythonComponent(std::unique_ptr<Component> component, size_t componentIndex)
 {
+    RequireWritableStructure();
     if (!component || dynamic_cast<PyComponentProxy *>(component.get()) == nullptr)
         throw std::invalid_argument("prepared component must be a PyComponentProxy");
     if (!m_scene || !m_scene->UsesRuntimeLifecycleScheduler())
@@ -841,6 +863,7 @@ bool GameObject::RemoveComponent(Component *component)
 
 Component *GameObject::ReplacePythonComponent(Component *current, std::unique_ptr<Component> replacement)
 {
+    RequireWritableStructure();
     if (!current || !replacement || dynamic_cast<PyComponentProxy *>(current) == nullptr ||
         dynamic_cast<PyComponentProxy *>(replacement.get()) == nullptr) {
         return nullptr;
@@ -947,6 +970,7 @@ std::vector<std::string> GameObject::GetRemovalBlockingComponentTypes(Component 
 
 void GameObject::AttachChild(std::unique_ptr<GameObject> child)
 {
+    RequireWritableStructure();
     if (!child)
         return;
     child->m_parent = this;
@@ -1186,6 +1210,7 @@ std::string GameObject::Serialize() const
 
 bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocumentIds)
 {
+    RequireWritableStructure();
     try {
         Scene stagingScene("GameObject document staging");
         auto stagedRoot = stagingScene.BuildGameObjectFromJsonImpl(j, /*preserveIds=*/false);
@@ -1370,11 +1395,17 @@ bool GameObject::DeserializeDocument(const nlohmann::json &j, bool preserveDocum
             }
         }
 
+        m_isDestroying = true;
         for (auto &component : m_components)
             component->CallOnDestroy();
         auto oldComponents = std::move(m_components);
-        m_children.clear();
+        m_executionOrderCache.clear();
+        m_executionOrderCacheDirty = true;
+        std::vector<std::unique_ptr<GameObject>> oldChildren;
+        oldChildren.swap(m_children);
+        oldChildren.clear();
         oldComponents.clear();
+        m_isDestroying = false;
 
         m_name = std::move(stagedRoot->m_name);
         m_id = rootObjectId;

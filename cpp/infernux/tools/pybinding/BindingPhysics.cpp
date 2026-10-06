@@ -13,6 +13,7 @@
 #include <Jolt/Jolt.h>
 #include <Jolt/Physics/PhysicsSystem.h>
 
+#include "BindingRegistration.h"
 #include "function/renderer/rhi/RhiComputeBuffer.h"
 #include "function/renderer/rhi/RhiComputeKernel.h"
 #include "function/scene/BoxCollider.h"
@@ -893,7 +894,7 @@ void RegisterPhysicsBindings(py::module_ &m)
 
     // Collider base (abstract — not directly constructible)
     // ====================================================================
-    py::class_<Collider, Component>(m, "Collider")
+    NativeClass<Collider, Component>(m, "Collider")
         .def_property("is_trigger", &Collider::IsTrigger, &Collider::SetIsTrigger, "Is this collider a trigger volume?")
         .def_property(
             "center", [](Collider *c) { return c->GetCenter(); },
@@ -928,7 +929,7 @@ void RegisterPhysicsBindings(py::module_ &m)
     // ====================================================================
     // BoxCollider
     // ====================================================================
-    py::class_<BoxCollider, Collider>(m, "BoxCollider")
+    NativeClass<BoxCollider, Collider>(m, "BoxCollider")
         .def(py::init<>())
         .def_property(
             "size", [](BoxCollider *c) { return c->GetSize(); },
@@ -939,7 +940,7 @@ void RegisterPhysicsBindings(py::module_ &m)
     // ====================================================================
     // SphereCollider
     // ====================================================================
-    py::class_<SphereCollider, Collider>(m, "SphereCollider")
+    NativeClass<SphereCollider, Collider>(m, "SphereCollider")
         .def(py::init<>())
         .def_property("radius", &SphereCollider::GetRadius, &SphereCollider::SetRadius, "Radius of the sphere collider")
         .def("serialize", &SphereCollider::Serialize)
@@ -948,7 +949,7 @@ void RegisterPhysicsBindings(py::module_ &m)
     // ====================================================================
     // CapsuleCollider
     // ====================================================================
-    py::class_<CapsuleCollider, Collider>(m, "CapsuleCollider")
+    NativeClass<CapsuleCollider, Collider>(m, "CapsuleCollider")
         .def(py::init<>())
         .def_property("radius", &CapsuleCollider::GetRadius, &CapsuleCollider::SetRadius,
                       "Radius of the capsule collider")
@@ -962,7 +963,7 @@ void RegisterPhysicsBindings(py::module_ &m)
     // ====================================================================
     // CylinderCollider
     // ====================================================================
-    py::class_<CylinderCollider, Collider>(m, "CylinderCollider")
+    NativeClass<CylinderCollider, Collider>(m, "CylinderCollider")
         .def(py::init<>())
         .def_property("radius", &CylinderCollider::GetRadius, &CylinderCollider::SetRadius,
                       "Radius of the cylinder collider")
@@ -976,7 +977,7 @@ void RegisterPhysicsBindings(py::module_ &m)
     // ====================================================================
     // MeshCollider
     // ====================================================================
-    py::class_<MeshCollider, Collider>(m, "MeshCollider")
+    NativeClass<MeshCollider, Collider>(m, "MeshCollider")
         .def(py::init<>())
         .def("recook", &MeshCollider::OnMeshGeometryChanged,
              "Request collision rebuilding from current sibling MeshRenderer geometry")
@@ -1069,7 +1070,7 @@ void RegisterPhysicsBindings(py::module_ &m)
     // ====================================================================
     // Rigidbody component (Unity: Rigidbody)
     // ====================================================================
-    py::class_<Rigidbody, Component>(m, "Rigidbody")
+    NativeClass<Rigidbody, Component>(m, "Rigidbody")
         .def(py::init<>())
         // ---- Serialized properties ----
         .def_property("mass", &Rigidbody::GetMass, &Rigidbody::SetMass, "Mass in kilograms (default 1)")
@@ -1186,7 +1187,7 @@ void RegisterPhysicsBindings(py::module_ &m)
         .def("serialize", &Rigidbody::Serialize)
         .def("deserialize", &Rigidbody::Deserialize, "json_str"_a);
 
-    py::class_<HingeJoint, Component>(m, "HingeJoint")
+    NativeClass<HingeJoint, Component>(m, "HingeJoint")
         .def(py::init<>())
         .def_property("anchor", &HingeJoint::GetAnchor, &HingeJoint::SetAnchor)
         .def_property("axis", &HingeJoint::GetAxis, &HingeJoint::SetAxis)
@@ -1200,7 +1201,7 @@ void RegisterPhysicsBindings(py::module_ &m)
         .def("serialize", &HingeJoint::Serialize)
         .def("deserialize", &HingeJoint::Deserialize, "json_str"_a);
 
-    py::class_<SliderJoint, Component>(m, "SliderJoint")
+    NativeClass<SliderJoint, Component>(m, "SliderJoint")
         .def(py::init<>())
         .def_property("anchor", &SliderJoint::GetAnchor, &SliderJoint::SetAnchor)
         .def_property("axis", &SliderJoint::GetAxis, &SliderJoint::SetAxis)

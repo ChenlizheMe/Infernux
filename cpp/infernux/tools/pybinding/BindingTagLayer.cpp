@@ -5,6 +5,7 @@
  * Exposes the project-wide Tag & Layer management singleton to Python.
  */
 
+#include "BindingRegistration.h"
 #include "function/scene/TagLayerManager.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>

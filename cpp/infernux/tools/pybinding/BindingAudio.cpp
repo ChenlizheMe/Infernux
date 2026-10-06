@@ -5,6 +5,7 @@
  * Exposes the audio system to Python for editor integration and gameplay scripting.
  */
 
+#include "BindingRegistration.h"
 #include "ComponentBindingRegistry.h"
 #include "function/audio/AudioClip.h"
 #include "function/audio/AudioEngine.h"
@@ -73,7 +74,7 @@ void RegisterAudioBindings(py::module_ &m)
     // ========================================================================
     // AudioSource — playback component (Unity: AudioSource, multi-track)
     // ========================================================================
-    py::class_<AudioSource, Component>(m, "AudioSource",
+    NativeClass<AudioSource, Component>(m, "AudioSource",
                                        "Audio playback component with multi-track support.\n"
                                        "Attach to a GameObject to play AudioClips.\n"
                                        "Each track can hold a different clip; all tracks\n"
@@ -146,7 +147,7 @@ void RegisterAudioBindings(py::module_ &m)
     // ========================================================================
     // AudioListener — scene listener component (Unity: AudioListener)
     // ========================================================================
-    py::class_<AudioListener, Component>(m, "AudioListener",
+    NativeClass<AudioListener, Component>(m, "AudioListener",
                                          "Audio listener component — the 'ears' in the scene.\n"
                                          "Attach to the main camera GameObject.")
         .def_property_readonly("game_object_id", &AudioListener::GetGameObjectId,

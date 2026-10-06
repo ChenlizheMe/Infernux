@@ -1,3 +1,4 @@
+#include "BindingRegistration.h"
 #include "JsonPyBridge.h"
 #include "ResourceMetaPyView.h"
 #include "function/resources/AssetDatabase/AssetDatabase.h"

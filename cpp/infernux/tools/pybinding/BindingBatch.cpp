@@ -8,6 +8,8 @@
 #include <pybind11/stl.h>
 #include <vector>
 
+#include "BindingRegistration.h"
+
 namespace py = pybind11;
 using namespace infernux;
 

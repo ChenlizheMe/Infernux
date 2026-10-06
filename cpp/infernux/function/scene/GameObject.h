@@ -28,7 +28,7 @@ class Scene;
  *   player->AddComponent<MeshRenderer>();
  *   player->GetTransform()->SetPosition(0, 1, 0);
  */
-class GameObject
+class GameObject : public NativeLifetimeOwner
 {
   public:
     explicit GameObject(const std::string &name = "GameObject");
@@ -509,6 +509,7 @@ class GameObject
     friend void InvalidateGameObjectLifecycleCaches(GameObject *gameObject);
 
     void SetScene(Scene *scene);
+    void RequireWritableStructure() const;
 
     [[nodiscard]] std::unique_ptr<GameObject> CloneGraph(Scene *scene,
                                                          std::unordered_map<uint64_t, uint64_t> &componentIdRemap,

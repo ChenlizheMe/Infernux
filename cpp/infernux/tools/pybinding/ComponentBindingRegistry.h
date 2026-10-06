@@ -1,6 +1,7 @@
 #pragma once
 
 #include "function/scene/Component.h"
+#include <function/scene/PythonNativeLifetime.h>
 #include <functional>
 #include <pybind11/pybind11.h>
 #include <string>

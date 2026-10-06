@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Component.h"
+#include "PythonNativeLifetime.h"
 #include <cstddef>
 #include <cstdint>
 #include <optional>

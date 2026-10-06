@@ -7,6 +7,7 @@
  * layer.
  */
 
+#include "BindingRegistration.h"
 #include <cmath>
 #include <functional>
 #include <glm/glm.hpp>

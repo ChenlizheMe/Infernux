@@ -8,6 +8,7 @@
  * missing — quaternions were only exposed as raw (x,y,z,w) tuples before.
  */
 
+#include "BindingRegistration.h"
 #include <cmath>
 #include <functional>
 #include <glm/glm.hpp>

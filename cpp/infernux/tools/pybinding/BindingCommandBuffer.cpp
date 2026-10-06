@@ -8,6 +8,7 @@
  * users to write custom render pipelines with explicit render-target commands.
  */
 
+#include "BindingRegistration.h"
 #include "MatrixPyBridge.h"
 #include <function/renderer/CommandBuffer.h>
 #include <function/renderer/RendererSelection.h>

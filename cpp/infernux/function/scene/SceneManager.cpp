@@ -188,6 +188,7 @@ void SceneManager::ClosePreviewScene(Scene *scene)
                                  [scene](const auto &item) { return item.get() == scene; });
     if (it == m_previewScenes.end())
         throw std::invalid_argument("Scene is not an open preview Scene");
+    auto retiring = std::move(*it);
     m_previewScenes.erase(it);
 }
 
@@ -252,6 +253,7 @@ void SceneManager::UnloadScene(Scene *scene)
                            [scene](const std::unique_ptr<Scene> &s) { return s.get() == scene; });
 
     if (it != m_scenes.end()) {
+        auto retiring = std::move(*it);
         m_scenes.erase(it);
     }
 }
@@ -297,7 +299,9 @@ void SceneManager::Shutdown()
 
     // Destroy all scenes (GameObjects → Components → Colliders → bodies).
     UnloadAllScenes();
-    m_previewScenes.clear();
+    std::vector<std::unique_ptr<Scene>> retiringPreviews;
+    retiringPreviews.swap(m_previewScenes);
+    retiringPreviews.clear();
     PhysicsECSStore::Instance().ClearPendingQueues();
 
 #if !defined(INFERNUX_RUNTIME_MINIMAL_HOST)
@@ -327,8 +331,10 @@ void SceneManager::UnloadAllScenes()
         }
     }
 
-    m_scenes.clear();
+    std::vector<std::unique_ptr<Scene>> retiring;
+    retiring.swap(m_scenes);
     m_loadedSceneSet.clear();
+    retiring.clear();
 }
 
 Scene *SceneManager::GetScene(const std::string &name) const

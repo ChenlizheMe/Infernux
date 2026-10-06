@@ -23,6 +23,11 @@ from infernux.components.component import InxComponent as _PublicComponent
 from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional, Sequence, Tuple, TypeVar, Union, overload
 from enum import IntEnum
 
+
+class InvalidNativeObjectError(RuntimeError):
+    """An entity argument has no live native object; rejected before dereference."""
+    ...
+
 import numpy as np
 import numpy.typing as npt
 
@@ -1579,6 +1584,7 @@ class Scene:
     def find_game_objects_with_tag(self, tag: str) -> List[GameObject]: ...
     def find_game_objects_in_layer(self, layer: int) -> List[GameObject]: ...
     def destroy_game_object(self, game_object: GameObject) -> None: ...
+    def _remove_game_object_immediately(self, game_object: GameObject) -> None: ...
     def _clone_game_object(
         self,
         source: GameObject,

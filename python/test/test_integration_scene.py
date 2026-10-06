@@ -2616,6 +2616,7 @@ class TestInstantiate:
         manager = SceneFileManager()
         native = SceneManager.instance()
         additive = native.create_scene("Additive")
+        additive_world_id = int(additive.world_id)
         registry = DocumentRegistry.instance()
         callbacks: list[str] = []
 
@@ -2645,7 +2646,7 @@ class TestInstantiate:
             assert all(identifier == primary_document for identifier in callbacks)
         finally:
             native.set_active_scene(scene)
-            if native.get_scene_by_world_id(int(additive.world_id)) is not None:
+            if native.get_scene_by_world_id(additive_world_id) is not None:
                 native.unload_scene(additive)
             SceneFileManager._instance = previous_manager
             set_project_root(previous_root)

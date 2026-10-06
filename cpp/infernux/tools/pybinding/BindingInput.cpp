@@ -9,6 +9,7 @@
  *   C++ GetKeyDown(scancode)  →  Python input_manager.get_key_down(scancode)
  */
 
+#include "BindingRegistration.h"
 #include <platform/input/InputManager.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
