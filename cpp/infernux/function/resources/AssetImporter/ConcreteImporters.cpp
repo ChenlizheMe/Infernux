@@ -162,6 +162,12 @@ bool IsBuiltinTextureToken(const std::string &value)
     return value == "white" || value == "black" || value == "normal";
 }
 
+bool IsBuiltinMeshToken(const std::string &value)
+{
+    return value == "builtin-mesh:Cube" || value == "builtin-mesh:Sphere" || value == "builtin-mesh:Capsule" ||
+           value == "builtin-mesh:Cylinder" || value == "builtin-mesh:Plane" || value == "builtin-mesh:Quad";
+}
+
 void RejectPathOnlyReference(const std::string &guid, const std::string &pathHint, const std::string &location)
 {
     if (guid.empty() && !pathHint.empty()) {
@@ -623,9 +629,9 @@ std::vector<std::string> ParticleGraphImporter::ScanDependencies(const ImportReq
         const std::string guid = reference["guid"].get<std::string>();
         const std::string pathHint = reference["path_hint"].get<std::string>();
         RejectPathOnlyReference(guid, pathHint, location);
-        // Built-in texture tokens are renderer symbols, not AssetDatabase
+        // Built-in texture and mesh tokens are renderer symbols, not AssetDatabase
         // identities, so they deliberately do not create dependency edges.
-        if (!guid.empty() && !IsBuiltinTextureToken(guid))
+        if (!guid.empty() && !IsBuiltinTextureToken(guid) && !IsBuiltinMeshToken(guid))
             dependencies.insert(guid);
     };
     std::function<void(const nlohmann::json &, const std::string &)> scanReferences;
