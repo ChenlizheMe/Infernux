@@ -1656,6 +1656,8 @@ struct ParticleGpuSystemManager::Impl
         state->graph->Initialize(context, deletionQueue);
         auto *graph = state->graph.get();
         std::map<uint64_t, std::vector<std::shared_ptr<Emitter>>> emittersByGraph;
+        std::unordered_map<uint64_t, ParticleGpuGraphSpawnDomain::GraphResources> spawnResources;
+        std::unordered_set<uint64_t> retainedDomains;
         for (const auto &[id, emitter] : candidateEmitters) {
             (void)id;
             if (!emitter || emitter->graphInstanceId == 0) {
@@ -1674,7 +1676,7 @@ struct ParticleGpuSystemManager::Impl
                     return {};
                 }
             }
-            auto domain = std::make_shared<ParticleGpuGraphSpawnDomain>();
+            std::shared_ptr<ParticleGpuGraphSpawnDomain> domain;
             const auto &parameterWords = graphEmitters.front()->sourceProgram.parameterWords;
             if (std::any_of(graphEmitters.begin(), graphEmitters.end(), [&](const auto &emitter) {
                     return emitter->sourceProgram.parameterWords != parameterWords;
@@ -1682,20 +1684,36 @@ struct ParticleGpuSystemManager::Impl
                 SetError(error, "GPU particle graph emitters disagree on the shared parameter block");
                 return {};
             }
-            if (!spawnProgram || !spawnProgram->IsValid() ||
-                !domain->Create(context->GetRhiDevice(), graphInstanceId, static_cast<uint32_t>(graphEmitters.size()),
-                                spawnProgram->View(), parameterWords)) {
-                SetError(error, "failed to create the GPU particle graph spawn domain");
-                return {};
+            if (graphState) {
+                const auto resident = graphState->spawnDomains.find(graphInstanceId);
+                if (resident != graphState->spawnDomains.end() &&
+                    resident->second->SlotCount() == graphEmitters.size() &&
+                    std::all_of(graphEmitters.begin(), graphEmitters.end(), [&](const auto &emitter) {
+                        const auto previous = emitters.find(emitter->id);
+                        return previous != emitters.end() && previous->second == emitter;
+                    })) {
+                    domain = resident->second;
+                    retainedDomains.insert(graphInstanceId);
+                }
             }
-            for (const auto &emitter : graphEmitters) {
-                if (!domain->RegisterEmitter(emitter->sourceProgram.graphEmitterIndex, *emitter->runtime)) {
-                    SetError(error, "failed to bind an emitter to the GPU particle graph spawn domain");
+            if (!domain) {
+                domain = std::make_shared<ParticleGpuGraphSpawnDomain>();
+                if (!spawnProgram || !spawnProgram->IsValid() ||
+                    !domain->Create(context->GetRhiDevice(), graphInstanceId,
+                                    static_cast<uint32_t>(graphEmitters.size()), spawnProgram->View(),
+                                    parameterWords)) {
+                    SetError(error, "failed to create the GPU particle graph spawn domain");
                     return {};
+                }
+                for (const auto &emitter : graphEmitters) {
+                    if (!domain->RegisterEmitter(emitter->sourceProgram.graphEmitterIndex, *emitter->runtime)) {
+                        SetError(error, "failed to bind an emitter to the GPU particle graph spawn domain");
+                        return {};
+                    }
                 }
             }
             const std::string prefix = "GpuParticleGraph/" + std::to_string(graphInstanceId);
-            if (!domain->Attach(*graph, prefix)) {
+            if (!domain->Attach(*graph, prefix, spawnResources[graphInstanceId])) {
                 SetError(error, "failed to attach the GPU particle graph spawn prepass");
                 return {};
             }
@@ -1720,10 +1738,19 @@ struct ParticleGpuSystemManager::Impl
             const auto domain = state->spawnDomains.find(emitter->graphInstanceId);
             if (domain == state->spawnDomains.end() ||
                 !scheduler->Attach(*state->graph, *emitter->runtime, *emitter->bounds, *domain->second,
+                                   spawnResources.at(emitter->graphInstanceId),
                                    emitter->sourceProgram.graphEmitterIndex, prefix, emitter->migration.get(),
                                    emitter->ribbonTopology.get())) {
                 SetError(error, "failed to attach GPU particle emitter to the simulation graph");
                 return {};
+            }
+            if (retainedDomains.count(emitter->graphInstanceId) != 0) {
+                const auto previous = graphState->schedulerById.find(id);
+                if (previous == graphState->schedulerById.end() ||
+                    !scheduler->PreserveSchedulingFrom(*previous->second)) {
+                    SetError(error, "failed to preserve scheduling for an unchanged GPU particle emitter");
+                    return {};
+                }
             }
             state->schedulerById.emplace(id, scheduler.get());
             state->schedulers.push_back(std::move(scheduler));

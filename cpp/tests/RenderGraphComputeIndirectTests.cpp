@@ -704,6 +704,7 @@ void main() {
 
 #include "ParticleCollisionUploadTests.h"
 #include "ParticleCullConservationTests.h"
+#include "ParticleDomainRetentionTests.h"
 #include "ParticleMeshMetadataTests.h"
 #include "ParticleRuntimeUploadTests.h"
 #include "ParticleSpawnInputTests.h"
@@ -937,6 +938,9 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     primaryMaterialState.depthWriteEnable = false;
     primaryOutput.material->SetRenderState(primaryMaterialState);
     managedProgram.outputs.push_back(primaryOutput);
+    if (!VerifyParticleDomainRetention(resources, sortCompiler, managedProgram, sortProgram, cullProgram, boundsProgram,
+                                       migrationProgram, spawnProgram))
+        return false;
     std::string managedError;
     auto publishManagedGraph = [&](std::vector<infernux::particle::GpuParticleEmitterProgram> emitters,
                                    std::vector<uint64_t> removeIds = {}) {
@@ -1351,13 +1355,14 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     infernux::particle::ParticleRenderGraph particleGraph;
     infernux::particle::ParticleGpuGraphSpawnDomain particleSpawnDomain;
+    infernux::particle::ParticleGpuGraphSpawnDomain::GraphResources particleSpawnResources;
     if (!Require(particleSpawnDomain.Create(rhi, 4200, 1, spawnProgram, {0u, 0u, 0u, 0u}),
                  "Particle graph spawn domain creation failed") ||
         !Require(particleSpawnDomain.RegisterEmitter(0, particleRuntime),
                  "Particle graph spawn-domain emitter registration failed") ||
         !Require(particleSpawnDomain.SetEmitterAcceptingBurstRequests(0, true),
                  "Particle graph spawn-domain acceptance update failed") ||
-        !Require(particleSpawnDomain.Attach(resources.graph, "Particle/TestGraph"),
+        !Require(particleSpawnDomain.Attach(resources.graph, "Particle/TestGraph", particleSpawnResources),
                  "Particle graph spawn-domain RenderGraph attachment failed"))
         return false;
     infernux::particle::GpuParticleFrameRequest particleFrame;
@@ -1446,8 +1451,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         };
     });
 
-    if (!Require(particleGraph.Attach(resources.graph, particleRuntime, particleBounds, particleSpawnDomain, 0,
-                                      "Particle/TestEmitter"),
+    if (!Require(particleGraph.Attach(resources.graph, particleRuntime, particleBounds, particleSpawnDomain,
+                                      particleSpawnResources, 0, "Particle/TestEmitter"),
                  "Particle RenderGraph attachment failed"))
         return false;
     if (!Require(particleGraph.BeginFrame(particleFrame), "Particle frame request was rejected"))

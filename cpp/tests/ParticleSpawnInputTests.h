@@ -2,7 +2,7 @@ bool VerifyParticleSpawnInputSnapshots(TestResources &resources, infernux::InxSh
                                        const infernux::particle::GpuParticleSpawnProgram &spawnProgram)
 {
     using namespace infernux;
-    constexpr uint32_t wordCount = 24;
+    constexpr uint32_t wordCount = 48;
     constexpr uint64_t bytes = wordCount * sizeof(uint32_t);
     auto &device = resources.context.GetRhiDevice();
     const auto code = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
@@ -24,7 +24,16 @@ void main() {
 }
 )glsl",
                                                              "Tests/SpawnInputSnapshot.comp"));
-    if (!Require(!code.empty(), "Spawn input shader failed"))
+    const auto poisonCode = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
+#version 450
+layout(local_size_x=1) in;
+layout(std430, set=0, binding=0) buffer Metadata { uint metadata[]; };
+void main() {
+    for (uint word=0u; word<24u; ++word) metadata[word] = 0x12340000u + word;
+}
+)glsl",
+                                                                   "Tests/SpawnMetadataPoison.comp"));
+    if (!Require(!code.empty() && !poisonCode.empty(), "Spawn input shader failed"))
         return false;
     struct Owner
     {
@@ -36,6 +45,10 @@ void main() {
         particle::ParticleGpuRuntime runtime;
         particle::ParticleGpuGraphSpawnDomain spawn;
         rhi::BufferHandle readback;
+        rhi::BindingLayoutHandle poisonLayout;
+        rhi::ShaderModuleHandle poisonShader;
+        rhi::ComputePipelineHandle poisonPipeline;
+        rhi::BindGroupHandle poisonGroup;
         VkSemaphore gate = VK_NULL_HANDLE;
         std::array<VkFence, 2> fences{};
         ~Owner()
@@ -50,6 +63,10 @@ void main() {
             executor.Destroy();
             queues.Destroy();
             graph.Destroy();
+            device.Release(poisonGroup);
+            device.Release(poisonPipeline);
+            device.Release(poisonShader);
+            device.Release(poisonLayout);
             spawn.Destroy();
             runtime.Destroy();
             device.Release(readback);
@@ -79,11 +96,30 @@ void main() {
                      owner.executor.Initialize(resources.context, owner.queues, 2),
                  "Spawn input fixture creation failed"))
         return false;
+    rhi::BindingLayoutDesc poisonLayout;
+    poisonLayout.entryCount = 1;
+    poisonLayout.entries[0] = {0, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
+    owner.poisonLayout = device.CreateBindingLayout(poisonLayout);
+    owner.poisonShader =
+        device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(poisonCode.data(), poisonCode.size()));
+    rhi::ComputePipelineDesc poisonPipeline;
+    poisonPipeline.computeShader = owner.poisonShader;
+    poisonPipeline.bindingLayoutCount = 1;
+    poisonPipeline.bindingLayouts[0] = owner.poisonLayout;
+    owner.poisonPipeline = device.CreateComputePipeline(poisonPipeline);
+    rhi::BindGroupDesc poisonGroup;
+    poisonGroup.layout = owner.poisonLayout;
+    poisonGroup.bufferCount = 1;
+    poisonGroup.buffers[0] = {0, rhi::BindingType::StorageBuffer, owner.spawn.MetadataBuffer()};
+    owner.poisonGroup = device.CreateBindGroup(poisonGroup);
+    if (!Require(owner.poisonPipeline.IsValid() && owner.poisonGroup.IsValid(), "Spawn poison fixture failed"))
+        return false;
     for (uint32_t slot = 0; slot < 3; ++slot)
         if (!Require(owner.spawn.SetEmitterAcceptingBurstRequests(slot, true), "Spawn acceptance setup failed"))
             return false;
     owner.graph.Initialize(&resources.context, nullptr);
-    if (!Require(owner.spawn.Attach(owner.graph, "SpawnSnapshots"), "Spawn advance attach failed"))
+    particle::ParticleGpuGraphSpawnDomain::GraphResources spawnResources;
+    if (!Require(owner.spawn.Attach(owner.graph, "SpawnSnapshots", spawnResources), "Spawn advance attach failed"))
         return false;
     if (!Require(owner.graph.Compile(), "Spawn advance compilation failed"))
         return false;
@@ -157,13 +193,27 @@ void main() {
                     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
                     vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                          0, 1, &barrier, 0, nullptr, 0, nullptr);
+                    vk::VulkanComputeCommandContext computeContext;
+                    const auto compute = device.MakeComputeCommandEncoder(computeContext, command);
+                    const auto poisonMetadata = [&] {
+                        compute.BindPipeline(owner.poisonPipeline);
+                        compute.BindGroup(owner.poisonPipeline, 0, owner.poisonGroup);
+                        compute.Dispatch(1, 1, 1);
+                    };
+                    // Make first-use correctness independent of allocator contents.
+                    if (step == 0) {
+                        poisonMetadata();
+                        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                                             nullptr);
+                    }
                     owner.graph.Execute(command, rhi::QueueRole::Compute);
                     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
                     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
                     vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
-                    vk::VulkanComputeCommandContext computeContext;
-                    const auto compute = device.MakeComputeCommandEncoder(computeContext, command);
                     if (!owner.runtime.RecordBootstrap(compute, 0, owner.spawn.RuntimeGroup(0)))
                         return false;
                     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -174,6 +224,17 @@ void main() {
                                         {0, frame * bytes, 18 * sizeof(uint32_t)});
                     transfer.CopyBuffer(owner.spawn.BurstRequestAcceptanceBuffer(), owner.readback,
                                         {0, frame * bytes + 18 * sizeof(uint32_t), 3 * sizeof(uint32_t)});
+                    transfer.CopyBuffer(owner.spawn.MetadataBuffer(), owner.readback,
+                                        {0, frame * bytes + 24 * sizeof(uint32_t), 24 * sizeof(uint32_t)});
+                    if (step == 0) {
+                        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                        barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0,
+                                             nullptr);
+                        // Later Advance calls must preserve established metadata.
+                        poisonMetadata();
+                    }
                     // Preroll may author another acceptance value during the
                     // same recording. The first copy must retain its snapshot.
                     barrier.srcAccessMask =
@@ -231,12 +292,20 @@ void main() {
             matched &= words[15] == 0 && words[16] == 0 && words[17] == 0;
             matched &= words[18] == 1 && words[19] == 1 && words[20] == (frame == 0 ? 1u : 0u);
             matched &= words[21] == 1 && words[22] == 1 && words[23] == (frame == 0 ? 0u : 1u);
+            for (uint32_t word = 0; word < 24; ++word) {
+                const uint32_t expected = step == 0 ? ((word % 8 == 5 || word % 8 == 6) ? 1u : 0u) : 0x12340000u + word;
+                if (words[24 + word] != expected) {
+                    std::cerr << "Spawn metadata step=" << step << " word=" << word << " actual=" << words[24 + word]
+                              << " expected=" << expected << '\n';
+                    matched = false;
+                }
+            }
         }
         const bool unmapped = device.UnmapBuffer(owner.readback, 0, bytes * 2, rhi::BufferMapAccess::Read);
         if (!Require(matched && unmapped, "Spawn inputs crossed frames or overwrote GPU-owned slots"))
             return false;
         std::cout << "Particle spawn input snapshots cycle=" << cycle
-                  << " frames=2 GPU parameter/playback mutations preserved\n";
+                  << " frames=2 GPU parameter/playback mutations preserved, metadata initialized once\n";
     }
     return true;
 }
