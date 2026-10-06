@@ -567,6 +567,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                     self.cooked_python_source_paths(),
                     os.path.join(final_dir, "Data"),
                     target=target_name,
+                    source_snapshots=self._player_python_source_texts,
                 )
             self._write_runtime_asset_records(
                 final_dir,
@@ -645,6 +646,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
                 if self._runtime_platform == "windows"
                 else "Player/Linux"
             ),
+            source_snapshots=self._player_python_source_texts,
         )
         self._write_runtime_asset_records(final_dir)
 

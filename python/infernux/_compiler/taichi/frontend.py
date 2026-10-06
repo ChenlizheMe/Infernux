@@ -703,7 +703,7 @@ def _load_artifact(key: str, params) -> CompilerArtifact | None:
     return _decode_artifact(path, specialization=_specialization_identity(params))
 
 
-def _load_player_artifact(function, params) -> CompilerArtifact:
+def _load_player_artifact(function, params, artifact_key: str) -> CompilerArtifact:
     root = _cache_root()
     manifest_path = root / "AotManifest.json"
     try:
@@ -718,6 +718,7 @@ def _load_player_artifact(function, params) -> CompilerArtifact:
         if isinstance(record, dict)
         and record.get("function") == identity
         and record.get("specialization") == specialization
+        and record.get("artifact") == f"{artifact_key}.inxgpu"
     ]
     if len(matches) != 1:
         raise RuntimeError(
@@ -753,8 +754,21 @@ def _store_artifact(key: str, artifact: CompilerArtifact, params) -> None:
     prune_cache_files(root, "*.inxgpu", file_limit=_CACHE_FILE_LIMIT, byte_limit=_CACHE_BYTE_LIMIT)
 
 
-def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object], ...] | None = None) -> CompilerArtifact:
-    """Lower one Infernux kernel specialization without creating a GPU."""
+@dataclass(slots=True)
+class KernelCompilationPlan:
+    artifact_key: str
+    definition: ast.FunctionDef
+    helpers: list[ast.FunctionDef]
+    globals_map: dict
+    domain_parameter: int
+
+
+def prepare_kernel(function, params, *, receiver_fields: tuple[tuple[str, object], ...] | None = None) -> KernelCompilationPlan:
+    """Prepare the same exact source identity for Editor, build and Player.
+
+    This phase requires neither a compiler installation nor a GPU. It runs
+    once when a specialization is prepared, not on each dispatch.
+    """
     from infernux.compute import Buffer
 
     signature = inspect.signature(function)
@@ -783,10 +797,6 @@ def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object
             f"arbitrary Python closure capture is not part of the GPU ABI ({captured or 'unknown value'})",
             "pass buffers or numeric scalars as explicit parameters; do not close over Python locals",
         ))
-    from infernux.application import Application
-
-    if Application.is_player() and (_cache_root() / "AotOnly").is_file():
-        return _load_player_artifact(function, params)
     source = _function_source(function)
     tree = ast.parse(source)
     definition = next((node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
@@ -877,18 +887,25 @@ def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object
         orelse=[],
     )]
     artifact_key = _artifact_key(function, definition, helpers, params, compile_values)
+    return KernelCompilationPlan(artifact_key, definition, helpers, globals_map, domain_parameter)
+
+
+def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object], ...] | None = None) -> CompilerArtifact:
+    """Lower one Infernux kernel specialization without creating a GPU."""
+    from infernux.compute import Buffer
+
+    plan = prepare_kernel(function, params, receiver_fields=receiver_fields)
+    artifact_key = plan.artifact_key
+    if (_cache_root() / "AotOnly").is_file():
+        return _load_player_artifact(function, params, artifact_key)
     cached = _load_artifact(artifact_key, params)
     if cached is not None:
         return cached
-    if (_cache_root() / "AotOnly").is_file():
-        raise RuntimeError(
-            "Player GPU AOT artifact is missing for "
-            f"{function.__module__}.{function.__qualname__}"
-        )
 
+    definition, helpers, globals_map = plan.definition, plan.helpers, plan.globals_map
     generated_name = f"_infernux_kernel_{function.__name__}_{id(function):x}"
     definition.name = generated_name
-    tree.body = [*helpers, definition]
+    tree = ast.Module(body=[*helpers, definition], type_ignores=[])
     ti = _load_vendor()
     signature = []
     with _lock:
@@ -933,7 +950,7 @@ def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object
             artifact = CompilerArtifact(
                 spirv_tasks=tuple(compiled._infernux_spirv_tasks),
                 task_metadata=tuple(dict(item) for item in compiled._infernux_task_metadata),
-                domain_parameter=domain_parameter,
+                domain_parameter=plan.domain_parameter,
                 argument_layout=dict(kernel._infernux_argument_layout),
                 required_capabilities=dict(compiled._infernux_required_capabilities),
                 diagnostic_locations=tuple({

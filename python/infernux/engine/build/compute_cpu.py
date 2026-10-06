@@ -5,6 +5,8 @@ from __future__ import annotations
 import ast
 import copy
 
+from infernux._compiler.source_metadata import compute_decorator_names
+
 
 def _attribute_name(node: ast.expr) -> str:
     parts: list[str] = []
@@ -18,43 +20,8 @@ def _attribute_name(node: ast.expr) -> str:
 
 
 def _compute_names(tree: ast.Module) -> tuple[set[str], set[str]]:
-    kernels = {
-        "compute.kernel",
-        "inx.compute.kernel",
-        "infernux.compute.kernel",
-        "infernux.compute.kernel",
-    }
-    atomics = {
-        "compute.atomic_add",
-        "inx.compute.atomic_add",
-        "infernux.compute.atomic_add",
-        "infernux.compute.atomic_add",
-    }
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name in {"infernux", "infernux"}:
-                    root = alias.asname or alias.name
-                    kernels.add(f"{root}.compute.kernel")
-                    atomics.add(f"{root}.compute.atomic_add")
-                elif alias.name in {"infernux.compute", "infernux.compute"}:
-                    root = alias.asname or alias.name
-                    kernels.add(f"{root}.kernel")
-                    atomics.add(f"{root}.atomic_add")
-        elif isinstance(node, ast.ImportFrom) and node.level == 0:
-            if node.module in {"infernux", "infernux"}:
-                for alias in node.names:
-                    if alias.name == "compute":
-                        root = alias.asname or alias.name
-                        kernels.add(f"{root}.kernel")
-                        atomics.add(f"{root}.atomic_add")
-            elif node.module in {"infernux.compute", "infernux.compute"}:
-                for alias in node.names:
-                    if alias.name == "kernel":
-                        kernels.add(alias.asname or alias.name)
-                    elif alias.name == "atomic_add":
-                        atomics.add(alias.asname or alias.name)
-    return kernels, atomics
+    return (compute_decorator_names(tree, kinds=("kernel",)),
+            compute_decorator_names(tree, kinds=("atomic_add",)))
 
 
 class _CpuComputeLowering(ast.NodeTransformer):

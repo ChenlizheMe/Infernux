@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import __future__
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ import numpy as np
 
 from infernux.engine.path_utils import resolved_path
 from infernux.engine.project_context import get_script_module_name
+from infernux._compiler.source_metadata import compute_decorator_names, embed_compute_sources
 from infernux._compiler.kernel_contract import (
     attribute_name,
     implicit_receiver_attribute,
@@ -51,11 +53,8 @@ def _gpu_buffer_descriptor(shape: tuple[int, ...], dtype):
     return value
 
 
-def ensure_engine_compute_artifacts(project_root: str | Path) -> float:
-    """Compile every engine-owned Player compute specialization into Library."""
+def _engine_specializations():
     from infernux import compute
-    from infernux._compiler.taichi.frontend import compile_kernel
-    from infernux.engine.project_context import using_project_root
     from infernux.math import vector3
 
     domain = _gpu_buffer_descriptor((1,), np.int32)
@@ -64,7 +63,7 @@ def ensure_engine_compute_artifacts(project_root: str | Path) -> float:
     triangles = _gpu_buffer_descriptor((1, 3), np.int32)
     adjacency = _gpu_buffer_descriptor((1, 1), np.int32)
     counts = _gpu_buffer_descriptor((1,), np.int32)
-    specializations = (
+    return (
         (compute._transform_anchor_points, (domain, vector_values, *([0.0] * 20))),
         (compute._transform_anchor_vectors, (domain, vector_values, *([0.0] * 14))),
         (
@@ -72,10 +71,17 @@ def ensure_engine_compute_artifacts(project_root: str | Path) -> float:
             (domain, vertices, triangles, adjacency, counts, 1, 1, 1),
         ),
     )
+
+
+def ensure_engine_compute_artifacts(project_root: str | Path) -> float:
+    """Compile every engine-owned Player compute specialization into Library."""
+    from infernux._compiler.taichi.frontend import compile_kernel
+    from infernux.engine.project_context import using_project_root
+
     started = time.perf_counter()
     try:
         with using_project_root(project_root):
-            for declaration, params in specializations:
+            for declaration, params in _engine_specializations():
                 compile_kernel(declaration.function, params)
     except Exception as error:
         raise ComputeAotBuildError(
@@ -89,29 +95,7 @@ def _attribute_name(node: ast.expr) -> str:
 
 
 def _compute_decorator_names(tree: ast.Module) -> set[str]:
-    names = {
-        "compute.kernel",
-        "inx.compute.kernel",
-        "infernux.compute.kernel",
-    }
-    for node in tree.body:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name in {"infernux", "infernux"}:
-                    root = alias.asname or alias.name
-                    names.add(f"{root}.compute.kernel")
-                elif alias.name in {"infernux.compute", "infernux.compute"}:
-                    names.add(f"{alias.asname or 'compute'}.kernel")
-        elif isinstance(node, ast.ImportFrom):
-            if node.module in {"infernux", "infernux"}:
-                for alias in node.names:
-                    if alias.name == "compute":
-                        names.add(f"{alias.asname or alias.name}.kernel")
-            elif node.module in {"infernux.compute", "infernux.compute"}:
-                for alias in node.names:
-                    if alias.name == "kernel":
-                        names.add(alias.asname or alias.name)
-    return names
+    return compute_decorator_names(tree, kinds=("kernel",))
 
 
 def _kernel_source_diagnostic(
@@ -211,6 +195,7 @@ def declared_kernel_names(
     project_root: str | Path,
     *,
     target: str = "Player/AOT",
+    _source_snapshots: dict[Path, str] | None = None,
 ) -> tuple[str, ...]:
     """Return runtime-qualified kernels in the selected Python closure."""
 
@@ -220,13 +205,14 @@ def declared_kernel_names(
         (Path(resolved_path(Path(path).expanduser())) for path in source_paths),
         key=lambda value: value.as_posix().casefold(),
     ):
-        if not source_path.is_file() or source_path.suffix.casefold() != ".py":
+        if source_path.suffix.casefold() != ".py":
             continue
         module_name = get_script_module_name(str(source_path), project_root=str(root))
         if not module_name:
             continue
         try:
-            source = source_path.read_text(encoding="utf-8")
+            source = (_source_snapshots[source_path] if _source_snapshots is not None
+                      else source_path.read_text(encoding="utf-8"))
             tree = ast.parse(source, filename=str(source_path))
         except (OSError, UnicodeError, SyntaxError) as error:
             raise ComputeAotBuildError(
@@ -327,12 +313,139 @@ def _artifact_record(path: Path) -> tuple[tuple[str, ...], str]:
         ) from error
 
 
+def _specialization_parameters(specialization: str) -> tuple:
+    """Recreate ABI descriptors, never runtime buffers or guessed scalar values."""
+    result = []
+    from infernux.math import vector2, vector3, vector4
+
+    dtypes = {"int": int, "float": float, "vector2": vector2, "vector3": vector3, "vector4": vector4}
+    records = json.loads(specialization)
+    if not isinstance(records, list):
+        raise ValueError("invalid GPU specialization")
+    for record in records:
+        if record == ["int32"]:
+            result.append(0)
+        elif record == ["float32"]:
+            result.append(0.0)
+        elif (isinstance(record, list) and len(record) == 3 and record[0] == "buffer"
+              and type(record[2]) is int and 1 <= record[2] <= 8):
+            result.append(_gpu_buffer_descriptor((1,) * record[2], dtypes.get(record[1], record[1])))
+        else:
+            raise ValueError(f"invalid GPU specialization parameter: {record!r}")
+    return tuple(result)
+
+
+def _select_current_artifacts(root: Path, snapshots: dict[Path, str], expected: tuple[str, ...]):
+    """Select only artifacts prepared from this build's current source closure.
+
+    Candidate imports are private and never borrow the editor's published
+    project modules. A same-named LKG function is not a valid build input.
+    """
+    from infernux._compiler.taichi import frontend
+    from infernux.engine.candidate_import import CandidateImportTransaction
+    from infernux.engine.project_context import using_project_root
+
+    class BuildSourceImports(CandidateImportTransaction):
+        def _reuse_project_lkg(self, name):
+            return None
+
+        def _has_lkg_descendant(self, name):
+            return False
+
+    cache = root / "Library/Artifacts/Compute"
+    specializations: dict[str, set[str]] = {name: set() for name in expected}
+    for path in sorted(cache.glob("*.inxgpu")):
+        functions, specialization = _artifact_record(path)
+        for name in set(functions).intersection(specializations):
+            specializations[name].add(specialization)
+
+    selected: dict[str, Path] = {}
+    manifest = []
+    missing: set[str] = set()
+
+    def select(function, params, *, bindings=None):
+        name = f"{function.__module__}.{function.__qualname__}"
+        plan = frontend.prepare_kernel(function, params, receiver_fields=bindings)
+        path = cache / f"{plan.artifact_key}.inxgpu"
+        if not path.is_file():
+            return False
+        functions, specialization = _artifact_record(path)
+        if name not in functions or specialization != frontend._specialization_identity(params):
+            raise ComputeAotBuildError(f"GPU AOT artifact identity disagrees with its source: {path}")
+        selected[path.name] = path
+        manifest.append({"function": name, "specialization": specialization, "artifact": path.name})
+        return True
+
+    with using_project_root(root):
+        broker = BuildSourceImports()
+        try:
+            modules = {}
+            for path, source in snapshots.items():
+                module_name = get_script_module_name(str(path), project_root=str(root))
+                if not module_name:
+                    continue
+                broker.register(module_name, str(path), source=embed_compute_sources(source))
+                modules[module_name] = path
+            owners: dict[str, list[str]] = {}
+            for name in expected:
+                module_name = max((module for module in modules if name.startswith(module + ".")), key=len)
+                owners.setdefault(module_name, []).append(name)
+            for module_name, names in owners.items():
+                path = modules[module_name]
+                module = broker.load(module_name)
+                sources = module.__dict__.get("__infernux_compute_sources__", {})
+                for name in names:
+                    qualified = name[len(module_name) + 1:]
+                    if qualified not in sources:
+                        raise ComputeAotBuildError(f"GPU AOT source is missing: {name}", missing=(name,))
+                    definition = ast.parse(sources[qualified]).body[0]
+                    if definition.args.defaults or any(value is not None for value in definition.args.kw_defaults):
+                        raise ComputeAotBuildError(f"GPU kernel requires parameters without defaults: {name}")
+                    fields = receiver_field_names(definition) if implicit_receiver_name(definition, in_class=True) else None
+                    definition.decorator_list = []
+                    namespace = dict(module.__dict__)
+                    # Rebuild the declaration without instantiating components or
+                    # calling factories. Closure captures cannot have warm artifacts.
+                    tree = ast.Module(body=[definition], type_ignores=[])
+                    exec(compile(tree, str(path), "exec", flags=__future__.annotations.compiler_flag,
+                                 dont_inherit=True), namespace)
+                    function = namespace[definition.name]
+                    function.__qualname__ = qualified
+                    matched = False
+                    for specialization in sorted(specializations[name]):
+                        params = _specialization_parameters(specialization)
+                        bindings = tuple(zip(fields, params)) if fields is not None else None
+                        expected_count = len(definition.args.posonlyargs) + len(definition.args.args)
+                        if fields is not None:
+                            expected_count += len(fields) - 1
+                        # Historical arities do not describe the current declaration.
+                        if len(params) != expected_count:
+                            continue
+                        matched = select(function, params, bindings=bindings) or matched
+                    if not matched:
+                        missing.add(name)
+            for declaration, params in _engine_specializations():
+                if not select(declaration.function, params):
+                    missing.add(f"{declaration.function.__module__}.{declaration.function.__qualname__}")
+        finally:
+            broker.rollback()
+    if missing:
+        ordered = tuple(sorted(missing))
+        raise ComputeAotBuildError(
+            "GPU AOT is incomplete for the current source of the selected Player closure: "
+            + ", ".join(ordered) + ". Prepare these kernels in the Editor before building.",
+            missing=ordered,
+        )
+    return list(selected.values()), manifest
+
+
 def stage_compute_artifacts(
     project_root: str | Path,
     source_paths: tuple[str | Path, ...],
     data_directory: str | Path,
     *,
     target: str = "Player/AOT",
+    source_snapshots: dict[str, str] | None = None,
 ) -> ComputeAotResult:
     """Stage the exact selected kernel set plus engine compute primitives.
 
@@ -342,7 +455,15 @@ def stage_compute_artifacts(
     """
 
     root = Path(resolved_path(Path(project_root).expanduser()))
-    expected = declared_kernel_names(source_paths, root, target=target)
+    paths = {Path(resolved_path(Path(path).expanduser())) for path in source_paths
+             if Path(path).suffix.casefold() == ".py"}
+    if source_snapshots is None:
+        snapshots = {path: path.read_text(encoding="utf-8") for path in sorted(paths)}
+    else:
+        snapshots = {Path(resolved_path(path)): source for path, source in source_snapshots.items()}
+        if set(snapshots) != paths:
+            raise ComputeAotBuildError("GPU AOT source snapshots disagree with the frozen Player closure")
+    expected = declared_kernel_names(source_paths, root, target=target, _source_snapshots=snapshots)
     destination = (
         Path(resolved_path(Path(data_directory).expanduser()))
         / "Library"
@@ -362,39 +483,12 @@ def stage_compute_artifacts(
             missing=expected,
         )
 
-    selected: list[Path] = []
-    covered: set[str] = set()
-    expected_set = set(expected)
-    for artifact in sorted(source.glob("*.inxgpu"), key=lambda value: value.name):
-        functions, _specialization = _artifact_record(artifact)
-        matched = expected_set.intersection(functions)
-        engine_primitive = any(name.startswith("infernux.compute.") for name in functions)
-        if not matched and not engine_primitive:
-            continue
-        selected.append(artifact)
-        covered.update(matched)
-
-    missing = tuple(sorted(expected_set - covered))
-    if missing:
-        raise ComputeAotBuildError(
-            "GPU AOT is incomplete for the selected Player closure: "
-            + ", ".join(missing),
-            missing=missing,
-        )
+    selected, manifest_records = _select_current_artifacts(root, snapshots, expected)
 
     _clear_staged_gpu_artifacts(destination)
     destination.mkdir(parents=True, exist_ok=True)
     for artifact in selected:
         shutil.copy2(artifact, destination / artifact.name)
-    manifest_records = []
-    for artifact in selected:
-        functions, specialization = _artifact_record(artifact)
-        for function_name in functions:
-            manifest_records.append({
-                "function": function_name,
-                "specialization": specialization,
-                "artifact": artifact.name,
-            })
     manifest_records.sort(key=lambda item: (item["function"], item["specialization"]))
     (destination / "AotManifest.json").write_text(
         json.dumps({"artifacts": manifest_records}, indent=2, sort_keys=True) + "\n",
