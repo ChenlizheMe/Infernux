@@ -266,7 +266,7 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
             context = GeometryBufferProviderContext(
                 self,
                 graph,
-                source=source,
+                source=_result.source,
                 phase=normalized_phase,
                 seed=_result.snapshot,
                 queue_range=queue_range,
@@ -279,14 +279,14 @@ class RenderPipeline(SerializedFieldCollectorMixin, RenderPipelineCallback):
                 available=context._buffers,
                 phase=normalized_phase,
                 providers=specs,
-                source=source,
+                source=_result.source,
             )
             for spec in order:
                 value = getattr(self, spec.method_name)(context)
                 if value is None:
                     raise GeometryBufferTopologyError(
                         f"geometry buffer provider {spec.method_name!r} returned no "
-                        f"resource for {spec.semantic!r} in source {source!r}"
+                        f"resource for {spec.semantic!r} in source {_result.source!r}"
                     )
                 context.publish(spec.semantic, value)
                 _result._publish_materialized(spec.semantic, value)

@@ -28,6 +28,62 @@ def test_pass_result_write_preserves_parent_revision():
     assert opacity.revision > opaque.revision
 
 
+@pytest.mark.parametrize("order", [("opaque", "post_copy"), ("post_copy", "opaque")])
+def test_derived_result_materializes_missing_semantics_in_its_own_source(order):
+    calls = []
+
+    class LazyPipeline(RenderPipeline):
+        @geometry_buffer("preview", dependencies={"color"})
+        def preview(self, context):
+            calls.append((context.source, context.sample("color")))
+            texture = context.graph.create_texture(f"{context.source}_preview", format=Format.RGBA16_SFLOAT)
+            with context.graph.add_pass(f"{context.source}_Preview") as render_pass:
+                render_pass.set_texture("_SourceTex", context.sample("color"))
+                render_pass.write_color(texture)
+                render_pass.fullscreen_quad("Fullscreen Blit")
+            return texture
+
+    graph = RenderGraph("Lazy Result Revisions")
+    original_color = graph.create_texture("original_color", format=Format.RGBA16_SFLOAT)
+    updated_color = graph.create_texture("updated_color", format=Format.RGBA16_SFLOAT)
+    parent = LazyPipeline().geometry_stage(graph, "opaque", buffers={"color": original_color}, queue_range=(0, 2500))
+    snapshot = parent.snapshot
+    child = graph.write_buffer("post_copy", parent, "color", updated_color)
+    results = {"opaque": parent, "post_copy": child}
+    for source in order:
+        texture = results[source].sample("preview")
+        assert texture.name == f"{source}_preview"
+    assert calls == [(source, original_color if source == "opaque" else updated_color) for source in order]
+    assert parent.sample("color") is original_color
+    assert child.sample("color") is updated_color
+    assert parent.sample("preview") is not child.sample("preview")
+    assert "preview" not in snapshot
+    with pytest.raises(TypeError):
+        snapshot["color"] = updated_color
+    assert child.revision > parent.revision
+
+
+def test_derived_result_preserves_semantics_already_materialized_on_parent():
+    calls = []
+
+    class LazyPipeline(RenderPipeline):
+        @geometry_buffer("preview", dependencies={"color"})
+        def preview(self, context):
+            calls.append(context.source)
+            return context.sample("color")
+
+    graph = RenderGraph("Inherited Materialized Result")
+    original_color = graph.create_texture("original_color", format=Format.RGBA16_SFLOAT)
+    updated_color = graph.create_texture("updated_color", format=Format.RGBA16_SFLOAT)
+    parent = LazyPipeline().geometry_stage(graph, "opaque", buffers={"color": original_color}, queue_range=(0, 2500))
+    assert parent.sample("preview") is original_color
+    child = graph.write_buffer("post_copy", parent, "color", updated_color)
+    assert child.sample("color") is updated_color
+    assert child.sample("preview") is original_color
+    assert parent.sample("color") is original_color
+    assert calls == ["opaque"]
+
+
 def test_pass_resources_reject_foreign_graph_handles_even_with_matching_names():
     view = RenderGraph("Scene View")
     other_view = RenderGraph("Game View")
