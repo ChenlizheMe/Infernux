@@ -361,6 +361,7 @@ set(IMGUI_CORE_SRCS
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/misc/cpp/imgui_stdlib.cpp
 )
 
 set(INFERNUX_IMGUI_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/imgui")

@@ -437,29 +437,24 @@ void RegisterGUIBindings(py::module_ &m)
              py::arg("label"), py::arg("value"), py::arg("speed"), py::arg("min"), py::arg("max"),
              py::arg("semantic_id"))
         .def("text_input",
-             [](InxGUIContext &ctx, const std::string &label, const std::string &value, size_t buffer_size) {
-                 std::vector<char> buffer(buffer_size, 0);
-                 if (value.size() < buffer_size) {
-                     std::copy(value.begin(), value.end(), buffer.begin());
-                 } else {
-                     std::copy(value.begin(), value.begin() + buffer_size - 1, buffer.begin());
-                 }
-                 ctx.TextInput(label, buffer.data(), buffer_size);
-                 return std::string(buffer.data());
-             })
-        .def("text_area", &InxGUIContext::TextArea)
+             [](InxGUIContext &ctx, const std::string &label, std::string value, size_t buffer_size) {
+                 value.reserve(buffer_size);
+                 ctx.TextInput(label, value);
+                 return value;
+             },
+             py::arg("label"), py::arg("value"), py::arg("buffer_size") = 256,
+             "Edit a complete string; buffer_size is a capacity hint, not a text length limit.")
+        .def("text_area", [](InxGUIContext &ctx, const std::string &label, std::string value) {
+            ctx.TextArea(label, value);
+            return value;
+        }, py::arg("label"), py::arg("text"))
         .def(
             "input_text_with_hint",
-            [](InxGUIContext &ctx, const std::string &label, const std::string &hint, const std::string &value,
+            [](InxGUIContext &ctx, const std::string &label, const std::string &hint, std::string value,
                size_t buffer_size, int flags) {
-                std::vector<char> buffer(buffer_size, 0);
-                if (value.size() < buffer_size) {
-                    std::copy(value.begin(), value.end(), buffer.begin());
-                } else {
-                    std::copy(value.begin(), value.begin() + buffer_size - 1, buffer.begin());
-                }
-                ctx.InputTextWithHint(label, hint, buffer.data(), buffer_size, flags);
-                return std::string(buffer.data());
+                value.reserve(buffer_size);
+                ctx.InputTextWithHint(label, hint, value, flags);
+                return value;
             },
             py::arg("label"), py::arg("hint"), py::arg("value"), py::arg("buffer_size") = 256, py::arg("flags") = 0)
         .def(

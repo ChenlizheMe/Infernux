@@ -147,6 +147,9 @@ class InxGUIContext
 
     void TextInput(const std::string &label, char *buffer, size_t bufferSize);
     void TextArea(const std::string &label, char *buffer, size_t bufferSize);
+    bool TextInput(const std::string &label, std::string &value);
+    bool TextArea(const std::string &label, std::string &value);
+    bool InputTextWithHint(const std::string &label, const std::string &hint, std::string &value, int flags = 0);
     bool InputTextWithHint(const std::string &label, const std::string &hint, char *buffer, size_t bufferSize,
                            int flags = 0);
     bool InputInt(const std::string &label, int *value, int step = 1, int stepFast = 100, int flags = 0,

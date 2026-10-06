@@ -286,6 +286,15 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.editor_shortcut_input COMMAND infernux_editor_shortcut_input_tests)
 
+    add_executable(infernux_editor_text_input_tests cpp/tests/EditorTextInputTests.cpp)
+    target_include_directories(infernux_editor_text_input_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_editor_text_input_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_editor_text_input_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.editor_text_input COMMAND infernux_editor_text_input_tests)
+
     add_executable(infernux_editor_tools_tests
         cpp/tests/EditorToolsTests.cpp
     )

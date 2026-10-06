@@ -12,6 +12,7 @@
 #include <function/editor/EditorThemeRegistry.h>
 #include <imgui_internal.h>
 #include <limits>
+#include <misc/cpp/imgui_stdlib.h>
 #include <stdexcept>
 #include <type_traits>
 
@@ -505,6 +506,31 @@ void InxGUIContext::TextArea(const std::string &label, char *buffer, size_t buff
     ImGui::InputTextMultiline(label.c_str(), buffer, bufferSize, ImVec2(-FLT_MIN, 100.0f * GetDpiScale()));
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("text_area", label, true, "", std::nullopt, std::nullopt, std::string(buffer));
+}
+
+bool InxGUIContext::TextInput(const std::string &label, std::string &value)
+{
+    const bool changed = ImGui::InputText(label.c_str(), &value);
+    if (InxGUISemantics::IsCaptureEnabled())
+        RecordSemanticItem("text_input", label, true, "", std::nullopt, std::nullopt, value);
+    return changed;
+}
+
+bool InxGUIContext::TextArea(const std::string &label, std::string &value)
+{
+    const bool changed = ImGui::InputTextMultiline(label.c_str(), &value, ImVec2(-FLT_MIN, 100.0f * GetDpiScale()));
+    if (InxGUISemantics::IsCaptureEnabled())
+        RecordSemanticItem("text_area", label, true, "", std::nullopt, std::nullopt, value);
+    return changed;
+}
+
+bool InxGUIContext::InputTextWithHint(const std::string &label, const std::string &hint, std::string &value, int flags)
+{
+    const bool changed = ImGui::InputTextWithHint(label.c_str(), hint.c_str(), &value, flags);
+    if (InxGUISemantics::IsCaptureEnabled())
+        RecordSemanticItem("text_input", label.empty() || label.rfind("##", 0) == 0 ? hint : label, true, label,
+                           std::nullopt, std::nullopt, value);
+    return changed;
 }
 
 bool InxGUIContext::InputTextWithHint(const std::string &label, const std::string &hint, char *buffer,
@@ -2520,23 +2546,17 @@ std::vector<PropertyChange> InxGUIContext::RenderPropertyBatch(const std::vector
         }
         case PropertyDesc::String: {
             doLabel(d.label);
-            char buf[4096];
-            const std::string shown = d.mixed ? std::string("--") : d.sVal;
-            size_t len = std::min(shown.size(), sizeof(buf) - 1);
-            std::memcpy(buf, shown.c_str(), len);
-            buf[len] = '\0';
-            if (d.multiline)
-                ImGui::InputTextMultiline(d.widgetId.c_str(), buf, sizeof(buf), ImVec2(-1, 80.0f * GetDpiScale()));
-            else
-                ImGui::InputText(d.widgetId.c_str(), buf, 256);
+            std::string value = d.mixed ? std::string("--") : d.sVal;
+            const bool edited =
+                d.multiline ? ImGui::InputTextMultiline(d.widgetId.c_str(), &value, ImVec2(-1, 80.0f * GetDpiScale()))
+                            : ImGui::InputText(d.widgetId.c_str(), &value);
             if (captureSemantics)
                 RecordSemanticItem(d.multiline ? "text_area" : "text_input", d.label, true, semanticId);
-            std::string newStr(buf);
-            if ((!d.mixed && newStr != d.sVal) || (d.mixed && newStr != "--")) {
+            if (edited && (d.mixed || value != d.sVal)) {
                 PropertyChange c;
                 c.index = i;
                 c.type = PropertyDesc::String;
-                c.sVal = std::move(newStr);
+                c.sVal = std::move(value);
                 changes.push_back(c);
             }
             break;
