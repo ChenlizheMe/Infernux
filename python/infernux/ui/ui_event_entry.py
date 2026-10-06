@@ -218,13 +218,30 @@ def normalize_event_arguments(existing_args: list[UIEventArgument], specs: list[
     for index, spec in enumerate(specs):
         if index < len(existing_args) and isinstance(existing_args[index], UIEventArgument):
             arg = copy.deepcopy(existing_args[index])
+            previous_component_type = arg.component_type
             arg.kind = spec.kind
             arg.name = spec.name
             arg.component_type = spec.component_type or ""
             if spec.kind == "component":
-                existing_ref = arg.component if isinstance(arg.component, ComponentRef) else ComponentRef()
-                if existing_ref.component_type != (spec.component_type or ""):
-                    arg.component = ComponentRef(go_id=existing_ref.go_id, component_type=spec.component_type or "")
+                # The normal field getter resolves the reference to an instance.
+                # Authoring must preserve the exact stored identity, including a
+                # temporarily missing target, without selecting a same-type peer.
+                existing_ref = _get_serializable_raw_field(arg, "component")
+                if not isinstance(existing_ref, ComponentRef):
+                    arg.component = ComponentRef(component_type=spec.component_type or "")
+                elif spec.component_type and spec.component_type != previous_component_type:
+                    # Only a changed constraint can invalidate a selection.
+                    # An unrestricted parameter accepts the existing reference;
+                    # a base-class parameter also accepts its derived instance.
+                    compatible = existing_ref.component_type == spec.component_type
+                    if not compatible:
+                        component = existing_ref.resolve()
+                        compatible = component is not None and any(
+                            base.__name__ == spec.component_type
+                            for base in type(component).__mro__
+                        )
+                    if not compatible:
+                        arg.component = ComponentRef(component_type=spec.component_type)
             normalized.append(arg)
             continue
         normalized.append(_build_default_argument(spec))
