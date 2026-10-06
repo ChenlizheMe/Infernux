@@ -1462,6 +1462,19 @@ if(INFERNUX_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
         )
     endforeach()
+    foreach(_tutorial_material_surface lit painted)
+        set(_tutorial_material_test "infernux.tutorial_material_${_tutorial_material_surface}_views_gpu")
+        add_test(NAME ${_tutorial_material_test}
+            COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_SOURCE_DIR}/python/infernux/test/tutorial_material_views_gpu_test.py
+                --surface ${_tutorial_material_surface}
+        )
+        set_tests_properties(${_tutorial_material_test} PROPERTIES
+            ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+            LABELS "requires_vulkan_device" TIMEOUT 60 RUN_SERIAL TRUE
+            FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
+        )
+    endforeach()
     foreach(_mesh_rejected_domain Fullscreen ParticleSprite)
         foreach(_mesh_domain_pipeline forward forward_plus deferred)
             set(_mesh_domain_test "infernux.mesh_reject_${_mesh_rejected_domain}_${_mesh_domain_pipeline}_gpu")
