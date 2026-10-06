@@ -40,23 +40,18 @@ class BuildDependencyMixin:
         }
 
     def _collect_user_dependencies(self) -> List[str]:
-        """Scan user scripts for third-party imports and return package names.
-
-        Detection sources (in order of priority):
-        1. ``ProjectSettings/requirements.txt`` — the same active PEP 508
-           requirements checked by the editor, including versions and markers.
-        2. AST-based import scanning of all ``.py`` files under ``Assets/``.
-           Only top-level package names are collected (``import a.b`` → ``a``).
-
-        The results are de-duplicated and stdlib/engine names are filtered out.
-        Every remaining package must be installed in the build environment.
-        """
+        """Collect requirements and imports from the compiled Player closure."""
         import ast
         import importlib.util
 
+        source_paths = self.cooked_python_source_paths()
+        sources = getattr(self, "_player_python_source_texts", {})
+        if set(source_paths) != set(sources):
+            raise RuntimeError("Player dependency sources do not match the compiled source closure")
         found: set[str] = set()
         uses_infernux_jit = False
         direct_parallel_runtime_imports: set[str] = set()
+        self._player_dependency_requirements = ()
 
         # --- Source 1: shared project requirements ----------------------
         req_path = requirements_path(self.project_path)
@@ -72,33 +67,20 @@ class BuildDependencyMixin:
                     + ", ".join(unresolved)
                 )
             found.update(module for _spec, module in entries)
+            self._player_dependency_requirements = tuple(spec for spec, _module in entries)
 
         # --- Source 2: AST import scanning ------------------------------
-        assets_dir = os.path.join(self.project_path, "Assets")
-        if os.path.isdir(assets_dir):
-            for root, _, files in os.walk(assets_dir):
-                for fname in files:
-                    if not fname.endswith(".py"):
-                        continue
-                    fpath = os.path.join(root, fname)
-                    with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                        source = f.read()
-                    tree = ast.parse(source, filename=fpath)
-                    if _jit_kernels.cpu_jit_declarations(source):
-                        uses_infernux_jit = True
-                    for node in ast.walk(tree):
-                        if isinstance(node, ast.Import):
-                            for alias in node.names:
-                                root_name = alias.name.split(".")[0]
-                                found.add(root_name)
-                                if root_name in {"numba", "llvmlite"}:
-                                    direct_parallel_runtime_imports.add(root_name)
-                        elif isinstance(node, ast.ImportFrom):
-                            if node.module and node.level == 0:
-                                root_name = node.module.split(".")[0]
-                                found.add(root_name)
-                                if root_name in {"numba", "llvmlite"}:
-                                    direct_parallel_runtime_imports.add(root_name)
+        for fpath in source_paths:
+            source = sources[fpath]
+            tree = ast.parse(source, filename=fpath)
+            if _jit_kernels.cpu_jit_declarations(source):
+                uses_infernux_jit = True
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    found.update(alias.name.split(".")[0] for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                    found.add(node.module.split(".")[0])
+        direct_parallel_runtime_imports = found & {"numba", "llvmlite"}
         # --- Filter: remove stdlib / engine / excluded ------------------
         found -= self._BUILTIN_MODULES
         found -= self._collect_internal_asset_module_names()
@@ -142,21 +124,16 @@ class BuildDependencyMixin:
         return dependencies
 
     def _collect_internal_asset_module_names(self) -> set[str]:
-        """Return top-level module names that belong to the project's Assets tree."""
-        names: set[str] = {"Assets"}
-        assets_dir = os.path.join(self.project_path, "Assets")
-        if not os.path.isdir(assets_dir):
-            return names
+        """Return import roots actually shipped by the project script loaders."""
+        from pathlib import Path
 
-        for entry in os.scandir(assets_dir):
-            name = entry.name
-            if name.startswith(".") or name in {"__pycache__"}:
+        names: set[str] = {"Assets", "_infernux_packages"}
+        assets_dir = os.path.join(self.project_path, "Assets")
+        for source in self.cooked_python_source_paths():
+            relative = Path(source).relative_to(self.project_path)
+            if relative.parts[0].casefold() != "assets":
                 continue
-            if entry.is_dir():
-                names.add(name)
-                continue
-            stem, ext = os.path.splitext(name)
-            if ext in {".py", ".pyc"} and stem and not stem.startswith("_"):
-                names.add(stem)
+            relative = Path(source).relative_to(assets_dir)
+            names.add(relative.parts[0] if len(relative.parts) > 1 else relative.stem)
         return names
 

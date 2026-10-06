@@ -1018,6 +1018,7 @@ class NuitkaBuilder:
     _PLAYER_POST_BUILD_ONLY_FILES = frozenset(
         {
             "engine/_build_dependencies.py",
+            "engine/player_dependencies.py",
             "engine/_build_splash.py",
             "engine/build_cancellation.py",
             "engine/game_builder.py",

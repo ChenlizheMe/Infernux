@@ -197,6 +197,23 @@ def _is_format_marker_group(paths) -> bool:
     return all(entry.endswith("/py.typed") for entry in entries)
 
 
+def _is_runtime_distribution_metadata_group(paths) -> bool:
+    """Separate installed distributions own separate importlib metadata files."""
+    distributions = set()
+    filenames = set()
+    for path in paths:
+        _archive, separator, relative = str(path).partition("/Runtime.inxrt::")
+        parts = relative.split("/")
+        if (
+            not separator or len(parts) != 2 or not parts[0].endswith(".dist-info")
+            or parts[1] not in {"METADATA", "WHEEL", "entry_points.txt", "top_level.txt", "RECORD"}
+        ):
+            return False
+        distributions.add(parts[0])
+        filenames.add(parts[1])
+    return len(distributions) == len(paths) and len(filenames) == 1
+
+
 def _is_runtime_license_group(paths) -> bool:
     """Dependencies retain their own legal notices even when the text repeats."""
     for path in paths:
@@ -859,6 +876,7 @@ def audit_player_package(
         and not _is_required_bootstrap_duplicate(paths)
         and not _is_format_marker_group(paths)
         and not _is_runtime_license_group(paths)
+        and not _is_runtime_distribution_metadata_group(paths)
         and not _is_linux_soname_alias_group(paths)
         and not _is_logically_distinct_asset_payload(paths, data_relative)
     )

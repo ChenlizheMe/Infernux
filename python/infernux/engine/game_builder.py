@@ -608,9 +608,6 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         self._clean_output()
         self._write_output_marker(self.output_dir, state="in_progress")
 
-        _p(t("build.step.collecting_deps"), 0.04)
-        user_packages = self._collect_user_dependencies()
-
         _p(t("build.step.generating_boot"), 0.05)
         boot_script = self._generate_boot_script()
 
@@ -619,8 +616,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             dist_dir = self._stage_player_runtime(
                 boot_script,
                 on_progress,
-                user_packages,
-                cancel_event,
+                cancel_event=cancel_event,
             )
         finally:
             # The boot source lives under the output directory. Remove it
@@ -636,6 +632,8 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
         _p(t("build.step.compiling_scripts"), 0.91)
         self._compile_user_scripts(final_dir)
         self._compile_player_plugin_scripts(final_dir)
+        _p(t("build.step.collecting_deps"), 0.915)
+        user_packages = self._collect_user_dependencies()
         from infernux.engine.build.compute_aot import stage_compute_artifacts
 
         stage_compute_artifacts(
@@ -662,6 +660,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
 
         _p(t("build.step.cleaning_redundant"), 0.98)
         self._cleanup_dist(final_dir)
+        self._stage_user_dependencies(final_dir, user_packages)
 
         _p("Organizing Player distribution", 0.9802)
         self._organize_player_layout(final_dir)
@@ -1336,7 +1335,6 @@ os._exit(_exit_code)
         self,
         boot_script: str,
         on_progress: Optional[Callable[[str, float], None]],
-        user_packages: Optional[List[str]] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> str:
         """Restore the selected plugin payload, independent of compiler caches."""
@@ -1352,21 +1350,30 @@ os._exit(_exit_code)
             parallel=self.include_jit_runtime,
         )
         try:
-            additional = sorted(set(user_packages or ()) - {"numpy", "packaging", "numba", "llvmlite"})
-            if additional:
-                # Reuse the source-less dependency copier, not its compiler
-                # or environment/cache fingerprint path.
-                copier = NuitkaBuilder(
-                    entry_script=boot_script, output_dir=self.output_dir,
-                    build_cache_root=os.path.join(self.project_path, "Cache", "Build", "Desktop"),
-                )
-                copier._inject_jit_packages(dist_dir, packages=additional)
             if cancel_event is not None and cancel_event.is_set():
                 raise _BuildCancelled()
             return dist_dir
         except BaseException:
             shutil.rmtree(os.path.dirname(dist_dir))
             raise
+
+    def _stage_user_dependencies(self, final_dir: str, user_packages: List[str]) -> None:
+        from .player_dependencies import resolve_runtime_dependencies, stage_runtime_dependencies
+
+        bundled = {"infernux", "numpy", "packaging"}
+        if self.include_jit_runtime:
+            bundled.update(("numba", "llvmlite"))
+        dependencies = resolve_runtime_dependencies(
+            user_packages,
+            requirements=self._player_dependency_requirements,
+            constraints=getattr(self, "_player_dependency_constraints", ()),
+            bundled=bundled,
+            forbidden=() if self.include_jit_runtime else ("numba", "llvmlite"),
+        )
+        self._player_dependency_files = ()
+        if dependencies:
+            root = Path(final_dir) / ".player-dependencies"
+            self._player_dependency_files = stage_runtime_dependencies(dependencies, root)
 
     def _player_host_path(self) -> str:
         """The selected platform package owns the game's native host."""
@@ -1477,6 +1484,7 @@ os._exit(_exit_code)
         self._runtime_artifact_bindings = {}
         self._runtime_artifact_source_paths = set()
         self._player_python_source_paths: set[str] = set()
+        self._player_python_source_texts: dict[str, str] = {}
         data_dir = os.path.join(final_dir, "Data")
         # Runtime settings are an explicit whitelist. Recursively copying the
         # authoring ProjectSettings directory would make every future Editor
@@ -1595,6 +1603,7 @@ os._exit(_exit_code)
         registry = PluginRegistry(self.project_path)
         document = registry.load()
         runtime_records: list[dict[str, object]] = []
+        dependency_constraints: set[str] = set()
         staged_plugin_guids: set[str] = set()
         assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
         packages_root = resolved_path(os.path.join(self.project_path, "Packages"))
@@ -1740,6 +1749,18 @@ os._exit(_exit_code)
                     shutil.copy2(meta, destination + ".meta")
             if not runtime_files:
                 continue
+            dependency_constraints.update(
+                str(item["requirement"]) for item in record.get("python_requirements", ())
+            )
+            # Local author packages have no install ledger. Their requirements
+            # are constraints for runtime imports, not roots for Editor tools.
+            from .project_requirements import _parse_requirements
+
+            package_requirements = os.path.join(
+                packages_root, *str(record["reference"]).split("/"), "requirements.txt"
+            )
+            if os.path.isfile(package_requirements):
+                dependency_constraints.update(spec for spec, _module in _parse_requirements(package_requirements))
             control = record.get("control")
             if not isinstance(control, dict):
                 raise RuntimeError(
@@ -1778,6 +1799,14 @@ os._exit(_exit_code)
             "python_installs": [],
             "python_dependencies": [],
         }
+        runtime_references = {str(record["reference"]).casefold() for record in runtime_records}
+        for dependency in document.get("python_dependencies", ()):
+            if dependency.get("installed_version") and any(
+                str(owner["reference"]).casefold() in runtime_references
+                for owner in dependency.get("owners", ())
+            ):
+                dependency_constraints.add(f"{dependency['name']}=={dependency['installed_version']}")
+        self._player_dependency_constraints = tuple(sorted(dependency_constraints))
         _write_json_atomic(
             os.path.join(data_dir, "ProjectSettings", "InxPlugins.json"),
             runtime_registry,
@@ -1789,6 +1818,7 @@ os._exit(_exit_code)
 
         if not hasattr(self, "_player_python_source_paths"):
             self._player_python_source_paths = set()
+            self._player_python_source_texts = {}
         data_root = os.path.join(final_dir, "Data")
         root = os.path.join(data_root, "Packages")
         if not os.path.isdir(root):
@@ -1859,6 +1889,7 @@ os._exit(_exit_code)
                     ]
                     registry_changed = True
                     source_text = Path(source).read_text(encoding="utf-8")
+                    self._player_python_source_texts[resolved_path(authored_source)] = source_text
                     component_records.extend(
                         self._runtime_component_type_records(
                             source_text,
@@ -3179,6 +3210,7 @@ os._exit(_exit_code)
             return
         if not hasattr(self, "_player_python_source_paths"):
             self._player_python_source_paths = set()
+            self._player_python_source_texts = {}
 
         data_dir = os.path.join(final_dir, "Data")
         guid_map: dict[str, str] = {}
@@ -3243,6 +3275,10 @@ os._exit(_exit_code)
                             source_text = sf.read()
                         runtime_path = relative_path(py_path + "c", data_dir).replace("\\", "/")
                         script_guid = guid_by_runtime_path.get(runtime_path.casefold(), "")
+                        authored_source = self._library_source_entry_path(
+                            self._cooked_asset_entries[script_guid]
+                        )
+                        self._player_python_source_texts[resolved_path(authored_source)] = source_text
                         runtime_type_records.extend(
                             self._runtime_component_type_records(
                                 source_text,
@@ -3679,6 +3715,9 @@ os._exit(_exit_code)
             os.path.join(final_dir, "infernux"),
         ]
         files: list[tuple[str, str]] = []
+        dependency_root = Path(final_dir) / ".player-dependencies"
+        dependency_files = getattr(self, "_player_dependency_files", ())
+        files.extend((relative, str(dependency_root / relative)) for relative in dependency_files)
         deferred_sources: list[str] = []
         deferred_source_set: set[str] = set()
         bootstrap_root_names = {
@@ -3809,6 +3848,8 @@ os._exit(_exit_code)
                 pass
         for payload_root in roots:
             shutil.rmtree(payload_root, ignore_errors=True)
+        if dependency_files:
+            shutil.rmtree(dependency_root)
         # The source-less Infernux package and native closure now live only
         # inside Runtime.inxrt. Do not leave an empty package directory behind.
         self._remove_empty_directory_tree(os.path.join(final_dir, "infernux"))

@@ -331,6 +331,17 @@ def _make_project(tmp_path):
     return project_root
 
 
+def _collect_fixture_dependencies(builder):
+    # Scanner unit fixtures explicitly provide compiled-source inputs. Full
+    # staging/compilation coverage lives in test_player_dependency_closure.py.
+    sources = sorted((Path(builder.project_path) / "Assets").rglob("*.py"))
+    builder._player_python_source_paths = {str(path.resolve()) for path in sources}
+    builder._player_python_source_texts = {
+        str(path.resolve()): path.read_text(encoding="utf-8") for path in sources
+    }
+    return builder._collect_user_dependencies()
+
+
 def _make_builder(tmp_path, output_dir):
     project_root = _make_project(tmp_path)
     return GameBuilder(str(project_root), str(output_dir), game_name="TestGame")
@@ -2137,7 +2148,7 @@ def test_player_stages_plugin_payload_without_compiler_or_cache_lookup(tmp_path,
                         lambda **kwargs: pytest.fail("No compiler builder for the base Player"))
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     builder.debug_mode = debug_mode
-    result = builder._stage_player_runtime(str(tmp_path / "boot.py"), None, user_packages=[])
+    result = builder._stage_player_runtime(str(tmp_path / "boot.py"), None)
     assert result == str(tmp_path / "dist")
     assert captured["root"] == builder.player_runtime_root
     assert Path(captured["staging_root"]) == Path(builder.project_path) / "Cache/Build/Desktop"
@@ -7468,7 +7479,7 @@ class TestGameBuilderDependencyCollection:
         monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
         monkeypatch.setattr("infernux.engine._build_dependencies._has_requirement", lambda *_args: True)
 
-        assert builder._collect_user_dependencies() == ["fastmcp", "mcp"]
+        assert _collect_fixture_dependencies(builder) == ["fastmcp", "mcp"]
 
     def test_collect_user_dependencies_allows_mcp_named_asset_imports(self, tmp_path, monkeypatch):
         project_root = _make_project(tmp_path)
@@ -7480,7 +7491,7 @@ class TestGameBuilderDependencyCollection:
 
         monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
 
-        assert builder._collect_user_dependencies() == ["fastmcp", "mcp"]
+        assert _collect_fixture_dependencies(builder) == ["fastmcp", "mcp"]
 
     def test_project_requirements_use_shared_path_markers_and_import_names(self, tmp_path, monkeypatch):
         project_root = _make_project(tmp_path)
@@ -7503,7 +7514,7 @@ class TestGameBuilderDependencyCollection:
             lambda spec, module: checked.append((spec, module)) or True,
         )
         monkeypatch.setattr(importlib.util, "find_spec", lambda name: object() if name == "PIL" else None)
-        assert builder._collect_user_dependencies() == ["PIL"]
+        assert _collect_fixture_dependencies(builder) == ["PIL"]
         assert checked == [("Pillow>=10", "PIL")]
         assert req_path.read_bytes() == before
 
@@ -7514,7 +7525,7 @@ class TestGameBuilderDependencyCollection:
         monkeypatch.setattr("infernux.engine._build_dependencies._has_requirement", lambda *_args: False)
         monkeypatch.setattr(importlib.util, "find_spec", lambda _name: object())
         with pytest.raises(RuntimeError, match="do not satisfy project requirements: demo==2.0"):
-            builder._collect_user_dependencies()
+            _collect_fixture_dependencies(builder)
 
     def test_filter_shipped_requirements_keeps_user_packages_and_removes_disabled_jit(self, tmp_path):
         data_dir = tmp_path / "build_output" / "Data"
@@ -7627,7 +7638,7 @@ class TestGameBuilderDependencyCollection:
 
         monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
 
-        deps = builder._collect_user_dependencies()
+        deps = _collect_fixture_dependencies(builder)
 
         assert deps == ["llvmlite", "numba", "numpy"]
 
@@ -7635,7 +7646,7 @@ class TestGameBuilderDependencyCollection:
         project_root = _make_project(tmp_path)
         _write_asset_script(project_root, "public_api.py", "import infernux as inx\nfrom infernux import Application\n")
         builder = GameBuilder(str(project_root), str(tmp_path / "build_output"))
-        assert builder._collect_user_dependencies() == []
+        assert _collect_fixture_dependencies(builder) == []
 
     def test_collect_user_dependencies_rejects_invalid_project_script(self, tmp_path):
         project_root = _make_project(tmp_path)
@@ -7648,7 +7659,7 @@ class TestGameBuilderDependencyCollection:
         )
 
         with pytest.raises(SyntaxError) as exc_info:
-            builder._collect_user_dependencies()
+            _collect_fixture_dependencies(builder)
 
         assert exc_info.value.filename == str(script_path)
 
@@ -7670,7 +7681,7 @@ class TestGameBuilderDependencyCollection:
             RuntimeError,
             match="Player build dependencies are not installed: absent_first, absent_second",
         ):
-            builder._collect_user_dependencies()
+            _collect_fixture_dependencies(builder)
 
 
 class TestGameBuilderAutoParallelExport:
@@ -7966,7 +7977,7 @@ class TestGameBuilderAutoParallelExport:
 
         monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
 
-        deps = builder._collect_user_dependencies()
+        deps = _collect_fixture_dependencies(builder)
 
         assert deps == ["llvmlite", "numba", "numpy"]
 
@@ -7985,7 +7996,7 @@ class TestGameBuilderAutoParallelExport:
 
         monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
 
-        assert builder._collect_user_dependencies() == []
+        assert _collect_fixture_dependencies(builder) == []
 
     def test_collect_user_dependencies_rejects_direct_numba_when_disabled(self, tmp_path):
         project_root = _make_project(tmp_path)
@@ -7994,7 +8005,7 @@ class TestGameBuilderAutoParallelExport:
         builder.include_jit_runtime = False
 
         with pytest.raises(RuntimeError, match="CPU JIT build capability"):
-            builder._collect_user_dependencies()
+            _collect_fixture_dependencies(builder)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows SDK environment")
