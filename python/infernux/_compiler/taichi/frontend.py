@@ -34,13 +34,14 @@ from ..kernel_contract import (
     receiver_issue,
 )
 from ..cache import compiler_cache_root, prune_cache_files
+from .compile_inputs import snapshot_compilation_values
 
 
 _VENDOR_NAME = "infernux._compiler.taichi._vendor.taichi"
 _lock = threading.RLock()
 _vendor = None
 _CACHE_MAGIC = b"INXGPU\x01"
-_CACHE_ABI = "infernux-gpu-kernel-contract"
+_CACHE_ABI = "infernux-gpu-kernel-contract-v2"
 _CACHE_FILE_LIMIT = 128
 _CACHE_BYTE_LIMIT = 256 * 1024 * 1024
 
@@ -644,7 +645,7 @@ def _cache_root() -> Path:
     return compiler_cache_root()
 
 
-def _artifact_key(function, definition, helpers, params) -> str:
+def _artifact_key(function, definition, helpers, params, compile_values) -> str:
     source_tree = ast.Module(body=[*helpers, definition], type_ignores=[])
     payload = {
         "abi": _CACHE_ABI,
@@ -652,6 +653,7 @@ def _artifact_key(function, definition, helpers, params) -> str:
         "qualname": function.__qualname__,
         "source": ast.dump(source_tree, include_attributes=False),
         "parameters": parameter_key(params),
+        "compile_values": compile_values,
         "target": "vulkan-1.2-spirv-1.5",
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -858,6 +860,7 @@ def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object
     definition.body = body
     globals_map = dict(function.__globals__)
     helpers = _helper_definitions(definition, globals_map)
+    compile_values = snapshot_compilation_values([*helpers, definition], globals_map)
     _lower_serial_loops(definition)
     for helper in helpers:
         _lower_serial_loops(helper)
@@ -873,7 +876,7 @@ def compile_kernel(function, params, *, receiver_fields: tuple[tuple[str, object
         body=body,
         orelse=[],
     )]
-    artifact_key = _artifact_key(function, definition, helpers, params)
+    artifact_key = _artifact_key(function, definition, helpers, params, compile_values)
     cached = _load_artifact(artifact_key, params)
     if cached is not None:
         return cached
