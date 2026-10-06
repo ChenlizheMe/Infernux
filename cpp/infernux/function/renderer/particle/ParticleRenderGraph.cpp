@@ -87,8 +87,6 @@ void main() {
     if (pc.reset != 0u) {
         burstRequestCounts[slot] = 0u;
         consumingCounts[slot] = 0u;
-        playingRequests[slot] = 0u;
-        return;
     }
     uint playingRequest = atomicExchange(playingRequests[slot], 0u);
     if (playingRequest == 1u) playingStates[slot] = 0u;
@@ -196,17 +194,15 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
     };
     m_burstRequestCounts = createDeviceLocal(uint64_t(slotCount) * sizeof(uint32_t), readableStorage);
     m_consumingCounts = createDeviceLocal(uint64_t(slotCount) * sizeof(uint32_t), readableStorage);
-    m_emitterPlayingRequests = createDeviceLocal(uint64_t(slotCount) * sizeof(uint32_t), readableStorage);
+    m_emitterPlayingRequests = createDeviceLocal(uint64_t(slotCount) * sizeof(uint32_t),
+                                                 readableStorage | rhi::BufferUsageFlags::TransferDestination);
     rhi::BufferDesc activeDesc;
     activeDesc.byteSize = uint64_t(slotCount) * sizeof(uint32_t);
-    activeDesc.usage = readableStorage;
-    activeDesc.memory = rhi::BufferMemory::Upload;
+    activeDesc.usage = readableStorage | rhi::BufferUsageFlags::TransferDestination;
+    activeDesc.memory = rhi::BufferMemory::DeviceLocal;
     activeDesc.queueAccess =
         rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
-    activeDesc.initialData = zeroCounts.data();
-    activeDesc.initialDataBytes = activeDesc.byteSize;
     m_acceptingRequestSlots = device.CreateBuffer(activeDesc);
-    activeDesc.initialData = playingStates.data();
     m_emitterPlayingStates = device.CreateBuffer(activeDesc);
     m_spawnMetadata =
         createDeviceLocal(uint64_t(slotCount) * MetadataStride,
@@ -216,11 +212,9 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
     const size_t parameterWordCount = parameterWords.empty() ? emptyParameterBlock.size() : parameterWords.size();
     rhi::BufferDesc parameterDesc;
     parameterDesc.byteSize = parameterWordCount * sizeof(uint32_t);
-    parameterDesc.usage = storage;
-    parameterDesc.memory = rhi::BufferMemory::Upload;
+    parameterDesc.usage = storage | rhi::BufferUsageFlags::TransferDestination;
+    parameterDesc.memory = rhi::BufferMemory::DeviceLocal;
     parameterDesc.queueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
-    parameterDesc.initialData = parameterData;
-    parameterDesc.initialDataBytes = parameterDesc.byteSize;
     m_parameterBuffer = device.CreateBuffer(parameterDesc);
     m_parameterWordCount = static_cast<uint32_t>(parameterWordCount);
     if (!m_burstRequestCounts.IsValid() || !m_consumingCounts.IsValid() || !m_acceptingRequestSlots.IsValid() ||
@@ -229,6 +223,10 @@ bool ParticleGpuGraphSpawnDomain::Create(rhi::Device &device, uint64_t graphInst
         Destroy();
         return false;
     }
+    m_acceptanceInputs.Initialize(m_acceptingRequestSlots, zeroCounts.data(), zeroCounts.size(), 1);
+    m_playingRequestInputs.Initialize(m_emitterPlayingRequests, zeroCounts.data(), zeroCounts.size(), 1);
+    m_playingStateInputs.Initialize(m_emitterPlayingStates, playingStates.data(), playingStates.size(), 1);
+    m_parameterInputs.Initialize(m_parameterBuffer, parameterData, parameterWordCount, 4);
 
     rhi::BindingLayoutDesc layoutDesc;
     layoutDesc.entries[0] = {0, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
@@ -319,6 +317,10 @@ void ParticleGpuGraphSpawnDomain::Destroy() noexcept
     m_spawnMetadata = {};
     m_parameterBuffer = {};
     m_parameterWordCount = 0;
+    m_acceptanceInputs = {};
+    m_playingRequestInputs = {};
+    m_playingStateInputs = {};
+    m_parameterInputs = {};
     m_emitterPlayingRequests = {};
     m_emitterPlayingStates = {};
     m_acceptingRequestSlots = {};
@@ -379,11 +381,103 @@ bool ParticleGpuGraphSpawnDomain::RegisterEmitter(uint32_t targetSlot, const Par
     return true;
 }
 
-bool ParticleGpuGraphSpawnDomain::UpdateParameters(const std::vector<uint32_t> &parameterWords)
+void ParticleGpuGraphSpawnDomain::PendingInputs::Initialize(rhi::BufferHandle destination, const uint32_t *data,
+                                                            size_t count, uint32_t stride)
 {
-    if (!IsValid() || parameterWords.size() != m_parameterWordCount || parameterWords.size() % 4 != 0)
+    buffer = destination;
+    wordsPerSlot = stride;
+    words.assign(data, data + count);
+    slots.assign(count / stride, Slot{});
+    pendingCount = slots.size();
+}
+
+void ParticleGpuGraphSpawnDomain::PendingInputs::Set(uint32_t offset, const uint32_t *data, size_t count)
+{
+    std::copy_n(data, count, words.begin() + offset);
+    for (size_t index = offset / wordsPerSlot; index < (offset + count) / wordsPerSlot; ++index) {
+        auto &slot = slots[index];
+        if (slot.revision == slot.submitted)
+            ++pendingCount;
+        ++slot.revision;
+    }
+}
+
+bool ParticleGpuGraphSpawnDomain::PendingInputs::Record(const rhi::TransferCommandEncoder &encoder)
+{
+    if (pendingCount == 0)
+        return true;
+    const auto needsUpload = [](const Slot &slot) {
+        return slot.revision != slot.submitted && slot.revision != slot.recorded;
+    };
+    for (size_t begin = 0; begin < slots.size();) {
+        if (!needsUpload(slots[begin])) {
+            ++begin;
+            continue;
+        }
+        size_t end = begin + 1;
+        while (end < slots.size() && needsUpload(slots[end]))
+            ++end;
+        if (!encoder.UpdateBuffer(buffer, begin * wordsPerSlot * sizeof(uint32_t), words.data() + begin * wordsPerSlot,
+                                  (end - begin) * wordsPerSlot * sizeof(uint32_t)))
+            return false;
+        begin = end;
+    }
+    for (auto &slot : slots)
+        if (needsUpload(slot))
+            slot.recorded = slot.revision;
+    return true;
+}
+
+void ParticleGpuGraphSpawnDomain::PendingInputs::NotifySubmission(bool submitted) noexcept
+{
+    if (pendingCount == 0)
+        return;
+    for (auto &slot : slots) {
+        if (submitted && slot.recorded != 0) {
+            slot.submitted = slot.recorded;
+            if (slot.revision == slot.submitted)
+                --pendingCount;
+        }
+        slot.recorded = 0;
+    }
+}
+
+bool ParticleGpuGraphSpawnDomain::HasPendingUploads() const noexcept
+{
+    return m_acceptanceInputs.pendingCount || m_playingRequestInputs.pendingCount ||
+           m_playingStateInputs.pendingCount || m_parameterInputs.pendingCount;
+}
+
+bool ParticleGpuGraphSpawnDomain::RecordPendingUploads(const rhi::TransferCommandEncoder &encoder)
+{
+    return IsValid() && encoder.IsValid() && m_acceptanceInputs.Record(encoder) &&
+           m_playingRequestInputs.Record(encoder) && m_playingStateInputs.Record(encoder) &&
+           m_parameterInputs.Record(encoder);
+}
+
+void ParticleGpuGraphSpawnDomain::NotifySubmission(bool submitted) noexcept
+{
+    m_acceptanceInputs.NotifySubmission(submitted);
+    m_playingRequestInputs.NotifySubmission(submitted);
+    m_playingStateInputs.NotifySubmission(submitted);
+    m_parameterInputs.NotifySubmission(submitted);
+}
+
+bool ParticleGpuGraphSpawnDomain::UpdateParameters(const std::vector<GpuParticleParameterUpdate> &updates)
+{
+    if (!IsValid() || updates.empty())
         return false;
-    return m_device->WriteBuffer(m_parameterBuffer, 0, parameterWords.data(), parameterWords.size() * sizeof(uint32_t));
+    uint64_t previousEnd = 0;
+    for (const auto &update : updates) {
+        const uint64_t end = uint64_t(update.wordOffset) + update.words.size();
+        if (update.words.empty() || update.wordOffset % 4 || update.words.size() % 4 ||
+            update.wordOffset < previousEnd || end > m_parameterWordCount)
+            return false;
+        previousEnd = end;
+    }
+    for (const auto &update : updates)
+        m_parameterInputs.Set(update.wordOffset, update.words.data(), update.words.size());
+    return true;
 }
 
 bool ParticleGpuGraphSpawnDomain::SetEmitterAcceptingBurstRequests(uint32_t targetSlot, bool accepting)
@@ -391,8 +485,10 @@ bool ParticleGpuGraphSpawnDomain::SetEmitterAcceptingBurstRequests(uint32_t targ
     if (!IsValid() || targetSlot >= m_slotCount)
         return false;
     const uint32_t value = accepting ? 1u : 0u;
-    return m_device->WriteBuffer(m_acceptingRequestSlots, uint64_t(targetSlot) * sizeof(uint32_t), &value,
-                                 sizeof(value));
+    // Acceptance has no GPU writer. Repeated frame scheduling is a no-op.
+    if (m_acceptanceInputs.words[targetSlot] != value)
+        m_acceptanceInputs.Set(targetSlot, &value, 1);
+    return true;
 }
 
 bool ParticleGpuGraphSpawnDomain::Attach(vk::RenderGraph &graph, const std::string &namePrefix)
@@ -459,9 +555,12 @@ bool ParticleGpuGraphSpawnDomain::SetEmitterPlaying(uint32_t targetSlot, bool pl
 {
     if (!IsValid() || targetSlot >= m_slotCount)
         return false;
-    const uint32_t value = playing ? 1u : 0u;
-    return m_device->WriteBuffer(m_emitterPlayingStates, uint64_t(targetSlot) * sizeof(uint32_t), &value,
-                                 sizeof(value));
+    // The next Advance consumes this command after previous GPU requests.
+    // An explicit CPU command replaces only this slot, including same-value
+    // assignments: the GPU may have changed it since the last CPU assignment.
+    const uint32_t request = playing ? 2u : 1u;
+    m_playingRequestInputs.Set(targetSlot, &request, 1);
+    return true;
 }
 
 void ParticleGpuGraphSpawnDomain::DeclareKernelWrite(vk::PassBuilder &builder)

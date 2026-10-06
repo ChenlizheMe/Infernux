@@ -44,6 +44,7 @@ from infernux.particle import (
     build_gpu_particle_migration,
     classify_emitter_update,
     pack_gpu_particle_parameters,
+    pack_gpu_particle_parameter_updates,
 )
 from infernux.particle.data_interface import MeshResourceBinding
 from infernux.components._gizmo_ids import ICON_KIND_PARTICLE
@@ -653,6 +654,11 @@ class ParticleSystem(InxComponent):
         normalized = self._normalize_parameter_value(parameter, value)
         current = self._parameter_overrides.get(parameter.stable_id, parameter.default)
         if current == normalized:
+            if parameter.value_type.value_type not in {ValueType.TEXTURE2D, ValueType.MESH}:
+                # An explicit setter still authors this range after the GPU
+                # has changed it; the CPU override is not a GPU readback.
+                self._upload_parameter_overrides((parameter.stable_id,))
+                self._refresh_parameter_material_bindings()
             return
         marker = object()
         previous = self._parameter_overrides.get(parameter.stable_id, marker)
@@ -669,10 +675,19 @@ class ParticleSystem(InxComponent):
             raise RuntimeError(
                 f"particle resource parameter {parameter.name!r} could not rebuild the GPU binding"
             )
+        if parameter.value_type.value_type not in {ValueType.TEXTURE2D, ValueType.MESH}:
+            try:
+                self._upload_parameter_overrides((parameter.stable_id,))
+            except Exception:
+                if previous is marker:
+                    self._parameter_overrides.pop(parameter.stable_id, None)
+                else:
+                    self._parameter_overrides[parameter.stable_id] = previous
+                raise
         self._store_parameter_overrides()
         self._gpu_update_dirty = True
         if parameter.value_type.value_type not in {ValueType.TEXTURE2D, ValueType.MESH}:
-            self._upload_parameter_overrides()
+            self._refresh_parameter_material_bindings()
 
     def get_parameter(self, name: str):
         parameter = self._require_exposed_parameter(name)
@@ -682,6 +697,9 @@ class ParticleSystem(InxComponent):
     def reset_parameter(self, name: str) -> bool:
         parameter = self._require_exposed_parameter(name)
         if parameter.stable_id not in self._parameter_overrides:
+            if parameter.value_type.value_type not in {ValueType.TEXTURE2D, ValueType.MESH}:
+                self._upload_parameter_overrides((parameter.stable_id,))
+                self._refresh_parameter_material_bindings()
             return False
         previous = self._parameter_overrides.pop(parameter.stable_id)
         if (
@@ -691,10 +709,16 @@ class ParticleSystem(InxComponent):
         ):
             self._parameter_overrides[parameter.stable_id] = previous
             return False
+        if parameter.value_type.value_type not in {ValueType.TEXTURE2D, ValueType.MESH}:
+            try:
+                self._upload_parameter_overrides((parameter.stable_id,))
+            except Exception:
+                self._parameter_overrides[parameter.stable_id] = previous
+                raise
         self._store_parameter_overrides()
         self._gpu_update_dirty = True
         if parameter.value_type.value_type not in {ValueType.TEXTURE2D, ValueType.MESH}:
-            self._upload_parameter_overrides()
+            self._refresh_parameter_material_bindings()
         return True
 
     def set_texture(self, name: str, value) -> None:
@@ -3299,6 +3323,7 @@ class ParticleSystem(InxComponent):
         )
         if parameter_raw != self._serialized_parameter_overrides_cache:
             previous = self._parameter_overrides
+            previous_serialized = self._serialized_parameter_overrides_cache
             self._serialized_parameter_overrides_cache = parameter_raw
             self._parameter_overrides = self._decode_parameter_overrides()
             if self._has_runtime():
@@ -3317,7 +3342,22 @@ class ParticleSystem(InxComponent):
                 if resource_changed:
                     self._load_saved_artifact(force=True)
                 else:
-                    self._upload_parameter_overrides()
+                    missing = object()
+                    changed_ids = tuple(
+                        parameter.stable_id
+                        for parameter in getattr(metadata, "parameters", ())
+                        if parameter.stable_id not in resource_ids
+                        and previous.get(parameter.stable_id, missing)
+                        != self._parameter_overrides.get(parameter.stable_id, missing)
+                    )
+                    try:
+                        self._upload_parameter_overrides(changed_ids)
+                    except Exception:
+                        self._parameter_overrides = previous
+                        self._serialized_parameter_overrides_cache = previous_serialized
+                        raise
+                    if changed_ids:
+                        self._refresh_parameter_material_bindings()
         emitter_raw = str(
             get_raw_field_value(self, "_emitter_overrides_json") or "{}"
         )
@@ -3494,18 +3534,24 @@ class ParticleSystem(InxComponent):
             )
         return self._parameter_overrides.get(parameter.stable_id, parameter.default)
 
-    def _upload_parameter_overrides(self) -> None:
+    def _upload_parameter_overrides(self, parameter_ids: tuple[str, ...]) -> None:
         kernel = getattr(self, "_particle_kernel", None)
-        if kernel is None or not self._has_runtime():
+        if kernel is None or not self._has_runtime() or not parameter_ids:
             return
-        words = pack_gpu_particle_parameters(kernel.parameters, self._parameter_overrides)
+        updates = pack_gpu_particle_parameter_updates(
+            kernel.parameters, self._parameter_overrides, parameter_ids,
+        )
         native = self._native_engine()
         if native is None or not hasattr(native, "_update_gpu_particle_parameters"):
             raise RuntimeError("GPU particle parameter updates require the native particle runtime")
-        error = native._update_gpu_particle_parameters(self._batch_id, list(words))
+        error = native._update_gpu_particle_parameters(self._batch_id, updates)
         if error:
             raise RuntimeError(error)
-        for emitter in getattr(self._particle_metadata, "emitters", ()):
+
+    def _refresh_parameter_material_bindings(self) -> None:
+        if not self._has_runtime():
+            return
+        for emitter in getattr(getattr(self, "_particle_metadata", None), "emitters", ()):
             for output in emitter.outputs:
                 self._gpu_material_binding(output, emitter.stable_id)
 

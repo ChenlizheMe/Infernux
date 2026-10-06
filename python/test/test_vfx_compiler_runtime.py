@@ -579,8 +579,8 @@ class _GpuParticleNative:
         self.frames.append((graph_instance_id, items))
         return self.accept_batches
 
-    def _update_gpu_particle_parameters(self, graph_instance_id, parameter_words):
-        self.parameter_updates.append((graph_instance_id, list(parameter_words)))
+    def _update_gpu_particle_parameters(self, graph_instance_id, parameter_updates):
+        self.parameter_updates.append((graph_instance_id, [(offset, list(words)) for offset, words in parameter_updates]))
         return ""
 
     def _reset_gpu_particle_emitter(self, emitter_id):
@@ -825,12 +825,96 @@ def test_particle_system_exposed_parameter_updates_live_gpu_block(
         "smoke-density": 0.75
     }
     assert len(native.parameter_updates) == 1
-    graph_instance_id, words = native.parameter_updates[0]
+    graph_instance_id, updates = native.parameter_updates[0]
+    offset, words = updates[0]
     assert graph_instance_id == component._batch_id
+    assert len(updates) == 1 and offset == 0
     assert len(words) == 4
     assert words[1:] == [0, 0, 0]
     with pytest.raises(TypeError, match="not vec3"):
         component.set_vector3("Density", 1.0, 2.0, 3.0)
+
+
+def test_particle_parameter_commands_preserve_explicit_ranges_after_gpu_writes(scene, monkeypatch, tmp_path):
+    source = tmp_path / "TargetedParameters.particlegraph"
+    ParticleGraphAsset(
+        stable_id="targeted-parameters",
+        parameters=(
+            ParticleParameter("first", "First", TypeRef(ValueType.F32), 1.0, True),
+            ParticleParameter("second", "Second", TypeRef(ValueType.F32), 2.0, True),
+        ),
+        emitters=(ParticleEmitterAsset(stable_id="targeted-emitter"),),
+    ).save(str(source))
+    native = _GpuParticleNative()
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: native))
+    component = ParticleSystem()
+    component.graph = _particle_graph_ref(monkeypatch, source)
+    scene.create_game_object("Targeted Parameters").add_py_component(component)
+    component.awake()
+    component.start()
+
+    component.set_float("First", 1.0)
+    component.set_float("Second", 4.0)
+    component.set_float("First", 1.0)
+    assert not component.reset_parameter("First")
+    assert component.reset_parameter("Second")
+    component._parameter_overrides_json = json.dumps({"first": 5.0})
+    component._sync_serialized_instance_overrides()
+    assert len(native.parameter_updates) == 6
+    actual = []
+    for graph_id, updates in native.parameter_updates:
+        assert graph_id == component._batch_id and len(updates) == 1
+        offset, words = updates[0]
+        assert len(words) == 4 and words[1:] == [0, 0, 0]
+        actual.append((offset, struct.unpack("<f", struct.pack("<I", words[0]))[0]))
+    assert actual == [(0, 1.0), (4, 4.0), (0, 1.0), (0, 1.0), (4, 2.0), (0, 5.0)]
+    original_document = component._parameter_overrides_json
+    monkeypatch.setattr(native, "_update_gpu_particle_parameters", lambda *_args: "rejected parameter update")
+    with pytest.raises(RuntimeError, match="rejected parameter update"):
+        component.set_float("First", 9.0)
+    assert component.get_float("First") == 5.0
+    assert component._parameter_overrides_json == original_document
+    with pytest.raises(RuntimeError, match="rejected parameter update"):
+        component.reset_parameter("First")
+    assert component.get_float("First") == 5.0
+    assert component._parameter_overrides_json == original_document
+    component._parameter_overrides_json = json.dumps({"first": 6.0})
+    with pytest.raises(RuntimeError, match="rejected parameter update"):
+        component._sync_serialized_instance_overrides()
+    assert component._parameter_overrides["first"] == 5.0
+    assert component._serialized_parameter_overrides_cache == original_document
+    monkeypatch.setattr(native, "_update_gpu_particle_parameters", lambda *_args: "")
+    component._sync_serialized_instance_overrides()
+    assert component.get_float("First") == 6.0
+
+
+def test_particle_parameter_patch_binding_reaches_live_native_graph(engine, scene, monkeypatch, tmp_path):
+    source = tmp_path / "NativeParameterRanges.particlegraph"
+    ParticleGraphAsset(
+        stable_id="native-parameter-ranges",
+        parameters=(
+            ParticleParameter("first", "First", TypeRef(ValueType.F32), 1.0, True),
+            ParticleParameter("second", "Second", TypeRef(ValueType.F32), 2.0, True),
+        ),
+        emitters=(ParticleEmitterAsset(stable_id="native-ranges-emitter", settings=EmitterSettings(capacity=8)),),
+    ).save(str(source))
+    monkeypatch.setattr(ParticleSystem, "_native_engine", staticmethod(lambda: engine))
+    component = ParticleSystem()
+    component.graph = _particle_graph_ref(monkeypatch, source)
+    scene.create_game_object("Native Parameter Ranges").add_py_component(component)
+    try:
+        component.awake()
+        component.start()
+        assert component._has_runtime()
+        component.set_float("Second", 9.0)
+        assert component.get_float("First") == 1.0 and component.get_float("Second") == 9.0
+        assert engine._update_gpu_particle_parameters(component._batch_id, [(8, [1, 2, 3, 4])])
+        assert engine._update_gpu_particle_parameters(component._batch_id, [(1, [1, 2, 3, 4])])
+        assert engine._update_gpu_particle_parameters(component._batch_id, [(0, [1, 2, 3, 4]), (0, [5, 6, 7, 8])])
+        component.set_float("First", 1.0)
+        assert component.reset_parameter("Second")
+    finally:
+        component.on_destroy()
 
 
 def _instantiate_particle_graph(tmp_path, name="InstantiateParameters"):
@@ -1162,7 +1246,9 @@ def test_particle_system_curve_and_gradient_parameters_hot_update_fixed_gpu_bloc
     assert component.get_curve("size-over-life") == curve
     assert component.get_gradient("Color Over Life") == gradient
     assert len(native_runtime.parameter_updates) == 2
-    assert len(native_runtime.parameter_updates[-1][1]) == (17 + 33) * 4
+    # The compiled ABI sorts stable IDs: color precedes size.
+    assert [(offset, len(words)) for offset, words in native_runtime.parameter_updates[0][1]] == [(33 * 4, 17 * 4)]
+    assert [(offset, len(words)) for offset, words in native_runtime.parameter_updates[1][1]] == [(0, 33 * 4)]
     assert component._artifact_revision > 0
 
 

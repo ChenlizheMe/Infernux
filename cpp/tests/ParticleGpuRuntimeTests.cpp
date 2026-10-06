@@ -667,6 +667,76 @@ struct BoundsTrace
 int main()
 {
     {
+        FakeDevice device;
+        const std::array<uint32_t, 5> code = {0x07230203u, 0u, 0u, 0u, 0u};
+        const particle::GpuParticleSpawnProgram program{{code.data(), code.size()}, {code.data(), code.size()}};
+        particle::ParticleGpuGraphSpawnDomain domain;
+        assert(domain.Create(device, 871, 3, program, std::vector<uint32_t>(16, 7)));
+        EventTransferTrace trace;
+        const rhi::TransferCommandEncoder::DispatchTable dispatch{
+            &EventTransferTrace::CopyBuffer, &EventTransferTrace::CopyTexture, &EventTransferTrace::ResolveTexture,
+            nullptr, &EventTransferTrace::UpdateBuffer};
+        const rhi::TransferCommandEncoder transfer(&trace, &dispatch);
+        assert(domain.HasPendingUploads() && domain.RecordPendingUploads(transfer));
+        assert(trace.updates.size() == 4 && device.writes == 0);
+        for (const auto &buffer : device.buffers)
+            assert(buffer.memory == rhi::BufferMemory::DeviceLocal && buffer.initialData == nullptr);
+        const auto parameters = trace.updates.back().destination;
+        assert(domain.RecordPendingUploads(transfer) && trace.updates.size() == 4);
+        domain.NotifySubmission(false);
+        assert(domain.HasPendingUploads());
+        trace.updates.clear();
+        assert(domain.RecordPendingUploads(transfer) && trace.updates.size() == 4);
+        domain.NotifySubmission(true);
+        assert(!domain.HasPendingUploads());
+
+        // Validate the complete patch list before publishing any CPU range.
+        assert(!domain.UpdateParameters({{0, {2, 2, 2, 2}}, {16, {3, 3, 3, 3}}}));
+        assert(!domain.UpdateParameters({{1, {2, 2, 2, 2}}}));
+        assert(!domain.UpdateParameters({{0, {2, 2}}}));
+        assert(!domain.UpdateParameters({{4, {2, 2, 2, 2}}, {0, {3, 3, 3, 3}}}));
+        assert(!domain.UpdateParameters({{0, {2, 2, 2, 2}}, {0, {3, 3, 3, 3}}}));
+        assert(!domain.HasPendingUploads());
+        assert(domain.UpdateParameters({{0, {2, 2, 2, 2}}, {12, {3, 3, 3, 3}}}));
+        trace.updates.clear();
+        trace.rejectUpdateAt = 1;
+        assert(!domain.RecordPendingUploads(transfer));
+        domain.NotifySubmission(false);
+        trace.updates.clear();
+        trace.rejectUpdateAt = std::numeric_limits<size_t>::max();
+        assert(domain.RecordPendingUploads(transfer) && trace.updates.size() == 2);
+        assert(trace.updates[0].destination == parameters && trace.updates[0].offset == 0 &&
+               trace.updates[0].bytes.size() == 16 && trace.updates[1].offset == 48);
+        // A newer CPU edit cannot be acknowledged by an earlier recording.
+        assert(domain.UpdateParameters({{0, {4, 4, 4, 4}}}));
+        domain.NotifySubmission(true);
+        assert(domain.HasPendingUploads());
+        trace.updates.clear();
+        assert(domain.RecordPendingUploads(transfer) && trace.updates.size() == 1);
+        uint32_t value = 0;
+        std::memcpy(&value, trace.updates[0].bytes.data(), sizeof(value));
+        assert(value == 4);
+        domain.NotifySubmission(true);
+        assert(!domain.HasPendingUploads());
+        // Same-value author commands must still override intervening GPU edits.
+        assert(domain.UpdateParameters({{0, {4, 4, 4, 4}}}) && domain.HasPendingUploads());
+        assert(domain.SetEmitterPlaying(1, false));
+        assert(domain.SetEmitterAcceptingBurstRequests(0, true));
+        assert(domain.SetEmitterAcceptingBurstRequests(1, true));
+        trace.updates.clear();
+        assert(domain.RecordPendingUploads(transfer) && trace.updates.size() == 3);
+        assert(trace.updates[0].destination == domain.BurstRequestAcceptanceBuffer() &&
+               trace.updates[0].bytes.size() == 8);
+        assert(trace.updates[1].destination == domain.EmitterPlayingRequestBuffer() && trace.updates[1].offset == 4);
+        std::memcpy(&value, trace.updates[1].bytes.data(), sizeof(value));
+        assert(value == 1);
+        domain.NotifySubmission(true);
+        assert(domain.SetEmitterAcceptingBurstRequests(1, true) && !domain.HasPendingUploads());
+        assert(!domain.SetEmitterPlaying(3, true) && !domain.SetEmitterAcceptingBurstRequests(3, true));
+        assert(domain.SetEmitterPlaying(1, false) && domain.HasPendingUploads());
+        assert(device.writes == 0);
+    }
+    {
         FakeDevice continuationDevice;
         const auto ownerLayout = continuationDevice.CreateBindingLayout({});
         rhi::BindGroupDesc ownerGroupDesc;

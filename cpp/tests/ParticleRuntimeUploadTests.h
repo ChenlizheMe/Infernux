@@ -171,7 +171,7 @@ void main() {
                                          &barrier, 0, nullptr, 0, nullptr);
                     vk::VulkanTransferCommandContext transferContext;
                     const auto transfer = device.MakeTransferCommandEncoder(transferContext, commands);
-                    if (!owner.runtime.RecordPendingUploads(transfer))
+                    if (!owner.runtime.RecordPendingUploads(transfer) || !owner.spawn.RecordPendingUploads(transfer))
                         return false;
                     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
@@ -194,6 +194,7 @@ void main() {
                 },
                 sync);
             owner.runtime.NotifySubmission(submitted.Succeeded());
+            owner.spawn.NotifySubmission(submitted.Succeeded());
             if (!Require(submitted.Succeeded() && !owner.runtime.HasPendingUploads(),
                          "Runtime input submission failed"))
                 return false;

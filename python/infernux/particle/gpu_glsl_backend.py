@@ -7850,6 +7850,36 @@ def pack_gpu_particle_parameters(
     return tuple(words)
 
 
+def pack_gpu_particle_parameter_updates(
+    parameters: tuple[KernelParameter, ...],
+    overrides: Mapping[str, Any],
+    parameter_ids: tuple[str, ...],
+) -> tuple[tuple[int, tuple[int, ...]], ...]:
+    """Pack only explicitly authored parameters, in canonical ABI order.
+
+    CPU overrides are not a mirror of GPU parameter state. Diffing a full CPU
+    block cannot express writing the same value again after a GPU mutation.
+    """
+    slots, _ = _parameter_slot_layout(parameters)
+    selected = set(parameter_ids)
+    unknown = (selected | set(overrides)) - slots.keys()
+    if unknown:
+        raise GpuParticleCompileError(
+            f"particle parameter updates reference unknown ids: {sorted(unknown)}"
+        )
+    updates = []
+    for parameter in parameters:
+        stable_id = parameter.stable_id
+        if stable_id not in selected:
+            continue
+        if parameter.value_type.value_type in {ValueType.TEXTURE2D, ValueType.MESH}:
+            raise GpuParticleCompileError("particle resource parameters require a GPU binding rebuild")
+        value = overrides.get(stable_id, parameter.default)
+        words = pack_gpu_particle_parameters((parameter,), {stable_id: value})
+        updates.append((slots[stable_id][0] * 4, words))
+    return tuple(updates)
+
+
 def _storage_type(value_type: TypeRef) -> str:
     return (
         "uint"
@@ -7998,5 +8028,6 @@ __all__ = [
     "compile_gpu_particle_spirv",
     "decode_gpu_particle_spirv",
     "pack_gpu_particle_parameters",
+    "pack_gpu_particle_parameter_updates",
     "validate_gpu_particle_spirv",
 ]

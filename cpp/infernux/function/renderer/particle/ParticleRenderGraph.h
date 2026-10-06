@@ -97,6 +97,12 @@ struct GpuParticleSpawnShaderSources
     [[nodiscard]] static std::string_view Prepare() noexcept;
 };
 
+struct GpuParticleParameterUpdate
+{
+    uint32_t wordOffset = 0;
+    std::vector<uint32_t> words;
+};
+
 /// One GPU spawn request domain per live ParticleGraph instance. A Burst node
 /// only appends a count to the addressed emitter's request queue; it never
 /// transfers source particles or source state. The next graph execution moves
@@ -125,7 +131,10 @@ class ParticleGpuGraphSpawnDomain
     [[nodiscard]] bool RegisterEmitter(uint32_t targetSlot, const ParticleGpuRuntime &runtime);
     [[nodiscard]] bool SetEmitterAcceptingBurstRequests(uint32_t targetSlot, bool accepting);
     [[nodiscard]] bool SetEmitterPlaying(uint32_t targetSlot, bool playing);
-    [[nodiscard]] bool UpdateParameters(const std::vector<uint32_t> &parameterWords);
+    [[nodiscard]] bool UpdateParameters(const std::vector<GpuParticleParameterUpdate> &updates);
+    [[nodiscard]] bool HasPendingUploads() const noexcept;
+    [[nodiscard]] bool RecordPendingUploads(const rhi::TransferCommandEncoder &encoder);
+    void NotifySubmission(bool submitted) noexcept;
     [[nodiscard]] bool Attach(vk::RenderGraph &graph, const std::string &namePrefix);
     /// Arm the graph-level spawn prepass for the next graph execution. The
     /// manager calls this only when an emitter in this graph has work.
@@ -196,6 +205,30 @@ class ParticleGpuGraphSpawnDomain
     }
 
   private:
+    // CPU values are upload sources, not a mirror of GPU-written state. Only
+    // explicitly authored slots become dirty after the initial upload.
+    struct PendingInputs
+    {
+        struct Slot
+        {
+            uint64_t revision = 1;
+            uint64_t recorded = 0;
+            uint64_t submitted = 0;
+        };
+        rhi::BufferHandle buffer;
+        uint32_t wordsPerSlot = 1;
+        std::vector<uint32_t> words;
+        std::vector<Slot> slots;
+        size_t pendingCount = 0;
+        void Initialize(rhi::BufferHandle destination, const uint32_t *data, size_t count, uint32_t stride);
+        void Set(uint32_t offset, const uint32_t *data, size_t count);
+        [[nodiscard]] bool Record(const rhi::TransferCommandEncoder &encoder);
+        void NotifySubmission(bool submitted) noexcept;
+    };
+    PendingInputs m_acceptanceInputs;
+    PendingInputs m_playingRequestInputs;
+    PendingInputs m_playingStateInputs;
+    PendingInputs m_parameterInputs;
     rhi::Device *m_device = nullptr;
     uint64_t m_graphInstanceId = 0;
     uint32_t m_slotCount = 0;

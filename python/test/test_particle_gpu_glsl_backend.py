@@ -37,6 +37,7 @@ from infernux.particle import (
     standard_particle_attributes,
     validate_gpu_particle_spirv,
     pack_gpu_particle_parameters,
+    pack_gpu_particle_parameter_updates,
 )
 from infernux.graph import GraphDocument, GraphLinkRecord, GraphNodeRecord, PortKind
 from infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
@@ -1779,6 +1780,25 @@ def test_gpu_parameters_use_one_stable_uvec4_slot_and_typed_loads():
     ) != pack_gpu_particle_parameters(kernel.parameters)
     assert "set = 3, binding = 2" in source.emitters[0].update
     assert "uintBitsToFloat(parameter_words[0].xyz)" in source.emitters[0].update
+
+
+def test_gpu_parameter_patches_follow_fixed_layout_and_exclude_unselected_parameters():
+    parameters = (
+        ParticleParameter("scalar", "Scalar", TypeRef(ValueType.F32), 2.0),
+        ParticleParameter("curve", "Curve", TypeRef(ValueType.CURVE), AnimationCurve().to_dict()),
+        ParticleParameter("color", "Color", TypeRef(ValueType.COLOR), [1.0, 0.0, 0.0, 1.0]),
+    )
+    overrides = {"scalar": 8.0, "curve": AnimationCurve((Keyframe(0.0, 4.0),)).to_dict()}
+    full = pack_gpu_particle_parameters(parameters, overrides)
+    assert pack_gpu_particle_parameter_updates(parameters, overrides, ("color", "curve")) == (
+        (4, full[4:72]), (72, full[72:76]),
+    )
+    assert pack_gpu_particle_parameter_updates(parameters, overrides, ()) == ()
+    with pytest.raises(GpuParticleCompileError, match="unknown ids"):
+        pack_gpu_particle_parameter_updates(parameters, overrides, ("missing",))
+    texture = ParticleParameter("texture", "Texture", TypeRef(ValueType.TEXTURE2D), AssetReference().to_dict())
+    with pytest.raises(GpuParticleCompileError, match="binding rebuild"):
+        pack_gpu_particle_parameter_updates((texture,), {}, ("texture",))
 
 
 def test_gpu_writable_parameter_emits_typed_shared_buffer_store():

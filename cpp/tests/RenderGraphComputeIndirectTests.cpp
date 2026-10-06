@@ -706,6 +706,7 @@ void main() {
 #include "ParticleCullConservationTests.h"
 #include "ParticleMeshMetadataTests.h"
 #include "ParticleRuntimeUploadTests.h"
+#include "ParticleSpawnInputTests.h"
 #include "ParticleSurfaceSnapshotTests.h"
 #include "RhiBufferUpdateTests.h"
 
@@ -863,6 +864,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!VerifyParticleMeshMetadata(resources, sortCompiler, spawnProgram))
         return false;
     if (!VerifyParticleRuntimeInputSnapshots(resources, sortCompiler, spawnProgram))
+        return false;
+    if (!VerifyParticleSpawnInputSnapshots(resources, sortCompiler, spawnProgram))
         return false;
     if (!VerifyParticleSurfaceSnapshots(resources, sortCompiler))
         return false;
@@ -2050,6 +2053,17 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
     vkCmdResetQueryPool(commandBuffer, resources.queryPool, 0, 1);
     particleSystems.Execute(commandBuffer);
+    infernux::vk::VulkanTransferCommandContext inputTransferContext;
+    const auto inputTransfer = rhi.MakeTransferCommandEncoder(inputTransferContext, commandBuffer);
+    if (!Require(particleSpawnDomain.RecordPendingUploads(inputTransfer) &&
+                     particleRuntime.RecordPendingUploads(inputTransfer),
+                 "Particle fixture input recording failed"))
+        return false;
+    VkMemoryBarrier inputBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    inputBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    inputBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                         &inputBarrier, 0, nullptr, 0, nullptr);
     resources.graph.Execute(commandBuffer);
     BufferReadback particleReadback;
     if (!Require(particleReadback.Create(resources.context.GetVmaAllocator(), 56),
@@ -2116,6 +2130,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     submitInfo.pCommandBuffers = &commandBuffer;
     const VkResult submitResult = vkQueueSubmit(resources.context.GetGraphicsQueue(), 1, &submitInfo, fence);
     particleSystems.NotifySubmission(submitResult == VK_SUCCESS);
+    particleSpawnDomain.NotifySubmission(submitResult == VK_SUCCESS);
+    particleRuntime.NotifySubmission(submitResult == VK_SUCCESS);
     const VkResult waitResult =
         submitResult == VK_SUCCESS ? vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX) : submitResult;
     vkDestroyFence(device, fence, nullptr);

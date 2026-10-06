@@ -340,7 +340,8 @@ class ParticleGpuSystemManager
     [[nodiscard]] bool ApplyGraphs(const std::vector<GpuParticleGraphProgram> &programs, std::string *error = nullptr);
     /// Update graph-instance parameters in place. No shader, pipeline, or
     /// particle-state resource is rebuilt.
-    [[nodiscard]] bool UpdateGraphParameters(uint64_t graphInstanceId, const std::vector<uint32_t> &parameterWords,
+    [[nodiscard]] bool UpdateGraphParameters(uint64_t graphInstanceId,
+                                             const std::vector<GpuParticleParameterUpdate> &updates,
                                              std::string *error = nullptr);
     /// Publish a scene-owned collider snapshot. No GPU work is recorded until
     /// the next particle simulation boundary.

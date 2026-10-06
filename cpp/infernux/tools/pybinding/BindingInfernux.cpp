@@ -3092,18 +3092,23 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             "Internal atomic publication for several saved ParticleGraph instances")
         .def(
             "_update_gpu_particle_parameters",
-            [](Infernux &self, uint64_t graphInstanceId, const std::vector<uint32_t> &parameterWords) {
+            [](Infernux &self, uint64_t graphInstanceId,
+               const std::vector<std::pair<uint32_t, std::vector<uint32_t>>> &parameterUpdates) {
                 auto *renderer = self.GetRenderer();
                 auto *manager = renderer ? renderer->GetParticleGpuSystemManager() : nullptr;
                 if (!manager)
                     return std::string("GPU particle runtime requires graphical renderer initialization");
+                std::vector<particle::GpuParticleParameterUpdate> updates;
+                updates.reserve(parameterUpdates.size());
+                for (const auto &[offset, words] : parameterUpdates)
+                    updates.push_back({offset, words});
                 std::string error;
-                if (!manager->UpdateGraphParameters(graphInstanceId, parameterWords, &error))
+                if (!manager->UpdateGraphParameters(graphInstanceId, updates, &error))
                     return error.empty() ? std::string("failed to update GPU particle parameters") : error;
                 return std::string{};
             },
-            py::arg("graph_instance_id"), py::arg("parameter_words"),
-            "Update one live ParticleGraph parameter block without rebuilding its pipelines")
+            py::arg("graph_instance_id"), py::arg("parameter_updates"),
+            "Update explicitly authored word ranges without overwriting other GPU parameter state")
         .def(
             "_begin_gpu_particle_batch",
             [](Infernux &self, uint64_t graphInstanceId, const py::sequence &encodedItems) {

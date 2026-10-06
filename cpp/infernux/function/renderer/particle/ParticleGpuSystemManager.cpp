@@ -367,15 +367,19 @@ struct ParticleGpuSystemManager::Impl
         const bool runtimePending = std::any_of(emitters.begin(), emitters.end(), [](const auto &entry) {
             return entry.second->runtime->HasPendingUploads();
         });
-        if (!collisionPending && !runtimePending)
+        const bool domainPending =
+            graphState && std::any_of(graphState->spawnDomains.begin(), graphState->spawnDomains.end(),
+                                      [](const auto &entry) { return entry.second->HasPendingUploads(); });
+        if (!collisionPending && !runtimePending && !domainPending)
             return true;
         vk::VulkanTransferCommandContext transferContext;
         const auto transfer = context->GetRhiDevice().MakeTransferCommandEncoder(transferContext, commandBuffer);
-        // Mutable simulation inputs are read only by Compute. Handle prior
-        // readers and uploads even if the prior frame skipped simulation.
+        // Parameters and playback requests also have GPU writers. Include
+        // diagnostic transfers and earlier substeps before targeted overwrites.
         VkMemoryBarrier before{};
         before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-        before.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        before.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT |
+                               VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
         before.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
@@ -386,10 +390,17 @@ struct ParticleGpuSystemManager::Impl
             if (emitter->runtime->HasPendingUploads() && !emitter->runtime->RecordPendingUploads(transfer))
                 return false;
         }
+        if (graphState) {
+            for (const auto &[id, domain] : graphState->spawnDomains) {
+                (void)id;
+                if (domain->HasPendingUploads() && !domain->RecordPendingUploads(transfer))
+                    return false;
+            }
+        }
         VkMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_UNIFORM_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_UNIFORM_READ_BIT;
         vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                              &barrier, 0, nullptr, 0, nullptr);
         return true;
@@ -2105,12 +2116,12 @@ bool ParticleGpuSystemManager::ApplyGraphs(const std::vector<GpuParticleGraphPro
 }
 
 bool ParticleGpuSystemManager::UpdateGraphParameters(uint64_t graphInstanceId,
-                                                     const std::vector<uint32_t> &parameterWords, std::string *error)
+                                                     const std::vector<GpuParticleParameterUpdate> &updates,
+                                                     std::string *error)
 {
     if (error)
         error->clear();
-    if (!m_impl || !m_impl->context || graphInstanceId == 0 || parameterWords.empty() ||
-        parameterWords.size() % 4 != 0) {
+    if (!m_impl || !m_impl->context || graphInstanceId == 0 || updates.empty()) {
         SetError(error, "GPU particle parameter update is invalid");
         return false;
     }
@@ -2124,8 +2135,13 @@ bool ParticleGpuSystemManager::UpdateGraphParameters(uint64_t graphInstanceId,
         SetError(error, "GPU particle graph instance is not active");
         return false;
     }
-    if (std::any_of(targets.begin(), targets.end(), [&](const auto &emitter) {
-            return !emitter->runtime || emitter->sourceProgram.parameterWords.size() != parameterWords.size();
+    const size_t wordCount = targets.front()->sourceProgram.parameterWords.size();
+    if (std::any_of(targets.begin(), targets.end(),
+                    [&](const auto &emitter) {
+                        return !emitter->runtime || emitter->sourceProgram.parameterWords.size() != wordCount;
+                    }) ||
+        std::any_of(updates.begin(), updates.end(), [&](const auto &update) {
+            return uint64_t(update.wordOffset) + update.words.size() > wordCount;
         })) {
         SetError(error, "GPU particle parameter layout does not match the active graph");
         return false;
@@ -2135,12 +2151,14 @@ bool ParticleGpuSystemManager::UpdateGraphParameters(uint64_t graphInstanceId,
         return false;
     }
     const auto domain = m_impl->graphState->spawnDomains.find(graphInstanceId);
-    if (domain == m_impl->graphState->spawnDomains.end() || !domain->second->UpdateParameters(parameterWords)) {
+    if (domain == m_impl->graphState->spawnDomains.end() || !domain->second->UpdateParameters(updates)) {
         SetError(error, "GPU particle shared parameter upload failed");
         return false;
     }
     for (const auto &emitter : targets)
-        emitter->sourceProgram.parameterWords = parameterWords;
+        for (const auto &update : updates)
+            std::copy(update.words.begin(), update.words.end(),
+                      emitter->sourceProgram.parameterWords.begin() + update.wordOffset);
     return true;
 }
 
@@ -2153,6 +2171,12 @@ void ParticleGpuSystemManager::NotifySubmission(bool submitted) noexcept
     for (const auto &[id, emitter] : m_impl->emitters) {
         (void)id;
         emitter->runtime->NotifySubmission(submitted);
+    }
+    if (m_impl->graphState) {
+        for (const auto &[id, domain] : m_impl->graphState->spawnDomains) {
+            (void)id;
+            domain->NotifySubmission(submitted);
+        }
     }
 }
 
@@ -2527,6 +2551,8 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
             break;
         }
         hasPendingEmitter = true;
+        if (recordedSteps < Impl::MaxQueuedSimulationStepsPerSubmission && !m_impl->RecordPendingUploads(commandBuffer))
+            throw std::runtime_error("GPU particle substep input upload failed");
     }
     m_impl->RecordDiagnostics(commandBuffer);
 }
@@ -2570,6 +2596,9 @@ bool ParticleGpuSystemManager::HasPendingGpuWork() const noexcept
         return true;
     if (std::any_of(m_impl->emitters.begin(), m_impl->emitters.end(),
                     [](const auto &entry) { return entry.second->runtime->HasPendingUploads(); }))
+        return true;
+    if (std::any_of(m_impl->graphState->spawnDomains.begin(), m_impl->graphState->spawnDomains.end(),
+                    [](const auto &entry) { return entry.second->HasPendingUploads(); }))
         return true;
 
     return std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
