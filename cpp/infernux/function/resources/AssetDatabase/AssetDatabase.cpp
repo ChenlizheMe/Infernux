@@ -364,8 +364,30 @@ bool HasReusableRuntimeArtifact(const AssetIndexEntry &entry, ResourceType type,
         RuntimeArtifactRelativePath(entry.guid, ResourceType::Mesh, ImportArtifact::RuntimeArtifactKind::SkinnedMesh);
     error.clear();
     const auto skinnedPath = projectRoot / std::filesystem::u8path(skinned);
-    return std::filesystem::is_regular_file(skinnedPath, error) && !error &&
-           HasCurrentRuntimeArtifactHeader(skinnedPath, type, ImportArtifact::RuntimeArtifactKind::SkinnedMesh);
+    if (!std::filesystem::is_regular_file(skinnedPath, error) || error ||
+        !HasCurrentRuntimeArtifactHeader(skinnedPath, type, ImportArtifact::RuntimeArtifactKind::SkinnedMesh))
+        return false;
+    // Embedded textures have no source file to scan. Their owner is the only
+    // importer capable of rebuilding a missing or obsolete child artifact.
+    if (entry.metadata.HasKey("model_textures")) {
+        const auto textures = nlohmann::json::parse(entry.metadata.GetDataAs<std::string>("model_textures"));
+        for (const auto &texture : textures) {
+            const auto path = projectRoot / std::filesystem::u8path(
+                                               RuntimeArtifactRelativePath(texture.at("guid").get<std::string>(),
+                                                                           ResourceType::Texture));
+            if (!HasCurrentRuntimeArtifactHeader(path, ResourceType::Texture,
+                                                 ImportArtifact::RuntimeArtifactKind::Primary))
+                return false;
+        }
+    }
+    return true;
+}
+
+size_t CountSourceAssets(const AssetIndex &index)
+{
+    return static_cast<size_t>(std::count_if(index.Entries().begin(), index.Entries().end(), [](const auto &item) {
+        return !item.second.metadata.HasKey("import_owner_guid");
+    }));
 }
 
 std::vector<DocumentTransactionEntry>
@@ -1667,9 +1689,9 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
         std::filesystem::remove(ToFsPath(tempPath), error);
     }
 
-    bool unchanged = !m_assetIndexDirty && artifact.files.size() == artifact.index.Size() &&
+    bool unchanged = !m_assetIndexDirty && artifact.files.size() == CountSourceAssets(artifact.index) &&
                      m_guidToPath.size() == artifact.index.Size() && m_pathToGuid.size() == artifact.index.Size() &&
-                     m_fileStates.size() == artifact.files.size();
+                     m_fileStates.size() == artifact.index.Size();
     for (const auto &file : artifact.files) {
         if (!unchanged)
             break;
@@ -2287,9 +2309,9 @@ void AssetDatabase::BeginPendingIndexBuild(const std::shared_ptr<PendingRefreshC
             state->committedDependencies[guid] = {metadata->GetDataAs<std::string>("import_owner_guid")};
 
     const bool reusedLoadedIndex =
-        state->pendingImports.empty() && m_lastRefreshReusedCount == state->stagedWorkingSet.assetIndex.Size() &&
+        state->pendingImports.empty() && m_lastRefreshReusedCount == state->scanArtifact.files.size() &&
         state->stagedWorkingSet.guidToPath.size() == state->stagedWorkingSet.assetIndex.Size() &&
-        state->scanArtifact.files.size() == state->stagedWorkingSet.assetIndex.Size();
+        state->scanArtifact.files.size() == CountSourceAssets(state->stagedWorkingSet.assetIndex);
     state->indexRebuildRequired = !reusedLoadedIndex;
     const std::string normalizedProjectRoot = FilesystemPathKey(m_projectRoot);
     const std::string assetIndexPath = m_assetIndexPath;
