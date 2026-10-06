@@ -263,12 +263,49 @@ def _get_reference_display_name(element_type, value) -> str:
 # ── Serializable-object field rendering ──
 
 
+def _render_serializable_value(ctx, parent_id, field_name, metadata, value, label_width):
+    return render_serialized_field(
+        ctx, f"##{parent_id}_{field_name}", pretty_field_name(field_name), metadata, value, label_width,
+    )
+
+
+def _render_serializable_members(ctx, parent_id, current_value, *, readonly=False, value_renderer=None):
+    """Collect only editable, visible members; never mutate the live object."""
+    from infernux.components.fields import get_serialized_fields, get_raw_field_value, FieldType
+
+    fields = [
+        (name, metadata) for name, metadata in get_serialized_fields(type(current_value)).items()
+        if not metadata.hidden and (metadata.visible_when is None or metadata.visible_when(current_value))
+    ]
+    label_width = max_label_w(ctx, [pretty_field_name(name) for name, _ in fields]) if fields else 0.0
+    render_value = value_renderer or _render_serializable_value
+    changes = {}
+    for name, metadata in fields:
+        value = get_raw_field_value(current_value, name)
+        field_readonly = readonly or metadata.readonly
+        if metadata.field_type == FieldType.SERIALIZABLE_OBJECT:
+            _render_nested_so(
+                ctx, parent_id, name, metadata, value, changes,
+                readonly=field_readonly, value_renderer=value_renderer,
+            )
+            continue
+        if field_readonly:
+            ctx.begin_disabled(True)
+        try:
+            updated = render_value(ctx, parent_id, name, metadata, value, label_width)
+        finally:
+            if field_readonly:
+                ctx.end_disabled()
+        if not field_readonly and has_field_changed(metadata.field_type, value, updated):
+            changes[name] = updated
+    return changes
+
+
 def _render_serializable_object_field(
     ctx: InxGUIContext, comp, field_name: str, metadata, current_value, lw: float,
 ):
     """Render a SerializableObject field as an inline collapsible section."""
     import copy as _copy
-    from infernux.components.fields import get_serialized_fields, FieldType
 
     so_class = type(current_value) if current_value is not None else getattr(metadata, 'serializable_class', None)
     if so_class is None:
@@ -280,27 +317,15 @@ def _render_serializable_object_field(
     if not render_compact_section_header(ctx, header, level="secondary"):
         return
 
-    so_fields = get_serialized_fields(so_class)
-    so_lw = max_label_w(ctx, [pretty_field_name(k) for k in so_fields]) if so_fields else 0.0
-
     if current_value is None:
+        if metadata.readonly:
+            ctx.label(t("igui.none"))
+            return
         current_value = so_class()
         _record_property(comp, field_name, None, current_value, f"Init {field_name}")
 
-    changes: dict = {}
-    for so_fn, so_meta in so_fields.items():
-        so_val = getattr(current_value, so_fn, so_meta.default)
-
-        if so_meta.field_type == FieldType.SERIALIZABLE_OBJECT:
-            _render_nested_so(ctx, field_name, so_fn, so_meta, so_val, so_lw, changes)
-        else:
-            new_val = render_serialized_field(
-                ctx, f"##{field_name}_{so_fn}", pretty_field_name(so_fn), so_meta, so_val, so_lw,
-            )
-            if has_field_changed(so_meta.field_type, so_val, new_val):
-                changes[so_fn] = new_val
-
-    if changes and not metadata.readonly:
+    changes = _render_serializable_members(ctx, field_name, current_value, readonly=metadata.readonly)
+    if changes:
         edited = _copy.deepcopy(current_value)
         for fn, fv in changes.items():
             setattr(edited, fn, fv)
@@ -308,12 +333,11 @@ def _render_serializable_object_field(
 
 
 def _render_nested_so(
-    ctx: InxGUIContext, parent_id: str, so_fn: str, so_meta, so_val, so_lw: float,
-    changes: dict,
+    ctx: InxGUIContext, parent_id: str, so_fn: str, so_meta, so_val,
+    changes: dict, *, readonly=False, value_renderer=None,
 ):
     """Render a nested SerializableObject sub-field and collect changes."""
     import copy as _copy
-    from infernux.components.fields import get_serialized_fields, FieldType
 
     so_class = type(so_val) if so_val is not None else getattr(so_meta, 'serializable_class', None)
     if so_class is None:
@@ -321,26 +345,21 @@ def _render_nested_so(
         return
 
     header = f"{pretty_field_name(so_fn)} ({so_class.__name__})"
-    if not render_compact_section_header(ctx, header, level="tertiary"):
+    if not render_compact_section_header(ctx, header, level="tertiary", header_id=f"{parent_id}_{so_fn}"):
         return
 
-    inner_fields = get_serialized_fields(so_class)
-    inner_lw = max_label_w(ctx, [pretty_field_name(k) for k in inner_fields]) if inner_fields else 0.0
-
+    readonly = readonly or so_meta.readonly
     if so_val is None:
+        if readonly:
+            ctx.label(t("igui.none"))
+            return
         so_val = so_class()
         changes[so_fn] = so_val
         return
 
-    inner_changes: dict = {}
-    for ifn, imeta in inner_fields.items():
-        ival = getattr(so_val, ifn, imeta.default)
-        new_val = render_serialized_field(
-            ctx, f"##{parent_id}_{so_fn}_{ifn}", pretty_field_name(ifn), imeta, ival, inner_lw,
-        )
-        if has_field_changed(imeta.field_type, ival, new_val):
-            inner_changes[ifn] = new_val
-
+    inner_changes = _render_serializable_members(
+        ctx, f"{parent_id}_{so_fn}", so_val, readonly=readonly, value_renderer=value_renderer,
+    )
     if inner_changes:
         edited = _copy.deepcopy(so_val)
         for fn, fv in inner_changes.items():
