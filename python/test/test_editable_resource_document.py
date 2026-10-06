@@ -83,6 +83,42 @@ class _ViewScopedExecutionLayer(_ExecutionLayer):
         raise AssertionError("view-scoped persistence must not own the flush")
 
 
+def test_linked_resource_reload_cannot_take_over_reused_inspector_state():
+    from infernux.engine.ui.asset_details_renderer import _State
+
+    previous_registry = DocumentRegistry._instance
+    registry = DocumentRegistry()
+    state = _State()
+    try:
+        source_controller = ensure_editable_resource_document(
+            category="render_effect", document_kind=DocumentKind.RENDER_EFFECT,
+            file_path="Assets/Edge Fade.effect", resource=_Resource(.35),
+            guid="source-effect-guid", view_id="inspector", state=state,
+        )
+        # Selection invalidation reuses this same view for the containing group.
+        state.reset()
+        group = _Resource(.6)
+        group_controller = ensure_editable_resource_document(
+            category="render_effect", document_kind=DocumentKind.RENDER_EFFECT,
+            file_path="Assets/Group.effectgroup", resource=group,
+            guid="group-guid", view_id="inspector", state=state,
+        )
+        reloaded_source = _Resource(.75)
+        linked_controller = ensure_editable_resource_document(
+            category="render_effect", document_kind=DocumentKind.RENDER_EFFECT,
+            file_path="Assets/Edge Fade.effect", resource=reloaded_source,
+            guid="source-effect-guid",
+        )
+
+        assert linked_controller is source_controller
+        assert linked_controller.resource is reloaded_source
+        assert state.resource_controller is group_controller
+        assert state.settings is group
+        assert registry.document_for_view("inspector").document_id == group_controller.document_id
+    finally:
+        DocumentRegistry._instance = previous_registry
+
+
 def test_editable_resource_document_is_shared_without_an_inspector_view():
     previous_registry = DocumentRegistry._instance
     registry = DocumentRegistry()

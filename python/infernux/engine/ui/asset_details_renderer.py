@@ -602,9 +602,16 @@ class _State:
     """Per-asset inspector state (only one asset is inspected at a time)."""
 
     def __init__(self):
+        self.import_controller = None
+        self.resource_controller = None
         self.reset()
 
     def reset(self, *, keep_view: bool = False):
+        # Controllers outlive this reusable Inspector view. A later linked
+        # resource reload must not bind its old document back into a new view.
+        for controller in (self.import_controller, self.resource_controller):
+            if controller is not None and controller.state is self:
+                controller.state = None
         self.file_path: str = self.file_path if keep_view else ""
         self.category: str = self.category if keep_view else ""
         self.meta: Optional[dict] = None
