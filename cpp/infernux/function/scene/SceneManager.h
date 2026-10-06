@@ -20,6 +20,7 @@ namespace infernux
 
 // Forward declaration for MeshRenderer registry
 class MeshRenderer;
+class SkinnedMeshRenderer;
 // Forward declaration for Light registry
 class Light;
 
@@ -473,6 +474,9 @@ class SceneManager
 
     /// Bump dynamic render content without forcing a structural rebuild.
     void NotifyMeshRendererContentChanged(MeshRenderer *renderer);
+    /// Track only changed poses; commit after all cameras have submitted.
+    void QueueSkinPoseHistoryCommit(SkinnedMeshRenderer *renderer);
+    void CommitSkinPoseHistories();
 
     /// Publish procedural vertex/bounds changes without rebuilding the
     /// renderer registry. Camera caches must recull these updates even when
@@ -606,6 +610,7 @@ class SceneManager
     // Avoids per-frame GetAllObjects() + dynamic_cast in CollectRenderables.
     std::vector<MeshRenderer *> m_activeMeshRenderers;
     std::unordered_set<MeshRenderer *> m_activeMeshRendererSet; // O(1) duplicate check
+    std::unordered_map<MeshRenderer *, SkinnedMeshRenderer *> m_pendingSkinPoseHistoryCommits;
     uint64_t m_meshRendererVersion = 0;
     uint32_t m_rendererRegistryTransactionDepth = 0;
     bool m_rendererRegistryTransactionDirty = false;

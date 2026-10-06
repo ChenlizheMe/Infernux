@@ -426,9 +426,16 @@ void SkinnedMeshRenderer::RefreshRuntimeSkinnedMesh()
             model->GetOrBuildGpuBonePalette(request, animationSource.get(), m_blendAnimationSourceModel.get());
     }
     m_skinPoseHistory.Publish(std::move(nextPalette), modelChanged);
+    SceneManager::Instance().QueueSkinPoseHistoryCommit(this);
     SceneManager::Instance().NotifyMeshRendererContentChanged(this);
     if (modelChanged)
         SceneManager::Instance().NotifyMeshRendererChanged(this);
+}
+
+void SkinnedMeshRenderer::CommitRuntimeSkinPoseHistory()
+{
+    if (m_skinPoseHistory.CommitFrame())
+        SceneManager::Instance().NotifyMeshRendererContentChanged(this);
 }
 
 nlohmann::json SkinnedMeshRenderer::SerializeDocument() const

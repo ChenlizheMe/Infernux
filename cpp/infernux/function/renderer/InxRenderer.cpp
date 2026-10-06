@@ -1604,6 +1604,7 @@ void InxRenderer::DrawFrame()
     if (HasPendingCapture(CaptureSource::Editor))
         m_vkCore->RequestPresentationReadback();
     m_vkCore->DrawFrame(m_cameraPos, m_cameraLookAt, m_cameraUp);
+    sceneManager.CommitSkinPoseHistories();
     if (m_vkCore->ConsumeFirstVisiblePresentation())
         m_view->RevealAfterFirstPresentation();
     if (m_vkCore->ConsumePresentationSurfaceLost()) {

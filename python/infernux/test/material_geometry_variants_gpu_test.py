@@ -95,13 +95,19 @@ class VariantsPipeline(inx.renderstack.RenderPipeline):
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--instances',type=int,choices=(1,2),default=1)
+    parser.add_argument('--skinned',action='store_true')
+    parser.add_argument('--proof',type=Path)
     args=parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='infernux-tutorial-variants-') as root:
         project=Path(root)
         for directory in ('Assets','Packages','ProjectSettings'):
             (project/directory).mkdir()
-        mesh_path=project/'Assets/Probe.obj'
-        mesh_path.write_text('v -0.5 -0.5 0\nv 0.5 -0.5 0\nv 0.5 0.5 0\nv -0.5 0.5 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nvn 0 0 -1\nf 1/1/1 3/3/1 2/2/1\nf 1/1/1 4/4/1 3/3/1\n',encoding='ascii')
+        mesh_path=project/('Assets/Probe.gltf' if args.skinned else 'Assets/Probe.obj')
+        if args.skinned:
+            from skinned_mesh_gpu_fixture import write_skinned_quad
+            write_skinned_quad(mesh_path)
+        else:
+            mesh_path.write_text('v -0.5 -0.5 0\nv 0.5 -0.5 0\nv 0.5 0.5 0\nv -0.5 0.5 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nvn 0 0 -1\nf 1/1/1 3/3/1 2/2/1\nf 1/1/1 4/4/1 3/3/1\n',encoding='ascii')
         for file,content in (('Shift.vert',VERTEX),('Cutout.frag',SURFACE),('Consumer.frag',CONSUMER)):
             (project/'Assets'/file).write_text(content,encoding='ascii')
         frontend=inx.Engine()
@@ -139,8 +145,12 @@ def main():
             for index,x in enumerate(positions):
                 obj=scene.create_game_object(f'Deformed Cutout {index}')
                 obj.transform.position=Vector3(x,0,0)
-                renderer=obj.add_component('MeshRenderer')
-                renderer.set_mesh_asset_guid(mesh.guid)
+                renderer=obj.add_component('SkinnedMeshRenderer' if args.skinned else 'MeshRenderer')
+                if args.skinned:
+                    renderer.set_source_model_guid(mesh.guid)
+                    renderer.submit_animation_pose('Scale',0.,0.,loop=False)
+                else:
+                    renderer.set_mesh_asset_guid(mesh.guid)
                 renderer.set_material(0,material)
                 objects.append(obj)
             pipeline.object_id=objects[0].id
@@ -148,6 +158,9 @@ def main():
             frontend.set_render_pipeline(pipeline)
             native.set_game_camera_enabled(True)
             phases=('cutout','solid','cutout_restored','vertex_property_changed','object_motion','procedural_local_motion','static_restored')
+            if args.skinned:
+                phases+=('bone_motion','bone_stopped')
+                proof['scope']+=' Imported one-joint animation covers moving bones and held poses after animation stops.'
             phase,frames,changed,ticket=0,0,0,None
             initial=None
             initial_pixels=None
@@ -184,7 +197,7 @@ def main():
                             np.testing.assert_array_equal(pixels,initial_pixels)
                         elif phase==3:
                             assert record['centroid_x']<initial['centroid_x']-10,record
-                        if phase==4:
+                        if phase in (4,7):
                             assert green.sum()>coverage.sum()*.9,record
                         else:
                             assert not green.any(),record
@@ -192,8 +205,10 @@ def main():
                             assert last_image is not None and not np.array_equal(last_image,pixels),record
                         proof['phases'].append(record)
                         last_image=pixels
-                        if phase==6:
+                        if phase==len(phases)-1:
                             proof['passed']=True
+                            if args.proof:
+                                args.proof.write_text(json.dumps(proof,indent=2),encoding='utf-8')
                             print(json.dumps(proof,indent=2),flush=True)
                             completed=True
                             native.exit()
@@ -216,6 +231,12 @@ def main():
                             obj.transform.position=Vector3(position.x+(.03 if index==0 else -.03),0,0)
                     elif phase==5:
                         material.set_float('shiftX',material.get_float('shiftX')+.03)
+                    if phase==7:
+                        for obj in objects:
+                            seconds=(frames-changed)*.02
+                            renderer=obj.get_component('SkinnedMeshRenderer')
+                            renderer.submit_animation_pose('Scale',seconds-.01,(seconds-.01)/3.,loop=False)
+                            renderer.submit_animation_pose('Scale',seconds,seconds/3.,loop=False)
                     if frames>250:
                         raise AssertionError('Variant GPU audit timed out')
                 except BaseException as error:

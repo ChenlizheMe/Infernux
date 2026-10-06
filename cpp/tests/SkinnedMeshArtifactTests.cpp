@@ -555,6 +555,22 @@ int main()
     assert(secondSnapshot->previous == firstPose);
     assert(secondSnapshot->revision > firstSnapshot->revision);
 
+    auto thirdPose = restored->GetOrBuildGpuBonePalette({"Move", 0.4f});
+    poseHistory.Publish(thirdPose, false);
+    const auto thirdSnapshot = poseHistory.Acquire();
+    assert(thirdSnapshot->current == thirdPose);
+    assert(thirdSnapshot->previous == firstPose); // Two submissions, one frame.
+    assert(poseHistory.CommitFrame());
+    const auto committedSnapshot = poseHistory.Acquire();
+    assert(committedSnapshot->previous == thirdPose);
+    assert(committedSnapshot->current == thirdPose);
+    assert(committedSnapshot->revision > thirdSnapshot->revision);
+    assert(secondSnapshot->previous == firstPose); // In-flight snapshots stay immutable.
+    assert(!poseHistory.CommitFrame());
+    assert(poseHistory.Acquire() == committedSnapshot); // A stopped pose stays stable.
+    poseHistory.Publish(secondPose, false);
+    assert(poseHistory.Acquire()->previous == thirdPose);
+
     auto differentSkeleton = std::make_shared<const infernux::SkinPoseHistory::Palette>(2, glm::mat4(1.0f));
     poseHistory.Publish(differentSkeleton, false);
     const auto resizedSnapshot = poseHistory.Acquire();

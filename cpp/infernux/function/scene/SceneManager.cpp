@@ -1374,6 +1374,7 @@ void SceneManager::ClearComponentRegistries(Scene *sceneBeingRebuilt)
     // a Scene::DeserializeDocument() commit (see the Scene Rebuild Contract).
     m_activeMeshRenderers.clear();
     m_activeMeshRendererSet.clear();
+    m_pendingSkinPoseHistoryCommits.clear();
     m_activeLights.clear();
     ++m_meshRendererVersion;
 
@@ -1432,6 +1433,8 @@ void SceneManager::RegisterMeshRenderer(MeshRenderer *renderer)
         return;
     if (m_activeMeshRendererSet.insert(renderer).second) {
         m_activeMeshRenderers.push_back(renderer);
+        if (auto *skinned = dynamic_cast<SkinnedMeshRenderer *>(renderer))
+            QueueSkinPoseHistoryCommit(skinned);
         MarkRendererRegistryChanged(m_rendererRegistryTransactionDepth, m_rendererRegistryTransactionDirty,
                                     m_meshRendererVersion);
     }
@@ -1439,6 +1442,7 @@ void SceneManager::RegisterMeshRenderer(MeshRenderer *renderer)
 
 void SceneManager::UnregisterMeshRenderer(MeshRenderer *renderer)
 {
+    m_pendingSkinPoseHistoryCommits.erase(renderer);
     if (!m_activeMeshRendererSet.erase(renderer))
         return;
     MarkRendererRegistryChanged(m_rendererRegistryTransactionDepth, m_rendererRegistryTransactionDirty,
@@ -1469,6 +1473,21 @@ void SceneManager::NotifyMeshRendererContentChanged(MeshRenderer *renderer)
     ++m_renderContentRevision;
     if (m_renderContentRevision == 0)
         m_renderContentRevision = 1;
+}
+
+void SceneManager::QueueSkinPoseHistoryCommit(SkinnedMeshRenderer *renderer)
+{
+    if (renderer && m_activeMeshRendererSet.find(renderer) != m_activeMeshRendererSet.end())
+        m_pendingSkinPoseHistoryCommits.emplace(renderer, renderer);
+}
+
+void SceneManager::CommitSkinPoseHistories()
+{
+    // Unregistration removes queued entries before component destruction.
+    // Static scenes take the empty path without scanning all mesh renderers.
+    for (const auto &[identity, renderer] : m_pendingSkinPoseHistoryCommits)
+        renderer->CommitRuntimeSkinPoseHistory();
+    m_pendingSkinPoseHistoryCommits.clear();
 }
 
 void SceneManager::NotifyMeshRendererGeometryChanged(MeshRenderer *renderer)

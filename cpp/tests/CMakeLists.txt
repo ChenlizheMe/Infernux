@@ -1484,6 +1484,15 @@ if(INFERNUX_BUILD_TESTS)
             LABELS "requires_vulkan_device" TIMEOUT 60 RUN_SERIAL TRUE
             FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD")
     endforeach()
+    foreach(_skin_instances 1 2)
+        set(_skin_motion_test "infernux.skinned_motion_${_skin_instances}_gpu")
+        add_test(NAME ${_skin_motion_test} COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/python/infernux/test/material_geometry_variants_gpu_test.py --skinned --instances ${_skin_instances})
+        set_tests_properties(${_skin_motion_test} PROPERTIES
+            ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+            LABELS "requires_vulkan_device" TIMEOUT 60 RUN_SERIAL TRUE
+            FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD")
+    endforeach()
     foreach(_camera_commit_target screen asset)
         set(_camera_commit_test "infernux.camera_commit_grade_${_camera_commit_target}_gpu")
         add_test(NAME ${_camera_commit_test}
