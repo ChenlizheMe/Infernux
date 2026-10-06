@@ -1681,10 +1681,11 @@ int main()
            cullSource.find("output_value = source_index") != std::string_view::npos &&
            cullSource.find("output_value = particle_index") != std::string_view::npos &&
            cullSource.find("bounds_fully_inside") != std::string_view::npos &&
-           cullSource.find("draw_instance_count & 0x80000000u") != std::string_view::npos &&
+           cullSource.find("stats_flags & 8u") != std::string_view::npos &&
+           cullSource.find("draw_instance_count =") == std::string_view::npos &&
            cullResetSource.find("bounds_fully_inside") != std::string_view::npos &&
-           cullResetSource.find("draw_instance_count = 0x80000000u") != std::string_view::npos &&
-           particle::GpuParticleCullShaderSources::Finalize().find("draw_instance_count & 0x7fffffffu") !=
+           cullResetSource.find("stats_flags |= 8u") != std::string_view::npos &&
+           particle::GpuParticleCullShaderSources::Finalize().find("min(draw_instance_count, pc.capacity)") !=
                std::string_view::npos);
     particle::ParticleGpuCuller sceneCuller;
     particle::ParticleGpuCuller gameCuller;

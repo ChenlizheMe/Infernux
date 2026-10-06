@@ -525,6 +525,8 @@ class PassBuilder
     void SetClearDepth(float depth, uint32_t stencil = 0);
 
   private:
+    ResourceHandle AddBufferRead(ResourceHandle handle, ResourceUsage usage,
+                                 rhi::PipelineStage stages, rhi::Access access);
     RenderGraph *m_graph;
     uint32_t m_passId;
     bool m_depthTestEnabled = true;

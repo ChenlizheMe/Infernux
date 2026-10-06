@@ -698,6 +698,8 @@ void main() {
     return Require(matches, "Vector Field GPU samples diverged from the CPU sampling contract");
 }
 
+#include "ParticleCullConservationTests.h"
+
 bool Run(const std::filesystem::path &computePath, const std::filesystem::path &vertexPath,
          const std::filesystem::path &fragmentPath, const std::filesystem::path &reflectionPath,
          const std::filesystem::path &particleComputePath, const std::filesystem::path &particleVertexPath,
@@ -789,6 +791,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         {cullCode[1].data(), cullCode[1].size()},
         {cullCode[2].data(), cullCode[2].size()},
     };
+    if (!VerifyParticleCullConservation(resources, cullProgram))
+        return false;
     const std::array<std::string_view, 3> boundsSources = {
         infernux::particle::GpuParticleBoundsShaderSources::Prepare(),
         infernux::particle::GpuParticleBoundsShaderSources::Reset(),
@@ -1500,6 +1504,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         builder.ReadStorageBuffer(managedSourceIndirectArguments);
         builder.ReadStorageBuffer(managedSourceIndices);
         builder.ReadIndirectBuffer(managedSortDispatchArguments);
+        builder.ReadStorageBuffer(managedSortDispatchArguments);
         managedVisibleIndices = builder.WriteStorageBuffer(managedVisibleIndices);
         managedIndirectArguments =
             builder.ReadWrite(managedIndirectArguments, infernux::rhi::PipelineStage::ComputeShader);
@@ -1558,6 +1563,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         builder.ReadStorageBuffer(offscreenSourceIndirectArguments);
         builder.ReadStorageBuffer(offscreenSourceIndices);
         builder.ReadIndirectBuffer(offscreenSortDispatchArguments);
+        builder.ReadStorageBuffer(offscreenSortDispatchArguments);
         offscreenVisibleIndices = builder.WriteStorageBuffer(offscreenVisibleIndices);
         offscreenIndirectArguments =
             builder.ReadWrite(offscreenIndirectArguments, infernux::rhi::PipelineStage::ComputeShader);

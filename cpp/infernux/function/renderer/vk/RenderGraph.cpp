@@ -522,24 +522,35 @@ ResourceHandle PassBuilder::ReadWrite(ResourceHandle handle, rhi::PipelineStage 
 
 ResourceHandle PassBuilder::ReadStorageBuffer(ResourceHandle handle, rhi::PipelineStage stages)
 {
-    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
-        return handle;
-
-    auto &pass = m_graph->m_passes[m_passId];
-    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::ShaderRead, stages, rhi::Access::ShaderRead,
-                          rhi::TextureLayout::Undefined});
-    return handle;
+    return AddBufferRead(handle, ResourceUsage::Read | ResourceUsage::ShaderRead, stages, rhi::Access::ShaderRead);
 }
 
-ResourceHandle PassBuilder::ReadUniformBuffer(ResourceHandle handle)
+ResourceHandle PassBuilder::AddBufferRead(ResourceHandle handle, ResourceUsage usage,
+                                         rhi::PipelineStage stages, rhi::Access access)
 {
     if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
         return handle;
 
     auto &pass = m_graph->m_passes[m_passId];
-    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::ShaderRead, rhi::PipelineStage::ComputeShader,
-                          rhi::Access::UniformRead, rhi::TextureLayout::Undefined});
+    // One buffer may be both indirect arguments and shader input in this pass.
+    // Keep the union in one access so barriers and retained states cover every
+    // consumer, independent of which binding was declared first.
+    for (auto &read : pass.reads) {
+        if (read.handle == handle && read.layout == rhi::TextureLayout::Undefined) {
+            read.usage = read.usage | usage;
+            read.stages = read.stages | stages;
+            read.access = read.access | access;
+            return handle;
+        }
+    }
+    pass.reads.push_back({handle, usage, stages, access, rhi::TextureLayout::Undefined});
     return handle;
+}
+
+ResourceHandle PassBuilder::ReadUniformBuffer(ResourceHandle handle)
+{
+    return AddBufferRead(handle, ResourceUsage::Read | ResourceUsage::ShaderRead,
+                         rhi::PipelineStage::ComputeShader, rhi::Access::UniformRead);
 }
 
 ResourceHandle PassBuilder::WriteStorageBuffer(ResourceHandle handle)
@@ -578,13 +589,8 @@ ResourceHandle PassBuilder::WriteStorageTexture(ResourceHandle handle)
 
 ResourceHandle PassBuilder::ReadIndirectBuffer(ResourceHandle handle)
 {
-    if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
-        return handle;
-
-    auto &pass = m_graph->m_passes[m_passId];
-    pass.reads.push_back({handle, ResourceUsage::Read | ResourceUsage::IndirectArgument,
-                          rhi::PipelineStage::DrawIndirect, rhi::Access::IndirectRead, rhi::TextureLayout::Undefined});
-    return handle;
+    return AddBufferRead(handle, ResourceUsage::Read | ResourceUsage::IndirectArgument,
+                         rhi::PipelineStage::DrawIndirect, rhi::Access::IndirectRead);
 }
 
 ResourceHandle PassBuilder::ReadRendererList(ResourceHandle handle)

@@ -135,10 +135,9 @@ void main() {
         }
     }
     if (bounds_valid == 0u || bounds_visible) stats_flags |= 2u;
-    // The cull pass already declares draw arguments as compute read/write. Use
-    // the high bit as a transient marker so the fast path does not introduce a
-    // second shader read of the profile-only stats buffer.
-    if (bounds_fully_inside) draw_instance_count = 0x80000000u;
+    // Reset publishes immutable culling flags separately from the counter.
+    // All workgroups consume the same flag while atomically appending indices.
+    if (bounds_fully_inside) stats_flags |= 8u;
     if (bounds_valid == 0u || bounds_visible) atomicOr(any_view_visible, 1u);
     sort_group_count_x = bounds_visible ? (source_count + 255u) / 256u : 0u;
     sort_group_count_y = 1u;
@@ -162,11 +161,10 @@ bool inx_visible_sphere(vec3 center, float radius) {
     return true;
 }
 void main() {
-    bool bounds_fully_inside = (draw_instance_count & 0x80000000u) != 0u;
+    bool bounds_fully_inside = (stats_flags & 8u) != 0u;
     if (gl_LocalInvocationIndex == 0u) {
         local_visible_count = 0u;
         global_base = 0u;
-        draw_instance_count = 0u;
     }
     barrier();
 
@@ -228,10 +226,8 @@ std::string_view GpuParticleCullShaderSources::Finalize() noexcept
 {
     static const std::string Source = BuildShader("layout(local_size_x = 1) in;\n", R"glsl(
 void main() {
-    // Reset uses the high bit as a transient fully-inside marker. Cull normally
-    // clears it before writing the real count, but a zero-source dispatch is
-    // intentionally skipped and still reaches this finalizer.
-    uint visible_count = min(draw_instance_count & 0x7fffffffu, pc.capacity);
+    // A skipped (empty or coarse-rejected) Cull retains Reset's zero count.
+    uint visible_count = min(draw_instance_count, pc.capacity);
     draw_instance_count = visible_count;
     sort_group_count_x = (visible_count + 255u) / 256u;
     sort_group_count_y = 1u;

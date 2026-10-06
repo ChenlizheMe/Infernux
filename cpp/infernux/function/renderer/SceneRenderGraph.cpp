@@ -3888,9 +3888,11 @@ void SceneRenderGraph::BuildRenderGraph()
             });
             m_renderGraph->AddComputePass(prefix + "/Cull", [&, culler](vk::PassBuilder &builder) {
                 builder.ReadStorageBuffer(resources.visibility);
+                builder.ReadStorageBuffer(resources.instances);
                 builder.ReadStorageBuffer(resources.sourceIndirectArguments);
                 builder.ReadStorageBuffer(resources.sourceRenderIndices);
                 builder.ReadIndirectBuffer(resources.sortDispatchArguments);
+                builder.ReadStorageBuffer(resources.sortDispatchArguments);
                 resources.renderIndices = builder.WriteStorageBuffer(resources.renderIndices);
                 resources.indirectArguments =
                     builder.ReadWrite(resources.indirectArguments, rhi::PipelineStage::ComputeShader);
