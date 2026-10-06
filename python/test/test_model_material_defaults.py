@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from infernux.core.assets import AssetManager
+from model_test_support import remove_model_test_folder
 
 
 @pytest.fixture
@@ -34,8 +35,11 @@ def imported_model(engine, scene, tmp_path, monkeypatch):
     go = scene.create_game_object("Model material defaults")
     renderer = go.add_component("MeshRenderer")._require_cpp_component()
     renderer.set_mesh_asset_guid(imported.guid)
-    yield renderer, document, source, database, scene
-    scene.destroy_game_object(go)
+    try:
+        yield renderer, document, source, database, scene
+    finally:
+        scene._remove_game_object_immediately(go)
+        remove_model_test_folder(database, source.parent)
 
 
 def color(renderer, slot=0):

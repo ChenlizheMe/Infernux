@@ -1,4 +1,5 @@
 #include <assimp/scene.h>
+#include "ModelSourceIOTests.h"
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshImportSettings.h>
@@ -442,6 +443,7 @@ static void TestHumanoidAutoMappingAndValidation()
 
 int main(int argc, char **argv)
 {
+    TestModelSourceFileIO();
     TestSkinWeightImport();
     TestMikkMirroredSeamPreservesVertexChannels();
     TestRootAnimationAxisBake();

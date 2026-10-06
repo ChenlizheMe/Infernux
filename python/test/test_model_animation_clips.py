@@ -10,6 +10,7 @@ from infernux.core.animation_clip3d import AnimationClip3D, embedded_take_descri
 from infernux.core.asset_types import MeshImportSettings, read_mesh_import_settings, read_meta_file
 from infernux.core.assets import AssetManager
 from infernux.lib import AssetRegistry
+from model_test_support import remove_model_test_folder
 
 
 def spec(name="Middle", identity="a" * 32):
@@ -157,9 +158,10 @@ def model(engine, tmp_path, monkeypatch):
                         "external/assimp/test/models/FBX/animation_with_skeleton.fbx").read_bytes())
     imported = AssetManager.import_asset(str(source), database=database)
     assert imported, imported.error
-    yield database, source, imported.guid
-    AssetRegistry.instance().invalidate_asset(imported.guid)
-    database.delete_asset(str(source))
+    try:
+        yield database, source, imported.guid
+    finally:
+        remove_model_test_folder(database, source.parent)
 
 
 @pytest.mark.parametrize("mode", ["sync", "async"])

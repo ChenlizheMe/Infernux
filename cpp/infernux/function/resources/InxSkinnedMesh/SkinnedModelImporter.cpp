@@ -1,5 +1,6 @@
 #include "SkinnedModelImporter.h"
 #include <function/resources/InxMesh/MeshImportSettings.h>
+#include <function/resources/InxMesh/ModelSourceIO.h>
 
 #include "InxSkinnedMesh.h"
 
@@ -15,7 +16,6 @@
 #include <cctype>
 #include <cmath>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -1316,25 +1316,8 @@ std::shared_ptr<InxSkinnedMesh> SkinnedModelImporter::ImportSource(const std::st
     const auto filePath = ToFsPath(sourcePath);
     if (!std::filesystem::is_regular_file(filePath))
         throw std::runtime_error("Skinned model source file not found: " + sourcePath);
-    std::ifstream file(filePath, std::ios::binary | std::ios::ate);
-    if (!file.is_open())
-        throw std::runtime_error("Skinned model source file cannot be opened: " + sourcePath);
-    const auto size = file.tellg();
-    if (size <= 0)
-        throw std::runtime_error("Skinned model source file is empty: " + sourcePath);
-    std::vector<char> bytes(static_cast<size_t>(size));
-    file.seekg(0);
-    if (!file.read(bytes.data(), size))
-        throw std::runtime_error("Skinned model source file cannot be read: " + sourcePath);
-
-    std::string extension = FromFsPath(filePath.extension());
-    if (!extension.empty() && extension.front() == '.')
-        extension.erase(extension.begin());
-    std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
     Assimp::Importer importer;
-    const aiScene *scene =
-        importer.ReadFileFromMemory(bytes.data(), bytes.size(), BuildAssimpFlags(), extension.c_str());
+    const aiScene *scene = ReadModelSource(importer, sourcePath, BuildAssimpFlags());
     if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
         throw std::runtime_error("Skinned model Assimp import failed for '" + sourcePath +
                                  "': " + importer.GetErrorString());

@@ -11,6 +11,7 @@
 #include "InxMesh.h"
 #include "MeshArtifact.h"
 #include "MeshImportSettings.h"
+#include "ModelSourceIO.h"
 #include "ModelVertexBasis.h"
 
 #include <core/config/MathConstants.h>
@@ -851,18 +852,6 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
     if (!std::filesystem::is_regular_file(fsPath))
         throw std::runtime_error("MeshLoader source file not found: " + filePath);
 
-    // Read file into memory to avoid Assimp's narrow-string path issues on Windows
-    std::ifstream file(fsPath, std::ios::binary | std::ios::ate);
-    if (!file.is_open())
-        throw std::runtime_error("MeshLoader cannot open source file: " + filePath);
-    auto fileSize = file.tellg();
-    if (fileSize <= 0)
-        throw std::runtime_error("MeshLoader source file is empty or unreadable: " + filePath);
-    std::vector<char> fileData(static_cast<size_t>(fileSize));
-    file.seekg(0);
-    if (!file.read(fileData.data(), fileSize))
-        throw std::runtime_error("MeshLoader failed to read source file: " + filePath);
-
     MeshImportSettings settings = MeshImportSettings::Read(metadata);
     const MeshCompression compression = settings.meshCompression == "low"      ? MeshCompression::Low
                                         : settings.meshCompression == "medium" ? MeshCompression::Medium
@@ -873,7 +862,7 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
                                                                            : MeshIndexFormat::Auto;
     unsigned int flags = BuildAssimpFlags(settings);
 
-    // Derive extension hint for Assimp (e.g. "fbx")
+    // Source-format settings use a case-independent extension.
     std::string ext = FromFsPath(fsPath.extension());
     if (!ext.empty() && ext[0] == '.')
         ext = ext.substr(1);
@@ -885,8 +874,18 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
             throw std::invalid_argument("material import mode requires a source model, not an authored .inxmesh");
         if (!settings.materialRemaps.empty())
             throw std::invalid_argument("material import remaps require a source model, not an authored .inxmesh");
+        std::ifstream file(fsPath, std::ios::binary | std::ios::ate);
+        if (!file.is_open())
+            throw std::runtime_error("MeshLoader cannot open source file: " + filePath);
+        const auto fileSize = file.tellg();
+        if (fileSize <= 0)
+            throw std::runtime_error("MeshLoader source file is empty or unreadable: " + filePath);
+        std::string fileData(static_cast<size_t>(fileSize), '\0');
+        file.seekg(0);
+        if (!file.read(fileData.data(), fileSize))
+            throw std::runtime_error("MeshLoader failed to read source file: " + filePath);
         MeshSourceImportResult result;
-        result.mesh = MeshArtifact::DeserializeSource(std::string_view(fileData.data(), fileData.size()));
+        result.mesh = MeshArtifact::DeserializeSource(fileData);
         (void)ResolveMeshIndexFormat(indexFormat, result.mesh->GetVertexCount(), result.mesh->GetIndices());
         result.mesh->SetIndexFormat(indexFormat);
         result.mesh->SetCompression(compression);
@@ -902,15 +901,7 @@ MeshSourceImportResult MeshLoader::ImportSourceDetailed(const std::string &fileP
 
     Assimp::Importer importer;
     // Validate external input once, before touching its channel pointers.
-    const aiScene *scene =
-        importer.ReadFileFromMemory(fileData.data(), fileData.size(), aiProcess_ValidateDataStructure, ext.c_str());
-
-    // OBJ has no authored scene root: Assimp derives it from the input file
-    // name. Memory IO supplies a synthetic filename, not an author node name.
-    // Restore the real filename at this boundary; never rename OBJ o/g nodes.
-    if (scene && scene->mRootNode && ext == "obj" &&
-        std::string_view(scene->mRootNode->mName.C_Str()) == "$$$___magic___$$$.obj")
-        scene->mRootNode->mName.Set(FromFsPath(fsPath.filename()));
+    const aiScene *scene = ReadModelSource(importer, filePath, aiProcess_ValidateDataStructure);
 
     if (scene) {
         PrepareVertexBasis(*scene, settings);
