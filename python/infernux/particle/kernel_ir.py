@@ -2084,6 +2084,7 @@ class ParticleKernelLowerer:
                 parameters,
                 attribute_types["builtin.position"],
                 source,
+                space_semantic="position",
             )
             normal = builder.operation_value(
                 "normal",
@@ -2110,6 +2111,7 @@ class ParticleKernelLowerer:
                 parameters,
                 attribute_types["builtin.position"],
                 source,
+                space_semantic="position",
             )
             sphere_radius = builder.operation_value(
                 "sphere_radius",
