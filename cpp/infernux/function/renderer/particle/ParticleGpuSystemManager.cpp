@@ -25,6 +25,7 @@
 #include <mutex>
 #include <numeric>
 #include <set>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -366,6 +367,14 @@ struct ParticleGpuSystemManager::Impl
             return true;
         vk::VulkanTransferCommandContext transferContext;
         const auto transfer = context->GetRhiDevice().MakeTransferCommandEncoder(transferContext, commandBuffer);
+        // The shared table may still contain a previous frame's upload, even
+        // when that frame did not dispatch a collision consumer.
+        VkMemoryBarrier before{};
+        before.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        before.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        before.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
         if (!collisionScene->RecordPendingUpload(transfer))
             return false;
         VkMemoryBarrier barrier{};
@@ -1867,17 +1876,15 @@ bool ParticleGpuSystemManager::Initialize(
     GpuParticleSkinnedMeshResolver skinnedMeshResolver, const GpuParticleSortProgram &sortProgram,
     const GpuParticleCullProgram &cullProgram, const GpuParticleBoundsProgram &boundsProgram,
     const GpuParticleMigrationProgram &migrationProgram, const GpuParticleSpawnProgram &spawnProgram,
-    const GpuParticleRibbonProgram &ribbonTopologyProgram, const GpuParticleRibbonRenderProgram &ribbonRenderProgram,
-    uint32_t framesInFlight)
+    const GpuParticleRibbonProgram &ribbonTopologyProgram, const GpuParticleRibbonRenderProgram &ribbonRenderProgram)
 {
     if (!m_impl || m_impl->context || !context.IsValid() || !boundsProgram.IsValid() || !migrationProgram.IsValid() ||
-        !spawnProgram.IsValid() || framesInFlight == 0 ||
-        ribbonTopologyProgram.IsValid() != ribbonRenderProgram.IsValid()) {
+        !spawnProgram.IsValid() || ribbonTopologyProgram.IsValid() != ribbonRenderProgram.IsValid()) {
         INXLOG_ERROR("ParticleGpuSystemManager initialization contract rejected: impl=", m_impl != nullptr,
                      " already_initialized=", m_impl && m_impl->context != nullptr, " context=", context.IsValid(),
                      " bounds=", boundsProgram.IsValid(), " migration=", migrationProgram.IsValid(),
                      " spawn=", spawnProgram.IsValid(), " ribbon_topology=", ribbonTopologyProgram.IsValid(),
-                     " ribbon_render=", ribbonRenderProgram.IsValid(), " frames=", framesInFlight);
+                     " ribbon_render=", ribbonRenderProgram.IsValid());
         return false;
     }
     m_impl->context = &context;
@@ -1889,8 +1896,7 @@ bool ParticleGpuSystemManager::Initialize(
     m_impl->vectorFieldTextureResolver = std::move(vectorFieldTextureResolver);
     m_impl->skinnedMeshResolver = std::move(skinnedMeshResolver);
     m_impl->collisionScene = std::make_unique<ParticleGpuCollisionScene>();
-    if (!m_impl->collisionScene->Create(context.GetRhiDevice(), ParticleGpuCollisionScene::DefaultCapacity,
-                                        framesInFlight)) {
+    if (!m_impl->collisionScene->Create(context.GetRhiDevice(), ParticleGpuCollisionScene::DefaultCapacity)) {
         INXLOG_ERROR("ParticleGpuSystemManager failed to create the collision scene");
         Shutdown();
         return false;
@@ -2127,6 +2133,12 @@ bool ParticleGpuSystemManager::UpdateGraphParameters(uint64_t graphInstanceId,
     for (const auto &emitter : targets)
         emitter->sourceProgram.parameterWords = parameterWords;
     return true;
+}
+
+void ParticleGpuSystemManager::NotifySubmission(bool submitted) noexcept
+{
+    if (m_impl && m_impl->collisionScene)
+        m_impl->collisionScene->NotifySubmission(submitted);
 }
 
 bool ParticleGpuSystemManager::PublishCollisionScene(const GpuParticleCollisionSceneSnapshot &snapshot,
@@ -2484,7 +2496,7 @@ void ParticleGpuSystemManager::Execute(VkCommandBuffer commandBuffer)
     if (!m_impl || !m_impl->graphState || !m_impl->graphState->graph || commandBuffer == VK_NULL_HANDLE)
         return;
     if (!m_impl->RecordCollisionUpload(commandBuffer))
-        INXLOG_ERROR("GPU particle collision scene upload failed");
+        throw std::runtime_error("GPU particle collision scene upload failed");
     bool hasPendingEmitter = std::any_of(m_impl->graphState->schedulers.begin(), m_impl->graphState->schedulers.end(),
                                          [](const auto &scheduler) { return scheduler->HasPendingFrame(); });
     uint32_t recordedSteps = 0;

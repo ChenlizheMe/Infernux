@@ -327,7 +327,7 @@ class ParticleGpuSystemManager
                const GpuParticleMigrationProgram &migrationProgram = {},
                const GpuParticleSpawnProgram &spawnProgram = {},
                const GpuParticleRibbonProgram &ribbonTopologyProgram = {},
-               const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {}, uint32_t framesInFlight = 2);
+               const GpuParticleRibbonRenderProgram &ribbonRenderProgram = {});
     void Shutdown() noexcept;
 
     /// Compile then publish one complete graph transaction. The active graph
@@ -344,6 +344,7 @@ class ParticleGpuSystemManager
                                              std::string *error = nullptr);
     /// Publish a scene-owned collider snapshot. No GPU work is recorded until
     /// the next particle simulation boundary.
+    void NotifySubmission(bool submitted) noexcept;
     [[nodiscard]] bool PublishCollisionScene(const GpuParticleCollisionSceneSnapshot &snapshot,
                                              std::string *error = nullptr);
     [[nodiscard]] uint64_t CollisionSceneRevision() const noexcept;

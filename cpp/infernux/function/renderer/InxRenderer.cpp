@@ -844,6 +844,10 @@ void InxRenderer::PreparePipeline()
             UpdateParticleCollisionScene();
             m_particleGpuSystemManager->Execute(cmdBuf);
         });
+        m_vkCore->SetFrameComputeSubmissionCallback([this](bool submitted) {
+            if (m_particleGpuSystemManager)
+                m_particleGpuSystemManager->NotifySubmission(submitted);
+        });
         m_vkCore->SetFrameComputeWorkPredicate(
             [this] { return m_particleGpuSystemManager && m_particleGpuSystemManager->HasPendingGpuWork(); });
         m_vkCore->SetFrameAsyncComputeExecutors(
@@ -3939,12 +3943,12 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
         }
         return snapshot;
     };
-    if (!manager->Initialize(
-            m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(), m_vkCore->GetResourceManager(),
-            m_vkCore->GetRetirementQueue(), *m_particleGpuDrawRegistry, std::move(particleTextureResolver),
-            std::move(particleVectorFieldTextureResolver), std::move(particleSkinnedMeshResolver), programs.sort.View(),
-            programs.cull.View(), programs.bounds.View(), programs.migration.View(), programs.spawn.View(),
-            programs.ribbonTopology.View(), programs.ribbonRender.View(), m_vkCore->GetMaxFramesInFlight())) {
+    if (!manager->Initialize(m_vkCore->GetDeviceContext(), m_vkCore->GetPipelineManager(),
+                             m_vkCore->GetResourceManager(), m_vkCore->GetRetirementQueue(), *m_particleGpuDrawRegistry,
+                             std::move(particleTextureResolver), std::move(particleVectorFieldTextureResolver),
+                             std::move(particleSkinnedMeshResolver), programs.sort.View(), programs.cull.View(),
+                             programs.bounds.View(), programs.migration.View(), programs.spawn.View(),
+                             programs.ribbonTopology.View(), programs.ribbonRender.View())) {
         INXLOG_ERROR("Failed to initialize the GPU particle system manager");
         return nullptr;
     }

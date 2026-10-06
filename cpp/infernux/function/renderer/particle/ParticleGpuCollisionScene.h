@@ -98,8 +98,8 @@ struct GpuParticleCollisionSceneSnapshot
 };
 
 /// Owns one device-local collider table shared by all resident GPU particle
-/// emitters. CPU publication writes staging memory only when the scene revision
-/// changes; RecordPendingUpload performs the frame-boundary RHI transfer.
+/// emitters. CPU publication prepares data; recording captures immutable upload
+/// bytes, and NotifySubmission confirms or rejects that publication.
 class ParticleGpuCollisionScene
 {
   public:
@@ -117,7 +117,7 @@ class ParticleGpuCollisionScene
     ParticleGpuCollisionScene(const ParticleGpuCollisionScene &) = delete;
     ParticleGpuCollisionScene &operator=(const ParticleGpuCollisionScene &) = delete;
 
-    [[nodiscard]] bool Create(rhi::Device &device, uint32_t capacity = DefaultCapacity, uint32_t uploadPageCount = 2,
+    [[nodiscard]] bool Create(rhi::Device &device, uint32_t capacity = DefaultCapacity,
                               uint32_t meshVertexCapacity = DefaultMeshVertexCapacity,
                               uint32_t meshIndexCapacity = DefaultMeshIndexCapacity,
                               uint32_t meshBvhNodeCapacity = DefaultMeshBvhNodeCapacity);
@@ -125,6 +125,9 @@ class ParticleGpuCollisionScene
 
     [[nodiscard]] bool Publish(const GpuParticleCollisionSceneSnapshot &snapshot, std::string *error = nullptr);
     [[nodiscard]] bool RecordPendingUpload(const rhi::TransferCommandEncoder &encoder);
+    /// Report the actual submission result, not completion of command recording.
+    /// A rejected submission keeps all prepared data available for the next frame.
+    void NotifySubmission(bool submitted) noexcept;
 
     [[nodiscard]] bool IsValid() const noexcept;
     [[nodiscard]] bool HasPendingUpload() const noexcept
@@ -201,23 +204,6 @@ class ParticleGpuCollisionScene
     }
 
   private:
-    struct UploadPage
-    {
-        rhi::BufferHandle header;
-        rhi::BufferHandle colliders;
-        rhi::BufferHandle gridOffsets;
-        rhi::BufferHandle gridColliderIndices;
-        rhi::BufferHandle meshVertices;
-        rhi::BufferHandle meshIndices;
-        rhi::BufferHandle meshBvhNodes;
-
-        [[nodiscard]] bool IsValid() const noexcept
-        {
-            return header.IsValid() && colliders.IsValid() && gridOffsets.IsValid() && gridColliderIndices.IsValid() &&
-                   meshVertices.IsValid() && meshIndices.IsValid() && meshBvhNodes.IsValid();
-        }
-    };
-
     rhi::Device *m_device = nullptr;
     rhi::BufferHandle m_headerBuffer;
     rhi::BufferHandle m_colliderBuffer;
@@ -226,25 +212,21 @@ class ParticleGpuCollisionScene
     rhi::BufferHandle m_meshVertexBuffer;
     rhi::BufferHandle m_meshIndexBuffer;
     rhi::BufferHandle m_meshBvhBuffer;
-    std::vector<UploadPage> m_uploadPages;
+    GpuParticleCollisionSceneHeader m_stagedHeader{};
+    GpuParticleCollisionSceneHeader m_recordedHeader{};
+    uint64_t m_recordedRevision = 0;
+    uint64_t m_recordedTopologyRevision = 0;
+    uint32_t m_recordedGridReferenceCount = 0;
     uint32_t m_capacity = 0;
     uint32_t m_meshVertexCapacity = 0;
     uint32_t m_meshIndexCapacity = 0;
     uint32_t m_meshBvhNodeCapacity = 0;
-    uint32_t m_pendingUploadPage = 0;
-    uint32_t m_nextUploadPage = 0;
-    uint32_t m_pendingColliderCount = 0;
-    uint32_t m_pendingStaticColliderCount = 0;
     uint32_t m_publishedColliderCount = 0;
     uint32_t m_publishedStaticColliderCount = 0;
-    uint32_t m_pendingGridOffsetCount = 0;
-    uint32_t m_pendingGridReferenceCount = 0;
     uint32_t m_publishedGridReferenceCount = 0;
     uint32_t m_publishedMeshVertexCount = 0;
     uint32_t m_publishedMeshIndexCount = 0;
     uint32_t m_publishedMeshBvhNodeCount = 0;
-    uint64_t m_pendingCopyOffset = 0;
-    uint64_t m_pendingCopyBytes = 0;
     uint64_t m_pendingRevision = 0;
     uint64_t m_publishedRevision = 0;
     uint64_t m_pendingTopologyRevision = 0;
@@ -257,9 +239,8 @@ class ParticleGpuCollisionScene
     std::vector<uint32_t> m_stagedMeshIndices;
     std::vector<GpuParticleCollisionBvhNode> m_stagedMeshBvhNodes;
     std::unordered_map<uint64_t, std::array<uint32_t, 4>> m_stagedGeometryByIdentity;
-    uint32_t m_pendingMeshVertexCount = 0;
-    uint32_t m_pendingMeshIndexCount = 0;
-    uint32_t m_pendingMeshBvhNodeCount = 0;
+    bool m_pendingStaticUpload = false;
+    bool m_pendingDynamicUpload = false;
     bool m_pendingTopologyUpload = false;
     bool m_uploadPending = false;
 };

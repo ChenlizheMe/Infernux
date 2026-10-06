@@ -729,6 +729,8 @@ class InxVkCoreModular
     /// callback falls back to the Graphics command buffer otherwise until
     /// cross-graph queue-family ownership is fully published.
     void SetFrameComputeExecutor(std::function<void(VkCommandBuffer cmdBuf)> executor);
+    /// Acknowledge command submission separately from recording and presentation.
+    void SetFrameComputeSubmissionCallback(std::function<void(bool)> callback);
 
     /// Publish whether the optional frame compute callback has work for the
     /// current frame.  The executor is installed for the lifetime of the
@@ -1607,6 +1609,7 @@ class InxVkCoreModular
     FrameSubmissionBuildCallback m_frameSubmissionBuilder;
     FramePreSetupCallback m_framePreSetupBuilder;
     std::function<void(VkCommandBuffer cmdBuf)> m_frameComputeExecutor;
+    std::function<void(bool)> m_frameComputeSubmissionCallback;
     std::function<bool()> m_frameComputeWorkPredicate;
     std::function<bool(VkCommandBuffer cmdBuf)> m_frameAsyncSimulationExecutor;
     std::function<bool(VkCommandBuffer cmdBuf)> m_frameAsyncExportExecutor;

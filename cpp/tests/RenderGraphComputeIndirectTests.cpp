@@ -12,8 +12,10 @@
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VkPipelineManager.h>
 #include <function/renderer/vk/VkResourceManager.h>
-#include <function/renderer/vk/VulkanRhiDevice.h>
 #include <function/renderer/vk/VulkanCommandUploads.h>
+#include <function/renderer/vk/VulkanQueueManager.h>
+#include <function/renderer/vk/VulkanRhiDevice.h>
+#include <function/renderer/vk/VulkanSubmissionExecutor.h>
 #include <function/resources/InxFileLoader/InxShaderLoader.hpp>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
@@ -699,6 +701,7 @@ void main() {
     return Require(matches, "Vector Field GPU samples diverged from the CPU sampling contract");
 }
 
+#include "ParticleCollisionUploadTests.h"
 #include "ParticleCullConservationTests.h"
 #include "ParticleMeshMetadataTests.h"
 #include "RhiBufferUpdateTests.h"
@@ -855,6 +858,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!VerifyGpuParticleMigration(resources, migrationProgram))
         return false;
     if (!VerifyParticleMeshMetadata(resources, sortCompiler, spawnProgram))
+        return false;
+    if (!VerifyParticleCollisionUploads(resources, sortCompiler))
         return false;
     auto initialLinkedParticleProgram = std::make_shared<infernux::ShaderProgramArtifact>();
     initialLinkedParticleProgram->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 10};

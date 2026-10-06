@@ -407,6 +407,25 @@ struct EventTransferTrace
         rhi::BufferCopyRegion region;
     };
     std::vector<Copy> copies;
+    struct Update
+    {
+        rhi::BufferHandle destination;
+        uint64_t offset;
+        std::vector<uint8_t> bytes;
+    };
+    std::vector<Update> updates;
+    size_t rejectUpdateAt = std::numeric_limits<size_t>::max();
+
+    static bool UpdateBuffer(void *context, rhi::BufferHandle destination, uint64_t offset, const void *data,
+                             uint64_t byteSize)
+    {
+        auto &trace = *static_cast<EventTransferTrace *>(context);
+        if (trace.updates.size() == trace.rejectUpdateAt)
+            return false;
+        const auto *bytes = static_cast<const uint8_t *>(data);
+        trace.updates.push_back({destination, offset, {bytes, bytes + byteSize}});
+        return true;
+    }
 
     static void CopyBuffer(void *context, rhi::BufferHandle source, rhi::BufferHandle destination,
                            const rhi::BufferCopyRegion &region)
@@ -996,15 +1015,16 @@ int main()
     {
         FakeDevice collisionDevice;
         particle::ParticleGpuCollisionScene collisionScene;
-        assert(collisionScene.Create(collisionDevice, 2, 2));
+        assert(collisionScene.Create(collisionDevice, 2));
         assert(collisionScene.IsValid() && collisionScene.Capacity() == 2 && collisionScene.PublishedRevision() == 0 &&
                collisionScene.HasPendingUpload());
-        assert(collisionDevice.buffers.size() == 21 && collisionDevice.writes == 2);
+        assert(collisionDevice.buffers.size() == 7 && collisionDevice.writes == 0);
         const auto collisionQueueAccess =
             rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
         assert(std::all_of(collisionDevice.buffers.begin(), collisionDevice.buffers.end(),
                            [collisionQueueAccess](const rhi::BufferDesc &buffer) {
-                               return buffer.queueAccess == collisionQueueAccess;
+                               return buffer.queueAccess == collisionQueueAccess &&
+                                      buffer.memory == rhi::BufferMemory::DeviceLocal;
                            }));
 
         particle::GpuParticleCollisionSceneSnapshot collisionSnapshot;
@@ -1016,21 +1036,23 @@ int main()
             static_cast<uint32_t>(particle::GpuParticleColliderType::Sphere);
         std::string collisionError;
         assert(collisionScene.Publish(collisionSnapshot, &collisionError) && collisionError.empty() &&
-               collisionScene.HasPendingUpload() && collisionDevice.writes == 6);
+               collisionScene.HasPendingUpload() && collisionDevice.writes == 0);
         EventTransferTrace collisionTransferTrace;
         const rhi::TransferCommandEncoder::DispatchTable collisionTransferDispatch = {
-            &EventTransferTrace::CopyBuffer,
-            &EventTransferTrace::CopyTexture,
-            &EventTransferTrace::ResolveTexture,
+            &EventTransferTrace::CopyBuffer,     &EventTransferTrace::CopyTexture,
+            &EventTransferTrace::ResolveTexture, nullptr,
+            &EventTransferTrace::UpdateBuffer,
         };
         const rhi::TransferCommandEncoder collisionTransferEncoder(&collisionTransferTrace, &collisionTransferDispatch);
         assert(collisionScene.RecordPendingUpload(collisionTransferEncoder));
+        assert(collisionScene.HasPendingUpload() && collisionScene.PublishedRevision() == 0);
+        collisionScene.NotifySubmission(true);
         assert(!collisionScene.HasPendingUpload() && collisionScene.PublishedColliderCount() == 1 &&
-               collisionTransferTrace.copies.size() == 4 &&
-               collisionTransferTrace.copies[0].region.byteSize == sizeof(particle::GpuParticleCollisionSceneHeader) &&
-               collisionTransferTrace.copies[1].region.byteSize == 2 * sizeof(uint32_t) &&
-               collisionTransferTrace.copies[2].region.byteSize == sizeof(uint32_t) &&
-               collisionTransferTrace.copies[3].region.byteSize == sizeof(particle::GpuParticleColliderRecord));
+               collisionTransferTrace.updates.size() == 4 &&
+               collisionTransferTrace.updates[0].bytes.size() == sizeof(particle::GpuParticleCollisionSceneHeader) &&
+               collisionTransferTrace.updates[1].bytes.size() == 2 * sizeof(uint32_t) &&
+               collisionTransferTrace.updates[2].bytes.size() == sizeof(uint32_t) &&
+               collisionTransferTrace.updates[3].bytes.size() == sizeof(particle::GpuParticleColliderRecord));
         assert(collisionScene.PublishedStaticColliderCount() == 1 &&
                collisionScene.PublishedDynamicColliderCount() == 0 &&
                collisionScene.PublishedGridReferenceCount() == 1);
@@ -1050,18 +1072,17 @@ int main()
         collisionSnapshot.dynamicColliders[0].previousWorldAabbMax = {-8.0f, 1.0f, 1.0f, 0.0f};
         const uint32_t writesBeforeDynamic = collisionDevice.writes;
         assert(collisionScene.Publish(collisionSnapshot, &collisionError) &&
-               collisionDevice.writes == writesBeforeDynamic + 4);
+               collisionDevice.writes == writesBeforeDynamic);
         EventTransferTrace dynamicTransferTrace;
         const rhi::TransferCommandEncoder dynamicTransferEncoder(&dynamicTransferTrace, &collisionTransferDispatch);
         assert(collisionScene.RecordPendingUpload(dynamicTransferEncoder));
-        assert(dynamicTransferTrace.copies.size() == 4 &&
-               dynamicTransferTrace.copies[3].region.sourceOffset == sizeof(particle::GpuParticleColliderRecord) &&
-               dynamicTransferTrace.copies[3].region.destinationOffset == sizeof(particle::GpuParticleColliderRecord) &&
-               dynamicTransferTrace.copies[3].region.byteSize == sizeof(particle::GpuParticleColliderRecord));
+        collisionScene.NotifySubmission(true);
+        assert(dynamicTransferTrace.updates.size() == 4 &&
+               dynamicTransferTrace.updates[3].offset == sizeof(particle::GpuParticleColliderRecord) &&
+               dynamicTransferTrace.updates[3].bytes.size() == sizeof(particle::GpuParticleColliderRecord));
         assert(collisionScene.PublishedColliderCount() == 2 && collisionScene.PublishedStaticColliderCount() == 1 &&
                collisionScene.PublishedDynamicColliderCount() == 1);
         assert(collisionScene.PublishedGridReferenceCount() > 2);
-        assert(collisionDevice.writtenBuffers[writesBeforeDynamic] != collisionDevice.writtenBuffers[0]);
 
         collisionSnapshot.revision = 4;
         collisionSnapshot.topologyRevision = 2;
@@ -1077,14 +1098,15 @@ int main()
         collisionSnapshot.meshGeometries = {triangleGeometry};
         const uint32_t writesBeforeTopology = collisionDevice.writes;
         assert(collisionScene.Publish(collisionSnapshot, &collisionError) && collisionError.empty() &&
-               collisionDevice.writes == writesBeforeTopology + 8);
+               collisionDevice.writes == writesBeforeTopology);
         EventTransferTrace topologyTransferTrace;
         const rhi::TransferCommandEncoder topologyTransferEncoder(&topologyTransferTrace, &collisionTransferDispatch);
         assert(collisionScene.RecordPendingUpload(topologyTransferEncoder));
-        assert(topologyTransferTrace.copies.size() == 7);
-        assert(topologyTransferTrace.copies[4].region.byteSize == 3u * sizeof(std::array<float, 4>));
-        assert(topologyTransferTrace.copies[5].region.byteSize == 3u * sizeof(uint32_t));
-        assert(topologyTransferTrace.copies[6].region.byteSize == sizeof(particle::GpuParticleCollisionBvhNode));
+        collisionScene.NotifySubmission(true);
+        assert(topologyTransferTrace.updates.size() == 8);
+        assert(topologyTransferTrace.updates[5].bytes.size() == 3u * sizeof(std::array<float, 4>));
+        assert(topologyTransferTrace.updates[6].bytes.size() == 3u * sizeof(uint32_t));
+        assert(topologyTransferTrace.updates[7].bytes.size() == sizeof(particle::GpuParticleCollisionBvhNode));
         assert(collisionScene.PublishedTopologyRevision() == 2 && collisionScene.PublishedMeshVertexCount() == 3 &&
                collisionScene.PublishedMeshIndexCount() == 3 && collisionScene.PublishedMeshBvhNodeCount() == 1);
         collisionSnapshot.replaceMeshTopology = false;
@@ -1117,13 +1139,14 @@ int main()
         collisionSnapshot.dynamicColliders[0].worldAabbMin[0] = 7.0f;
         const uint32_t writesBeforeTransformOnly = collisionDevice.writes;
         assert(collisionScene.Publish(collisionSnapshot, &collisionError) && collisionError.empty() &&
-               collisionDevice.writes == writesBeforeTransformOnly + 4);
+               collisionDevice.writes == writesBeforeTransformOnly);
         EventTransferTrace transformOnlyTransferTrace;
         const rhi::TransferCommandEncoder transformOnlyTransferEncoder(&transformOnlyTransferTrace,
                                                                        &collisionTransferDispatch);
         assert(collisionScene.RecordPendingUpload(transformOnlyTransferEncoder));
-        assert(transformOnlyTransferTrace.copies.size() == 4 &&
-               transformOnlyTransferTrace.copies[3].region.byteSize == sizeof(particle::GpuParticleColliderRecord));
+        collisionScene.NotifySubmission(true);
+        assert(transformOnlyTransferTrace.updates.size() == 4 &&
+               transformOnlyTransferTrace.updates[3].bytes.size() == sizeof(particle::GpuParticleColliderRecord));
         assert(collisionScene.PublishedRevision() == 5 && collisionScene.PublishedTopologyRevision() == 2 &&
                collisionScene.PublishedMeshVertexCount() == 3 && collisionScene.PublishedMeshIndexCount() == 3 &&
                collisionScene.PublishedMeshBvhNodeCount() == 1);
@@ -1136,11 +1159,11 @@ int main()
         collisionSnapshot.dynamicColliders.resize(1);
         assert(!collisionScene.Publish(collisionSnapshot, &collisionError) && !collisionError.empty());
         collisionScene.Destroy();
-        assert(!collisionScene.IsValid() && collisionDevice.bufferReleases == 21);
+        assert(!collisionScene.IsValid() && collisionDevice.bufferReleases == 7);
 
         FakeDevice sortedCollisionDevice;
         particle::ParticleGpuCollisionScene sortedCollisionScene;
-        assert(sortedCollisionScene.Create(sortedCollisionDevice, 3, 2));
+        assert(sortedCollisionScene.Create(sortedCollisionDevice, 3));
         particle::GpuParticleCollisionSceneSnapshot sortedSnapshot;
         sortedSnapshot.revision = 2;
         sortedSnapshot.topologyRevision = 1;
@@ -1150,12 +1173,17 @@ int main()
         sortedSnapshot.dynamicColliders.resize(1);
         sortedSnapshot.dynamicColliders[0].identity = {15u, 0u, 3u, 0u};
         assert(sortedCollisionScene.Publish(sortedSnapshot, &collisionError) && collisionError.empty());
-        const auto staticWrite = std::find_if(
-            sortedCollisionDevice.writtenBytes.begin(), sortedCollisionDevice.writtenBytes.end(),
-            [](const auto &bytes) { return bytes.size() == 2u * sizeof(particle::GpuParticleColliderRecord); });
-        assert(staticWrite != sortedCollisionDevice.writtenBytes.end());
+        EventTransferTrace sortedTrace;
+        const rhi::TransferCommandEncoder sortedEncoder(&sortedTrace, &collisionTransferDispatch);
+        assert(sortedCollisionScene.RecordPendingUpload(sortedEncoder));
+        sortedCollisionScene.NotifySubmission(true);
+        const auto staticWrite =
+            std::find_if(sortedTrace.updates.begin(), sortedTrace.updates.end(), [&](const auto &update) {
+                return update.destination == sortedCollisionScene.ColliderBuffer() && update.offset == 0;
+            });
+        assert(staticWrite != sortedTrace.updates.end());
         std::array<particle::GpuParticleColliderRecord, 2> sortedStatic{};
-        std::memcpy(sortedStatic.data(), staticWrite->data(), staticWrite->size());
+        std::memcpy(sortedStatic.data(), staticWrite->bytes.data(), staticWrite->bytes.size());
         assert(sortedStatic[0].identity[0] == 10u && sortedStatic[1].identity[0] == 20u);
 
         sortedSnapshot.revision = 3;
@@ -1164,6 +1192,67 @@ int main()
         assert(!sortedCollisionScene.Publish(sortedSnapshot, &collisionError));
         assert(collisionError.find("duplicate collider identity") != std::string::npos);
         sortedCollisionScene.Destroy();
+
+        // Coalesce CPU edits without losing static/topology data from an earlier
+        // edit, and acknowledge publication only after a successful submission.
+        FakeDevice coalescedDevice;
+        particle::ParticleGpuCollisionScene coalesced;
+        assert(coalesced.Create(coalescedDevice, 4));
+        auto first = collisionSnapshot;
+        first.revision = 2;
+        first.topologyRevision = 2;
+        first.replaceMeshTopology = true;
+        first.staticColliders.resize(1);
+        first.dynamicColliders.clear();
+        first.meshGeometries = {triangleGeometry};
+        assert(coalesced.Publish(first));
+        auto latest = first;
+        latest.revision = 3;
+        latest.replaceMeshTopology = false;
+        latest.meshGeometries.clear();
+        latest.dynamicColliders = {sortedSnapshot.dynamicColliders.front()};
+        latest.dynamicColliders.front().material[0] = 0.75f;
+        assert(coalesced.Publish(latest));
+        EventTransferTrace failedTrace;
+        failedTrace.rejectUpdateAt = 2;
+        assert(!coalesced.RecordPendingUpload({&failedTrace, &collisionTransferDispatch}));
+        coalesced.NotifySubmission(false);
+        assert(coalesced.PublishedRevision() == 0 && coalesced.HasPendingUpload());
+
+        EventTransferTrace rejectedTrace;
+        assert(coalesced.RecordPendingUpload({&rejectedTrace, &collisionTransferDispatch}));
+        assert(rejectedTrace.updates.size() == 8);
+        coalesced.NotifySubmission(false);
+        assert(coalesced.PublishedRevision() == 0 && coalesced.HasPendingUpload());
+        EventTransferTrace acceptedTrace;
+        assert(coalesced.RecordPendingUpload({&acceptedTrace, &collisionTransferDispatch}));
+        assert(acceptedTrace.updates.size() == rejectedTrace.updates.size());
+        for (size_t index = 0; index < acceptedTrace.updates.size(); ++index) {
+            assert(acceptedTrace.updates[index].destination == rejectedTrace.updates[index].destination);
+            assert(acceptedTrace.updates[index].offset == rejectedTrace.updates[index].offset);
+            assert(acceptedTrace.updates[index].bytes == rejectedTrace.updates[index].bytes);
+        }
+
+        // An edit between recording and acknowledgement must remain pending;
+        // the already recorded bytes must retain the prior immutable snapshot.
+        latest.revision = 4;
+        latest.dynamicColliders.front().material[0] = 0.25f;
+        assert(coalesced.Publish(latest));
+        coalesced.NotifySubmission(true);
+        assert(coalesced.PublishedRevision() == 3 && coalesced.HasPendingUpload());
+        EventTransferTrace newerTrace;
+        assert(coalesced.RecordPendingUpload({&newerTrace, &collisionTransferDispatch}));
+        assert(newerTrace.updates[4].bytes != acceptedTrace.updates[4].bytes);
+        particle::GpuParticleColliderRecord captured{};
+        std::memcpy(&captured, acceptedTrace.updates[4].bytes.data(), sizeof(captured));
+        assert(captured.material[0] == 0.75f);
+        coalesced.NotifySubmission(true);
+        assert(coalesced.PublishedRevision() == 4 && !coalesced.HasPendingUpload());
+        assert(coalesced.PublishedTopologyRevision() == 2 && coalesced.PublishedMeshVertexCount() == 3);
+        assert(coalesced.Publish(latest));
+        EventTransferTrace noChangeTrace;
+        assert(coalesced.RecordPendingUpload({&noChangeTrace, &collisionTransferDispatch}));
+        assert(noChangeTrace.updates.empty() && coalescedDevice.writes == 0);
     }
 
     {

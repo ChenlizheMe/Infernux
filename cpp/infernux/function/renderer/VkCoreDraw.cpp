@@ -475,10 +475,14 @@ void InxVkCoreModular::DrawFrame(const float *viewPos, const float *viewLookAt, 
             },
             externalSync);
     } catch (...) {
+        if (m_frameComputeSubmissionCallback)
+            m_frameComputeSubmissionCallback(false);
         if (!m_backend.Queues().AbandonGraphicsFrameSlot(frameSlot))
             INXLOG_ERROR("Failed to restore graphics frame slot after command recording exception");
         throw;
     }
+    if (m_frameComputeSubmissionCallback)
+        m_frameComputeSubmissionCallback(executeResult.Succeeded());
 #if INFERNUX_FRAME_PROFILE
     _tNow = Clock::now();
     m_drawSubMs[1] += std::chrono::duration<double, std::milli>(_tNow - _tPrev).count();
