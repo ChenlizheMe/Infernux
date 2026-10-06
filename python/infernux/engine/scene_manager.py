@@ -988,6 +988,20 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
     # Core operations
     # ------------------------------------------------------------------
 
+    def _can_replace_scene(self) -> bool:
+        """Editor replacement cannot overlap a Play or scene transaction.
+
+        Play owns the authored documents until Stop has restored them. This
+        also covers a queued Play request whose state is still Edit.
+        """
+        from infernux.engine.deferred_task import DeferredTaskRunner
+
+        return (
+            not self._is_play_mode()
+            and not self.is_loading
+            and not DeferredTaskRunner.instance().is_busy
+        )
+
     def _is_play_mode(self) -> bool:
         """Return True if the engine is in Play or Pause mode."""
         from infernux.engine.play_mode import PlayModeManager, PlayModeState
@@ -1007,8 +1021,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         The actual load is deferred to the next frame so the scene view can
         stop rendering old 3D content first.
         """
-        if self.is_loading:
-            Debug.log_warning("Scene load already pending or in progress — ignoring open_scene()")
+        if not self._can_replace_scene():
             return False
         if self.is_prefab_mode:
             return self._request_prefab_exit(
@@ -1219,7 +1232,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
 
     def _continue_open_scene(self, path: str) -> bool:
         """Resolve the active Scene document before scheduling a replacement."""
-        if self.is_prefab_mode:
+        if self.is_prefab_mode or not self._can_replace_scene():
             return False
         self._stage_scene_navigation()
 
@@ -1254,6 +1267,8 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
         If the current scene is dirty, shows a save-confirmation popup first.
         The actual creation is deferred to the next frame.
         """
+        if not self._can_replace_scene():
+            return
         if self.is_prefab_mode:
             self._request_prefab_exit(on_complete=self._continue_new_scene)
             return
@@ -1262,7 +1277,7 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
 
     def _continue_new_scene(self) -> None:
         """Resolve the active Scene document before creating a replacement."""
-        if self.is_prefab_mode:
+        if self.is_prefab_mode or not self._can_replace_scene():
             return
         self._stage_scene_navigation()
 
@@ -1388,6 +1403,9 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
 
     def _begin_deferred_open(self, path: str):
         """Schedule a scene open for the next frame."""
+        if not self._can_replace_scene():
+            self._cancel_scene_navigation()
+            return
         self._last_scene_load = {
             "status": "pending", "path": resolved_path(path), "error": "",
         }
@@ -1396,6 +1414,9 @@ class SceneFileManager(ScenePrefabMixin, SceneSaveMixin):
 
     def _begin_deferred_new(self):
         """Schedule a new-scene creation for the next frame."""
+        if not self._can_replace_scene():
+            self._cancel_scene_navigation()
+            return
         self._last_scene_load = {"status": "idle", "path": "", "error": ""}
         self._deferred_load_path = None
         self._deferred_new_scene = True

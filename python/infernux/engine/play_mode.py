@@ -679,6 +679,9 @@ class PlayModeManager(PlayModeSerializationMixin):
         if sfm and sfm.is_prefab_mode:
             Debug.log_warning("Cannot enter Play mode while in Prefab Mode. Exit Prefab Mode first.")
             return False
+        if sfm and sfm.is_loading:
+            Debug.log_warning("Cannot enter Play mode while an editor scene transaction is pending.")
+            return False
 
         # Pre-flight check: block play if any script has load errors
         from infernux.components.script_loader import has_script_errors, get_script_errors

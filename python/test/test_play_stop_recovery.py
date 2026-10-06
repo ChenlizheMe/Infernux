@@ -1,5 +1,6 @@
 """Stop must publish Edit only after the authored Scene snapshot is restored."""
 from pathlib import Path
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -141,3 +142,79 @@ def test_failed_stop_keeps_snapshot_and_requires_explicit_recovery(playing_autho
     assert state.scene.find_by_id(state.object_id).name == "AuthorDoor"
     assert state.path.read_bytes() == state.original_bytes
     assert not Material._suppress_auto_save and not RenderEffect._suppress_auto_save
+
+
+@pytest.mark.parametrize("paused", [False, True])
+@pytest.mark.parametrize("operation", ["open", "new", "confirmed_open", "confirmed_new"])
+def test_editor_scene_replacement_cannot_retire_play_document(playing_author, paused, operation):
+    state = playing_author
+    from infernux.engine.interaction import DocumentRegistry
+
+    registry = DocumentRegistry.instance()
+    document = registry.require(state.files.document_id)
+    revisions = (document.revision, document.saved_revision)
+    if paused:
+        assert state.manager.pause()
+    if operation == "open":
+        assert not state.files.open_scene(str(state.path))
+    elif operation == "new":
+        state.files.new_scene()
+    elif operation == "confirmed_open":
+        state.files._begin_deferred_open(str(state.path))
+    else:
+        state.files._begin_deferred_new()
+    assert not state.files.is_loading
+    state.files.poll_deferred_load()
+    assert registry.require(document.document_id) is document
+    assert state.files.document_id == document.document_id
+    assert state.scene.find_by_id(state.object_id).name == "RuntimeDoor"
+    for _ in range(3):
+        assert state.manager.exit_play_mode()
+        state.runner.tick()
+        assert state.manager.is_edit_mode
+        assert state.scene.find_by_id(state.object_id).name == "AuthorDoor"
+        assert registry.require(document.document_id) is document
+        assert (document.revision, document.saved_revision) == revisions
+        assert state.path.read_bytes() == state.original_bytes
+        assert state.manager.enter_play_mode()
+        state.runner.tick()
+        assert state.manager.is_playing
+
+
+def test_pending_play_request_locks_editor_scene_replacement(playing_author):
+    state = playing_author
+    assert state.manager.exit_play_mode()
+    state.runner.tick()
+    assert state.manager.enter_play_mode()
+    assert state.manager.is_edit_mode and state.runner.is_busy
+    assert not state.files.open_scene(str(state.path))
+    state.files.new_scene()
+    assert not state.files.is_loading
+    state.runner.tick()
+    assert state.manager.is_playing
+    assert state.manager.exit_play_mode()
+    state.runner.tick()
+    assert state.manager.is_edit_mode
+
+
+def test_pending_editor_scene_load_blocks_play_snapshot(playing_author):
+    state = playing_author
+    assert state.manager.exit_play_mode()
+    state.runner.tick()
+    assert state.files.open_scene(str(state.path))
+    assert state.files.is_loading
+    assert not state.manager.enter_play_mode()
+    assert state.manager.is_edit_mode and not state.runner.is_busy
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        state.files.poll_deferred_load()
+        if not state.files.is_loading:
+            break
+        time.sleep(0.005)
+    assert not state.files.is_loading
+    assert state.manager.enter_play_mode()
+    state.runner.tick()
+    assert state.manager.is_playing
+    assert state.manager.exit_play_mode()
+    state.runner.tick()
+    assert state.manager.is_edit_mode
