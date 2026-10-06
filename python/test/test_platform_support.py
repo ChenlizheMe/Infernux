@@ -185,6 +185,32 @@ def test_support_environment_uses_one_validated_manifest_revision(tmp_path, monk
     assert android_support_environment(environment) == {}
 
 
+def test_support_rejects_wrong_prerequisite_types_after_warmup(tmp_path):
+    from infernux.plugins import platform_support as support
+
+    root = tmp_path / "android"
+    root.mkdir()
+    _support_root(root)
+    environment = {"INFERNUX_ANDROID_SUPPORT_ROOT": str(root)}
+    assert android_support_available(environment)
+    layout = support._support_layout(root)
+    for path in layout.files:
+        contents = path.read_bytes()
+        path.unlink()
+        path.mkdir()
+        assert not android_support_available(environment)
+        path.rmdir()
+        path.write_bytes(contents)
+        assert android_support_available(environment)
+    for path in layout.directories:
+        path.rmdir()
+        path.write_bytes(b"not a directory")
+        assert not android_support_available(environment)
+        path.unlink()
+        path.mkdir()
+        assert android_support_available(environment)
+
+
 @pytest.mark.parametrize("document", [[], None, {"paths": []}, {"paths": {"python": []}}])
 def test_malformed_support_manifest_never_produces_an_environment(tmp_path, document):
     from infernux.plugins.platform_support import android_support_environment

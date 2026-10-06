@@ -213,6 +213,83 @@ def test_registry_results_do_not_share_mutable_catalog_nodes(tmp_path):
         assert registry.find("team/plugin")["source"]["tags"] == ["original"]
 
 
+@pytest.mark.parametrize("query", ["available", "find", "installed", "installed_metadata", "installed_record"])
+def test_all_registry_read_projections_detach_json_containers(tmp_path, query):
+    registry = PluginRegistry(str(tmp_path))
+    document = registry.load()
+    record = {
+        "reference": "team/plugin", "version": "1.0",
+        "source": {"type": "github", "nested": [{"values": [None, True, 7, 2.5, "中文"]}]},
+        "files": [{"guid": "11111111111111111111111111111111", "owned": True}],
+        "control": {"guid": "22222222222222222222222222222222", "owned": True},
+    }
+    document["packages"] = [record]
+    document["installed"] = [record]
+    registry.save(document)
+
+    def read():
+        method = getattr(registry, query)
+        return method("team/plugin") if query in {"find", "installed_record"} else method()[0]
+
+    with read_model_frame():
+        first = read()
+        assert first["source"]["nested"][0]["values"] == [None, True, 7, 2.5, "中文"]
+        first["source"]["nested"][0]["values"][1] = "caller mutation"
+        first["source"]["nested"].append({"values": []})
+        if "files" in first:
+            first["files"][0]["owned"] = False
+            first["control"]["guid"] = "caller"
+        assert read()["source"]["nested"] == record["source"]["nested"]
+        if query != "installed_metadata":
+            assert read()["files"] == record["files"]
+            assert read()["control"] == record["control"]
+        else:
+            assert "files" not in read() and "control" not in read()
+
+
+def test_download_lookup_does_not_copy_catalog_payload_and_observes_publication(tmp_path, monkeypatch):
+    monkeypatch.setenv("INFERNUX_PACKAGE_CACHE_ROOT", str(tmp_path / "cache"))
+    manager = PluginManager(str(tmp_path / "project"), runtime=True)
+    peer = PluginRegistry(str(tmp_path / "project"))
+    try:
+        value = peer.load()
+        value["packages"] = [{
+            "reference": "team/plugin", "version": "1.0",
+            "source": {"cache_location": "packages/team/plugin/1.0/package.inxpkg"},
+            "pages": [{"languages": ["en", "zh"], "path": "guide.md"}],
+        }]
+        peer.save(value)
+        archive = tmp_path / "cache/packages/team/plugin/1.0/package.inxpkg"
+        archive.parent.mkdir(parents=True)
+        archive.write_bytes(b"download")
+        assert Path(manager.cached_reference_path("team/plugin")) == archive
+
+        def unexpected_copy(*args, **kwargs):
+            pytest.fail("Download lookup copied the full catalog record")
+
+        # Ordinary APIs still return independent mutable copies. This internal
+        # query only needs two immutable strings, regardless of payload size.
+        monkeypatch.setattr(manager.registry, "find", unexpected_copy)
+        with read_model_frame():
+            assert Path(manager.cached_reference_path("team/plugin")) == archive
+            revised = peer.load()
+            revised["packages"][0]["source"]["cache_location"] = "packages/team/plugin/2.0/package.inxpkg"
+            revised["packages"][0]["version"] = "2.0"
+            peer.save(revised)
+            assert Path(manager.cached_reference_path("team/plugin")) == archive
+        # Peer publication is observed at the next normal panel submission.
+        with read_model_frame():
+            assert manager.cached_reference_path("team/plugin") == ""
+        next_archive = tmp_path / "cache/packages/team/plugin/2.0/package.inxpkg"
+        next_archive.parent.mkdir(parents=True)
+        next_archive.write_bytes(b"new download")
+        assert Path(manager.cached_reference_path("team/plugin")) == next_archive
+        next_archive.unlink()
+        assert manager.cached_reference_path("team/plugin") == ""
+    finally:
+        manager.shutdown()
+
+
 def test_registry_observes_local_environment_and_corruption(tmp_path):
     registry = PluginRegistry(str(tmp_path))
     registry.save(registry.load())

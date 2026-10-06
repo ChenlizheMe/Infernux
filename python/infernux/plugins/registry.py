@@ -28,6 +28,19 @@ _registry_locks = weakref.WeakValueDictionary()
 _registry_locks_guard = threading.Lock()
 
 
+def _copy_json(value):
+    """Detach a json.load tree without deepcopy's arbitrary-object protocol.
+
+    Only parsed read-model data reaches this path, so containers are dict/list
+    and leaves are immutable JSON scalars. Writer inputs still use deepcopy.
+    """
+    if type(value) is dict:
+        return {key: _copy_json(item) for key, item in value.items()}
+    if type(value) is list:
+        return [_copy_json(item) for item in value]
+    return value
+
+
 class _RegistrySnapshot(dict):
     def __init__(self, document, file_state):
         super().__init__(document)
@@ -193,18 +206,18 @@ class PluginRegistry:
 
     def available(self) -> tuple[dict[str, object], ...]:
         return tuple(
-            copy.deepcopy(item) for item in self._query_document()["packages"] if isinstance(item, dict)
+            _copy_json(item) for item in self._query_document()["packages"] if isinstance(item, dict)
         )
 
     def installed(self) -> tuple[dict[str, object], ...]:
         return tuple(
-            copy.deepcopy(item) for item in self._query_document()["installed"] if isinstance(item, dict)
+            _copy_json(item) for item in self._query_document()["installed"] if isinstance(item, dict)
         )
 
     def installed_metadata(self) -> tuple[dict[str, object], ...]:
         """Detached presentation records without the asset ownership ledger."""
         return tuple(
-            copy.deepcopy({key: value for key, value in item.items() if key not in {"files", "control"}})
+            {key: _copy_json(value) for key, value in item.items() if key not in {"files", "control"}}
             for item in self._query_document()["installed"] if isinstance(item, dict)
         )
 
@@ -222,21 +235,35 @@ class PluginRegistry:
                 for name, field in (("available", "packages"), ("installed", "installed"))}
 
     def find(self, reference: str) -> dict[str, object] | None:
+        record = self._query_package(reference)
+        return _copy_json(record) if record is not None else None
+
+    def _query_package(self, reference: str) -> dict[str, object] | None:
+        """Service-owned record; never expose mutable nodes to callers."""
         key = validate_reference(reference).casefold()
         return next(
             (
-                copy.deepcopy(item)
+                item
                 for item in self._query_document()["packages"]
                 if isinstance(item, dict) and str(item.get("reference", "")).casefold() == key
             ),
             None,
         )
 
+    def _download_coordinates(self, reference: str) -> tuple[str, str] | None:
+        """Immutable projection without copying unrelated catalog payloads."""
+        record = self._query_package(reference)
+        if record is None:
+            return None
+        source = record.get("source")
+        location = str(source.get("cache_location", "")) if isinstance(source, Mapping) else ""
+        return str(record.get("version", "")).strip(), location
+
     def installed_record(self, reference: str) -> dict[str, object] | None:
         key = validate_reference(reference).casefold()
         return next(
             (
-                copy.deepcopy(item)
+                _copy_json(item)
                 for item in self._query_document()["installed"]
                 if isinstance(item, dict) and str(item.get("reference", "")).casefold() == key
             ),

@@ -980,17 +980,13 @@ class PluginManager:
         )
 
     def cached_reference_path(self, reference: str) -> str:
-        record = self.registry.find(reference)
-        if record is None:
+        coordinates = self.registry._download_coordinates(reference)
+        if coordinates is None:
             return ""
         cache = self._package_cache()
-        source = record.get("source")
-        location = ""
-        if isinstance(source, Mapping):
-            location = str(source.get("cache_location", ""))
-            if location:
-                location = SharedPackageCache.validate_location(location)
-        version = str(record.get("version", "")).strip()
+        version, location = coordinates
+        if location:
+            location = SharedPackageCache.validate_location(location)
 
         def prepare(observed):
             candidates = []
