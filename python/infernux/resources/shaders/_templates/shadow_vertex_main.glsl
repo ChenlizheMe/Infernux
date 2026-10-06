@@ -92,9 +92,11 @@ ${VERTEX_CALL}
             v.tangent = vec4(normalize(skinNormalMat * v.tangent.xyz), v.tangent.w);
         }
         worldPos = instModel * vec4(v.position, 1.0);
-        mat3 normalMatrix = transpose(inverse(mat3(instModel)));
+        mat3 modelMatrix = mat3(instModel);
+        mat3 normalMatrix = transpose(inverse(modelMatrix));
         worldNormal = normalize(normalMatrix * v.normal);
-        worldTangent = vec4(normalize(normalMatrix * v.tangent.xyz), v.tangent.w);
+        worldTangent = vec4(normalize(modelMatrix * v.tangent.xyz),
+                            v.tangent.w * sign(determinant(modelMatrix)));
     }
 
     // The caster pass stays purely geometric: shadow acne is handled by the
