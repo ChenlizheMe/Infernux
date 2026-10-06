@@ -458,7 +458,7 @@ def test_source_reparent_between_existing_pivots_does_not_rename_the_old_pivot(m
     assert mesh in right["children"]
 
 
-def test_deleted_generated_pivot_hoists_authored_child(monkeypatch):
+def test_deleted_generated_pivot_preserves_authored_child_transform_chain(monkeypatch):
     authored_child = {
         "id": 9,
         "name": "Gameplay",
@@ -480,6 +480,8 @@ def test_deleted_generated_pivot_hoists_authored_child(monkeypatch):
 
     reconcile_scene_document_model_source_graphs(document, _Database([]))
 
-    assert authored_child in root["children"]
-    assert all(child is not old_pivot for child in root["children"])
+    assert old_pivot in root["children"]
+    assert authored_child in old_pivot["children"]
+    assert "model_source" not in old_pivot
+    assert old_pivot["transform"]["position"] == [7.0, 8.0, 9.0]
     assert any(child.get("name") == "CurrentPivot" for child in root["children"])

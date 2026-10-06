@@ -88,16 +88,6 @@ def _document_has_authored_content(node: dict[str, Any], source_guid: str) -> bo
     return False
 
 
-def _document_has_direct_authored_content(node: dict[str, Any]) -> bool:
-    """Whether the source host itself, rather than a descendant, is authored."""
-    for component in node.get("components") or ():
-        if not isinstance(component, dict):
-            return True
-        if _component_type(component) not in _MODEL_GEOMETRY_TYPE_IDS:
-            return True
-    return False
-
-
 def reconcile_scene_document_model_instances(
     document: Any, asset_database: Any
 ) -> int:
@@ -547,9 +537,9 @@ def _reconcile_document_instance_graph(
             + ", ".join("/".join(path) for path in sorted(duplicates))
         )
 
-    # Retire deleted source nodes before additions. Authored hosts survive but
-    # lose imported renderer/source ownership; generated hosts are removed and
-    # their children are hoisted for the following authoritative reparent pass.
+    # Retire deleted source nodes before additions. Authored hosts keep their
+    # ancestor transform chain and lose geometry/source ownership. Pure generated
+    # hosts are removed; surviving source children join the reparent pass below.
     stale = [
         node for path, node in current_by_path.items()
         if path and path not in source_graph
@@ -561,12 +551,12 @@ def _reconcile_document_instance_graph(
         if not isinstance(parent_children, list):
             parent_children = []
             parent["children"] = parent_children
-        authored = _document_has_direct_authored_content(node)
+        authored = _document_has_authored_content(node, guid)
         if authored:
             components = node.get("components") or []
             node["components"] = [
                 component for component in components
-                if _component_type(component) not in _MODEL_RENDERER_TYPE_IDS
+                if _component_type(component) not in _MODEL_GEOMETRY_TYPE_IDS
             ]
             node.pop("model_source", None)
             changed += 1
@@ -707,24 +697,37 @@ def _descendants(root: Any) -> tuple[Any, ...]:
     return tuple(result)
 
 
-def _source_node_has_authored_content(obj: Any, guid: str) -> bool:
-    """Return whether a removed source node carries author-owned state.
+def _plan_source_retirement(root: Any, stale: dict[int, Any]) -> tuple[list[Any], list[Any]]:
+    """Plan against the actual hierarchy before removing any component/object.
 
-    Model creation contributes only the renderer/collider pair (and the
-    optional skinned renderer).  Any other native or Python component, or an
-    explicitly authored child, means the GameObject is part of the scene
-    authoring rather than disposable imported geometry.
+    A surviving child owns its ancestor transform chain. This includes an
+    authored component/child and a still-current source node deliberately
+    parented there by the scene author. Only wholly disposable subtrees can
+    be destroyed; retained stale nodes each lose their imported geometry.
     """
     generated = {"Transform", "MeshRenderer", "SkinnedMeshRenderer", "MeshCollider"}
-    for component in tuple(obj.get_components() or ()):
-        if type(component).__name__ not in generated:
-            return True
-    if tuple(obj.get_py_components() or ()):
-        return True
-    for child in _descendants(obj):
-        if str(getattr(child, "_model_source_guid", "") or "") != guid:
-            return True
-    return False
+    retain: dict[int, bool] = {}
+    nodes = (root, *_descendants(root))
+    for obj in reversed(nodes):
+        object_id = int(obj.id)
+        retain[object_id] = (
+            object_id not in stale
+            or any(retain[int(child.id)] for child in obj.get_children())
+            or bool(obj.get_py_components())
+            or any(type(component).__name__ not in generated for component in obj.get_components())
+        )
+    retire, destroy = [], []
+    for obj in nodes:
+        object_id = int(obj.id)
+        if object_id not in stale:
+            continue
+        if retain[object_id]:
+            retire.append(obj)
+        else:
+            parent = obj.get_parent()
+            if parent is None or retain[int(parent.id)]:
+                destroy.append(obj)
+    return retire, destroy
 
 
 def _retire_source_geometry(obj: Any) -> None:
@@ -939,109 +942,48 @@ def _destroy_stale_geometry(
     source: dict[tuple[str, ...], dict],
     source_ids: dict[tuple[str, ...], str],
 ) -> bool:
-    paths = _object_path_map(root)
-    source_objects: dict[tuple[str, ...], Any] = {}
-    for candidate in (root, *_descendants(root)):
-        if str(getattr(candidate, "_model_source_guid", "") or "") != guid:
+    # Instances are selected by their persisted source GUID, never display
+    # paths. There is no name-based deletion route for unbound scene objects.
+    stale: dict[int, Any] = {}
+    current_ids = frozenset(source_ids.values())
+    for obj in _descendants(root):
+        if str(getattr(obj, "_model_source_guid", "") or "") != guid:
             continue
-        source_path = tuple(str(part) for part in (getattr(candidate, "_model_source_path", ()) or ()))
-        source_objects[source_path] = candidate
-    stale: dict[tuple[str, ...], Any] = {}
-    if source_objects:
-        current_ids = frozenset(source_ids.values())
-        for path, obj in tuple(source_objects.items()):
-            if not path:
-                continue
-            renderer = obj.get_component("MeshRenderer")
-            if renderer is None:
-                renderer = obj.get_component("SkinnedMeshRenderer")
-            identifier = str(getattr(renderer, "model_subresource_id", "") or "") if renderer else ""
-            # Identity owns model geometry.  A DCC node deleted and recreated
-            # with the same display path is a new object, not a continuation
-            # of the old scene instance.
-            if identifier and identifier not in current_ids:
-                stale[path] = obj
-                continue
-            if path not in source:
-                stale[path] = obj
-                continue
-            source_node = source[path]
-            has_renderer = obj.get_component("MeshRenderer") is not None or obj.get_component(
-                "SkinnedMeshRenderer"
-            ) is not None
-            if int(source_node.get("node_group", -1)) < 0 and has_renderer:
-                stale[path] = obj
-        if not stale:
-            return False
-        # Destroy only the highest stale source node. Its descendants belong
-        # to the same removed source subtree and are retired with it.
-        selected = []
-        stale_paths = set(stale)
-        for path, obj in sorted(stale.items(), key=lambda item: (len(item[0]), item[0])):
-            if any(path[:index] in stale_paths for index in range(1, len(path))):
-                continue
-            selected.append(obj)
-        if selected:
-            from infernux.debug import Debug
-
-            for obj in selected:
-                source_path = tuple(str(part) for part in (getattr(obj, "_model_source_path", ()) or ()))
-                if _source_node_has_authored_content(obj, guid):
-                    Debug.log_warning(
-                        "Model source node was removed; retaining author-owned instance "
-                        f"'{obj.name}' and retiring imported geometry at source path "
-                        f"'{('/'.join(source_path))}' (guid={guid})"
-                    )
-                    _retire_source_geometry(obj)
-                else:
-                    Debug.log_warning(
-                        "Model source node was removed from the imported asset; "
-                        f"retiring instance '{obj.name}' at source path "
-                        f"'{('/'.join(source_path))}' (guid={guid})"
-                    )
-        for obj in selected:
-            if obj is not root and not _source_node_has_authored_content(obj, guid):
-                scene.destroy_game_object(obj)
-        scene.process_pending_destroys()
-        return True
-    for path, obj in tuple(paths.items()):
+        path = tuple(str(part) for part in (obj._model_source_path or ()))
         if not path:
             continue
         renderer = obj.get_component("MeshRenderer")
         if renderer is None:
             renderer = obj.get_component("SkinnedMeshRenderer")
-        if renderer is None:
-            continue
-        if not str(renderer.mesh_asset_guid or ""):
-            continue
-        if str(renderer.mesh_asset_guid) != guid:
-            # This branch is only a defensive guard for user-authored children;
-            # the caller filters instances by source GUID.
-            continue
-        source_node = source.get(path)
-        if source_node is None or int(source_node.get("node_group", -1)) < 0:
-            stale[path] = obj
-            continue
-        # A removed source pivot must take its old geometry with it.  Destroy
-        # the first missing ancestor, not each descendant independently.
-        prefix: tuple[str, ...] = ()
-        for part in path:
-            prefix += (part,)
-            if prefix not in source:
-                stale[prefix] = paths.get(prefix, obj)
-                break
+        identifier = str(getattr(renderer, "model_subresource_id", "") or "") if renderer else ""
+        # Deletion/recreation at the same display path is a new identity.
+        if identifier and identifier not in current_ids:
+            stale[int(obj.id)] = obj
+        elif path not in source:
+            stale[int(obj.id)] = obj
+        elif int(source[path].get("node_group", -1)) < 0 and renderer is not None:
+            stale[int(obj.id)] = obj
     if not stale:
         return False
+
+    retire, destroy = _plan_source_retirement(root, stale)
     from infernux.debug import Debug
 
-    for path in sorted(stale):
+    for obj in retire:
+        source_path = '/'.join(obj._model_source_path)
+        Debug.log_warning(
+            "Model source node was removed; retaining author-owned instance "
+            f"'{obj.name}' and retiring imported geometry at source path "
+            f"'{source_path}' (guid={guid})"
+        )
+        _retire_source_geometry(obj)
+    for obj in destroy:
+        source_path = '/'.join(obj._model_source_path)
         Debug.log_warning(
             "Model source node was removed from the imported asset; "
-            f"retiring instance source path '{('/'.join(path))}' (guid={guid})"
+            f"retiring instance '{obj.name}' at source path '{source_path}' (guid={guid})"
         )
-    for obj in stale.values():
-        if obj is not root:
-            scene.destroy_game_object(obj)
+        scene.destroy_game_object(obj)
     scene.process_pending_destroys()
     return True
 
