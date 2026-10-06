@@ -1,6 +1,7 @@
 """List field rendering helpers for the Inspector component renderers."""
 
 from dataclasses import replace
+import json
 from infernux.components.component import InxComponent
 from infernux.lib import InxGUIContext
 from .inspector_utils import (
@@ -19,6 +20,11 @@ from ._inspector_references import (
     _picker_scene_components,
     render_asset_reference_field,
 )
+
+
+# ImGui payload type names are limited to 32 bytes. List identity belongs
+# in the payload data, where long and Unicode field names remain exact.
+_LIST_REORDER_TYPE = "INX_INSPECTOR_LIST_REORDER"
 
 
 def _make_list_default_element(metadata, element_type):
@@ -414,14 +420,15 @@ def _render_list_items_body(
     from dataclasses import replace
 
     changed = False
-    _list_drag_id = f"IGUI_LIST_{id(comp)}_{field_name}"
     move_from = None
     move_to = None
 
     def _make_reorder_cb(target_index):
         def _cb(payload):
             nonlocal move_from, move_to
-            src = int(payload)
+            owner, field, src = json.loads(payload)
+            if owner != id(comp) or field != field_name or not 0 <= src < len(items):
+                return
             if src != target_index and src != target_index - 1:
                 move_from = src
                 move_to = target_index
@@ -430,7 +437,7 @@ def _render_list_items_body(
     # ── List body background ──
     body_state = IGUI.list_body_begin(ctx, f"list_body_{field_name}")
 
-    IGUI.reorder_separator(ctx, f"##sep_{field_name}_before_0", _list_drag_id, _make_reorder_cb(0))
+    IGUI.reorder_separator(ctx, f"##sep_{field_name}_before_0", _LIST_REORDER_TYPE, _make_reorder_cb(0))
 
     remove_index = None
     element_meta = replace(metadata, field_type=element_type, default=_make_list_default_element(metadata, element_type))
@@ -441,7 +448,10 @@ def _render_list_items_body(
         ctx.same_line(0, button_spacing)
 
         if ctx.begin_drag_drop_source(0):
-            ctx.set_drag_drop_payload(_list_drag_id, index)
+            ctx.set_drag_drop_payload_str(
+                _LIST_REORDER_TYPE,
+                json.dumps((id(comp), field_name, index), separators=(",", ":")),
+            )
             ctx.label(f"[{index}]")
             ctx.end_drag_drop_source()
 
@@ -471,7 +481,7 @@ def _render_list_items_body(
         if remove_clicked:
             remove_index = index
         ctx.pop_id()
-        IGUI.reorder_separator(ctx, f"##sep_{field_name}_after_{index}", _list_drag_id, _make_reorder_cb(index + 1))
+        IGUI.reorder_separator(ctx, f"##sep_{field_name}_after_{index}", _LIST_REORDER_TYPE, _make_reorder_cb(index + 1))
 
     IGUI.list_body_end(ctx, body_state)
 
