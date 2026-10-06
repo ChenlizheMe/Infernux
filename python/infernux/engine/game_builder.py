@@ -1289,6 +1289,7 @@ def _crash_report(_exc):
     except Exception:
         pass
 
+_exit_code = 0
 try:
     _log(
         "boot phases: "
@@ -1308,13 +1309,16 @@ try:
     _log("boot: run_player returned")
 except Exception as _exc:
     _crash_report(_exc)
-    sys.exit(1)
+    _exit_code = 1
 finally:
     if _DEBUG_MODE:
         try:
             _debug_fh.close()
         except Exception:
             pass
+# The Player owns this process, including failed startup. Returning through
+# SystemExit would finalize CPython while native runtime objects remain live.
+os._exit(_exit_code)
 '''
         boot_dir = os.path.join(self.output_dir, self._BUILD_TEMP_DIR_NAME)
         os.makedirs(boot_dir, exist_ok=True)
