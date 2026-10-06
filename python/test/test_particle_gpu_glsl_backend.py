@@ -141,7 +141,7 @@ def test_gpu_nonfused_particle_recycling_has_one_stage_owner():
     # compacted the current alive list. The following Update owns recycling so
     # the same slot cannot be pushed twice by independent stages.
     assert "state.lifecycle_flags &= ~INX_PARTICLE_ALIVE" in emitter.contact_dispatch
-    assert "if (!particle_alive && (particle_was_alive || pc.use_alive_list != 0u))" in emitter.update
+    assert "if (!particle_alive && (particle_was_alive || particle_pending_recycle || pc.use_alive_list != 0u))" in emitter.update
     assert emitter.update.count("inx_push_free(particle_index)") == 1
     assert "inx_push_free(particle_index)" not in emitter.rendering
 
@@ -2924,8 +2924,9 @@ def test_gpu_init_reserves_one_free_list_block_per_workgroup_and_compiles():
     assert "if (!initialized_state_finite) atomicAdd(counters.dropped_count, 1u);" in main
     assert "bool inx_append_alive(uint slot, uint particle_index)" in init
     assert "atomicAdd(alive_control.alive_counts[min(slot, 1u)], 0xffffffffu)" in init
-    assert "particle_alive && !inx_append_alive" in main
-    assert "inx_push_free(particle_index);" in main
+    assert "pc.use_alive_list != 0u && !inx_append_alive" in main
+    assert "INX_PARTICLE_RECYCLE_PENDING" in main
+    assert "inx_push_free(particle_index);" not in main
 
     compiled = native._compile_compute_glsl_batch(
         {"init": init}, "particle-init-free-block-test"

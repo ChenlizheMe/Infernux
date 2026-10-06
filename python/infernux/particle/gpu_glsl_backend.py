@@ -5657,6 +5657,7 @@ shared uint inx_particle_alive_subgroup_counts[64];
 
 const uint INX_PARTICLE_ALIVE = 1u;
 const uint INX_PARTICLE_INIT_COMPLETE = 2u;
+const uint INX_PARTICLE_RECYCLE_PENDING = 4u;
 const uint INX_PARTICLE_CONTINUATION_LOCK = 0x80000000u;
 
 struct ParticleState {{
@@ -6868,14 +6869,17 @@ void main() {{
     particle_alive = particle_alive && initialized_state_finite;
     if (!initialized_state_finite) atomicAdd(counters.dropped_count, 1u);
     if (!inx_stage_suspended) state.lifecycle_flags |= INX_PARTICLE_INIT_COMPLETE;
-    state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
+    // Init only consumes free slots. Returning a rejected slot here could
+    // overwrite a different workgroup's reservation before it reads the slot.
+    // Update owns reclamation after this dispatch completes, including when
+    // rebuilding an alive list with a full-capacity scan after migration.
+    state.lifecycle_flags = particle_alive ? state.lifecycle_flags : INX_PARTICLE_RECYCLE_PENDING;
     states[particle_index] = state;
-    if (particle_alive && !inx_append_alive(pc.alive_read_slot, particle_index)) {{
-        state.lifecycle_flags = 0u;
+    if (pc.use_alive_list != 0u && !inx_append_alive(pc.alive_read_slot, particle_index)) {{
+        state.lifecycle_flags = INX_PARTICLE_RECYCLE_PENDING;
         states[particle_index] = state;
-        inx_push_free(particle_index);
         atomicAdd(counters.dropped_count, 1u);
-    }} else if (!particle_alive) inx_push_free(particle_index);
+    }}
 }}
 """
 
@@ -6940,11 +6944,13 @@ void main() {{
     ParticleState state;
     bool particle_alive = false;
     bool particle_was_alive = false;
+    bool particle_pending_recycle = false;
     bool inx_stage_suspended = false;
     if (inx_particle_active_candidate) {{
         state = states[particle_index];
         particle_alive = (state.lifecycle_flags & INX_PARTICLE_ALIVE) != 0u;
         particle_was_alive = particle_alive;
+        particle_pending_recycle = (state.lifecycle_flags & INX_PARTICLE_RECYCLE_PENDING) != 0u;
         bool run_update = particle_alive
             && (state.lifecycle_flags & INX_PARTICLE_INIT_COMPLETE) != 0u
             && simulation_control.simulation_allowed != 0u
@@ -6955,7 +6961,7 @@ void main() {{
         }}
         state.lifecycle_flags = particle_alive ? state.lifecycle_flags : 0u;
         states[particle_index] = state;
-        if (!particle_alive && (particle_was_alive || pc.use_alive_list != 0u))
+        if (!particle_alive && (particle_was_alive || particle_pending_recycle || pc.use_alive_list != 0u))
             inx_push_free(particle_index);
     }}
     inx_particle_active_candidate = inx_particle_active_candidate && particle_alive;
@@ -7301,10 +7307,12 @@ void main() {{
 {snapshot_declarations}
     bool particle_alive = false;
     bool particle_was_alive = false;
+    bool particle_pending_recycle = false;
     bool inx_stage_suspended = false;
     if (inx_particle_active_candidate) {{
         state = states[particle_index];
         particle_was_alive = (state.lifecycle_flags & INX_PARTICLE_ALIVE) != 0u;
+        particle_pending_recycle = (state.lifecycle_flags & INX_PARTICLE_RECYCLE_PENDING) != 0u;
         particle_alive = particle_was_alive;
         inx_particle_render_candidate =
             particle_was_alive
@@ -7326,7 +7334,7 @@ void main() {{
         if (!particle_alive) {{
             state.lifecycle_flags = 0u;
             states[particle_index] = state;
-            if (particle_was_alive || pc.use_alive_list != 0u)
+            if (particle_was_alive || particle_pending_recycle || pc.use_alive_list != 0u)
                 inx_push_free(particle_index);
         }}
     }}
