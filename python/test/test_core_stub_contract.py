@@ -28,6 +28,19 @@ def test_core_exports_are_declared_and_reexported():
     assert set(core.__all__) <= imports
 
 
+def test_renderstack_exports_are_declared_and_reexported():
+    import infernux.renderstack as renderstack
+
+    tree = stub_tree(renderstack)
+    exported = next(ast.literal_eval(node.value) for node in tree.body
+                    if isinstance(node, ast.Assign)
+                    and any(isinstance(t, ast.Name) and t.id == '__all__' for t in node.targets))
+    imports = {alias.asname for node in tree.body if isinstance(node, ast.ImportFrom)
+               for alias in node.names if alias.asname == alias.name}
+    assert set(exported) == set(renderstack.__all__)
+    assert set(renderstack.__all__) <= imports
+
+
 def test_all_specialized_asset_references_have_declarations():
     expected = {name for name, value in vars(asset_ref).items()
                 if isinstance(value, type) and issubclass(value, asset_ref.AssetRefBase)}

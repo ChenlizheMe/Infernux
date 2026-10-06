@@ -51,21 +51,22 @@ import infernux as inx
 
 print(sorted(inx.renderstack.discover_pipelines()))
 print(inx.renderstack.discovery_import_failures())
+print(inx.renderstack.discovery_name_conflicts())
 ```
 
 An import failure entry is keyed by source path and includes the exception type and message. An empty failure map plus a missing name usually means the file was skipped, the class inheritance was not recognized, or `name` is empty or begins with `_`.
 
-Duplicate pipeline names have a narrower current diagnostic boundary. Discovery stores `{pipeline.name: class}` and a later subclass silently replaces an earlier class under the same key. The Pipeline menu shows one entry and emits no collision diagnostic or candidate list. To identify the selected winner in the Console, run:
+Pipeline names must be unique, including built-in names. If two live declarations use the same name, discovery omits that ambiguous name instead of choosing a winner. The Inspector lists both source declarations. An already-saved ambiguous selection stays saved and reports an error; it does not select another pipeline. Inspect the same conflict map in the Console:
 
 ```python
-import inspect
 import infernux as inx
 
-pipeline_type = inx.renderstack.discover_pipelines()["Simple Forward"]
-print(pipeline_type.__module__, inspect.getsourcefile(pipeline_type))
+print(inx.renderstack.discovery_name_conflicts())
 ```
 
-Give every project pipeline a unique, stable `name`. After a rename, select the new name and save the scene again; the old saved selection and its parameter-store key are not migrated automatically.
+The map is `{name: tuple_of_source_declarations}`. Give each declaration a unique `name`, or remove the duplicate, then save and wait for asset refresh. Discovery admits the remaining unique declaration again. Importing one discovery-owned source through an alias does not create a second declaration, and retained classes from a previous project do not enter the current project's catalog. The same rule applies to RenderPass discovery; `discovery_name_conflicts("pass")` reports those conflicts.
+
+After renaming the selected pipeline, choose its new name and save the scene again; the old saved selection and its parameter-store key are not migrated automatically.
 
 ## A minimal pipeline {#minimal-pipeline}
 
@@ -283,21 +284,22 @@ import infernux as inx
 
 print(sorted(inx.renderstack.discover_pipelines()))
 print(inx.renderstack.discovery_import_failures())
+print(inx.renderstack.discovery_name_conflicts())
 ```
 
 导入失败表以源码路径为键，值中包含异常类型和消息。失败表为空且名称缺失时，应检查文件是否被跳过、类继承能否被识别，以及 `name` 是否为空或以下划线开头。
 
-同名管线的当前诊断范围更窄。发现结果保存为 `{pipeline.name: class}`，后遍历到的子类会静默覆盖同一个键中的早期子类。Pipeline 菜单只显示一项，也不会给出冲突诊断或候选列表。可在 Console 中确认当前胜出的类型与源码路径：
+管线名称必须唯一，也不能与内置管线重名。两个活动声明使用同一名称时，发现器会从可用目录中移除这个歧义名称，不选择任意一方。Inspector 会列出双方的源码声明。场景已经保存的歧义选择会保留并报错，不会改选其它管线。可在 Console 查看同一份冲突表：
 
 ```python
-import inspect
 import infernux as inx
 
-pipeline_type = inx.renderstack.discover_pipelines()["Simple Forward"]
-print(pipeline_type.__module__, inspect.getsourcefile(pipeline_type))
+print(inx.renderstack.discovery_name_conflicts())
 ```
 
-项目中的每条管线都应使用唯一且稳定的 `name`。改名后需要选择新名称并重新保存场景；旧选择与旧参数存储键不会自动迁移。
+冲突表的结构是 `{名称: 源码声明元组}`。为每个声明设置唯一的 `name`，或删除重复声明，然后保存并等待资产刷新；恢复唯一性的声明会重新进入目录。同一份由发现器管理的源码经别名导入不会产生第二个声明，旧项目保留的类也不会进入当前项目目录。RenderPass 的发现流程遵循相同规则，可通过 `discovery_name_conflicts("pass")` 查看其冲突。
+
+修改当前管线名称后，需要选择新名称并重新保存场景；旧选择与旧参数存储键不会自动迁移。
 
 ## 最小管线 {#minimal-pipeline_1}
 

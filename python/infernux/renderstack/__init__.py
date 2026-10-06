@@ -92,6 +92,7 @@ from infernux.renderstack.discovery import (
     discover_passes,
     discover_pipelines,
     discovery_import_failures,
+    discovery_name_conflicts,
 )
 
 __all__ = [
@@ -161,4 +162,5 @@ __all__ = [
     "discover_pipelines",
     "discover_passes",
     "discovery_import_failures",
+    "discovery_name_conflicts",
 ]

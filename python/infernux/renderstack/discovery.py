@@ -35,6 +35,10 @@ _effect_feature_scripts_loaded = False
 _pipeline_source_classification: dict[str, tuple[int, int, bool]] = {}
 _source_inheritance_cache: dict[str, tuple[int, int, "_SourceInheritance"]] = {}
 _script_import_failures: dict[str, str] = {}
+_catalog_name_conflicts: dict[str, dict[str, tuple[str, ...]]] = {
+    "pipeline": {},
+    "pass": {},
+}
 _catalog_class_names: set[str] = {
     "RenderPipeline",
     "RenderPass",
@@ -189,6 +193,8 @@ def invalidate_discovery_cache() -> None:
     _pipeline_cache = None
     _pass_cache = None
     _effect_feature_scripts_loaded = False
+    for conflicts in _catalog_name_conflicts.values():
+        conflicts.clear()
 
 
 def discovery_import_failures() -> dict[str, str]:
@@ -200,7 +206,27 @@ def discovery_import_failures() -> dict[str, str]:
     than silently substituting another rendering contract.
     """
 
-    return dict(_script_import_failures)
+    assets_root = get_assets_root()
+    return {
+        path: message for path, message in _script_import_failures.items()
+        if assets_root and is_path_within(path, assets_root)
+    }
+
+
+def discovery_name_conflicts(kind: str = "pipeline") -> dict[str, tuple[str, ...]]:
+    """Return ambiguous catalog names and their source declarations.
+
+    Conflicting declarations are omitted from the catalog. There is no
+    traversal-order winner; renaming or removing a declaration repairs the
+    name after discovery invalidation. ``kind`` is ``pipeline`` or ``pass``.
+    """
+    if kind == "pipeline":
+        discover_pipelines()
+    elif kind == "pass":
+        discover_passes()
+    else:
+        raise ValueError("catalog kind must be 'pipeline' or 'pass'")
+    return dict(_catalog_name_conflicts[kind])
 
 
 def script_may_affect_pipeline_catalog(file_path: str, event_type: str = "modified") -> bool:
@@ -261,7 +287,7 @@ def discover_pipelines() -> Dict[str, type]:
     _ensure_user_scripts_loaded(*roots)
 
     result: Dict[str, type] = {}
-    _collect_subclasses(RenderPipeline, result, name_attr="name")
+    _catalog_name_conflicts["pipeline"] = _collect_subclasses(RenderPipeline, result, name_attr="name")
     _pipeline_cache = result
     return dict(result)
 
@@ -289,7 +315,7 @@ def discover_passes() -> Dict[str, type]:
     _ensure_user_scripts_loaded(*roots)
 
     result: Dict[str, type] = {}
-    _collect_subclasses(RenderPass, result, name_attr="name")
+    _catalog_name_conflicts["pass"] = _collect_subclasses(RenderPass, result, name_attr="name")
     _pass_cache = result
     return dict(result)
 
@@ -421,14 +447,32 @@ def _collect_subclasses(
     base: type,
     out: Dict[str, type],
     name_attr: str,
-) -> None:
-    """Recursively collect concrete subclasses into *out*."""
-    for cls in base.__subclasses__():
+) -> dict[str, tuple[str, ...]]:
+    """Collect unique declarations, rejecting ambiguous names atomically."""
+    candidates: dict[str, list[type]] = {}
+    pending = list(base.__subclasses__())
+    visited: set[type] = set()
+    while pending:
+        cls = pending.pop()
+        if cls in visited:
+            continue
+        visited.add(cls)
+        pending.extend(cls.__subclasses__())
         name = getattr(cls, name_attr, "")
         if name and not name.startswith("_") and _is_live_class(cls):
-            out[name] = cls
-        # Recurse into deeper subclasses
-        _collect_subclasses(cls, out, name_attr)
+            candidates.setdefault(name, []).append(cls)
+    conflicts: dict[str, tuple[str, ...]] = {}
+    for name, classes in sorted(candidates.items()):
+        if len(classes) == 1:
+            out[name] = classes[0]
+        else:
+            declarations = []
+            for cls in classes:
+                module = sys.modules[cls.__module__]
+                source = getattr(module, "__file__", "") or cls.__module__
+                declarations.append(f"{source}:{cls.__qualname__}")
+            conflicts[name] = tuple(sorted(declarations))
+    return conflicts
 
 
 def _is_live_class(cls: type) -> bool:
@@ -440,11 +484,22 @@ def _is_live_class(cls: type) -> bool:
     mod = sys.modules.get(getattr(cls, "__module__", ""))
     if mod is None:
         return False
+    src = getattr(mod, "__file__", "")
+    source_key = path_key(src) if src else ""
+    published_module = _loaded_script_modules.get(source_key)
+    if published_module:
+        # Discovery owns one namespace for each project source. Alias imports
+        # are the same declaration, not competing providers. Retained classes
+        # from another project must not enter this project's catalog.
+        assets_root = get_assets_root()
+        if not assets_root or not is_path_within(source_key, assets_root):
+            return False
+        if cls.__module__ != published_module:
+            return False
     # In player/packaged builds there is no hot-reload, so every loaded
     # class is live by definition.
     if os.environ.get("_INFERNUX_PLAYER_MODE"):
         return True
-    src = getattr(mod, "__file__", "")
     if not src:
         return True
     if not os.path.exists(src):

@@ -217,6 +217,12 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
                         messages=lambda: (stack._topology_probe_error,) if stack._topology_probe_error else (),
                         warning=True,
                     ),
+                    InspectorMessages(
+                        key="pipeline_name_conflicts",
+                        title=t("renderstack.pipeline"),
+                        messages=lambda: _pipeline_name_conflict_messages(),
+                        warning=True,
+                    ),
                 ),
             ),
             InspectorSection(
@@ -230,6 +236,15 @@ def build_renderstack_inspector_model(stack: "RenderStack") -> InspectorModel:
     )
     stack._inspector_declarative_model = (cache_key, model)
     return model
+
+
+def _pipeline_name_conflict_messages():
+    from infernux.renderstack.discovery import discovery_name_conflicts
+
+    return tuple(
+        f"Ambiguous pipeline '{name}': {'; '.join(declarations)}"
+        for name, declarations in sorted(discovery_name_conflicts().items())
+    )
 
 
 def _render_effect_assets(ctx, references, widget_prefix: str) -> None:

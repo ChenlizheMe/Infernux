@@ -997,6 +997,15 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             DefaultForwardPipeline,
         )
 
+        from infernux.renderstack.discovery import discovery_name_conflicts
+
+        conflicts = discovery_name_conflicts().get(self.pipeline_class_name)
+        if conflicts:
+            raise RuntimeError(
+                f"RenderStack pipeline name is ambiguous: '{self.pipeline_class_name}'. "
+                f"Declarations: {'; '.join(conflicts)}. Give each provider a unique name."
+            )
+
         if self.pipeline_class_name == self.DEFAULT_PIPELINE_NAME:
             self._unregister_pipeline_reload()
             self._pipeline_source_file = inspect.getsourcefile(DefaultForwardPipeline)
