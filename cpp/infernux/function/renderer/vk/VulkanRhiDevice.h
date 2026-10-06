@@ -423,6 +423,8 @@ class VulkanRhiDevice final : public rhi::Device
                            const rhi::BufferCopyRegion &region);
     static bool FillBuffer(void *context, rhi::BufferHandle destination, uint64_t offset, uint64_t byteSize,
                            uint32_t value);
+    static bool UpdateBuffer(void *context, rhi::BufferHandle destination, uint64_t offset, const void *data,
+                             uint64_t byteSize);
     static void CopyTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,
                             const rhi::TextureCopyRegion &region);
     static void ResolveTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,

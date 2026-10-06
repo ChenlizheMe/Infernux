@@ -686,6 +686,7 @@ const rhi::TransferCommandEncoder::DispatchTable VulkanRhiDevice::s_transferDisp
     &VulkanRhiDevice::CopyTexture,
     &VulkanRhiDevice::ResolveTexture,
     &VulkanRhiDevice::FillBuffer,
+    &VulkanRhiDevice::UpdateBuffer,
 };
 
 VulkanRhiDevice::VulkanRhiDevice() : m_deviceId(rhi::AllocateDeviceId())
@@ -2098,6 +2099,19 @@ bool VulkanRhiDevice::FillBuffer(void *context, rhi::BufferHandle destination, u
         offset > buffer->byteSize || byteSize > buffer->byteSize - offset)
         return false;
     vkCmdFillBuffer(command.commandBuffer, buffer->buffer, offset, byteSize, value);
+    return true;
+}
+
+bool VulkanRhiDevice::UpdateBuffer(void *context, rhi::BufferHandle destination, uint64_t offset, const void *data,
+                                   uint64_t byteSize)
+{
+    auto &command = *static_cast<VulkanTransferCommandContext *>(context);
+    const auto *buffer = command.device ? command.device->Resolve(command.device->m_buffers, destination) : nullptr;
+    if (command.commandBuffer == VK_NULL_HANDLE || !buffer || buffer->buffer == VK_NULL_HANDLE ||
+        offset > buffer->byteSize || byteSize > buffer->byteSize - offset)
+        return false;
+    // Vulkan owns the copied payload until the recorded command retires.
+    vkCmdUpdateBuffer(command.commandBuffer, buffer->buffer, offset, byteSize, data);
     return true;
 }
 

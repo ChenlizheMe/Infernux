@@ -159,12 +159,17 @@ struct TextureResolveRegion
 class TransferCommandEncoder
 {
   public:
+    // Inline updates are for small, frequently changing control data. Bulk
+    // uploads use CopyBuffer with submission-owned staging storage.
+    static constexpr uint64_t MaxUpdateBufferBytes = 65536;
+
     struct DispatchTable
     {
         void (*copyBuffer)(void *, BufferHandle, BufferHandle, const BufferCopyRegion &) = nullptr;
         void (*copyTexture)(void *, TextureHandle, TextureHandle, const TextureCopyRegion &) = nullptr;
         void (*resolveTexture)(void *, TextureHandle, TextureHandle, const TextureResolveRegion &) = nullptr;
         bool (*fillBuffer)(void *, BufferHandle, uint64_t, uint64_t, uint32_t) = nullptr;
+        bool (*updateBuffer)(void *, BufferHandle, uint64_t, const void *, uint64_t) = nullptr;
     };
 
     constexpr TransferCommandEncoder() noexcept = default;
@@ -193,6 +198,21 @@ class TransferCommandEncoder
     {
         return IsValid() && m_dispatch->fillBuffer && destination.IsValid() && byteSize > 0 && offset % 4 == 0 &&
                byteSize % 4 == 0 && m_dispatch->fillBuffer(m_context, destination, offset, byteSize, value);
+    }
+
+    /// Capture host bytes into this recording's immutable upload payload. The
+    /// caller may change or release data immediately after successful recording.
+    /// The destination changes only when the transfer executes. Callers own
+    /// transfer-write barriers and completion dependencies. Requires
+    /// TransferDestination usage and nonempty, four-byte-aligned ranges of at
+    /// most MaxUpdateBufferBytes. This command must be outside a render pass.
+    [[nodiscard]] bool UpdateBuffer(BufferHandle destination, uint64_t offset, const void *data,
+                                    uint64_t byteSize) const
+    {
+        return IsValid() && m_dispatch->updateBuffer && destination.IsValid() && data && byteSize > 0 &&
+               byteSize <= MaxUpdateBufferBytes &&
+               offset % 4 == 0 && byteSize % 4 == 0 &&
+               m_dispatch->updateBuffer(m_context, destination, offset, data, byteSize);
     }
 
     void CopyTexture(TextureHandle source, TextureHandle destination, const TextureCopyRegion &region) const

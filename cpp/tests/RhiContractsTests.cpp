@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,10 @@ struct RecordedCommands
     uint64_t fillSize = 0;
     uint32_t fillValue = 0;
     uint32_t fillCount = 0;
+    BufferHandle updateDestination;
+    uint64_t updateOffset = 0;
+    std::vector<uint8_t> updateBytes;
+    uint32_t updateCount = 0;
     TextureHandle copySourceTexture;
     TextureHandle copyDestinationTexture;
     TextureCopyRegion textureCopy;
@@ -135,6 +140,17 @@ void ResolveTexture(void *context, TextureHandle source, TextureHandle destinati
     recorded.textureResolve = region;
 }
 
+bool RecordBufferUpdate(void *context, BufferHandle destination, uint64_t offset, const void *data, uint64_t size)
+{
+    auto &recorded = *static_cast<RecordedCommands *>(context);
+    recorded.updateDestination = destination;
+    recorded.updateOffset = offset;
+    recorded.updateBytes.resize(static_cast<size_t>(size));
+    std::memcpy(recorded.updateBytes.data(), data, static_cast<size_t>(size));
+    ++recorded.updateCount;
+    return true;
+}
+
 } // namespace
 
 int main()
@@ -215,7 +231,8 @@ int main()
     const BufferHandle copyDestinationBuffer{12, 1};
     const TextureHandle copySourceTexture{13, 1};
     const TextureHandle copyDestinationTexture{14, 1};
-    const TransferCommandEncoder::DispatchTable transferDispatch{CopyBuffer, CopyTexture, ResolveTexture, FillBuffer};
+    const TransferCommandEncoder::DispatchTable transferDispatch{
+        CopyBuffer, CopyTexture, ResolveTexture, FillBuffer, RecordBufferUpdate};
     const TransferCommandEncoder transferEncoder(&recorded, &transferDispatch);
     transferEncoder.CopyBuffer(copySourceBuffer, copyDestinationBuffer, {16, 32, 128});
     assert(transferEncoder.FillBuffer(copyDestinationBuffer, 16, 128, 0x12345678u));
@@ -230,6 +247,27 @@ int main()
     const TransferCommandEncoder::DispatchTable unsupportedFill{};
     assert(!TransferCommandEncoder(&recorded, &unsupportedFill).FillBuffer(copyDestinationBuffer, 0, 16));
     assert(recorded.fillCount == 1);
+    uint32_t updateData = 0x76543210;
+    assert(transferEncoder.UpdateBuffer(copyDestinationBuffer, 12, &updateData, sizeof(updateData)));
+    updateData = 0;
+    uint32_t recordedData;
+    std::memcpy(&recordedData, recorded.updateBytes.data(), sizeof(recordedData));
+    assert(recordedData == 0x76543210 && recorded.updateDestination == copyDestinationBuffer &&
+           recorded.updateOffset == 12);
+    assert(!transferEncoder.UpdateBuffer({}, 0, &updateData, 4));
+    assert(!transferEncoder.UpdateBuffer(copyDestinationBuffer, 1, &updateData, 4));
+    assert(!transferEncoder.UpdateBuffer(copyDestinationBuffer, 0, &updateData, 3));
+    assert(!transferEncoder.UpdateBuffer(copyDestinationBuffer, 0, &updateData, 0));
+    assert(!transferEncoder.UpdateBuffer(copyDestinationBuffer, 0, nullptr, 4));
+    std::vector<uint32_t> maximumUpdate(TransferCommandEncoder::MaxUpdateBufferBytes / 4 + 1, 0xAABBCCDD);
+    assert(!transferEncoder.UpdateBuffer(copyDestinationBuffer, 0, maximumUpdate.data(),
+                                         TransferCommandEncoder::MaxUpdateBufferBytes + 4));
+    assert(!TransferCommandEncoder{}.UpdateBuffer(copyDestinationBuffer, 0, &updateData, 4));
+    assert(!TransferCommandEncoder(&recorded, &unsupportedFill).UpdateBuffer(copyDestinationBuffer, 0, &updateData, 4));
+    assert(recorded.updateCount == 1);
+    assert(transferEncoder.UpdateBuffer(copyDestinationBuffer, 0, maximumUpdate.data(),
+                                        TransferCommandEncoder::MaxUpdateBufferBytes));
+    assert(recorded.updateCount == 2 && recorded.updateBytes.size() == TransferCommandEncoder::MaxUpdateBufferBytes);
     transferEncoder.CopyTexture(copySourceTexture, copyDestinationTexture,
                                 {TextureAspect::Depth, 1, 2, 3, 4, 64, 32, 1});
     transferEncoder.ResolveTexture(copySourceTexture, copyDestinationTexture,

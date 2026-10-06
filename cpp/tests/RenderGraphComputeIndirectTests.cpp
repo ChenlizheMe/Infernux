@@ -700,6 +700,7 @@ void main() {
 
 #include "ParticleCullConservationTests.h"
 #include "ParticleMeshMetadataTests.h"
+#include "RhiBufferUpdateTests.h"
 
 bool Run(const std::filesystem::path &computePath, const std::filesystem::path &vertexPath,
          const std::filesystem::path &fragmentPath, const std::filesystem::path &reflectionPath,
@@ -724,6 +725,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     if (!Require(resources.resources.Initialize(resources.context), "Vulkan resource manager initialization failed"))
         return false;
     if (!VerifyRhiBufferUpload(resources))
+        return false;
+    if (!VerifyRhiBufferUpdateSnapshots(resources))
         return false;
 
     const VkDevice device = resources.context.GetDevice();
