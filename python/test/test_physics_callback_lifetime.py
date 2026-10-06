@@ -28,8 +28,11 @@ def test_contact_dispatch_resolves_live_receivers(tmp_path, kind, phase, action)
     )
     assert result.returncode == 0, result.stdout + result.stderr
     if action == "remove_self_throw":
-        assert "ContactProbe.on_" + kind + "_" + phase in result.stdout + result.stderr
-        assert "CONTACT_SELF_REMOVE_EXPECTED" in result.stdout + result.stderr
+        # Headless native logging belongs to the project's engine log. The
+        # worker has exited, so its diagnostic file has already been flushed.
+        diagnostics = (tmp_path / "Logs" / "engine.log").read_text(encoding="utf-8")
+        assert "ContactProbe.on_" + kind + "_" + phase in diagnostics
+        assert diagnostics.count("CONTACT_SELF_REMOVE_EXPECTED") == 1
     evidence = json.loads((tmp_path / "contact-evidence.json").read_text(encoding="utf-8"))
     assert evidence["status"] == "passed"
 
