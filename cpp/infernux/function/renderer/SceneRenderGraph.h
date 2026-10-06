@@ -201,8 +201,9 @@ class SceneRenderGraph
      * order, resource connections).
      *
      * @param desc The graph topology description from Python
+     * @return Whether the description was accepted, including an unchanged replay.
      */
-    void ApplyPythonGraph(const RenderGraphDescription &desc);
+    bool ApplyPythonGraph(const RenderGraphDescription &desc);
 
     /// Validate a backend-neutral graph description before applying it.
     [[nodiscard]] static bool ValidateGraphDescription(const RenderGraphDescription &desc, uint32_t activeFrameSamples);

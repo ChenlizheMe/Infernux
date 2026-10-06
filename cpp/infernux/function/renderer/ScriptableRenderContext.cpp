@@ -177,11 +177,10 @@ void ScriptableRenderContext::ApplyGraph(const RenderGraphDescription &desc)
     using Clock = std::chrono::high_resolution_clock;
     const auto t0 = Clock::now();
 #endif
-    if (m_graph) {
-        m_graph->ApplyPythonGraph(desc);
-    } else {
-        INXLOG_WARN("ScriptableRenderContext::ApplyGraph: No SceneRenderGraph available");
-    }
+    if (!m_graph)
+        throw std::runtime_error("Render graph publication requires an available render context graph");
+    if (!m_graph->ApplyPythonGraph(desc))
+        throw std::runtime_error("Render graph '" + desc.name + "' publication rejected by native validation");
 #if INFERNUX_FRAME_PROFILE
     g_srcProfileSnapshot.applyGraphMs += std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
 #endif

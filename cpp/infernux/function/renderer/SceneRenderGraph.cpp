@@ -1869,11 +1869,11 @@ MaterialPassPipelineDescriptor SceneRenderGraph::ResolveMaterialPass(const Rende
     return result;
 }
 
-void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
+bool SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
 {
     if (!m_vkCore || !m_sceneTarget) {
         INXLOG_ERROR("SceneRenderGraph::ApplyPythonGraph: Not initialized");
-        return;
+        return false;
     }
 
     RenderGraphDescription normalizedDesc = desc;
@@ -1918,11 +1918,11 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
             m_pythonGraphSourceRevision = desc.sourceRevision;
             m_pythonGraphDesc.sourceRevision = desc.sourceRevision;
         }
-        return;
+        return true;
     }
 
     if (topologyChanged && !ValidatePythonGraphDescription(normalizedDesc, static_cast<uint32_t>(callbackSamples))) {
-        return;
+        return false;
     }
 
     if (topologyChanged) {
@@ -2108,6 +2108,7 @@ void SceneRenderGraph::ApplyPythonGraph(const RenderGraphDescription &desc)
     if (topologyChanged || callbackContractChanged) {
         m_needsRebuild = true;
     }
+    return true;
 }
 
 void SceneRenderGraph::UpdateParameterBlocks(const std::vector<GraphParameterBlockUpdate> &updates)
