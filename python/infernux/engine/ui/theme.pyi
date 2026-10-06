@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Iterable, Tuple, Any
+from infernux.lib._Infernux import ImGuiStyleVar as ImGuiStyleVar
 
 RGBA = Tuple[float, float, float, float]
 
@@ -133,51 +134,6 @@ class ImGuiMouseCursor:
     ResizeNESW: int
     ResizeNWSE: int
     Hand: int
-
-
-class ImGuiStyleVar:
-    """ImGui style variable indices matching the ``imgui.h`` ``ImGuiStyleVar_`` enum."""
-
-    Alpha: int
-    DisabledAlpha: int
-    WindowPadding: int
-    WindowRounding: int
-    WindowBorderSize: int
-    WindowMinSize: int
-    WindowTitleAlign: int
-    ChildRounding: int
-    ChildBorderSize: int
-    PopupRounding: int
-    PopupBorderSize: int
-    FramePadding: int
-    FrameRounding: int
-    FrameBorderSize: int
-    ItemSpacing: int
-    ItemInnerSpacing: int
-    IndentSpacing: int
-    CellPadding: int
-    ScrollbarSize: int
-    ScrollbarRounding: int
-    ScrollbarPadding: int
-    GrabMinSize: int
-    GrabRounding: int
-    ImageBorderSize: int
-    TabRounding: int
-    TabBorderSize: int
-    TabMinWidthBase: int
-    TabMinWidthShrink: int
-    TabBarBorderSize: int
-    TabBarOverlineSize: int
-    TableAngledHeadersAngle: int
-    TableAngledHeadersTextAlign: int
-    TreeLinesSize: int
-    TreeLinesRounding: int
-    ButtonTextAlign: int
-    SelectableTextAlign: int
-    SeparatorTextBorderSize: int
-    SeparatorTextAlign: int
-    SeparatorTextPadding: int
-    DockingSeparatorSize: int
 
 
 class Theme:

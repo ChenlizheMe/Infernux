@@ -24,6 +24,51 @@ from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional, Seque
 from enum import IntEnum
 
 
+class ImGuiStyleVar(IntEnum):
+    """Style indices from the ImGui compiled into this native module."""
+    Alpha = 0
+    DisabledAlpha = 1
+    WindowPadding = 2
+    WindowRounding = 3
+    WindowBorderSize = 4
+    WindowMinSize = 5
+    WindowTitleAlign = 6
+    ChildRounding = 7
+    ChildBorderSize = 8
+    PopupRounding = 9
+    PopupBorderSize = 10
+    FramePadding = 11
+    FrameRounding = 12
+    FrameBorderSize = 13
+    ItemSpacing = 14
+    ItemInnerSpacing = 15
+    IndentSpacing = 16
+    CellPadding = 17
+    ScrollbarSize = 18
+    ScrollbarRounding = 19
+    ScrollbarPadding = 20
+    GrabMinSize = 21
+    GrabRounding = 22
+    ImageRounding = 23
+    ImageBorderSize = 24
+    TabRounding = 25
+    TabBorderSize = 26
+    TabMinWidthBase = 27
+    TabMinWidthShrink = 28
+    TabBarBorderSize = 29
+    TabBarOverlineSize = 30
+    TableAngledHeadersAngle = 31
+    TableAngledHeadersTextAlign = 32
+    TreeLinesSize = 33
+    TreeLinesRounding = 34
+    ButtonTextAlign = 35
+    SelectableTextAlign = 36
+    SeparatorTextBorderSize = 37
+    SeparatorTextAlign = 38
+    SeparatorTextPadding = 39
+    DockingSeparatorSize = 40
+
+
 class InvalidNativeObjectError(RuntimeError):
     """An entity argument has no live native object; rejected before dereference."""
     ...

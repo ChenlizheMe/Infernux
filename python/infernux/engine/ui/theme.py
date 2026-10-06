@@ -22,6 +22,8 @@ Usage::
 from __future__ import annotations
 from typing import Iterable, Optional, Tuple
 
+from infernux.lib import ImGuiStyleVar
+
 # Color type alias (R, G, B, A) all float [0..1]
 RGBA = Tuple[float, float, float, float]
 
@@ -169,49 +171,6 @@ class ImGuiMouseCursor:
     ResizeNESW = 5
     ResizeNWSE = 6
     Hand       = 7
-
-
-class ImGuiStyleVar:
-    Alpha                       = 0
-    DisabledAlpha               = 1
-    WindowPadding               = 2
-    WindowRounding              = 3
-    WindowBorderSize            = 4
-    WindowMinSize               = 5
-    WindowTitleAlign            = 6
-    ChildRounding               = 7
-    ChildBorderSize             = 8
-    PopupRounding               = 9
-    PopupBorderSize             = 10
-    FramePadding                = 11
-    FrameRounding               = 12
-    FrameBorderSize             = 13
-    ItemSpacing                 = 14
-    ItemInnerSpacing            = 15
-    IndentSpacing               = 16
-    CellPadding                 = 17
-    ScrollbarSize               = 18
-    ScrollbarRounding           = 19
-    ScrollbarPadding            = 20
-    GrabMinSize                 = 21
-    GrabRounding                = 22
-    ImageBorderSize             = 23
-    TabRounding                 = 24
-    TabBorderSize               = 25
-    TabMinWidthBase             = 26
-    TabMinWidthShrink           = 27
-    TabBarBorderSize            = 28
-    TabBarOverlineSize          = 29
-    TableAngledHeadersAngle     = 30
-    TableAngledHeadersTextAlign = 31
-    TreeLinesSize               = 32
-    TreeLinesRounding           = 33
-    ButtonTextAlign             = 34
-    SelectableTextAlign         = 35
-    SeparatorTextBorderSize     = 36
-    SeparatorTextAlign          = 37
-    SeparatorTextPadding        = 38
-    DockingSeparatorSize        = 39
 
 
 # ╔══════════════════════════════════════════════════════════════════════════╗

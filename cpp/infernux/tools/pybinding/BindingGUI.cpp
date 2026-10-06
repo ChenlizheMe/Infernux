@@ -236,6 +236,58 @@ py::dict EncodePropertyChanges(const std::vector<PropertyChange> &changes)
 
 void RegisterGUIBindings(py::module_ &m)
 {
+    // Use the compiled ImGui constants as the sole numeric authority. Export
+    // ordinary Python integers through IntEnum so all existing style APIs work.
+    constexpr std::pair<const char *, int> styleVars[] = {
+        {"Alpha", ImGuiStyleVar_Alpha},
+        {"DisabledAlpha", ImGuiStyleVar_DisabledAlpha},
+        {"WindowPadding", ImGuiStyleVar_WindowPadding},
+        {"WindowRounding", ImGuiStyleVar_WindowRounding},
+        {"WindowBorderSize", ImGuiStyleVar_WindowBorderSize},
+        {"WindowMinSize", ImGuiStyleVar_WindowMinSize},
+        {"WindowTitleAlign", ImGuiStyleVar_WindowTitleAlign},
+        {"ChildRounding", ImGuiStyleVar_ChildRounding},
+        {"ChildBorderSize", ImGuiStyleVar_ChildBorderSize},
+        {"PopupRounding", ImGuiStyleVar_PopupRounding},
+        {"PopupBorderSize", ImGuiStyleVar_PopupBorderSize},
+        {"FramePadding", ImGuiStyleVar_FramePadding},
+        {"FrameRounding", ImGuiStyleVar_FrameRounding},
+        {"FrameBorderSize", ImGuiStyleVar_FrameBorderSize},
+        {"ItemSpacing", ImGuiStyleVar_ItemSpacing},
+        {"ItemInnerSpacing", ImGuiStyleVar_ItemInnerSpacing},
+        {"IndentSpacing", ImGuiStyleVar_IndentSpacing},
+        {"CellPadding", ImGuiStyleVar_CellPadding},
+        {"ScrollbarSize", ImGuiStyleVar_ScrollbarSize},
+        {"ScrollbarRounding", ImGuiStyleVar_ScrollbarRounding},
+        {"ScrollbarPadding", ImGuiStyleVar_ScrollbarPadding},
+        {"GrabMinSize", ImGuiStyleVar_GrabMinSize},
+        {"GrabRounding", ImGuiStyleVar_GrabRounding},
+        {"ImageRounding", ImGuiStyleVar_ImageRounding},
+        {"ImageBorderSize", ImGuiStyleVar_ImageBorderSize},
+        {"TabRounding", ImGuiStyleVar_TabRounding},
+        {"TabBorderSize", ImGuiStyleVar_TabBorderSize},
+        {"TabMinWidthBase", ImGuiStyleVar_TabMinWidthBase},
+        {"TabMinWidthShrink", ImGuiStyleVar_TabMinWidthShrink},
+        {"TabBarBorderSize", ImGuiStyleVar_TabBarBorderSize},
+        {"TabBarOverlineSize", ImGuiStyleVar_TabBarOverlineSize},
+        {"TableAngledHeadersAngle", ImGuiStyleVar_TableAngledHeadersAngle},
+        {"TableAngledHeadersTextAlign", ImGuiStyleVar_TableAngledHeadersTextAlign},
+        {"TreeLinesSize", ImGuiStyleVar_TreeLinesSize},
+        {"TreeLinesRounding", ImGuiStyleVar_TreeLinesRounding},
+        {"ButtonTextAlign", ImGuiStyleVar_ButtonTextAlign},
+        {"SelectableTextAlign", ImGuiStyleVar_SelectableTextAlign},
+        {"SeparatorTextBorderSize", ImGuiStyleVar_SeparatorTextBorderSize},
+        {"SeparatorTextAlign", ImGuiStyleVar_SeparatorTextAlign},
+        {"SeparatorTextPadding", ImGuiStyleVar_SeparatorTextPadding},
+        {"DockingSeparatorSize", ImGuiStyleVar_DockingSeparatorSize},
+    };
+    static_assert(std::size(styleVars) == ImGuiStyleVar_COUNT, "Expose new ImGui style variables to Python");
+    py::dict styleMembers;
+    for (const auto &[name, value] : styleVars)
+        styleMembers[py::str(name)] = value;
+    m.attr("ImGuiStyleVar") = py::module_::import("enum").attr("IntEnum")("ImGuiStyleVar", styleMembers,
+                                                                          py::arg("module") = m.attr("__name__"));
+
     m.def("set_gui_semantic_capture_enabled", &InxGUISemantics::SetCaptureEnabled, py::arg("enabled"),
           "Enable or disable the read-only editor UI semantic capture registry.");
     m.def(
