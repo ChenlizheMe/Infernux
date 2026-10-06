@@ -175,6 +175,8 @@ Keep the declaration in sync with `setup_passes()`. Declaring `modifies = {"colo
 
 `creates` is also declarative. The implementation must create the graph resource and call `bus.set("semantic_name", handle)`. A later effect can consume it in the same stage; a later stage receives it only when that pipeline stage includes the semantic in `inputs`. The current `ResourceBus.set()` replaces an existing handle with the same semantic name, so two successful effects that publish one name are resolved by Slot/Group order and the later publisher wins. There is no automatic duplicate-`creates` diagnostic. Use separate semantic names when both products must survive.
 
+For low-level pipeline authoring, carry published semantic handles in an explicit `PassResult`: publish the initial result with `graph.publish_pass_result()` and declare the stages inside `with graph.pass_result(result):`. A successful effect updates the current result; a later stage's `inputs` selects which of those handles its local bus receives. Adding a name to `inputs` does not create or publish that resource. See the RenderGraph chapter for result publication and derivation.
+
 Additive and color-replacement effects can share one route. Their policies merge into `ORDERED_COMPOSITE`: the complete chain executes in Slot/Group order, then the result is partitioned into geometry-bound color and overflow before returning to its parent. Bloom and Edge Detection can therefore remain at the same mount point; swapping their order changes which image each effect processes. `CUSTOM_FEATURE` is reserved for specialized composition and cannot mix with built-in policies; the built-in pipeline compiler does not implement a custom route composer.
 
 Failure recovery has three concrete boundaries:
@@ -410,6 +412,8 @@ Assets/
 声明必须和 `setup_passes()` 一致。写下 `modifies = {"color"}` 不会自动修改颜色，Feature 仍要把替换后的 Handle 发布回 Bus。
 
 `creates` 同样只负责声明。实现代码必须创建图资源，并调用 `bus.set("semantic_name", handle)`。同一 Stage 中的后续 Effect 可以消费它；后续 Stage 只有在管线把该语义列入 `inputs` 时才能收到它。当前 `ResourceBus.set()` 会替换同名语义的已有 Handle，所以两个成功 Effect 发布同一名称时，结果由 Slot/Group 顺序决定，后发布者生效。系统目前没有重复 `creates` 的自动诊断；需要同时保留两份产物时，请使用不同语义名称。
+
+编写底层管线时，用显式 `PassResult` 传递已发布的语义 Handle：先通过 `graph.publish_pass_result()` 发布初始结果，再在 `with graph.pass_result(result):` 内声明各个 Stage。成功的 Effect 会更新当前 Result；后续 Stage 的 `inputs` 决定它的局部 Bus 接收哪些 Handle。仅向 `inputs` 添加名称不会创建或发布该资源。Result 的发布与派生见 RenderGraph 章节。
 
 发光与颜色替换效果可以共用同一 Route，其 Policy 会合并为 `ORDERED_COMPOSITE`：完整效果链按 Slot/Group 顺序执行，再将结果分成物体覆盖区域内的颜色与区域外的效果像素，合回父级。Bloom 与 Edge Detection 可以保持在同一挂点；交换顺序会改变各自处理的输入图像。`CUSTOM_FEATURE` 预留给专用合成逻辑，不能与内置 Policy 混用；内置管线编译器目前没有实现自定义 Route 合成器。
 
