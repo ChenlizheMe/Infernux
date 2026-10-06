@@ -401,7 +401,9 @@ void RegisterGUIBindings(py::module_ &m)
         .def(
             "checkbox_inspector",
             [](InxGUIContext &ctx, const std::string &label, bool value) {
-                ctx.CheckboxInspector(label, &value);
+                // Checkbox uses the same compact Inspector drawing and also
+                // records the item for semantic queries and pointer automation.
+                ctx.Checkbox(label, &value);
                 return value;
             },
             py::arg("label"), py::arg("value"),
