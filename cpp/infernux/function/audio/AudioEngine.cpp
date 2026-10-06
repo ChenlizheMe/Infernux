@@ -44,6 +44,14 @@ size_t AudioBusSlot(const std::string &busName)
     return static_cast<size_t>(AudioBusIndex(busName) + 1);
 }
 
+bool IsEligibleListener(const AudioListener *listener)
+{
+    if (!listener || listener->IsDestroyed() || !listener->IsEnabled())
+        return false;
+    const auto *owner = listener->GetGameObject();
+    return owner && owner->IsActiveInHierarchy();
+}
+
 } // namespace
 
 struct AudioEngine::AudioVoiceState
@@ -386,12 +394,7 @@ AudioListener *AudioEngine::FindBestListenerLocked(AudioListener *exclude) const
     AudioListener *best = nullptr;
     uint64_t bestId = (std::numeric_limits<uint64_t>::max)();
     for (AudioListener *candidate : m_registeredListeners) {
-        if (!candidate || candidate == exclude || candidate->IsDestroyed() || !candidate->IsEnabled()) {
-            continue;
-        }
-
-        auto *gameObject = candidate->GetGameObject();
-        if (!gameObject || !gameObject->IsActiveInHierarchy()) {
+        if (candidate == exclude || !IsEligibleListener(candidate)) {
             continue;
         }
 
@@ -828,16 +831,14 @@ void AudioEngine::UnregisterSource(AudioSource *source)
 
 void AudioEngine::RegisterListener(AudioListener *listener)
 {
-    if (!listener) {
+    if (!IsEligibleListener(listener)) {
         return;
     }
 
     std::lock_guard<std::mutex> lock(m_listenersMutex);
     const bool inserted = m_registeredListeners.insert(listener).second;
 
-    if (!m_activeListener || m_activeListener == listener || m_activeListener->IsDestroyed() ||
-        !m_activeListener->IsEnabled() || !m_activeListener->GetGameObject() ||
-        !m_activeListener->GetGameObject()->IsActiveInHierarchy()) {
+    if (m_activeListener == listener || !IsEligibleListener(m_activeListener)) {
         m_activeListener = listener;
         return;
     }
@@ -888,6 +889,9 @@ void AudioEngine::SetActiveListener(AudioListener *listener)
         m_activeListener = FindBestListenerLocked();
         return;
     }
+
+    if (!IsEligibleListener(listener))
+        return;
 
     std::lock_guard<std::mutex> lock(m_listenersMutex);
     m_registeredListeners.insert(listener);

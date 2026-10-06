@@ -15,11 +15,6 @@ namespace infernux
 // Register AudioListener with ComponentFactory
 INFERNUX_REGISTER_VALIDATED_COMPONENT("AudioListener", AudioListener)
 
-void AudioListener::Awake()
-{
-    AudioEngine::Instance().RegisterListener(this);
-}
-
 void AudioListener::OnEnable()
 {
     AudioEngine::Instance().RegisterListener(this);
