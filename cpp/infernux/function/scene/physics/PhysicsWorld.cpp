@@ -1123,38 +1123,46 @@ size_t PhysicsWorld::DispatchContactEvents()
         return 0;
     const size_t eventCount = events.size();
 
-    std::vector<Component *> receiversA;
-    std::vector<Component *> receiversB;
+    // Resolve the complete batch before any user code can remove a collider,
+    // rebuild a compound shape or clear the listener's event storage. Subshape
+    // slots and serialized IDs alone do not identify a component lifetime.
+    struct PendingContact
+    {
+        ContactEvent event;
+        ObjectHandle colliderA;
+        ObjectHandle colliderB;
+    };
+    std::vector<PendingContact> pending;
+    pending.reserve(eventCount);
+    for (const auto &event : events) {
+        Collider *a = ResolveColliderForSubShape(event.bodyIdA, event.subShapeIdA);
+        Collider *b = ResolveColliderForSubShape(event.bodyIdB, event.subShapeIdB);
+        if (a && b)
+            pending.push_back({event, a->GetHandle(), b->GetHandle()});
+    }
+
+    std::vector<ObjectHandle> receiversA;
+    std::vector<ObjectHandle> receiversB;
     receiversA.reserve(8);
     receiversB.reserve(8);
 
-    std::unordered_map<GameObject *, uint8_t> callbackMasks;
-    callbackMasks.reserve(std::min(events.size() * 2u, m_bodyToCollider.size()));
-
-    auto callbackMask = [&](GameObject *go) {
-        const auto found = callbackMasks.find(go);
-        if (found != callbackMasks.end())
-            return found->second;
-
-        uint8_t mask = 0;
-        for (const auto &comp : go->GetAllComponents()) {
-            if (!comp || !comp->IsEnabled() || !comp->WantsPhysicsCallbacks())
-                continue;
-            if (comp->WantsCollisionEnterCallbacks())
-                mask |= CollisionEnterInterest;
-            if (comp->WantsCollisionStayCallbacks())
-                mask |= CollisionStayInterest;
-            if (comp->WantsCollisionExitCallbacks())
-                mask |= CollisionExitInterest;
-            if (comp->WantsTriggerEnterCallbacks())
-                mask |= TriggerEnterInterest;
-            if (comp->WantsTriggerStayCallbacks())
-                mask |= TriggerStayInterest;
-            if (comp->WantsTriggerExitCallbacks())
-                mask |= TriggerExitInterest;
-        }
-        callbackMasks.emplace(go, mask);
-        return mask;
+    auto resolveActiveComponent = [](const ObjectHandle &handle) -> Component * {
+        if (!handle.IsValid())
+            return nullptr;
+        Component *comp = Component::FindByComponentId(handle.id);
+        if (!comp || comp->GetHandle() != handle || !comp->IsEnabled() || comp->IsDestroyed() ||
+            comp->IsBeingDestroyed())
+            return nullptr;
+        GameObject *owner = comp->GetGameObject();
+        if (!owner || owner->IsDestroying() || !owner->IsActiveInHierarchy())
+            return nullptr;
+        return comp;
+    };
+    auto resolveCollider = [&](const ObjectHandle &handle, uint32_t bodyId) -> Collider * {
+        // Only handles captured from Collider instances enter this path. A
+        // matching generation cannot resolve to a replacement component type.
+        auto *collider = static_cast<Collider *>(resolveActiveComponent(handle));
+        return collider && collider->GetBodyId() == bodyId ? collider : nullptr;
     };
 
     auto wantsEvent = [](const Component &comp, ContactEventType type) {
@@ -1175,9 +1183,10 @@ size_t PhysicsWorld::DispatchContactEvents()
         return false;
     };
 
-    for (const auto &evt : events) {
-        Collider *colA = ResolveColliderForSubShape(evt.bodyIdA, evt.subShapeIdA);
-        Collider *colB = ResolveColliderForSubShape(evt.bodyIdB, evt.subShapeIdB);
+    for (const auto &contact : pending) {
+        const auto &evt = contact.event;
+        Collider *colA = resolveCollider(contact.colliderA, evt.bodyIdA);
+        Collider *colB = resolveCollider(contact.colliderB, evt.bodyIdB);
         if (!colA || !colB)
             continue;
 
@@ -1215,56 +1224,43 @@ size_t PhysicsWorld::DispatchContactEvents()
                 continue;
         }
 
-        const uint8_t requiredBit = ContactEventInterestBit(type);
-        const bool wantsA = (callbackMask(goA) & requiredBit) != 0;
-        const bool wantsB = (callbackMask(goB) & requiredBit) != 0;
-        if (!wantsA && !wantsB)
-            continue;
-
         receiversA.clear();
         receiversB.clear();
 
-        if (wantsA) {
-            for (const auto &comp : goA->GetAllComponents()) {
-                if (!comp || !comp->IsEnabled() || !wantsEvent(*comp, type))
-                    continue;
-                receiversA.push_back(comp.get());
-            }
+        for (const auto &comp : goA->GetAllComponents()) {
+            if (comp && comp->IsEnabled() && wantsEvent(*comp, type))
+                receiversA.push_back(comp->GetHandle());
         }
 
-        if (wantsB) {
-            for (const auto &comp : goB->GetAllComponents()) {
-                if (!comp || !comp->IsEnabled() || !wantsEvent(*comp, type))
-                    continue;
-                receiversB.push_back(comp.get());
-            }
+        for (const auto &comp : goB->GetAllComponents()) {
+            if (comp && comp->IsEnabled() && wantsEvent(*comp, type))
+                receiversB.push_back(comp->GetHandle());
         }
 
         if (receiversA.empty() && receiversB.empty())
             continue;
 
-        // Build CollisionInfo for each side
-        CollisionInfo infoForA;
-        infoForA.collider = colB;
-        infoForA.gameObject = goB;
-        infoForA.contactPoint = evt.contactPoint;
-        // Jolt's manifold normal points A -> B. Public CollisionInfo uses
-        // the surface normal from the other collider towards its receiver.
-        infoForA.contactNormal = -evt.contactNormal;
-        infoForA.relativeVelocity = evt.relativeVelocity;
+        // Snapshot both receiver lists before invoking either side. Newly added
+        // components do not inherit this contact's already queued delivery.
+        auto dispatchToReceivers = [&](const std::vector<ObjectHandle> &receivers, bool sideA) {
+            for (const auto &handle : receivers) {
+                Collider *a = resolveCollider(contact.colliderA, evt.bodyIdA);
+                Collider *b = resolveCollider(contact.colliderB, evt.bodyIdB);
+                if (!a || !b)
+                    break;
+                Component *comp = resolveActiveComponent(handle);
+                if (!comp || comp->GetGameObject() != (sideA ? a : b)->GetGameObject() || !wantsEvent(*comp, type))
+                    continue;
 
-        CollisionInfo infoForB;
-        infoForB.collider = colA;
-        infoForB.gameObject = goA;
-        infoForB.contactPoint = evt.contactPoint;
-        infoForB.contactNormal = evt.contactNormal;
-        infoForB.relativeVelocity = -evt.relativeVelocity;
-
-        // Dispatch to all components on both GameObjects
-        auto dispatchToReceivers = [&](const std::vector<Component *> &receivers, const CollisionInfo &info,
-                                       ContactEventType t) {
-            for (Component *comp : receivers) {
-                switch (t) {
+                CollisionInfo info;
+                info.collider = sideA ? b : a;
+                info.gameObject = info.collider->GetGameObject();
+                info.contactPoint = evt.contactPoint;
+                // Jolt's normal points A -> B; the public normal points from
+                // the other collider towards the receiving component.
+                info.contactNormal = sideA ? -evt.contactNormal : evt.contactNormal;
+                info.relativeVelocity = sideA ? evt.relativeVelocity : -evt.relativeVelocity;
+                switch (type) {
                 case ContactEventType::CollisionEnter:
                     comp->OnCollisionEnter(info);
                     break;
@@ -1287,11 +1283,8 @@ size_t PhysicsWorld::DispatchContactEvents()
             }
         };
 
-        dispatchToReceivers(receiversA, infoForA, type);
-        // Guard: a callback on side A may have destroyed body B's physics body (and vice-versa).
-        // Re-validate both sides before dispatching to B's receivers.
-        if (FindColliderByBodyId(evt.bodyIdA) && FindColliderByBodyId(evt.bodyIdB))
-            dispatchToReceivers(receiversB, infoForB, type);
+        dispatchToReceivers(receiversA, true);
+        dispatchToReceivers(receiversB, false);
     }
     return eventCount;
 }

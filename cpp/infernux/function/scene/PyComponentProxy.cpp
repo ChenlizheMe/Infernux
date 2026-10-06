@@ -80,7 +80,9 @@ void CallPythonLifecycleFloatArg(const py::object &pyComponent, const std::strin
     }
 }
 
-void CallPythonLifecycleOneArg(const py::object &pyComponent, const std::string &typeName, const char *entryPoint,
+// A contact callback may remove its own proxy, including before raising an
+// exception. Keep the Python receiver and diagnostic name alive through return.
+void CallPythonLifecycleOneArg(py::object pyComponent, std::string typeName, const char *entryPoint,
                                const char *displayName, py::object arg)
 {
     try {
