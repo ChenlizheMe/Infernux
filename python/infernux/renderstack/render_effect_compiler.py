@@ -9,7 +9,7 @@ import inspect
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 from infernux.core.asset_ref import RenderEffectRef
@@ -21,6 +21,9 @@ from infernux.renderstack.render_effect_asset import (
     parse_render_effect_document,
 )
 from infernux.renderstack.route_policy import RoutePolicy
+
+if TYPE_CHECKING:
+    from infernux.renderstack._effect_parameter_context import EffectParameterContext
 
 
 class RenderEffectCompileError(ValueError):
@@ -269,7 +272,9 @@ class RenderEffectArtifactRegistry:
         features = None
         if isinstance(document, RenderEffectAsset):
             _validate_declared_effect_dependencies(document)
-            get_render_effect_feature(document.feature_type).validate_parameters(document.parameters)
+            features = (cls._compile_feature_record(
+                RenderEffect(document, file_path=source_path, guid=guid)
+            ),)
         else:
             # A group's unchanged JSON does not establish that its referenced
             # effects are unchanged or still valid. Resolve and compile the
@@ -418,21 +423,16 @@ class RenderEffectArtifactRegistry:
         # obey the same publication contract as directly imported effects.
         _validate_declared_effect_dependencies(source.to_asset())
         feature = get_render_effect_feature(source.feature_type)
-        passes = _record_feature_passes(source, feature)
+        instance = feature.instantiate(source)
+        # Import has no pipeline/View/stage. Compile the portable declaration;
+        # setup_passes is compiled only by the actual mount's ResourceBus.
         return {
             "feature_type": feature.type_id,
             "route_policy": feature.route_policy.value,
-            "topology": list(feature.topology_signature(source)),
-            "passes": [
-                {
-                    "name": render_pass.name,
-                    "type": render_pass._pass_type,
-                    "action": render_pass._action,
-                    "shader": render_pass._shader_name,
-                    "parameter_layout": list(render_pass._push_constants),
-                }
-                for render_pass in passes
-            ],
+            "topology": [list(entry) for entry in feature.topology_signature(source)],
+            "requires": sorted(instance.requires),
+            "modifies": sorted(instance.modifies),
+            "creates": sorted(instance.creates),
         }
 
     @staticmethod
@@ -487,21 +487,17 @@ def _is_current_feature_records(features) -> bool:
             "feature_type",
             "route_policy",
             "topology",
-            "passes",
+            "requires",
+            "modifies",
+            "creates",
         }:
             return False
         if type(feature["route_policy"]) is not str:
             return False
-        if type(feature["topology"]) is not list or type(feature["passes"]) is not list:
+        if type(feature["topology"]) is not list:
             return False
-        for render_pass in feature["passes"]:
-            if type(render_pass) is not dict or set(render_pass) != {
-                "name",
-                "type",
-                "action",
-                "shader",
-                "parameter_layout",
-            }:
+        for key in ("requires", "modifies", "creates"):
+            if type(feature[key]) is not list or any(type(name) is not str for name in feature[key]):
                 return False
     return True
 
@@ -770,6 +766,8 @@ class CompiledEffectBinding:
     feature: RenderEffectFeature
     blocks: tuple[_ParameterBlockSpec, ...]
     topology_signature: tuple
+    parameter_context: EffectParameterContext
+    graph_structure: tuple
 
     def collect_updates(self):
         """Return ``(requires_rebuild, native_updates)`` for current values."""
@@ -777,7 +775,9 @@ class CompiledEffectBinding:
             return True, []
         if self.feature.topology_signature(self.source) != self.topology_signature:
             return True, []
-        passes = _record_feature_passes(self.source, self.feature)
+        passes, structure = self.parameter_context.record(self.source, self.feature, self.binding_id)
+        if structure != self.graph_structure:
+            return True, []
         updates = []
         from infernux.lib import GraphParameterBlockUpdate
 
@@ -833,6 +833,9 @@ def _compile_effect(
     first_buffer = len(graph._buffers)
     first_topology = len(graph._topology)
     bus_snapshot = bus.snapshot()
+    from infernux.renderstack._effect_parameter_context import EffectParameterContext, graph_structure
+
+    parameter_context = EffectParameterContext(graph, bus)
     try:
         with graph.name_scope(f"effects/{binding_id}"):
             instance.setup_passes(graph, bus)
@@ -844,6 +847,7 @@ def _compile_effect(
         bus._resources = bus_snapshot
         raise
     generated = graph._passes[first_pass:]
+    structure = graph_structure(graph)
     blocks = []
     for pass_index, render_pass in enumerate(generated):
         if not render_pass._push_constants:
@@ -864,29 +868,9 @@ def _compile_effect(
         feature=feature,
         blocks=tuple(blocks),
         topology_signature=feature.topology_signature(source),
+        parameter_context=parameter_context,
+        graph_structure=structure,
     )
-
-
-def _record_feature_passes(source: RenderEffect, feature: RenderEffectFeature):
-    from infernux.rendergraph.graph import Format, RenderGraph
-    from infernux.renderstack.resource_bus import ResourceBus
-
-    graph = RenderGraph("RenderEffectParameterProbe")
-    color = graph.create_texture("color", camera_target=True)
-    depth = graph.create_texture("depth", format=Format.D32_SFLOAT)
-    normal = graph.create_texture("normal", format=Format.RGBA16_SFLOAT, samples=1)
-    motion = graph.create_texture("motion", format=Format.RG16_SFLOAT, samples=1)
-    bus = ResourceBus(
-        {
-            "color": color,
-            "depth": depth,
-            "normal": normal,
-            "motion": motion,
-        },
-        graph=graph,
-    )
-    feature.instantiate(source).setup_passes(graph, bus)
-    return graph._passes
 
 
 def expand_render_effect_reference(

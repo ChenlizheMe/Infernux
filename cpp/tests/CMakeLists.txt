@@ -1462,6 +1462,15 @@ if(INFERNUX_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
         )
     endforeach()
+    add_test(NAME infernux.effect_stage_context_gpu
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/python/infernux/test/effect_stage_context_gpu_test.py
+    )
+    set_tests_properties(infernux.effect_stage_context_gpu PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+        LABELS "requires_vulkan_device" TIMEOUT 60 RUN_SERIAL TRUE
+        FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
+    )
     add_test(NAME infernux.renderstack_recovery_gpu
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/python/infernux/test/renderstack_recovery_gpu_test.py

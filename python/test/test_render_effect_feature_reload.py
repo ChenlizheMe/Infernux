@@ -157,7 +157,16 @@ def test_feature_reload_recompiles_unchanged_asset_with_new_passes(tmp_path, mon
 
     assert path.read_bytes() == source_bytes
     assert updated is not accepted
-    assert updated.features[0]["passes"][0]["name"].endswith("ReloadAfter")
+    assert updated.revision > accepted.revision
+    assert updated.features[0]["feature_type"] == "tests.post.reload"
+    # Passes require a real mount context; the portable artifact is a
+    # declaration, and the replaced implementation supplies the mounted graph.
+    effect = RenderEffect(RenderEffectAsset("tests.post.reload", parameters={"intensity": .35}))
+    stack = RenderStack()
+    stack.add_effect_slot("final", RenderEffectRef(effect=effect))
+    description = stack.build_graph()
+    assert any(p.name.endswith("ReloadAfter") for p in description.passes)
+    assert not any(p.name.endswith("ReloadBefore") for p in description.passes)
     assert compiler.RenderEffectArtifactRegistry.compile_and_publish(str(path), guid="reload-guid")[0] is updated
 
 

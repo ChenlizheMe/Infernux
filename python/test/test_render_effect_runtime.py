@@ -775,9 +775,11 @@ def test_render_effect_load_reuses_matching_persisted_artifact(tmp_path, monkeyp
     assert restored.artifact_path == published.artifact_path
 
 
+@pytest.mark.parametrize("obsolete", ["route_policy", "stage_passes"])
 def test_render_effect_rebuilds_artifact_missing_current_route_policy(
     tmp_path,
     monkeypatch,
+    obsolete,
 ):
     from infernux.engine import project_context
 
@@ -790,25 +792,20 @@ def test_render_effect_rebuilds_artifact_missing_current_route_policy(
         str(path), guid="bloom-guid"
     )
     payload = json.loads(Path(published.artifact_path).read_text(encoding="utf-8"))
-    payload["features"][0].pop("route_policy")
+    record = payload["features"][0]
+    if obsolete == "route_policy":
+        record.pop("route_policy")
+    else:
+        # The previous compiler persisted passes from an invented stage bus.
+        for key in ("requires", "modifies", "creates"):
+            record.pop(key)
+        record["passes"] = []
     Path(published.artifact_path).write_text(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     RenderEffectArtifactRegistry.clear()
 
-    original_compile = RenderEffectArtifactRegistry._compile_document
-    compile_calls = []
-
-    def track_compile(_cls, document, source_path, guid):
-        compile_calls.append(source_path)
-        return original_compile(document, source_path, guid)
-
-    monkeypatch.setattr(
-        RenderEffectArtifactRegistry,
-        "_compile_document",
-        classmethod(track_compile),
-    )
     rebuilt, _ = RenderEffectArtifactRegistry.compile_and_publish(
         str(path), guid="bloom-guid"
     )
@@ -816,8 +813,11 @@ def test_render_effect_rebuilds_artifact_missing_current_route_policy(
         Path(rebuilt.artifact_path).read_text(encoding="utf-8")
     )
 
-    assert compile_calls == [str(path)]
+    assert rebuilt_payload != payload
+    assert rebuilt.features[0] == rebuilt_payload["features"][0]
     assert rebuilt_payload["features"][0]["route_policy"] == "additive_extract"
+    assert "passes" not in rebuilt_payload["features"][0]
+    assert RenderEffectArtifactRegistry.compile_and_publish(str(path), guid="bloom-guid")[0] is rebuilt
 
 
 def test_asset_publish_updates_loaded_render_effect_in_place(tmp_path, monkeypatch):
