@@ -36,6 +36,7 @@ from typing import Callable, List, Optional
 
 from infernux.debug import Debug
 from infernux.engine.build_cancellation import BuildCancelled
+from infernux.engine.filesystem import remove_directory_tree
 from infernux.engine.i18n import t
 from infernux.engine.path_utils import path_key, relative_path, resolved_path
 from infernux.engine.player_package_native import extract_pack, read_manifest, write_pack
@@ -2106,15 +2107,7 @@ print(json.dumps({{
         Using a short ASCII-only staging directory avoids temporary-path
         edge cases and keeps compiler output paths stable on Windows.
         """
-        if os.path.isdir(self._staging_dir):
-            if sys.platform == "win32":
-                subprocess.run(
-                    ["cmd", "/c", "rd", "/s", "/q", self._staging_dir],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            else:
-                shutil.rmtree(self._staging_dir, ignore_errors=True)
+        remove_directory_tree(self._staging_dir)
         os.makedirs(self._staging_dir, exist_ok=True)
 
         # Nuitka module mode requires the source module name and output module
@@ -3321,14 +3314,7 @@ print(json.dumps({{
             _pkg_t0 = _time.perf_counter()
             dst = dist_root / pkg
             if dst.exists():
-                if sys.platform == "win32":
-                    subprocess.run(
-                        ["cmd", "/c", "rd", "/s", "/q", str(dst)],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                else:
-                    shutil.rmtree(dst)
+                remove_directory_tree(dst)
 
             # Use robocopy on Windows for significantly faster bulk copy.
             # /XD skips directories that are never needed at runtime,
@@ -3379,14 +3365,7 @@ print(json.dumps({{
             if os.path.isdir(libs_src):
                 libs_dst = dist_root / libs_name
                 if libs_dst.exists():
-                    if sys.platform == "win32":
-                        subprocess.run(
-                            ["cmd", "/c", "rd", "/s", "/q", str(libs_dst)],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
-                    else:
-                        shutil.rmtree(libs_dst)
+                    remove_directory_tree(libs_dst)
                 if sys.platform == "win32":
                     rc = subprocess.call(
                         ["robocopy", libs_src, str(libs_dst), "/E",
@@ -3577,10 +3556,9 @@ print(json.dumps({{
     def _cleanup_build_artifacts(self):
         """Remove Nuitka's intermediate .build directory from staging.
 
-        Deletion runs in a background daemon thread so the caller doesn't
-        block.  On Windows we use ``rd /s /q`` which is dramatically faster
-        than Python's shutil.rmtree (native NTFS batch-delete vs per-file
-        unlink syscalls).
+        Finish on the build worker before staging can be reused by a later
+        build. Locked files fail visibly instead of leaving a cleanup daemon
+        racing with the next owner of the same path.
         """
         dirs_to_remove: list[str] = []
         build_dir = os.path.join(self._staging_dir, "boot.build")
@@ -3594,21 +3572,8 @@ print(json.dumps({{
         if os.path.isfile(staged_script):
             os.remove(staged_script)
 
-        if dirs_to_remove:
-            def _bg_remove(paths: list[str]):
-                for p in paths:
-                    if sys.platform == "win32":
-                        # rd /s /q is 5-10x faster than shutil.rmtree on NTFS
-                        subprocess.run(
-                            ["cmd", "/c", "rd", "/s", "/q", p],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                        )
-                    else:
-                        shutil.rmtree(p, ignore_errors=True)
-
-            t = threading.Thread(target=_bg_remove, args=(dirs_to_remove,), daemon=True)
-            t.start()
+        for path in dirs_to_remove:
+            remove_directory_tree(path)
 
     # ------------------------------------------------------------------
     # Icon conversion

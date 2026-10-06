@@ -381,7 +381,10 @@ def test_new_project_uses_structural_staging_but_creates_runtime_at_final_path(t
     scene = json.loads(
         (Path(result) / "Assets" / "Scenes" / "SampleScene.scene").read_text(encoding="utf-8")
     )
-    assert scene["mainCameraComponentId"] == 2
+    assert scene["identity_format"] == "guid-v1"
+    camera_id = scene["objects"][0]["components"][0]["component_id"]
+    assert len(camera_id) == 32 and set(camera_id) <= set("0123456789abcdef")
+    assert scene["mainCameraComponentId"] == camera_id
     assert [item["name"] for item in scene["objects"]] == [
         "Main Camera",
         "Directional Light",

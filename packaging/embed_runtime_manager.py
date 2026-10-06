@@ -19,6 +19,7 @@ from hub_utils import (
     is_frozen,
     merge_child_env_utf8,
 )
+from hub_utils import remove_directory_tree as _remove_tree
 from private_python_runtime import (
     extract_runtime_archive,
     has_runtime_build_support as _has_build_support,
@@ -161,22 +162,6 @@ def _fast_copy_threads() -> int:
         return max(1, min(128, int(raw_value)))
     except ValueError:
         return 16
-
-
-def _remove_tree(path: str) -> None:
-    if not path or not os.path.exists(path):
-        return
-    if sys.platform == "win32":
-        completed = subprocess.run(
-            ["cmd", "/c", "rd", "/s", "/q", path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=_NO_WINDOW,
-            env=merge_child_env_utf8(),
-        )
-        if completed.returncode == 0 and not os.path.exists(path):
-            return
-    shutil.rmtree(path, ignore_errors=True)
 
 
 def _runtime_artifact_ignore(_directory: str, names: list[str]) -> set[str]:

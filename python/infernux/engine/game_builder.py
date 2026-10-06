@@ -65,7 +65,7 @@ from infernux.engine.path_utils import (
     same_path,
 )
 from infernux.engine.build_settings import load_build_settings_for_build
-from infernux.engine.filesystem import replace_path
+from infernux.engine.filesystem import remove_directory_tree, replace_path
 from infernux.engine.runtime_artifact_catalog import (
     RUNTIME_JSON_DOCUMENT_SUFFIXES,
     RuntimeArtifactError,
@@ -3533,25 +3533,8 @@ os._exit(_exit_code)
 
     @staticmethod
     def _remove_directory_tree(path: str) -> None:
-        """Delete one staged directory without a Python-side unlink loop.
-
-        Player content finalize used to ``os.remove`` every packed file. That
-        keeps the GIL almost continuously, so the editor tick cannot run even
-        though the worker is a background thread. Windows ``rd /s /q`` (and
-        ``shutil.rmtree`` elsewhere) release the GIL for the whole tree.
-        """
-
-        if not os.path.isdir(path):
-            return
-        if sys.platform == "win32":
-            subprocess.run(
-                ["cmd", "/c", "rd", "/s", "/q", path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=True,
-            )
-        else:
-            shutil.rmtree(path)
+        """Delete a staged directory on the build worker using literal paths."""
+        remove_directory_tree(path)
 
     @staticmethod
     def _park_player_paths(paths: list[str], park_root: str) -> list[tuple[str, str]]:

@@ -9,6 +9,7 @@ import runpy
 import sysconfig
 
 from hub_utils import is_frozen, merge_child_env_utf8
+from hub_utils import remove_directory_tree as _remove_tree
 from project_paths import inspect_existing_project, new_project_target
 from project_python_runtime import (
     project_runtime_directory,
@@ -196,22 +197,6 @@ def _distribution_files_present(site_packages: str, distribution_name: str) -> b
         if lower_name.startswith(dist_info_prefix) and lower_name.endswith(".dist-info"):
             return True
     return False
-
-
-def _remove_tree(path: str) -> None:
-    if not path or not os.path.exists(path):
-        return
-    if sys.platform == "win32":
-        completed = subprocess.run(
-            ["cmd", "/c", "rd", "/s", "/q", path],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=_NO_WINDOW,
-            env=merge_child_env_utf8(),
-        )
-        if completed.returncode == 0 and not os.path.exists(path):
-            return
-    shutil.rmtree(path, ignore_errors=True)
 
 
 def _safe_wheel_member_path(name: str) -> str:

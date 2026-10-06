@@ -2,8 +2,30 @@
 
 import json
 import os
+import shutil
 import sys
 from enum import Enum
+
+
+def remove_directory_tree(path: str | os.PathLike[str]) -> None:
+    """Remove one explicitly owned directory through literal filesystem paths.
+
+    The Hub ships without the engine package, so it owns this stdlib boundary.
+    Linked roots are rejected; shutil does not follow links inside the tree.
+    Missing targets are already clean. Other failures must reach the caller.
+    """
+    if not path:
+        raise ValueError("Directory cleanup requires an explicit path")
+    target = os.path.abspath(path)
+    if target == os.path.dirname(target):
+        raise ValueError("Directory cleanup cannot remove a filesystem root")
+    try:
+        os.lstat(target)
+    except FileNotFoundError:
+        return
+    if os.path.islink(target) or os.path.isjunction(target):
+        raise ValueError(f"Directory cleanup cannot remove a linked root: {target}")
+    shutil.rmtree(target)
 
 
 class HubLaunchContext(Enum):
