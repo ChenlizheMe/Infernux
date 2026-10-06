@@ -33,9 +33,10 @@ def _validate_game_object_document(
         "local_id", "name", "active", "is_static", "tag", "layer",
         "transform", "components", "children",
     }
-    if not required.issubset(document) or set(document) - required - {"nested_prefab"}:
+    optional = {"nested_prefab", "model_source"}
+    if not required.issubset(document) or set(document) - required - optional:
         missing = sorted(required - set(document))
-        unknown = sorted(set(document) - required - {"nested_prefab"})
+        unknown = sorted(set(document) - required - optional)
         raise PrefabDocumentError(
             f"{location} fields do not match the current schema; missing={missing}, unknown={unknown}"
         )
@@ -54,6 +55,15 @@ def _validate_game_object_document(
     for field in ("components", "children"):
         if not isinstance(document[field], list):
             raise PrefabDocumentError(f"{location}.{field} must be an array")
+    if "model_source" in document:
+        source = document["model_source"]
+        if (
+            not isinstance(source, dict) or set(source) != {"guid", "path"}
+            or not isinstance(source["guid"], str) or not source["guid"]
+            or not isinstance(source["path"], list)
+            or any(not isinstance(part, str) or not part for part in source["path"])
+        ):
+            raise PrefabDocumentError(f"{location}.model_source requires a non-empty GUID and source path array")
     for index, child in enumerate(document["children"]):
         _validate_game_object_document(child, f"{location}.children[{index}]", local_ids)
     if "nested_prefab" in document:
