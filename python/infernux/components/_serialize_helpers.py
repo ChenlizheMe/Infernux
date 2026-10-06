@@ -163,9 +163,4 @@ def make_null_ref(field_type, field_meta=None) -> Any:
         from .ref_wrappers import ComponentRef
         comp_type = getattr(field_meta, "component_type", "") or ""
         return ComponentRef(component_type=comp_type)
-    if field_type == FieldType.SERIALIZABLE_OBJECT:
-        so_cls = getattr(field_meta, "serializable_class", None)
-        if so_cls is not None:
-            return so_cls()
-        return None
     return None
