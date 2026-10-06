@@ -1,4 +1,5 @@
 #include "VulkanRhiDevice.h"
+#include "VulkanCommandUploads.h"
 
 #include "DescriptorBindTrace.h"
 #include "RhiVulkanTypes.h"
@@ -2110,9 +2111,13 @@ bool VulkanRhiDevice::UpdateBuffer(void *context, rhi::BufferHandle destination,
     if (command.commandBuffer == VK_NULL_HANDLE || !buffer || buffer->buffer == VK_NULL_HANDLE ||
         offset > buffer->byteSize || byteSize > buffer->byteSize - offset)
         return false;
-    // Vulkan owns the copied payload until the recorded command retires.
-    vkCmdUpdateBuffer(command.commandBuffer, buffer->buffer, offset, byteSize, data);
-    return true;
+    if (byteSize <= 65536) {
+        // Small control blocks stay directly in the command recording.
+        vkCmdUpdateBuffer(command.commandBuffer, buffer->buffer, offset, byteSize, data);
+        return true;
+    }
+    auto *uploads = VulkanCommandUploads::Current(command.device->m_allocator, command.commandBuffer);
+    return uploads && uploads->Update(command.commandBuffer, buffer->buffer, offset, data, byteSize);
 }
 
 void VulkanRhiDevice::CopyTexture(void *context, rhi::TextureHandle source, rhi::TextureHandle destination,

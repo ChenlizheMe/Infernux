@@ -13,6 +13,7 @@
 #undef NDEBUG
 #endif
 #include <array>
+#include <algorithm>
 #include <cassert>
 #include <limits>
 #include <stdexcept>
@@ -20,6 +21,8 @@
 #include <vector>
 
 using namespace infernux;
+
+#include "VulkanCommandUploadsTests.h"
 
 int main()
 {
@@ -548,6 +551,7 @@ int main()
         assert(timestamps.LatestFrame().serial == 2);
     }
     timestamps.Destroy();
+    VerifyExecutorCommandUploads(context, queues, executor);
     vkDestroyFence(context.GetDevice(), completionFence, nullptr);
     executor.Destroy();
     queues.Destroy();

@@ -159,10 +159,6 @@ struct TextureResolveRegion
 class TransferCommandEncoder
 {
   public:
-    // Inline updates are for small, frequently changing control data. Bulk
-    // uploads use CopyBuffer with submission-owned staging storage.
-    static constexpr uint64_t MaxUpdateBufferBytes = 65536;
-
     struct DispatchTable
     {
         void (*copyBuffer)(void *, BufferHandle, BufferHandle, const BufferCopyRegion &) = nullptr;
@@ -204,13 +200,13 @@ class TransferCommandEncoder
     /// caller may change or release data immediately after successful recording.
     /// The destination changes only when the transfer executes. Callers own
     /// transfer-write barriers and completion dependencies. Requires
-    /// TransferDestination usage and nonempty, four-byte-aligned ranges of at
-    /// most MaxUpdateBufferBytes. This command must be outside a render pass.
+    /// TransferDestination usage and nonempty, four-byte-aligned ranges. Large
+    /// updates require submission-owned staging storage in the native recording
+    /// scope. This command must be outside a render pass.
     [[nodiscard]] bool UpdateBuffer(BufferHandle destination, uint64_t offset, const void *data,
                                     uint64_t byteSize) const
     {
         return IsValid() && m_dispatch->updateBuffer && destination.IsValid() && data && byteSize > 0 &&
-               byteSize <= MaxUpdateBufferBytes &&
                offset % 4 == 0 && byteSize % 4 == 0 &&
                m_dispatch->updateBuffer(m_context, destination, offset, data, byteSize);
     }

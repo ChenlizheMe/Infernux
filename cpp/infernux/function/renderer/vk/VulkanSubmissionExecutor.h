@@ -1,10 +1,13 @@
 #pragma once
 
+#include "VulkanCommandUploads.h"
+
 #include <function/renderer/rhi/RenderSubmissionPlan.h>
 
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 #include <vulkan/vulkan.h>
@@ -85,6 +88,7 @@ class VulkanSubmissionExecutor
     {
         VkCommandPool pool = VK_NULL_HANDLE;
         std::vector<VkCommandBuffer> buffers;
+        std::unique_ptr<VulkanCommandUploads> uploads;
         uint32_t cursor = 0;
     };
 
