@@ -22,6 +22,7 @@ class RenderStackFieldCommand(SetPropertyCommand):
         super().__init__(target, field_name, old_value, new_value,
                          description or f"Set {field_name}")
         self._stack = stack
+        self._stack_component_id = int(getattr(stack, "component_id", 0) or 0)
         self._stack_game_object_id = _game_object_id_of(stack)
         self._stack_type_name = _comp_type_name_of(stack)
         self._pipeline_class_name = str(stack.pipeline_class_name)
@@ -31,6 +32,7 @@ class RenderStackFieldCommand(SetPropertyCommand):
             self._stack,
             self._stack_game_object_id,
             self._stack_type_name,
+            self._stack_component_id,
         )
 
     def _commit_projection(self, value) -> None:
@@ -55,6 +57,14 @@ class RenderStackFieldCommand(SetPropertyCommand):
     def redo(self) -> None:
         self._commit_projection(self._new_value)
 
+    def can_merge(self, other: UndoCommand) -> bool:
+        return (
+            super().can_merge(other)
+            and self._stack_game_object_id == other._stack_game_object_id
+            and self._stack_component_id == other._stack_component_id
+            and self._pipeline_class_name == other._pipeline_class_name
+        )
+
 
 class RenderStackSetPipelineCommand(UndoCommand):
     _is_property_edit = True
@@ -63,6 +73,7 @@ class RenderStackSetPipelineCommand(UndoCommand):
                  description: str = "Set Render Pipeline"):
         super().__init__(description)
         self._stack = stack
+        self._stack_component_id = int(getattr(stack, "component_id", 0) or 0)
         self._stack_game_object_id = _game_object_id_of(stack)
         self._stack_type_name = _comp_type_name_of(stack)
         self._old_pipeline = old_pipeline
@@ -73,6 +84,7 @@ class RenderStackSetPipelineCommand(UndoCommand):
             self._stack,
             self._stack_game_object_id,
             self._stack_type_name,
+            self._stack_component_id,
         )
 
     def _apply(self, pipeline_name: str) -> None:
@@ -106,6 +118,7 @@ class RenderStackEffectSlotsCommand(UndoCommand):
     ) -> None:
         super().__init__(description)
         self._stack = stack
+        self._stack_component_id = int(getattr(stack, "component_id", 0) or 0)
         self._stack_game_object_id = _game_object_id_of(stack)
         self._stack_type_name = _comp_type_name_of(stack)
         self._stage_id = str(stage_id or "")
@@ -117,6 +130,7 @@ class RenderStackEffectSlotsCommand(UndoCommand):
             self._stack,
             self._stack_game_object_id,
             self._stack_type_name,
+            self._stack_component_id,
         )
 
     def _apply(self, slots: Any) -> None:

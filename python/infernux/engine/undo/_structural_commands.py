@@ -257,24 +257,13 @@ class DeleteGameObjectsCommand(UndoCommand):
         _prune_destroyed_selection(destroyed_ids, "delete_game_objects")
 
     def undo(self) -> None:
-        from infernux.engine.undo._recreate import _recreate_game_object_from_document
-        restored = []
-        try:
-            for entry in sorted(self._entries, key=self._entry_order):
-                scene = _get_scene_by_world_id(entry["scene_world_id"])
-                obj = _recreate_game_object_from_document(
-                    entry["document"], entry["parent_id"], entry["sibling_index"],
-                    scene=scene)
-                restored.append(
-                    _validate_recreated_object(obj, entry["object_id"])
-                )
-        except Exception:
-            for obj in reversed(restored):
-                live = _find_runtime_object(int(obj.id))
-                scene = getattr(live, "scene", None) if live is not None else None
-                if scene is not None:
-                    _destroy_game_object_immediately(scene, live)
-            raise
+        from infernux.engine.undo._recreate import _recreate_game_objects_from_documents
+        entries = [
+            (entry["document"], entry["parent_id"], entry["sibling_index"],
+             _get_scene_by_world_id(entry["scene_world_id"]))
+            for entry in sorted(self._entries, key=self._entry_order)
+        ]
+        _recreate_game_objects_from_documents(entries)
         if self._entries:
             _bump_inspector_structure()
             _notify_gizmos_scene_changed()

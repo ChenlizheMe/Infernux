@@ -1171,6 +1171,13 @@ def test_builtin_asset_reference_field_records_native_property(monkeypatch, tmp_
         component_id=34,
         physic_material=PhysicMaterialRef(),
     )
+    # A scene-addressed edit must resolve the captured ID through its owner.
+    # This fixture previously depended on editing an unresolvable stale ref.
+    from infernux.engine.undo import _helpers
+    owner = component.game_object
+    owner.get_components = lambda: [component]
+    owner.get_py_components = lambda: []
+    monkeypatch.setattr(_helpers, "_find_runtime_object", lambda identity: owner if identity == 21 else None)
     metadata = SimpleNamespace(asset_type="PhysicMaterial")
 
     from infernux.engine.undo import UndoManager
@@ -1192,6 +1199,10 @@ def test_builtin_asset_reference_field_records_native_property(monkeypatch, tmp_
         assert component.physic_material.guid == "bouncy-guid"
         assert component.physic_material.path_hint.endswith("Bouncy.physicMaterial")
         assert len(manager.action_journal.applied_entries()) == 1
+        manager.undo()
+        assert not component.physic_material.guid
+        manager.redo()
+        assert component.physic_material.guid == "bouncy-guid"
     finally:
         UndoManager._instance = previous
 

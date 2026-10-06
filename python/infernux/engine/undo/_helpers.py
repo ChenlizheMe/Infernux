@@ -66,31 +66,25 @@ def _stable_target_id(target: Any) -> int:
 
 
 def _resolve_target(stored_ref: Any, game_object_id: int,
-                    comp_type_name: str) -> Any:
+                    comp_type_name: str, component_id: int) -> Any:
+    """Resolve the identity captured by a command, never a same-type peer."""
     if not game_object_id or not comp_type_name:
         return stored_ref
     obj = _find_runtime_object(game_object_id)
-    if obj is None:
-        return None
-    if comp_type_name == "GameObject":
-        return obj
-    if comp_type_name == "Transform":
-        return getattr(obj, "transform", None)
-    component_id = int(getattr(stored_ref, "component_id", 0) or 0)
-    if component_id:
-        for component in (obj.get_components() or ()):
-            if int(getattr(component, "component_id", 0) or 0) == component_id:
-                return component
-        for component in (obj.get_py_components() or ()):
-            if int(getattr(component, "component_id", 0) or 0) == component_id:
-                return component
-    live = obj.get_component(comp_type_name)
-    if live is not None:
-        return live
-    for pc in obj.get_py_components():
-        if type(pc).__name__ == comp_type_name:
-            return pc
-    return None
+    if obj is not None:
+        if comp_type_name == "GameObject":
+            return obj
+        if component_id:
+            for component in (obj.get_py_components() or ()):
+                if int(component.component_id) == component_id:
+                    return component
+            for component in (obj.get_components() or ()):
+                if int(component.component_id) == component_id:
+                    return component
+    raise RuntimeError(
+        f"History target is unavailable (go={game_object_id}, "
+        f"component={component_id}, type={comp_type_name})"
+    )
 
 
 _resolve_live_ref = _resolve_target

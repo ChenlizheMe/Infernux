@@ -466,6 +466,7 @@ def preflight_scene_python_components(
     asset_database=None,
     *,
     prefer_loaded_types: bool = False,
+    reference_scene=None,
 ) -> PreparedPythonComponentGraph:
     """Resolve and decode the complete Python graph before native scene commit."""
     records = getattr(document, "_python_component_records", None)
@@ -479,6 +480,7 @@ def preflight_scene_python_components(
         list(raw_descriptors),
         asset_database,
         prefer_loaded_types=prefer_loaded_types,
+        reference_scene=reference_scene,
     )
 
 
@@ -647,7 +649,8 @@ def _publish_prepared_scene_python_components(
     clear_registries: bool = True,
     object_id_map: Optional[dict[int | tuple[int, int], int]] = None,
     component_id_map: Optional[dict[int, int]] = None,
-) -> None:
+    defer_lifecycle: bool = False,
+) -> list:
     """Match native pending descriptors and publish a preflighted graph."""
     prepared_graph.require_open()
     pending = scene.get_pending_py_components()
@@ -764,16 +767,18 @@ def _publish_prepared_scene_python_components(
             native_component.enabled = item.enabled
             instance._enabled = item.enabled
             native_component.execution_order = item.execution_order
-        for _target, instance, _native_component in attached:
-            instance._call_on_after_deserialize()
-        for target, _instance, native_component in attached:
-            target._activate_prepared_py_component(native_component)
+        if not defer_lifecycle:
+            for _target, instance, _native_component in attached:
+                instance._call_on_after_deserialize()
+            for target, _instance, native_component in attached:
+                target._activate_prepared_py_component(native_component)
     except Exception as exc:
         for target, _instance, native_component in reversed(attached):
             target._remove_prepared_py_component(native_component)
         prepared_graph.discard()
         raise PythonComponentRestoreError(f"failed to publish Python component graph: {exc}") from exc
     prepared_graph.consume()
+    return attached
 
 
 def publish_prepared_scene_python_components(
@@ -783,15 +788,17 @@ def publish_prepared_scene_python_components(
     clear_registries: bool = True,
     object_id_map: Optional[dict[int | tuple[int, int], int]] = None,
     component_id_map: Optional[dict[int, int]] = None,
-) -> None:
+    defer_lifecycle: bool = False,
+) -> list:
     """Consume a prepared graph, releasing every unattached instance on failure."""
     try:
-        _publish_prepared_scene_python_components(
+        return _publish_prepared_scene_python_components(
             scene,
             prepared_graph,
             clear_registries=clear_registries,
             object_id_map=object_id_map,
             component_id_map=component_id_map,
+            defer_lifecycle=defer_lifecycle,
         )
     except Exception:
         prepared_graph.discard()

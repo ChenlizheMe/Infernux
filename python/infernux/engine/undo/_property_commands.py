@@ -29,6 +29,7 @@ class SetPropertyCommand(UndoCommand):
         self._old_value = _snapshot_value(old_value)
         self._new_value = _snapshot_value(new_value)
         self._target_id: int = _stable_target_id(target)
+        self._component_id: int = int(getattr(target, "component_id", 0) or 0)
         self._game_object_id: int = _game_object_id_of(target)
         self._comp_type_name: str = _comp_type_name_of(target) if self._game_object_id else ""
         self._builtin_wrapper_cls = None
@@ -41,46 +42,35 @@ class SetPropertyCommand(UndoCommand):
             pass
 
     def _live(self):
-        target = _resolve_target(self._target, self._game_object_id, self._comp_type_name)
+        target = _resolve_target(
+            self._target, self._game_object_id, self._comp_type_name, self._component_id,
+        )
         wrapper_cls = self._builtin_wrapper_cls
         if target is None or wrapper_cls is None or isinstance(target, wrapper_cls):
             return target
         game_object = getattr(target, "game_object", None)
         if game_object is None:
             return target
-        try:
-            return wrapper_cls._get_or_create_wrapper(target, game_object)
-        except (AttributeError, ReferenceError, RuntimeError, TypeError):
-            return target
+        return wrapper_cls._get_or_create_wrapper(target, game_object)
 
     def execute(self) -> None:
         target = self._live()
-        if target is None:
-            target = self._target
         setattr(target, self._prop_name, self._new_value)
 
     def undo(self) -> None:
         target = self._live()
-        if target is None:
-            Debug.log_error(
-                f"[Undo] SetProperty('{self._prop_name}').undo: target not found "
-                f"(go={self._game_object_id}, type={self._comp_type_name})")
-            return
         setattr(target, self._prop_name, self._old_value)
 
     def redo(self) -> None:
         target = self._live()
-        if target is None:
-            Debug.log_error(
-                f"[Undo] SetProperty('{self._prop_name}').redo: target not found "
-                f"(go={self._game_object_id}, type={self._comp_type_name})")
-            return
         setattr(target, self._prop_name, self._new_value)
 
     def can_merge(self, other: UndoCommand) -> bool:
-        if not isinstance(other, SetPropertyCommand):
+        if type(other) is not type(self):
             return False
         return (self._target_id == other._target_id
+                and self._game_object_id == other._game_object_id
+                and self._comp_type_name == other._comp_type_name
                 and self._prop_name == other._prop_name
                 and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW)
 
@@ -110,7 +100,9 @@ class GenericComponentCommand(UndoCommand):
         self._mergeable = bool(mergeable)
 
     def _live(self):
-        return _resolve_target(self._comp, self._game_object_id, self._comp_type_name)
+        return _resolve_target(
+            self._comp, self._game_object_id, self._comp_type_name, self._comp_id,
+        )
 
     def execute(self) -> None:
         comp = self._live()
@@ -119,19 +111,11 @@ class GenericComponentCommand(UndoCommand):
 
     def undo(self) -> None:
         comp = self._live()
-        if comp is None:
-            Debug.log_error(
-                f"[Undo] GenericComponent('{self._comp_type_name}').undo: not found")
-            return
         if not comp.deserialize_document(self._old_document):
             raise RuntimeError(f"GenericComponent('{self._comp_type_name}').undo failed")
 
     def redo(self) -> None:
         comp = self._live()
-        if comp is None:
-            Debug.log_error(
-                f"[Undo] GenericComponent('{self._comp_type_name}').redo: not found")
-            return
         if not comp.deserialize_document(self._new_document):
             raise RuntimeError(f"GenericComponent('{self._comp_type_name}').redo failed")
 
@@ -141,6 +125,7 @@ class GenericComponentCommand(UndoCommand):
         return (self._mergeable
                 and other._mergeable
                 and self._comp_id == other._comp_id
+                and self._game_object_id == other._game_object_id
                 and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW)
 
     def merge(self, other: GenericComponentCommand) -> None:
@@ -166,15 +151,9 @@ class PythonComponentDocumentCommand(UndoCommand):
         self._edit_key = str(edit_key)
 
     def _live(self):
-        if self._game_object_id and self._comp_id:
-            from infernux.engine.undo._helpers import _get_active_scene
-            scene = _get_active_scene()
-            obj = scene.find_by_id(self._game_object_id) if scene else None
-            if obj is not None:
-                for component in (obj.get_py_components() or ()):
-                    if getattr(component, "component_id", 0) == self._comp_id:
-                        return component
-        return _resolve_target(self._comp, self._game_object_id, self._comp_type_name)
+        return _resolve_target(
+            self._comp, self._game_object_id, self._comp_type_name, self._comp_id,
+        )
 
     @staticmethod
     def _apply(comp: Any, document: dict) -> None:
@@ -183,30 +162,21 @@ class PythonComponentDocumentCommand(UndoCommand):
         comp._deserialize_fields_document(copy.deepcopy(document))
 
     def execute(self) -> None:
-        self._apply(self._live() or self._comp, self._new_document)
+        self._apply(self._live(), self._new_document)
 
     def undo(self) -> None:
         target = self._live()
-        if target is None:
-            Debug.log_error(
-                f"[Undo] PythonComponent('{self._comp_type_name}').undo: not found"
-            )
-            return
         self._apply(target, self._old_document)
 
     def redo(self) -> None:
         target = self._live()
-        if target is None:
-            Debug.log_error(
-                f"[Undo] PythonComponent('{self._comp_type_name}').redo: not found"
-            )
-            return
         self._apply(target, self._new_document)
 
     def can_merge(self, other: UndoCommand) -> bool:
         return (
             isinstance(other, PythonComponentDocumentCommand)
             and self._comp_id == other._comp_id
+            and self._game_object_id == other._game_object_id
             and self._edit_key == other._edit_key
             and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW
         )
@@ -381,6 +351,7 @@ class SetMaterialSlotCommand(UndoCommand):
                  description: str = ""):
         super().__init__(description or f"Set Material Slot {slot}")
         self._renderer = renderer
+        self._component_id: int = int(getattr(renderer, "component_id", 0) or 0)
         self._slot = slot
         self._old_guid = old_guid or ""
         self._new_guid = new_guid or ""
@@ -388,34 +359,27 @@ class SetMaterialSlotCommand(UndoCommand):
         self._comp_type_name: str = _comp_type_name_of(renderer) if self._game_object_id else ""
 
     def _live(self):
-        return _resolve_target(self._renderer, self._game_object_id, self._comp_type_name)
+        return _resolve_target(
+            self._renderer, self._game_object_id, self._comp_type_name, self._component_id,
+        )
 
     def execute(self) -> None:
-        target = self._live() or self._renderer
+        target = self._live()
         target.set_material(self._slot, self._new_guid)
 
     def undo(self) -> None:
         target = self._live()
-        if target is None:
-            Debug.log_error(
-                f"[Undo] SetMaterialSlot({self._slot}).undo: renderer not found "
-                f"(go={self._game_object_id}, type={self._comp_type_name})")
-            return
         target.set_material(self._slot, self._old_guid)
 
     def redo(self) -> None:
         target = self._live()
-        if target is None:
-            Debug.log_error(
-                f"[Undo] SetMaterialSlot({self._slot}).redo: renderer not found "
-                f"(go={self._game_object_id}, type={self._comp_type_name})")
-            return
         target.set_material(self._slot, self._new_guid)
 
     def can_merge(self, other: UndoCommand) -> bool:
         if not isinstance(other, SetMaterialSlotCommand):
             return False
         return (self._game_object_id == other._game_object_id
+                and self._component_id == other._component_id
                 and self._comp_type_name == other._comp_type_name
                 and self._slot == other._slot
                 and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW)

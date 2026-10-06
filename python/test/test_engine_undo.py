@@ -302,7 +302,8 @@ class TestSetPropertyCommand:
         target = _NativeTarget()
         cmd = SetPropertyCommand(target, "x", 1, 2)
         _patch_undo_modules(monkeypatch, "_get_active_scene", lambda: None)
-        cmd.undo()
+        with pytest.raises(RuntimeError, match="History target is unavailable"):
+            cmd.undo()
         assert target.x == 99
 
     def test_gameobject_target_resolves_live_object(self, monkeypatch):
@@ -330,12 +331,11 @@ class TestSetPropertyCommand:
         assert live.active is True
 
     def test_resolve_live_ref_finds_python_component(self, monkeypatch):
-        """_resolve_live_ref falls back to get_py_components() for Python
-        components (RenderStack etc.) that get_component() cannot find."""
+        """Python targets resolve their captured ID in the owning object."""
 
         class _PyComp:
             """Mimics a Python InxComponent attached via PyComponentProxy."""
-            pass
+            component_id = 73
 
         py_comp = _PyComp()
 
@@ -359,7 +359,7 @@ class TestSetPropertyCommand:
         _patch_world_undo(monkeypatch, _FakeScene())
 
         resolve = getattr(_undo_mod_ref, "_resolve_live_ref")
-        result = resolve("stale_ref", 7, "_PyComp")
+        result = resolve("stale_ref", 7, "_PyComp", 73)
         assert result is py_comp
 
 
@@ -1702,8 +1702,16 @@ class TestDeleteGameObjectsCommand:
             restored.append((document["id"], parent_id, sibling_index))
             return self._Object(document["id"], sibling_index)
 
-        with _override_recreate_game_object(restore_object):
-            command.undo()
+        batches = []
+
+        def restore_batch(entries):
+            batches.append(entries)
+            return [restore_object(document, parent_id, sibling_index, scene=owner)
+                    for document, parent_id, sibling_index, owner in entries]
+
+        monkeypatch.setattr(_recreate_mod, "_recreate_game_objects_from_documents", restore_batch)
+        command.undo()
+        assert len(batches) == 1
         assert restored == [(10, None, 0), (20, None, 1)]
 
 

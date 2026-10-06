@@ -8,64 +8,40 @@ from typing import Any, Callable, Optional
 from infernux.debug import Debug
 from infernux.engine.undo._base import CompoundCommand, UndoCommand
 from infernux.engine.undo._helpers import (
-    _comp_type_name_of, _find_runtime_object,
+    _comp_type_name_of,
     _require_scene_object, _find_live_native_component,
     _invalidate_builtin_wrapper,
     _bump_inspector_structure, _notify_gizmos_scene_changed,
 )
-from infernux.engine.undo._snapshots import _get_nth_live_py_component
 
 
 # -- Helper functions --
 
 def _snapshot_py_fields(py_comp: Any) -> str:
-    if py_comp is None or not hasattr(py_comp, '_serialize_fields'):
-        return ""
-    try:
-        return py_comp._serialize_fields()
-    except Exception as exc:
-        Debug.log_suppressed("undo._component_commands._snapshot_py_fields", exc)
-        return ""
+    snapshot = py_comp._serialize_fields()
+    if not isinstance(snapshot, str) or not snapshot:
+        raise RuntimeError("Python component snapshot must be a nonempty serialized document")
+    return snapshot
 
 
 def _snapshot_py_enabled(py_comp: Any) -> bool:
-    try:
-        return bool(getattr(py_comp, 'enabled', True))
-    except Exception:
-        return True
+    return bool(py_comp.enabled)
 
 
-def _find_py_ordinal(object_id: int, py_comp: Any) -> int:
-    obj = _find_runtime_object(object_id)
-    if obj is None or not hasattr(obj, 'get_py_components'):
-        return 0
-    target_type = _comp_type_name_of(py_comp)
-    target_guid = getattr(py_comp, '_script_guid', '') or ''
-    target_type_guid = py_comp.__class__._get_type_guid()
-    ordinal = 0
-    try:
-        for current in obj.get_py_components():
-            try:
-                ct = _comp_type_name_of(current)
-                cg = getattr(current, '_script_guid', '') or ''
-                ctg = current.__class__._get_type_guid()
-            except Exception as exc:
-                Debug.log_suppressed("undo._component_commands._find_py_ordinal.read_meta", exc)
-                continue
-            if ct != target_type or cg != target_guid or ctg != target_type_guid:
-                continue
-            if current is py_comp:
-                return ordinal
-            ordinal += 1
-    except Exception as exc:
-        Debug.log_suppressed("undo._component_commands._find_py_ordinal.iter", exc)
-    return 0
+def _resolve_live_py(obj, component_id: int):
+    """Resolve the authored component instance, independently of slot or type order."""
+    return next((component for component in obj.get_py_components()
+                 if int(component.component_id) == component_id), None)
 
 
-def _resolve_live_py(obj, type_name: str, script_guid: str, type_guid: str,
-                     ordinal: int):
-    """Resolve a live Python component by its GUID-anchored identity only."""
-    return _get_nth_live_py_component(obj.id, type_name, ordinal, script_guid, type_guid)
+def _require_py_component_identity(object_id: int, py_comp: Any) -> int:
+    component_id = int(getattr(py_comp, "component_id", 0) or 0)
+    if component_id <= 0:
+        raise ValueError("Component history requires a live bound component identity")
+    _scene, obj = _require_scene_object(object_id, "ComponentIdentity")
+    if _resolve_live_py(obj, component_id) is not py_comp:
+        raise ValueError("Component history target is not bound to the addressed live GameObject")
+    return component_id
 
 
 def _instantiate_py_snapshot(type_name: str, script_guid: str, type_guid: str,
@@ -182,18 +158,20 @@ def _add_native_from_snapshot(object_id: int, type_name: str,
     return result
 
 
-def _snapshot_and_remove_py(object_id: int, type_name: str, script_guid: str, type_guid: str,
-                            ordinal: int, label: str):
+def _snapshot_and_remove_py(object_id: int, component_id: int, label: str):
     _scene, obj = _require_scene_object(object_id, label)
-    live = _resolve_live_py(obj, type_name, script_guid, type_guid, ordinal)
+    live = _resolve_live_py(obj, component_id)
     if live is None:
-        raise RuntimeError(f"[Undo] {label}: component not found")
+        raise RuntimeError(f"[Undo] {label}: component id={component_id} not found")
     fields_json = _snapshot_py_fields(live)
     enabled = _snapshot_py_enabled(live)
+    # Earlier commands in a batch may already have removed preceding slots.
+    # Capture the position at removal so reverse replay restores exact order.
+    component_index = _component_index(object_id, component_id)
     if obj.remove_py_component(live) is False:
         raise RuntimeError(f"[Undo] {label}: Python component removal failed")
     _bump_inspector_structure()
-    return fields_json, enabled, live
+    return fields_json, enabled, live, component_index
 
 
 def _add_py_from_snapshot(object_id: int, type_name: str, script_guid: str, type_guid: str,
@@ -626,25 +604,24 @@ class AddPyComponentCommand(UndoCommand):
         super().__init__(description or f"Add {self._type_name_str}")
         self._object_id = object_id
         self._py_comp_ref = py_comp_ref
+        self._component_id = _require_py_component_identity(object_id, py_comp_ref)
         self._script_guid = getattr(py_comp_ref, '_script_guid', '') or ''
         self._type_guid = py_comp_ref.__class__._get_type_guid()
         self._fields_json = _snapshot_py_fields(py_comp_ref)
         self._enabled = _snapshot_py_enabled(py_comp_ref)
-        self._ordinal = _find_py_ordinal(object_id, py_comp_ref)
         self._component_index = _component_index(
-            object_id, int(getattr(py_comp_ref, "component_id", 0) or 0)
+            object_id, self._component_id
         )
 
     def execute(self) -> None:
         pass
 
     def undo(self) -> None:
-        fj, en, live = _snapshot_and_remove_py(
-            self._object_id, self._type_name_str, self._script_guid,
-            self._type_guid,
-            self._ordinal,
+        fj, en, live, index = _snapshot_and_remove_py(
+            self._object_id, self._component_id,
             f"AddPy('{self._type_name_str}').undo")
         self._fields_json, self._enabled, self._py_comp_ref = fj, en, live
+        self._component_index = index
 
     def redo(self) -> None:
         self._py_comp_ref = _add_py_from_snapshot(
@@ -663,13 +640,13 @@ class RemovePyComponentCommand(UndoCommand):
         super().__init__(description or f"Remove {self._type_name_str}")
         self._object_id = object_id
         self._py_comp_ref = py_comp_ref
+        self._component_id = _require_py_component_identity(object_id, py_comp_ref)
         self._script_guid = getattr(py_comp_ref, '_script_guid', '') or ''
         self._type_guid = py_comp_ref.__class__._get_type_guid()
         self._fields_json = _snapshot_py_fields(py_comp_ref)
         self._enabled = _snapshot_py_enabled(py_comp_ref)
-        self._ordinal = _find_py_ordinal(object_id, py_comp_ref)
         self._component_index = _component_index(
-            object_id, int(getattr(py_comp_ref, "component_id", 0) or 0)
+            object_id, self._component_id
         )
 
     def execute(self) -> None:
@@ -686,12 +663,11 @@ class RemovePyComponentCommand(UndoCommand):
         self._do_remove()
 
     def _do_remove(self) -> None:
-        fj, en, live = _snapshot_and_remove_py(
-            self._object_id, self._type_name_str, self._script_guid,
-            self._type_guid,
-            self._ordinal,
+        fj, en, live, index = _snapshot_and_remove_py(
+            self._object_id, self._component_id,
             f"RemovePy('{self._type_name_str}')")
         self._fields_json, self._enabled, self._py_comp_ref = fj, en, live
+        self._component_index = index
 
 
 class RemoveComponentsCommand(CompoundCommand):
