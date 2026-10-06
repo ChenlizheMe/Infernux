@@ -22,6 +22,120 @@ def _host_id() -> str:
     return "linux-x64" if platform.system().casefold() == "linux" else ""
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows native architecture query")
+def test_windows_host_query_avoids_wmi_and_environment_guesses(monkeypatch):
+    from infernux.plugins import platform_support as support
+
+    expected = "windows-x64" if platform.machine().casefold() in {"amd64", "x86_64"} else ""
+    support._host_id.cache_clear()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Host selection invoked WMI/platform.machine")
+
+    monkeypatch.setattr(platform, "machine", forbidden)
+    monkeypatch.setattr(platform, "_wmi_query", forbidden)
+    monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "ARM64")
+    monkeypatch.setenv("PROCESSOR_ARCHITEW6432", "ARM64")
+    try:
+        assert support._host_id() == expected
+        assert support._host_id() == expected
+    finally:
+        support._host_id.cache_clear()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows emulated process/native host distinction")
+@pytest.mark.parametrize("process_machine,native_machine,expected", [
+    (0, 0x8664, "windows-x64"), (0x14c, 0x8664, "windows-x64"),
+    (0x8664, 0xaa64, ""), (0, 0x14c, ""), (0, 0, ""),
+])
+def test_host_selection_uses_native_architecture_once(monkeypatch, process_machine, native_machine, expected):
+    import ctypes
+    from types import SimpleNamespace
+    from infernux.plugins import platform_support as support
+
+    calls = []
+
+    def query(handle, process, native):
+        calls.append(handle.value)
+        ctypes.cast(process, ctypes.POINTER(ctypes.c_ushort))[0] = process_machine
+        ctypes.cast(native, ctypes.POINTER(ctypes.c_ushort))[0] = native_machine
+        return 1
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: SimpleNamespace(IsWow64Process2=query))
+    support._host_id.cache_clear()
+    try:
+        assert support._host_id() == expected
+        assert support._host_id() == expected
+        assert len(calls) == 1
+    finally:
+        support._host_id.cache_clear()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows API failure contract")
+def test_host_query_failure_is_not_cached_as_success(monkeypatch):
+    import ctypes
+    from types import SimpleNamespace
+    from infernux.plugins import platform_support as support
+
+    calls = []
+
+    def query(*args):
+        calls.append(1)
+        ctypes.set_last_error(5)
+        return 0
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *args, **kwargs: SimpleNamespace(IsWow64Process2=query))
+    support._host_id.cache_clear()
+    try:
+        for _ in range(2):
+            with pytest.raises(OSError) as caught:
+                support._host_id()
+            assert caught.value.winerror == 5
+        assert len(calls) == 2
+    finally:
+        support._host_id.cache_clear()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows platform-kit OS floor")
+def test_older_windows_does_not_probe_an_unavailable_api(monkeypatch):
+    import ctypes
+    from infernux.plugins import platform_support as support
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Unsupported Windows version queried platform APIs")
+
+    monkeypatch.setattr(support.sys, "getwindowsversion", lambda: (10, 0, 15063))
+    monkeypatch.setattr(ctypes, "WinDLL", forbidden)
+    support._host_id.cache_clear()
+    try:
+        assert support._host_id() == ""
+    finally:
+        support._host_id.cache_clear()
+
+
+@pytest.mark.parametrize("system,machine,expected", [
+    ("Linux", "x86_64", "linux-x64"), ("Linux", "aarch64", ""), ("Darwin", "x86_64", ""),
+])
+def test_posix_host_uses_kernel_identity(monkeypatch, system, machine, expected):
+    from types import SimpleNamespace
+    from infernux.plugins import platform_support as support
+
+    calls = []
+
+    def uname():
+        calls.append(1)
+        return SimpleNamespace(sysname=system, machine=machine)
+
+    monkeypatch.setattr(support, "os", SimpleNamespace(name="posix", uname=uname))
+    support._host_id.cache_clear()
+    try:
+        assert support._host_id() == expected
+        assert support._host_id() == expected
+        assert len(calls) == 1
+    finally:
+        support._host_id.cache_clear()
+
+
 def _support_root(root: Path) -> None:
     sdk = root / "sdk"
     (sdk / "platforms/android-36").mkdir(parents=True)
@@ -125,6 +239,22 @@ def test_support_install_gate_rechecks_manifest_inside_a_panel_frame(tmp_path):
         manifest.write_text("{broken", encoding="utf-8")
         with pytest.raises(RuntimeError, match="Infernux Hub"):
             require_plugin_support("infernux/platform-android", environment)
+
+
+def test_unknown_host_cannot_validate_a_manifest_with_empty_host(tmp_path, monkeypatch):
+    from infernux.plugins import platform_support as support
+
+    root = tmp_path / "android"
+    root.mkdir()
+    _support_root(root)
+    manifest = root / "infernux-android-support.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["host"] = ""
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(support, "_host_id", lambda: "")
+    environment = {"INFERNUX_ANDROID_SUPPORT_ROOT": str(root)}
+    assert not android_support_available(environment)
+    assert support.android_support_environment(environment) == {}
 
 
 def test_support_layout_reuses_parsing_but_checks_every_required_file(tmp_path, monkeypatch):

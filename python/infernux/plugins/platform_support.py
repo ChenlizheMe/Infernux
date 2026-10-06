@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-import platform
+import sys
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Mapping
 
@@ -25,14 +26,35 @@ ANDROID_SUPPORT_REQUIRED_MESSAGE = (
 _manifest_reads = FileReadCache(capacity=8)
 
 
+@cache
 def _host_id() -> str:
-    machine = platform.machine().casefold()
-    if machine not in {"amd64", "x86_64"}:
-        return ""
+    """The host architecture is immutable for the lifetime of this process.
+
+    Do not use platform.machine here: on CPython/Windows its first call also
+    queries OS details through WMI, blocking the first visible plugin panel.
+    """
     if os.name == "nt":
-        return "windows-x64"
-    if os.name == "posix" and platform.system().casefold() == "linux":
-        return "linux-x64"
+        # IsWow64Process2 and this platform-kit host check require Windows 10
+        # 1709+. This kit probe does not advertise support on older hosts.
+        if sys.getwindowsversion() < (10, 0, 16299):
+            return ""
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        query = kernel32.IsWow64Process2
+        query.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.USHORT), ctypes.POINTER(wintypes.USHORT)]
+        query.restype = wintypes.BOOL
+        process_machine, native_machine = wintypes.USHORT(), wintypes.USHORT()
+        # -1 is the current-process pseudo handle; it is not owned or closed.
+        if not query(wintypes.HANDLE(-1), ctypes.byref(process_machine), ctypes.byref(native_machine)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        # Inspect the host, not a possibly emulated process architecture.
+        return "windows-x64" if native_machine.value == 0x8664 else ""
+    if os.name == "posix":
+        host = os.uname()
+        if host.sysname == "Linux" and host.machine.casefold() in {"amd64", "x86_64"}:
+            return "linux-x64"
     return ""
 
 
@@ -105,6 +127,8 @@ class _SupportLayout:
 def _support_layout(root: Path) -> _SupportLayout | None:
     manifest = root / ANDROID_SUPPORT_MANIFEST
     host = _host_id()
+    if not host:
+        return None
 
     def prepare(observed):
         observed.watch(manifest)
