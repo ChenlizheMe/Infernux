@@ -1462,6 +1462,15 @@ if(INFERNUX_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
         )
     endforeach()
+    add_test(NAME infernux.render_effect_group_order_gpu
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/python/infernux/test/render_effect_group_order_gpu_test.py
+    )
+    set_tests_properties(infernux.render_effect_group_order_gpu PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+        LABELS "requires_vulkan_device" TIMEOUT 60 RUN_SERIAL TRUE
+        FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
+    )
     add_test(NAME infernux.material_raster_state_gpu
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/python/infernux/test/material_raster_state_gpu_test.py
