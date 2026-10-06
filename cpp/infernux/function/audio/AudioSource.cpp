@@ -343,13 +343,10 @@ void AudioSource::SetTrackCount(int count)
     }
     int oldCount = static_cast<int>(m_tracks.size());
 
-    // Stop voices for tracks that are being removed
-    for (int i = count; i < oldCount; ++i) {
-        StopVoice(i);
-        if (m_tracks[i].clipAsset.HasGuid())
-            AssetDependencyGraph::Instance().RemoveRuntimeDependency(GetInstanceGuid(),
-                                                                     m_tracks[i].clipAsset.GetGuid());
-    }
+    // Retire each reference through the same owner-level dependency path used
+    // by clip edits. A removed track may share its clip with a retained track.
+    for (int i = count; i < oldCount; ++i)
+        AssignTrackClipReference(i, {}, nullptr);
 
     m_tracks.resize(count);
 }
@@ -405,7 +402,11 @@ void AudioSource::AssignTrackClipReference(int trackIndex, const std::string &gu
 
     auto &graph = AssetDependencyGraph::Instance();
     const std::string oldGuid = track.clipAsset.GetGuid();
-    if (!oldGuid.empty())
+    const bool oldClipStillReferenced = std::any_of(
+        m_tracks.begin(), m_tracks.end(), [&](const AudioTrack &other) {
+            return &other != &track && other.clipAsset.GetGuid() == oldGuid;
+        });
+    if (!oldGuid.empty() && oldGuid != guid && !oldClipStillReferenced)
         graph.RemoveRuntimeDependency(GetInstanceGuid(), oldGuid);
 
     track.clipAsset.Clear();
@@ -423,7 +424,8 @@ void AudioSource::AssignTrackClipReference(int trackIndex, const std::string &gu
         else
             track.transientClip = std::move(clip);
     }
-    graph.AddRuntimeDependency(GetInstanceGuid(), guid);
+    if (guid != oldGuid)
+        graph.AddRuntimeDependency(GetInstanceGuid(), guid);
 }
 
 void AudioSource::OnAudioClipAssetEvent(const std::string &guid, AssetEvent event)
