@@ -2590,6 +2590,11 @@ bool SceneRenderGraph::UsesForwardPlus() const
                 command.shaderTarget == ShaderCompileTarget::ForwardPlus) {
                 return true;
             }
+            // Deferred lighting consumes the same per-view light grid even
+            // when the graph contains no Forward+ geometry pass.
+            if (command.type == GraphCommandType::FullscreenQuad && command.shaderName == "Deferred Lighting") {
+                return true;
+            }
         }
     }
     return false;
@@ -4893,6 +4898,17 @@ void SceneRenderGraph::BuildRenderGraph()
                         std::none_of(fsReadInputs.begin(), fsReadInputs.end(),
                                      [&](const auto &input) { return input.handle == fullscreenShadowInput; })) {
                         builder.ReadSampledDepth(fullscreenShadowInput);
+                    }
+                    if (shaderName == "Deferred Lighting") {
+                        for (const auto &resources : forwardPlusResources) {
+                            if (!resources.canonicalLights.IsValid() || !resources.headers.IsValid() ||
+                                !resources.lightMasks.IsValid()) {
+                                continue;
+                            }
+                            builder.ReadStorageBuffer(resources.canonicalLights, rhi::PipelineStage::FragmentShader);
+                            builder.ReadStorageBuffer(resources.headers, rhi::PipelineStage::FragmentShader);
+                            builder.ReadStorageBuffer(resources.lightMasks, rhi::PipelineStage::FragmentShader);
+                        }
                     }
                     // Declare color output
                     fsWrittenVersion = builder.WriteColor(fsOutputTarget, 0);

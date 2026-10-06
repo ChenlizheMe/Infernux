@@ -687,7 +687,7 @@ def _draw_deferred_route(
     with graph.name_scope(f"route/{route.route_id}/deferred"):
         albedo = graph.create_texture("albedo", format=Format.RGBA16_SFLOAT)
         normal = graph.create_texture("normal", format=Format.RGBA16_SFLOAT)
-        material = graph.create_texture("material", format=Format.RGBA8_UNORM)
+        material = graph.create_texture("material", format=Format.RGBA16_SFLOAT)
         emission = graph.create_texture("emission", format=Format.RGBA16_SFLOAT)
         object_data = graph.create_texture("object", format=Format.RGBA32_UINT)
         lit = graph.create_texture("lit", format=color_format)

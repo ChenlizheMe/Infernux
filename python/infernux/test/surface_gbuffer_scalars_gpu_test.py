@@ -1,9 +1,12 @@
-import json,tempfile
+import argparse,json,tempfile
 from pathlib import Path
 import numpy as np
 import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel,InxMaterial,SceneManager,Vector3
+from infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
+from infernux.renderstack.pipeline_compiler import compile_pipeline_definition
+from infernux.renderstack.pipeline_dsl import Path as RenderPath, PipelineBuilder
 
 SURFACE='''#version 450
 ShaderInfo { Name "Tutorial Surface Scalar Contract" ShadingModel PBR CastShadows Off ReceiveShadows Off
@@ -24,30 +27,44 @@ void main() {
  else outColor=vec4(1,0,1,1);
 }
 '''
-class ScalarPipeline(inx.renderstack.RenderPipeline):
+class ScalarPipeline(DefaultDeferredPipeline):
     name='Tutorial Canonical GBuffer Scalars'
+    def __init__(self, route):
+        super().__init__()
+        self.route = route
     def define_topology(self,g):
-        self.builds+=1;g.set_msaa_samples(1);f=inx.rendergraph.Format
-        depth=g.create_texture('depth',format=f.D32_SFLOAT,samples=1)
-        formats=(f.RGBA8_UNORM,f.RGBA16_SFLOAT,f.RGBA16_SFLOAT,f.RGBA16_SFLOAT,f.RGBA32_UINT)
-        buffers=[g.create_texture('gbuf'+str(i),format=format,samples=1) for i,format in enumerate(formats)]
-        p=g.add_pass('CanonicalGBuffer').write_depth(depth).set_clear(color=(0,0,0,0),depth=1)
-        for slot,texture in enumerate(buffers):p.write_color(texture,slot=slot)
-        p.draw_renderers(queue_range=(0,2500),material_pass='gbuffer',material_filter='deferred_compatible')
-        target=g.create_texture('color',camera_target=True)
+        self.builds += 1
+        if self.route == 'builtin':
+            super().define_topology(g)
+            albedo = g.get_texture('gbuffer_albedo')
+            material = g.get_texture('gbuffer_material')
+            emission = g.get_texture('gbuffer_emission')
+        else:
+            builder = PipelineBuilder()
+            builder.frame(hdr=True, msaa=1)
+            builder.opaque().deferred(fallback=RenderPath.FORWARD_PLUS)
+            compile_pipeline_definition(builder.build(), g, pipeline=self)
+            lighting, = [p for p in g._passes if p._action == 'fullscreen_quad' and p._shader_name == 'Deferred Lighting']
+            albedo = g.get_texture(lighting._input_bindings['gAlbedo'])
+            material = g.get_texture(lighting._input_bindings['gMaterial'])
+            emission = g.get_texture(lighting._input_bindings['gEmission'])
+        target = g.get_texture('color')
         p=g.add_pass('CheckScalarStorage').write_color(target)
-        for key,texture in [('albedoTex',buffers[0]),('materialTex',buffers[2]),('emissionTex',buffers[3])]:p.set_texture(key,texture)
+        for key,texture in [('albedoTex',albedo),('materialTex',material),('emissionTex',emission)]:p.set_texture(key,texture)
         p.fullscreen_quad('Tutorial Scalar GBuffer Consumer')
-        g.screen_ui_overlay_section(resources={'color'});g.set_output(target)
+        g.set_output(target)
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--path', choices=('builtin', 'dsl'), default='builtin')
+args = parser.parse_args()
 with tempfile.TemporaryDirectory(prefix='infernux-gbuffer-scalar-contract-') as folder:
     project=Path(folder)
     for name in ('Assets','Packages','ProjectSettings'):(project/name).mkdir()
     for name,text in [('Surface.frag',SURFACE),('Consumer.frag',CONSUMER)]: (project/'Assets'/name).write_text(text,encoding='ascii')
     mesh=project/'Assets/Quad.obj'
     mesh.write_text('v -0.5 -0.5 0\nv 0.5 -0.5 0\nv 0.5 0.5 0\nv -0.5 0.5 0\nvn 0 0 -1\nf 1//1 3//1 2//1\nf 1//1 4//1 3//1\n',encoding='ascii')
-    frontend=inx.Engine();native=frontend.get_native_engine();console=ConsolePanel();pipeline=ScalarPipeline();pipeline.builds=0
-    proof={'scope':'Independent installed GPU canonical GBuffer stores both SurfaceData shadingParam scalars without clamping, including signed/HDR values, zeros and exact restore; one authored topology.','phases':[]};failures=[];complete=False
+    frontend=inx.Engine();native=frontend.get_native_engine();console=ConsolePanel();pipeline=ScalarPipeline(args.path);pipeline.builds=0;pipeline.shadow_resolution=256
+    proof={'scope':'Actual production Deferred GBuffer attachments preserve both model-defined scalars, including signed/HDR values, zeros and exact restore; no custom attachment formats.', 'path':args.path, 'phases':[]};failures=[];complete=False
     try:
         frontend.init_renderer(160,120,str(project));frontend.resize_game_render_target(160,120)
         native.set_scene_view_visible(False);native.set_editor_fps_cap(240);native.set_editor_idle_fps(0)
@@ -73,7 +90,8 @@ with tempfile.TemporaryDirectory(prefix='infernux-gbuffer-scalar-contract-') as 
                     good=np.all(np.abs(rgb-np.asarray(expected))<.01,axis=-1);bad=(rgb[...,0]>.9)&(rgb[...,2]>.9)
                     record={'phase':('default_scalars','signed_hdr_scalars','zero_scalars','restored')[phase],'covered':int(good.sum()),'mismatch':int(bad.sum()),'builds':pipeline.builds}
                     assert good.sum()>100 and not bad.any() and pipeline.builds==1,record
-                    assert not [e for e in console._get_visible_log_snapshot(2000) if e['level'] in ('ERROR','FATAL')]
+                    issues = [e for e in console._get_visible_log_snapshot(2000) if e['level'] in ('ERROR','FATAL')]
+                    assert not issues, issues
                     if phase==0:initial=pixels
                     elif phase==3:np.testing.assert_array_equal(pixels,initial)
                     proof['phases'].append(record);print(record,flush=True)
