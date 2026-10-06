@@ -1291,8 +1291,16 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
                     material->GetName(), "'");
         return VK_NULL_HANDLE;
     }
+    // Forward merges an identical vertex/fragment MaterialProperties layout
+    // into its canonical material UBO. Shadow remaps those stages to separate
+    // bindings, but both bindings still consume that same authored buffer.
+    const MaterialUBO *vertexUbo = hasVertexMaterialUBO
+        ? (forwardProgram && forwardProgram->HasVertexMaterialUBO()
+               ? forwardMaterialDesc->vertexMaterialUBO.get()
+               : forwardMaterialDesc->materialUBO.get())
+        : nullptr;
     if (hasVertexMaterialUBO &&
-        (!forwardMaterialDesc->vertexMaterialUBO || !forwardMaterialDesc->vertexMaterialUBO->IsValid())) {
+        (!vertexUbo || !vertexUbo->IsValid())) {
         INXLOG_WARN("EnsureShadowMaterialBinding: missing vertex material UBO for '", material->GetName(), "'");
         return VK_NULL_HANDLE;
     }
@@ -1401,7 +1409,6 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     }
 
     const MaterialUBO *fragmentUbo = hasFragmentMaterialUBO ? forwardMaterialDesc->materialUBO.get() : nullptr;
-    const MaterialUBO *vertexUbo = hasVertexMaterialUBO ? forwardMaterialDesc->vertexMaterialUBO.get() : nullptr;
     VkDescriptorBufferInfo fragmentBuffer{};
     fragmentBuffer.buffer =
         fragmentUbo ? fragmentUbo->GetBuffer() : (vertexUbo ? vertexUbo->GetBuffer() : m_materialUbo->GetBuffer());
