@@ -376,7 +376,7 @@ class TestStrictSerializationFailures:
             class UnsupportedField(InxComponent):
                 payload = serialized_field(default=None, field_type=FieldType.UNKNOWN)
 
-    def test_non_finite_vector_falls_back_to_field_default(self):
+    def test_non_finite_vector_rejects_save_and_preserves_authored_fields(self):
         from infernux.math import Vector3
 
         class CameraRig(InxComponent):
@@ -395,9 +395,10 @@ class TestStrictSerializationFailures:
             0.0,
         ]
 
-        document = component._serialize_fields_document()
-        assert document["speed"] == 5.0
-        assert document["sway"] == pytest.approx([0.1, 0.2, 0.3])
+        with pytest.raises(ValueError, match=r"CameraRig\.sway"):
+            component._serialize_fields_document()
+        assert type(component).__dict__["speed"]._values[id(component)] == 5.0
+        assert type(component).__dict__["sway"]._values[id(component)][1:] == [0.0, 0.0]
 
     def test_repair_keeps_editor_defaults_for_stale_scene_data(self):
         class ShowcaseDirector(InxComponent):

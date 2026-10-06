@@ -10,7 +10,6 @@ class ComponentSerializationMixin:
     def _serialize_fields_document(self) -> dict[str, Any]:
         """Encode all serialized fields into the current typed document."""
         from .fields import (
-            copy_serialized_field_default,
             get_raw_field_value,
             get_serialized_fields,
         )
@@ -27,15 +26,12 @@ class ComponentSerializationMixin:
         for name, metadata in fields.items():
             path = f"{self.__class__.__name__}.{name}"
             value = get_raw_field_value(self, name)
-            try:
-                data[name] = VALUE_CODECS.encode(value, path)
-            except ValueError:
-                # Non-finite CDS leftovers from a schema hot-reload must not
-                # brick every Inspector edit. Fall back to the authored default
-                # so sibling fields can still be committed as one document.
-                data[name] = VALUE_CODECS.encode(
-                    copy_serialized_field_default(metadata), path
-                )
+            encoded = VALUE_CODECS.encode(value, path)
+            # Mutable collections can change without passing through a field
+            # setter. Reject them at the persistence boundary; never replace
+            # authored values with defaults while constructing a save.
+            VALUE_CODECS.validate(encoded, metadata, path)
+            data[name] = encoded
         
         return data
 
