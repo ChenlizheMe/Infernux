@@ -39,6 +39,9 @@ struct InxTextureData
 class InxTextureLoader
 {
   public:
+    /// Select the P2/P3/P5/P6 decoder by source signature, before attempting stb.
+    static bool IsPnmSource(const unsigned char *data, size_t dataSize);
+
     /// @brief Load texture directly from file path (convenience method)
     /// @param filePath Path to the texture file
     /// @param name Texture identifier name

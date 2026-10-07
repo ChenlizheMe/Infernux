@@ -235,16 +235,20 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeMemory(const std::ve
         }
     } else {
         texture->format = ReadSrgb(metadata) ? TextureFormat::Rgba8Srgb : TextureFormat::Rgba8UNorm;
-        stbi_uc *decoded = stbi_load_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,
-                                                 &sourceHeight, &sourceChannels, STBI_rgb_alpha);
+        stbi_uc *decoded = nullptr;
         std::vector<unsigned char> pnmPixels;
-        if (!decoded) {
+        if (InxTextureLoader::IsPnmSource(source.data(), source.size())) {
             InxTextureData pnm = InxTextureLoader::LoadFromMemory(source.data(), source.size(), sourcePath);
             if (!pnm.IsValid())
                 throw std::runtime_error("failed to decode texture: " + sourcePath);
             sourceWidth = pnm.width;
             sourceHeight = pnm.height;
             pnmPixels = std::move(pnm.pixels);
+        } else {
+            decoded = stbi_load_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,
+                                           &sourceHeight, &sourceChannels, STBI_rgb_alpha);
+            if (!decoded)
+                throw std::runtime_error("failed to decode texture: " + sourcePath);
         }
         auto release = std::unique_ptr<stbi_uc, decltype(&stbi_image_free)>(decoded, &stbi_image_free);
         const unsigned char *base = decoded ? decoded : pnmPixels.data();
