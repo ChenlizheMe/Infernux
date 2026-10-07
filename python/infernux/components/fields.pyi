@@ -250,13 +250,6 @@ def hide_field(default: Any = ...) -> Any:
     ...
 
 
-def set_field_change_hooks(
-    will_change: Optional[Callable] = None,
-    did_change: Optional[Callable] = None,
-) -> None:
-    """Set global hooks called before/after a serialized field changes."""
-    ...
-
 def resolve_runtime_field_value(value: Any, field_meta_or_type: Any) -> Any:
     """Resolve a runtime field value (e.g. dereference refs)."""
     ...

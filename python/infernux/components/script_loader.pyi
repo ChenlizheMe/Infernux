@@ -134,7 +134,11 @@ def create_component_instance(component_class: Type[InxComponent]) -> InxCompone
 
 
 def load_and_create_component(
-    file_path: str, asset_database: Optional[object] = ...
+    file_path: str,
+    asset_database: Optional[object] = ...,
+    type_name: str = ...,
+    *,
+    script_guid: str = ...,
 ) -> Optional[InxComponent]:
     """Load first component from file and create an instance.
 

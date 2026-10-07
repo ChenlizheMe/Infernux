@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Callable, List, Optional, Tuple, Type, TypeVar
-
-_SerializedValue = TypeVar("_SerializedValue")
-
 from .component import InxComponent as InxComponent
 from .builtin_component import BuiltinComponent, CppProperty
 from .builtin import (
@@ -38,6 +34,7 @@ from .value_codec import (
     VALUE_CODECS as VALUE_CODECS,
 )
 from .fields import (
+    serialized_field as serialized_field,
     int_field as int_field,
     list_field as list_field,
     component_field as component_field,
@@ -71,33 +68,6 @@ from infernux.graph.ramp import (
 )
 
 
-def serialized_field(
-    default: _SerializedValue = ...,
-    *,
-    field_type: Optional[FieldType] = ...,
-    element_type: Optional[FieldType] = ...,
-    element_class: Optional[Type] = ...,
-    serializable_class: Optional[Type] = ...,
-    component_type: Optional[str] = ...,
-    asset_type: Optional[str] = ...,
-    range: Optional[Tuple[float, float]] = ...,
-    tooltip: str = ...,
-    display_name_key: str = ...,
-    enum_labels: Optional[List[str]] = ...,
-    readonly: bool = ...,
-    header: str = ...,
-    space: float = ...,
-    group: str = ...,
-    info_text: str = ...,
-    multiline: bool = ...,
-    slider: bool = ...,
-    drag_speed: Optional[float] = ...,
-    required_component: Optional[str] = ...,
-    visible_when: Optional[Callable] = ...,
-    hdr: bool = ...,
-    curve_non_negative: bool = ...,
-    hidden: bool = ...,
-) -> _SerializedValue: ...
 InspectorSpace = Space
 from .ref_wrappers import (
     GameObjectRef as GameObjectRef,
