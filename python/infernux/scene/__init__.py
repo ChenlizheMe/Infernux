@@ -253,9 +253,12 @@ class SceneManager:
 
         scene_files = SceneFileManager.instance()
         native = _NativeSceneManager.instance()
+        if scene_files is not None:
+            # Document snapshots and World identity belong to the live Scene.
+            # Complete authoring retirement before the native owner is destroyed.
+            scene_files.unregister_loaded_scene(scene)
         native.unload_scene(scene)
         if scene_files is not None:
-            scene_files.unregister_loaded_scene(scene)
             active = native.get_active_scene()
             if active is not None and scene_files.document_id_for_scene(active):
                 scene_files.activate_loaded_scene(active)
