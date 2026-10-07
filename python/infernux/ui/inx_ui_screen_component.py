@@ -349,6 +349,12 @@ class InxUIScreenComponent(InxUIComponent):
 
     def is_effectively_interactable(self) -> bool:
         """Return whether this element may receive a pointer transaction."""
+        owner = self._try_get_game_object()
+        if self._is_destroyed or owner is None or not self.enabled or not owner.active_in_hierarchy:
+            return False
+        canvas = self._canvas_for_owner(owner)
+        if canvas is not None and (not canvas.is_valid or not canvas.enabled):
+            return False
         _alpha, group_interactable, _blocks = self.get_effective_group_state()
         return group_interactable and bool(getattr(self, "interactable", True))
 

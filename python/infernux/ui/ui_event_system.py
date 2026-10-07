@@ -19,6 +19,32 @@ if TYPE_CHECKING:
 _DRAG_THRESHOLD = 5.0
 _DOUBLE_CLICK_TIME = 0.3
 _MOUSE_POINTER_ID = -1
+_TERMINAL_CALLBACKS = frozenset({"on_pointer_up", "on_end_drag", "on_pointer_exit"})
+
+
+def _accepts_pointer_input(target, surface) -> bool:
+    """Check a live action against its original coordinate-system owner."""
+    if getattr(target, "_is_destroyed", False) or not target.is_valid:
+        return False
+    accepts = getattr(target, "is_effectively_interactable", None)
+    if callable(accepts):
+        if not accepts():
+            return False
+    elif not target.enabled:
+        return False
+    if surface is None or getattr(surface, "_is_destroyed", False) or not getattr(surface, "is_valid", True):
+        return False
+    if not surface.enabled:
+        return False
+    owner = surface.game_object
+    if owner is not None and not owner.active_in_hierarchy:
+        return False
+    get_canvas = getattr(target, "get_canvas", None)
+    if callable(get_canvas):
+        current = get_canvas()
+        if current is not surface and not (current is None and getattr(surface, "element", None) is target):
+            return False
+    return True
 
 
 def _canvas_raycast(canvas, canvas_x: float, canvas_y: float):
@@ -52,8 +78,10 @@ class _PointerState:
     pointer_type: PointerType
     hover_target: Optional[InxUIScreenComponent] = None
     hover_canvas: Optional[UICanvas] = None
+    hover_canvas_size: Tuple[float, float] = (0.0, 0.0)
     press_target: Optional[InxUIScreenComponent] = None
     press_canvas: Optional[UICanvas] = None
+    press_canvas_size: Tuple[float, float] = (0.0, 0.0)
     press_position: Tuple[float, float] = (0.0, 0.0)
     drag_target: Optional[InxUIScreenComponent] = None
     is_dragging: bool = False
@@ -164,20 +192,12 @@ class UIEventProcessor:
 
         captured = state.press_target
         if captured is not None:
-            accepts = getattr(captured, "is_effectively_interactable", None)
-            if callable(accepts) and not accepts():
-                current = self._xy(pointer.canvas_positions[0]) if pointer.canvas_positions else (0.0, 0.0)
-                canceled_pointer = UIPointerFrame(
-                    pointer_id=pointer_id,
-                    pointer_type=pointer.pointer_type,
-                    canvas_positions=pointer.canvas_positions,
-                    up=True,
-                    canceled=True,
-                )
-                self._release_pointer(
-                    canceled_pointer, state, current, (0.0, 0.0),
-                    None, None, current, epoch,
-                )
+            if not any(surface is state.press_canvas for surface in canvases) or not _accepts_pointer_input(
+                captured, state.press_canvas
+            ):
+                self._cancel_pointer_state(pointer_key, state, epoch)
+            else:
+                state.press_canvas_size = state.press_canvas.input_logical_size
 
         current = self._xy(pointer.canvas_positions[0]) if pointer.canvas_positions else (0.0, 0.0)
         previous = self._xy(state.last_canvas_positions[0]) if state.last_canvas_positions else current
@@ -216,10 +236,8 @@ class UIEventProcessor:
                 hit_position = self._xy(position)
                 break
 
-        if hit_element is not None:
-            accepts = getattr(hit_element, "is_effectively_interactable", None)
-            if callable(accepts) and not accepts():
-                hit_element = None
+        if hit_element is not None and not _accepts_pointer_input(hit_element, hit_canvas):
+            hit_element = None
 
         if pointer.down or pointer.up or pointer.canceled:
             hit_object = getattr(hit_element, "game_object", None) if hit_element is not None else None
@@ -248,13 +266,15 @@ class UIEventProcessor:
         if hit_element is not previous_hover:
             if previous_hover is not None:
                 event = self._make_event(
-                    pointer, hit_position, delta, state.hover_canvas, previous_hover
+                    pointer, hit_position, delta, state.hover_canvas, previous_hover,
+                    canvas_size=state.hover_canvas_size,
                 )
                 self._dispatch_pointer_callback(previous_hover, "on_pointer_exit", event, epoch)
             state.hover_target = hit_element
             state.hover_canvas = hit_canvas
             if hit_element is not None:
                 event = self._make_event(pointer, hit_position, delta, hit_canvas, hit_element)
+                state.hover_canvas_size = event.canvas_size
                 self._dispatch_pointer_callback(hit_element, "on_pointer_enter", event, epoch)
 
         if pointer.down and hit_element is not None:
@@ -264,6 +284,7 @@ class UIEventProcessor:
             state.drag_target = hit_element
             state.is_dragging = False
             event = self._make_event(pointer, hit_position, delta, hit_canvas, hit_element)
+            state.press_canvas_size = event.canvas_size
             event.press_position = state.press_position
             self._dispatch_pointer_callback(hit_element, "on_pointer_down", event, epoch)
 
@@ -325,7 +346,8 @@ class UIEventProcessor:
         if pointer.pointer_type is PointerType.Touch and (pointer.up or pointer.canceled):
             if state.hover_target is not None:
                 event = self._make_event(
-                    pointer, hit_position, delta, state.hover_canvas, state.hover_target
+                    pointer, hit_position, delta, state.hover_canvas, state.hover_target,
+                    canvas_size=state.hover_canvas_size,
                 )
                 self._dispatch_pointer_callback(state.hover_target, "on_pointer_exit", event, epoch)
             self._pointers.pop(pointer_key, None)
@@ -372,6 +394,7 @@ class UIEventProcessor:
                 delta,
                 press_canvas,
                 press_target,
+                canvas_size=state.press_canvas_size,
             )
             event.press_position = state.press_position
             self._dispatch_pointer_callback(press_target, "on_pointer_up", event, epoch)
@@ -392,7 +415,8 @@ class UIEventProcessor:
 
         if drag_target is not None:
             event = self._make_event(
-                pointer, current, delta, press_canvas, drag_target
+                pointer, current, delta, press_canvas, drag_target,
+                canvas_size=state.press_canvas_size,
             )
             event.press_position = state.press_position
             self._dispatch_pointer_callback(drag_target, "on_end_drag", event, epoch)
@@ -419,9 +443,12 @@ class UIEventProcessor:
         )
         if state.hover_target is not None:
             event = self._make_event(
-                pointer, current, (0.0, 0.0), state.hover_canvas, state.hover_target
+                pointer, current, (0.0, 0.0), state.hover_canvas, state.hover_target,
+                canvas_size=state.hover_canvas_size,
             )
             self._dispatch_pointer_callback(state.hover_target, "on_pointer_exit", event, epoch)
+        state.hover_target = None
+        state.hover_canvas = None
 
     def reset(self) -> None:
         """Cancel every active pointer transaction."""
@@ -494,6 +521,21 @@ class UIEventProcessor:
                     "last_callback_status": "target_invalid",
                 })
                 return
+            if not _accepts_pointer_input(target, event.canvas):
+                if method_name in _TERMINAL_CALLBACKS:
+                    # Release hooks clean up captures/visuals even after a
+                    # prior callback disables the control or retires its Canvas.
+                    event.canceled = True
+                else:
+                    pointer_key = (event.pointer_type, event.pointer_id)
+                    state = self._pointers.get(pointer_key)
+                    if state is not None and (state.press_target is target or state.hover_target is target):
+                        self._cancel_pointer(pointer_key, epoch)
+                    self._last_pointer_debug.update({
+                        "last_callback": method_name,
+                        "last_callback_status": "target_unavailable",
+                    })
+                    return
             try:
                 callback(event)
             except BaseException as exc:
@@ -525,12 +567,15 @@ class UIEventProcessor:
         delta: Tuple[float, float],
         canvas: Optional[UICanvas],
         target: Optional[InxUIScreenComponent],
+        *,
+        canvas_size: Optional[Tuple[float, float]] = None,
     ) -> PointerEventData:
         event = PointerEventData()
         event.position = position
         event.delta = delta
         event.canvas_size = (
-            canvas.input_logical_size if canvas is not None else (0.0, 0.0)
+            canvas_size if canvas_size is not None else
+            (canvas.input_logical_size if canvas is not None else (0.0, 0.0))
         )
         event.pointer_id = int(pointer.pointer_id)
         event.pointer_type = pointer.pointer_type

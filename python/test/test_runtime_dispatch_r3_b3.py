@@ -344,8 +344,9 @@ def test_ui_process_keeps_simultaneous_touch_transactions_independent():
     publication.commit()
     try:
         processor = UIEventProcessor()
+        canvas = SplitCanvas()
         processor.process_pointers(
-            [SplitCanvas()],
+            [canvas],
             (
                 UIPointerFrame(10, PointerType.Touch, ((10.0, 0.0),), down=True, held=True),
                 UIPointerFrame(11, PointerType.Touch, ((90.0, 0.0),), down=True, held=True),
@@ -353,7 +354,7 @@ def test_ui_process_keeps_simultaneous_touch_transactions_independent():
             0.016,
         )
         processor.process_pointers(
-            [SplitCanvas()],
+            [canvas],
             (
                 UIPointerFrame(10, PointerType.Touch, ((10.0, 0.0),), up=True),
                 UIPointerFrame(11, PointerType.Touch, ((90.0, 0.0),), up=True),
@@ -382,13 +383,14 @@ def test_ui_touch_cancel_releases_capture_without_click():
     publication.commit()
     try:
         processor = UIEventProcessor()
+        canvas = _Canvas(target)
         processor.process_pointers(
-            [_Canvas(target)],
+            [canvas],
             (UIPointerFrame(27, PointerType.Touch, ((0.0, 0.0),), down=True, held=True),),
             0.016,
         )
         processor.process_pointers(
-            [_Canvas(target)],
+            [canvas],
             (
                 UIPointerFrame(
                     27,
@@ -409,7 +411,8 @@ def test_ui_touch_cancel_releases_capture_without_click():
         _PointerProbe.on_pointer_up = old_up
 
 
-def test_ui_group_interactable_change_cancels_active_capture():
+@pytest.mark.parametrize("down_already_drained", [False, True])
+def test_ui_group_interactable_change_cancels_active_capture(down_already_drained):
     target = _make_pointer_target()
     target.accepts_interaction = True
     target.is_effectively_interactable = lambda: target.accepts_interaction
@@ -429,13 +432,15 @@ def test_ui_group_interactable_change_cancels_active_capture():
         processor.process(
             [canvas], [(0.0, 0.0)], True, False, True, (0.0, 0.0), 0.016
         )
+        if down_already_drained:
+            drain_runtime_events()
         target.accepts_interaction = False
         processor.process(
             [canvas], [(1.0, 0.0)], False, False, True, (0.0, 0.0), 0.016
         )
         drain_runtime_events()
 
-        assert target.events == ["enter", "down", "up", "exit"]
+        assert target.events == (["enter", "down"] if down_already_drained else []) + ["up", "exit"]
         assert canceled == [True]
     finally:
         publication.rollback()
