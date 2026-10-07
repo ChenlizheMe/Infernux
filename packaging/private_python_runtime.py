@@ -12,6 +12,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
 
 from python_runtime_catalog import (
@@ -212,20 +213,10 @@ def is_current_private_runtime_root(
     )
 
 
-def extract_runtime_archive(
-    archive_path: str | os.PathLike[str],
-    destination: str | os.PathLike[str],
-    *,
-    expected_sha256: str,
-    runtime: str | PythonRuntimeId = DEFAULT_PYTHON_RUNTIME,
-    validate: Callable[[Path], None] | None = None,
-) -> None:
-    archive = Path(archive_path).resolve()
+@contextmanager
+def runtime_publication(destination: str | os.PathLike[str], *, replace_existing: bool = True):
+    """Prepare an owned candidate, then replace the live tree on successful exit."""
     target = Path(destination).resolve()
-    if not archive.is_file():
-        raise RuntimeError(f"Private Python runtime archive not found: {archive}")
-    verify_runtime_archive(archive, expected_sha256)
-
     target.parent.mkdir(parents=True, exist_ok=True)
     extract_root = Path(
         tempfile.mkdtemp(prefix=f".{target.name}.extract-", dir=target.parent)
@@ -233,31 +224,17 @@ def extract_runtime_archive(
     backup = extract_root / "previous-runtime"
     committed = False
     try:
-        try:
-            with tarfile.open(archive, mode="r:gz") as package:
-                package.extractall(extract_root, filter="data")
-        except (tarfile.TarError, OSError) as exc:
-            raise RuntimeError(f"Invalid private Python runtime archive: {archive}") from exc
-
         unpacked_runtime = extract_root / "python"
+        yield unpacked_runtime
         if not unpacked_runtime.is_dir():
-            raise RuntimeError(
-                "Unexpected private Python runtime archive layout: missing the python/ root."
-            )
-
-        write_private_runtime_marker(
-            unpacked_runtime,
-            archive.name,
-            expected_sha256,
-            runtime=runtime,
-        )
-        if validate is not None:
-            validate(unpacked_runtime)
+            raise RuntimeError("Runtime publication requires a prepared python/ directory.")
 
         # Keep the live tree until extraction, its marker, and validation have
         # all succeeded. A failed rename restores the previous tree once;
         # this is transaction rollback, never a second installation attempt.
         if target.exists():
+            if not replace_existing:
+                raise FileExistsError(str(target))
             os.replace(target, backup)
         try:
             os.replace(unpacked_runtime, target)
@@ -281,6 +258,33 @@ def extract_runtime_archive(
                 logging.getLogger(__name__).warning(
                     "Could not clean runtime extraction directory %s: %s", extract_root, exc,
                 )
+
+
+def extract_runtime_archive(
+    archive_path: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    *,
+    expected_sha256: str,
+    runtime: str | PythonRuntimeId = DEFAULT_PYTHON_RUNTIME,
+    validate: Callable[[Path], None] | None = None,
+) -> None:
+    archive = Path(archive_path).resolve()
+    if not archive.is_file():
+        raise RuntimeError(f"Private Python runtime archive not found: {archive}")
+    verify_runtime_archive(archive, expected_sha256)
+    with runtime_publication(destination) as candidate:
+        try:
+            with tarfile.open(archive, mode="r:gz") as package:
+                package.extractall(candidate.parent, filter="data")
+        except (tarfile.TarError, OSError) as exc:
+            raise RuntimeError(f"Invalid private Python runtime archive: {archive}") from exc
+        if not candidate.is_dir():
+            raise RuntimeError(
+                "Unexpected private Python runtime archive layout: missing the python/ root."
+            )
+        write_private_runtime_marker(candidate, archive.name, expected_sha256, runtime=runtime)
+        if validate is not None:
+            validate(candidate)
 
 
 def prune_runtime_staging_cache(

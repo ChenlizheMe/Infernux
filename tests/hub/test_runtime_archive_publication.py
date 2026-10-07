@@ -211,5 +211,5 @@ def test_invalid_executable_rejected_before_manager_replaces_old_tree(
     monkeypatch.setattr(manager_module, "extract_runtime_archive", lambda source, destination, **kwargs:
         extract(source, destination, **{**kwargs, "expected_sha256": digest}))
     with pytest.raises(manager_module.PythonRuntimeError, match="valid full runtime"):
-        manager._extract_runtime_to_root(str(installed_tree), overwrite=True)
+        manager._extract_runtime_to_root(str(installed_tree))
     assert_previous(installed_tree)

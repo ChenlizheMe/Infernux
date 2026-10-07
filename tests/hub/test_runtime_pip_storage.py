@@ -45,7 +45,7 @@ def test_builder_package_install_does_not_disable_cache(tmp_path, monkeypatch):
     assert "--no-cache-dir" not in calls[0]
 
 
-def test_managed_runtime_reuses_download_with_server_offline(tmp_path, monkeypatch):
+def test_managed_runtime_reuses_download_with_server_offline(tmp_path, monkeypatch, private_python_factory):
     monkeypatch.setenv("INFERNUX_SHARED_DATA_ROOT", str(tmp_path / "Shared"))
     monkeypatch.delenv("PIP_CACHE_DIR", raising=False)
     monkeypatch.delenv("PIP_NO_CACHE_DIR", raising=False)
@@ -86,12 +86,11 @@ def test_managed_runtime_reuses_download_with_server_offline(tmp_path, monkeypat
     manager = runtime.PythonRuntimeManager(runtime_dir=str(tmp_path / "Shared/Runtimes"))
 
     def install(name):
-        target = tmp_path / name
-        # Redirect only the installation destination; real pip and real module
-        # detection run in subprocesses without changing this Python environment.
-        monkeypatch.setattr(runtime, "_site_packages_root", lambda *args: str(target))
-        monkeypatch.setenv("PYTHONPATH", str(target))
-        manager._ensure_runtime_packages(sys.executable)
+        root = tmp_path / name
+        python = private_python_factory(root)
+        target = root / ("Lib/site-packages" if sys.platform == "win32" else "lib/python3.13/site-packages")
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+        manager._ensure_runtime_packages(str(python))
         assert (target / "inx_runtime_cache_probe.py").read_text() == "VALUE = 'owned download'\n"
 
     try:
