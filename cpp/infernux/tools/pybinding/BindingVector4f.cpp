@@ -116,10 +116,9 @@ inline glm::vec4 SmoothDamp(glm::vec4 current, glm::vec4 target, glm::vec4 &curr
     float omega = 2.f / smoothTime;
     float x = omega * deltaTime;
     float exp = 1.f / (1.f + x + 0.48f * x * x + 0.235f * x * x * x);
-    glm::vec4 temp = (diff * omega) + currentVelocity;
-    glm::vec4 change = temp * deltaTime;
+    glm::vec4 temp = (diff * omega + currentVelocity) * deltaTime;
     currentVelocity = (currentVelocity - temp * omega) * exp;
-    glm::vec4 result = targetPos + (diff + change) * exp;
+    glm::vec4 result = targetPos + (diff + temp) * exp;
 
     glm::vec4 toOriginal = originalTarget - current;
     glm::vec4 toResult = result - originalTarget;

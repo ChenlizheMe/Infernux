@@ -112,19 +112,56 @@ inline float SignedAngle(const glm::vec3 &from, const glm::vec3 &to)
         ang = -ang;
     return ang;
 }
-inline glm::vec3 SlerpUnclamped(glm::vec3 a, glm::vec3 b, float t)
+inline glm::vec3 SlerpUnclamped(const glm::vec3 &a, const glm::vec3 &b, float t)
 {
-    a = Normalize(a);
-    b = Normalize(b);
-    float dotAB = std::clamp(Dot(a, b), -1.f, 1.f);
-    float theta = std::acos(dotAB) * t;
-    glm::vec3 rel = Normalize(b - a * dotAB);
-    if (SqrMagnitude(rel) < 1e-12f)
-        return LerpUnclamped(a, b, t);
-    return a * std::cos(theta) + rel * std::sin(theta);
+    // Preserve authored lengths. Double intermediates keep finite float
+    // vectors normalizable even when their squared length over/underflows float.
+    glm::dvec3 first(a), second(b);
+    const double lengthA = glm::length(first), lengthB = glm::length(second);
+    if (!std::isfinite(t) || !std::isfinite(lengthA) || !std::isfinite(lengthB))
+        throw std::invalid_argument("Vector3.slerp requires finite vectors and t");
+    if (t == 0.0f)
+        return a;
+    if (t == 1.0f)
+        return b;
+
+    glm::dvec3 interpolated;
+    if (lengthA == 0.0 || lengthB == 0.0) {
+        // A zero vector has no direction; its defined path is Cartesian lerp.
+        interpolated = first + (second - first) * static_cast<double>(t);
+    } else {
+        first /= lengthA;
+        second /= lengthB;
+        const double cosine = std::clamp(glm::dot(first, second), -1.0, 1.0);
+        glm::dvec3 tangent = second - first * cosine;
+        const double sine = glm::length(tangent);
+        const double angle = std::atan2(sine, cosine) * static_cast<double>(t);
+        if (sine > 1e-12) {
+            tangent /= sine;
+        } else if (cosine < 0.0) {
+            // Antipodal directions have no unique arc. Pick the least aligned
+            // coordinate axis with a stable tie order to define that plane.
+            const glm::dvec3 alignment = glm::abs(first);
+            const int axis = alignment.x <= alignment.y && alignment.x <= alignment.z ? 0
+                             : alignment.y <= alignment.z ? 1 : 2;
+            glm::dvec3 basis(0.0);
+            basis[axis] = 1.0;
+            tangent = glm::normalize(glm::cross(first, basis));
+        } else {
+            tangent = glm::dvec3(0.0);
+        }
+        const double length = lengthA + (lengthB - lengthA) * static_cast<double>(t);
+        interpolated = (first * std::cos(angle) + tangent * std::sin(angle)) * length;
+    }
+    const glm::vec3 result(interpolated);
+    if (!std::isfinite(result.x) || !std::isfinite(result.y) || !std::isfinite(result.z))
+        throw std::overflow_error("Vector3.slerp produced a non-finite result");
+    return result;
 }
 inline glm::vec3 Slerp(const glm::vec3 &a, const glm::vec3 &b, float t)
 {
+    if (!std::isfinite(t))
+        throw std::invalid_argument("Vector3.slerp requires finite t");
     return SlerpUnclamped(a, b, std::clamp(t, 0.f, 1.f));
 }
 inline void RotateTowards(glm::vec3 &current, const glm::vec3 &target, float maxRadiansDelta, float maxMagnitudeDelta)

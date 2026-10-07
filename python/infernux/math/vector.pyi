@@ -116,11 +116,15 @@ class vector3(metaclass=_VecMeta):
         ...
     @staticmethod
     def slerp(a: Vector3, b: Vector3, t: float) -> Vector3:
-        """Spherically interpolate between two vectors."""
+        """Interpolate direction and length, clamping t to [0, 1].
+
+        Zero endpoints use Cartesian lerp. Opposite directions use a stable
+        perpendicular plane chosen from the least aligned coordinate axis.
+        """
         ...
     @staticmethod
     def slerp_unclamped(a: Vector3, b: Vector3, t: float) -> Vector3:
-        """Spherically interpolate between two vectors without clamping t."""
+        """Use the same direction/length path as slerp without clamping t."""
         ...
     @staticmethod
     def smooth_damp(
