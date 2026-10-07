@@ -65,7 +65,8 @@ app.sendPostedEvents()
 print("SHUTDOWN_OK", flush=True)
 '''
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    packaging = Path(__file__).resolve().parents[1]
+    env["PYTHONPATH"] = os.pathsep.join((str(packaging), str(packaging.parent / "python")))
     result = subprocess.run(
         [sys.executable, "-c", script, query], env=env,
         capture_output=True, text=True, timeout=10,

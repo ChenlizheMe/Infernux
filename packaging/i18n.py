@@ -230,6 +230,7 @@ _ZH = {
     "{replies} replies · {views} views · {likes} likes": "{replies} 条回复 · {views} 次浏览 · {likes} 个赞",
     "Open": "打开",
     "Community topics could not be loaded: {message}": "无法加载社区帖子：{message}",
+    "Community request timed out.": "社区请求超时。",
     "System language is detected automatically on Windows.": "Windows 上会自动检测系统显示语言。",
     "Language changes apply immediately.": "语言更改会立即应用。",
     "Hub Update": "Hub 更新",

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QThread, Qt, QUrl, Signal
+import json
+
+from PySide6.QtCore import QTimer, Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QPainter
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -14,7 +17,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from community_feed import COMMUNITY_ORIGIN, HotTopic, fetch_hot_topics
+import community_feed
+from community_feed import COMMUNITY_ORIGIN, HotTopic, parse_hot_topics
 from i18n import tr
 from style import StyleManager
 from view.hover_widgets import AnimatedSurfaceFrame
@@ -44,26 +48,22 @@ class DiscussionGlyph(QWidget):
         painter.end()
 
 
-class _CommunityWorker(QObject):
-    finished = Signal(object)
-    failed = Signal(str)
-
-    def run(self) -> None:
-        try:
-            self.finished.emit(fetch_hot_topics())
-        except Exception as exc:
-            self.failed.emit(str(exc))
-
-
 class DiscussionView(QWidget):
     """Official community entry plus the live weekly top-topic feed."""
 
     FORUM_URL = COMMUNITY_ORIGIN + "/"
+    REQUEST_TIMEOUT_MS = 15000
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._thread: QThread | None = None
-        self._worker: _CommunityWorker | None = None
+        self._network = QNetworkAccessManager(self)
+        self._reply: QNetworkReply | None = None
+        self._closing = False
+        self._request_error = ""
+        self._deadline = QTimer(self)
+        self._deadline.setSingleShot(True)
+        self._deadline.timeout.connect(self._request_expired)
+        QApplication.instance().aboutToQuit.connect(self.shutdown)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 30, 32, 30)
@@ -135,27 +135,49 @@ class DiscussionView(QWidget):
         )
 
     def refresh(self) -> None:
-        if self._thread is not None and self._thread.isRunning():
+        if self._closing or self._reply is not None:
             return
         self._clear_feed()
         self._set_feed_message(tr("Loading community topics..."), "loading")
         self._refresh.setEnabled(False)
-        self._thread = QThread(self)
-        self._worker = _CommunityWorker()
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.finished.connect(self._show_topics)
-        self._worker.failed.connect(self._show_error)
-        self._worker.finished.connect(self._thread.quit)
-        self._worker.failed.connect(self._thread.quit)
-        self._thread.finished.connect(self._worker.deleteLater)
-        self._thread.finished.connect(self._refresh_ready)
-        self._thread.start()
+        self._request_error = ""
+        request = QNetworkRequest(QUrl(community_feed.HOT_TOPICS_URL))
+        request.setRawHeader(b"Accept", b"application/json")
+        request.setRawHeader(b"User-Agent", b"InfernuxHub-Community")
+        request.setTransferTimeout(self.REQUEST_TIMEOUT_MS)
+        self._reply = self._network.get(request)
+        self._reply.finished.connect(self._request_finished)
+        # An overall deadline also covers a response that trickles indefinitely.
+        self._deadline.start(self.REQUEST_TIMEOUT_MS)
 
-    def _refresh_ready(self) -> None:
-        self._refresh.setEnabled(True)
-        self._worker = None
-        self._thread = None
+    def _request_expired(self) -> None:
+        if self._reply is not None:
+            self._request_error = tr("Community request timed out.")
+            self._reply.abort()
+
+    def _request_finished(self) -> None:
+        reply, self._reply = self._reply, None
+        if reply is None:
+            return
+        self._deadline.stop()
+        try:
+            if reply.error() != QNetworkReply.NetworkError.NoError:
+                self._show_error(self._request_error or reply.errorString())
+            else:
+                self._show_topics(parse_hot_topics(json.loads(bytes(reply.readAll()).decode("utf-8"))))
+        except (UnicodeDecodeError, ValueError) as exc:
+            self._show_error(str(exc))
+        finally:
+            reply.deleteLater()
+            self._refresh.setEnabled(True)
+
+    def shutdown(self) -> None:
+        self._closing = True
+        self._deadline.stop()
+        reply, self._reply = self._reply, None
+        if reply is not None:
+            reply.abort()
+            reply.deleteLater()
 
     def _clear_feed(self) -> None:
         while self._feed.count():
