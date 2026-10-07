@@ -210,6 +210,27 @@ int main()
     assert(selection.Find(renderer.MakeDrawIdentity(4)) && !*selection.Find(renderer.MakeDrawIdentity(4)));
     selection.Clear();
     assert(selection.Size() == 0 && !selection.Find(renderer.MakeDrawIdentity()));
+    // Retained renderer lists must observe queue/tag/state mutations while
+    // animated shader values keep the immutable routing cache reusable.
+    const auto routingBeforeValues = InxMaterial::GetRoutingPublicationRevision();
+    material->SetFloat("AnimatedValue", 1.0F);
+    material->SetFloat("AnimatedValue", 2.0F);
+    assert(InxMaterial::GetRoutingPublicationRevision() == routingBeforeValues);
+    material->SetRenderQueue(3000);
+    const auto routingAfterQueue = InxMaterial::GetRoutingPublicationRevision();
+    assert(routingAfterQueue > routingBeforeValues);
+    material->SetRenderQueue(3000);
+    assert(InxMaterial::GetRoutingPublicationRevision() == routingAfterQueue);
+    material->SetPassTag("transparent");
+    assert(InxMaterial::GetRoutingPublicationRevision() > routingAfterQueue);
+    const auto routingBeforeState = InxMaterial::GetRoutingPublicationRevision();
+    auto updatedState = material->GetRenderState();
+    updatedState.renderQueue = 2000;
+    material->SetRenderState(updatedState);
+    assert(InxMaterial::GetRoutingPublicationRevision() > routingBeforeState);
+    const auto routingBeforeShader = InxMaterial::GetRoutingPublicationRevision();
+    material->SetFragShader("OtherQueueShader");
+    assert(InxMaterial::GetRoutingPublicationRevision() > routingBeforeShader);
     for (int submesh : {-2, -19}) {
         rejected = false;
         try {

@@ -35,6 +35,10 @@ namespace infernux
 namespace
 {
 
+// One out-of-line publication shared by AssetRuntime and renderer DLLs.
+// Inline counters in the header would create independent Windows DLL copies.
+std::atomic<uint64_t> g_materialRoutingRevision{1};
+
 bool IsBuiltinTextureToken(const std::string &value)
 {
     return value == "white" || value == "black" || value == "normal";
@@ -477,6 +481,16 @@ bool ApplyStencilMeta(RenderState &renderState, const std::string &stencil)
 
 } // namespace
 
+uint64_t InxMaterial::GetRoutingPublicationRevision() noexcept
+{
+    return g_materialRoutingRevision.load(std::memory_order_relaxed);
+}
+
+void InxMaterial::NotifyRoutingChanged() noexcept
+{
+    g_materialRoutingRevision.fetch_add(1, std::memory_order_relaxed);
+}
+
 // ============================================================================
 // RenderState Implementation
 // ============================================================================
@@ -613,6 +627,7 @@ void InxMaterial::ResetRenderStateAuthorship()
     m_renderStateOverrides = 0;
     m_pipelineDirty = true;
     ++m_version;
+    NotifyRoutingChanged();
 }
 
 InxMaterial &InxMaterial::operator=(const InxMaterial &other)
@@ -652,6 +667,7 @@ InxMaterial &InxMaterial::operator=(const InxMaterial &other)
     m_derivedVersion = 0;
     m_isDeleted = other.m_isDeleted;
 
+    NotifyRoutingChanged();
     return *this;
 }
 
@@ -1146,6 +1162,7 @@ void InxMaterial::ApplyShaderRenderMeta(const std::string &cullMode, const std::
     if (changed) {
         m_pipelineDirty = true;
         ++m_version;
+        NotifyRoutingChanged();
     }
     m_derivedVersion += m_version - previousVersion;
 }
@@ -1399,6 +1416,7 @@ bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
     m_pipelineDirty = true;
     m_propertiesDirty = true;
     ++m_version;
+    NotifyRoutingChanged();
     TrackRuntimeShaderReferences();
     return true;
 }

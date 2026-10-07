@@ -357,6 +357,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
             ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     /// @brief Set vertex shader name independently.
@@ -371,6 +372,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
             ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     /// @brief Set fragment shader name independently.
@@ -385,6 +387,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
             ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     void SetVertShaderReference(ShaderAssetReference reference)
@@ -398,6 +401,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
             ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     void SetFragShaderReference(ShaderAssetReference reference)
@@ -411,6 +415,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
             ResetRenderStateAuthorship();
         m_pipelineDirty = true;
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     /// @brief Get the fragment shader name (primary identity for render meta).
@@ -445,6 +450,11 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     // Render State
     // ========================================================================
 
+    /// Queue, pass-tag, shader and render-state edits invalidate retained draw
+    /// routing. Value/texture animation does not change this publication.
+    [[nodiscard]] static uint64_t GetRoutingPublicationRevision() noexcept;
+    static void NotifyRoutingChanged() noexcept;
+
     [[nodiscard]] const RenderState &GetRenderState() const
     {
         return m_renderState;
@@ -461,6 +471,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
         m_renderStateOverrides |= kAllRenderStateOverrides;
         m_pipelineDirty = true;
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     [[nodiscard]] int32_t GetRenderQueue() const
@@ -474,6 +485,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
         m_renderState.renderQueue = queue;
         m_renderStateOverrides |= static_cast<uint32_t>(RenderStateOverride::RenderQueue);
         ++m_version;
+        NotifyRoutingChanged();
     }
 
     [[nodiscard]] const std::string &GetPassTag() const
@@ -482,8 +494,10 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     }
     void SetPassTag(const std::string &tag)
     {
-        if (m_passTag != tag)
+        if (m_passTag != tag) {
             ++m_version;
+            NotifyRoutingChanged();
+        }
         m_passTag = tag;
     }
 
@@ -511,8 +525,10 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     /// @brief Set the entire override bitmask.
     void SetRenderStateOverrides(uint32_t overrides)
     {
-        if (m_renderStateOverrides != overrides)
+        if (m_renderStateOverrides != overrides) {
             ++m_version;
+            NotifyRoutingChanged();
+        }
         m_renderStateOverrides = overrides;
     }
 

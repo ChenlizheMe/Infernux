@@ -1672,6 +1672,8 @@ class InxVkCoreModular
     uint64_t m_shadowListBufferRevision = 0;
     uint64_t m_drawListRenderMetaRevision = 0;
     uint64_t m_shadowListRenderMetaRevision = 0;
+    uint64_t m_drawListMaterialRoutingRevision = 0;
+    uint64_t m_shadowListMaterialRoutingRevision = 0;
     std::vector<DrawListMetadata> m_drawListMetadata;
     std::vector<DrawListMetadata> m_shadowListMetadata;
     // SkyboxPass has an explicit RenderDomain contract. Keep its indices so

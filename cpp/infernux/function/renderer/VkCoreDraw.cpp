@@ -556,6 +556,7 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
     if (!forceRefresh && m_drawCallsPtr == drawCalls && m_drawListMetadataSource == drawCalls &&
         m_drawListBufferRevision == m_objectBufferRevision &&
         m_drawListRenderMetaRevision == m_shaderCache.GetRenderMetaRevision() &&
+        m_drawListMaterialRoutingRevision == InxMaterial::GetRoutingPublicationRevision() &&
         (!drawCalls || m_drawListMetadata.size() == drawCalls->size()))
         return;
 
@@ -568,6 +569,7 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
     m_drawListBufferRevision = 0;
     m_drawListRenderMetaRevision = m_shaderCache.GetRenderMetaRevision();
     m_drawListMetadata.clear();
+    m_drawListMaterialRoutingRevision = InxMaterial::GetRoutingPublicationRevision();
     m_skyboxDrawListSource = drawCalls;
     m_skyboxDrawCallIndices.clear();
 
@@ -626,6 +628,7 @@ void InxVkCoreModular::SetDrawCalls(const std::vector<DrawCall> *drawCalls, bool
     }
     m_drawListBufferRevision = m_objectBufferRevision;
     m_drawListRenderMetaRevision = m_shaderCache.GetRenderMetaRevision();
+    m_drawListMaterialRoutingRevision = InxMaterial::GetRoutingPublicationRevision();
 }
 
 void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls, bool forceRefresh)
@@ -633,6 +636,7 @@ void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls
     if (!forceRefresh && m_shadowDrawCallsPtr == drawCalls && m_shadowListMetadataSource == drawCalls &&
         m_shadowListBufferRevision == m_objectBufferRevision &&
         m_shadowListRenderMetaRevision == m_shaderCache.GetRenderMetaRevision() &&
+        m_shadowListMaterialRoutingRevision == InxMaterial::GetRoutingPublicationRevision() &&
         (!drawCalls || m_shadowListMetadata.size() == drawCalls->size()))
         return;
 
@@ -642,6 +646,7 @@ void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls
     m_shadowListBufferRevision = 0;
     m_shadowListRenderMetaRevision = m_shaderCache.GetRenderMetaRevision();
     m_shadowListMetadata.clear();
+    m_shadowListMaterialRoutingRevision = InxMaterial::GetRoutingPublicationRevision();
     if (!drawCalls)
         return;
 
@@ -665,6 +670,7 @@ void InxVkCoreModular::SetShadowDrawCalls(const std::vector<DrawCall> *drawCalls
     }
     m_shadowListBufferRevision = m_objectBufferRevision;
     m_shadowListRenderMetaRevision = m_shaderCache.GetRenderMetaRevision();
+    m_shadowListMaterialRoutingRevision = InxMaterial::GetRoutingPublicationRevision();
 }
 
 void InxVkCoreModular::ReleaseActiveDrawLists() noexcept
