@@ -746,6 +746,28 @@ if(INFERNUX_BUILD_TESTS)
     target_link_libraries(infernux_compute_resource_lifetime_tests PRIVATE InfernuxRenderCore)
     add_test(NAME infernux.compute_resource_lifetime COMMAND infernux_compute_resource_lifetime_tests)
 
+    set(_compute_dispatch_limits_spirv "${CMAKE_CURRENT_BINARY_DIR}/ComputeDispatchLimits.comp.spv")
+    add_custom_command(OUTPUT "${_compute_dispatch_limits_spirv}"
+        COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
+            "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/ComputeDispatchLimits.comp"
+            -o "${_compute_dispatch_limits_spirv}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/cpp/tests/shaders/ComputeDispatchLimits.comp" VERBATIM)
+    add_executable(infernux_compute_dispatch_limits_vulkan_tests
+        cpp/tests/ComputeDispatchLimitsVulkanTests.cpp "${_compute_dispatch_limits_spirv}")
+    target_include_directories(infernux_compute_dispatch_limits_vulkan_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_compute_dispatch_limits_vulkan_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_compute_dispatch_limits_vulkan_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_compute_dispatch_limits_vulkan_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.compute_dispatch_limits_vulkan
+        COMMAND infernux_compute_dispatch_limits_vulkan_tests "${_compute_dispatch_limits_spirv}")
+    set_tests_properties(infernux.compute_dispatch_limits_vulkan PROPERTIES
+        LABELS "requires_vulkan_device" TIMEOUT 60 RUN_SERIAL TRUE
+        FAIL_REGULAR_EXPRESSION "Validation Error:;SYNC-HAZARD")
+
     add_executable(infernux_render_texture_artifact_tests cpp/tests/RenderTextureArtifactTests.cpp)
     target_include_directories(infernux_render_texture_artifact_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 
 namespace infernux::rhi
@@ -162,6 +163,14 @@ ComputeKernel::PreparedDispatch ComputeKernel::PrepareDispatch(std::vector<std::
         throw std::invalid_argument("Compute kernel push constants do not match its compiled layout");
     if (groupCountX == 0 || groupCountY == 0 || groupCountZ == 0)
         throw std::invalid_argument("Compute kernel dispatch dimensions must be positive");
+    const uint32_t groups[] = {groupCountX, groupCountY, groupCountZ};
+    const auto &limits = m_host.device.GetCapabilities().limits;
+    for (size_t axis = 0; axis < 3; ++axis) {
+        if (groups[axis] > limits.maxComputeWorkgroupCount[axis])
+            throw std::invalid_argument("Compute kernel dispatch group count " + std::string(1, "XYZ"[axis]) + "=" +
+                                        std::to_string(groups[axis]) + " exceeds device limit " +
+                                        std::to_string(limits.maxComputeWorkgroupCount[axis]));
+    }
     for (const auto &buffer : buffers)
         if (!buffer)
             throw std::invalid_argument("Compute kernel buffer cannot be null");

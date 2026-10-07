@@ -4,7 +4,10 @@
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <array>
 #include <cstring>
+#include <iostream>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -21,6 +24,12 @@ class TestDevice final : public Device
     std::shared_ptr<DeviceLifetime> lifetime = std::make_shared<DeviceLifetime>();
     std::set<uint32_t> live;
     uint32_t next = 1;
+    TestDevice()
+    {
+        caps.limits.maxComputeWorkgroupCount[0] = 4;
+        caps.limits.maxComputeWorkgroupCount[1] = 3;
+        caps.limits.maxComputeWorkgroupCount[2] = 2;
+    }
     const DeviceCaps &GetCapabilities() const noexcept override
     {
         return caps;
@@ -168,10 +177,75 @@ class TestQueue final : public ComputeQueue
         return 0;
     }
 };
+
+bool VerifyDispatchLimits()
+{
+    struct Scenario
+    {
+        std::array<uint32_t, 3> groups;
+        bool valid;
+    };
+    const std::array<Scenario, 11> scenarios{{
+        {{1, 1, 1}, true}, {{4, 3, 2}, true},
+        {{0, 1, 1}, false}, {{1, 0, 1}, false}, {{1, 1, 0}, false},
+        {{5, 1, 1}, false}, {{1, 4, 1}, false}, {{1, 1, 3}, false},
+        {{UINT32_MAX, 1, 1}, false}, {{1, UINT32_MAX, 1}, false}, {{1, 1, UINT32_MAX}, false},
+    }};
+    unsigned passed = 0, failed = 0;
+    for (int path = 0; path < 3; ++path) {
+        for (const auto &scenario : scenarios) {
+            TestDevice device;
+            TestQueue queue;
+            ComputeHost host(device, queue);
+            bool rejected = false;
+            {
+                const uint32_t spirv[] = {0x07230203u, 0, 0, 0, 0};
+                auto buffer = std::make_shared<ComputeBuffer>(host, ComputeBufferDesc{4});
+                auto kernel = std::make_shared<ComputeKernel>(host, spirv, 5, 1, 0);
+                try {
+                    if (path == 0) {
+                        kernel->Dispatch({buffer}, nullptr, 0, scenario.groups[0], scenario.groups[1], scenario.groups[2]);
+                    } else {
+                        ComputeDispatchDesc invalid;
+                        invalid.kernel = kernel;
+                        invalid.buffers = {buffer};
+                        invalid.bufferAccesses = {ComputeBufferAccess::ReadWrite};
+                        invalid.groupCountX = scenario.groups[0];
+                        invalid.groupCountY = scenario.groups[1];
+                        invalid.groupCountZ = scenario.groups[2];
+                        if (path == 1) {
+                            SubmitComputeBatch(host, {invalid});
+                        } else {
+                            auto valid = invalid;
+                            valid.groupCountX = valid.groupCountY = valid.groupCountZ = 1;
+                            SubmitComputeBatch(host, {{buffer, 0, {0, 0, 0, 0}}}, {valid, invalid});
+                        }
+                    }
+                } catch (const std::invalid_argument &) {
+                    rejected = true;
+                }
+            }
+            const bool correct = rejected == !scenario.valid && queue.submissions == (scenario.valid ? 1u : 0u) &&
+                                 device.live.empty();
+            if (correct)
+                ++passed;
+            else {
+                ++failed;
+                std::cerr << "dispatch limits failed path=" << path << " groups=" << scenario.groups[0] << ','
+                          << scenario.groups[1] << ',' << scenario.groups[2] << " submissions=" << queue.submissions
+                          << '\n';
+            }
+        }
+    }
+    std::cout << "Compute dispatch limits: passed=" << passed << " failed=" << failed << '\n';
+    return failed == 0;
+}
 } // namespace
 
 int main()
 {
+    if (!VerifyDispatchLimits())
+        return 1;
     TestDevice device;
     TestQueue originalQueue, replacementQueue;
     std::optional<ComputeHost> wrapper;
