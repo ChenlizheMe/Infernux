@@ -793,6 +793,9 @@ void Collider::CloneBaseColliderData(Collider &target) const
     auto &dst = target.DataMut();
     dst.isTrigger = src.isTrigger;
     dst.center = src.center;
+    // Clone already has an authored shape, just like a deserialized collider.
+    // Awake must not replace it with a new-component fit to renderer bounds.
+    dst.deserialized = true;
     if (m_physicMaterial.HasGuid())
         target.SetPhysicMaterialGuid(m_physicMaterial.GetGuid());
     else

@@ -255,9 +255,6 @@ class PhysicsWorld
     /// Update a body's user layer while preserving whether it is moving/static.
     void SetBodyGameLayer(uint32_t bodyId, int gameLayer);
 
-    /// Set mass override via the body's MassProperties.
-    void SetBodyMassProperties(uint32_t bodyId, float mass);
-
     /// Set linear / angular damping (drag).
     void SetBodyDamping(uint32_t bodyId, float linearDamping, float angularDamping);
 

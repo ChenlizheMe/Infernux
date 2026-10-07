@@ -314,7 +314,7 @@ void Rigidbody::SetMass(float mass)
         throw std::invalid_argument("mass must be finite and at least 0.001");
     auto &d = DataMut();
     d.mass = mass;
-    ForEachBody([&](PhysicsWorld &pw, uint32_t id) { pw.SetBodyMassProperties(id, d.mass); });
+    ApplyConstraints();
 }
 
 void Rigidbody::SetDrag(float drag)
@@ -1111,7 +1111,6 @@ void Rigidbody::ApplyConfigurationToBody(uint32_t bodyId)
         throw std::runtime_error("cannot configure a body before PhysicsWorld initialization");
 
     auto &data = DataMut();
-    world.SetBodyMassProperties(bodyId, data.mass);
     world.SetBodyDamping(bodyId, data.drag, data.angularDrag);
     world.SetBodyGravityFactor(bodyId, data.useGravity ? 1.0f : 0.0f);
     const int allowedDofs = 0x3F & ~(data.constraints >> 1);

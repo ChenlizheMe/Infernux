@@ -1472,7 +1472,13 @@ void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
     // Queries that already hold the read side therefore finish against the
     // previously published immutable shape; its BVH is retired only after
     // the last reference is released.  Never mutate a published mesh shape.
-    bodyInterface.SetShape(JPH::BodyID(id), newShape, true, JPH::EActivation::Activate);
+    // Geometry changes must retain authored mass and allowed axes. Recompute
+    // inertia from the new shape through the same path as body configuration,
+    // without first replacing it with the shape's default density mass.
+    bodyInterface.SetShape(JPH::BodyID(id), newShape, false, JPH::EActivation::Activate);
+    auto *rigidbody = collider->GetCachedRigidbody();
+    if (rigidbody && rigidbody->IsEnabled())
+        SetBodyAllowedDOFs(id, 0x3F & ~(rigidbody->GetConstraints() >> 1), rigidbody->GetMass());
     // Publish geometry, aggregate sensor state and its exact member identities
     // under the same query snapshot lock. A single remaining shape has no
     // compound subshape ID, so its primary identity must follow that member.
@@ -1640,29 +1646,6 @@ void PhysicsWorld::SetBodyGameLayer(uint32_t bodyId, int gameLayer)
     const bool moving = motionType != JPH::EMotionType::Static;
     bi.SetObjectLayer(JPH::BodyID(bodyId), PhysicsObjectLayers::Encode(gameLayer, moving));
     m_queryGeneration.fetch_add(1, std::memory_order_release);
-}
-
-void PhysicsWorld::SetBodyMassProperties(uint32_t bodyId, float mass)
-{
-    if (!m_initialized || bodyId == 0xFFFFFFFF)
-        return;
-
-    JPH::BodyLockWrite lock(m_physicsSystem->GetBodyLockInterface(), JPH::BodyID(bodyId));
-    if (lock.Succeeded()) {
-        JPH::Body &body = lock.GetBody();
-        if (body.IsDynamic()) {
-            JPH::MotionProperties *mp = body.GetMotionProperties();
-            if (mp->GetInverseMass() > 0.0f) {
-                // Scale mass and inertia proportionally
-                mp->ScaleToMass(mass > 0.001f ? mass : 0.001f);
-            } else {
-                // Body was just switched from static — compute mass from shape
-                JPH::MassProperties massProp = body.GetShape()->GetMassProperties();
-                massProp.ScaleToMass(mass > 0.001f ? mass : 0.001f);
-                mp->SetMassProperties(JPH::EAllowedDOFs::All, massProp);
-            }
-        }
-    }
 }
 
 void PhysicsWorld::SetBodyDamping(uint32_t bodyId, float linearDamping, float angularDamping)
