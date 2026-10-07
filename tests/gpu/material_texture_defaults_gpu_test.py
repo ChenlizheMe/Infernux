@@ -1,4 +1,4 @@
-"""Numerical GPU proof of declared defaults, assignment, clear and shader reload."""
+"""GPU proof of declared defaults, explicit tokens, overrides and shader reload."""
 import argparse
 import json
 from pathlib import Path
@@ -47,17 +47,24 @@ def main():
     parser.add_argument("--proof", type=Path)
     args = parser.parse_args()
     phases = [
-        ("white_unassigned", "white", False, (1, 1, 1)),
-        ("black_unassigned", "black", False, (0, 0, 0)),
-        ("normal_unassigned", "normal", False, (.5, .5, 1)),
-        ("assigned_red", "normal", True, (1, 0, 0)),
-        ("changed_default_keeps_assigned", "black", True, (1, 0, 0)),
-        ("clear_restores_black", "black", False, (0, 0, 0)),
-        ("normal_restored", "normal", False, (.5, .5, 1)),
-        ("white_exact_restore", "white", False, (1, 1, 1)),
+        ("white_unassigned", "white", "", None, (1, 1, 1)),
+        ("black_unassigned", "black", "", None, (0, 0, 0)),
+        ("normal_unassigned", "normal", "", None, (.5, .5, 1)),
+        ("assigned_red", "normal", "asset", None, (1, 0, 0)),
+        ("changed_default_keeps_assigned", "black", "asset", None, (1, 0, 0)),
+        ("clear_restores_black", "black", "", None, (0, 0, 0)),
+        ("normal_restored", "normal", "", None, (.5, .5, 1)),
+        ("explicit_black", "normal", "black", None, (0, 0, 0)),
+        ("explicit_white", "normal", "white", None, (1, 1, 1)),
+        ("explicit_normal", "white", "normal", None, (.5, .5, 1)),
+        ("override_black", "white", "normal", "black", (0, 0, 0)),
+        ("override_white", "black", "normal", "white", (1, 1, 1)),
+        ("override_normal", "white", "black", "normal", (.5, .5, 1)),
+        ("clear_override_restores_material", "white", "black", None, (0, 0, 0)),
+        ("white_exact_restore", "white", "", None, (1, 1, 1)),
     ]
     proof = {"passed": False, "package": inx.__file__, "phases": [],
-             "scope": "Independent disposable Vulkan renderer, numerical GPU readback only. Property name differs from default tokens. Declared white/black/normal, assigned asset preservation across shader reload, clear and exact restore. No live Editor viewport access."}
+             "scope": "Independent disposable Vulkan renderer, numerical GPU readback only. Property name differs from default tokens. Declared and explicit white/black/normal, per-renderer overrides, assigned asset preservation across shader reload, clear and exact restore. No live Editor viewport access."}
     with tempfile.TemporaryDirectory(prefix="infernux-texture-defaults-") as folder:
         project = Path(folder)
         for directory in ("Assets", "Packages", "ProjectSettings"):
@@ -94,7 +101,8 @@ def main():
             cube = scene.create_primitive(inx.PrimitiveType.Cube)
             material = inx.Material.create_unlit("Default Texture Probe")
             material.frag_shader_name = "Declared Texture Default Probe"
-            cube.get_component(inx.MeshRenderer).set_material(0, material)
+            renderer = cube.get_component(inx.MeshRenderer)
+            renderer.set_material(0, material)
             frontend.set_render_pipeline(pipeline)
             native.set_game_camera_enabled(True)
             native.set_play_mode_rendering(True)
@@ -111,7 +119,7 @@ def main():
                         pixels = ticket.result_numpy().copy().astype(np.float32)
                         covered = pixels[..., 3] > .9
                         assert covered.sum() > 100, (phases[phase][0], int(covered.sum()))
-                        expected = np.array(phases[phase][3])
+                        expected = np.array(phases[phase][4])
                         display = np.where(expected <= .0031308, expected * 12.92,
                                            1.055 * expected ** (1 / 2.4) - .055)
                         measured = pixels[..., :3][covered]
@@ -120,7 +128,8 @@ def main():
                                   if entry["level"] in ("ERROR", "FATAL", "WARN", "WARNING")]
                         assert not issues, issues
                         proof["phases"].append({"phase": phases[phase][0], "default": phases[phase][1],
-                                                "assigned": phases[phase][2], "covered": int(covered.sum()),
+                                                "assigned": phases[phase][2], "override": phases[phase][3],
+                                                "covered": int(covered.sum()),
                                                 "measured_display": measured.mean(axis=0).tolist(),
                                                 "expected_display": display.tolist(), "shader_guid": shader_guid})
                         print("PASS " + phases[phase][0], flush=True)
@@ -137,9 +146,16 @@ def main():
                             reimported = AssetManager.reimport_asset(str(shader), database=database)
                             assert reimported and reimported.guid == shader_guid, reimported.error
                         if phases[phase][2] != phases[phase - 1][2]:
-                            material.set_texture_guid("independentName", texture_guid if phases[phase][2] else "")
+                            assignment = phases[phase][2]
+                            material.set_texture_guid("independentName", texture_guid if assignment == "asset" else assignment)
+                        if phases[phase][3] != phases[phase - 1][3]:
+                            override = phases[phase][3]
+                            if override is None:
+                                renderer.clear_parameters()
+                            else:
+                                renderer.set_parameter("independentName", override)
                         changed, ticket = frame, None
-                    if frame > 240:
+                    if frame > 400:
                         raise AssertionError("Declared texture default GPU test did not finish")
                 except BaseException as error:
                     failures.append(error)

@@ -129,6 +129,30 @@ int main(int argc, char **argv)
     auto *cloneDescriptor = descriptors.GetOrCreateDescriptorSet(*defaultClone, program);
     assert(cloneDescriptor && cloneDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
 
+    // Explicit built-ins win over the shader default, both at first publication
+    // and after editing the same material. Renderer overrides remain local.
+    const std::array<std::pair<const char *, size_t>, 3> builtins = {
+        std::pair{"white", size_t{0}}, {"black", 3}, {"normal", 1}};
+    for (const auto &[initialToken, initialView] : builtins) {
+        InxMaterial tokens(std::string("builtin-") + initialToken, "Gizmo Icon");
+        tokens.SynchronizeShaderPropertyDefaults(defaults);
+        tokens.SetTextureGuid("texSampler", initialToken);
+        auto *created = descriptors.GetOrCreateDescriptorSet(tokens, program);
+        assert(created && created->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[initialView]);
+        for (const auto &[token, view] : builtins) {
+            tokens.SetTextureGuid("texSampler", token);
+            descriptors.ResolveTextureProperties(tokens.GetMaterialKey(), tokens, program);
+            auto *updated = descriptors.GetOrCreateDescriptorSet(tokens, program);
+            assert(updated && updated->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[view]);
+            auto overrides = std::make_shared<RendererParameterBlock>();
+            overrides->properties["detailTex"] =
+                MaterialProperty{"detailTex", MaterialPropertyType::Texture2D, std::string{token}};
+            auto *overridden = descriptors.GetOrCreateRendererDescriptorSet(tokens, program, overrides);
+            assert(overridden && overridden->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[view]);
+            assert(updated->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
+        }
+    }
+
     std::unordered_map<std::string, TextureResolveStatus> statuses = {{"icon-guid", TextureResolveStatus::Pending},
                                                                       {"detail-guid", TextureResolveStatus::Ready},
                                                                       {"draw-guid", TextureResolveStatus::Pending}};

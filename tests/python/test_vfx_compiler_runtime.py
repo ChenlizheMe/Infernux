@@ -310,7 +310,7 @@ def test_particle_runtime_does_not_reverse_lookup_texture_path_hint(monkeypatch)
         ParticleSystem._particle_texture_guid(
             AssetReference(path_hint="Assets/VFX/obsolete-smoke.png")
         )
-        == "white"
+        == ""  # Unassigned input uses its ShaderInfo default, without a path lookup.
     )
 
 

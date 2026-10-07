@@ -1937,7 +1937,7 @@ class ParticleSystem(InxComponent):
                                 metadata.parameters,
                                 emitter.stable_id,
                             ),
-                            "material": self._gpu_material_binding(output, emitter.stable_id),
+                            "material": self._gpu_material_binding(output, emitter.stable_id, metadata.parameters),
                             "receive_scene_lighting": output.receive_scene_lighting,
                             "receive_shadows": output.receive_shadows,
                             "cast_shadows": output.cast_shadows,
@@ -2806,19 +2806,19 @@ class ParticleSystem(InxComponent):
 
     @staticmethod
     def _particle_texture_guid(value) -> str:
-        """Return the imported texture GUID used by the native runtime."""
+        """Preserve the asset reference, including an unassigned shader input."""
         if isinstance(value, AssetReference):
             reference = value
         elif isinstance(value, dict):
             reference = AssetReference.from_dict(value)
         else:
-            token = str(value or "").strip()
-            return token if token in {"white", "black", "normal"} else "white"
+            if type(value) is str and value.strip() in {"", "white", "black", "normal"}:
+                return value.strip()
+            raise TypeError("particle surface texture requires an asset reference or a builtin token")
 
-        guid = str(reference.guid or "").strip()
-        return guid or "white"
+        return str(reference.guid or "").strip()
 
-    def _gpu_material_binding(self, output, emitter_id: str = "") -> dict[str, object]:
+    def _gpu_material_binding(self, output, emitter_id: str = "", parameters=()) -> dict[str, object]:
         is_mesh = output.output_type == "mesh"
         state: dict[str, object] = {
             "render_queue": 2000 if is_mesh else 3000,
@@ -2844,12 +2844,14 @@ class ParticleSystem(InxComponent):
                 material.vert_shader_name = "Particle Sprite"
                 material.frag_shader_name = str(output.shader)
                 self._output_materials[cache_key] = material
+            parameter_defaults = {parameter.stable_id: parameter.default for parameter in parameters}
             for binding in output.shader_properties:
-                value = (
-                    self._parameter_overrides.get(binding.parameter_id, binding.default)
-                    if binding.parameter_id
-                    else binding.default
-                )
+                # A connected graph parameter owns the value even before the
+                # first override, and after reset. Shader defaults only apply
+                # to unconnected shader inputs.
+                value = self._parameter_overrides.get(
+                    binding.parameter_id, parameter_defaults[binding.parameter_id]
+                ) if binding.parameter_id else binding.default
                 kind = binding.value_type.value_type
                 if kind is ValueType.TEXTURE2D:
                     material.native.set_texture_guid(
@@ -3551,9 +3553,10 @@ class ParticleSystem(InxComponent):
     def _refresh_parameter_material_bindings(self) -> None:
         if not self._has_runtime():
             return
-        for emitter in getattr(getattr(self, "_particle_metadata", None), "emitters", ()):
+        metadata = self._particle_metadata
+        for emitter in metadata.emitters:
             for output in emitter.outputs:
-                self._gpu_material_binding(output, emitter.stable_id)
+                self._gpu_material_binding(output, emitter.stable_id, metadata.parameters)
 
     @staticmethod
     def _native_engine():
