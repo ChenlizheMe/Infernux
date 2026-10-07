@@ -1753,6 +1753,15 @@ def validate_serialized_field_document(
         )
 
 
+def _merge_serialized_fields(component_class) -> Dict[str, FieldMetadata]:
+    fields = {}
+    for base in reversed(component_class.__mro__):
+        for name in base.__dict__.get('_non_serialized_fields_', ()):
+            fields.pop(name, None)
+        fields.update(base.__dict__.get('_serialized_fields_', {}))
+    return fields
+
+
 def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
     """Compile the shared component/data-object declaration syntax once.
 
@@ -1761,6 +1770,20 @@ def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
     """
     # Always create a fresh dict for this class (don't inherit from parent)
     cls._serialized_fields_ = {}
+    cls._non_serialized_fields_ = frozenset()
+    excluded = set()
+
+    def _runtime_default(name, annotation):
+        inherited = _merge_serialized_fields(cls).get(name)
+        if inherited is not None:
+            return inherited.default
+        base_annotation, _markers = _unwrap_annotation(annotation)
+        return get_annotation_default(base_annotation)
+
+    def _install_hidden(name, default):
+        hidden = HiddenField(default)
+        hidden.__set_name__(cls, name)
+        setattr(cls, name, hidden)
 
     # ── Resolve own-class annotations once ──────────────────────────
     # String annotations (incl. files using ``from __future__ import
@@ -1799,6 +1822,15 @@ def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
     for attr_name in list(cls.__dict__):
         # Raw attribute from class __dict__ (avoids descriptor protocol)
         attr = cls.__dict__[attr_name]
+        if isinstance(attr, HiddenField):
+            excluded.add(attr_name)
+            continue
+        ann = _annotation_for(attr_name)
+        if _is_class_var(ann):
+            excluded.add(attr_name)
+            if isinstance(attr, SerializedFieldDescriptor):
+                setattr(cls, attr_name, attr.metadata.default)
+            continue
         # Private annotations remain runtime-only by default. An explicit
         # serialized_field(), however, is an authoring declaration; this
         # is how hidden backing data participates in save and undo while
@@ -1806,15 +1838,12 @@ def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
         if attr_name.startswith('_') and not isinstance(
             attr, SerializedFieldDescriptor
         ):
+            _base, markers = _unwrap_annotation(ann)
+            if any(_is_marker(marker, NonSerialized) for marker in markers):
+                excluded.add(attr_name)
             continue
 
         if callable(attr) or isinstance(attr, (property, classmethod, staticmethod)):
-            continue
-        if isinstance(attr, HiddenField):
-            continue
-
-        ann = _annotation_for(attr_name)
-        if _is_class_var(ann):
             continue
         # Public uppercase names are Python constants, not per-instance
         # Inspector fields.  An explicit field declaration still opts in.
@@ -1859,8 +1888,9 @@ def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
                         else:
                             attr.metadata.default = _coerce_default(attr.metadata, attr.metadata.default)
                 if markers and _apply_markers(attr.metadata, markers) is None:
-                    # NonSerialized marker wins: drop the field entirely.
-                    delattr(cls, attr_name)
+                    # Keep a runtime value while masking the inherited field.
+                    excluded.add(attr_name)
+                    _install_hidden(attr_name, attr.metadata.default)
                     continue
             cls._serialized_fields_[attr_name] = attr.metadata
             continue
@@ -1877,6 +1907,7 @@ def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
             if metadata is NON_SERIALIZED_FIELD:
                 # Explicitly excluded: keep the plain class attribute as-is
                 # (regular Python attr, not serialized, not in Inspector).
+                excluded.add(attr_name)
                 continue
 
         # No (usable) annotation → infer from the plain value.
@@ -1904,6 +1935,14 @@ def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
             continue
         ann = _annotation_for(attr_name)
         if _is_class_var(ann):
+            excluded.add(attr_name)
+            setattr(cls, attr_name, _runtime_default(attr_name, ann))
+            continue
+
+        metadata = build_field_from_annotation(ann, default=_UNSET)
+        if metadata is NON_SERIALIZED_FIELD:
+            excluded.add(attr_name)
+            _install_hidden(attr_name, _runtime_default(attr_name, ann))
             continue
 
         if attr_name.startswith('_'):
@@ -1914,9 +1953,6 @@ def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
                 setattr(cls, attr_name, hidden)
             continue
 
-        metadata = build_field_from_annotation(ann, default=_UNSET)
-        if metadata is NON_SERIALIZED_FIELD:
-            continue
         if metadata is not None:
             metadata.name = attr_name
             descriptor = SerializedFieldDescriptor(metadata)
@@ -1926,9 +1962,8 @@ def _compile_serialized_fields(cls, *, descriptors: bool = True) -> None:
 
     # Validate the effective MRO, before CDS/type registration. Overrides of
     # the same Python name are one field; distinct fields cannot share an ID.
-    merged_fields = {}
-    for base in reversed(cls.__mro__):
-        merged_fields.update(base.__dict__.get('_serialized_fields_', {}))
+    cls._non_serialized_fields_ = frozenset(excluded)
+    merged_fields = _merge_serialized_fields(cls)
     identities = {}
     for name, metadata in merged_fields.items():
         identity = metadata.field_id if metadata.field_id is not None else name
@@ -1987,13 +2022,7 @@ def get_serialized_fields(component_class: Type['InxComponent']) -> Dict[str, Fi
     cached = _SERIALIZED_FIELDS_CACHE.get(component_class)
     if cached is not None:
         return cached
-    fields = {}
-    # Use cls.__dict__ directly so each class in the MRO contributes
-    # only its OWN fields (avoids inheriting a parent's empty dict).
-    for cls in reversed(component_class.__mro__):
-        own = cls.__dict__.get('_serialized_fields_')
-        if own:
-            fields.update(own)
+    fields = _merge_serialized_fields(component_class)
     _SERIALIZED_FIELDS_CACHE[component_class] = fields
     return fields
 

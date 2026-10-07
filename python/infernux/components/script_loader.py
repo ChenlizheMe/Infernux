@@ -1186,6 +1186,7 @@ def retire_script_module(file_path: str) -> object | None:
 
 _BODY_PATCH_GENERATED_KEYS = frozenset({
     "_serialized_fields_",
+    "_non_serialized_fields_",
     "_field_schemas_",
     "_intrinsic_script_guid_",
     "_type_guid_",
@@ -1279,7 +1280,11 @@ def _plan_component_class_body_patch(
     target_schema = _serialized_schema_signature(target_type)
     candidate_schema = _serialized_schema_signature(candidate_type)
     identity_changed = publish_identity and target_type._get_type_guid() != candidate_type._get_type_guid()
-    schema_changed = target_schema != candidate_schema or identity_changed
+    excluded = candidate_type.__dict__.get("_non_serialized_fields_", frozenset())
+    schema_changed = (
+        target_schema != candidate_schema or identity_changed
+        or target_type.__dict__.get("_non_serialized_fields_", frozenset()) != excluded
+    )
 
     for key in _BODY_PATCH_CONTRACT_KEYS:
         if _reload_value_signature(getattr(target_type, key, None)) != _reload_value_signature(
@@ -1327,6 +1332,7 @@ def _plan_component_class_body_patch(
         from .fields import SerializedFieldDescriptor
 
         operations.append(("_field_schemas_", True, candidate_type.__dict__["_field_schemas_"]))
+        operations.append(("_non_serialized_fields_", True, excluded))
         operations.append(
             (
                 "_serialized_fields_",
@@ -1347,6 +1353,8 @@ def _plan_component_class_body_patch(
             target_has_field = isinstance(target_value, SerializedFieldDescriptor)
             candidate_has_field = isinstance(candidate_value, SerializedFieldDescriptor)
             if candidate_has_field:
+                operations.append((name, True, candidate_value))
+            elif name in candidate_body:
                 operations.append((name, True, candidate_value))
             elif target_has_field:
                 operations.append((name, False, None))
