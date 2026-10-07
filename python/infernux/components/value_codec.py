@@ -217,7 +217,9 @@ class ValueCodecRegistry:
             if not isinstance(value, dict):
                 raise TypeError(f"{path}: SERIALIZABLE_OBJECT field requires an object")
             from .serializable_object import SerializableObject
-            SerializableObject._validate_document(value, path)
+            SerializableObject._validate_document(
+                value, path, expected_class=getattr(field_meta_or_type, "serializable_class", None),
+            )
             return
 
         if field_type == FieldType.LIST:
@@ -358,6 +360,9 @@ class ValueCodecRegistry:
         element_field = copy.copy(field_meta_or_type)
         element_field.field_type = element_type
         element_field.element_type = None
+        from .fields import FieldType
+        if element_type == FieldType.SERIALIZABLE_OBJECT:
+            element_field.serializable_class = field_meta_or_type.element_class
         return element_field
 
     @staticmethod

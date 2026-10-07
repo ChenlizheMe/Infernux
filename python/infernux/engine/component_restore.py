@@ -427,7 +427,6 @@ def _prepare_python_component_records(
                 instance._deserialize_fields_document(
                     live_fields,
                     _skip_on_after_deserialize=True,
-                    repair=True,
                 )
             except Exception as exc:
                 instance._call_on_destroy()
@@ -722,10 +721,14 @@ def _publish_prepared_scene_python_components(
                     f"{item.document_path}.py_fields",
                     component_id_map,
                 )
+                # The native descriptor is compared to the authored identity
+                # above. Field replay uses the already accepted live class
+                # when that asset-backed script has been renamed.
+                if not getattr(item.instance, "_is_broken", False):
+                    remapped_fields["__type_name__"] = type(item.instance).__name__
                 item.instance._deserialize_fields_document(
                     remapped_fields,
                     _skip_on_after_deserialize=True,
-                    repair=True,
                 )
         except (KeyError, TypeError, ValueError) as exc:
             raise PythonComponentRestoreError(

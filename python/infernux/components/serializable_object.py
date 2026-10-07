@@ -214,7 +214,9 @@ class SerializableObject:
         )
 
     @classmethod
-    def _prepare_document(cls, data: dict, path: str = "SerializableObject"):
+    def _prepare_document(
+        cls, data: dict, path: str = "SerializableObject", *, expected_class: type | None = None,
+    ):
         """Validate identity and normalize one document to current fields.
 
         The editor is intentionally forward-only while the data model is in
@@ -235,6 +237,10 @@ class SerializableObject:
         actual_cls = get_serializable_class(type_id)
         if actual_cls is None:
             raise ValueError(f"{path}: unknown SerializableObject type_id {type_id!r}")
+        if expected_class is not None and not issubclass(actual_cls, expected_class):
+            raise TypeError(
+                f"{path}: expected {expected_class.__qualname__}, got {actual_cls.__qualname__}"
+            )
 
         fields = get_serialized_fields(actual_cls)
         fields_document = data.get("fields")
@@ -268,9 +274,11 @@ class SerializableObject:
         )
 
     @classmethod
-    def _validate_document(cls, data: dict, path: str = "SerializableObject"):
+    def _validate_document(
+        cls, data: dict, path: str = "SerializableObject", *, expected_class: type | None = None,
+    ):
         """Validate a complete object graph without constructing an instance."""
-        actual_cls, fields, _document = cls._prepare_document(data, path)
+        actual_cls, fields, _document = cls._prepare_document(data, path, expected_class=expected_class)
         return actual_cls, fields
 
     @classmethod

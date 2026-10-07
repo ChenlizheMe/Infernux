@@ -431,21 +431,30 @@ class TestComponentLifecycle:
         assert restored_holder.target is restored_target
         assert restored_target is not target
 
-    def test_pending_python_component_restore_repairs_invalid_field_atomically(self, scene):
-        from infernux.engine.component_restore import deserialize_game_object_document_transactionally
+    def test_pending_python_component_restore_rejects_invalid_field_atomically(self, scene):
+        from infernux.engine.component_restore import (
+            PythonComponentRestoreError,
+            deserialize_game_object_document_transactionally,
+        )
 
         game_object = scene.create_game_object("AtomicPythonRestore")
-        game_object.add_py_component(_RestoreFirst())
-        game_object.add_py_component(_RestoreSecond())
+        first = game_object.add_py_component(_RestoreFirst())
+        second = game_object.add_py_component(_RestoreSecond())
+        first.value = 31
+        second.value = 42
+        before = game_object.serialize_document()
         document = game_object.serialize_document()
+        document["components"][0]["data"]["value"] = 99
         document["components"][1]["data"]["value"] = "invalid"
 
-        assert deserialize_game_object_document_transactionally(game_object, document)
+        with pytest.raises(PythonComponentRestoreError, match="INT field requires an integer"):
+            deserialize_game_object_document_transactionally(game_object, document)
 
         restored = game_object.get_py_components()
-        assert len(restored) == 2
-        assert next(item for item in restored if isinstance(item, _RestoreFirst)).value == 1
-        assert next(item for item in restored if isinstance(item, _RestoreSecond)).value == 2
+        assert restored == [first, second]
+        assert first.value == 31
+        assert second.value == 42
+        assert game_object.serialize_document() == before
         assert scene.has_pending_py_components() is False
 
     def test_missing_python_component_type_restores_as_data_preserving_placeholder(self, scene):
