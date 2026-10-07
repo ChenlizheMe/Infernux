@@ -1071,6 +1071,17 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.particle_gpu_runtime COMMAND infernux_particle_gpu_runtime_tests)
 
+    add_executable(infernux_particle_contact_graph_tests tests/native/ParticleContactGraphTests.cpp)
+    target_include_directories(infernux_particle_contact_graph_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/cpp/infernux" "${CMAKE_SOURCE_DIR}/external")
+    target_link_libraries(infernux_particle_contact_graph_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_particle_contact_graph_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_particle_contact_graph_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.particle_contact_graph COMMAND infernux_particle_contact_graph_tests)
+
     set(INFERNUX_COMPUTE_INDIRECT_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/tests/shaders")
     set(INFERNUX_COMPUTE_INDIRECT_SHADER_SOURCES
         "${CMAKE_SOURCE_DIR}/tests/native/shaders/RenderGraphComputeIndirect.comp"

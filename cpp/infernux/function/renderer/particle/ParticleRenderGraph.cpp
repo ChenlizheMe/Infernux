@@ -1124,10 +1124,10 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     if (runtime.HasContactRuntime()) {
         graph.AddComputePass(StageName(namePrefix, "ContactSolve"), [&](vk::PassBuilder &builder) {
             readMeshBuffers(builder);
-            builder.ReadStorageBuffer(contactRecords);
+            contactRecords = builder.ReadWrite(contactRecords, rhi::PipelineStage::ComputeShader);
             contactHashSlots = builder.ReadWrite(contactHashSlots, rhi::PipelineStage::ComputeShader);
             builder.ReadStorageBuffer(contactParticleRecordIndices);
-            builder.ReadStorageBuffer(contactParticleStates);
+            contactParticleStates = builder.ReadWrite(contactParticleStates, rhi::PipelineStage::ComputeShader);
             contactWorkItems = builder.ReadWrite(contactWorkItems, rhi::PipelineStage::ComputeShader);
             contactCounters = builder.ReadWrite(contactCounters, rhi::PipelineStage::ComputeShader);
             return [this](vk::RenderContext &context) {
@@ -1147,6 +1147,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
             freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
             counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
             builder.ReadStorageBuffer(contactRecords);
+            builder.ReadStorageBuffer(contactParticleStates);
             builder.ReadStorageBuffer(contactWorkItems);
             builder.ReadIndirectBuffer(contactDispatchIndirect);
             contactCounters = builder.ReadWrite(contactCounters, rhi::PipelineStage::ComputeShader);
