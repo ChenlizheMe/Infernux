@@ -1570,10 +1570,24 @@ def _load_script_module(
 
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
+    from .registry import (
+        snapshot_component_script_registry, restore_component_script_registry,
+        component_types_for_script_path,
+    )
+    registry_before = snapshot_component_script_registry(file_path)
+    previous_types = component_types_for_script_path(file_path)
+    serializable_before = None
     try:
         from infernux.renderstack.render_effect_compiler import _stage_source_effect_features
+        from .serializable_object import (
+            _candidate_serializable_scope, _publish_serializable_types,
+        )
 
-        with _stage_source_effect_features(file_path):
+        serializable_types: dict[str, type] = {}
+        with (
+            _stage_source_effect_features(file_path),
+            _candidate_serializable_scope(serializable_types, module_name),
+        ):
             if code is not None:
                 exec(code, module.__dict__)
             elif source_only or source is not None:
@@ -1591,7 +1605,24 @@ def _load_script_module(
                 exec(code, module.__dict__)
             else:
                 spec.loader.exec_module(module)
+            # First loads and reload candidates share the same data identity
+            # ownership boundary. Failed source prefixes cannot replace the
+            # published data catalog. Ordinary component declarations retain
+            # immediate numeric storage and callback registration semantics.
+            serializable_before = _publish_serializable_types(serializable_types, {module_name})
     except Exception:
+        if serializable_before is not None:
+            from .serializable_object import _restore_serializable_types
+            _restore_serializable_types(serializable_before)
+        failed_types = tuple(
+            cls for cls in _component_classes_from_module(module, module_name)
+            if cls not in previous_types
+        )
+        if failed_types or snapshot_component_script_registry(file_path) != registry_before:
+            restore_component_script_registry(file_path, registry_before)
+            from infernux.engine.runtime_dispatch import publish_runtime_dispatch_epoch
+            publication = publish_runtime_dispatch_epoch(previous_types, retired_types=failed_types)
+            publication.commit()
         if sys.modules.get(module_name) is module:
             sys.modules.pop(module_name, None)
         raise
@@ -1712,6 +1743,7 @@ def load_all_components_from_file(
         raise ScriptLoadError(f"Not a Python file: {file_path}")
     
     module_name = get_script_module_name(file_path) or _unique_module_name_for_path(file_path)
+    previous_module = sys.modules.get(module_name, _MODULE_ABSENT)
     _clear_loaded_script_modules([module_name], preserve_classes=preserve_classes)
 
     importlib.invalidate_caches()
@@ -1727,6 +1759,8 @@ def load_all_components_from_file(
                 code=code,
             )
     except Exception as exc:
+        if previous_module is not _MODULE_ABSENT:
+            sys.modules[module_name] = previous_module
         # Track this script as having a load error
         _record_script_error(file_path, exc)
         # Return empty list — the component can still be referenced by GUID/type

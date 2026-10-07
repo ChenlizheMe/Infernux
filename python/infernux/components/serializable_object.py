@@ -49,6 +49,14 @@ def _candidate_serializable_scope(types: dict[str, type], module_name: str):
         _CANDIDATE_TYPES.reset(token)
 
 
+def _require_serializable_type_owner(identity: str, module_names: set[str]) -> None:
+    previous = _SERIALIZABLE_REGISTRY.get(identity)
+    if previous is not None and previous.__module__ not in module_names:
+        raise ValueError(
+            f"serialized type ID {identity!r} is owned by module {previous.__module__!r}"
+        )
+
+
 def _publish_serializable_types(
     types: dict[str, type], module_names: set[str],
 ) -> dict[str, type | None]:
@@ -58,11 +66,7 @@ def _publish_serializable_types(
         if cls.__module__ in module_names
     }
     for identity in published:
-        previous = _SERIALIZABLE_REGISTRY.get(identity)
-        if previous is not None and previous.__module__ not in module_names:
-            raise ValueError(
-                f"serialized type ID {identity!r} is owned by module {previous.__module__!r}"
-            )
+        _require_serializable_type_owner(identity, module_names)
     before = {
         identity: cls for identity, cls in _SERIALIZABLE_REGISTRY.items()
         if cls.__module__ in module_names
@@ -152,6 +156,7 @@ class SerializableObject:
         else:
             # Trusted engine modules materialized during a candidate import
             # still own their ordinary declarations, not the project transaction.
+            _require_serializable_type_owner(current_type_id, {cls.__module__})
             _SERIALIZABLE_REGISTRY[current_type_id] = cls
 
     # ------------------------------------------------------------------
