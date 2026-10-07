@@ -513,6 +513,7 @@ class Buffer:
 
     def _coerce_data(self, data) -> np.ndarray:
         if isinstance(data, Buffer):
+            data._require_open()
             if data.device != "cpu":
                 raise TypeError("GPU-to-GPU copies require the compute copy operation")
             source = data._array
@@ -533,6 +534,7 @@ class Buffer:
 
     def _coerce_element_range(self, data) -> np.ndarray:
         if isinstance(data, Buffer):
+            data._require_open()
             if data.device != "cpu":
                 raise TypeError("GPU-to-GPU copies require the compute copy operation")
             if data._dtype != self._dtype:
@@ -590,6 +592,7 @@ class Buffer:
             out = Buffer(shape=output_shape, dtype=self._dtype, device="cpu")
         if not isinstance(out, Buffer) or out.device != "cpu":
             raise TypeError("inx.buffer get_data out must be a CPU Buffer")
+        out._require_writable()
         if out.element_count != count or out._dtype != self._dtype:
             raise ValueError("inx.buffer get_data out layout does not match the source")
         destination = out._array.reshape((-1, self._dtype.lanes)) if self._dtype.lanes > 1 else out._array.reshape(-1)
@@ -684,6 +687,11 @@ class Buffer:
                 else self._array.reshape(-1)
             )
             result._array = flat[offset:offset + count]
+            if result._readonly:
+                # Permissions belong to this borrowed ndarray, not its owner.
+                # NumPy slices and cooked CPU kernels inherit the same flag
+                # without checks or copies on each access.
+                result._array.flags.writeable = False
         result._description = result._build_description()
         if result._device == "gpu":
             _gpu_buffers.add(result)
@@ -793,6 +801,12 @@ class Readback:
     def get_data(self, out: Buffer | None = None) -> Buffer:
         if self._cancelled:
             raise RuntimeError("Readback result was cancelled")
+        if out is not None:
+            if not isinstance(out, Buffer) or out.device != "cpu":
+                raise TypeError("inx.compute.Readback get_data out must be a CPU Buffer")
+            out._require_writable()
+            if out.element_count != int(np.prod(self._shape)) or out._dtype != self._dtype:
+                raise ValueError("inx.compute.Readback get_data out layout does not match the snapshot")
         if self._result is None:
             payload = self._task.get_bytes()
             result = Buffer(shape=self._shape, dtype=self._dtype, device="cpu")
@@ -802,12 +816,9 @@ class Readback:
             self._task = None
             self._host = None
             _readbacks.discard(self)
+        self._result._require_open()
         if out is None:
             return self._result
-        if not isinstance(out, Buffer) or out.device != "cpu":
-            raise TypeError("inx.compute.Readback get_data out must be a CPU Buffer")
-        if out.element_count != self._result.element_count or out._dtype != self._dtype:
-            raise ValueError("inx.compute.Readback get_data out layout does not match the snapshot")
         np.copyto(out._array.reshape(self._result._array.shape), self._result._array, casting="no")
         return out
 
@@ -1404,6 +1415,10 @@ class _CpuKernelExecutable:
 def _cpu_atomic_add(target, indices, values, mask=None) -> None:
     """Apply one cooked CPU atomic reduction without a Python work-item loop."""
     target = np.asarray(target)
+    # NumPy's indexed add.at can write through a non-writeable ndarray, unlike
+    # ordinary assignment. Enforce the same permission before that operation.
+    if not target.flags.writeable:
+        raise RuntimeError("CPU compute atomic target is read-only")
     if target.ndim != 1:
         raise ValueError("CPU compute atomic targets must expose one scalar lane")
     indices = np.asarray(indices)
