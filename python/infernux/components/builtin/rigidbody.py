@@ -327,10 +327,10 @@ class Rigidbody(BuiltinComponent):
         Rigidbody is not kinematic or has no active Collider body.
 
         Args:
-            rotation: Target rotation as (x, y, z, w) quaternion tuple.
+            rotation: Target quaternion or (x, y, z, w) sequence.
         """
         cpp = self._require_cpp_component()
-        cpp.move_rotation(rotation)
+        cpp.move_rotation(coerce_quat(rotation))
 
     # ---- Sleep API ----
 

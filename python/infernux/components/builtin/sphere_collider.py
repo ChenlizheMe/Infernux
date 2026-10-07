@@ -42,7 +42,7 @@ class SphereCollider(Collider):
 
         pos = transform.position
         rot = transform.rotation  # world rotation quaternion
-        scale = transform.local_scale
+        scale = transform.lossy_scale
 
         cpp = self._get_bound_native_component()
         if cpp is None:
@@ -51,9 +51,9 @@ class SphereCollider(Collider):
         r = cpp.radius
 
         c = cpp.center
-        local_center = (c.x, c.y, c.z)
+        local_center = (c.x * scale.x, c.y * scale.y, c.z * scale.z)
 
-        # Rotate center offset into world space
+        # Match the native shape's signed world scale before world rotation.
         cx, cy, cz = quat_rotate(rot, local_center)
         world_center = (pos.x + cx, pos.y + cy, pos.z + cz)
 
