@@ -459,20 +459,22 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 # not failed imports.  Requeue them without consuming the
                 # bounded importer retry budget or emitting user-facing errors.
                 if bool(getattr(self._asset_database, "refresh_pending", False)):
-                    self._coordinator.defer(event)
+                    self._reschedule_asset_event(event, retry=False)
                     continue
                 self._dispatch_event(event)
             except _AssetLocalWritePending:
-                self._coordinator.defer(event)
+                self._reschedule_asset_event(event, retry=False)
             except _CompiledAssetRejected:
                 # Recompiling identical invalid source cannot make it valid.
                 # A subsequent source save submits a new candidate normally.
                 self._rejected_compiled_assets.add(path_key(event.destination or event.path))
             except _AssetImportNotReady as exc:
-                if not self._coordinator.retry(event):
+                if not self._reschedule_asset_event(event, retry=True):
                     Debug.log_error(f"Asset event exhausted retries: {event}: {exc}")
             except Exception as exc:
                 Debug.log_error(f"Asset event failed: {event}: {exc}")
+            finally:
+                self._coordinator.complete(event)
 
         # Dispatch first: a script event can submit its immutable snapshot to
         # the frontend worker, whose result may already be ready by the time
@@ -486,6 +488,20 @@ class ResourceChangeHandler(FileSystemEventHandler):
             self.process_script_worker()
             processed += self._drain_script_results()
         return processed + len(events)
+
+    def _reschedule_asset_event(self, event: AssetFsEvent, *, retry: bool) -> bool:
+        # An importer can wait after its create/move catalog commit. The
+        # remaining work is then a content revision at the published path,
+        # rather than another identity mutation. Only waiting work needs this
+        # owner-thread lookup; successful imports do not pay for it.
+        published = False
+        if event.kind in (AssetFsEventKind.CREATED, AssetFsEventKind.MOVED):
+            guid = self._asset_database.get_guid_from_path(event.destination or event.path)
+            published = bool(guid) and (not event.guid_hint or guid == event.guid_hint)
+        if retry:
+            return self._coordinator.retry(event, asset_published=published)
+        self._coordinator.defer(event, asset_published=published)
+        return True
 
     def _record_frontend_failure(self, result: ScriptChangeResult) -> None:
         from infernux.components.script_loader import set_script_error
