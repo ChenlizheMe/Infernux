@@ -544,7 +544,9 @@ bool ParticleGpuRibbonRenderer::RecordDraw(const rhi::GraphicsCommandEncoder &en
     const auto pipeline = GetOrCreatePipeline(pass, usesPerViewBindings ? perView.layout : rhi::BindingLayoutHandle{});
     const auto geometryGroup = ResolveGeometryGroup(renderIndices);
     const auto surfaceGroup = m_surface.ResolveBindGroup(sceneDepth, sceneDepthIsDepth);
-    const bool usesBindlessTextures = m_surface.UsesBindlessTextures();
+    const bool usesBindlessTextures =
+        m_surface.UsesBindlessTextures() &&
+        (pass.target == ShaderCompileTarget::Forward || pass.target == ShaderCompileTarget::ForwardPlus);
     const auto bindlessTable = m_surface.BindlessTableBinding();
     if (!pipeline.IsValid() || !geometryGroup.IsValid() || !surfaceGroup.IsValid() ||
         (usesBindlessTextures && !bindlessTable.IsValid()))

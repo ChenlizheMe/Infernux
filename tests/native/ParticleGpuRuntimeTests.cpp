@@ -662,10 +662,184 @@ struct BoundsTrace
     }
 };
 
+static std::shared_ptr<ShaderProgramArtifact> PassBindingArtifact(bool bindless)
+{
+    auto result = std::make_shared<ShaderProgramArtifact>();
+    result->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 1};
+    result->domain = ShaderProgramDomain::ParticleSprite;
+    result->compatibilitySignature = 1;
+    result->usesBindlessTextureABI = bindless;
+    result->properties = {{"texSampler", "Texture2D", "", "white", ShaderProgramStageMask::Fragment, false,
+                           std::nullopt, std::nullopt, 0, 0, 0}};
+    for (const auto target :
+         {ShaderCompileTarget::Forward, ShaderCompileTarget::ForwardPlus, ShaderCompileTarget::Motion}) {
+        ShaderProgramArtifact::PassVariant variant;
+        variant.target = target;
+        variant.compatibilitySignature = 1;
+        variant.vertexSpirv.resize(5 * sizeof(uint32_t));
+        variant.fragmentSpirv.resize(5 * sizeof(uint32_t));
+        const uint32_t magic = 0x07230203u;
+        std::memcpy(variant.vertexSpirv.data(), &magic, sizeof(magic));
+        std::memcpy(variant.fragmentSpirv.data(), &magic, sizeof(magic));
+        result->variants.push_back(std::move(variant));
+    }
+    assert(result->IsValid());
+    return result;
+}
+
+static bool VerifyParticlePassBinding(const std::string &kind, bool bindless, ShaderCompileTarget target)
+{
+    FakeDevice device;
+    device.bindlessEnabled = bindless;
+    TestTextureSlots textureSlots;
+    std::array<uint32_t, 5> words{0x07230203u, 0u, 0u, 0u, 0u};
+    const particle::ShaderBytecode shader{words.data(), words.size()};
+    const auto instances =
+        device.CreateBuffer({64 * sizeof(particle::GpuParticleRenderInstance), rhi::BufferUsageFlags::Storage});
+    const auto indices = device.CreateBuffer({64 * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
+    const auto indirect = device.CreateBuffer({16, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect});
+    const auto control = device.CreateBuffer({16, rhi::BufferUsageFlags::Storage});
+    const auto textureView = device.CreateTextureView({});
+    const auto sampler = device.CreateSampler({});
+    auto resolver = [&](const std::string &guid, const std::string &name, particle::GpuParticleTextureRequest request) {
+        assert(name == "texSampler" && request == particle::GpuParticleTextureRequest::Poll);
+        return AcquireTestTexture(device, textureSlots, guid, 1, textureView, sampler);
+    };
+    auto material = std::make_shared<InxMaterial>("ParticlePassBinding");
+    material->SetTextureGuid("texSampler", "white");
+    const auto artifact = PassBindingArtifact(bindless);
+    GraphicsTrace trace;
+    const rhi::GraphicsCommandEncoder::Dispatch dispatch = {&GraphicsTrace::BindPipeline, &GraphicsTrace::BindGroup,
+                                                            &GraphicsTrace::PushConstants, &GraphicsTrace::Draw,
+                                                            &GraphicsTrace::DrawIndirect};
+    const rhi::GraphicsCommandEncoder encoder(&trace, &dispatch);
+    MaterialPassPipelineDescriptor pass;
+    pass.target = target;
+    if (target != ShaderCompileTarget::Shadow)
+        pass.colorFormats = {target == ShaderCompileTarget::Motion    ? rhi::PixelFormat::RG16SFloat
+                             : target == ShaderCompileTarget::Picking ? rhi::PixelFormat::RG32UInt
+                                                                      : rhi::PixelFormat::RGBA8UNorm};
+    pass.depthFormat = rhi::PixelFormat::D32SFloat;
+    pass.depthReadOnly = target == ShaderCompileTarget::Motion;
+    pass.samples = rhi::SampleCount::One;
+    assert(pass.IsValid());
+    const particle::GpuParticlePerViewBindings perView{{91000, 1}, {91001, 1}}; // borrowed caller-owned handles
+    particle::GpuParticleViewConstants view;
+    bool recorded = false;
+    if (kind == "billboard") {
+        particle::GpuBillboardRendererDesc desc;
+        desc.vertexShader = desc.pickingFragmentShader = desc.motionVertexShader = desc.motionFragmentShader = shader;
+        desc.instances = instances;
+        desc.renderIndices = indices;
+        desc.shaderProgram = artifact;
+        desc.material = material;
+        desc.semantics.receiveSceneLighting = true;
+        desc.textureResolver = resolver;
+        particle::ParticleGpuBillboardRenderer renderer;
+        assert(renderer.Create(device, desc));
+        recorded = renderer.RecordDraw(encoder, pass, indirect, view, {}, {}, true, perView);
+        renderer.Destroy();
+    } else if (kind == "ribbon") {
+        auto topology = std::make_shared<particle::ParticleGpuRibbonTopology>();
+        particle::GpuParticleRibbonDesc topologyDesc;
+        topologyDesc.capacity = 64;
+        topologyDesc.instances = instances;
+        topologyDesc.sourceIndices = indices;
+        topologyDesc.sourceIndirectArguments = indirect;
+        topologyDesc.simulationControl = control;
+        topologyDesc.program = {shader, shader, shader, shader, shader};
+        assert(topology->Create(device, topologyDesc));
+        particle::GpuRibbonRendererDesc desc;
+        desc.program = {shader, shader, shader, shader};
+        desc.topology = topology;
+        desc.shaderProgram = artifact;
+        desc.material = material;
+        desc.semantics.receiveSceneLighting = true;
+        desc.textureResolver = resolver;
+        particle::ParticleGpuRibbonRenderer renderer;
+        assert(renderer.Create(device, desc));
+        recorded = renderer.RecordDraw(encoder, pass, topology->DrawIndirectBuffer(), view, {}, {}, true, perView);
+        renderer.Destroy();
+        topology->Destroy();
+    } else {
+        assert(kind == "mesh");
+        auto mesh = std::make_shared<InxMesh>("PassBindingTriangle");
+        std::vector<Vertex> vertices(3);
+        vertices[0].pos = {-0.5f, -0.5f, 0.0f};
+        vertices[1].pos = {0.5f, -0.5f, 0.0f};
+        vertices[2].pos = {0.0f, 0.5f, 0.0f};
+        for (auto &vertex : vertices) {
+            vertex.normal = {0.0f, 0.0f, 1.0f};
+            vertex.tangent = {1.0f, 0.0f, 0.0f, 1.0f};
+        }
+        SubMesh subMesh;
+        subMesh.indexCount = subMesh.vertexCount = 3;
+        mesh->SetData(std::move(vertices), {0, 1, 2}, {subMesh});
+        particle::GpuMeshRendererDesc desc;
+        desc.vertexShader = desc.shadowFragmentShader = desc.pickingFragmentShader = desc.motionVertexShader =
+            desc.motionFragmentShader = shader;
+        desc.instances = instances;
+        desc.renderIndices = indices;
+        desc.mesh = mesh;
+        desc.meshVertices = device.CreateBuffer({3 * 5 * sizeof(glm::vec4), rhi::BufferUsageFlags::Storage});
+        desc.meshIndices = device.CreateBuffer({3 * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
+        desc.indexCount = 3;
+        desc.meshBufferKeepAlive = std::make_shared<int>(1);
+        desc.shaderProgram = artifact;
+        desc.material = material;
+        desc.semantics.receiveSceneLighting = true;
+        desc.textureResolver = resolver;
+        particle::ParticleGpuMeshRenderer renderer;
+        assert(renderer.Create(device, desc));
+        recorded = renderer.RecordDraw(encoder, pass, indirect, view, {}, {}, true, perView);
+        renderer.Destroy();
+        device.Release(desc.meshVertices);
+        device.Release(desc.meshIndices);
+    }
+    assert(recorded && trace.indirectBuffers.size() == 1 && device.graphicsPipelineDescs.size() == 1);
+    const uint32_t layoutCount = device.graphicsPipelineDescs.front().bindingLayoutCount;
+    const bool inRange = std::all_of(trace.groupSets.begin(), trace.groupSets.end(),
+                                     [layoutCount](uint32_t set) { return set < layoutCount; });
+    textureSlots.clear();
+    device.Release(control);
+    device.Release(indirect);
+    device.Release(indices);
+    device.Release(instances);
+    const bool cleanup = device.buffers.size() == device.bufferReleases &&
+                         device.textures.size() + device.textureViews.size() == device.textureReleases &&
+                         device.samplers.size() == device.samplerReleases &&
+                         device.shaderCreates == device.shaderReleases &&
+                         device.layoutCreates == device.layoutReleases && device.groupCreates == device.groupReleases &&
+                         device.graphicsPipelineCreates == device.graphicsPipelineReleases &&
+                         device.pipelineCreates == device.pipelineReleases;
+    assert(cleanup);
+    if (!inRange)
+        std::cerr << kind << " bindless=" << bindless << " target=" << static_cast<int>(target)
+                  << " bound a descriptor set outside its " << layoutCount << " pipeline layouts\n";
+    return inRange;
+}
+
+static void VerifyParticlePassBindings()
+{
+    unsigned failures = 0;
+    for (const std::string kind : {"billboard", "ribbon", "mesh"}) {
+        for (const bool bindless : {false, true}) {
+            for (const auto target : {ShaderCompileTarget::Forward, ShaderCompileTarget::ForwardPlus,
+                                      ShaderCompileTarget::Picking, ShaderCompileTarget::Motion})
+                failures += VerifyParticlePassBinding(kind, bindless, target) ? 0u : 1u;
+            if (kind == "mesh")
+                failures += VerifyParticlePassBinding(kind, bindless, ShaderCompileTarget::Shadow) ? 0u : 1u;
+        }
+    }
+    assert(failures == 0);
+    std::cout << "Particle pass binding contracts: 26 passed\n";
+}
+
 } // namespace
 
 int main()
 {
+    VerifyParticlePassBindings();
     {
         FakeDevice device;
         const std::array<uint32_t, 5> code = {0x07230203u, 0u, 0u, 0u, 0u};
