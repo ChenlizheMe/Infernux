@@ -19,6 +19,7 @@ def test_every_style_variable_matches_vendored_imgui():
 
 def test_style_indices_cross_the_actual_python_gui_binding(engine):
     from infernux import lib
+    from infernux.renderstack import RenderStackPipeline
 
     # Check this before rendering: passing a scalar index to the vec2 ImGui API
     # would assert in a debug build, not merely fail a Python assertion.
@@ -53,10 +54,15 @@ def test_style_indices_cross_the_actual_python_gui_binding(engine):
     probe = Probe()
     engine.register_gui_renderable("test.style_enum", probe)
     try:
+        # The graphical fixture also renders its Scene view. Give it a valid
+        # pipeline while checking GUI styles, rather than emitting unrelated
+        # missing-pipeline errors on every frame.
+        engine.set_render_pipeline(RenderStackPipeline())
         engine.set_pre_scene_update_callback(update)
         engine.run()
     finally:
         engine.set_pre_scene_update_callback(None)
         engine.unregister_gui_renderable("test.style_enum")
+        engine.set_render_pipeline(None)
     assert observed["error"] is None, repr(observed["error"])
     assert observed["renders"] > 0
