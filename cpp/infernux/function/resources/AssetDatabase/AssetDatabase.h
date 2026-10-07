@@ -194,11 +194,14 @@ class AssetDatabase
     /// Notifies dependents via AssetDependencyGraph::NotifyEvent(Deleted).
     [[nodiscard]] AssetMutationResult DeleteAsset(const std::string &path);
 
-    /// @brief Move/rename asset preserving GUID.
+    /// @brief Publish an already completed filesystem relocation, preserving GUID.
+    /// The caller moves the asset first; a missing destination is rejected
+    /// before metadata or directory mappings change.
     /// Notifies dependents via AssetDependencyGraph::NotifyEvent(Moved).
     [[nodiscard]] AssetMutationResult MoveAsset(const std::string &oldPath, const std::string &newPath);
 
-    /// Commit a preflighted relocation batch with one catalog publication.
+    /// Commit completed filesystem relocations with one catalog publication.
+    /// All destinations must exist before any metadata is changed.
     [[nodiscard]] std::vector<AssetMutationResult>
     MoveAssetsBatch(const std::vector<std::pair<std::string, std::string>> &moves);
 

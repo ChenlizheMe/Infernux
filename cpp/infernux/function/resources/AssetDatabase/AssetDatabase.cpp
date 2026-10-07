@@ -2859,6 +2859,13 @@ AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const s
         result.error = "asset relocation source has no registered GUID";
         return result;
     }
+    std::error_code destinationError;
+    if (!std::filesystem::exists(ToFsPath(newPath), destinationError)) {
+        result.errorCode = destinationError ? AssetMutationErrorCode::InvalidPath : AssetMutationErrorCode::NotFound;
+        result.error = destinationError ? "asset relocation destination cannot be inspected: " + destinationError.message()
+                                        : "asset relocation destination must exist before notification";
+        return result;
+    }
     MoveMetadata(oldPath, newPath);
 
     UpdateMapping(guid, newPath);
@@ -2927,6 +2934,12 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
         if (guid.empty())
             return failure(oldPath, newPath, AssetMutationErrorCode::NotFound,
                            "asset relocation source has no registered GUID");
+        std::error_code destinationError;
+        if (!std::filesystem::exists(ToFsPath(newPath), destinationError))
+            return failure(oldPath, newPath,
+                           destinationError ? AssetMutationErrorCode::InvalidPath : AssetMutationErrorCode::NotFound,
+                           destinationError ? "asset relocation destination cannot be inspected: " + destinationError.message()
+                                            : "asset relocation destination must exist before notification");
         prepared.push_back({oldPath, newPath, oldKey, newKey, guid, GetResourceTypeForPath(newPath)});
     }
 
