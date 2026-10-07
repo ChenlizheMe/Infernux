@@ -84,7 +84,7 @@ def test_channel_retry_never_installs_older_build_under_new_name(tmp_path, monke
         {"name": new, "browser_download_url": "https://example.invalid/new"},
     ]}])
     requests = []
-    def fail(request):
+    def fail(request, *, timeout):
         requests.append(request.full_url)
         raise urllib.error.URLError("unavailable")
     monkeypatch.setattr(vm_mod.urllib.request, "urlopen", fail)
@@ -131,8 +131,8 @@ def vm(tmp_path, monkeypatch):
         "published_at": "2026-01-01T00:00:00Z",
         "assets": [{
             "name": "infernux-9.9.9-cp312-cp312-win_amd64.whl",
-            "browser_download_url": "https://example.invalid/infernux-9.9.9.whl",
-            "size": 128,
+            "browser_download_url": "https://example.invalid/infernux-9.9.9-cp312-cp312-win_amd64.whl",
+            "size": len(_make_wheel_bytes()),
         }],
     }
     monkeypatch.setattr(manager, "_fetch_releases", lambda: [release])
@@ -152,7 +152,7 @@ class TestDownload:
     def test_successful_download_is_valid_wheel(self, vm, monkeypatch):
         payload = _make_wheel_bytes()
         monkeypatch.setattr(vm_mod.urllib.request, "urlopen",
-                            lambda req: _FakeResponse(payload))
+                            lambda req, *, timeout: _FakeResponse(payload))
         path = vm.download_version("9.9.9")
         assert os.path.isfile(path)
         assert zipfile.is_zipfile(path)
@@ -163,7 +163,7 @@ class TestDownload:
         # actually triggers mid-transfer.
         payload = _make_wheel_bytes() + b"\0" * (64 * 1024 * 6)
         monkeypatch.setattr(vm_mod.urllib.request, "urlopen",
-                            lambda req: _FakeResponse(payload))
+                            lambda req, *, timeout: _FakeResponse(payload))
         calls = {"n": 0}
 
         def cancel_after_two_chunks():
@@ -183,7 +183,7 @@ class TestDownload:
     def test_cancel_then_reinstall_succeeds(self, vm, monkeypatch):
         cancel_payload = _make_wheel_bytes() + b"\0" * (64 * 1024 * 6)
         monkeypatch.setattr(vm_mod.urllib.request, "urlopen",
-                            lambda req: _FakeResponse(cancel_payload))
+                            lambda req, *, timeout: _FakeResponse(cancel_payload))
         flag = {"n": 0}
 
         def cancel_once():
@@ -196,14 +196,14 @@ class TestDownload:
         # Second attempt with no cancellation must produce a valid install.
         good_payload = _make_wheel_bytes()
         monkeypatch.setattr(vm_mod.urllib.request, "urlopen",
-                            lambda req: _FakeResponse(good_payload))
+                            lambda req, *, timeout: _FakeResponse(good_payload))
         path = vm.download_version("9.9.9")
         assert zipfile.is_zipfile(path)
         assert vm.is_installed("9.9.9")
 
     def test_truncated_transfer_rejected(self, vm, monkeypatch):
         monkeypatch.setattr(vm_mod.urllib.request, "urlopen",
-                            lambda req: _FakeResponse(b"not-a-zip"))
+                            lambda req, *, timeout: _FakeResponse(b"not-a-zip"))
         with pytest.raises(ValueError, match="not a valid wheel"):
             vm.download_version("9.9.9")
         assert not vm.is_installed("9.9.9")
@@ -216,7 +216,7 @@ class TestDownload:
 
         payload = _make_wheel_bytes()
         monkeypatch.setattr(vm_mod.urllib.request, "urlopen",
-                            lambda req: _FakeResponse(payload))
+                            lambda req, *, timeout: _FakeResponse(payload))
         path = vm.download_version("9.9.9")
         assert zipfile.is_zipfile(path)
 
@@ -227,14 +227,14 @@ class TestDownload:
             "assets": [
                 {
                     "name": filename,
-                    "browser_download_url": "https://files.pythonhosted.org/pypi.whl",
-                    "size": 128,
+                    "browser_download_url": f"https://files.pythonhosted.org/pypi/{filename}",
+                    "size": len(_make_wheel_bytes()),
                     "source": "pypi",
                 },
                 {
                     "name": filename,
-                    "browser_download_url": "https://github.com/github.whl",
-                    "size": 128,
+                    "browser_download_url": f"https://github.com/github/{filename}",
+                    "size": len(_make_wheel_bytes()),
                     "source": "github",
                 },
             ],
@@ -242,7 +242,7 @@ class TestDownload:
         monkeypatch.setattr(vm, "_fetch_releases", lambda: [release])
         requested = []
 
-        def open_asset(request):
+        def open_asset(request, *, timeout):
             requested.append(request.full_url)
             if "pythonhosted" in request.full_url:
                 raise urllib.error.URLError("PyPI unavailable")
@@ -252,8 +252,8 @@ class TestDownload:
 
         assert zipfile.is_zipfile(vm.download_version("9.9.9"))
         assert requested == [
-            "https://files.pythonhosted.org/pypi.whl",
-            "https://github.com/github.whl",
+            f"https://files.pythonhosted.org/pypi/{filename}",
+            f"https://github.com/github/{filename}",
         ]
 
     def test_newer_pypi_build_tag_wins_within_same_engine_version(
@@ -264,20 +264,20 @@ class TestDownload:
             "assets": [
                 {
                     "name": "infernux-9.9.9-cp312-cp312-win_amd64.whl",
-                    "browser_download_url": "https://files.pythonhosted.org/old.whl",
-                    "size": 128,
+                    "browser_download_url": "https://files.pythonhosted.org/old/infernux-9.9.9-cp312-cp312-win_amd64.whl",
+                    "size": len(_make_wheel_bytes()),
                     "source": "pypi",
                 },
                 {
                     "name": "infernux-9.9.9-1-cp312-cp312-win_amd64.whl",
-                    "browser_download_url": "https://files.pythonhosted.org/new.whl",
-                    "size": 128,
+                    "browser_download_url": "https://files.pythonhosted.org/new/infernux-9.9.9-1-cp312-cp312-win_amd64.whl",
+                    "size": len(_make_wheel_bytes(build=1)),
                     "source": "pypi",
                 },
                 {
                     "name": "infernux-9.9.9-1-cp312-cp312-win_amd64.whl",
-                    "browser_download_url": "https://github.com/new.whl",
-                    "size": 128,
+                    "browser_download_url": "https://github.com/new/infernux-9.9.9-1-cp312-cp312-win_amd64.whl",
+                    "size": len(_make_wheel_bytes(build=1)),
                     "source": "github",
                 },
             ],
@@ -285,14 +285,14 @@ class TestDownload:
         monkeypatch.setattr(vm, "_fetch_releases", lambda: [release])
         requested = []
 
-        def open_asset(request):
+        def open_asset(request, *, timeout):
             requested.append(request.full_url)
             return _FakeResponse(_make_wheel_bytes(build=1))
 
         monkeypatch.setattr(vm_mod.urllib.request, "urlopen", open_asset)
 
         vm.download_version("9.9.9")
-        assert requested == ["https://files.pythonhosted.org/new.whl"]
+        assert requested == ["https://files.pythonhosted.org/new/infernux-9.9.9-1-cp312-cp312-win_amd64.whl"]
 
         wheels = vm_mod._find_wheel_assets(release)
         assert [(wheel.filename, wheel.source) for wheel in wheels[:2]] == [
@@ -307,14 +307,14 @@ class TestDownload:
             "assets": [
                 {
                     "name": filename,
-                    "browser_download_url": "https://files.pythonhosted.org/pypi.whl",
-                    "size": 128,
+                    "browser_download_url": f"https://files.pythonhosted.org/pypi/{filename}",
+                    "size": len(_make_wheel_bytes()),
                     "source": "pypi",
                 },
                 {
                     "name": filename,
-                    "browser_download_url": "https://github.com/github.whl",
-                    "size": 128,
+                    "browser_download_url": f"https://github.com/github/{filename}",
+                    "size": len(_make_wheel_bytes()),
                     "source": "github",
                 },
             ],
@@ -322,7 +322,7 @@ class TestDownload:
         monkeypatch.setattr(vm, "_fetch_releases", lambda: [release])
         requested = []
 
-        def open_asset(request):
+        def open_asset(request, *, timeout):
             requested.append(request.full_url)
             return _FakeResponse(b"not a wheel")
 
@@ -330,7 +330,7 @@ class TestDownload:
 
         with pytest.raises(ValueError, match="not a valid wheel"):
             vm.download_version("9.9.9")
-        assert requested == ["https://files.pythonhosted.org/pypi.whl"]
+        assert requested == [f"https://files.pythonhosted.org/pypi/{filename}"]
 
 
 class TestListingHealsCorruption:
@@ -410,12 +410,12 @@ def test_release_with_conflicting_python_abis_is_rejected(
         "assets": [
             {
                 "name": "infernux-0.4.0-cp313-cp313-win_amd64.whl",
-                "browser_download_url": "https://example.invalid/cp313.whl",
+                "browser_download_url": "https://example.invalid/infernux-0.4.0-cp313-cp313-win_amd64.whl",
                 "size": 313,
             },
             {
                 "name": "infernux-0.4.0-cp312-cp312-win_amd64.whl",
-                "browser_download_url": "https://example.invalid/cp312.whl",
+                "browser_download_url": "https://example.invalid/infernux-0.4.0-cp312-cp312-win_amd64.whl",
                 "size": 312,
             },
         ],
@@ -442,7 +442,7 @@ def test_online_engine_stays_visible_but_install_is_blocked_without_python(
         "assets": [
             {
                 "name": "infernux-0.4.0-cp313-cp313-win_amd64.whl",
-                "browser_download_url": "https://example.invalid/cp313.whl",
+                "browser_download_url": "https://example.invalid/infernux-0.4.0-cp313-cp313-win_amd64.whl",
                 "size": 313,
             }
         ],
@@ -500,12 +500,12 @@ def test_release_assets_are_filtered_by_host_platform(tmp_path, monkeypatch):
         "assets": [
             {
                 "name": "infernux-0.4.0-cp313-cp313-win_amd64.whl",
-                "browser_download_url": "https://example.invalid/windows.whl",
+                "browser_download_url": "https://example.invalid/infernux-0.4.0-cp313-cp313-win_amd64.whl",
                 "size": 101,
             },
             {
                 "name": "infernux-0.4.0-cp313-cp313-manylinux_2_28_x86_64.whl",
-                "browser_download_url": "https://example.invalid/linux.whl",
+                "browser_download_url": "https://example.invalid/infernux-0.4.0-cp313-cp313-manylinux_2_28_x86_64.whl",
                 "size": 202,
             },
         ],
@@ -517,7 +517,7 @@ def test_release_assets_are_filtered_by_host_platform(tmp_path, monkeypatch):
     assert [wheel.filename for wheel in engine.wheel_options] == [
         "infernux-0.4.0-cp313-cp313-win_amd64.whl"
     ]
-    assert engine.wheel_url == "https://example.invalid/windows.whl"
+    assert engine.wheel_url == "https://example.invalid/infernux-0.4.0-cp313-cp313-win_amd64.whl"
     assert engine.python_version == "3.13"
 
 

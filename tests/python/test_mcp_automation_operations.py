@@ -38,6 +38,7 @@ def test_authoring_queue_drains_before_native_frame_and_reload(monkeypatch):
     monkeypatch.setattr(MainThreadCommandQueue, "instance", lambda: SimpleNamespace(drain=drain))
     monkeypatch.setattr(engine_module, "_PLAYER_MODE", False)
     engine = engine_module.Engine.__new__(engine_module.Engine)
+    engine._mode = engine_module.RuntimeMode.Graphical
     engine._engine = SimpleNamespace(
         set_pre_scene_update_callback=lambda cb: callbacks.update(pre_scene=cb),
     )
