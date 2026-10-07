@@ -59,11 +59,23 @@ class UISlider(UISelectable):
         return max(0.0, min(1.0, (float(self.value) - minimum) / (maximum - minimum)))
 
     def set_value(self, value: float, notify: bool = True) -> float:
+        """Clamp and publish a value, rounding to a valid integer in whole-number mode.
+
+        Whole-number updates require finite values and at least one integer
+        between minimum and maximum; invalid updates raise before mutation.
+        """
         minimum = float(self.minimum)
-        maximum = max(minimum, float(self.maximum))
-        value = max(minimum, min(maximum, float(value)))
+        maximum = float(self.maximum)
+        value = float(value)
         if self.whole_numbers:
-            value = float(round(value))
+            if not (math.isfinite(minimum) and math.isfinite(maximum) and math.isfinite(value)):
+                raise ValueError("Whole-number slider bounds and value must be finite")
+            lower, upper = math.ceil(minimum), math.floor(maximum)
+            if lower > upper:
+                raise ValueError("Whole-number slider range must contain at least one integer")
+            value = float(max(lower, min(upper, round(value))))
+        else:
+            value = max(minimum, min(max(minimum, maximum), value))
         changed = value != float(self.value)
         self.value = value
         if changed and notify:
