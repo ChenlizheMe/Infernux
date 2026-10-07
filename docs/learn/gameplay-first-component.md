@@ -49,7 +49,7 @@ class HelloComponent(inx.InxComponent):
         inx.Debug.log("OnDestroy", self)
 ```
 
-Private names beginning with `_` stay out of serialization and the Inspector. They are useful for runtime bookkeeping. Do not add an `__init__` method: `InxComponent` owns construction and raises `TypeError` when a subclass overrides it. Use `awake` or `start` for setup.
+Ordinary private attributes beginning with `_` stay out of serialization and the Inspector. They are useful for runtime bookkeeping. To save private data explicitly, declare it with `serialized_field(..., hidden=True)`, as described in the next chapter. Do not add an `__init__` method: `InxComponent` owns construction and raises `TypeError` when a subclass overrides it. Use `awake` or `start` for setup.
 
 ## Attach and run {#attach-and-run}
 
@@ -104,6 +104,8 @@ An inactive GameObject defers `awake` until it first becomes active. `start` run
 Edit-mode execution is a separate opt-in with `@inx.execute_in_edit_mode`. You can add or remove this decorator while the component is attached: a successful script reload updates its edit-mode execution setting without replacing the component or losing serialized values. If the candidate fails to publish, the previous setting remains active. Play-mode callbacks continue to run regardless of this decorator.
 
 For opted-in Python components, the editor runs all `update` callbacks before all `late_update` callbacks in the same frame. This supports camera-follow and reflection previews without entering Play. It does not start fixed-step physics; ordinary gameplay components remain inactive.
+
+Edit-mode preview callbacks receive the editor frame duration. Use their `delta_time` argument for preview animation: `Time.delta_time` and `Time.frame_count` belong to the Play clock, which does not advance in Edit mode.
 
 ## Common errors {#troubleshooting}
 
@@ -169,7 +171,7 @@ class HelloComponent(inx.InxComponent):
         inx.Debug.log("OnDestroy", self)
 ```
 
-以 `_` 开头的私有名称不会进入序列化和 Inspector，适合保存运行时状态。请勿添加 `__init__`：组件构造由 `InxComponent` 管理，子类覆写它时会抛出 `TypeError`。初始化工作放进 `awake` 或 `start`。
+以 `_` 开头的普通私有属性不会进入序列化和 Inspector，适合保存运行时状态。需要明确保存私有数据时，使用下一章介绍的 `serialized_field(..., hidden=True)`。请勿添加 `__init__`：组件构造由 `InxComponent` 管理，子类覆写它时会抛出 `TypeError`。初始化工作放进 `awake` 或 `start`。
 
 ## 挂载并运行 {#attach-and-run_1}
 
@@ -224,6 +226,8 @@ class HelloComponent(inx.InxComponent):
 编辑模式执行需要通过 `@inx.execute_in_edit_mode` 单独选择加入。组件挂载后仍可以添加或移除这个装饰器：脚本成功热重载时会更新编辑模式执行设置，不替换组件，也不丢失序列化值。如果候选脚本发布失败，之前的设置仍然生效。Play 模式下的回调不受这个装饰器限制。
 
 对选择加入的 Python 组件，编辑器在同一帧先执行所有 `update`，再执行所有 `late_update`。跟随相机和反射预览因此不必进入 Play 才能更新。这不会启动固定步物理，普通游戏逻辑也不会跟着执行。
+
+编辑模式预览回调收到的是编辑器帧时长。预览动画应使用回调的 `delta_time` 参数；`Time.delta_time` 和 `Time.frame_count` 属于 Play 时钟，在编辑模式下不会推进。
 
 ## 常见错误 {#troubleshooting_1}
 

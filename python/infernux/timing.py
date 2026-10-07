@@ -3,21 +3,27 @@ Static ``Time`` class — Unity-style frame timing information.
 
 Access timing data from anywhere in gameplay scripts without instantiation::
 
-    from infernux import Time
+    import infernux as inx
 
-    class PlayerController(InxComponent):
-        speed = 10.0
+    class PlayerController(inx.InxComponent):
+        speed: float = inx.serialized_field(default=10.0)
 
-        def update(self, dt):
-            velocity = self.speed * Time.delta_time
-            if Time.frame_count % 60 == 0:
-                debug.log(f"Play time: {Time.time:.1f}s")
+        def update(self, delta_time: float) -> None:
+            position = self.transform.position
+            distance = self.speed * inx.Time.delta_time
+            self.transform.position = inx.Vector3(
+                position.x + distance, position.y, position.z,
+            )
+            if inx.Time.frame_count % 60 == 0:
+                inx.Debug.log(f"Play time: {inx.Time.time:.1f}s", self)
 
 Note:
-    ``update()`` and ``late_update()`` receive the scaled simulation delta,
+    In Play mode, ``update()`` and ``late_update()`` receive the scaled simulation delta,
     matching ``Time.delta_time``. ``fixed_update()`` receives the fixed
     simulation step, matching ``Time.fixed_delta_time``. Use
     ``Time.unscaled_delta_time`` for frame-driven work independent of time scale.
+    Edit-mode preview callbacks receive the editor frame duration instead.
+    Use their callback argument; the Play clock does not advance in Edit mode.
 """
 
 from __future__ import annotations

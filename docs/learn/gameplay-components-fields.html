@@ -190,7 +190,7 @@
 </ol>
 <p>预期日志为 <code>Reporter -&gt; Target; speed=6.0</code>。具体数值格式遵循 Python 的浮点格式化结果。</p>
 <h2 id="fields_1">序列化字段</h2>
-<p>公开注解支持 <code>int</code>、<code>float</code>、<code>bool</code>、<code>str</code>、向量、枚举、已知资产引用、<code>GameObject</code>、组件子类、受支持类型的列表和可序列化对象。带受支持类型的公开类属性会被收集为序列化字段。需要用关键字集中表达元数据时，可以显式使用 <code>serialized_field(...)</code>。</p>
+<p>公开注解支持 <code>int</code>、<code>float</code>、<code>bool</code>、<code>str</code>、向量、枚举、已知资产引用、<code>GameObject</code>、组件子类、受支持类型的列表和可序列化对象。带受支持类型的公开类属性会被收集为序列化字段。使用 <code>serialized_field(...)</code> 明确声明可编辑字段及其 Inspector 元数据。</p>
 <p>注解同样为 <code>serialized_field</code> 声明提供类型：<code>numbers: list[int] = inx.serialized_field(default=[])</code> 即使默认列表为空，也会声明整数元素；<code>speed: float = inx.serialized_field(default=1)</code> 的默认值是浮点数 <code>1.0</code>。显式传入的 <code>field_type</code>、<code>element_type</code> 等类型参数优先于注解中的对应信息。</p>
 <p><code>serialized_field()</code> 的 <code>range</code>、<code>header</code> 和 <code>tooltip</code> 参数分别提供滑块、分区标题和悬停提示。相同的数值边界会用于 Inspector 编辑、反序列化和脚本赋值。场景会保存编辑后的值；以后修改类默认值，不会覆盖场景里已经写入的值。</p>
 <p>临时状态适合放在私有 <code>_name</code> 属性中。数据需要保存且无需出现在 Inspector 时，使用 <code>serialized_field(..., hidden=True)</code>。普通运行时缓存应在生命周期回调中重建，并避开序列化字段。</p>

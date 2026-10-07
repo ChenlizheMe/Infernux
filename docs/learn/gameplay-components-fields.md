@@ -193,7 +193,7 @@ class TargetReporter(inx.InxComponent):
 
 ## 序列化字段 {#fields_1}
 
-公开注解支持 `int`、`float`、`bool`、`str`、向量、枚举、已知资产引用、`GameObject`、组件子类、受支持类型的列表和可序列化对象。带受支持类型的公开类属性会被收集为序列化字段。需要用关键字集中表达元数据时，可以显式使用 `serialized_field(...)`。
+公开注解支持 `int`、`float`、`bool`、`str`、向量、枚举、已知资产引用、`GameObject`、组件子类、受支持类型的列表和可序列化对象。带受支持类型的公开类属性会被收集为序列化字段。使用 `serialized_field(...)` 明确声明可编辑字段及其 Inspector 元数据。
 
 注解同样为 `serialized_field` 声明提供类型：`numbers: list[int] = inx.serialized_field(default=[])` 即使默认列表为空，也会声明整数元素；`speed: float = inx.serialized_field(default=1)` 的默认值是浮点数 `1.0`。显式传入的 `field_type`、`element_type` 等类型参数优先于注解中的对应信息。
 

@@ -74,7 +74,7 @@
         <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnDestroy"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 </code></pre></div>
 
-<p>Private names beginning with <code>_</code> stay out of serialization and the Inspector. They are useful for runtime bookkeeping. Do not add an <code>__init__</code> method: <code>InxComponent</code> owns construction and raises <code>TypeError</code> when a subclass overrides it. Use <code>awake</code> or <code>start</code> for setup.</p>
+<p>Ordinary private attributes beginning with <code>_</code> stay out of serialization and the Inspector. They are useful for runtime bookkeeping. To save private data explicitly, declare it with <code>serialized_field(..., hidden=True)</code>, as described in the next chapter. Do not add an <code>__init__</code> method: <code>InxComponent</code> owns construction and raises <code>TypeError</code> when a subclass overrides it. Use <code>awake</code> or <code>start</code> for setup.</p>
 <h2 id="attach-and-run">Attach and run</h2>
 <ol>
 <li>Create or select any active object in <strong>Hierarchy</strong> and rename it <code>HelloObject</code>.</li>
@@ -143,6 +143,7 @@
 <p>An inactive GameObject defers <code>awake</code> until it first becomes active. <code>start</code> runs once, immediately before that component's first simulation update. Regular <code>update</code>, <code>fixed_update</code>, and <code>late_update</code> callbacks run in Play mode.</p>
 <p>Edit-mode execution is a separate opt-in with <code>@inx.execute_in_edit_mode</code>. You can add or remove this decorator while the component is attached: a successful script reload updates its edit-mode execution setting without replacing the component or losing serialized values. If the candidate fails to publish, the previous setting remains active. Play-mode callbacks continue to run regardless of this decorator.</p>
 <p>For opted-in Python components, the editor runs all <code>update</code> callbacks before all <code>late_update</code> callbacks in the same frame. This supports camera-follow and reflection previews without entering Play. It does not start fixed-step physics; ordinary gameplay components remain inactive.</p>
+<p>Edit-mode preview callbacks receive the editor frame duration. Use their <code>delta_time</code> argument for preview animation: <code>Time.delta_time</code> and <code>Time.frame_count</code> belong to the Play clock, which does not advance in Edit mode.</p>
 <h2 id="troubleshooting">Common errors</h2>
 <ul>
 <li><strong>The script is absent from Add Component.</strong> Save the file, confirm the class derives from <code>InxComponent</code>, and inspect the Console for an import or syntax error.</li>
@@ -196,7 +197,7 @@
         <span class="n">inx</span><span class="o">.</span><span class="n">Debug</span><span class="o">.</span><span class="n">log</span><span class="p">(</span><span class="s2">"OnDestroy"</span><span class="p">,</span> <span class="bp">self</span><span class="p">)</span>
 </code></pre></div>
 
-<p>以 <code>_</code> 开头的私有名称不会进入序列化和 Inspector，适合保存运行时状态。请勿添加 <code>__init__</code>：组件构造由 <code>InxComponent</code> 管理，子类覆写它时会抛出 <code>TypeError</code>。初始化工作放进 <code>awake</code> 或 <code>start</code>。</p>
+<p>以 <code>_</code> 开头的普通私有属性不会进入序列化和 Inspector，适合保存运行时状态。需要明确保存私有数据时，使用下一章介绍的 <code>serialized_field(..., hidden=True)</code>。请勿添加 <code>__init__</code>：组件构造由 <code>InxComponent</code> 管理，子类覆写它时会抛出 <code>TypeError</code>。初始化工作放进 <code>awake</code> 或 <code>start</code>。</p>
 <h2 id="attach-and-run_1">挂载并运行</h2>
 <ol>
 <li>在 <strong>Hierarchy</strong> 中创建或选择一个启用的物体，命名为 <code>HelloObject</code>。</li>
@@ -265,6 +266,7 @@
 <p>非活动 GameObject 会把 <code>awake</code> 推迟到第一次激活。<code>start</code> 只运行一次，位置在该组件第一次模拟更新之前。普通的 <code>update</code>、<code>fixed_update</code> 与 <code>late_update</code> 只在 Play 模式运行。</p>
 <p>编辑模式执行需要通过 <code>@inx.execute_in_edit_mode</code> 单独选择加入。组件挂载后仍可以添加或移除这个装饰器：脚本成功热重载时会更新编辑模式执行设置，不替换组件，也不丢失序列化值。如果候选脚本发布失败，之前的设置仍然生效。Play 模式下的回调不受这个装饰器限制。</p>
 <p>对选择加入的 Python 组件，编辑器在同一帧先执行所有 <code>update</code>，再执行所有 <code>late_update</code>。跟随相机和反射预览因此不必进入 Play 才能更新。这不会启动固定步物理，普通游戏逻辑也不会跟着执行。</p>
+<p>编辑模式预览回调收到的是编辑器帧时长。预览动画应使用回调的 <code>delta_time</code> 参数；<code>Time.delta_time</code> 和 <code>Time.frame_count</code> 属于 Play 时钟，在编辑模式下不会推进。</p>
 <h2 id="troubleshooting_1">常见错误</h2>
 <ul>
 <li><strong>Add Component 找不到脚本。</strong> 保存文件，确认类继承 <code>InxComponent</code>，再查看 Console 中的导入或语法错误。</li>
