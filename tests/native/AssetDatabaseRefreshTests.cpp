@@ -334,6 +334,69 @@ void TestProjectPackagesScanRootSharesTheGuidCatalog()
     std::filesystem::remove_all(root);
 }
 
+void TestRegisteredScriptKeepsGuidWhenSidecarAndDerivedIndexAreMissing(bool keepIndex, bool changeSource,
+                                                                     bool packageScript)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+                      (std::string("infernux-live-script-sidecar-") + (keepIndex ? "indexed-" : "unindexed-") +
+                       (changeSource ? "changed-" : "unchanged-") + (packageScript ? "package" : "asset"));
+    std::filesystem::remove_all(root);
+    const auto script = packageScript ? root / "Packages" / "vendor" / "tool" / "editor" / "__init__.py"
+                                      : root / "Assets" / "Scripts" / "Identity.py";
+    WriteText(script, "VALUE = 1\n");
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::Script, std::make_unique<infernux::InxPythonScriptLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        auto *assetDatabase = registry.GetAssetDatabase();
+        if (packageScript)
+            assetDatabase->AddScanRoot(infernux::FromFsPath(root / "Packages"));
+        assetDatabase->Refresh();
+        const std::string scriptPath = infernux::FromFsPath(script);
+        const std::string originalGuid = assetDatabase->GetGuidFromPath(scriptPath);
+        const auto originalMetadata = assetDatabase->GetMetaByGuid(originalGuid);
+        Require(!originalGuid.empty() && originalMetadata != nullptr,
+                "initial refresh did not register the identity fixture");
+        const std::string originalHash =
+            originalMetadata->GetDataAs<std::string>("content_hash");
+        assetDatabase->FlushDerivedIndex();
+        const auto sidecar = infernux::ToFsPath(scriptPath + ".meta");
+        Require(std::filesystem::remove(sidecar), "identity fixture sidecar was not removed");
+        if (!keepIndex)
+            Require(std::filesystem::remove(root / "Library" / "AssetIndex.json"),
+                    "identity fixture derived index was not removed");
+        if (changeSource)
+            WriteText(script, "VALUE = 2\n");
+
+        assetDatabase->Refresh();
+        Require(assetDatabase->GetGuidFromPath(scriptPath) == originalGuid,
+                "refresh replaced a registered script GUID after its sidecar/index was removed");
+        Require(assetDatabase->GetPathFromGuid(originalGuid) == scriptPath,
+                "refresh retired the original GUID-to-path mapping");
+        const auto rebuilt = assetDatabase->GetMetaByGuid(originalGuid);
+        Require(rebuilt != nullptr && rebuilt->GetGuid() == originalGuid,
+                "refresh did not publish the original script metadata identity");
+        Require((rebuilt->GetDataAs<std::string>("content_hash") != originalHash) == changeSource,
+                "identity preservation reused the wrong source revision");
+        std::ifstream input(sidecar);
+        Require(nlohmann::json::parse(input).at("metadata").at("guid").at("value") == originalGuid,
+                "regenerated sidecar did not preserve the registered GUID");
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
 void TestStartupCatalogSurvivesLiveIndexInvalidation()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-asset-startup-catalog";
@@ -998,6 +1061,11 @@ int main()
         TestScriptReimportRefreshesContentHashAndPreservesGuid();
         TestValidButStaleSidecarIsRebuiltFromCurrentSource();
         TestProjectPackagesScanRootSharesTheGuidCatalog();
+        for (const bool keepIndex : {true, false})
+            for (const bool changeSource : {false, true})
+                for (const bool packageScript : {false, true})
+                    TestRegisteredScriptKeepsGuidWhenSidecarAndDerivedIndexAreMissing(keepIndex, changeSource,
+                                                                                     packageScript);
         TestStartupCatalogSurvivesLiveIndexInvalidation();
         TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar();
         TestCompositeModelPublishesExternalTextureGuidDependencies();

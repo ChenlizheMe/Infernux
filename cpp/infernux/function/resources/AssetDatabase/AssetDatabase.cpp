@@ -1780,15 +1780,22 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
         if (loader == m_loaders.end() || !loader->second)
             throw std::logic_error("AssetDatabase metadata preparation has no loader");
         item.loader = loader->second;
+        if (!file.readOnly) {
+            // The live catalog owns registered identities. A derived index can
+            // disappear while a sidecar is being rebuilt; losing that cache
+            // must not create a new GUID for an existing path.
+            const auto registered = previousWorkingSet.pathToGuid.find(file.normalizedPath);
+            if (registered != previousWorkingSet.pathToGuid.end())
+                item.fallbackGuid = registered->second;
+            else if (indexed)
+                item.fallbackGuid = indexed->guid;
+        }
         if (indexed && !file.readOnly && indexed->resourceType != type) {
             item.mode = WorkerMetadataPrepare::Mode::Rebuild;
-            item.fallbackGuid = indexed->guid;
         } else if (indexed && !file.readOnly && indexed->source == file.source && indexed->meta != file.meta) {
             item.mode = WorkerMetadataPrepare::Mode::LoadExisting;
-            item.fallbackGuid = indexed->guid;
         } else if (indexed && !file.readOnly && indexed->source != file.source) {
             item.mode = WorkerMetadataPrepare::Mode::Rebuild;
-            item.fallbackGuid = indexed->guid;
         } else {
             item.mode = WorkerMetadataPrepare::Mode::CreateOrLoad;
         }
