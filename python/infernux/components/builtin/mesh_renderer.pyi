@@ -88,9 +88,12 @@ class MeshRenderer(BuiltinComponent):
     def get_material_guids(self) -> List[str]:
         """Return the list of material GUIDs for all slots."""
         ...
-    def set_materials(self, guids: List[str]) -> None:
-        """Set all material slots from a list of asset GUIDs."""
+    def set_materials(self, materials_list: list[Material | InxMaterial | str | None]) -> None:
+        """Replace every slot, including removal of omitted tail slots."""
         ...
+    def set_shared_materials(self, materials_list: list[Material | InxMaterial | str | None]) -> None: ...
+    SetMaterials = set_materials
+    SetSharedMaterials = set_shared_materials
     def set_material_slot_count(self, count: int) -> None:
         """Set the number of material slots on this renderer."""
         ...

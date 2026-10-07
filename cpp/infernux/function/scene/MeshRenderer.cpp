@@ -902,29 +902,43 @@ void MeshRenderer::SetMaterial(uint32_t slot, const std::string &guid)
 
 void MeshRenderer::SetMaterials(const std::vector<std::string> &guids)
 {
-    // Clear old dependency edges
+    std::vector<MaterialSlotValue> materials(guids.begin(), guids.end());
+    SetMaterialSlots(materials);
+}
+
+void MeshRenderer::SetMaterialSlots(const std::vector<MaterialSlotValue> &materials)
+{
+    // Resolve the complete replacement before changing the renderer. The
+    // binding likewise converts every input before entering this function.
+    std::vector<AssetRef<InxMaterial>> candidate;
+    candidate.reserve(materials.size());
+    auto &registry = AssetRegistry::Instance();
+    for (const auto &value : materials) {
+        if (const auto *assetGuid = std::get_if<std::string>(&value)) {
+            candidate.emplace_back(*assetGuid);
+            registry.Resolve(candidate.back(), ResourceType::Material);
+        } else {
+            const auto &material = std::get<std::shared_ptr<InxMaterial>>(value);
+            const std::string guid = material ? material->GetGuid() : "";
+            const uint64_t version = guid.empty() ? 0 : registry.GetAssetVersion(guid);
+            candidate.emplace_back(guid, material, version);
+        }
+    }
+
     auto &graph = AssetDependencyGraph::Instance();
     for (auto &ref : m_materials) {
         if (ref.HasGuid())
             graph.RemoveRuntimeDependency(GetInstanceGuid(), ref.GetGuid());
     }
 
-    m_materials.resize(guids.size());
-    m_embeddedMaterialVersions.assign(guids.size(), std::nullopt);
-    m_persistentParameters.resize(guids.size());
-    m_runtimeParameters.resize(guids.size());
-    m_parameterBlocks.resize(guids.size());
-    for (uint32_t i = 0; i < guids.size(); ++i) {
-        // Empty GUID is an explicit clear, including transient resources whose
-        // previous GUID was also empty. SetGuid alone retains that cached pointer.
-        if (guids[i].empty())
-            m_materials[i] = AssetRef<InxMaterial>{};
-        else
-            m_materials[i].SetGuid(guids[i]);
-        AssetRegistry::Instance().Resolve(m_materials[i], ResourceType::Material);
-
-        if (!guids[i].empty())
-            graph.AddRuntimeDependency(GetInstanceGuid(), guids[i]);
+    m_materials = std::move(candidate);
+    m_embeddedMaterialVersions.assign(materials.size(), std::nullopt);
+    m_persistentParameters.resize(materials.size());
+    m_runtimeParameters.resize(materials.size());
+    m_parameterBlocks.resize(materials.size());
+    for (const auto &ref : m_materials) {
+        if (ref.HasGuid())
+            graph.AddRuntimeDependency(GetInstanceGuid(), ref.GetGuid());
     }
 
     RefreshParameterTextureDependencies();

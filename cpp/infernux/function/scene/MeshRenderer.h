@@ -15,6 +15,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <variant>
 #include <vector>
 
 namespace infernux
@@ -271,6 +272,10 @@ class MeshRenderer : public Component
 
     /// @brief Bulk-set all materials from GUID list.
     void SetMaterials(const std::vector<std::string> &guids);
+
+    using MaterialSlotValue = std::variant<std::string, std::shared_ptr<InxMaterial>>;
+    /// Replace all slots, preserving explicit native instances and unresolved GUIDs.
+    void SetMaterialSlots(const std::vector<MaterialSlotValue> &materials);
 
     /// @brief Resize the material slot array (new slots get empty refs).
     void SetMaterialSlotCount(uint32_t count);

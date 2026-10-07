@@ -103,11 +103,7 @@ class MeshRenderer(BuiltinComponent):
 
     @materials.setter
     def materials(self, value: list) -> None:
-        cpp = self._cpp_component
-        if cpp is None:
-            return
-        for i, mat in enumerate(value):
-            cpp.set_material(i, _to_native_material(mat))
+        self.set_materials(value)
 
     @property
     def sharedMaterials(self) -> list:
@@ -229,12 +225,7 @@ class MeshRenderer(BuiltinComponent):
         cpp = self._cpp_component
         if cpp is None:
             return
-        for i, mat in enumerate(materials_list):
-            native = _to_native_material(mat)
-            if isinstance(native, str):
-                cpp.set_material(i, native)
-            else:
-                cpp.set_material(i, native)
+        cpp.set_materials([_to_native_material(mat) for mat in materials_list])
 
     SetMaterials = set_materials  # Unity PascalCase alias
 
