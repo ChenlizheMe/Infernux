@@ -6,7 +6,7 @@ import sys
 import pytest
 
 
-@pytest.mark.parametrize('action', ['escape', 'close', 'reject', 'accept', 'done', 'reentry', 'quit', 'hub-quit'])
+@pytest.mark.parametrize('action', ['escape', 'close', 'reject', 'accept', 'done', 'reentry', 'quit', 'hub-quit', 'hub-language'])
 @pytest.mark.parametrize('outcome', ['success', 'failure'])
 def test_creation_owns_its_progress_thread_and_result(action, outcome, tmp_path):
     packaging = Path(__file__).resolve().parents[1]

@@ -55,7 +55,7 @@ def main():
             registered.append((name, path))
             return SimpleNamespace(project_id=name)
 
-    if action == 'hub-quit':
+    if action in ('hub-quit', 'hub-language'):
         from launcher import GameEngineLauncher
         hub = GameEngineLauncher(HubLaunchContext.SOURCE)
         vm = hub.viewmodel
@@ -98,7 +98,17 @@ def main():
     thread, worker = vm._creation_thread, vm._creation_worker
     progress = next(w for w in app.topLevelWidgets() if isinstance(w, CustomProgressDialog) and w.isVisible())
     try:
-        if action in ('quit', 'hub-quit'):
+        if action == 'hub-language':
+            old_central = hub.centralWidget()
+            combo = hub.settings_view.language_combo
+            combo.setCurrentIndex(combo.findData('en' if combo.currentData() != 'en' else 'zh'))
+            QTest.qWait(30)
+            assert hub.centralWidget() is old_central
+            gate.set()
+            spin(lambda: vm._creation_thread is None)
+            spin(lambda: hub.centralWidget() is not old_central)
+            assert vm.project_list is hub.project_list
+        elif action in ('quit', 'hub-quit'):
             if action == 'hub-quit':
                 # Also cover application shutdown with a hidden task window.
                 progress.hide()

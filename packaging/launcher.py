@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QVBoxLayout, QSizePolicy, QStackedWidget,
     QGraphicsOpacityEffect, QSystemTrayIcon, QMenu, QTabWidget, QLabel,
 )
-from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import QObject, QThread, Qt, QTimer, QPropertyAnimation, QEasingCurve, Slot
 from PySide6.QtGui import QIcon, QFontDatabase
 
 from ui_project_list import ProjectListPane
@@ -95,7 +95,39 @@ class GameEngineLauncher(QMainWindow):
         self.install_queue = install_queue if install_queue is not None else InstallQueue(self.app)
         self._exit_when_idle = False
         self.install_queue.idle.connect(self._on_queue_idle)
+        self.install_queue.job_finished.connect(self._on_installation_finished)
 
+        # Services belong to this window, independently of translated pages.
+        model = ProjectModel(self.db, self.version_manager, self.runtime_manager)
+        self.viewmodel = ControlPaneViewModel(
+            model, None, self.version_manager, self.runtime_manager,
+            launch_context=self.launch_context,
+        )
+        self.viewmodel.setParent(self)
+        from view.update_dialog import UpdateController
+        self.update_controller = UpdateController(self)
+        self.update_controller.check_finished.connect(self._on_startup_update_check_finished)
+        self._startup_update_pending = False
+        from view.notification_dialog import HubNotificationController
+        self.notification_controller = HubNotificationController(
+            self, self.db, open_installs=lambda: self.sidebar.select_page(1),
+        )
+        self._language_wait_connections = []
+        self._language_refresh_timer = QTimer(self)
+        self._language_refresh_timer.setSingleShot(True)
+        self._language_refresh_timer.timeout.connect(self._refresh_language_pages)
+
+        self._build_pages()
+        self.tray = QSystemTrayIcon(QIcon(ICON_PATH), self)
+        self.tray.setToolTip("Infernux Hub")
+        self._build_tray_menu()
+        self.tray.activated.connect(self._on_tray_activated)
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.app.setQuitOnLastWindowClosed(False)
+            self.tray.show()
+        self.app.aboutToQuit.connect(self._on_close)
+
+    def _build_pages(self):
         # ── Root layout: sidebar | content ───────────────────────────
         central = QWidget(self)
         central.setObjectName("central")
@@ -121,23 +153,9 @@ class GameEngineLauncher(QMainWindow):
         self.project_list = ProjectListPane(
             self.db, self.version_manager, parent=projects_page,
         )
-        model = ProjectModel(self.db, self.version_manager, self.runtime_manager)
-        viewmodel = ControlPaneViewModel(
-            model,
-            self.project_list,
-            self.version_manager,
-            self.runtime_manager,
-            launch_context=self.launch_context,
-        )
-        self.viewmodel = viewmodel
+        self.viewmodel.project_list = self.project_list
         self.project_list.remove_requested.connect(self._remove_project_from_card)
-        # Engine and Python installs change which project cards are launchable.
-        # Rebuild the cards after the queue completes so a blocked project
-        # becomes selectable as soon as its matching local version is ready.
-        self.install_queue.job_finished.connect(
-            lambda _job: self.project_list.refresh()
-        )
-        self.controls = ControlPane(viewmodel, parent=projects_page)
+        self.controls = ControlPane(self.viewmodel, parent=projects_page)
 
         self.controls.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.project_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -188,24 +206,10 @@ class GameEngineLauncher(QMainWindow):
         settings_layout.addWidget(self.settings_view)
         self.pages.addWidget(settings_page)
 
-        from view.update_dialog import UpdateController
-        self.update_controller = UpdateController(self)
-        self.update_controller.check_finished.connect(
-            self._on_startup_update_check_finished
-        )
-        self._startup_update_pending = False
         self.settings_view.update_check_requested.connect(
             lambda: self.update_controller.check(silent=False)
         )
         self.settings_view.language_changed.connect(self._on_language_changed)
-
-        from view.notification_dialog import HubNotificationController
-
-        self.notification_controller = HubNotificationController(
-            self,
-            self.db,
-            open_installs=lambda: self.sidebar.select_page(1),
-        )
 
         # ── Page 3: Discussion ──────────────────────────────────────
         from view.discussion_view import DiscussionView
@@ -218,24 +222,23 @@ class GameEngineLauncher(QMainWindow):
         self.install_panel = InstallQueuePanel(self.install_queue, central)
         self.install_panel.layout_changed.connect(self._position_install_panel)
         self._position_install_panel()
-        self.tray = QSystemTrayIcon(QIcon(ICON_PATH), self)
-        self.tray.setToolTip("Infernux Hub")
+        self.sidebar.page_changed.connect(self._on_page_changed)
+
+    def _build_tray_menu(self):
+        old_menu = self.tray.contextMenu()
         tray_menu = QMenu(self)
         tray_menu.addAction(tr("Open Infernux Hub"), self._restore_window)
         tray_menu.addAction(tr("Downloads and installs"), self._show_installs)
         tray_menu.addSeparator()
         tray_menu.addAction(tr("Exit"), self.request_quit)
         self.tray.setContextMenu(tray_menu)
-        self.tray.activated.connect(self._on_tray_activated)
-        if QSystemTrayIcon.isSystemTrayAvailable():
-            self.app.setQuitOnLastWindowClosed(False)
-            self.tray.show()
+        if old_menu is not None:
+            old_menu.deleteLater()
 
-        # ── Sidebar → page switching ─────────────────────────────────
-        self.sidebar.page_changed.connect(self._on_page_changed)
-
-        # Cleanup on close
-        self.app.aboutToQuit.connect(self._on_close)
+    @Slot(object)
+    def _on_installation_finished(self, _job):
+        # Exactly one subscription follows the current project page.
+        self.project_list.refresh()
 
     def _on_page_changed(self, index: int):
         self.pages.setCurrentIndex(index)
@@ -325,15 +328,60 @@ class GameEngineLauncher(QMainWindow):
         self.viewmodel.remove_project(self)
 
     def _on_language_changed(self, _mode: str):
-        """Rebuild visible widgets in the new language without restarting the process."""
-        replacement = GameEngineLauncher(self.launch_context, install_queue=self.install_queue)
-        replacement.setGeometry(self.geometry())
-        replacement.show()
-        # Keep the replacement alive while the old window finishes its event turn.
-        self._language_replacement = replacement
-        self.tray.hide()
-        self.hide()
-        self.db.close()
+        # Leave the Settings signal stack before retiring its widgets.
+        self._schedule_language_refresh()
+
+    @Slot()
+    def _schedule_language_refresh(self):
+        self._language_refresh_timer.start(0)
+
+    @Slot()
+    def _clear_language_waits(self):
+        for connection in self._language_wait_connections:
+            QObject.disconnect(connection)
+        self._language_wait_connections.clear()
+
+    @Slot()
+    def _refresh_language_pages(self):
+        self._clear_language_waits()
+        central = self.centralWidget()
+        waiting = False
+        # Query dialogs own their QThreads. Keep the pages alive until those
+        # threads finish; completion signals schedule one more event turn.
+        for thread in central.findChildren(QThread):
+            connection = thread.finished.connect(self._schedule_language_refresh)
+            if thread.isRunning():
+                waiting = True
+                self._language_wait_connections.append(connection)
+            else:
+                thread.wait()
+                QObject.disconnect(connection)
+        creation = self.viewmodel._creation_dialog
+        if creation is not None:
+            self._language_wait_connections.append(
+                creation.finished.connect(self._schedule_language_refresh)
+            )
+            waiting = True
+        if waiting:
+            return
+
+        selected = self.project_list.get_selected_project_id()
+        search = self.project_list.search_edit.text()
+        page, tab = self.pages.currentIndex(), self.install_tabs.currentIndex()
+        transition = getattr(self, "_page_transition", None)
+        if transition is not None:
+            transition.stop()
+            transition.deleteLater()
+        self.discussion_view.shutdown()
+        old_central = self.takeCentralWidget()
+        old_central.hide()
+        self._build_pages()
+        self._build_tray_menu()
+        self.project_list.search_edit.setText(search)
+        self.project_list.select_project(selected)
+        self.install_tabs.setCurrentIndex(tab)
+        self.sidebar.select_page(page)
+        old_central.deleteLater()
 
     def run(self):
         self.show()
@@ -371,6 +419,8 @@ class GameEngineLauncher(QMainWindow):
             self.notification_controller.show_pending()
 
     def _on_close(self):
+        self._language_refresh_timer.stop()
+        self._clear_language_waits()
         self.viewmodel._wait_for_creation()
         self.db.close()
 
