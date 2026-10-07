@@ -150,6 +150,61 @@ def test_model_creation_is_one_undoable_hierarchy(scene, hierarchy_asset):
         UndoManager._instance = previous
 
 
+@pytest.mark.parametrize("api", ("create_model", "create_model_object"))
+@pytest.mark.parametrize("rejection", ("empty", "disabled_history", "missing_history", "missing_parent"))
+def test_model_creation_preflight_rejection_has_no_result_or_side_effects(
+    scene, hierarchy_asset, api, rejection,
+):
+    from infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ClipboardService, SelectionService, SceneObjectCommandService
+
+    _, _, guid = hierarchy_asset
+    previous = UndoManager._instance
+    manager = UndoManager()
+    selection = SelectionService()
+    service = SceneObjectCommandService(selection, ClipboardService())
+    before = scene.serialize_document()
+    before_selection = selection.snapshot
+    try:
+        manager.enabled = rejection != "disabled_history"
+        if rejection == "missing_history":
+            UndoManager._instance = None
+        result = getattr(service, api)(
+            "" if rejection == "empty" else guid,
+            is_guid=True, parent_id=2**31 if rejection == "missing_parent" else 0,
+        )
+        assert result is (False if api == "create_model" else None)
+        assert scene.serialize_document() == before
+        assert selection.snapshot == before_selection
+        assert not manager.action_journal.entries
+    finally:
+        manager.shutdown()
+        UndoManager._instance = previous
+
+
+def test_model_boolean_result_reports_actual_creation(scene, hierarchy_asset):
+    from infernux.engine.undo import UndoManager
+    from infernux.engine.interaction import ClipboardService, SelectionService, SceneObjectCommandService
+
+    _, _, guid = hierarchy_asset
+    previous = UndoManager._instance
+    manager = UndoManager()
+    try:
+        service = SceneObjectCommandService(SelectionService(), ClipboardService())
+        before = len(scene.get_all_objects())
+        assert service.create_model(guid, is_guid=True) is True
+        after = len(scene.get_all_objects())
+        assert after > before
+        assert len(manager.action_journal.entries) == 1
+        manager.undo()
+        assert len(scene.get_all_objects()) == before
+        manager.redo()
+        assert len(scene.get_all_objects()) == after
+    finally:
+        manager.shutdown()
+        UndoManager._instance = previous
+
+
 def test_replacing_hierarchy_mesh_clears_local_view(scene, hierarchy_asset):
     _, _, guid = hierarchy_asset
     root = scene.create_from_model(guid)

@@ -597,11 +597,11 @@ class SceneObjectCommandService:
 
         ref = str(reference or "").strip()
         if not self.can_external_drop(ref, parent_id, is_guid):
-            return False
+            return None
         scene = self._active_scene()
         manager = UndoManager.instance()
         if scene is None or manager is None:
-            return False
+            return None
 
         from infernux.lib._Infernux import split_model_mesh_reference, make_model_mesh_reference
         source, node_path = split_model_mesh_reference(ref)
