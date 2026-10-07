@@ -206,7 +206,6 @@ InxVkCoreModular::~InxVkCoreModular()
     DestroyGuiRenderGraphs();
     m_submissionExecutor.Destroy();
     m_resourceManager.Destroy();
-    m_asyncReadbackContext.Destroy();
     m_asyncTransferContext.Destroy();
 
     // RenderGraph::Destroy() and MaterialPipelineManager::Shutdown()
@@ -376,14 +375,6 @@ bool InxVkCoreModular::PrepareSurface()
         m_resourceManager.SetAsyncTransferContext(&m_asyncTransferContext, graphicsFamily);
     } else {
         INXLOG_ERROR("Required GPU upload context initialization failed");
-        return false;
-    }
-
-    if (m_asyncReadbackContext.Initialize(m_backend.Device().GetDevice(), graphicsFamily, false, false,
-                                          m_backend.Queues(), rhi::QueueRole::Graphics)) {
-        m_resourceManager.SetAsyncReadbackContext(&m_asyncReadbackContext);
-    } else {
-        INXLOG_ERROR("Required GPU readback context initialization failed");
         return false;
     }
 

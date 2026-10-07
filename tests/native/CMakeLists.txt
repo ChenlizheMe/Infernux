@@ -856,6 +856,20 @@ if(INFERNUX_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "Validation Error:;SYNC-HAZARD")
     endforeach()
 
+    add_executable(infernux_vulkan_image_readback_tests tests/native/VulkanImageReadbackTests.cpp)
+    target_include_directories(infernux_vulkan_image_readback_tests PRIVATE ${CMAKE_SOURCE_DIR}/cpp/infernux)
+    target_link_libraries(infernux_vulkan_image_readback_tests PRIVATE InfernuxVulkanBackend)
+    if(MSVC)
+        target_compile_options(infernux_vulkan_image_readback_tests PRIVATE /utf-8)
+    endif()
+    foreach(_case IN ITEMS frame_early frame_cancelled frame_completed frame_drain invalid_epoch
+            graphics graphics_cancelled graphics_drain recorder_abandon)
+        add_test(NAME infernux.image_readback.${_case} COMMAND infernux_vulkan_image_readback_tests ${_case})
+        set_tests_properties(infernux.image_readback.${_case} PROPERTIES
+            LABELS "requires_vulkan_device" TIMEOUT 45 RUN_SERIAL TRUE
+            FAIL_REGULAR_EXPRESSION "Validation Error:;SYNC-HAZARD")
+    endforeach()
+
     add_executable(infernux_scene_render_graph_validation_tests
         tests/native/SceneRenderGraphValidationTests.cpp
     )

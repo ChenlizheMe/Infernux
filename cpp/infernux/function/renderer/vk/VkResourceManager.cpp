@@ -259,11 +259,13 @@ void VkResourceManager::Destroy() noexcept
 
     DrainBufferUploads();
     DrainAsyncGraphicsSubmissions();
-    DrainImageReadbacks();
 
     if (!m_skipWaitIdle) {
         vkDeviceWaitIdle(m_device);
     }
+    // A frame readback may still own staging referenced by the frame command
+    // buffer. Recycling can discard the allocation when the pool is full.
+    DrainImageReadbacks();
     ClearStagingPool();
 
     // Destroy samplers
@@ -319,7 +321,6 @@ void VkResourceManager::Destroy() noexcept
     m_deviceLifetime.reset();
     m_queueManager = nullptr;
     m_asyncTransfer = nullptr;
-    m_asyncReadback = nullptr;
 }
 
 // ============================================================================
@@ -983,7 +984,6 @@ void VkResourceManager::FinalizeImageReadback(const std::shared_ptr<ImageReadbac
         }
     }
     RecycleStagingBuffer(std::move(ticket->m_staging));
-    ticket->m_submission = {};
     ticket->m_graphicsSubmission.reset();
     ticket->m_frameCompletionEpoch = rhi::InvalidSubmissionSerial;
 }
@@ -994,14 +994,14 @@ void VkResourceManager::PollImageReadbacks()
     size_t writeIndex = 0;
     for (size_t index = 0; index < m_pendingImageReadbacks.size(); ++index) {
         auto &ticket = m_pendingImageReadbacks[index];
-        const bool graphicsComplete =
-            ticket && ticket->m_graphicsSubmission && ticket->m_graphicsSubmission->IsComplete();
-        const bool transferComplete = ticket && !ticket->m_graphicsSubmission && m_asyncReadback &&
-                                      m_asyncReadback->IsComplete(ticket->m_submission);
-        const bool frameComplete = ticket && ticket->m_frameCompletionEpoch != rhi::InvalidSubmissionSerial &&
-                                   m_queueManager &&
-                                   m_queueManager->IsCompletionEpochComplete(ticket->m_frameCompletionEpoch);
-        if (graphicsComplete || transferComplete || frameComplete) {
+        // Each readback has one completion owner: its standalone graphics
+        // submission, or the frame into which the copy was recorded. Cancellation
+        // changes the public status, never the lifetime of GPU-referenced staging.
+        const bool complete = ticket && (ticket->m_graphicsSubmission
+            ? ticket->m_graphicsSubmission->IsComplete()
+            : ticket->m_frameCompletionEpoch != rhi::InvalidSubmissionSerial && m_queueManager &&
+              m_queueManager->IsCompletionEpochComplete(ticket->m_frameCompletionEpoch));
+        if (complete) {
             FinalizeImageReadback(ticket);
             continue;
         }
@@ -1030,15 +1030,6 @@ void VkResourceManager::DrainImageReadbacks() noexcept
             ticket->Cancel();
             FinalizeImageReadback(ticket);
             continue;
-        }
-        if (m_asyncReadback && ticket->m_submission.IsValid()) {
-            try {
-                m_asyncReadback->Wait(ticket->m_submission);
-                FinalizeImageReadback(ticket);
-            } catch (...) {
-                ticket->m_error = "Failed while draining a pending GPU image readback";
-                ticket->m_status.store(ImageReadbackStatus::Failed, std::memory_order_release);
-            }
         }
     }
     m_pendingImageReadbacks.clear();

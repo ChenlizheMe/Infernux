@@ -184,7 +184,6 @@ class ImageReadbackTicket final
     friend class VkResourceManager;
     friend class GraphicsImageReadbackRecorder;
     std::shared_ptr<VkBufferHandle> m_staging;
-    AsyncSubmissionHandle m_submission;
     std::shared_ptr<GraphicsSubmissionTicket> m_graphicsSubmission;
     rhi::SubmissionSerial m_frameCompletionEpoch = rhi::InvalidSubmissionSerial;
     std::atomic<ImageReadbackStatus> m_status{ImageReadbackStatus::Pending};
@@ -352,6 +351,8 @@ class VkResourceManager
     [[nodiscard]] GraphicsImageReadbackRecorder BeginGraphicsImageReadback(uint32_t width, uint32_t height,
                                                                            VkFormat format);
     void PollImageReadbacks();
+    /// Frame command buffers must already be idle or discarded before draining.
+    /// Standalone graphics readbacks are waited here; frame readbacks are cancelled.
     void DrainImageReadbacks() noexcept;
     [[nodiscard]] size_t GetPendingImageReadbackCount() const noexcept
     {
@@ -607,11 +608,6 @@ class VkResourceManager
         m_graphicsQueueFamily = graphicsQueueFamily;
     }
 
-    void SetAsyncReadbackContext(class AsyncTransferContext *readback)
-    {
-        m_asyncReadback = readback;
-    }
-
   private:
     bool m_skipWaitIdle = false;
     VmaAllocator m_vmaAllocator = VK_NULL_HANDLE;
@@ -628,7 +624,6 @@ class VkResourceManager
     // (typically InxVkCoreModular::m_asyncTransferContext) — VkResourceManager
     // never destroys it. nullptr means "always use the synchronous path".
     class AsyncTransferContext *m_asyncTransfer = nullptr;
-    class AsyncTransferContext *m_asyncReadback = nullptr;
     uint32_t m_graphicsQueueFamily = 0;
     std::vector<std::shared_ptr<BufferUploadTicket>> m_pendingBufferUploads;
     std::vector<std::shared_ptr<TextureUploadTicket>> m_pendingTextureUploads;

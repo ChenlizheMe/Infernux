@@ -1174,11 +1174,6 @@ class InxVkCoreModular
         return m_asyncTransferContext;
     }
 
-    [[nodiscard]] vk::AsyncTransferContext &GetAsyncReadbackContext()
-    {
-        return m_asyncReadbackContext;
-    }
-
   private:
     // ========================================================================
     // Internal Methods
@@ -1207,7 +1202,6 @@ class InxVkCoreModular
     vk::VkPipelineManager m_pipelineManager;
     vk::VkResourceManager m_resourceManager;
     vk::AsyncTransferContext m_asyncTransferContext;
-    vk::AsyncTransferContext m_asyncReadbackContext;
     vk::RenderGraph m_renderGraph;
     vk::VulkanFrameSubmission m_frameSubmission;
     vk::VulkanSubmissionExecutor m_submissionExecutor;
