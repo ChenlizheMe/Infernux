@@ -453,7 +453,12 @@ class WindowManager:
         target_id = str(snapshot.active_view_id or snapshot.active_panel_id or "")
         if not target_id or target_id not in self._window_states:
             return
-        if self._window_states[target_id] in {WindowState.CLOSING, WindowState.CLOSED}:
+        if self._window_states[target_id] in {
+            WindowState.OPENING, WindowState.CLOSING, WindowState.CLOSED
+        }:
+            # Focus is presentation state. It cannot complete (or cancel) the
+            # registration transaction; project the current snapshot after
+            # the native panel has actually been registered.
             return
         changed = False
         for window_id, state in tuple(self._window_states.items()):
@@ -538,6 +543,20 @@ class WindowManager:
 
     def _request_focus(self, window_id: str, *, restore_request: bool = False) -> None:
         from infernux.engine.interaction import FocusService
+
+        if self._window_states.get(window_id) is WindowState.OPENING:
+            instance = self._window_instances[window_id]
+
+            def focus_after_registration():
+                if (
+                    self._window_instances.get(window_id) is instance
+                    and window_id in self._registered_instance_ids
+                    and self._window_states.get(window_id) in _VISIBLE_STATES
+                ):
+                    self._request_focus(window_id, restore_request=restore_request)
+
+            self._enqueue_action(focus_after_registration)
+            return
 
         self._window_restore_failures.pop(window_id, None)
         if restore_request:
@@ -770,6 +789,9 @@ class WindowManager:
             else:
                 self._registered_instance_ids.add(target_id)
                 self._window_states[target_id] = WindowState.OPEN
+                from infernux.engine.interaction import FocusService
+
+                self.project_interaction_focus(FocusService.instance().snapshot)
                 pending_focus = self._pending_user_focus_requests.pop(
                     target_id,
                     None,

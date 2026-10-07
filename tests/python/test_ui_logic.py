@@ -1483,6 +1483,47 @@ class TestWindowManager:
             core.shutdown()
             WindowManager._instance = previous_manager
 
+    @pytest.mark.parametrize("intent", ["focus", "project", "both"])
+    def test_opening_window_keeps_registration_when_focus_arrives(self, intent):
+        from infernux.engine.interaction import EditorInteractionCore, PanelInteractionDescriptor
+        from infernux.engine.ui.closable_panel import ClosablePanel
+        from infernux.engine.ui.window_manager import WindowManager, WindowState
+
+        class Engine:
+            def __init__(self):
+                self.events = []
+
+            def register_gui(self, window_id, instance):
+                self.events.append(("register", window_id))
+
+            def select_docked_window(self, window_id):
+                assert ("register", window_id) in self.events
+                self.events.append(("focus", window_id))
+
+        previous = WindowManager._instance
+        core = EditorInteractionCore()
+        try:
+            engine = Engine()
+            manager = _window_manager(engine, core.panels)
+            core.panels.register_type("graph", PanelInteractionDescriptor())
+            manager.register_window_type("graph", ClosablePanel, "Graph",
+                                         factory=lambda: ClosablePanel("Graph", "graph"))
+            core.focus.add_listener(manager.project_interaction_focus)
+            panel = manager.open_window("graph")
+            if intent in {"focus", "both"}:
+                manager.focus_window("graph")
+            if intent in {"project", "both"}:
+                core.focus.activate_panel("graph", view_id="graph", record_history=False)
+            assert manager.get_window_state("graph") is WindowState.OPENING
+            manager.process_pending_actions()
+            assert engine.events.count(("register", "graph")) == 1
+            assert "graph" in manager._registered_instance_ids
+            assert manager.get_window_instance("graph") is panel
+            assert manager.get_window_state("graph") is WindowState.FOCUSED
+        finally:
+            core.shutdown()
+            WindowManager._instance = previous
+
     def test_user_window_command_does_not_publish_visible_focus(self):
         from infernux.engine.interaction import (
             EditorInteractionCore,
