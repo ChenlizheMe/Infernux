@@ -14,7 +14,7 @@ This chapter starts with the Editor workflow available today. Pipeline authoring
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-voxel-continent.webp" alt="real Infernux render of a voxel continent with depth of field and color treatment" loading="lazy" decoding="async">
-  <figcaption>Captured from the matching Infernux scene, RenderStack, mounted Effect assets, and MSAA setup used by this chapter.</figcaption>
+  <figcaption>An Infernux demo frame used as a visual reference for scene-wide effects.</figcaption>
 </figure>
 
 ## Start in the Editor {#stack-workflow}
@@ -77,7 +77,7 @@ RenderStack rejects a new slot for an undeclared stage. If a pipeline change rem
 
 The scope belongs to the `EffectStage`; it is absent from the `.effect` asset and from the slot. This lets one reusable asset work at several scopes when their resource contracts and route policies are compatible.
 
-The built-in stages follow the same accumulation. `after_opaque` receives the opaque domain only: scene color plus depth, before sky and transparency. `after_sky` adds the skybox. `after_transparent` receives the complete scene composite, still in linear HDR. `after_camera_ui` adds the Camera Overlay UI on top. `final` runs before display encoding and is the intended home for post-processing chains. `after_screen_ui` receives the display-encoded image plus Screen Overlay UI. Chapter 1 of this course introduced the distinction: Camera Overlay canvases join the scene before post-processing, while Screen Overlay canvases draw after the single linear-to-sRGB conversion and therefore avoid scene effects by default.
+The built-in stages follow the same accumulation. `after_opaque` receives the opaque domain only: scene color plus depth, before sky and transparency. `after_sky` adds the skybox. `after_transparent` receives the complete scene composite, still in linear HDR. `after_camera_ui` adds the Camera Overlay UI on top. `final` runs before display encoding and is the intended home for post-processing chains. `after_screen_ui` receives the display-encoded image plus Screen Overlay UI. Camera Overlay canvases join the scene before post-processing, while Screen Overlay canvases draw after the single linear-to-sRGB conversion and therefore avoid scene effects by default. [UI actions and scene flow](gameplay-ui-scenes.html) explains how to select these Canvas modes.
 
 The stage contract supplies a local semantic resource bus. Its `inputs` decide whether `color`, `depth`, `normal`, `motion`, `light_list`, or another handle reaches the effect. `light_list` is a read-only, camera-local storage buffer: it is published once per Vulkan frame slot from the canonical light snapshot and never allocates or aliases an author-owned buffer. The renderer also gathers `requires ∪ modifies` from enabled assets early enough to request optional geometry buffers. Both sides must agree: requesting `motion` or `light_list` can make the pipeline produce it, while mounting at a stage that does not expose the requested handle still fails the local contract.
 
@@ -215,7 +215,7 @@ This distinction also explains why `before_post_process` and `after_post_process
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-voxel-continent.webp" alt="带景深与色彩处理的 Infernux 体素大陆真实画面" loading="lazy" decoding="async">
-  <figcaption>截图来自本章对应的 Infernux 场景、RenderStack、已挂载 Effect 资产与 MSAA 配置。</figcaption>
+  <figcaption>来自 Infernux 演示项目的画面，用于参考场景级效果。</figcaption>
 </figure>
 
 ## 先在 Editor 中挂载 {#stack-workflow_1}
@@ -278,9 +278,9 @@ RenderStack 会拒绝向未声明 Stage 新增 Slot。管线变化导致旧 Stag
 
 Scope 属于 `EffectStage`，不会写进 `.effect` 资产或 Slot。同一份可复用资产只要满足资源契约和 Route Policy，就可以用于多个 Scope。
 
-内置 Stage 遵循同样的累加顺序。`after_opaque` 只收到不透明域：场景颜色与深度，天空与透明物体还没进来。`after_sky` 加上天空盒。`after_transparent` 收到完整场景合成，仍在线性 HDR 空间。`after_camera_ui` 在其上叠加 Camera Overlay UI。`final` 位于显示编码之前，是后处理链的默认归宿。`after_screen_ui` 收到显示编码后的图像与 Screen Overlay UI。本课程第一章介绍了这个区别：Camera Overlay Canvas 在后处理前进入场景，Screen Overlay Canvas 在唯一的 linear-to-sRGB 转换之后绘制，因此默认不受场景效果影响。
+内置 Stage 遵循同样的累加顺序。`after_opaque` 只收到不透明域：场景颜色与深度，天空与透明物体还没进来。`after_sky` 加上天空盒。`after_transparent` 收到完整场景合成，仍在线性 HDR 空间。`after_camera_ui` 在其上叠加 Camera Overlay UI。`final` 位于显示编码之前，是后处理链的默认归宿。`after_screen_ui` 收到显示编码后的图像与 Screen Overlay UI。Camera Overlay Canvas 在后处理前进入场景，Screen Overlay Canvas 在唯一的 linear-to-sRGB 转换之后绘制，因此默认不受场景效果影响。[UI 操作与场景流程](gameplay-ui-scenes.html)介绍了这两种 Canvas 模式的设置方法。
 
-Stage 契约会建立局部语义 Resource Bus。它的 `inputs` 决定 `color`、`depth`、`normal`、`motion` 等 Handle 能否到达 Effect。渲染器也会提前汇总启用资产的 `requires ∪ modifies`，以便请求可选几何 Buffer。两边必须一致：请求 `motion` 可以促使管线生成它；挂到没有暴露 `motion` 的 Stage 时，局部契约仍会失败。
+Stage 契约会建立局部语义 Resource Bus。它的 `inputs` 决定 `color`、`depth`、`normal`、`motion`、`light_list` 等 Handle 能否到达 Effect。`light_list` 是只读、每相机的 Storage Buffer：每个 Vulkan Frame Slot 从统一光源快照发布一次，不会分配或别名引用作者自己的 Buffer。渲染器也会提前汇总启用资产的 `requires ∪ modifies`，以便请求可选几何 Buffer。两边必须一致：请求 `motion` 或 `light_list` 可以促使管线准备它；挂到没有暴露对应 Handle 的 Stage 时，局部契约仍会失败。
 
 稳定 ID 属于面向资产的 API。管线作者可以重构内部 Pass 名称与临时纹理，同时保持 `after_opaque` 或 `final` 不变。重命名 Stage 会改变场景契约，旧 Slot 将保持 Orphan 状态，直到完成 Remap。
 

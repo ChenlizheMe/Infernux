@@ -16,7 +16,7 @@ PBR, unlit color, toon bands, halftone lighting, skin response, and project-spec
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-render-styles.webp" alt="style reference showing two contrasting rendered character appearances" loading="lazy" decoding="async">
-  <figcaption>Captured from the matching Infernux scene, Material, ShadingModel, and RenderStack setup.</figcaption>
+  <figcaption>An Infernux demo frame illustrating surface and lighting styles.</figcaption>
 </figure>
 
 ## Build a complete three-file model {#complete-example}
@@ -204,7 +204,7 @@ PBR、无光照颜色、色阶卡通、半调、皮肤响应和项目自己的�
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-render-styles.webp" alt="展示两种对比鲜明人物渲染外观的风格参考图" loading="lazy" decoding="async">
-  <figcaption>画面来自对应的 Infernux Scene、Material、ShadingModel 与 RenderStack 配置。</figcaption>
+  <figcaption>来自 Infernux 演示项目的画面，用于观察表面与光照风格。</figcaption>
 </figure>
 
 ## 构建完整的三文件模型 {#complete-example_1}
