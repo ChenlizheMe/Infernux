@@ -247,5 +247,24 @@ def exercise_missing_provider(project, selected):
         engine.exit()
 
 
+@pytest.mark.parametrize("pipeline_name,field", [("__default__", "msaa_samples"), (ParameterDocumentPipeline.name, "samples")])
+def test_previous_renderstack_enum_save_is_upgraded_on_load(typed_stack, pipeline_name, field):
+    saved = typed_stack._serialize_fields_document()
+    saved["pipeline_class_name"] = RenderStack.DEFAULT_PIPELINE_NAME if pipeline_name == "__default__" else pipeline_name
+    saved["pipeline_params_json"] = json.dumps({pipeline_name: {field: {"__enum_name__": "X2"}}})
+    restored = RenderStack()
+    restored._deserialize_fields_document(saved)
+    assert getattr(restored.pipeline, field) is MSAASamples.X2
+    canonical = json.loads(restored._serialize_fields_document()["pipeline_params_json"])
+    assert canonical[pipeline_name][field] == VALUE_CODECS.encode(MSAASamples.X2)
+
+
+def test_previous_enum_save_with_unknown_member_is_rejected(typed_stack):
+    saved = typed_stack._serialize_fields_document()
+    saved["pipeline_params_json"] = json.dumps({ParameterDocumentPipeline.name: {"samples": {"__enum_name__": "X16"}}})
+    with pytest.raises(ValueError, match="unknown legacy enum member"):
+        RenderStack()._deserialize_fields_document(saved)
+
+
 if __name__ == "__main__":
     exercise_missing_provider(Path(sys.argv[1]), bool(int(sys.argv[2])))

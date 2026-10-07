@@ -434,6 +434,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             current[pipeline_name] = {}
             for name, value in params.items():
                 if name in declared:
+                    value = self._upgrade_legacy_pipeline_enum(value, declared[name], f"{pipeline_name}.{name}")
                     VALUE_CODECS.validate(value, declared[name], f"{pipeline_name}.{name}")
                     current[pipeline_name][name] = value
         serialized = _json.dumps(current, allow_nan=False)
@@ -1086,6 +1087,20 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             params[name] = encoded
         return params
 
+    @staticmethod
+    def _upgrade_legacy_pipeline_enum(value, meta, path):
+        """Migrate the enum-name record written by earlier RenderStack saves."""
+        from infernux.components.fields import FieldType
+        from infernux.components.value_codec import VALUE_CODECS
+
+        if meta.field_type == FieldType.ENUM and type(value) is dict and set(value) == {"__enum_name__"}:
+            name = value["__enum_name__"]
+            enum_type = meta.enum_type
+            if type(name) is not str or enum_type is None or name not in enum_type.__members__:
+                raise ValueError(f"{path}: unknown legacy enum member {name!r}")
+            return VALUE_CODECS.encode(enum_type[name], path)
+        return value
+
     def _restore_pipeline_params(self, pipeline) -> None:
         if self._pipeline_param_store is None:
             self._pipeline_param_store = {}
@@ -1098,7 +1113,10 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             return
 
         decoded = {
-            name: VALUE_CODECS.decode(saved[name], meta, f"{pipeline.name}.{name}")
+            name: VALUE_CODECS.decode(
+                self._upgrade_legacy_pipeline_enum(saved[name], meta, f"{pipeline.name}.{name}"),
+                meta, f"{pipeline.name}.{name}",
+            )
             for name, meta in get_serialized_fields(type(pipeline)).items() if name in saved
         }
         previous_deserializing = getattr(pipeline, "_inf_deserializing", False)
