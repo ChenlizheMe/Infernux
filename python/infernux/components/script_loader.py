@@ -1714,9 +1714,8 @@ def load_all_components_from_file(
     components = _component_classes_from_module(module, module_name)
 
     if register:
-        from .registry import register_component_type
-        for component_type in components:
-            register_component_type(component_type, script_path=file_path)
+        from .registry import publish_component_script_types
+        publish_component_script_types(file_path, tuple(components))
 
     return components
 
