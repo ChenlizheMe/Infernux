@@ -13,7 +13,8 @@ Usage::
         ("重建场景...",  0.6, rebuild_fn),
     ], on_done=lambda ok: EngineStatus.flash("Done", 1.0))
 
-The runner is ticked once per frame by the engine's pre-GUI callback.
+The runner advances once per frame: pre-GUI for graphical hosts, or the
+pre-scene maintenance point for Headless hosts (both run and manual tick).
 """
 
 from __future__ import annotations

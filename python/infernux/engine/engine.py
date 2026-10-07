@@ -315,6 +315,8 @@ class Engine():
                         undo = UndoManager.instance()
                         if undo is not None:
                             undo.process_pending_replay()
+                    if engine._mode == RuntimeMode.Headless:
+                        engine._tick_headless_maintenance()
                     engine.tick_play_mode(float(delta_time))
                 # Publish the immutable phase plan before SceneManager enters
                 # its native frame. Scene loads may register components from
@@ -676,15 +678,13 @@ class Engine():
             self.exit()
 
     def tick(self, delta_time: float):
-        if self._mode != RuntimeMode.Headless:
-            # Graphical manual stepping: one native tick simulates AND renders
-            # one frame with an exact delta time. Between-frame maintenance
-            # (deferred tasks, command queue, asset saves) already runs inside
-            # DrawFrame through the registered pre-GUI/post-draw callbacks, so
-            # running it here as well would double-drain those queues.
-            self._engine.tick(float(delta_time))
-            return
+        # Both Run and manual Tick enter the same native frame callbacks.
+        # Headless maintenance belongs to the pre-scene safe point; graphical
+        # maintenance remains in the pre-GUI/post-draw callbacks. Never drain
+        # either set here, which would advance a task twice per manual frame.
+        self._engine.tick(float(delta_time))
 
+    def _tick_headless_maintenance(self) -> None:
         from infernux.engine.deferred_task import DeferredTaskRunner
         DeferredTaskRunner.instance().tick()
 
@@ -702,8 +702,6 @@ class Engine():
         from infernux.engine.interaction import DocumentRegistry
         DocumentRegistry.instance().process_deferred_saves()
         DocumentRegistry.instance().process_pending_saves()
-
-        self._engine.tick(float(delta_time))
 
     def request_exit(self):
         """Request a safe close, preserving graphical Editor confirmations."""
