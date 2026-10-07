@@ -268,6 +268,12 @@ bool IsValueType(std::string_view value)
     return IsPropertyType(value) && value != "Texture2D" && value != "FloatArray" && value != "Float4Array";
 }
 
+bool IsResourceType(std::string_view value)
+{
+    return value == "Texture2D" || value == "Texture3D" || value == "Texture2DUInt" ||
+           value == "Texture2DMS" || value == "Texture2DMSUInt" || value == "BufferUInt";
+}
+
 bool IsInterpolation(std::string_view value)
 {
     return value == "Smooth" || value == "Flat" || value == "NoPerspective" || value == "Centroid";
@@ -452,14 +458,12 @@ class Parser final
         std::unordered_set<std::string> names;
         while (m_current.kind != TokenKind::RightBrace && m_current.kind != TokenKind::End) {
             const Token begin = m_current;
-            if (m_current.kind != TokenKind::Identifier ||
-                (m_current.text != "Texture2D" && m_current.text != "Texture3D" && m_current.text != "Texture2DUInt" &&
-                 m_current.text != "Texture2DMS" && m_current.text != "Texture2DMSUInt" &&
-                 m_current.text != "BufferUInt")) {
+            if (m_current.kind != TokenKind::Identifier || !IsResourceType(m_current.text)) {
                 Error(m_current,
                       "Resources supports Texture2D, Texture3D, Texture2DUInt, Texture2DMS, Texture2DMSUInt and "
                       "BufferUInt");
-                SkipToPropertyBoundary();
+                Advance();
+                SkipToDeclarationBoundary(IsResourceType);
                 continue;
             }
             ShaderInfoResource resource;
@@ -467,7 +471,7 @@ class Parser final
             Advance();
             if (m_current.kind != TokenKind::Identifier) {
                 Error(m_current, "expected a resource name");
-                SkipToPropertyBoundary();
+                SkipToDeclarationBoundary(IsResourceType);
                 continue;
             }
             resource.name = m_current.text;
@@ -504,7 +508,8 @@ class Parser final
             const Token begin = m_current;
             if (m_current.kind != TokenKind::Identifier || !IsValueType(m_current.text)) {
                 Error(m_current, "expected a supported PushConstants value type");
-                SkipToPropertyBoundary();
+                Advance();
+                SkipToDeclarationBoundary(IsValueType);
                 continue;
             }
             ShaderInfoConstant field;
@@ -512,7 +517,7 @@ class Parser final
             Advance();
             if (m_current.kind != TokenKind::Identifier) {
                 Error(m_current, "expected a PushConstants field name");
-                SkipToPropertyBoundary();
+                SkipToDeclarationBoundary(IsValueType);
                 continue;
             }
             field.name = m_current.text;
@@ -562,14 +567,14 @@ class Parser final
             Advance();
             if (m_current.kind != TokenKind::Identifier) {
                 Error(m_current, "expected a property name");
-                SkipToPropertyBoundary();
+                SkipToDeclarationBoundary(IsPropertyType);
                 continue;
             }
             property.name = m_current.text;
             const Token nameToken = m_current;
             Advance();
             if (!Consume(TokenKind::Equals, "expected '=' after property name")) {
-                SkipToPropertyBoundary();
+                SkipToDeclarationBoundary(IsPropertyType);
                 continue;
             }
             property.defaultValue = ParsePropertyDefault(property.type);
@@ -683,7 +688,7 @@ class Parser final
             Advance();
             if (m_current.kind != TokenKind::Identifier) {
                 Error(m_current, "expected a varying name");
-                SkipToPropertyBoundary();
+                SkipToDeclarationBoundary(IsPropertyType);
                 continue;
             }
             varying.name = m_current.text;
@@ -778,11 +783,11 @@ class Parser final
         } while (depth > 0 && m_current.kind != TokenKind::End);
     }
 
-    void SkipToPropertyBoundary()
+    void SkipToDeclarationBoundary(bool (*isType)(std::string_view))
     {
         while (m_current.kind != TokenKind::End && m_current.kind != TokenKind::RightBrace &&
                m_current.kind != TokenKind::Semicolon &&
-               !(m_current.kind == TokenKind::Identifier && IsPropertyType(m_current.text)))
+               !(m_current.kind == TokenKind::Identifier && isType(m_current.text)))
             Advance();
         if (m_current.kind == TokenKind::Semicolon)
             Advance();

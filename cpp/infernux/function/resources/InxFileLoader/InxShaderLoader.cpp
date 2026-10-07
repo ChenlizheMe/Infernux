@@ -2181,27 +2181,12 @@ InxShaderLoader::CompileLinkedProgramVariant(const std::string &vertexSource, co
     return compilation;
 }
 
-std::string InxShaderLoader::TrimShaderSource(const std::string &source)
-{
-    std::string result = source;
-    size_t lastBrace = result.find_last_of('}');
-    if (lastBrace != std::string::npos) {
-        result = result.substr(0, lastBrace + 1);
-    }
-    while (!result.empty() && std::isspace(result.back())) {
-        result.pop_back();
-    }
-    return result;
-}
-
 bool InxShaderLoader::CompileGLSL(const std::string &glslSource, EShLanguage shaderType, const std::string &filePath,
                                   std::vector<char> &outSpirv, bool reportDiagnostics)
 {
-    std::string trimmed = TrimShaderSource(glslSource);
-
-    std::vector<char> buf(trimmed.begin(), trimmed.end());
-    buf.push_back('\0');
-    const char *strings[1] = {buf.data()};
+    // A closing brace does not end GLSL: directives, comments and declarations
+    // may follow it. Submit the complete caller-owned source to glslang.
+    const char *strings[1] = {glslSource.c_str()};
 
     glslang::TShader shader(shaderType);
     shader.setStrings(strings, 1);
@@ -2283,7 +2268,7 @@ void InxShaderLoader::CompileVariant(const char *content, const std::string &fil
     std::vector<char> spirv;
     if (!CompileGLSL(variantSource, shaderType, filePath, spirv)) {
         INXLOG_WARN(variantName, " variant compile failed for '", filePath, "'");
-        INXLOG_WARN(variantName, " variant source:\n", TrimShaderSource(variantSource));
+        INXLOG_WARN(variantName, " variant source:\n", variantSource);
         return;
     }
 

@@ -189,9 +189,6 @@ class InxShaderLoader
     void InitGLSLBuiltResources();
     EShLanguage GetShaderType(const std::string &typeStr);
 
-    /// Trim trailing content after last '}' and trailing whitespace.
-    static std::string TrimShaderSource(const std::string &source);
-
     /// Compile GLSL source to SPIR-V. Returns false on failure (sets s_lastCompileError).
     bool CompileGLSL(const std::string &glslSource, EShLanguage shaderType, const std::string &filePath,
                      std::vector<char> &outSpirv, bool reportDiagnostics = true);

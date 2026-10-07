@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include "ShaderParserRecoveryTests.h"
 
 namespace
 {
@@ -169,12 +170,23 @@ void surface(out SurfaceData s) { s = InitSurfaceData(); }
 }
 } // namespace
 
-int main()
+int main(int argc, char **argv)
 try {
 #ifdef _WIN32
     // Keep failed assertions in the CI log instead of a desktop CRT dialog.
     _set_error_mode(_OUT_TO_STDERR);
 #endif
+    if (argc == 2 && std::string_view(argv[1]) == "--parser-case-count") {
+        std::cout << std::size(shader_parser_tests::Cases) << '\n';
+        return 0;
+    }
+    if (argc == 3 && std::string_view(argv[1]) == "--parser-case") {
+        std::cout << "PARSER_READY" << std::endl;
+        shader_parser_tests::CheckCase(std::stoul(argv[2]));
+        return 0;
+    }
+    for (size_t index = 0; index < std::size(shader_parser_tests::Cases); ++index)
+        shader_parser_tests::CheckCase(index);
     const std::string richSource = R"(
 // ShaderInfo { Name "Ignored/InComment" }
 ShaderInfo
