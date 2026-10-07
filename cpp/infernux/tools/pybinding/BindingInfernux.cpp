@@ -1898,6 +1898,13 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
             },
             py::arg("font_path"), py::arg("font_size"))
         .def(
+            "invalidate_ui_font_asset",
+            [](Infernux &self, const std::string &path) {
+                if (auto *renderer = self.GetRenderer())
+                    renderer->InvalidateGUIFontAsset(path);
+            },
+            py::arg("path"))
+        .def(
             "get_display_scale",
             [](Infernux &self) -> float {
                 auto *r = self.GetRenderer();

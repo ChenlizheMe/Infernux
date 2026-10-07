@@ -389,6 +389,7 @@ class InxRenderer
     void CancelClose();
 
     void SetGUIFont(const char *fontPath, float fontSize);
+    void InvalidateGUIFontAsset(const std::string &path);
     float GetDisplayScale() const;
     void RegisterGUIRenderable(const char *name, std::shared_ptr<InxGUIRenderable> renderable, int priority = 0);
     void UnregisterGUIRenderable(const char *name);

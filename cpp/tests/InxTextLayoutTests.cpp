@@ -286,6 +286,56 @@ int main()
     std::filesystem::current_path(oldDirectory);
     assert(io.Fonts->Fonts.Size == fontCount);
     ImGui::EndFrame();
+    {
+        using namespace infernux::textlayout;
+        const auto folder = std::filesystem::temp_directory_path() /
+                            ("inx-font-reload-" + std::to_string(
+                                std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(folder);
+        const auto path = folder / "Shared.ttf";
+        const auto cousin = repositoryRoot / "external/imgui/misc/fonts/Cousine-Regular.ttf";
+        assert(ResolveFont(path.string()) == nullptr);
+        std::filesystem::copy_file(latinFont, path);
+        assert(InvalidateFontPath(path.string()));
+        TextLayoutParams params{};
+        params.text = "WWWWWWiiiiii";
+        params.fontPath = path.string();
+        params.fontSize = 24;
+        const auto original = LayoutText(params);
+        assert(original.font);
+        const int retainedCount = io.Fonts->Fonts.Size;
+        auto *unaffected = ResolveFont(latinFont);
+        for (int iteration = 0; iteration < 20; ++iteration) {
+            const auto old = LayoutText(params);
+            const auto source = iteration % 2 == 0 ? cousin : infernux::ToFsPath(latinFont);
+            std::filesystem::copy_file(source, path, std::filesystem::copy_options::overwrite_existing);
+            const auto epoch = FontCacheGeneration();
+            assert(InvalidateFontPath((folder / "." / "Shared.ttf").string()));
+            assert(FontCacheGeneration() == epoch + 1);
+            const auto changed = LayoutText(params);
+            assert(changed.font != old.font && std::abs(changed.totalWidth - old.totalWidth) > 5.f);
+            assert(old.font->OwnerAtlas == io.Fonts && !old.font->Sources.empty());
+            assert(ResolveFont(latinFont) == unaffected);
+            assert(GetRetiredFonts().size() == 1);
+            CollectRetiredFonts(); // No GPU in this isolated ImGui fixture.
+            assert(GetRetiredFonts().empty());
+            assert(io.Fonts->Fonts.Size == retainedCount);
+        }
+        const auto epoch = FontCacheGeneration();
+        assert(!InvalidateFontPath((folder / "NeverUsed.ttf").string()));
+        assert(FontCacheGeneration() == epoch);
+        std::filesystem::remove(path);
+        assert(InvalidateFontPath(path.string()));
+        assert(ResolveFont(path.string()) == nullptr);
+        CollectRetiredFonts();
+        std::filesystem::copy_file(cousin, path);
+        assert(InvalidateFontPath(path.string()));
+        assert(ResolveFont(path.string()));
+        assert(InvalidateFontPath(path.string()));
+        CollectRetiredFonts();
+        std::filesystem::remove_all(folder);
+        std::cout << "FONT_RELOAD_LIFETIME cycles=20 missing_restore=passed unrelated_face=stable\n";
+    }
     infernux::textlayout::ClearFontCache();
     assert(infernux::textlayout::GetFontCache().empty());
     assert(infernux::textlayout::GetMissingFonts().empty());

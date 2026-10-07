@@ -39,7 +39,7 @@ from infernux.core.audio_clip import AudioClip
 from infernux.core.physic_material import PhysicMaterial
 from infernux.core.asset_types import (
     IMAGE_EXTENSIONS, SHADER_EXTENSIONS, MATERIAL_EXTENSIONS, AUDIO_EXTENSIONS,
-    MESH_EXTENSIONS,
+    MESH_EXTENSIONS, FONT_EXTENSIONS,
     ANIMCLIP_EXTENSIONS,
     ANIMCLIP3D_EXTENSIONS,
     ANIMFSM_EXTENSIONS,
@@ -1086,6 +1086,7 @@ class AssetManager:
         """Publish one committed database consequence to Interaction Core."""
         if not path:
             return
+        cls._invalidate_font_ui_cache(path)
         # Dropped mutation events desynchronize every listener (panels,
         # preload catalogs, undo); failures must surface.
         from infernux.engine.interaction import (
@@ -1102,6 +1103,13 @@ class AssetManager:
                 guid=guid,
                 origin=current_action_origin(),
             )
+
+    @classmethod
+    def _invalidate_font_ui_cache(cls, path: str) -> None:
+        if os.path.splitext(path)[1].lower() in FONT_EXTENSIONS:
+            from infernux.ui.ui_font_asset import invalidate_ui_font_asset
+
+            invalidate_ui_font_asset(path, cls._native_engine())
 
     @staticmethod
     def _invalidate_shader_authoring_cache(path: str) -> None:
@@ -1181,6 +1189,8 @@ class AssetManager:
         suppress_watcher_echo: bool = True,
     ) -> None:
         """Apply loaded-runtime and editor-cache consequences of a catalog move."""
+        cls._invalidate_font_ui_cache(old_path)
+        cls._invalidate_font_ui_cache(new_path)
         registry = cls._get_registry()
         if registry and guid:
             registry.update_loaded_asset_path(guid, new_path)

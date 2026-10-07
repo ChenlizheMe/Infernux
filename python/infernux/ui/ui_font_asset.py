@@ -9,6 +9,20 @@ to a second resource identity.
 from __future__ import annotations
 
 
+_font_asset_revision = 1
+
+
+def invalidate_ui_font_asset(path: str, native) -> None:
+    """Publish a committed Font change without probing files during rendering."""
+    global _font_asset_revision
+    if native is not None and native.has_renderer:
+        native.invalidate_ui_font_asset(path)
+    _font_asset_revision += 1
+    from .ui_render_revision import mark_runtime_ui_dirty
+
+    mark_runtime_ui_dirty()
+
+
 def _font_reference_guid(reference) -> str:
     if reference is None:
         return ""
@@ -84,12 +98,13 @@ def ui_font_paths(component, primary_field: str = "font",
 
 
 def ui_font_signature(component, primary_field: str = "font",
-                      fallback_field: str = "fallback_fonts") -> tuple[str, tuple[str, ...]]:
-    """Return the GUID-only identity used by text layout caches."""
+                      fallback_field: str = "fallback_fonts") -> tuple[int, str, tuple[str, ...]]:
+    """Return committed font revision and GUID identities for layout caches."""
     primary, fallbacks = ui_font_references(
         component, primary_field, fallback_field,
     )
     return (
+        _font_asset_revision,
         _font_reference_guid(primary),
         tuple(_font_reference_guid(reference) for reference in fallbacks),
     )

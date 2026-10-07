@@ -137,6 +137,8 @@ InxGUI::~InxGUI()
 {
     Shutdown();
 
+    textlayout::ClearFontCache();
+    textlayout::SetDefaultFont(nullptr);
     ImGui::DestroyContext(m_imguiContext_ptr);
     m_imguiContext_ptr = nullptr;
 }
@@ -277,6 +279,12 @@ void InxGUI::SetGUIFont(const char *fontPath, float fontSize)
     dpiState.fontPath = fontPath;
     dpiState.fontSize = fontSize;
     ReloadGUIFont();
+}
+
+void InxGUI::InvalidateFontAsset(const std::string &path)
+{
+    textlayout::InvalidateFontPath(path);
+    RequestFrame();
 }
 
 void InxGUI::ReloadGUIFont()
@@ -509,6 +517,14 @@ void InxGUI::BuildFrameInternal()
     // Do not let a render-graph submission reuse the stale publication while
     // this frame is being rebuilt (notably after a throttled editor refresh).
     m_hasDrawData = false;
+
+    if (!textlayout::GetRetiredFonts().empty()) {
+        // Asset publication never frees fonts referenced by recorded UI. A
+        // rare font edit drains GPU consumers here before returning glyph
+        // rectangles to the dynamic atlas. Ordinary frames perform no wait.
+        m_vkCore_ptr->GetDeviceContext().WaitIdle();
+        textlayout::CollectRetiredFonts();
+    }
 
     // SDL reports per-monitor scale changes as the window crosses displays.
     // Poll here as well as processing the event so a throttled editor frame or

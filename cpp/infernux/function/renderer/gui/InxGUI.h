@@ -34,6 +34,7 @@ class InxGUI
     void Init(SDL_Window *window);
 
     void SetGUIFont(const char *fontPath, float fontSize);
+    void InvalidateFontAsset(const std::string &path);
     float GetDisplayScale() const
     {
         return m_dpiScale;

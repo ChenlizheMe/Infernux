@@ -182,6 +182,52 @@ inline uint64_t &FontCacheGeneration()
     return generation;
 }
 
+inline std::unordered_set<ImFont *> &GetRetiredFonts()
+{
+    detail::AssertMainThread();
+    static std::unordered_set<ImFont *> fonts;
+    return fonts;
+}
+
+// Remove path aliases immediately, but keep atlas-owned font storage alive
+// until the GUI's next frame boundary has drained its submitted GPU work.
+inline bool InvalidateFontPath(const std::string &path)
+{
+    const std::string requestKey = LexicalFilesystemPathKey(path);
+    const std::string resolvedKey = FoldFilesystemPathCase(ResolveFilesystemPath(path));
+    auto &cache = GetFontCache();
+    auto &missing = GetMissingFonts();
+    auto &retired = GetRetiredFonts();
+    bool changed = false;
+    for (const auto &key : {requestKey, resolvedKey}) {
+        if (key.empty())
+            continue;
+        changed = missing.erase(key) != 0 || changed;
+        if (const auto found = cache.find(key); found != cache.end()) {
+            retired.insert(found->second);
+            changed = true;
+        }
+    }
+    if (!changed)
+        return false;
+    for (auto entry = cache.begin(); entry != cache.end();) {
+        if (retired.count(entry->second))
+            entry = cache.erase(entry);
+        else
+            ++entry;
+    }
+    ++FontCacheGeneration();
+    return true;
+}
+
+inline void CollectRetiredFonts()
+{
+    // Caller owns the main-thread, between-frame and GPU-completion boundary.
+    for (ImFont *font : GetRetiredFonts())
+        font->OwnerAtlas->RemoveFont(font);
+    GetRetiredFonts().clear();
+}
+
 // The editor/player GUI installs one authoritative engine font at startup.
 // UIText without an authored Font asset must use that same PingFang face,
 // rather than inheriting whatever ambient ImGui font happens to be active.
@@ -202,6 +248,8 @@ inline void ClearFontCache()
 {
     GetFontCache().clear();
     GetMissingFonts().clear();
+    // Atlas Clear/Destroy owns these objects when the entire GUI is reset.
+    GetRetiredFonts().clear();
     ++FontCacheGeneration();
 }
 
@@ -233,7 +281,7 @@ inline ImFont *ResolveFont(const std::string &fontPath)
 
     const std::string normalizedPath = NormalizeFontPath(fontPath);
     if (normalizedPath.empty()) {
-        if (missingFonts.insert(fontPath).second)
+        if (missingFonts.insert(requestKey).second)
             INXLOG_ERROR("UIText explicit font path cannot be resolved: '", fontPath, "'");
         return nullptr;
     }

@@ -2858,6 +2858,12 @@ void InxRenderer::SetGUIFont(const char *fontPath, float fontSize)
     }
 }
 
+void InxRenderer::InvalidateGUIFontAsset(const std::string &path)
+{
+    if (m_gui)
+        m_gui->InvalidateFontAsset(path);
+}
+
 float InxRenderer::GetDisplayScale() const
 {
     if (!m_gui)
