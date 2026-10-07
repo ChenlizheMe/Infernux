@@ -90,6 +90,22 @@ _SOURCE_DESCRIPTOR_FIELDS = frozenset(
 )
 
 
+def _require_package_identity(
+    metadata: Mapping[str, object], *, expected_reference: str = "", expected_version: str = "",
+) -> str:
+    reference = validate_reference(str(metadata.get("reference", "")))
+    if expected_reference and reference.casefold() != validate_reference(expected_reference).casefold():
+        raise RuntimeError(
+            f"Plugin reference mismatch: expected {expected_reference}, found {reference}"
+        )
+    version = str(metadata.get("version", ""))
+    if expected_version and version != expected_version:
+        raise RuntimeError(
+            f"Plugin version mismatch: expected {reference}@{expected_version}, found {version}"
+        )
+    return reference
+
+
 def _report_progress(
     callback: _InstallProgress | None,
     stage: str,
@@ -499,16 +515,22 @@ class PluginManager:
         progress: _InstallProgress | None = None,
         update: bool = False,
         overwrite_modified: bool = False,
+        expected_reference: str = "",
+        expected_version: str = "",
     ) -> PluginState:
         _report_progress(progress, "inspect_package", 0.36)
         package_path = resolved_path(package_path)
         preview = InxPackage.inspect(package_path)
+        # A registry request owns the identity. Reject mismatches before cache,
+        # project files, dependency installation or preload publication.
+        reference = _require_package_identity(
+            preview.metadata, expected_reference=expected_reference, expected_version=expected_version,
+        )
         compatibility = str(preview.metadata.get("engine", "")).strip()
         if compatibility and Version(ENGINE_VERSION) not in SpecifierSet(compatibility):
             raise RuntimeError(
                 f"InxPackage requires Infernux {compatibility}, current engine is {ENGINE_VERSION}"
             )
-        reference = validate_reference(str(preview.metadata["reference"]))
         from .platform_support import require_plugin_support
 
         require_plugin_support(reference)
@@ -894,6 +916,7 @@ class PluginManager:
         if not isinstance(source, Mapping):
             raise ValueError(f"Plugin registry source is invalid: {reference}")
         descriptor = dict(source)
+        pinned_version = str(record.get("version", "")).strip()
         if (
             str(descriptor.get("type", "")).strip().casefold() == "local"
             and descriptor.get("builtin") is True
@@ -902,6 +925,8 @@ class PluginManager:
                 descriptor,
                 install_dependencies=install_dependencies,
                 progress=progress,
+                expected_reference=reference,
+                expected_version=pinned_version,
             )
         cache_path = self.cached_reference_path(reference)
         if cache_path:
@@ -910,11 +935,15 @@ class PluginManager:
                 source=descriptor,
                 install_dependencies=install_dependencies,
                 progress=progress,
+                expected_reference=reference,
+                expected_version=pinned_version,
             )
         return self.install_source(
             descriptor,
             install_dependencies=install_dependencies,
             progress=progress,
+            expected_reference=reference,
+            expected_version=pinned_version,
         )
 
     def available_releases(self, reference: str) -> tuple[dict[str, object], ...]:
@@ -1027,6 +1056,10 @@ class PluginManager:
             raise KeyError(f"Plugin reference was not found: {reference}")
         cached = self.cached_reference_path(reference)
         if cached and not force and not release_tag:
+            _require_package_identity(
+                InxPackage.inspect(cached).metadata, expected_reference=reference,
+                expected_version=str(record.get("version", "")).strip(),
+            )
             return {"reference": reference, "path": cached, "cached": True}
         source = record.get("source")
         if not isinstance(source, Mapping):
@@ -1040,14 +1073,10 @@ class PluginManager:
                 release_tag=release_tag,
             )
             preview = InxPackage.inspect(package_path)
-            actual_reference = validate_reference(
-                str(preview.metadata.get("reference", ""))
+            actual_reference = _require_package_identity(
+                preview.metadata, expected_reference=reference,
+                expected_version="" if release_tag else str(record.get("version", "")).strip(),
             )
-            if actual_reference.casefold() != validate_reference(reference).casefold():
-                raise RuntimeError(
-                    f"Downloaded plugin reference mismatch: expected {reference}, "
-                    f"found {actual_reference}"
-                )
             compatibility = str(preview.metadata.get("engine", "")).strip()
             if compatibility and Version(ENGINE_VERSION) not in SpecifierSet(
                 compatibility
@@ -1057,11 +1086,6 @@ class PluginManager:
                     f"is {ENGINE_VERSION}"
                 )
             version = str(preview.metadata.get("version", ""))
-            pinned_version = str(record.get("version", "")).strip()
-            if pinned_version and not release_tag and version != pinned_version:
-                raise RuntimeError(
-                    f"Downloaded plugin version mismatch: expected {reference}@{pinned_version}, found {version}"
-                )
             cache = self._package_cache()
             destination = cache.store(
                 package_path,
@@ -1116,6 +1140,8 @@ class PluginManager:
         install_dependencies: bool = True,
         progress: _InstallProgress | None = None,
         update: bool = False,
+        expected_reference: str = "",
+        expected_version: str = "",
     ) -> PluginState:
         _report_progress(progress, "resolve_source", 0.04)
         descriptor = self._source_descriptor(source)
@@ -1132,6 +1158,8 @@ class PluginManager:
                 source=acquired_source,
                 progress=progress,
                 update=update,
+                expected_reference=expected_reference,
+                expected_version=expected_version,
             )
 
     def install_pip(
