@@ -307,12 +307,6 @@ void RegisterVector2Bindings(py::module_ &m)
         .def("__neg__", [](const Vec &v) { return Vec(-v.x, -v.y); })
         .def("__len__", [](const Vec &) { return 2; })
         .def("__iter__", [](const Vec &v) { return py::make_tuple(v.x, v.y).attr("__iter__")(); })
-        .def("__hash__",
-             [](const Vec &v) {
-                 size_t h = std::hash<float>{}(v.x);
-                 h ^= std::hash<float>{}(v.y) + 0x9e3779b9 + (h << 6) + (h >> 2);
-                 return h;
-             })
         .def("__bool__", [](const Vec &v) { return vec2_util::SqrMagnitude(v) > 1e-12f; })
         .def("__abs__", [](const Vec &v) { return Vec(std::abs(v.x), std::abs(v.y)); })
         .def("__copy__", [](const Vec &v) { return Vec(v); })

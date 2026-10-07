@@ -292,14 +292,6 @@ void RegisterVec4fBindings(py::module_ &m)
             .def("__neg__", [](const Vec &v) { return Vec(-v.x, -v.y, -v.z, -v.w); })
             .def("__len__", [](const Vec &) { return 4; })
             .def("__iter__", [](const Vec &v) { return py::make_tuple(v.x, v.y, v.z, v.w).attr("__iter__")(); })
-            .def("__hash__",
-                 [](const Vec &v) {
-                     size_t h = std::hash<float>{}(v.x);
-                     h ^= std::hash<float>{}(v.y) + 0x9e3779b9 + (h << 6) + (h >> 2);
-                     h ^= std::hash<float>{}(v.z) + 0x9e3779b9 + (h << 6) + (h >> 2);
-                     h ^= std::hash<float>{}(v.w) + 0x9e3779b9 + (h << 6) + (h >> 2);
-                     return h;
-                 })
             .def("__bool__", [](const Vec &v) { return vec4_util::SqrMagnitude(v) > 1e-12f; })
             .def("__abs__",
                  [](const Vec &v) { return Vec(std::abs(v.x), std::abs(v.y), std::abs(v.z), std::abs(v.w)); })

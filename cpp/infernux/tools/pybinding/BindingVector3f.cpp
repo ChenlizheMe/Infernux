@@ -41,11 +41,14 @@ inline float SqrMagnitude(const glm::vec3 &v)
 }
 inline float Angle(const glm::vec3 &from, const glm::vec3 &to)
 {
-    float denom = Magnitude(from) * Magnitude(to);
-    if (denom < 1e-6f)
+    const glm::dvec3 a(from), b(to);
+    const double lengthA = glm::length(a), lengthB = glm::length(b);
+    if (!std::isfinite(lengthA) || !std::isfinite(lengthB))
+        throw std::invalid_argument("Vector3.angle requires finite vectors");
+    if (lengthA == 0.0 || lengthB == 0.0)
         return 0.f;
-    float val = Dot(from, to) / denom;
-    return std::acos(std::clamp(val, -1.f, 1.f)) * (180.0f / glm::pi<float>());
+    return static_cast<float>(std::atan2(glm::length(glm::cross(a, b)), glm::dot(a, b)) *
+                              (180.0 / glm::pi<double>()));
 }
 inline glm::vec3 ClampMagnitude(const glm::vec3 &v, float maxLength)
 {
@@ -105,10 +108,12 @@ inline glm::vec3 Reflect(const glm::vec3 &inDir, const glm::vec3 &inNorm)
 {
     return inDir - inNorm * (Dot(inDir, inNorm) * 2.f);
 }
-inline float SignedAngle(const glm::vec3 &from, const glm::vec3 &to)
+inline float SignedAngle(const glm::vec3 &from, const glm::vec3 &to, const glm::vec3 &axis)
 {
+    if (!std::isfinite(axis.x) || !std::isfinite(axis.y) || !std::isfinite(axis.z))
+        throw std::invalid_argument("Vector3.signed_angle axis must be finite");
     float ang = Angle(from, to);
-    if (Cross(from, to).z < 0)
+    if (glm::dot(glm::dvec3(axis), glm::cross(glm::dvec3(from), glm::dvec3(to))) < 0.0)
         ang = -ang;
     return ang;
 }
@@ -382,13 +387,6 @@ void RegisterVector3Bindings(py::module_ &m)
         .def("__neg__", [](const Vec &v) { return Vec(-v.x, -v.y, -v.z); })
         .def("__len__", [](const Vec &) { return 3; })
         .def("__iter__", [](const Vec &v) { return py::make_tuple(v.x, v.y, v.z).attr("__iter__")(); })
-        .def("__hash__",
-             [](const Vec &v) {
-                 size_t h = std::hash<float>{}(v.x);
-                 h ^= std::hash<float>{}(v.y) + 0x9e3779b9 + (h << 6) + (h >> 2);
-                 h ^= std::hash<float>{}(v.z) + 0x9e3779b9 + (h << 6) + (h >> 2);
-                 return h;
-             })
         .def("__bool__", [](const Vec &v) { return vec3_util::SqrMagnitude(v) > 1e-12f; })
         .def("__abs__", [](const Vec &v) { return Vec(std::abs(v.x), std::abs(v.y), std::abs(v.z)); })
         .def("__copy__", [](const Vec &v) { return Vec(v); })
@@ -467,7 +465,8 @@ void RegisterVector3Bindings(py::module_ &m)
         .def_static(
             "scale", [](const Vec &a, const Vec &b) { return Vec(a * b); },
             "Multiplies two vectors component-wise. Unity: Vector3.Scale(a, b)")
-        .def_static("signed_angle", &vec3_util::SignedAngle)
+        .def_static("signed_angle", &vec3_util::SignedAngle,
+                    py::arg("from_v"), py::arg("to_v"), py::arg("axis"))
         .def_static("smooth_damp", [](const Vec &current, const Vec &target, Vec currentVelocity, float smoothTime,
                                       float maxSpeed, float deltaTime) {
             Vec result = vec3_util::SmoothDamp(current, target, currentVelocity, smoothTime, maxSpeed, deltaTime);

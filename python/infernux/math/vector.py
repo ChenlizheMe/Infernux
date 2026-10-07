@@ -5,6 +5,9 @@ These wrap the C++ ``Vector2`` / ``Vector3`` / ``vec4f`` types and add Unity-sty
 class-level properties that do NOT require parentheses — matching Unity's C#
 calling convention while using Python-friendly lowercase names.
 
+Vectors are mutable and approximately comparable, so they are unhashable.
+Use ``tuple(value)`` when an immutable, exact dictionary or set key is needed.
+
 Usage::
 
     from infernux.math import vector3, vector2, vector4
