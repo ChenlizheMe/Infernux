@@ -8,6 +8,7 @@ from infernux.components import SerializableObject
 from infernux.components import registry, serializable_object
 from infernux.components.script_loader import (
     get_script_error_by_path, load_all_components_from_file, load_and_create_component,
+    _snapshot_script_diagnostics, _restore_script_diagnostics,
 )
 from infernux.engine.project_context import get_project_root, set_project_root
 
@@ -17,6 +18,7 @@ def project(tmp_path):
     previous_root = get_project_root()
     previous_types = dict(serializable_object._SERIALIZABLE_REGISTRY)
     previous_components = registry.snapshot_component_registry_state()
+    previous_diagnostics = _snapshot_script_diagnostics()
     names = ("initial_data_owner", "initial_data_other")
     previous_modules = {name:sys.modules.get(name) for name in names}
     assets = tmp_path / "Assets"
@@ -28,6 +30,7 @@ def project(tmp_path):
         serializable_object._SERIALIZABLE_REGISTRY.clear()
         serializable_object._SERIALIZABLE_REGISTRY.update(previous_types)
         registry.restore_component_registry_state(previous_components)
+        _restore_script_diagnostics(previous_diagnostics)
         for name,module in previous_modules.items():
             if module is None:
                 sys.modules.pop(name,None)
