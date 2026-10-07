@@ -225,18 +225,19 @@ def _list_assets(
         }[scope]
         values = []
         scoped_count = 0
+        result_limit = max(1, min(int(limit), 2000))
         for path in database.get_all_asset_paths():
             text = resolved_path(path)
             if not any(is_path_within(text, candidate) for candidate in roots):
                 continue
             scoped_count += 1
+            if len(values) >= result_limit:
+                continue
             if needle and needle not in text.casefold():
                 continue
             if suffix and not text.casefold().endswith(suffix):
                 continue
             values.append(asset_identity(text))
-            if len(values) >= max(1, min(int(limit), 2000)):
-                break
         return {
             "assets": values,
             "returned": len(values),

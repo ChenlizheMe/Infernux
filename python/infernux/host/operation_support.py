@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 from collections.abc import Callable, Mapping, MutableMapping, MutableSequence
 from typing import Any
 
@@ -323,12 +324,24 @@ def serializable_component(
     return result
 
 
+def _json_pointer_index(token: str, sequence: MutableSequence, pointer: str) -> int:
+    if re.fullmatch(r"0|[1-9][0-9]*", token) is None:
+        raise OperationError("operation.invalid_arguments", f"Invalid JSON pointer array index: {pointer}")
+    # Reject out-of-range tokens before converting an arbitrarily large integer.
+    maximum = str(len(sequence) - 1)
+    if not sequence or len(token) > len(maximum) or (len(token) == len(maximum) and token > maximum):
+        raise OperationError("operation.invalid_arguments", f"JSON pointer does not exist: {pointer}")
+    return int(token)
+
+
 def set_json_pointer(document: Mapping[str, Any], pointer: str, value: Any) -> dict[str, Any]:
-    result = copy.deepcopy(dict(document))
-    text = str(pointer or "").strip()
-    if not text.startswith("/"):
+    if not isinstance(pointer, str) or not pointer.startswith("/"):
         raise OperationError("operation.invalid_arguments", "JSON pointer must start with '/'.")
+    text = pointer
+    if re.search(r"~(?![01])", text):
+        raise OperationError("operation.invalid_arguments", f"Invalid JSON pointer escape: {text}")
     parts = [part.replace("~1", "/").replace("~0", "~") for part in text[1:].split("/")]
+    result = copy.deepcopy(dict(document))
     current: Any = result
     for part in parts[:-1]:
         if isinstance(current, MutableMapping):
@@ -336,10 +349,7 @@ def set_json_pointer(document: Mapping[str, Any], pointer: str, value: Any) -> d
                 raise OperationError("operation.invalid_arguments", f"JSON pointer does not exist: {text}")
             current = current[part]
         elif isinstance(current, MutableSequence):
-            try:
-                current = current[int(part)]
-            except (IndexError, TypeError, ValueError) as exc:
-                raise OperationError("operation.invalid_arguments", f"JSON pointer does not exist: {text}") from exc
+            current = current[_json_pointer_index(part, current, text)]
         else:
             raise OperationError("operation.invalid_arguments", f"JSON pointer does not exist: {text}")
     leaf = parts[-1]
@@ -348,10 +358,7 @@ def set_json_pointer(document: Mapping[str, Any], pointer: str, value: Any) -> d
             raise OperationError("operation.invalid_arguments", f"JSON pointer does not exist: {text}")
         current[leaf] = copy.deepcopy(value)
     elif isinstance(current, MutableSequence):
-        try:
-            current[int(leaf)] = copy.deepcopy(value)
-        except (IndexError, TypeError, ValueError) as exc:
-            raise OperationError("operation.invalid_arguments", f"JSON pointer does not exist: {text}") from exc
+        current[_json_pointer_index(leaf, current, text)] = copy.deepcopy(value)
     else:
         raise OperationError("operation.invalid_arguments", f"JSON pointer does not exist: {text}")
     return result

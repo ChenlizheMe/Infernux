@@ -81,27 +81,26 @@ def _set_data_asset_property(
     value,
 ) -> dict[str, object]:
     def edit():
-        normalized_pointer = str(pointer or "").strip()
-        if not normalized_pointer.startswith("/fields/"):
+        if not isinstance(pointer, str) or not pointer.startswith("/fields/"):
             raise OperationError(
                 "operation.invalid_arguments",
                 "DataAsset edits must address an existing /fields/... value.",
             )
         path, _asset, before = _load_data_asset(asset_guid)
-        after = set_json_pointer(before, normalized_pointer, value)
+        after = set_json_pointer(before, pointer, value)
         host = EditorAutomationHost.instance()
         host.publish_data_asset_document(
             path,
             asset_guid,
             after,
-            edit_key=f"data_asset:{normalized_pointer}",
-            description=f"Set DataAsset {normalized_pointer}",
+            edit_key=f"data_asset:{pointer}",
+            description=f"Set DataAsset {pointer}",
         )
         _asset, published = host.data_asset_document(path)
         return {
             "asset_guid": asset_guid,
             "path": path,
-            "pointer": normalized_pointer,
+            "pointer": pointer,
             "document": published,
         }
 
