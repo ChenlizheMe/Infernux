@@ -829,7 +829,7 @@ def test_plugin_panel_reads_the_current_shared_cache_contract():
                 "source": {"official": True},
             },
         ),
-        installed=lambda: (),
+        installed_metadata=lambda: (),
     )
     cache_queries: list[str] = []
     manager = SimpleNamespace(
