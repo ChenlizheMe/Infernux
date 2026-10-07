@@ -59,6 +59,7 @@ class AudioSource(BuiltinComponent):
 
     # ---- Volume / Pitch / Mute (source-level) ----
     volume = CppProperty.from_native("AudioSource", "volume")
+    priority = CppProperty.from_native("AudioSource", "priority")
     pitch = CppProperty.from_native("AudioSource", "pitch")
     mute = CppProperty.from_native("AudioSource", "mute")
 
@@ -73,11 +74,10 @@ class AudioSource(BuiltinComponent):
     output_bus = CppProperty.from_native("AudioSource", "output_bus")
 
     # ------------------------------------------------------------------
-    # Properties (not shown in inspector, accessible via script)
+    # One-shot capacity is hidden in the Inspector and accessible via script.
     # ------------------------------------------------------------------
 
     one_shot_pool_size = CppProperty.from_native("AudioSource", "one_shot_pool_size")
-    priority = CppProperty.from_native("AudioSource", "priority")
 
     # ------------------------------------------------------------------
     # Track management (delegate methods)

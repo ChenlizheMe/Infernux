@@ -127,7 +127,7 @@ The following members are declared by the current Python wrapper and type stub.
 | `play_on_awake: bool` | Automatically plays track 0 when the component starts. |
 | `min_distance`, `max_distance` | Start and end distances for spatial attenuation. |
 | `one_shot_pool_size: int` | Maximum concurrent pooled one-shot voices; script-only in the current Inspector. |
-| `output_bus: str` | Output bus name; script-only in the current Inspector. |
+| `output_bus: str` | Output bus name; editable in the Inspector's routing section. |
 | `is_playing`, `is_paused` | Read-only convenience state for track 0. |
 | `game_object_id` | Read-only owning GameObject ID. |
 
@@ -317,7 +317,7 @@ def update(self, delta_time):
 | `play_on_awake: bool` | 组件启动时自动播放轨道 0。 |
 | `min_distance`、`max_distance` | 空间衰减的起始与结束距离。 |
 | `one_shot_pool_size: int` | 池化一次性声部的最大并发数；当前 Inspector 不显示。 |
-| `output_bus: str` | 输出总线名称；当前 Inspector 不显示。 |
+| `output_bus: str` | 输出总线名称，可在 Inspector 的路由区域编辑。 |
 | `is_playing`、`is_paused` | 轨道 0 的只读便捷状态。 |
 | `game_object_id` | 所属 GameObject 的只读 ID。 |
 
