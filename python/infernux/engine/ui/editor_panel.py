@@ -378,6 +378,10 @@ class EditorPanel(ClosablePanel):
     def _load_persisted_view_state_once(self) -> None:
         if self._persisted_view_state_loaded:
             return
+        # Bootstrap also calls this before the first render/on_enable. View
+        # identities (event stages, selected elements) belong to the restored
+        # document, not the constructor's temporary blank model.
+        self.restore_persisted_session_document()
         self._persisted_view_state_loaded = True
         from . import panel_state
 

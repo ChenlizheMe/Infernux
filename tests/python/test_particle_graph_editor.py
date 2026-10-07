@@ -2468,6 +2468,33 @@ def test_particle_view_state_rejects_stage_not_owned_by_restored_emitter(invalid
     assert panel.asset.to_dict() == before
 
 
+def test_persisted_particle_view_claims_document_before_validating_event_stage(monkeypatch):
+    from infernux.engine.ui import panel_state
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel, _manager = _particle_panel_with_history()
+    event = panel.add_event_type("OnDoorOpen", 16, [])
+    flow = panel.add_authoring_event_flow(event["stable_id"])
+    before = panel.asset.to_dict()
+    view = panel.save_state()
+    session = DocumentRegistry.instance().capture_session_state()
+    assert DocumentRegistry().queue_session_restore(session) == 1
+    restored = ParticleGraphEditorPanel()
+    monkeypatch.setattr(panel_state, "get", lambda key: view if key == "panel:particle_graph_editor" else None)
+    deleted = []
+    monkeypatch.setattr(panel_state, "delete", deleted.append)
+
+    # Bootstrap restores view state before the first GUI on_enable callback.
+    restored._load_persisted_view_state_once()
+
+    assert not deleted
+    assert restored.asset.to_dict() == before
+    assert restored._stage == "event." + flow["flow_id"]
+    assert not DocumentRegistry.instance().has_pending_session_document(restored.window_id)
+    restored._load_persisted_view_state_once()
+    assert restored.asset.to_dict() == before
+
+
 def test_cross_stage_invalid_port_preserves_document_history_and_selection():
     from infernux.engine.interaction import SelectionService
 
