@@ -19,6 +19,7 @@ import os
 import sys
 import tokenize
 import types
+from collections import ChainMap
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -314,46 +315,24 @@ class CandidateImportTransaction:
             return cached
         proxy = types.ModuleType("dataclasses")
         proxy.__dict__.update(vars(module))
-        real_dataclass = module.dataclass
-
-        def candidate_dataclass(cls=None, /, **kwargs):
-            def decorate(target):
-                annotations = getattr(target, "__annotations__", None)
-                original = dict(annotations) if isinstance(annotations, dict) else None
-                original_module = getattr(target, "__module__", None)
-                if annotations is not None:
-                    for key, value in tuple(annotations.items()):
-                        if not isinstance(value, str):
-                            continue
-                        try:
-                            resolved = value
-                            for _ in range(2):
-                                if not isinstance(resolved, str):
-                                    break
-                                resolved = eval(
-                                    resolved,
-                                    target.__dict__,
-                                    target.__dict__,
-                                )
-                            annotations[key] = resolved
-                        except Exception:
-                            pass
-                if any(isinstance(value, str) for value in (annotations or {}).values()):
-                    # dataclasses uses sys.modules for a few string-annotation
-                    # checks. Point that lookup at an existing trusted module,
-                    # never at the private candidate module.
-                    target.__module__ = "builtins"
-                try:
-                    return real_dataclass(target, **kwargs)
-                finally:
-                    if original_module is not None:
-                        target.__module__ = original_module
-                    if original is not None:
-                        target.__annotations__ = original
-
-            return decorate if cls is None else decorate(cls)
-
-        proxy.dataclass = candidate_dataclass
+        # Keep CPython's annotation classification and code generation intact.
+        # Its functions look up class namespaces through their module's sys
+        # global, so bind them to a private interpreter-table view. Class/Field
+        # identities stay shared with stdlib; no candidate enters sys.modules,
+        # no annotation is evaluated, and slots classes keep their real module.
+        private_sys = types.ModuleType("sys")
+        private_sys.__dict__.update(vars(sys))
+        private_sys.modules = ChainMap({"dataclasses": proxy}, self._modules, sys.modules)
+        proxy.sys = private_sys
+        for name, value in vars(module).items():
+            if isinstance(value, types.FunctionType) and value.__globals__ is vars(module):
+                rebound = types.FunctionType(value.__code__, proxy.__dict__, value.__name__,
+                                             value.__defaults__, value.__closure__)
+                rebound.__kwdefaults__ = value.__kwdefaults__
+                rebound.__annotations__ = dict(value.__annotations__)
+                rebound.__qualname__ = value.__qualname__
+                rebound.__dict__.update(value.__dict__)
+                proxy.__dict__[name] = rebound
         self._trusted_proxies["dataclasses"] = proxy
         return proxy
 
