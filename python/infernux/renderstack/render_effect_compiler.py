@@ -949,6 +949,7 @@ def _compile_effect(
     first_texture = len(graph._textures)
     first_buffer = len(graph._buffers)
     first_topology = len(graph._topology)
+    previous_temporal_jitter = graph._temporal_jitter
     bus_snapshot = bus.snapshot()
     from infernux.renderstack._effect_parameter_context import EffectParameterContext, graph_structure
 
@@ -961,6 +962,7 @@ def _compile_effect(
         del graph._textures[first_texture:]
         del graph._buffers[first_buffer:]
         del graph._topology[first_topology:]
+        graph.set_temporal_jitter(previous_temporal_jitter)
         bus._resources = bus_snapshot
         raise
     generated = graph._passes[first_pass:]
