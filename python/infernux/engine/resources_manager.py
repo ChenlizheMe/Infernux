@@ -96,6 +96,7 @@ class _ScriptPublicationTransaction:
         # submission time.  A later revision may remove the old result before
         # the owner drains it, leaving no result object to compare against.
         self.expected_generations: dict[str, int] = {}
+        self.capture_incomplete = False
         self.results: dict[str, ScriptChangeResult] = {}
         self.failed = False
         self.initial_scan = bool(initial_scan)
@@ -568,6 +569,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
         ``state.results`` cannot detect this race; the journal's latest
         generation is the durable source of truth.
         """
+        if state.capture_incomplete:
+            return True
         for path in state.expected_paths:
             expected_generation = state.expected_generations.get(path_key(path))
             latest = self._script_change_collector.latest(path)
@@ -902,6 +905,10 @@ class ResourceChangeHandler(FileSystemEventHandler):
         # the source/hash check is repeated after claim and immediately before
         # any live, registry, or graph mutation.
         if any(not self._script_source_matches_disk(result) for result in ready):
+            # Initial scan owns a complete baseline. A vanished/changed member
+            # requires recapturing its surviving peers, not discarding them.
+            if state.initial_scan:
+                state.capture_incomplete = True
             return False
 
         graph = self._dependency_graph
@@ -1072,6 +1079,9 @@ class ResourceChangeHandler(FileSystemEventHandler):
             self._discard_failed_script_transaction(state)
             return False
         if published is False:
+            if state.initial_scan and state.capture_incomplete:
+                self._restart_initial_scan_transaction(state)
+                return False
             state.failed = True
             self._discard_failed_script_transaction(state)
             return False
@@ -1632,11 +1642,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
         force: bool | None = None,
     ):
         """Capture exact bytes and submit one immutable frontend revision."""
-        if not os.path.exists(file_path):
+        try:
+            with open(file_path, "rb") as source_file:
+                source = source_file.read()
+        except FileNotFoundError:
+            state = self._script_transactions.get(transaction_id)
+            if state is not None and state.initial_scan:
+                state.capture_incomplete = True
             return None
-
-        with open(file_path, "rb") as source_file:
-            source = source_file.read()
         if change_kind is None:
             change_kind = catalog_event if catalog_event in {
                 "created",
@@ -2012,6 +2025,7 @@ class ResourcesManager:
                 origin="initial_scan",
                 change_kind="initial_scan",
                 transaction_id=transaction_id,
+                force=True,
             )
 
     def process_pending_reloads(self, *, force: bool = False) -> int:
