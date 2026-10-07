@@ -81,22 +81,22 @@ jobs:
       - name: Audit project synchronization contract
         run: |
           python scripts/maintenance/audit_project_sync.py tests/fixtures/multiplatform_player --tracked
-      # Keep this focused list synchronized with TESTING.md.
+      # Keep this focused list synchronized with tests/README.md.
       - name: Test critical Hub workflows without a native engine
         run: >-
           python -m pytest
-          packaging/tests/test_hub_project_workflow.py
-          packaging/tests/test_project_python_runtime.py
-          packaging/tests/test_hub_new_project_python_binding.py
-          packaging/tests/test_hub_launch_state.py
-          packaging/tests/test_project_runtime_strictness.py
-          packaging/tests/test_regression_guide.py
-          packaging/tests/test_cpu_jit_dependency_packaging.py
-          packaging/tests/test_release_signing.py
-          packaging/tests/test_hub_utils.py
-          packaging/tests/test_bundle_resources.py
-          packaging/tests/test_workspace_cleanup.py
-          packaging/tests/test_project_sync_audit.py
+          tests/hub/test_hub_project_workflow.py
+          tests/hub/test_project_python_runtime.py
+          tests/hub/test_hub_new_project_python_binding.py
+          tests/hub/test_hub_launch_state.py
+          tests/hub/test_project_runtime_strictness.py
+          tests/hub/test_regression_guide.py
+          tests/hub/test_cpu_jit_dependency_packaging.py
+          tests/hub/test_release_signing.py
+          tests/hub/test_hub_utils.py
+          tests/hub/test_bundle_resources.py
+          tests/hub/test_workspace_cleanup.py
+          tests/hub/test_project_sync_audit.py
           tests/contracts
           -q -ra --junitxml out/test-results/portable-hub.xml
       - uses: actions/upload-artifact@v4
@@ -168,7 +168,7 @@ jobs:
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          cmake --preset windows-msvc-release "-DCMAKE_PROJECT_Infernux_INCLUDE=$PWD/scripts/acceptance/windows_software_vulkan.cmake"
+          cmake --preset windows-msvc-release "-DCMAKE_PROJECT_Infernux_INCLUDE=$PWD/tests/acceptance/windows_software_vulkan.cmake"
 
       - name: Provide pinned software Vulkan for build and tests
         shell: pwsh
@@ -197,7 +197,9 @@ jobs:
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
           cmake --build --preset windows-msvc-release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset windows-msvc-player
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run preset tests
         shell: pwsh
@@ -213,14 +215,14 @@ jobs:
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
           $env:PYTHONPATH = "$env:GITHUB_WORKSPACE\python" + $(if ($env:PYTHONPATH) { ";$env:PYTHONPATH" } else { "" })
-          python -m pytest python\test -q --junitxml out\test-results\pytest-windows.xml
+          python -m pytest tests\python -q --junitxml out\test-results\pytest-windows.xml
 
       - name: Run Hub tests
         shell: pwsh
         run: |
           conda activate infernux
           $env:PYTHONPATH = 'packaging'
-          python -m pytest packaging\tests -q --junitxml out\test-results\pytest-hub-windows.xml
+          python -m pytest tests\hub -q --junitxml out\test-results\pytest-hub-windows.xml
 
       - name: Build Windows editor wheel
         shell: pwsh
@@ -293,7 +295,7 @@ jobs:
         run: |
           conda activate infernux
           mkdir -p out/test-results
-          xvfb-run --auto-servernum env QT_QPA_PLATFORM=xcb QT_DEBUG_PLUGINS=1 PYTHONPATH=packaging python -m pytest packaging/tests -q -s --junitxml out/test-results/pytest-hub-linux.xml
+          xvfb-run --auto-servernum env QT_QPA_PLATFORM=xcb QT_DEBUG_PLUGINS=1 PYTHONPATH=packaging python -m pytest tests/hub -q -s --junitxml out/test-results/pytest-hub-linux.xml
 
       - name: Configure Linux release preset
         run: |
@@ -316,7 +318,7 @@ jobs:
         run: |
           conda activate infernux
           export PYTHONPATH="$GITHUB_WORKSPACE/python${PYTHONPATH:+:$PYTHONPATH}"
-          xvfb-run --auto-servernum python -m pytest python/test -q --junitxml out/test-results/pytest-linux.xml
+          xvfb-run --auto-servernum python -m pytest tests/python -q --junitxml out/test-results/pytest-linux.xml
 
       - name: Build Linux editor wheel and Hub distribution
         run: |

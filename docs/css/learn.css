@@ -47,11 +47,11 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    min-height: 300px;
+    min-height: 260px;
     padding: 28px;
     overflow: hidden;
     border: 1px solid var(--border-strong);
-    border-radius: 6px;
+    border-radius: var(--radius-xs);
     background: var(--bg-panel);
     color: inherit;
     transition: border-color 150ms ease, background-color 150ms ease, transform 150ms ease;
@@ -568,3 +568,6 @@
     .learn-course-pager > div { grid-template-columns: 1fr 1fr; }
     .learn-course-home { display: none; }
 }
+
+.learn-heading h1 { font-size: clamp(2rem, 4vw, 3.4rem); }
+.learn-article h1 { font-size: clamp(1.9rem, 3vw, 2.6rem); line-height: 1.3; }

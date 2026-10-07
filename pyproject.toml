@@ -70,10 +70,10 @@ infernux = [
     "resources/fonts/*.ttf",
     "resources/fonts/*.txt",
     "resources/pictures/*.png",
-    "resources/schemas/*.json",
+    "diagnostics/schemas/*.json",
     "resources/shaders/**/*",
-    "resources/project_templates/*.txt",
-    "resources/project_templates/*.json",
+    "templates/project/*.txt",
+    "templates/project/*.json",
     "resources/*.inxpkg",
     "resources/official_packages/*.json",
 ]

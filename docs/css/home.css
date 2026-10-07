@@ -100,21 +100,12 @@
     padding: 14px 15px 13px;
     border: 1px solid var(--accent);
     border-radius: var(--tape-corner, 3px);
-    background:
-        linear-gradient(135deg, rgba(235, 87, 87, 0.18), transparent 58%),
-        rgba(9, 11, 17, 0.84);
-    box-shadow: 5px 5px 0 rgba(0, 0, 0, 0.36), inset 0 1px rgba(255, 255, 255, 0.1);
+    background: var(--bg-panel);
+    box-shadow: none;
     overflow: hidden;
 }
 
-.github-star-deck::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background: repeating-linear-gradient(0deg, transparent 0 4px, rgba(255, 255, 255, 0.05) 4px 5px);
-    opacity: 0.5;
-}
+.github-star-deck::after { content: none; }
 
 .github-star-heading,
 .github-star-link,
@@ -143,3 +134,41 @@
 @media (max-width: 520px) {
     .github-star-deck { grid-column: span 1; }
 }
+
+.hero-capture { display: block; position: relative; border: 1px solid var(--border-strong); border-top: 0; background: var(--bg-deep); }
+.hero-capture picture, .hero-capture img { display: block; width: 100%; height: auto; }
+.hero-capture img { aspect-ratio: 80 / 43; object-fit: cover; }
+.capture-label { display: flex; justify-content: space-between; gap: 12px; padding: 11px 14px; border-top: 1px solid var(--border); color: var(--text-muted); font: .6rem var(--font-mono); letter-spacing: .08em; }
+.hero-capture:hover { border-color: var(--accent); }
+.starter-console { margin-top: 28px; }
+.starter-console .code-preview { display: grid; grid-template-columns: 200px minmax(0, 1fr); }
+.starter-console .code-header { flex-wrap: wrap; align-content: center; justify-content: center; border-bottom: 0; border-right: 1px solid var(--border); }
+.starter-console .code-copy-action { margin: 12px auto 0; }
+.starter-console pre { min-width: 0; font-size: .78rem; }
+@media (max-width: 820px) { .starter-console .code-preview { grid-template-columns: 1fr; } .starter-console .code-header { justify-content: flex-start; border-right: 0; border-bottom: 1px solid var(--border); } .starter-console .code-copy-action { margin: 0 0 0 auto; } }
+
+.hero-phrase { display: inline-block; max-width: 100%; }
+.engineering-board { grid-column: 1 / -1; margin-top: 0; }
+.engineering-board .hero-meta { grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(220px, 1fr); margin-top: 12px; }
+.engineering-board .github-star-deck { grid-column: auto; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; padding: 12px 14px; border-color: var(--border); }
+.github-star-heading { grid-column: 1 / -1; }
+.github-star-value { grid-row: 2 / 4; align-self: center; margin: 0; font-size: 1.8rem; }
+.github-star-link, .github-star-caption { margin: 0; }
+.metric-card { align-content: center; }
+@media (max-width: 820px) {
+    .hero-copy { display: contents; }
+    .hero-index-rail { order: 0; }
+    .hero-codename { order: 1; margin: 0; gap: 10px; }
+    .hero-title { order: 2; }
+    .hero-subtitle { order: 3; margin: 0; }
+    .hero-panel { order: 5; padding: 0; }
+    .hero-description { order: 6; margin: 0; }
+    .hero-actions { order: 4; margin: 0; }
+    .hero-platform-note { order: 7; margin: 0; }
+    .hero-text-links { order: 8; margin: 0; }
+    .engineering-board { order: 9; }
+    .engineering-board .hero-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .engineering-board-head { font-size: .65rem; }
+    .hero-codename .badge { font-size: .58rem; letter-spacing: .09em; }
+}
+@media (max-width: 520px) { .engineering-board .hero-meta { grid-template-columns: 1fr; } }

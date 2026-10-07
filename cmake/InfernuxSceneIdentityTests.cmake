@@ -1,6 +1,6 @@
 if(INFERNUX_BUILD_TESTS)
     add_executable(infernux_scene_authoring_identity_tests
-        cpp/tests/SceneAuthoringIdentityTests.cpp
+        tests/native/SceneAuthoringIdentityTests.cpp
         cpp/infernux/function/scene/SceneAuthoringIdentity.cpp
         cpp/infernux/core/types/Guid.cpp
     )

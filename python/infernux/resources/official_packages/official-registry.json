@@ -4,18 +4,18 @@
     {
       "reference": "infernux/mcp",
       "name": "Infernux MCP",
-      "version": "0.1.2",
+      "version": "0.1.12",
       "intro": "Let an MCP-compatible AI agent drive the Infernux Editor.",
       "intros": {
         "zh-CN": "让兼容 MCP 的 AI Agent 直接操作 Infernux 编辑器。"
       },
       "artifact": "infernux.mcp.inxpkg",
-      "engine": ">=0.4,<0.5",
+      "engine": ">=0.4.1,<0.5",
       "dependencies": [],
       "repository": "https://github.com/ChenlizheMe/infernux_mcp",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.mcp/0.1.2/infernux.mcp.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.mcp/0.1.12/infernux.mcp.inxpkg"
       },
       "category": "editor_tools",
       "targets": [],
@@ -51,7 +51,7 @@
     {
       "reference": "infernux/platform-windows",
       "name": "Infernux Windows Platform",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "intro": "Build Infernux games for Windows with Vulkan.",
       "intros": {
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Windows。"
@@ -62,18 +62,32 @@
       "repository": "https://github.com/ChenlizheMe/infernux_windows",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-windows/0.2.1/infernux.platform-windows.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-windows/0.2.2/infernux.platform-windows.inxpkg"
       },
       "category": "platform_build",
       "targets": [
         "windows-x64"
       ],
-      "pages": []
+      "pages": [
+        {
+          "id": "usage",
+          "title": "Windows Platform",
+          "path": "plugin_pages/usage.md",
+          "format": "markdown"
+        },
+        {
+          "id": "usage",
+          "title": "Windows 平台",
+          "path": "plugin_pages/usage.zh-CN.md",
+          "format": "markdown",
+          "locale": "zh-CN"
+        }
+      ]
     },
     {
       "reference": "infernux/platform-linux",
       "name": "Infernux Linux Platform",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "intro": "Build Infernux games for Linux with Vulkan.",
       "intros": {
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Linux。"
@@ -84,18 +98,32 @@
       "repository": "https://github.com/ChenlizheMe/infernux_linux",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-linux/0.2.1/infernux.platform-linux.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-linux/0.2.2/infernux.platform-linux.inxpkg"
       },
       "category": "platform_build",
       "targets": [
         "linux-x64"
       ],
-      "pages": []
+      "pages": [
+        {
+          "id": "usage",
+          "title": "Linux Platform",
+          "path": "plugin_pages/usage.md",
+          "format": "markdown"
+        },
+        {
+          "id": "usage",
+          "title": "Linux 平台",
+          "path": "plugin_pages/usage.zh-CN.md",
+          "format": "markdown",
+          "locale": "zh-CN"
+        }
+      ]
     },
     {
       "reference": "infernux/platform-android",
       "name": "Infernux Android Platform",
-      "version": "0.2.3",
+      "version": "0.2.4",
       "intro": "Build Infernux games for Android with Vulkan.",
       "intros": {
         "zh-CN": "使用 Vulkan 将 Infernux 游戏构建到 Android。"
@@ -106,19 +134,33 @@
       "repository": "https://github.com/ChenlizheMe/infernux_android",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-android/0.2.3/infernux.platform-android.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-android/0.2.4/infernux.platform-android.inxpkg"
       },
       "category": "platform_build",
       "targets": [
         "android-arm64",
         "android-x64-emulator"
       ],
-      "pages": []
+      "pages": [
+        {
+          "id": "usage",
+          "title": "Android Platform",
+          "path": "plugin_pages/usage.md",
+          "format": "markdown"
+        },
+        {
+          "id": "usage",
+          "title": "Android 平台",
+          "path": "plugin_pages/usage.zh-CN.md",
+          "format": "markdown",
+          "locale": "zh-CN"
+        }
+      ]
     },
     {
       "reference": "infernux/platform-web",
       "name": "Infernux Web Platform",
-      "version": "0.2.1",
+      "version": "0.2.2",
       "intro": "Build Infernux games for browsers with WebGPU.",
       "intros": {
         "zh-CN": "使用 WebGPU 将 Infernux 游戏构建到浏览器。"
@@ -129,13 +171,27 @@
       "repository": "https://github.com/ChenlizheMe/infernux_web",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-web/0.2.1/infernux.platform-web.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-web/0.2.2/infernux.platform-web.inxpkg"
       },
       "category": "platform_build",
       "targets": [
         "web-wasm32"
       ],
-      "pages": []
+      "pages": [
+        {
+          "id": "usage",
+          "title": "Web Platform",
+          "path": "plugin_pages/usage.md",
+          "format": "markdown"
+        },
+        {
+          "id": "usage",
+          "title": "Web 平台",
+          "path": "plugin_pages/usage.zh-CN.md",
+          "format": "markdown",
+          "locale": "zh-CN"
+        }
+      ]
     }
   ]
 }

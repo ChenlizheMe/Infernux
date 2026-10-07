@@ -1,0 +1,388 @@
+{
+  "key": "animation",
+  "titleKey": "roadmap.galaxy.animation.title",
+  "branches": [
+    {
+      "en": "TIMELINE",
+      "zh": "时间线",
+      "leaves": [
+        ["Animation clips","动画片段","live"],
+        ["Curve playback","曲线播放","live"],
+        ["Markers","时间标记","planned"],
+        ["Layer blending","层混合","planned"],
+        ["Track binding contracts","轨道绑定契约","planned"],
+        ["Time remapping","时间重映射","planned"],
+        ["Clip event ordering","片段事件顺序","planned"],
+        ["Timeline scrubbing","时间线拖动预览","live"]
+      ]
+    },
+    {
+      "en": "SKELETAL",
+      "zh": "骨骼动画",
+      "leaves": [
+        ["FBX import","FBX 导入","live"],
+        ["Skinned meshes","蒙皮网格","live"],
+        ["Retargeting","重定向","planned"],
+        ["Pose cache","姿态缓存","future"],
+        ["Skeleton asset identity","骨架资产标识","planned"],
+        ["Bone transform compression","骨骼变换压缩","planned"],
+        ["Root motion extraction","根运动提取","planned"],
+        ["Additive animation","叠加动画","planned"]
+      ]
+    },
+    {
+      "en": "PARTICLE GRAPH",
+      "zh": "粒子图",
+      "leaves": [
+        ["GPU emitters","GPU 发射器","live"],
+        ["Init / Update stages","Init / Update 阶段","live"],
+        ["Mesh particles","网格粒子","planned"],
+        ["Simulation fields","模拟场","future"],
+        ["Particle sorting","粒子排序","planned"],
+        ["Collision modules","粒子碰撞模块","planned"],
+        ["Trail ribbons","拖尾带","planned"],
+        ["Particle LOD budgets","粒子 LOD 预算","planned"]
+      ]
+    },
+    {
+      "en": "STATE MACHINE",
+      "zh": "状态机",
+      "leaves": [
+        ["Transition graph","转换图","live"],
+        ["Blend spaces","混合空间","planned"],
+        ["Animation events","动画事件","live"],
+        ["Authoring preview","创作预览","future"],
+        ["State parameters","状态参数","live"],
+        ["Nested state machines","嵌套状态机","planned"],
+        ["Transition interruption","转换中断","planned"],
+        ["Live state inspection","运行状态检查","planned"]
+      ]
+    },
+    {
+      "en": "Pose evaluation",
+      "zh": "姿态求值",
+      "leaves": [
+        ["Pose graph scheduling","姿态图调度","planned"],
+        ["Layer masks","动画层遮罩","planned"],
+        ["Per-bone blending","逐骨骼混合","planned"],
+        ["Quaternion interpolation","四元数插值","planned"],
+        ["Pose buffer reuse","姿态缓冲复用","planned"],
+        ["Parallel animation jobs","并行动画任务","planned"],
+        ["Animation update LOD","动画更新 LOD","planned"],
+        ["Pose evaluation profiler","姿态求值分析器","planned"]
+      ]
+    },
+    {
+      "en": "Inverse kinematics",
+      "zh": "逆向运动学",
+      "leaves": [
+        ["Two-bone IK","双骨骼 IK","planned"],
+        ["CCD solver","CCD 求解器","planned"],
+        ["FABRIK solver","FABRIK 求解器","planned"],
+        ["Foot placement","足部落点适配","planned"],
+        ["Look-at constraints","朝向约束","planned"],
+        ["Full-body IK","全身 IK","future"],
+        ["Contact-aware poses","接触感知姿态","future"],
+        ["IK authoring gizmos","IK 编辑辅助","planned"]
+      ]
+    },
+    {
+      "en": "Character motion",
+      "zh": "角色运动",
+      "leaves": [
+        ["Locomotion graph","移动行为图","planned"],
+        ["Turn-in-place","原地转向","planned"],
+        ["Stride warping","步幅修正","planned"],
+        ["Motion matching","动作匹配","future"],
+        ["Trajectory prediction","运动轨迹预测","future"],
+        ["Procedural leaning","程序化倾斜","planned"],
+        ["Animation / physics sync","动画与物理同步","planned"],
+        ["Motion debugging overlays","运动调试叠层","planned"]
+      ]
+    },
+    {
+      "en": "Deformation",
+      "zh": "形变系统",
+      "leaves": [
+        ["Blend shapes","混合形状","planned"],
+        ["Morph target import","形态目标导入","planned"],
+        ["GPU skinning budgets","GPU 蒙皮预算","planned"],
+        ["Skin weight validation","蒙皮权重验证","planned"],
+        ["Corrective poses","修正姿态","planned"],
+        ["Cloth attachment","布料附着","future"],
+        ["Facial rig controls","面部绑定控制","future"],
+        ["Neural deformation","神经形变","future"]
+      ]
+    },
+    {
+      "en": "Animation tools",
+      "zh": "动画工具",
+      "leaves": [
+        ["Curve editor","曲线编辑器","planned"],
+        ["Clip trimming","动画片段裁剪","live"],
+        ["Event track editor","事件轨道编辑器","planned"],
+        ["Retarget preview","重定向预览","planned"],
+        ["Animation asset validation","动画资产验证","live"],
+        ["Pose library","姿态库","planned"],
+        ["Batch animation import","批量动画导入","planned"],
+        ["Animation capture export","动画捕获导出","planned"]
+      ]
+    },
+    {
+      "en": "Neural motion",
+      "zh": "神经运动",
+      "leaves": [
+        ["Motion dataset export","动作数据集导出","future"],
+        ["Pose observation schema","姿态观测结构","future"],
+        ["Policy-driven locomotion","策略驱动移动","future"],
+        ["Learned motion synthesis","学习式动作合成","future"],
+        ["Motion generation constraints","动作生成约束","future"],
+        ["Model latency budgeting","模型延迟预算","future"],
+        ["Motion quality evaluation","动作质量评估","future"],
+        ["Deterministic policy playback","确定性策略回放","future"]
+      ]
+    },
+    {
+      "en": "Clip sampling mechanics",
+      "zh": "动画片段采样细节",
+      "leaves": [
+        ["Keyframe interval lookup","关键帧区间查找","planned"],
+        ["Cubic Hermite curves","三次 Hermite 曲线","planned"],
+        ["Bezier tangent handles","贝塞尔切线控制柄","planned"],
+        ["Weighted curve tangents","加权曲线切线","planned"],
+        ["Quaternion shortest paths","四元数最短路径","planned"],
+        ["Quaternion squad interpolation","四元数 Squad 插值","planned"],
+        ["Loop seam continuity","循环接缝连续性","planned"],
+        ["Negative playback direction","反向播放方向","planned"],
+        ["Clip endpoint sampling","片段端点采样","planned"],
+        ["Sample-rate conversion","动画采样率转换","planned"],
+        ["Curve key reduction","曲线关键帧精简","planned"],
+        ["Curve quantization bounds","曲线量化边界","planned"],
+        ["Constant-channel stripping","常量通道裁剪","planned"],
+        ["Animation channel defaults","动画通道默认值","planned"],
+        ["Clip time-domain conversion","片段时间域转换","planned"],
+        ["Sampling error visualization","采样误差可视化","planned"]
+      ]
+    },
+    {
+      "en": "Skeleton mapping",
+      "zh": "骨架映射",
+      "leaves": [
+        ["Bone path canonicalization","骨骼路径规范化","planned"],
+        ["Skeleton topology signatures","骨架拓扑签名","planned"],
+        ["Bind-pose space contracts","绑定姿态空间契约","planned"],
+        ["Inverse bind matrix checks","逆绑定矩阵检查","planned"],
+        ["Humanoid bone roles","人形骨骼角色","planned"],
+        ["Retarget source pose","重定向源姿态","planned"],
+        ["Retarget destination pose","重定向目标姿态","planned"],
+        ["Limb length compensation","肢体长度补偿","planned"],
+        ["Twist-bone distribution","扭转骨分配","planned"],
+        ["Scale-aware retargeting","缩放感知重定向","planned"],
+        ["Root orientation offsets","根朝向偏移","planned"],
+        ["Retarget translation modes","重定向位移模式","planned"],
+        ["Missing-bone mapping reports","缺失骨骼映射报告","planned"],
+        ["Skeleton remap caching","骨架重映射缓存","planned"],
+        ["Cross-rig preview comparison","跨骨架预览对比","planned"],
+        ["Retarget profile assets","重定向配置资产","planned"]
+      ]
+    },
+    {
+      "en": "Blend graph mechanics",
+      "zh": "混合图细节",
+      "leaves": [
+        ["Normalized blend weights","归一化混合权重","planned"],
+        ["One-dimensional blend trees","一维混合树","planned"],
+        ["Two-dimensional blend triangulation","二维混合三角剖分","planned"],
+        ["Directional blend interpolation","方向混合插值","planned"],
+        ["Additive reference spaces","叠加参考空间","planned"],
+        ["Mesh-space rotation blending","网格空间旋转混合","planned"],
+        ["Local-space pose blending","局部空间姿态混合","planned"],
+        ["Bone mask falloff","骨骼遮罩衰减","planned"],
+        ["Sync-marker alignment","同步标记对齐","planned"],
+        ["Phase-preserving transitions","保相位过渡","planned"],
+        ["Inertialized pose transitions","惯性化姿态过渡","planned"],
+        ["Transition interruption priorities","过渡中断优先级","planned"],
+        ["Blend graph cycle checks","混合图环检查","planned"],
+        ["Pose node cache keys","姿态节点缓存键","planned"],
+        ["Blend weight debug overlays","混合权重调试叠层","planned"],
+        ["Graph parameter snapshots","动画图参数快照","planned"]
+      ]
+    },
+    {
+      "en": "Constraint solving",
+      "zh": "动画约束求解",
+      "leaves": [
+        ["IK pole-vector controls","IK 极向量控制","planned"],
+        ["Joint-angle clamp rules","关节角钳制规则","planned"],
+        ["IK chain reach limits","IK 链触及限制","planned"],
+        ["IK stretch ratios","IK 拉伸比","planned"],
+        ["IK iteration tolerances","IK 迭代容差","planned"],
+        ["IK target space conversion","IK 目标空间转换","planned"],
+        ["Foot locking windows","足部锁定时间窗","planned"],
+        ["Pelvis height adjustment","骨盆高度调整","planned"],
+        ["Hand contact constraints","手部接触约束","planned"],
+        ["Gaze cone limits","注视锥限制","planned"],
+        ["Aim-axis remapping","瞄准轴重映射","planned"],
+        ["Constraint stack ordering","约束栈顺序","planned"],
+        ["Constraint weight envelopes","约束权重包络","planned"],
+        ["Constraint evaluation islands","约束求值分组","planned"],
+        ["IK singularity handling","IK 奇异点处理","planned"],
+        ["Constraint residual display","约束残差显示","planned"]
+      ]
+    },
+    {
+      "en": "Motion selection",
+      "zh": "动作选择",
+      "leaves": [
+        ["Motion feature extraction","动作特征提取","planned"],
+        ["Pose feature normalization","姿态特征归一化","planned"],
+        ["Trajectory feature windows","轨迹特征时间窗","planned"],
+        ["Motion database indexing","动作数据库索引","planned"],
+        ["Motion candidate pruning","动作候选剪枝","planned"],
+        ["Feature distance weights","特征距离权重","planned"],
+        ["Continuity cost terms","连续性代价项","planned"],
+        ["Motion selection hysteresis","动作选择滞后","planned"],
+        ["Foot-contact feature tags","足部接触特征标签","planned"],
+        ["Future trajectory blending","未来轨迹混合","planned"],
+        ["Root velocity matching","根速度匹配","planned"],
+        ["Turn anticipation windows","转向预判时间窗","planned"],
+        ["Motion database streaming","动作数据库流送","planned"],
+        ["Motion match debug views","动作匹配调试视图","planned"],
+        ["Motion database rebuilding","动作数据库重建","planned"],
+        ["Pose search latency budgets","姿态搜索延迟预算","planned"]
+      ]
+    },
+    {
+      "en": "Skinning and morphs",
+      "zh": "蒙皮与形态细节",
+      "leaves": [
+        ["Bone palette packing","骨骼调色板打包","planned"],
+        ["Vertex influence pruning","顶点影响精简","planned"],
+        ["Skin weight renormalization","蒙皮权重重归一化","planned"],
+        ["Dual-quaternion skinning","双四元数蒙皮","planned"],
+        ["Linear skinning reference path","线性蒙皮参考路径","planned"],
+        ["Morph delta compression","形态增量压缩","planned"],
+        ["Sparse morph vertex maps","稀疏形态顶点映射","planned"],
+        ["Morph normal reconstruction","形态法线重建","planned"],
+        ["Morph tangent reconstruction","形态切线重建","planned"],
+        ["Corrective morph drivers","修正形态驱动","planned"],
+        ["Morph weight limits","形态权重上限","planned"],
+        ["Skinning output reuse","蒙皮输出复用","planned"],
+        ["Previous-pose retention","前姿态保留","planned"],
+        ["Skinning bounds expansion","蒙皮边界扩展","planned"],
+        ["Deformation velocity output","形变速度输出","planned"],
+        ["Skinning numerical comparisons","蒙皮数值对比","planned"]
+      ]
+    },
+    {
+      "en": "Particle simulation details",
+      "zh": "粒子模拟细节",
+      "leaves": [
+        ["Particle spawn accumulators","粒子生成累积器","planned"],
+        ["Burst scheduling windows","爆发调度时间窗","planned"],
+        ["Per-emitter random streams","逐发射器随机流","planned"],
+        ["Particle alive-index compaction","粒子存活索引压缩","planned"],
+        ["Particle free-slot allocation","粒子空槽分配","planned"],
+        ["Particle attribute layouts","粒子属性布局","planned"],
+        ["Particle integration schemes","粒子积分方案","planned"],
+        ["Particle vector-field sampling","粒子矢量场采样","planned"],
+        ["Particle SDF collisions","粒子 SDF 碰撞","planned"],
+        ["Particle depth collisions","粒子深度碰撞","planned"],
+        ["Particle event buffers","粒子事件缓冲","planned"],
+        ["Ribbon segment continuity","拖尾段连续性","planned"],
+        ["Particle orientation frames","粒子朝向坐标系","planned"],
+        ["Sub-emitter event ordering","子发射器事件顺序","planned"],
+        ["Particle deterministic spawning","粒子确定性生成","planned"],
+        ["Particle simulation bounds","粒子模拟边界","planned"]
+      ]
+    },
+    {
+      "en": "Animation event semantics",
+      "zh": "动画事件语义",
+      "leaves": [
+        ["Event interval inclusivity","事件区间端点规则","planned"],
+        ["Loop-crossing event dispatch","跨循环事件分派","planned"],
+        ["Reverse-playback event rules","反向播放事件规则","planned"],
+        ["Skipped-time event handling","跳时事件处理","planned"],
+        ["Blend event arbitration","混合事件仲裁","planned"],
+        ["Event deduplication identities","事件去重标识","planned"],
+        ["Event payload type schemas","事件载荷类型结构","planned"],
+        ["Event receiver lifetime","事件接收者生命周期","planned"],
+        ["Animation notify states","动画通知状态","planned"],
+        ["Notify begin-end pairing","通知开始结束配对","planned"],
+        ["Event preview muting","预览事件静音","planned"],
+        ["Timeline signal tracks","时间线信号轨道","planned"],
+        ["Event cancellation on stop","停止时事件取消","planned"],
+        ["Clip event provenance","片段事件来源","planned"],
+        ["Event breakpoint inspection","事件断点检查","planned"],
+        ["Event timing regression fixtures","事件时序回归夹具","planned"]
+      ]
+    },
+    {
+      "en": "Animation authoring details",
+      "zh": "动画创作细节",
+      "leaves": [
+        ["Multi-curve selection","多曲线选择","planned"],
+        ["Keyframe snapping modes","关键帧吸附模式","planned"],
+        ["Tangent continuity editing","切线连续编辑","planned"],
+        ["Curve extrapolation modes","曲线外推模式","planned"],
+        ["Dope-sheet range selection","摄影表区间选择","planned"],
+        ["Clip range ripple edits","片段区间波纹编辑","planned"],
+        ["Keyframe time scaling","关键帧时间缩放","planned"],
+        ["Animation track folders","动画轨道文件夹","planned"],
+        ["Track mute and solo","轨道静音与独奏","planned"],
+        ["Pose mirroring rules","姿态镜像规则","planned"],
+        ["Animation onion skins","动画洋葱皮","planned"],
+        ["Motion trail display","动作轨迹显示","planned"],
+        ["Clip reference repair","片段引用修复","planned"],
+        ["Animation preview isolation","动画预览隔离","planned"],
+        ["Animation edit transactions","动画编辑事务","planned"],
+        ["Animation export coordinate rules","动画导出坐标规则","planned"]
+      ]
+    },
+    {
+      "en": "Neural motion interfaces",
+      "zh": "神经动作接口",
+      "leaves": [
+        ["Joint observation ordering","关节观测顺序","planned"],
+        ["Pose tensor normalization","姿态张量归一化","planned"],
+        ["Root-relative observations","根相对观测","planned"],
+        ["Contact label extraction","接触标签提取","planned"],
+        ["Motion window buffering","动作窗口缓冲","planned"],
+        ["Policy pose blending","策略姿态混合","planned"],
+        ["Policy action rate conversion","策略动作频率转换","planned"],
+        ["Learned pose constraints","学习姿态约束","planned"],
+        ["Motion latent interpolation","动作潜变量插值","planned"],
+        ["Trajectory conditioning inputs","轨迹条件输入","planned"],
+        ["Text-motion conditioning","文本动作条件化","planned"],
+        ["Motion model state reset","动作模型状态重置","planned"],
+        ["Motion inference deadlines","动作推理截止时间","planned"],
+        ["Generated motion provenance","生成动作来源","planned"],
+        ["Motion dataset clip splits","动作数据集片段划分","planned"],
+        ["Motion policy replay records","动作策略回放记录","planned"]
+      ]
+    },
+    {
+      "en": "Animation job ownership",
+      "zh": "动画任务归属",
+      "leaves": [
+        ["Pose job dependency fences","姿态任务依赖屏障","planned"],
+        ["Animation component read epochs","动画组件读取时段","planned"],
+        ["Pose output double buffers","姿态输出双缓冲","planned"],
+        ["Bone palette publication barriers","骨骼调色板发布屏障","planned"],
+        ["Animation job cancellation tokens","动画任务取消令牌","planned"],
+        ["Invisible animator update policies","不可见动画更新策略","planned"],
+        ["Distance-based sampling rates","基于距离的采样频率","planned"],
+        ["Animation task batch sizing","动画任务批次尺寸","planned"],
+        ["Pose scratch arena ownership","姿态临时存储归属","planned"],
+        ["Clip decode worker queues","片段解码工作队列","planned"],
+        ["Animation graph rebuild barriers","动画图重建屏障","planned"],
+        ["Animation event main-thread handoff","动画事件主线程交接","planned"],
+        ["Animator destruction fences","动画器销毁屏障","planned"],
+        ["Pose job starvation counters","姿态任务饥饿计数","planned"],
+        ["Animation worker trace lanes","动画工作线程追踪轨道","planned"],
+        ["Animation concurrency stress fixtures","动画并发压力夹具","planned"]
+      ]
+    }
+  ]
+}

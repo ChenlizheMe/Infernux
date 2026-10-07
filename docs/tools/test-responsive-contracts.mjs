@@ -126,7 +126,7 @@ for (const [relativePath, surface] of [["wiki/site/en/api/GameObject.html", "API
     const html = await read(relativePath);
     assert.match(html, viewportContract, `${surface} must opt into the device viewport`);
     assert.doesNotMatch(html, /\sstyle\s*=/i, `${surface} must not use inline layout styles`);
-    assert.ok(html.includes('/css/wiki-generated.css?v=9'), `${surface} must load responsive generated-document styles`);
+    assert.ok(html.includes('/css/wiki-generated.css?v=10'), `${surface} must load responsive generated-document styles`);
     assert.ok(html.includes(`/css/${hashedTemplateStyles[0]}`), `${surface} must load the current responsive template stylesheet`);
     assert.ok(html.includes('data-doc-outline'), `${surface} must retain its collapsible document outline`);
 }

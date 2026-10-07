@@ -3,9 +3,9 @@
 .changelog-heading { max-width: 850px; margin-bottom: 2.5rem; }
 .changelog-heading h1 { font-size: clamp(2rem, 4vw, 3.7rem); line-height: 1.15; margin: 1rem 0; letter-spacing: -.035em; }
 .changelog-heading p { font-size: 1.08rem; line-height: 1.8; color: var(--text-muted); }
-.release-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.25rem; }
-.release-card { border: 1px solid var(--border); border-radius: 16px; padding: 1.8rem; background: var(--bg-panel); }
-.release-featured { grid-column: 1 / -1; border-left: 4px solid var(--accent); }
+.release-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; }
+.release-card { border: 1px solid var(--border); border-radius: var(--radius-xs); padding: 1.8rem; background: var(--bg-panel); }
+.release-featured { grid-column: 1 / -1; border-top: 3px solid var(--accent-fill); }
 .release-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 1rem; color: var(--text-muted); font-size: .85rem; }
 .release-meta strong { font-size: 1.15rem; color: var(--text); }
 .release-card h2 { font-size: 1.35rem; margin: .85rem 0; }
@@ -20,6 +20,6 @@
 .release-prose p, .release-prose ul, .release-prose ol { margin-bottom: 1.2rem; }
 .release-prose ul, .release-prose ol { padding-left: 1.5rem; }
 .release-prose li { margin: .8rem 0; }
-.release-prose pre { overflow-x: auto; padding: 1rem; background: var(--bg-panel); border-radius: 8px; }
+.release-prose pre { overflow-x: auto; padding: 1rem; background: var(--bg-panel); border-radius: var(--radius-xs); }
 .release-prose code { font-size: .9em; }
 @media (max-width: 700px) { .release-list { grid-template-columns: 1fr; } .release-card { padding: 1.3rem; } .changelog-page { padding-top: 2rem; } }

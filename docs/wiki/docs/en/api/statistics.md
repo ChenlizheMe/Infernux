@@ -1,7 +1,7 @@
 # statistics
 
 <div class="class-info">
-function in <b>infernux.jit</b>
+function in <b>Infernux.jit</b>
 </div>
 
 ```python

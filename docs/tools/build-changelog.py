@@ -65,7 +65,7 @@ def shell(title: str, description: str, route: str, body: str) -> str:
                   lambda m: m[1] + html.escape(title, quote=True), head)
     head = head.replace("https://infernux-engine.com/start.html", "https://infernux-engine.com/" + route)
     head = head.replace('class="active nav-priority" aria-current="page"', 'class="nav-priority"')
-    head = head.replace('css/start.css?v=3', 'css/changelog.css?v=1')
+    head = head.replace('css/start.css?v=4', 'css/changelog.css?v=2')
     foot = foot.replace('js/i18n-start.js?v=2', 'js/i18n-changelog.js?v=1')
     if "/" in route:
         def relative(match):

@@ -25,7 +25,7 @@
 | infernux.debug | Debug |
 | infernux.gizmos | Gizmos |
 | infernux.input | KeyCode, Input |
-| infernux.jit | compile, warmup, statistics |
+| Infernux.jit | compile, warmup, statistics |
 | infernux.math | vector3, vector2, vector4, quaternion |
 | infernux.mathf | Mathf |
 | infernux.physics | Physics |

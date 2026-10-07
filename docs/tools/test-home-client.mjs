@@ -58,13 +58,16 @@ const starDeck = { dataset: {}, querySelector(selector) {
     return null;
 } };
 document.querySelector = (selector) => selector === "[data-github-stars]" ? starDeck : null;
-sandbox.fetch = async () => ({ ok: true, async json() { return { stargazers_count: 1447 }; } });
+sandbox.fetch = async (url) => {
+    assert.equal(url, "https://api.github.com/repos/ChenlizheMe/Infernux", "home must request the engine repository's live star count");
+    return { ok: true, async json() { return { stargazers_count: 1447 }; } };
+};
 await api.loadGithubStars();
 assert.equal(starValue.textContent, "1,447", "the live GitHub signal must render the authoritative star count");
 assert.equal(starDeck.dataset.githubStarsState, "ready");
 
 for (const contract of [
-    'href="css/home.css?v=2"',
+    'href="css/home.css?v=3"',
     'data-home-code-copy',
     'type="button"',
     'aria-controls="home-starter-code"',
@@ -92,7 +95,6 @@ assert.match(css, /@media\s*\(max-width:\s*520px\)[\s\S]*?\.code-copy-action\s*\
 assert.match(source, /navigator\?\.clipboard\?\.writeText/, "home copy must prefer the Clipboard API");
 assert.match(source, /document\.execCommand\("copy"\)/, "home copy must retain a legacy fallback");
 assert.match(source, /dataset\.state/, "home copy must expose state to CSS");
-assert.match(source, /api\.github\.com\/repos\/ChenlizheMe\/Infernux/, "home must read the live repository signal from GitHub");
 assert.match(source, /stargazers_count/, "home must render GitHub's authoritative star count");
 assert.doesNotMatch(source, /\.innerHTML\s*=/, "home copy must not inject HTML");
 assert.doesNotMatch(source, /\.style\.|setAttribute\(["']style|\.cssText\s*=/, "home copy must not inject runtime styles");

@@ -43,7 +43,7 @@ for (const file of pages) {
     assert(!html.includes('theme-toggle') && !html.includes('dark light'), `${path.relative(root, file)} still advertises a light theme`);
     assert(html.includes('vendor/gsap.min.js?v=3.13.0'), `${path.relative(root, file)} is missing local GSAP`);
     assert(html.includes('vendor/ScrollTrigger.min.js?v=3.13.0'), `${path.relative(root, file)} is missing local ScrollTrigger`);
-    assert(html.includes('motion.js?v=1'), `${path.relative(root, file)} is missing the motion layer`);
+    assert(html.includes('motion.js?v=2'), `${path.relative(root, file)} is missing the motion layer`);
 }
 
 console.log(`Motion client verified: GSAP ${gsap.length} bytes, ScrollTrigger ${scrollTrigger.length} bytes, ${pages.length} HTML pages wired locally.`);

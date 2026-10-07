@@ -114,6 +114,9 @@ jobs:
       - name: Test vendored GSAP motion layer
         run: node docs/tools/test-motion-client.mjs
 
+      - name: Test roadmap data and variable-size tree layout
+        run: node docs/tools/test-roadmap-data.mjs
+
       - name: Enforce static performance budget
         run: node docs/tools/check-static-budget.mjs
 

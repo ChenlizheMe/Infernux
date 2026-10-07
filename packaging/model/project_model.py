@@ -63,7 +63,7 @@ def _write_asset_identity_meta(path: str, guid: str, resource_type: str, *, proj
 
 def _read_source_project_template(name: str) -> bytes:
     engine_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    path = os.path.join(engine_root, "python", "infernux", "resources", "project_templates", name)
+    path = os.path.join(engine_root, "python", "infernux", "templates", "project", name)
     try:
         with open(path, "rb") as stream:
             return stream.read()
@@ -450,7 +450,7 @@ class ProjectModel:
         if not wheel or not os.path.isfile(wheel):
             raise RuntimeError(f"Required Infernux project template is unavailable: {source_name}")
         with zipfile.ZipFile(wheel) as archive:
-            archive_name = f"infernux/resources/project_templates/{source_name}"
+            archive_name = f"infernux/templates/project/{source_name}"
             matches = [name for name in archive.namelist() if name == archive_name]
             if len(matches) != 1:
                 raise RuntimeError(

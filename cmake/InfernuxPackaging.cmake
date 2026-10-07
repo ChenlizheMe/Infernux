@@ -84,7 +84,7 @@ add_custom_target(install_python_wheel
         -DINFERNUX_SOURCE_DIR=${CMAKE_SOURCE_DIR}
         -DINFERNUX_WHEEL_DIR=${INFERNUX_PYTHON_WHEEL_DIR}
         -DPYTHON_EXECUTABLE=${Python3_EXECUTABLE}
-        -P "${CMAKE_SOURCE_DIR}/install_wheel.cmake"
+        -P "${CMAKE_SOURCE_DIR}/cmake/install_wheel.cmake"
     DEPENDS package_python
     COMMENT "Installing the verified Infernux wheel into the active Python environment"
     VERBATIM

@@ -29,11 +29,11 @@
     <link rel="apple-touch-icon" sizes="180x180" href="assets/infernux-apple-touch-icon.png">
     <link rel="manifest" href="site.webmanifest">
     <link rel="stylesheet" href="css/fonts.css?v=2">
-    <link rel="stylesheet" href="css/style.css?v=23">
+    <link rel="stylesheet" href="css/style.css?v=24">
     <link rel="stylesheet" href="css/docs-search.css?v=3">
-    <link rel="stylesheet" href="css/mission.css?v=2">
-    <link rel="stylesheet" href="css/roadmap.css?v=8">
-    <link rel="stylesheet" href="css/changelog.css?v=1">
+    <link rel="stylesheet" href="css/mission.css?v=3">
+    <link rel="stylesheet" href="css/roadmap.css?v=16">
+    <link rel="stylesheet" href="css/changelog.css?v=2">
     <link rel="stylesheet" href="css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -76,7 +76,7 @@
 
     <main class="page-shell roadmap-layout" id="main-content">
         <div class="container">
-            <section class="subpage-hero roadmap-hero"><h1 data-i18n="roadmap.hero.title">ROADMAP</h1><p data-i18n="roadmap.hero.description">Nine system galaxies: shipped nodes, work in motion, and distant possibilities.</p></section>
+            <section class="subpage-hero roadmap-hero"><h1 data-i18n="roadmap.hero.title">ROADMAP</h1><p data-i18n="roadmap.hero.description">Building a game engine is an enormous undertaking. So we use multiple node maps to describe our goals.</p></section>
             <section class="tree-workspace" data-roadmap-app>
                 <nav class="tree-page-tabs" role="tablist" aria-label="Roadmap categories">
                     <button class="tree-page-tab is-active" role="tab" type="button" data-tree-page="foundation" aria-controls="tree-foundation" aria-selected="true" data-i18n="roadmap.galaxy.foundation.title">FOUNDATION</button>
@@ -88,89 +88,128 @@
                     <button class="tree-page-tab" role="tab" type="button" data-tree-page="toolchain" aria-controls="tree-toolchain" aria-selected="false" data-i18n="roadmap.galaxy.toolchain.title">TOOLCHAIN</button>
                     <button class="tree-page-tab" role="tab" type="button" data-tree-page="network" aria-controls="tree-network" aria-selected="false" data-i18n="roadmap.galaxy.network.title">NETWORK</button>
                     <button class="tree-page-tab" role="tab" type="button" data-tree-page="data" aria-controls="tree-data" aria-selected="false" data-i18n="roadmap.galaxy.data.title">DATA-ORIENTED</button>
+                    <button class="tree-page-tab" role="tab" type="button" data-tree-page="neural" aria-controls="tree-neural" aria-selected="false" data-i18n="roadmap.galaxy.neural.title">NEURAL NETWORKS & HPC</button>
                 </nav>
-                <div class="galaxy-toolbar"><span data-i18n="roadmap.graph.hint">Drag to drift · wheel to zoom</span></div>
+                <div class="map-main">
+                <div class="galaxy-toolbar">
+                    <div class="map-search">
+                        <input type="search" data-roadmap-search data-i18n="roadmap.graph.search" data-i18n-aria-label="roadmap.graph.search" aria-label="Find a node in this map" placeholder="Find a node in this map" aria-controls="roadmap-results" autocomplete="off">
+                        <div class="map-search-results" id="roadmap-results" data-roadmap-results hidden></div>
+                    </div>
+                    <span class="map-hint" data-i18n="roadmap.graph.hint">Drag to explore · scroll to zoom · select a branch to focus</span>
+                    <div class="map-zoom-controls">
+                        <button type="button" data-map-zoom="out" data-i18n-aria-label="roadmap.graph.zoomOut" aria-label="Zoom out">−</button>
+                        <button type="button" data-map-zoom="fit" data-i18n="roadmap.graph.fit">Fit map</button>
+                        <button type="button" data-map-zoom="in" data-i18n-aria-label="roadmap.graph.zoomIn" aria-label="Zoom in">+</button>
+                    </div>
+                </div>
+                <div class="map-overview">
+                    <span data-roadmap-count></span>
+                    <div class="map-legend"><span class="legend-live" data-i18n="roadmap.graph.live">Implemented</span><span class="legend-partial" data-i18n="roadmap.graph.partial">Partially implemented</span><span class="legend-progress" data-i18n="roadmap.graph.progress">In progress</span><span class="legend-planned" data-i18n="roadmap.graph.planned">Planned</span><span class="legend-future" data-i18n="roadmap.graph.future">Long-term research</span></div>
+                </div>
                                 <article class="tree-page galaxy-panel" id="tree-foundation" role="tabpanel" data-tree-panel="foundation" data-galaxy="foundation">
                     <div class="galaxy-bar"><span class="galaxy-code">A / 01</span><h2 data-i18n="roadmap.galaxy.foundation.title">FOUNDATION</h2></div>
                     <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive foundation star map. Drag to drift and use the wheel to zoom.">
-                        <svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="img" aria-labelledby="graph-title-foundation graph-desc-foundation">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-foundation graph-desc-foundation">
                             <title id="graph-title-foundation">FOUNDATION star map</title><desc id="graph-desc-foundation">A flat vector constellation for the foundation system.</desc>
-                            <g class="galaxy-stars" data-starfield aria-hidden="true"></g><g class="galaxy-orbits" aria-hidden="true"><ellipse cx="800" cy="450" rx="330" ry="190" transform="rotate(-18 800 450)"/><ellipse cx="800" cy="450" rx="265" ry="345" transform="rotate(32 800 450)"/><ellipse cx="800" cy="450" rx="430" ry="270" transform="rotate(74 800 450)"/></g><g class="graph-camera" data-graph-camera><!-- graph-node graph-dot --></g>
-                        </svg>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
                     </div>
                 </article>
                 <article class="tree-page galaxy-panel" id="tree-pipeline" role="tabpanel" data-tree-panel="pipeline" data-galaxy="rendering" hidden>
                     <div class="galaxy-bar"><span class="galaxy-code">B / 02</span><h2 data-i18n="roadmap.galaxy.rendering.title">RENDERING</h2></div>
                     <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive rendering star map. Drag to drift and use the wheel to zoom.">
-                        <svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="img" aria-labelledby="graph-title-rendering graph-desc-rendering">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-rendering graph-desc-rendering">
                             <title id="graph-title-rendering">RENDERING star map</title><desc id="graph-desc-rendering">A flat vector constellation for the rendering system.</desc>
-                            <g class="galaxy-stars" data-starfield aria-hidden="true"></g><g class="galaxy-orbits" aria-hidden="true"><ellipse cx="800" cy="450" rx="330" ry="190" transform="rotate(-18 800 450)"/><ellipse cx="800" cy="450" rx="265" ry="345" transform="rotate(32 800 450)"/><ellipse cx="800" cy="450" rx="430" ry="270" transform="rotate(74 800 450)"/></g><g class="graph-camera" data-graph-camera><!-- graph-node graph-dot --></g>
-                        </svg>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
                     </div>
                 </article>
                 <article class="tree-page galaxy-panel" id="tree-runtime" role="tabpanel" data-tree-panel="runtime" data-galaxy="animation" hidden>
                     <div class="galaxy-bar"><span class="galaxy-code">C / 03</span><h2 data-i18n="roadmap.galaxy.animation.title">ANIMATION SYSTEM</h2></div>
                     <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive animation system star map. Drag to drift and use the wheel to zoom.">
-                        <svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="img" aria-labelledby="graph-title-animation graph-desc-animation">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-animation graph-desc-animation">
                             <title id="graph-title-animation">ANIMATION SYSTEM star map</title><desc id="graph-desc-animation">A flat vector constellation for the animation system system.</desc>
-                            <g class="galaxy-stars" data-starfield aria-hidden="true"></g><g class="galaxy-orbits" aria-hidden="true"><ellipse cx="800" cy="450" rx="330" ry="190" transform="rotate(-18 800 450)"/><ellipse cx="800" cy="450" rx="265" ry="345" transform="rotate(32 800 450)"/><ellipse cx="800" cy="450" rx="430" ry="270" transform="rotate(74 800 450)"/></g><g class="graph-camera" data-graph-camera><!-- graph-node graph-dot --></g>
-                        </svg>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
                     </div>
                 </article>
                 <article class="tree-page galaxy-panel" id="tree-agents" role="tabpanel" data-tree-panel="agents" data-galaxy="physics" hidden>
                     <div class="galaxy-bar"><span class="galaxy-code">D / 04</span><h2 data-i18n="roadmap.galaxy.physics.title">PHYSICS SYSTEM</h2></div>
                     <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive physics system star map. Drag to drift and use the wheel to zoom.">
-                        <svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="img" aria-labelledby="graph-title-physics graph-desc-physics">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-physics graph-desc-physics">
                             <title id="graph-title-physics">PHYSICS SYSTEM star map</title><desc id="graph-desc-physics">A flat vector constellation for the physics system system.</desc>
-                            <g class="galaxy-stars" data-starfield aria-hidden="true"></g><g class="galaxy-orbits" aria-hidden="true"><ellipse cx="800" cy="450" rx="330" ry="190" transform="rotate(-18 800 450)"/><ellipse cx="800" cy="450" rx="265" ry="345" transform="rotate(32 800 450)"/><ellipse cx="800" cy="450" rx="430" ry="270" transform="rotate(74 800 450)"/></g><g class="graph-camera" data-graph-camera><!-- graph-node graph-dot --></g>
-                        </svg>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
                     </div>
                 </article>
                 <article class="tree-page galaxy-panel" id="tree-audio" role="tabpanel" data-tree-panel="audio" data-galaxy="audio" hidden>
                     <div class="galaxy-bar"><span class="galaxy-code">E / 05</span><h2 data-i18n="roadmap.galaxy.audio.title">AUDIO</h2></div>
                     <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive audio star map. Drag to drift and use the wheel to zoom.">
-                        <svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="img" aria-labelledby="graph-title-audio graph-desc-audio">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-audio graph-desc-audio">
                             <title id="graph-title-audio">AUDIO star map</title><desc id="graph-desc-audio">A flat vector constellation for the audio system.</desc>
-                            <g class="galaxy-stars" data-starfield aria-hidden="true"></g><g class="galaxy-orbits" aria-hidden="true"><ellipse cx="800" cy="450" rx="330" ry="190" transform="rotate(-18 800 450)"/><ellipse cx="800" cy="450" rx="265" ry="345" transform="rotate(32 800 450)"/><ellipse cx="800" cy="450" rx="430" ry="270" transform="rotate(74 800 450)"/></g><g class="graph-camera" data-graph-camera><!-- graph-node graph-dot --></g>
-                        </svg>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
                     </div>
                 </article>
                 <article class="tree-page galaxy-panel" id="tree-gameplay" role="tabpanel" data-tree-panel="gameplay" data-galaxy="gameplay" hidden>
                     <div class="galaxy-bar"><span class="galaxy-code">F / 06</span><h2 data-i18n="roadmap.galaxy.gameplay.title">GAMEPLAY</h2></div>
                     <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive gameplay star map. Drag to drift and use the wheel to zoom.">
-                        <svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="img" aria-labelledby="graph-title-gameplay graph-desc-gameplay">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-gameplay graph-desc-gameplay">
                             <title id="graph-title-gameplay">GAMEPLAY star map</title><desc id="graph-desc-gameplay">A flat vector constellation for the gameplay system.</desc>
-                            <g class="galaxy-stars" data-starfield aria-hidden="true"></g><g class="galaxy-orbits" aria-hidden="true"><ellipse cx="800" cy="450" rx="330" ry="190" transform="rotate(-18 800 450)"/><ellipse cx="800" cy="450" rx="265" ry="345" transform="rotate(32 800 450)"/><ellipse cx="800" cy="450" rx="430" ry="270" transform="rotate(74 800 450)"/></g><g class="graph-camera" data-graph-camera><!-- graph-node graph-dot --></g>
-                        </svg>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
                     </div>
                 </article>
                 <article class="tree-page galaxy-panel" id="tree-toolchain" role="tabpanel" data-tree-panel="toolchain" data-galaxy="toolchain" hidden>
                     <div class="galaxy-bar"><span class="galaxy-code">G / 07</span><h2 data-i18n="roadmap.galaxy.toolchain.title">TOOLCHAIN</h2></div>
                     <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive toolchain star map. Drag to drift and use the wheel to zoom.">
-                        <svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="img" aria-labelledby="graph-title-toolchain graph-desc-toolchain">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-toolchain graph-desc-toolchain">
                             <title id="graph-title-toolchain">TOOLCHAIN star map</title><desc id="graph-desc-toolchain">A flat vector constellation for the toolchain system.</desc>
-                            <g class="galaxy-stars" data-starfield aria-hidden="true"></g><g class="galaxy-orbits" aria-hidden="true"><ellipse cx="800" cy="450" rx="330" ry="190" transform="rotate(-18 800 450)"/><ellipse cx="800" cy="450" rx="265" ry="345" transform="rotate(32 800 450)"/><ellipse cx="800" cy="450" rx="430" ry="270" transform="rotate(74 800 450)"/></g><g class="graph-camera" data-graph-camera><!-- graph-node graph-dot --></g>
-                        </svg>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
                     </div>
                 </article>
                 <article class="tree-page galaxy-panel" id="tree-network" role="tabpanel" data-tree-panel="network" data-galaxy="network" hidden>
                     <div class="galaxy-bar"><span class="galaxy-code">H / 08</span><h2 data-i18n="roadmap.galaxy.network.title">NETWORK</h2></div>
                     <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive network star map. Drag to drift and use the wheel to zoom.">
-                        <svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="img" aria-labelledby="graph-title-network graph-desc-network">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-network graph-desc-network">
                             <title id="graph-title-network">NETWORK star map</title><desc id="graph-desc-network">A flat vector constellation for the network system.</desc>
-                            <g class="galaxy-stars" data-starfield aria-hidden="true"></g><g class="galaxy-orbits" aria-hidden="true"><ellipse cx="800" cy="450" rx="330" ry="190" transform="rotate(-18 800 450)"/><ellipse cx="800" cy="450" rx="265" ry="345" transform="rotate(32 800 450)"/><ellipse cx="800" cy="450" rx="430" ry="270" transform="rotate(74 800 450)"/></g><g class="graph-camera" data-graph-camera><!-- graph-node graph-dot --></g>
-                        </svg>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
                     </div>
                 </article>
                 <article class="tree-page galaxy-panel" id="tree-data" role="tabpanel" data-tree-panel="data" data-galaxy="data" hidden>
                     <div class="galaxy-bar"><span class="galaxy-code">I / 09</span><h2 data-i18n="roadmap.galaxy.data.title">DATA-ORIENTED</h2></div>
                     <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive data-oriented star map. Drag to drift and use the wheel to zoom.">
-                        <svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="img" aria-labelledby="graph-title-data graph-desc-data">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1600 900" role="group" aria-labelledby="graph-title-data graph-desc-data">
                             <title id="graph-title-data">DATA-ORIENTED star map</title><desc id="graph-desc-data">A flat vector constellation for the data-oriented system.</desc>
-                            <g class="galaxy-stars" data-starfield aria-hidden="true"></g><g class="galaxy-orbits" aria-hidden="true"><ellipse cx="800" cy="450" rx="330" ry="190" transform="rotate(-18 800 450)"/><ellipse cx="800" cy="450" rx="265" ry="345" transform="rotate(32 800 450)"/><ellipse cx="800" cy="450" rx="430" ry="270" transform="rotate(74 800 450)"/></g><g class="graph-camera" data-graph-camera><!-- graph-node graph-dot --></g>
-                        </svg>
+                            <g class="graph-camera" data-graph-camera><!-- Nodes load from the selected category JSON. --></g>
+                        </svg></div>
                     </div>
                 </article>
+                <article class="tree-page galaxy-panel" id="tree-neural" role="tabpanel" data-tree-panel="neural" data-galaxy="neural" hidden>
+                    <div class="galaxy-bar"><span class="galaxy-code">N / 10</span><h2 data-i18n="roadmap.galaxy.neural.title">NEURAL NETWORKS & HPC</h2></div>
+                    <div class="node-graph-shell" data-graph-canvas tabindex="0" aria-label="Interactive neural networks and high-performance computing map. Drag to explore and use the wheel to zoom.">
+                        <svg class="star-sky" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"><g data-starfield></g></svg>
+                        <div class="graph-plane" data-graph-plane><svg class="node-graph" preserveAspectRatio="xMidYMid meet" viewBox="0 0 2400 1800" role="group" aria-labelledby="graph-title-neural graph-desc-neural">
+                            <title id="graph-title-neural">NEURAL NETWORKS &amp; HPC</title><desc id="graph-desc-neural">Model runtimes, accelerated computation and learning environments.</desc>
+                            <g class="graph-camera" data-graph-camera></g>
+                        </svg></div>
+                    </div>
+                </article>
+                <div class="map-detail" data-roadmap-detail aria-live="polite"></div>
+                <p class="map-note" data-i18n="roadmap.graph.note">Theme color marks implemented capabilities; charcoal marks remaining goals. A colored arc shows the implemented share of a branch. Only explicitly active work pulses. Select a branch or search to explore details.</p>
+                </div>
             </section>
             <section class="roadmap-changelog" id="release-log"><header class="roadmap-changelog-heading"><h2 data-i18n="roadmap.changelog.title">CHANGELOG</h2></header>
 <section class="roadmap-release-language" data-page-language="en"><ol class="release-list" aria-label="CHANGELOG"><li class="release-card"><div class="release-meta"><strong>v0.4.1</strong><time datetime="2026-10-01">2026-10-01</time></div><h3><a href="changelog/0.4.1.html?lang=en">Worlds, compute and live tools.</a></h3><a class="release-read" href="changelog/0.4.1.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.4.0</strong><time datetime="2026-09-06">2026-09-06</time></div><h3><a href="changelog/0.4.0.html?lang=en">Multiplatform players and distribution.</a></h3><a class="release-read" href="changelog/0.4.0.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.3.7</strong><time datetime="2026-08-27">2026-08-27</time></div><h3><a href="changelog/0.3.7.html?lang=en">Plugins and skeletal animation.</a></h3><a class="release-read" href="changelog/0.3.7.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.3.6</strong><time datetime="2026-08-24">2026-08-24</time></div><h3><a href="changelog/0.3.6.html?lang=en">Unified hierarchy and Hub updates.</a></h3><a class="release-read" href="changelog/0.3.6.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.3.5</strong><time datetime="2026-08-23">2026-08-23</time></div><h3><a href="changelog/0.3.5.html?lang=en">Release maintenance and fixes.</a></h3><a class="release-read" href="changelog/0.3.5.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.3.4</strong><time datetime="2026-08-21">2026-08-21</time></div><h3><a href="changelog/0.3.4.html?lang=en">Runtime and editor improvements.</a></h3><a class="release-read" href="changelog/0.3.4.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.2.9</strong><time datetime="2026-07-17">2026-07-17</time></div><h3><a href="changelog/0.2.9.html?lang=en">Core authoring improvements.</a></h3><a class="release-read" href="changelog/0.2.9.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.2.1</strong><time datetime="2026-07-10">2026-07-10</time></div><h3><a href="changelog/0.2.1.html?lang=en">Editor workflow improvements.</a></h3><a class="release-read" href="changelog/0.2.1.html?lang=en">Details →</a></li><li class="release-card"><div class="release-meta"><strong>v0.2.0</strong><time datetime="2026-06-25">2026-06-25</time></div><h3><a href="changelog/0.2.0.html?lang=en">First public engine line.</a></h3><a class="release-read" href="changelog/0.2.0.html?lang=en">Details →</a></li></ol></section>
@@ -206,9 +245,9 @@
         </div>
     </footer>
 
-    <script src="js/i18n-roadmap.js?v=5"></script>
+    <script src="js/i18n-roadmap.js?v=10"></script>
     <script src="js/i18n.js?v=20"></script>
-    <script src="js/vendor/gsap.min.js?v=3.13.0"></script><script src="js/vendor/ScrollTrigger.min.js?v=3.13.0"></script><script src="js/main.js?v=17"></script><script src="js/motion.js?v=1"></script><script src="js/roadmap.js?v=6"></script><script src="js/bilingual-page.js?v=1"></script>
+    <script src="js/vendor/gsap.min.js?v=3.13.0"></script><script src="js/vendor/ScrollTrigger.min.js?v=3.13.0"></script><script src="js/main.js?v=17"></script><script src="js/motion.js?v=2"></script><script src="js/roadmap-data.js?v=4"></script><script src="js/roadmap-layout.js?v=5"></script><script src="js/roadmap.js?v=13"></script><script src="js/bilingual-page.js?v=1"></script>
     <script src="js/docs-search.js?v=6"></script>
     <script type="application/ld+json">
     {

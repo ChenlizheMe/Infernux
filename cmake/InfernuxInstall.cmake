@@ -4,7 +4,7 @@
 
 # Create a custom script to copy all DLL dependencies
 configure_file(
-    "${CMAKE_SOURCE_DIR}/copy_dependencies.cmake.in"
+    "${CMAKE_SOURCE_DIR}/cmake/copy_dependencies.cmake.in"
     "${CMAKE_BINARY_DIR}/copy_dependencies.cmake"
     @ONLY
 )
@@ -201,12 +201,12 @@ install(
     PATTERN "*.so" EXCLUDE
     PATTERN "*.dylib" EXCLUDE
     PATTERN "*.meta" EXCLUDE
+    PATTERN "*.inxpkg" EXCLUDE
     PATTERN "_runtime_packs" EXCLUDE
     PATTERN "_runtime_modules" EXCLUDE
     PATTERN "official_packages" EXCLUDE
     PATTERN "player_runtime" EXCLUDE
 )
-
 
 install(
     FILES

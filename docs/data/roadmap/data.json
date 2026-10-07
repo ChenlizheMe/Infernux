@@ -1,0 +1,388 @@
+{
+  "key": "data",
+  "titleKey": "roadmap.galaxy.data.title",
+  "branches": [
+    {
+      "en": "ENTITY STORAGE",
+      "zh": "实体存储与批量访问",
+      "leaves": [
+        ["World reads","世界读取","live"],
+        ["World writes","世界写入","live"],
+        ["Column views","列视图","planned"],
+        ["Dirty ranges","脏区间","future"],
+        ["Archetype transitions","原型迁移","planned"],
+        ["Sparse component storage","稀疏组件存储","planned"],
+        ["Query cache invalidation","查询缓存失效","planned"],
+        ["Component schema versions","组件结构版本","planned"]
+      ]
+    },
+    {
+      "en": "ARRAY BRIDGE",
+      "zh": "数组桥",
+      "leaves": [
+        ["NumPy bridge","NumPy 桥","live"],
+        ["Typed buffers","类型化缓冲","live"],
+        ["Zero-copy views","零拷贝视图","future"],
+        ["Memory layout","内存布局","future"],
+        ["Read / write access declarations","读写访问声明","planned"],
+        ["Array alignment contracts","数组对齐契约","planned"],
+        ["Array lifetime pinning","数组生命周期固定","planned"],
+        ["Copy cost inspection","复制成本检查","planned"]
+      ]
+    },
+    {
+      "en": "World schemas",
+      "zh": "世界数据结构",
+      "leaves": [
+        ["Typed observation fields","类型化观测字段","planned"],
+        ["Action schema validation","动作结构验证","planned"],
+        ["Stable entity mapping","稳定实体映射","planned"],
+        ["Schema introspection","结构自省","planned"],
+        ["Schema evolution","结构演进","planned"],
+        ["World-state projections","世界状态投影","planned"],
+        ["Tool / model shared schemas","工具与模型共享结构","planned"],
+        ["Schema compatibility tests","结构兼容性测试","planned"]
+      ]
+    },
+    {
+      "en": "Data-oriented tooling",
+      "zh": "面向数据的工具",
+      "leaves": [
+        ["Entity storage inspector","实体存储检查器","planned"],
+        ["Query plan visualization","查询计划可视化","planned"],
+        ["System schedule viewer","系统调度查看器","planned"],
+        ["Tensor buffer inspection","张量缓冲检查","planned"],
+        ["World schema browser","世界结构浏览器","planned"],
+        ["Dataflow capture","数据流捕获","planned"],
+        ["Cache locality profiling","缓存局部性分析","planned"],
+        ["Observation / action debugger","观测与动作调试器","planned"]
+      ]
+    },
+    {
+      "en": "Component storage",
+      "zh": "组件存储",
+      "leaves": [
+        ["Archetype chunk allocation","原型块分配","planned"],
+        ["Sparse-set indexing","稀疏集索引","planned"],
+        ["Component relocation contracts","组件迁移契约","planned"],
+        ["Stable generation handles","稳定代际句柄","live"],
+        ["Structural-change queues","结构变更队列","planned"],
+        ["Chunk utilization metrics","块利用率指标","planned"],
+        ["Component alignment policies","组件对齐策略","planned"],
+        ["Component lifetime hooks","组件生命周期接口","planned"]
+      ]
+    },
+    {
+      "en": "Query execution",
+      "zh": "查询执行",
+      "leaves": [
+        ["Cached query plans","缓存查询计划","planned"],
+        ["Component inclusion filters","组件包含过滤","planned"],
+        ["Optional component access","可选组件访问","planned"],
+        ["Change-filtered queries","变更过滤查询","planned"],
+        ["Parallel query iteration","并行查询迭代","planned"],
+        ["Query dependency invalidation","查询依赖失效","planned"],
+        ["Spatial query adapters","空间查询适配器","planned"],
+        ["Query cost estimation","查询成本估算","planned"]
+      ]
+    },
+    {
+      "en": "System scheduling",
+      "zh": "系统调度",
+      "leaves": [
+        ["System access declarations","系统访问声明","planned"],
+        ["Read-write hazard analysis","读写风险分析","planned"],
+        ["Task graph construction","任务图构建","planned"],
+        ["Deterministic system ordering","确定性系统排序","planned"],
+        ["Parallel execution groups","并行执行组","planned"],
+        ["Job granularity tuning","任务粒度调整","planned"],
+        ["Synchronization point inspection","同步点检查","planned"],
+        ["Schedule replay diagnostics","调度回放诊断","planned"]
+      ]
+    },
+    {
+      "en": "Memory layouts",
+      "zh": "内存布局",
+      "leaves": [
+        ["Structure-of-arrays layouts","结构分离数组布局","live"],
+        ["Hot / cold data separation","冷热数据分离","planned"],
+        ["Cache-line alignment","缓存行对齐","planned"],
+        ["SIMD-friendly packing","SIMD 友好打包","planned"],
+        ["Allocator ownership domains","分配器归属域","planned"],
+        ["Memory fragmentation tracking","内存碎片追踪","planned"],
+        ["NUMA placement","NUMA 放置","future"],
+        ["Data locality visualization","数据局部性可视化","planned"]
+      ]
+    },
+    {
+      "en": "Change propagation",
+      "zh": "变更传播",
+      "leaves": [
+        ["Component version counters","组件版本计数","live"],
+        ["Dirty-bit propagation","脏位传播","live"],
+        ["Incremental derived state","增量派生状态","live"],
+        ["Change notification batches","变更通知批次","planned"],
+        ["Dependency invalidation graph","依赖失效图","planned"],
+        ["Change journal compaction","变更日志压缩","planned"],
+        ["Consistent read epochs","一致读取时段","planned"],
+        ["Cross-thread publication","跨线程发布","planned"]
+      ]
+    },
+    {
+      "en": "Storage transactions",
+      "zh": "存储事务",
+      "leaves": [
+        ["Atomic structural changes","原子结构变更","planned"],
+        ["Read snapshot isolation","读取快照隔离","planned"],
+        ["Bulk insert / remove","批量插入与移除","planned"],
+        ["Entity migration batches","实体迁移批次","planned"],
+        ["Persistent storage adapters","持久存储适配器","planned"],
+        ["Transaction diagnostics","事务诊断","planned"],
+        ["Versioned storage exports","版本化存储导出","planned"],
+        ["Storage stress scenarios","存储压力场景","planned"]
+      ]
+    },
+    {
+      "en": "Entity identity details",
+      "zh": "实体标识细节",
+      "leaves": [
+        ["Entity slot reuse generations","实体槽复用代际","planned"],
+        ["World-local entity namespaces","世界局部实体命名空间","planned"],
+        ["Persistent entity GUID mapping","持久实体 GUID 映射","planned"],
+        ["Entity tombstone retention","实体墓碑保留","planned"],
+        ["Entity alias resolution","实体别名解析","planned"],
+        ["Entity clone remap tables","实体克隆重映射表","planned"],
+        ["Cross-world entity transfer IDs","跨世界实体转移标识","planned"],
+        ["Entity reference serialization","实体引用序列化","planned"],
+        ["Stale entity access diagnostics","过期实体访问诊断","planned"],
+        ["Entity identity batch allocation","实体标识批量分配","planned"],
+        ["Entity identity exhaustion policy","实体标识耗尽策略","planned"],
+        ["Entity lookup publication","实体查询发布","planned"],
+        ["Entity identity export tables","实体标识导出表","planned"],
+        ["Network-to-world identity adapters","网络到世界标识适配","planned"],
+        ["Entity identity inspection","实体标识检查","planned"],
+        ["Identity stability regression cases","标识稳定性回归用例","planned"]
+      ]
+    },
+    {
+      "en": "Chunk storage details",
+      "zh": "分块存储细节",
+      "leaves": [
+        ["Archetype signature interning","原型签名驻留","planned"],
+        ["Chunk header layouts","分块头布局","planned"],
+        ["Chunk capacity calculation","分块容量计算","planned"],
+        ["Component column offsets","组件列偏移","planned"],
+        ["Chunk free-slot bitmaps","分块空槽位图","planned"],
+        ["Chunk move compaction","分块移动压缩","planned"],
+        ["Swap-remove remap updates","交换删除映射更新","planned"],
+        ["Enableable component masks","可启用组件遮罩","planned"],
+        ["Shared component partitions","共享组件分区","planned"],
+        ["Variable-length component heaps","变长组件堆","planned"],
+        ["Chunk alignment padding","分块对齐填充","planned"],
+        ["Chunk lifetime generations","分块生命周期代际","planned"],
+        ["Chunk memory reservation","分块内存预留","planned"],
+        ["Chunk migration cost counters","分块迁移成本计数","planned"],
+        ["Chunk density heatmaps","分块密度热图","planned"],
+        ["Chunk corruption diagnostics","分块损坏诊断","planned"]
+      ]
+    },
+    {
+      "en": "Query planning details",
+      "zh": "查询规划细节",
+      "leaves": [
+        ["Archetype matching bitsets","原型匹配位集","planned"],
+        ["Query exclusion predicates","查询排除谓词","planned"],
+        ["Query union term evaluation","查询并集项求值","planned"],
+        ["Optional column resolution","可选列解析","planned"],
+        ["Shared-value query filters","共享值查询过滤","planned"],
+        ["Enabled-mask iteration","启用遮罩迭代","planned"],
+        ["Changed-version query gates","变更版本查询约束","planned"],
+        ["Query plan cache keys","查询计划缓存键","planned"],
+        ["Archetype addition invalidation","原型新增失效","planned"],
+        ["Query iterator generation fences","查询迭代器代际屏障","planned"],
+        ["Query chunk work partitioning","查询分块工作划分","planned"],
+        ["Query result ordering contracts","查询结果顺序契约","planned"],
+        ["Query projection layouts","查询投影布局","planned"],
+        ["Query join ownership","查询连接归属","planned"],
+        ["Query plan cost counters","查询计划成本计数","planned"],
+        ["Query explain views","查询解释视图","planned"]
+      ]
+    },
+    {
+      "en": "Structural publication details",
+      "zh": "结构发布细节",
+      "leaves": [
+        ["Deferred command buffer ownership","延后命令缓冲归属","planned"],
+        ["Structural command sequence IDs","结构命令序号","planned"],
+        ["Entity create-destroy coalescing","实体创建销毁合并","planned"],
+        ["Component add-remove coalescing","组件增删合并","planned"],
+        ["Structural conflict arbitration","结构冲突仲裁","planned"],
+        ["Structural barrier placement","结构屏障放置","planned"],
+        ["Archetype migration reservations","原型迁移预留","planned"],
+        ["Component move construction rules","组件移动构造规则","planned"],
+        ["Structural rollback journals","结构回滚日志","planned"],
+        ["Structural publication epochs","结构发布时段","planned"],
+        ["Observer notification ordering","观察者通知顺序","planned"],
+        ["Bulk structural edit transactions","批量结构编辑事务","planned"],
+        ["Structural mutation thread gates","结构变更线程约束","planned"],
+        ["Structural change memory caps","结构变更内存上限","planned"],
+        ["Structural command inspection","结构命令检查","planned"],
+        ["Structural stress seed fixtures","结构压力种子夹具","planned"]
+      ]
+    },
+    {
+      "en": "Array interoperability details",
+      "zh": "数组互操作细节",
+      "leaves": [
+        ["Array dtype registry","数组类型注册","planned"],
+        ["Array shape rank limits","数组形状秩限制","planned"],
+        ["Array stride descriptors","数组步长描述","planned"],
+        ["Contiguous view requirements","连续视图要求","planned"],
+        ["Read-only array exports","只读数组导出","planned"],
+        ["Borrowed array epoch pins","借用数组时段固定","planned"],
+        ["Array owner capsule contracts","数组拥有者胶囊契约","planned"],
+        ["DLPack capsule transfer","DLPack 胶囊转移","planned"],
+        ["NumPy view invalidation rules","NumPy 视图失效规则","planned"],
+        ["Negative-stride copy policy","负步长复制策略","planned"],
+        ["Array endian conversion","数组字节序转换","planned"],
+        ["Array alignment negotiation","数组对齐协商","planned"],
+        ["Device array stream tokens","设备数组流令牌","planned"],
+        ["Array slice alias tracking","数组切片别名追踪","planned"],
+        ["Interop copy attribution","互操作复制归因","planned"],
+        ["Array boundary regression fixtures","数组边界回归夹具","planned"]
+      ]
+    },
+    {
+      "en": "System access details",
+      "zh": "系统访问细节",
+      "leaves": [
+        ["Component read-set declarations","组件读集声明","planned"],
+        ["Component write-set declarations","组件写集声明","planned"],
+        ["Resource access declarations","资源访问声明","planned"],
+        ["Exclusive world access gates","独占世界访问约束","planned"],
+        ["Access conflict graph edges","访问冲突图边","planned"],
+        ["System ordering constraints","系统顺序约束","planned"],
+        ["System phase membership","系统阶段归属","planned"],
+        ["System dependency cycle errors","系统依赖环错误","planned"],
+        ["Parallel system batch formation","并行系统批次形成","planned"],
+        ["System task fence ownership","系统任务屏障归属","planned"],
+        ["System cancellation propagation","系统取消传播","planned"],
+        ["System execution trace IDs","系统执行追踪标识","planned"],
+        ["System workload estimates","系统工作量估计","planned"],
+        ["System schedule cache invalidation","系统调度缓存失效","planned"],
+        ["System access debug assertions","系统访问调试断言","planned"],
+        ["System dependency visualization","系统依赖可视化","planned"]
+      ]
+    },
+    {
+      "en": "Data locality details",
+      "zh": "数据局部性细节",
+      "leaves": [
+        ["Hot-field column grouping","热字段列分组","planned"],
+        ["Cold metadata indirection","冷元数据间接寻址","planned"],
+        ["SIMD lane-width policies","SIMD 通道宽度策略","planned"],
+        ["Vector tail handling","向量尾部处理","planned"],
+        ["AoSoA tile selection","AoSoA 分块选择","planned"],
+        ["Prefetch distance tuning","预取距离调节","planned"],
+        ["Cache-line false sharing reports","缓存行伪共享报告","planned"],
+        ["Read-mostly data replication","多读数据复制","planned"],
+        ["NUMA allocation affinities","NUMA 分配亲和性","planned"],
+        ["Large-page allocation policy","大页分配策略","planned"],
+        ["Memory access stride profiling","内存访问步长分析","planned"],
+        ["Chunk traversal order tuning","分块遍历顺序调整","planned"],
+        ["Component footprint reports","组件内存足迹报告","planned"],
+        ["Working-set size estimates","工作集尺寸估计","planned"],
+        ["Data locality benchmark kernels","数据局部性基准内核","planned"],
+        ["Cache miss attribution","缓存未命中归因","planned"]
+      ]
+    },
+    {
+      "en": "Incremental dataflow details",
+      "zh": "增量数据流细节",
+      "leaves": [
+        ["Field change bitmasks","字段变更位遮罩","planned"],
+        ["Chunk change version stamps","分块变更版本戳","planned"],
+        ["Dependency dirty propagation","依赖脏标记传播","planned"],
+        ["Derived value cache keys","派生值缓存键","planned"],
+        ["Invalidation scope boundaries","失效作用域边界","planned"],
+        ["Dirty range unioning","脏区间合并","planned"],
+        ["Dirty queue deduplication","脏队列去重","planned"],
+        ["Change batch commit epochs","变更批次提交时段","planned"],
+        ["Observer subscription generations","观察者订阅代际","planned"],
+        ["Change journal retention windows","变更日志保留时间窗","planned"],
+        ["Incremental recompute budgets","增量重算预算","planned"],
+        ["Dependency fan-out metrics","依赖扇出指标","planned"],
+        ["Change propagation cycle guards","变更传播环约束","planned"],
+        ["Cross-thread dirty publication","跨线程脏状态发布","planned"],
+        ["Incremental state consistency probes","增量状态一致性探测","planned"],
+        ["Dataflow invalidation visualization","数据流失效可视化","planned"]
+      ]
+    },
+    {
+      "en": "World schema details",
+      "zh": "世界数据结构细节",
+      "leaves": [
+        ["Observation field stable IDs","观测字段稳定标识","planned"],
+        ["Observation units metadata","观测单位元数据","planned"],
+        ["Observation bounds declarations","观测边界声明","planned"],
+        ["Observation missing-value policy","观测缺失值策略","planned"],
+        ["Action field type contracts","动作字段类型契约","planned"],
+        ["Action field range validation","动作字段范围验证","planned"],
+        ["Schema field default values","结构字段默认值","planned"],
+        ["Schema revision compatibility","结构修订兼容性","planned"],
+        ["Schema projection compilation","结构投影编译","planned"],
+        ["Entity-to-tensor row mapping","实体到张量行映射","planned"],
+        ["Variable-entity padding masks","变长实体填充遮罩","planned"],
+        ["World schema reflection API","世界结构反射 API","planned"],
+        ["Schema serialization descriptors","结构序列化描述","planned"],
+        ["Tool-model schema sharing","工具模型结构共享","planned"],
+        ["Schema documentation export","结构文档导出","planned"],
+        ["Schema contract fixture generation","结构契约夹具生成","planned"]
+      ]
+    },
+    {
+      "en": "Storage consistency details",
+      "zh": "存储一致性细节",
+      "leaves": [
+        ["Read epoch acquisition","读取时段获取","planned"],
+        ["Read epoch retirement","读取时段退役","planned"],
+        ["Snapshot visible-version rules","快照可见版本规则","planned"],
+        ["Writer commit sequence IDs","写者提交序号","planned"],
+        ["Multi-column atomic publication","多列原子发布","planned"],
+        ["Transaction conflict detection","事务冲突检测","planned"],
+        ["Transaction memory reservation","事务内存预留","planned"],
+        ["Rollback object destruction rules","回滚对象销毁规则","planned"],
+        ["Storage checkpoint chunking","存储检查点分块","planned"],
+        ["Storage export reference tables","存储导出引用表","planned"],
+        ["Bulk import identity remapping","批量导入标识重映射","planned"],
+        ["Storage schema migration staging","存储结构迁移暂存","planned"],
+        ["Storage durability boundaries","存储持久性边界","planned"],
+        ["Storage consistency stress seeds","存储一致性压力种子","planned"],
+        ["Snapshot retention budgets","快照保留预算","planned"],
+        ["Storage transaction trace views","存储事务追踪视图","planned"]
+      ]
+    },
+    {
+      "en": "Spatial data indexes",
+      "zh": "空间数据索引",
+      "leaves": [
+        ["Uniform grid cell keys","均匀网格单元键","planned"],
+        ["Spatial hash collision handling","空间哈希碰撞处理","planned"],
+        ["Morton-code entity ordering","莫顿码实体排序","planned"],
+        ["Hierarchical grid level selection","分层网格级别选择","planned"],
+        ["Spatial index move updates","空间索引移动更新","planned"],
+        ["Spatial index removal epochs","空间索引移除时段","planned"],
+        ["Spatial query result deduplication","空间查询结果去重","planned"],
+        ["Spatial index snapshot ownership","空间索引快照归属","planned"],
+        ["Nearest-neighbor search budgets","最近邻搜索预算","planned"],
+        ["Radius query partitioning","半径查询分区","planned"],
+        ["Spatial index rebuild thresholds","空间索引重建阈值","planned"],
+        ["Spatial occupancy histograms","空间占用直方图","planned"],
+        ["Large-entity multi-cell membership","大型实体多格归属","planned"],
+        ["Spatial filter composition","空间过滤组合","planned"],
+        ["Spatial index memory accounting","空间索引内存统计","planned"],
+        ["Spatial index debug overlays","空间索引调试叠层","planned"]
+      ]
+    }
+  ]
+}

@@ -161,10 +161,10 @@
     <link rel="icon" type="image/png" href="/assets/logo.png">
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/infernux-apple-touch-icon.png">
     <link rel="stylesheet" href="/css/fonts.css?v=2">
-    <link rel="stylesheet" href="/css/style.css?v=23">
+    <link rel="stylesheet" href="/css/style.css?v=24">
     <link rel="stylesheet" href="/css/fontawesome-subset.css?v=6.4.0">
     <link rel="stylesheet" href="/css/docs-search.css?v=3">
-    <link rel="stylesheet" href="/css/wiki-generated.css?v=9">
+    <link rel="stylesheet" href="/css/wiki-generated.css?v=10">
     <style>
         /* ======================================================
            Infernux API Reference — Unity-Inspired Dark Theme
@@ -430,7 +430,7 @@
         .api-main pre {
             background: var(--bg-deep);
             border: 1px solid var(--border);
-            border-radius: 6px;
+            border-radius: var(--radius-xs);
             padding: 16px 20px;
             overflow-x: auto;
             margin: 10px 0 18px;
@@ -495,7 +495,7 @@
             min-height: 28px;
             padding: 3px 9px;
             border: 1px solid var(--border-accent);
-            border-radius: 999px;
+            border-radius: var(--radius-xs);
             background: var(--accent-soft);
             color: var(--accent-strong);
             font-family: var(--font-mono);
@@ -589,6 +589,8 @@
                 min-width: 7rem;
             }
         }
+        .api-main h1 { overflow-wrap: anywhere; line-height: 1.25; }
+        .api-sidebar { border-right: 1px solid var(--border); }
     </style>
 </head>
 <body class="{% if page.url and '/api/' in '/' + page.url %}api-reference-page{% else %}guide-page{% endif %}">
@@ -810,7 +812,7 @@
     <script src="/js/vendor/gsap.min.js?v=3.13.0"></script>
     <script src="/js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
     <script src="/js/main.js?v=16"></script>
-    <script src="/js/motion.js?v=1"></script>
+    <script src="/js/motion.js?v=2"></script>
     <script src="/js/docs-search.js?v=6"></script>
     <script src="/js/wiki-generated.js?v=14"></script>
 </body>

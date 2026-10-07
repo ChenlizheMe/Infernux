@@ -86,7 +86,7 @@ nav:
     - infernux.input:
       - Input: en/api/Input.md
       - KeyCode: en/api/KeyCode.md
-    - infernux.jit:
+    - Infernux.jit:
       - compile: en/api/compile.md
       - statistics: en/api/statistics.md
       - warmup: en/api/warmup.md
@@ -203,7 +203,7 @@ nav:
     - infernux.input:
       - Input: zh/api/Input.md
       - KeyCode: zh/api/KeyCode.md
-    - infernux.jit:
+    - Infernux.jit:
       - compile: zh/api/compile.md
       - statistics: zh/api/statistics.md
       - warmup: zh/api/warmup.md

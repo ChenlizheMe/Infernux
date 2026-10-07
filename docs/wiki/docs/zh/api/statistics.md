@@ -1,7 +1,7 @@
 # statistics
 
 <div class="class-info">
-函数位于 <b>infernux.jit</b>
+函数位于 <b>Infernux.jit</b>
 </div>
 
 ```python

@@ -33,6 +33,30 @@ def test_nested_library_is_discovered_outside_the_consumer_directory(
         directory.parent.rmdir()
 
 
+def test_project_library_overrides_the_matching_builtin_declaration(engine, dependency_sources):
+    import infernux
+
+    prefix, create, registry = dependency_sources
+    original = (Path(infernux.__file__).parent / 'resources/shaders/math.glsl').read_text(encoding='utf-8')
+    function = prefix + '_project_only'
+    override, _ = create('MathOverride', '.glsl', original + f'\nvec4 {function}(){{return vec4(1);}}\n')
+    root_source = (f'#version 450\nShaderInfo {{ Name "{prefix} Consumer" '
+                   'Capabilities [Fullscreen] Imports ["Math"] Outputs { Float4 outColor } }\n'
+                   f'void main(){{outColor={function}();}}\n')
+    root, guid = create('Consumer', '.frag', root_source)
+    assert Shader.reload(str(root))
+    assert registry.get_asset_version(guid) > 0
+    # After removing only the authored extra function, resolving the same
+    # built-in Name must compile its ordinary library body without a duplicate.
+    override.write_text(original, encoding='utf-8')
+    rejected = AssetManager.reimport_asset(str(override))
+    assert not rejected and function in rejected.error
+    repaired = root_source.replace(function + '()', 'vec4(1)')
+    root.write_text(repaired, encoding='utf-8')
+    accepted = AssetManager.reimport_asset(str(root))
+    assert accepted, accepted.error
+
+
 @pytest.mark.parametrize('rejection', ('case-mismatch', 'template-directory', 'duplicate-library', 'duplicate-model'))
 def test_invalid_declaration_discovery_rejects_before_publication_and_recovers(
         engine, dependency_sources, rejection):

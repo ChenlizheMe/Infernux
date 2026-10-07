@@ -6,7 +6,7 @@
 #include <core/log/InxLog.h>
 #include <cstdio>
 #include <nlohmann/json.hpp>
-#include <tools/pybinding/JsonPyBridge.h>
+#include <bindings/python/JsonPyBridge.h>
 
 using json = nlohmann::json;
 

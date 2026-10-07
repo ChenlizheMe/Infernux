@@ -7,7 +7,7 @@
 }
 
 .download-page > .container > div {
-    max-width: 980px;
+    max-width: 1120px;
     margin: 0 auto;
 }
 
@@ -19,7 +19,7 @@
 .download-heading h1 {
     margin: 12px 0 10px;
     font-family: var(--font-display);
-    font-size: 1.55rem;
+    font-size: clamp(2rem, 4vw, 3.4rem);
     line-height: 1.16;
     letter-spacing: 0;
 }
@@ -38,8 +38,9 @@
     grid-template-columns: 128px minmax(0, 1fr);
     gap: 28px;
     align-items: center;
-    padding: 30px;
+    padding: 36px;
     border: 1px solid var(--border-strong);
+    border-top: 3px solid var(--accent-fill);
     background: var(--surface);
 }
 
@@ -72,7 +73,7 @@
 
 .hub-platform-actions {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, max-content));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 14px;
     margin-top: 18px;
 }
@@ -202,11 +203,11 @@
     }
 
     .download-heading h1 {
-        font-size: 1.45rem;
+        font-size: 2.1rem;
     }
 
     .hub-download {
-        grid-template-columns: 72px minmax(0, 1fr);
+        grid-template-columns: minmax(0, 1fr);
         gap: 18px;
         padding: 22px;
     }
@@ -238,3 +239,7 @@
         width: 100%;
     }
 }
+
+.hub-platform-actions .btn { width: 100%; }
+.hub-platform-actions > div { padding: 16px; border: 1px solid var(--border); background: var(--bg-deep); }
+.advanced-download { padding: 20px 24px; }

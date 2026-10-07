@@ -95,6 +95,7 @@ set(INFERNUX_NATIVE_TARGETS
 foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})
     target_include_directories(${_infernux_target} PRIVATE
         ${INFERNUX_INCLUDE_DIRS}
+        ${CMAKE_SOURCE_DIR}/cpp
         ${CMAKE_SOURCE_DIR}/external
         ${CMAKE_SOURCE_DIR}/cpp/infernux
     )

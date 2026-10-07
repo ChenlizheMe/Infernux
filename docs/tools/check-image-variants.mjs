@@ -87,15 +87,18 @@ if (avifBytes >= pngBytes * 0.2) fail(`AVIF must save at least 80% over PNG; fou
 if (webpBytes <= avifBytes) fail("AVIF should remain the smallest preferred representation");
 
 const homepage = await readFile(path.join(docsRoot, "index.html"), "utf8");
-const picture = homepage.match(/<picture>([\s\S]*?)<\/picture>/i)?.[1];
-if (!picture) {
-    fail("index.html: runtime evidence must use a picture element");
-} else {
+const pictures = [...homepage.matchAll(/<picture>([\s\S]*?)<\/picture>/gi)].map(match => match[1]);
+if (pictures.length !== 2) fail("index.html: expected the hero capture and the detailed showcase");
+for (const [index, picture] of pictures.entries()) {
     const avifSource = '<source srcset="assets/demo-runtime.avif" type="image/avif">';
-    const fallback = '<img src="assets/demo-runtime.webp" width="1920" height="1032" alt="Infernux editor rendering the 65,536-object Voxel Continent showcase with a custom RenderStack" loading="lazy" decoding="async">';
-    for (const token of [avifSource, fallback]) if (!picture.includes(token)) fail(`index.html: picture is missing '${token}'`);
-    if (picture.includes('<source srcset="assets/demo-runtime.webp"')) fail("index.html: WebP should be the img fallback, not a redundant source candidate");
-    if (!(picture.indexOf(avifSource) < picture.indexOf(fallback))) fail("index.html: picture sources must prefer AVIF and fall back to WebP");
+    const img = picture.match(/<img\b[^>]*>/i)?.[0] || '';
+    for (const token of ['src="assets/demo-runtime.webp"', 'width="1920"', 'height="1032"', 'decoding="async"']) {
+        if (!img.includes(token)) fail(`index.html: capture ${index} is missing ${token}`);
+    }
+    if (!/alt="[^"]+"/.test(img)) fail(`index.html: capture ${index} needs descriptive alternative text`);
+    if (!picture.includes(avifSource) || picture.indexOf(avifSource) > picture.indexOf(img)) fail("index.html: prefer AVIF before the WebP image");
+    if (index === 0 && (!img.includes('fetchpriority="high"') || img.includes('loading="lazy"'))) fail("index.html: hero capture must load eagerly at high priority");
+    if (index === 1 && !img.includes('loading="lazy"')) fail("index.html: lower showcase must remain lazy");
 }
 if (!homepage.includes('"screenshot": "https://infernux-engine.com/assets/demo-runtime.webp"')) fail("index.html: structured evidence must use the delivered WebP screenshot");
 if (homepage.includes("assets/demo.png")) fail("index.html: the repository-only PNG evidence source must not be part of website delivery");

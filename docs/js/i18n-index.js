@@ -146,7 +146,7 @@ globalThis.INFERNUX_PAGE_TRANSLATIONS = {
         "home.hero.moreActions": "了解熔炉的更多方式",
         "home.hero.platform": "编辑器：Windows / Linux · Player：Windows / Linux / Android / Web · 0.4.1",
         "home.hero.start": "开始第一个项目",
-        "home.hero.title": "创造世界，<br>让<span class=\"accent\">智能</span>成为其中一部分。",
+        "home.hero.title": "创造世界，<br>让<span class=\"accent\">智能</span>成为<span class=\"hero-phrase\">其中一部分。</span>",
         "home.manifesto": "我们致力于成为 Neural Network-Native Engine（3N），即神经网络原生引擎：让模型通过引擎直接参与世界数据与模拟。Python、批量 API 和 CPU/GPU 计算构成基础，可移植推理、回放与完整张量数据面是后续方向。",
         "home.manifesto.tag": "NEURAL NETWORK-NATIVE ENGINE · 3N",
         "home.status.card1.body": "从 Windows/Linux 编辑器、四端 Player、InxPackage 资源与 Hub 托管环境开始。可用发行包以下载页为准。",

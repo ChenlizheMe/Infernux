@@ -1,0 +1,388 @@
+{
+  "key": "foundation",
+  "titleKey": "roadmap.galaxy.foundation.title",
+  "branches": [
+    {
+      "en": "DETERMINISTIC CORE",
+      "zh": "确定性核心",
+      "leaves": [
+        ["Scene ownership","场景所有权","live"],
+        ["Fixed-step clock","定步时钟","live"],
+        ["Replay contracts","回放契约","planned"],
+        ["Runtime invariants","运行时不变量","planned"],
+        ["Simulation phases","模拟阶段划分","live"],
+        ["Seeded randomness","随机种子管理","planned"],
+        ["Tick ordering","Tick 执行顺序","planned"],
+        ["State divergence reports","状态分歧报告","planned"]
+      ]
+    },
+    {
+      "en": "WORLD & SCENE",
+      "zh": "世界与场景",
+      "leaves": [
+        ["Scene graph","场景图","live"],
+        ["Prefab authoring","Prefab 创作","live"],
+        ["World snapshots","世界快照","planned"],
+        ["Streaming worlds","流式世界","future"],
+        ["World partitioning","世界分区","planned"],
+        ["Scene transition transactions","场景切换事务","live"],
+        ["Prefab override diffs","Prefab 覆写差异","live"],
+        ["Large-world coordinates","大世界坐标","future"]
+      ]
+    },
+    {
+      "en": "PLATFORM LAYER",
+      "zh": "平台层",
+      "leaves": [
+        ["Windows player","Windows Player","live"],
+        ["Linux player","Linux Player","live"],
+        ["Android player","Android Player","live"],
+        ["Capability matrix","能力矩阵","live"],
+        ["Platform service interface","平台服务接口","planned"],
+        ["Window lifecycle","窗口生命周期","live"],
+        ["Device loss recovery contract","设备丢失处理契约","planned"],
+        ["Headless simulation target","无窗口模拟目标","planned"]
+      ]
+    },
+    {
+      "en": "MEMORY & JOBS",
+      "zh": "内存与任务",
+      "leaves": [
+        ["Thread pool","线程池","live"],
+        ["Resource lifetime","资源生命周期","live"],
+        ["Arena allocator","Arena 分配器","planned"],
+        ["Deterministic scheduling","确定性调度","future"],
+        ["Job dependency graph","任务依赖图","planned"],
+        ["Work stealing","工作窃取调度","planned"],
+        ["Frame scratch storage","帧临时存储","planned"],
+        ["Memory budget telemetry","内存预算观测","planned"]
+      ]
+    },
+    {
+      "en": "Serialization",
+      "zh": "序列化与版本",
+      "leaves": [
+        ["Versioned schemas","版本化数据结构","planned"],
+        ["Schema migrations","数据结构迁移","planned"],
+        ["Binary scene format","二进制场景格式","planned"],
+        ["Stable object references","稳定对象引用","live"],
+        ["Incremental save","增量保存","planned"],
+        ["Save-game compatibility","存档兼容性","planned"],
+        ["Reference repair diagnostics","引用修复诊断","planned"],
+        ["Cross-version replay","跨版本回放","future"]
+      ]
+    },
+    {
+      "en": "Runtime boundaries",
+      "zh": "运行时边界",
+      "leaves": [
+        ["Module ownership","模块所有权","planned"],
+        ["Explicit initialization order","显式初始化顺序","planned"],
+        ["Shutdown dependency order","关闭依赖顺序","planned"],
+        ["Service lifetime contracts","服务生命周期契约","planned"],
+        ["Thread affinity rules","线程归属规则","planned"],
+        ["Python / native error boundary","Python 与原生错误边界","planned"],
+        ["Reentrant-call policy","重入调用规则","planned"],
+        ["Process isolation","进程隔离","future"]
+      ]
+    },
+    {
+      "en": "Resource lifecycle",
+      "zh": "资源生命周期",
+      "leaves": [
+        ["Dependency tracking","资源依赖追踪","live"],
+        ["Asynchronous load handles","异步加载句柄","planned"],
+        ["Cancellation propagation","取消信号传播","planned"],
+        ["Budgeted residency","驻留预算","planned"],
+        ["Deferred destruction","延迟销毁","live"],
+        ["Reload transactions","重载事务","live"],
+        ["Resource leak reports","资源泄漏报告","planned"],
+        ["Streaming priorities","流式加载优先级","planned"]
+      ]
+    },
+    {
+      "en": "Observability",
+      "zh": "可观测性",
+      "leaves": [
+        ["Structured diagnostics","结构化诊断","planned"],
+        ["CPU timeline traces","CPU 时间线追踪","planned"],
+        ["Allocation attribution","分配来源追踪","planned"],
+        ["Frame capture markers","帧捕获标记","planned"],
+        ["Crash context bundles","崩溃上下文包","planned"],
+        ["Runtime counters","运行时计数器","live"],
+        ["Determinism audit tools","确定性审计工具","planned"],
+        ["Cross-system event traces","跨系统事件追踪","planned"]
+      ]
+    },
+    {
+      "en": "World reproduction",
+      "zh": "世界重现",
+      "leaves": [
+        ["Input event journals","输入事件日志","planned"],
+        ["Snapshot checkpoints","快照检查点","planned"],
+        ["Delta state recording","增量状态记录","planned"],
+        ["Simulation replay runner","模拟回放执行器","planned"],
+        ["Replay divergence locator","回放分歧定位","planned"],
+        ["External event capture","外部事件捕获","planned"],
+        ["Cross-platform reproducibility","跨平台可复现性","future"],
+        ["Branching simulation histories","分支模拟历史","future"]
+      ]
+    },
+    {
+      "en": "Runtime delivery",
+      "zh": "运行时交付",
+      "leaves": [
+        ["Startup dependency manifest","启动依赖清单","planned"],
+        ["Engine / project compatibility","引擎与项目兼容性","planned"],
+        ["Runtime feature profiles","运行时功能配置","planned"],
+        ["Platform contract tests","平台契约测试","live"],
+        ["Cold-start profiling","冷启动分析","planned"],
+        ["Long-session soak tests","长时间运行测试","planned"],
+        ["Memory-pressure behavior","内存压力行为","planned"],
+        ["Suspend / resume contracts","挂起与恢复契约","live"]
+      ]
+    },
+    {
+      "en": "Clock semantics",
+      "zh": "时钟语义",
+      "leaves": [
+        ["Tick integer representation","Tick 整数表示","planned"],
+        ["Tick overflow policy","Tick 溢出策略","planned"],
+        ["Simulation accumulator limits","模拟累积器上限","planned"],
+        ["Catch-up tick caps","追赶 Tick 上限","planned"],
+        ["Paused-clock ownership","暂停时钟归属","planned"],
+        ["Time-scale transition rules","时间缩放切换规则","planned"],
+        ["Clock source injection","时钟源注入","planned"],
+        ["Monotonic clock calibration","单调时钟校准","planned"],
+        ["Frame-to-tick input mapping","帧到 Tick 输入映射","planned"],
+        ["Subtick event timestamps","子 Tick 事件时间戳","planned"],
+        ["Simulation deadline accounting","模拟截止时间统计","planned"],
+        ["Deterministic timer queues","确定性定时队列","planned"],
+        ["Timer cancellation ordering","定时取消顺序","planned"],
+        ["Fixed-rate subsystem ratios","定频子系统频率比","planned"],
+        ["Clock serialization units","时钟序列化单位","planned"],
+        ["Clock discontinuity reports","时钟不连续报告","planned"]
+      ]
+    },
+    {
+      "en": "Numeric contracts",
+      "zh": "数值契约",
+      "leaves": [
+        ["Floating-point mode ownership","浮点模式归属","planned"],
+        ["Denormal handling policy","非规格化数处理策略","planned"],
+        ["NaN propagation boundaries","NaN 传播边界","planned"],
+        ["Infinity input rejection","无穷输入拒绝","planned"],
+        ["Fused operation consistency","融合运算一致性","planned"],
+        ["Reduction summation order","归约求和顺序","planned"],
+        ["Quaternion normalization thresholds","四元数归一化阈值","planned"],
+        ["Transform decomposition tolerances","变换分解容差","planned"],
+        ["Matrix singularity policy","矩阵奇异性策略","planned"],
+        ["World unit conventions","世界单位约定","planned"],
+        ["Angle unit contracts","角度单位契约","planned"],
+        ["Coordinate handedness contracts","坐标手性契约","planned"],
+        ["Origin rebasing precision","原点重定位精度","planned"],
+        ["Deterministic transcendental functions","确定性超越函数","planned"],
+        ["Numeric drift benchmarks","数值漂移基准","planned"],
+        ["Cross-ISA arithmetic comparison","跨指令集算术对比","planned"]
+      ]
+    },
+    {
+      "en": "Allocator mechanics",
+      "zh": "分配器机制",
+      "leaves": [
+        ["Arena reset epochs","Arena 重置时段","planned"],
+        ["Arena overflow behavior","Arena 溢出行为","planned"],
+        ["Slab size classes","Slab 尺寸分级","planned"],
+        ["Pool free-list generations","对象池空闲链代际","planned"],
+        ["Thread-local allocation caches","线程局部分配缓存","planned"],
+        ["Allocation alignment guarantees","分配对齐保证","planned"],
+        ["Allocator tag inheritance","分配器标签继承","planned"],
+        ["Large allocation routing","大块分配路由","planned"],
+        ["Scratch reservation limits","临时存储预留上限","planned"],
+        ["Memory poison debug modes","内存毒化调试模式","planned"],
+        ["Allocation failure propagation","分配失败传播","planned"],
+        ["Fragmentation histograms","碎片分布直方图","planned"],
+        ["Memory high-water marks","内存峰值水位","planned"],
+        ["Allocator domain shutdown","分配器域关闭","planned"],
+        ["Cross-thread free queues","跨线程释放队列","planned"],
+        ["Pool exhaustion diagnostics","对象池耗尽诊断","planned"]
+      ]
+    },
+    {
+      "en": "Job execution mechanics",
+      "zh": "任务执行机制",
+      "leaves": [
+        ["Job prerequisite counters","任务前置计数","planned"],
+        ["Ready-queue priority aging","就绪队列优先级老化","planned"],
+        ["Worker-local deque ownership","工作线程双端队列归属","planned"],
+        ["Steal victim selection","窃取目标选择","planned"],
+        ["Task group close semantics","任务组关闭语义","planned"],
+        ["Nested wait deadlock detection","嵌套等待死锁检测","planned"],
+        ["Cooperative cancellation checkpoints","协作取消检查点","planned"],
+        ["Worker exception aggregation","工作线程异常聚合","planned"],
+        ["Job affinity masks","任务亲和性遮罩","planned"],
+        ["Parallel range partitioning","并行区间划分","planned"],
+        ["Main-thread task publication","主线程任务发布","planned"],
+        ["Dependency cycle reporting","依赖环报告","planned"],
+        ["Job queue backpressure","任务队列背压","planned"],
+        ["Worker parking thresholds","工作线程休眠阈值","planned"],
+        ["Job provenance tags","任务来源标签","planned"],
+        ["Scheduling fairness traces","调度公平性追踪","planned"]
+      ]
+    },
+    {
+      "en": "Scene ownership details",
+      "zh": "场景归属细节",
+      "leaves": [
+        ["Cross-scene reference policy","跨场景引用策略","planned"],
+        ["Scene generation retirement","场景代际退役","planned"],
+        ["Detached object staging","脱离对象暂存","planned"],
+        ["Hierarchy mutation barriers","层级变更屏障","planned"],
+        ["Parent-cycle rejection","父级环拒绝","planned"],
+        ["Scene activation epochs","场景激活时段","planned"],
+        ["Additive scene visibility rules","叠加场景可见性规则","planned"],
+        ["Persistent promotion ordering","持久对象提升顺序","planned"],
+        ["Scene unload callback ordering","场景卸载回调顺序","planned"],
+        ["Scene-scoped service teardown","场景服务关闭","planned"],
+        ["Object destruction batching","对象销毁批次","planned"],
+        ["World origin ownership","世界原点归属","planned"],
+        ["Scene load cancellation points","场景加载取消点","planned"],
+        ["Scene transition rollback scope","场景切换回滚范围","planned"],
+        ["Unresolved scene references","未解析场景引用","planned"],
+        ["World ownership inspection","世界归属检查","planned"]
+      ]
+    },
+    {
+      "en": "Archive schemas",
+      "zh": "归档数据结构",
+      "leaves": [
+        ["Field identifier stability","字段标识稳定性","planned"],
+        ["Optional field encoding","可选字段编码","planned"],
+        ["Unknown field preservation","未知字段保留","planned"],
+        ["Schema compatibility direction","结构兼容方向","planned"],
+        ["Archive endianness markers","归档字节序标记","planned"],
+        ["Numeric wire widths","数值存储位宽","planned"],
+        ["Object graph cycle encoding","对象图环编码","planned"],
+        ["Shared reference deduplication","共享引用去重","planned"],
+        ["External asset reference tables","外部资产引用表","planned"],
+        ["Archive chunk indexing","归档分块索引","planned"],
+        ["Archive compression boundaries","归档压缩边界","planned"],
+        ["Atomic archive publication","归档原子发布","planned"],
+        ["Migration chain ordering","迁移链顺序","planned"],
+        ["Migration failure reports","迁移失败报告","planned"],
+        ["Partial archive reads","局部归档读取","planned"],
+        ["Save consistency barriers","保存一致性屏障","planned"]
+      ]
+    },
+    {
+      "en": "Native scripting boundary",
+      "zh": "原生脚本边界",
+      "leaves": [
+        ["Borrowed pointer lifetimes","借用指针生命周期","planned"],
+        ["Owned handle transfer rules","拥有型句柄转移规则","planned"],
+        ["Python GIL handoff points","Python GIL 交接点","planned"],
+        ["Native callback pinning","原生回调固定","planned"],
+        ["Callback retirement epochs","回调退役时段","planned"],
+        ["Exception translation tables","异常转换表","planned"],
+        ["Binding argument units","绑定参数单位","planned"],
+        ["Native array stride validation","原生数组步长验证","planned"],
+        ["Reentrant mutation exclusion","重入变更互斥","planned"],
+        ["Module import publication","模块导入发布","planned"],
+        ["Extension unload restrictions","扩展卸载限制","planned"],
+        ["Interpreter shutdown ordering","解释器关闭顺序","planned"],
+        ["Script domain reset contracts","脚本域重置契约","planned"],
+        ["Foreign thread entry gates","外部线程入口约束","planned"],
+        ["Binding lifetime diagnostics","绑定生命周期诊断","planned"],
+        ["Native ABI version negotiation","原生 ABI 版本协商","planned"]
+      ]
+    },
+    {
+      "en": "Streaming ownership",
+      "zh": "流式资源归属",
+      "leaves": [
+        ["Resource request deduplication","资源请求去重","planned"],
+        ["Load dependency fan-in","加载依赖汇合","planned"],
+        ["Load priority inheritance","加载优先级继承","planned"],
+        ["Residency pin tokens","驻留固定令牌","planned"],
+        ["Eviction eligibility rules","淘汰资格规则","planned"],
+        ["Streaming deadline hints","流送截止时间提示","planned"],
+        ["IO completion publication","IO 完成发布","planned"],
+        ["Decompression worker budgets","解压工作线程预算","planned"],
+        ["Staging buffer reuse","暂存缓冲复用","planned"],
+        ["Cancelled load cleanup","取消加载清理","planned"],
+        ["In-flight reload exclusion","在途重载互斥","planned"],
+        ["Asset generation handover","资产代际交接","planned"],
+        ["Transient load memory caps","加载临时内存上限","planned"],
+        ["Dependency unload ordering","依赖卸载顺序","planned"],
+        ["Resource request tracing","资源请求追踪","planned"],
+        ["Streaming starvation detection","流送饥饿检测","planned"]
+      ]
+    },
+    {
+      "en": "Platform lifecycle details",
+      "zh": "平台生命周期细节",
+      "leaves": [
+        ["Window surface generation IDs","窗口表面代际标识","planned"],
+        ["Resize event coalescing","缩放事件合并","planned"],
+        ["Drawable extent publication","可绘制尺寸发布","planned"],
+        ["DPI coordinate conversion","DPI 坐标转换","planned"],
+        ["Focus-loss input reset","失焦输入重置","planned"],
+        ["Suspended frame suppression","挂起期间帧抑制","planned"],
+        ["Mobile surface recreation","移动端表面重建","planned"],
+        ["User-data path contracts","用户数据路径契约","planned"],
+        ["Platform locale changes","平台语言变化","planned"],
+        ["Clipboard ownership rules","剪贴板归属规则","planned"],
+        ["IME composition lifecycle","输入法组合生命周期","planned"],
+        ["OS thread naming","操作系统线程命名","planned"],
+        ["Power-state notifications","电源状态通知","planned"],
+        ["Low-memory notifications","低内存通知","planned"],
+        ["Window close veto semantics","窗口关闭阻止语义","planned"],
+        ["Platform service test doubles","平台服务测试替身","planned"]
+      ]
+    },
+    {
+      "en": "Reproduction records",
+      "zh": "可复现记录",
+      "leaves": [
+        ["Replay header schemas","回放头结构","planned"],
+        ["Initial world identity records","初始世界标识记录","planned"],
+        ["Random stream state capture","随机流状态捕获","planned"],
+        ["Input ordering sequence IDs","输入顺序序号","planned"],
+        ["External clock event records","外部时钟事件记录","planned"],
+        ["Asset version provenance","资产版本来源","planned"],
+        ["Replay checkpoint spacing","回放检查点间隔","planned"],
+        ["Snapshot dependency closure","快照依赖闭包","planned"],
+        ["State comparison projections","状态比较投影","planned"],
+        ["First-divergence tick search","首次分歧 Tick 搜索","planned"],
+        ["Field-level divergence views","字段级分歧视图","planned"],
+        ["Replay branch parentage","回放分支父系","planned"],
+        ["Recorded side-effect suppression","录制副作用抑制","planned"],
+        ["Replay storage quotas","回放存储配额","planned"],
+        ["Replay fixture minimization","回放夹具最小化","planned"],
+        ["Reproduction environment manifests","复现环境清单","planned"]
+      ]
+    },
+    {
+      "en": "Random stream contracts",
+      "zh": "随机流契约",
+      "leaves": [
+        ["Counter-based random generators","计数器随机数生成器","planned"],
+        ["World seed derivation","世界种子派生","planned"],
+        ["Subsystem seed namespaces","子系统种子命名空间","planned"],
+        ["Entity random stream keys","实体随机流键","planned"],
+        ["Random stream splitting","随机流分割","planned"],
+        ["Random stream jump-ahead","随机流跳跃推进","planned"],
+        ["Random draw count tracing","随机抽取次数追踪","planned"],
+        ["Random distribution versioning","随机分布版本管理","planned"],
+        ["Integer range bias avoidance","整数区间偏差消除","planned"],
+        ["Random float interval conventions","随机浮点区间约定","planned"],
+        ["Parallel random draw ordering","并行随机抽取顺序","planned"],
+        ["Random state serialization","随机状态序列化","planned"],
+        ["Random stream reset boundaries","随机流重置边界","planned"],
+        ["Seed override inspection","种子覆盖检查","planned"],
+        ["Random generator golden vectors","随机生成器标准向量","planned"],
+        ["Replay random stream attribution","回放随机流归因","planned"]
+      ]
+    }
+  ]
+}

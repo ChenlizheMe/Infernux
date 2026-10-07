@@ -201,10 +201,10 @@ still require confirmation. The manual settings action checks explicitly.
   publication restrictions. Subsequent tests exercise both desktop platforms
   and mock all publication/deployment network writes.
 - Final full Hub suite: `python -m pytest -q -rs -o pythonpath=packaging
-  --confcutdir=packaging/tests packaging/tests` — 375 passed, 3 skipped. The
+  --confcutdir=tests/hub tests/hub` — 375 passed, 3 skipped. The
   skips are POSIX permission checks and Linux standalone CPython layout on
   the Windows host. `python -m pytest -q --noconftest
-  python/test/test_release_automation.py` — 3 passed. Workflow YAML parsing and
+  tests/python/test_release_automation.py` — 3 passed. Workflow YAML parsing and
   `git diff --check` passed. No native engine test fixture was loaded.
 - The final suite includes unset/enabled/disabled startup and settings behavior,
   confirmation before any update download, and English/Chinese installer text

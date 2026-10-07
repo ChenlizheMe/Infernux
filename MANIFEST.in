@@ -4,7 +4,5 @@ include python/infernux_project_lock.py
 recursive-exclude python/infernux/_runtime_packs *
 recursive-exclude python/infernux/_runtime_modules *
 recursive-exclude python/infernux/resources/player_runtime *
-recursive-exclude python/infernux/test *
-recursive-exclude python/test *
 recursive-exclude python *.meta
 global-exclude __pycache__ *.pyc *.pyo *.bak *.pdb *.lib *.exp

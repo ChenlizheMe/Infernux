@@ -33,6 +33,7 @@ Makefile
 *.dylib
 *.pyd
 *.obj
+!/tests/native/fixtures/*.obj
 *.o
 *.exe
 *.ilk

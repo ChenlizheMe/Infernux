@@ -1,16 +1,13 @@
 # Source ownership for the native runtime and Python bindings.
 
-file(GLOB_RECURSE INFERNUX_RUNTIME_SOURCES CONFIGURE_DEPENDS cpp/*.cpp cpp/*.h)
+file(GLOB_RECURSE INFERNUX_RUNTIME_SOURCES CONFIGURE_DEPENDS cpp/infernux/*.cpp cpp/infernux/*.h)
 list(APPEND INFERNUX_RUNTIME_SOURCES "${CMAKE_SOURCE_DIR}/external/MikkTSpace/mikktspace.c")
 
 # Runtime implementation and Python bindings are separate binary layers.
-list(FILTER INFERNUX_RUNTIME_SOURCES EXCLUDE REGEX "tools/launcher/")
-list(FILTER INFERNUX_RUNTIME_SOURCES EXCLUDE REGEX "tools/pybinding/")
-list(FILTER INFERNUX_RUNTIME_SOURCES EXCLUDE REGEX "cpp/tests/")
 
-file(GLOB_RECURSE BINDING_SOURCES CONFIGURE_DEPENDS cpp/infernux/tools/pybinding/*.cpp)
+file(GLOB_RECURSE BINDING_SOURCES CONFIGURE_DEPENDS cpp/bindings/python/*.cpp)
 set(INFERNUX_BOOTSTRAP_BINDING_SOURCE
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/tools/pybinding/BindingInfernuxBootstrap.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/bindings/python/BindingInfernuxBootstrap.cpp"
 )
 list(REMOVE_ITEM BINDING_SOURCES ${INFERNUX_BOOTSTRAP_BINDING_SOURCE})
 
@@ -108,7 +105,7 @@ list(REMOVE_ITEM INFERNUX_RUNTIME_SOURCES
     ${INFERNUX_VULKAN_BACKEND_SOURCES}
 )
 
-file(GLOB_RECURSE INFERNUX_HEADERS "${CMAKE_SOURCE_DIR}/cpp/*.h")
+file(GLOB_RECURSE INFERNUX_HEADERS "${CMAKE_SOURCE_DIR}/cpp/infernux/*.h")
 foreach(_hdr ${INFERNUX_HEADERS})
     get_filename_component(_hdr_dir "${_hdr}" DIRECTORY)
     list(APPEND INFERNUX_INCLUDE_DIRS "${_hdr_dir}")

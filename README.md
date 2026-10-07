@@ -92,7 +92,7 @@ For plugin authors: [authoring guide](https://infernux-engine.com/wiki/site/en/p
 Windows needs Visual Studio 2022 with MSVC v143, CMake 3.25+, a Vulkan SDK and the Python 3.13 development environment:
 
 ```powershell
-git clone --recurse-submodules https://github.com/ChenlizheMe/infernux.git
+git clone --recurse-submodules https://github.com/ChenlizheMe/Infernux.git
 cd Infernux
 ./scripts/setup/configure_development.ps1
 conda activate infernux

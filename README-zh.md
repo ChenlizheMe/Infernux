@@ -92,7 +92,7 @@ InxPackage 插件可以包含组件、工具、资源和平台导出器。玩法
 Windows 需要带 MSVC v143 的 Visual Studio 2022、CMake 3.25+、Vulkan SDK 与 Python 3.13 开发环境。通过 preset 构建并安装：
 
 ```powershell
-git clone --recurse-submodules https://github.com/ChenlizheMe/infernux.git
+git clone --recurse-submodules https://github.com/ChenlizheMe/Infernux.git
 cd Infernux
 ./scripts/setup/configure_development.ps1
 conda activate infernux

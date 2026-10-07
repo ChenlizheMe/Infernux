@@ -50,7 +50,7 @@ DOCS_ROOT = WIKI_ROOT / "docs"
 PROJECT_ROOT = WIKI_ROOT.parent.parent               # Infernux repo root
 WEB_ROOT = PROJECT_ROOT / "docs"
 PYTHON_ROOT = PROJECT_ROOT / "python"
-STUB_ROOT = PYTHON_ROOT / "Infernux"
+STUB_ROOT = PYTHON_ROOT / "infernux"
 DOCUMENTED_RELEASE = json.loads(
     (WEB_ROOT / "docs-manifest.json").read_text(encoding="utf-8")
 )["documented_release"]
@@ -1615,10 +1615,10 @@ PUBLIC_API_FUNCTIONS = {
 }
 
 # Function names are not globally unique. Keep module-specific APIs qualified so
-# similarly named functions (for example ``infernux.compute.statistics``) cannot
+# similarly named functions (for example ``Infernux.compute.statistics``) cannot
 # silently share and overwrite a generated page.
 PUBLIC_API_FUNCTIONS_BY_MODULE = {
-    "infernux.jit": {"compile", "statistics", "warmup"},
+    "Infernux.jit": {"compile", "statistics", "warmup"},
 }
 
 

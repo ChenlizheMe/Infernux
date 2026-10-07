@@ -1,0 +1,388 @@
+{
+  "key": "toolchain",
+  "titleKey": "roadmap.galaxy.toolchain.title",
+  "branches": [
+    {
+      "en": "EDITOR",
+      "zh": "编辑器",
+      "leaves": [
+        ["Scene editing","场景编辑","live"],
+        ["Inspector","Inspector","live"],
+        ["Command palette","命令面板","planned"],
+        ["Extension API","扩展 API","live"],
+        ["Workspace layouts","工作区布局","planned"],
+        ["Multi-object property editing","多对象属性编辑","planned"],
+        ["Editor selection history","编辑器选择历史","planned"],
+        ["Editor performance traces","编辑器性能追踪","planned"]
+      ]
+    },
+    {
+      "en": "PACKAGES",
+      "zh": "包系统",
+      "leaves": [
+        ["InxPackage","InxPackage","live"],
+        ["Asset index","资产索引","live"],
+        ["Plugin lifecycle","插件生命周期","live"],
+        ["Dependency graph","依赖图","future"],
+        ["Package capability declarations","包能力声明","planned"],
+        ["Dependency version resolution","依赖版本解析","planned"],
+        ["Package compatibility checks","包兼容性检查","planned"],
+        ["Reproducible package builds","可复现包构建","planned"]
+      ]
+    },
+    {
+      "en": "HUB",
+      "zh": "Hub",
+      "leaves": [
+        ["Environment setup","环境配置","live"],
+        ["Artifact channels","构建产物通道","planned"],
+        ["Version pinning","版本固定","planned"],
+        ["Team workspaces","团队工作区","future"],
+        ["Download resume contracts","下载续传契约","planned"],
+        ["Environment diagnostics","环境诊断","planned"],
+        ["Runtime cache management","运行时缓存管理","planned"],
+        ["Offline installation bundles","离线安装包","planned"]
+      ]
+    },
+    {
+      "en": "MCP TOOLS",
+      "zh": "MCP 工具",
+      "leaves": [
+        ["World inspection","世界检查","live"],
+        ["Safe mutations","安全变更","live"],
+        ["Undo boundaries","撤销边界","live"],
+        ["Agent sessions","Agent 会话","future"],
+        ["Tool schema versions","工具结构版本","planned"],
+        ["Command result provenance","命令结果溯源","planned"],
+        ["Scene mutation previews","场景变更预览","planned"],
+        ["Agent action journals","智能体操作日志","planned"]
+      ]
+    },
+    {
+      "en": "Asset pipeline",
+      "zh": "资产管线",
+      "leaves": [
+        ["Incremental import graph","增量导入图","planned"],
+        ["Importer dependency contracts","导入器依赖契约","planned"],
+        ["Content cooking profiles","内容烘焙配置","planned"],
+        ["Asset validation rules","资产验证规则","planned"],
+        ["Import result diagnostics","导入结果诊断","planned"],
+        ["Shared derived-data cache","共享派生数据缓存","planned"],
+        ["Remote asset cooking","远程资产烘焙","future"],
+        ["Asset pipeline profiling","资产管线分析","planned"]
+      ]
+    },
+    {
+      "en": "Build & delivery",
+      "zh": "构建与交付",
+      "leaves": [
+        ["Build target presets","构建目标预设","planned"],
+        ["Build graph visualization","构建图可视化","planned"],
+        ["Incremental player builds","增量 Player 构建","planned"],
+        ["Artifact manifest inspection","产物清单检查","planned"],
+        ["Symbol package generation","符号包生成","planned"],
+        ["Platform packaging diagnostics","平台打包诊断","planned"],
+        ["Release provenance records","发布来源记录","planned"],
+        ["Remote build workers","远程构建执行器","future"]
+      ]
+    },
+    {
+      "en": "Debugging & profiling",
+      "zh": "调试与分析",
+      "leaves": [
+        ["Python debugger integration","Python 调试器接入","planned"],
+        ["Native crash symbolication","原生崩溃符号化","planned"],
+        ["CPU / GPU timeline correlation","CPU 与 GPU 时间线关联","planned"],
+        ["Memory snapshot viewer","内存快照查看器","planned"],
+        ["Live resource inspector","实时资源检查器","planned"],
+        ["Remote player inspection","远程 Player 检查","planned"],
+        ["Performance regression reports","性能回归报告","planned"],
+        ["Frame comparison tools","帧对比工具","planned"]
+      ]
+    },
+    {
+      "en": "Collaboration",
+      "zh": "协作工作流",
+      "leaves": [
+        ["Project VCS conventions","项目版本控制约定","planned"],
+        ["Scene diff representation","场景差异表示","planned"],
+        ["Asset conflict diagnostics","资产冲突诊断","planned"],
+        ["Mergeable editor metadata","可合并编辑元数据","planned"],
+        ["Shared project settings","共享项目设置","planned"],
+        ["Reviewable scene changes","可审查场景变更","planned"],
+        ["Live multi-user sessions","实时多人会话","future"],
+        ["Collaborative undo ownership","协作撤销归属","future"]
+      ]
+    },
+    {
+      "en": "Extensibility",
+      "zh": "扩展机制",
+      "leaves": [
+        ["Editor service registry","编辑器服务注册","planned"],
+        ["Plugin dependency ordering","插件依赖顺序","planned"],
+        ["Extension lifecycle tests","扩展生命周期测试","planned"],
+        ["Plugin resource ownership","插件资源归属","live"],
+        ["Localized plugin interfaces","插件界面本地化","live"],
+        ["Custom inspector widgets","自定义检查器控件","planned"],
+        ["Plugin API compatibility","插件 API 兼容性","planned"],
+        ["Plugin permissions","插件权限","future"]
+      ]
+    },
+    {
+      "en": "Documentation & examples",
+      "zh": "文档与示例",
+      "leaves": [
+        ["Executable tutorial projects","可执行教程项目","planned"],
+        ["API signature verification","API 签名验证","planned"],
+        ["Bilingual example coverage","双语示例覆盖","planned"],
+        ["Plugin authoring samples","插件编写示例","planned"],
+        ["Platform acceptance examples","平台验收示例","planned"],
+        ["Migration guides","迁移指南","planned"],
+        ["Editor contextual help","编辑器上下文帮助","planned"],
+        ["Learning-path progress","学习路径进度","future"]
+      ]
+    },
+    {
+      "en": "Editor command details",
+      "zh": "编辑器命令细节",
+      "leaves": [
+        ["Command identifier namespaces","命令标识命名空间","planned"],
+        ["Command argument schemas","命令参数结构","planned"],
+        ["Command availability predicates","命令可用条件","planned"],
+        ["Command shortcut conflict reports","命令快捷键冲突报告","planned"],
+        ["Command search ranking","命令搜索排序","planned"],
+        ["Command transaction grouping","命令事务分组","planned"],
+        ["Undo entry coalescing","撤销条目合并","planned"],
+        ["Undo memory retention budgets","撤销内存保留预算","planned"],
+        ["Undo resource pinning","撤销资源固定","planned"],
+        ["Redo branch invalidation","重做分支失效","planned"],
+        ["Command failure atomicity","命令失败原子性","planned"],
+        ["Selection change transactions","选择变更事务","planned"],
+        ["Editor command provenance","编辑器命令来源","planned"],
+        ["Command macro recording","命令宏录制","planned"],
+        ["Command history inspection","命令历史检查","planned"],
+        ["Command replay fixtures","命令回放夹具","planned"]
+      ]
+    },
+    {
+      "en": "Asset import details",
+      "zh": "资产导入细节",
+      "leaves": [
+        ["Importer version identities","导入器版本标识","planned"],
+        ["Import settings fingerprints","导入设置标识","planned"],
+        ["Source dependency discovery","源依赖发现","planned"],
+        ["Import output ownership","导入输出归属","planned"],
+        ["Subasset stable identities","子资产稳定标识","planned"],
+        ["Importer worker isolation","导入工作进程隔离","planned"],
+        ["Importer cancellation points","导入器取消点","planned"],
+        ["Import queue priority rules","导入队列优先级规则","planned"],
+        ["Source rename transactions","源文件重命名事务","planned"],
+        ["Import artifact publication","导入产物发布","planned"],
+        ["Import log attribution","导入日志归因","planned"],
+        ["Import failure quarantine","导入失败隔离","planned"],
+        ["Derived artifact eviction","派生产物淘汰","planned"],
+        ["Importer dependency cycle checks","导入器依赖环检查","planned"],
+        ["Import result comparison","导入结果对比","planned"],
+        ["Import reproducibility fixtures","导入可复现夹具","planned"]
+      ]
+    },
+    {
+      "en": "Player build details",
+      "zh": "Player 构建细节",
+      "leaves": [
+        ["Build input closure","构建输入闭包","planned"],
+        ["Build target feature manifests","构建目标功能清单","planned"],
+        ["Build step dependency ordering","构建步骤依赖顺序","planned"],
+        ["Build workspace isolation","构建工作区隔离","planned"],
+        ["Incremental cook keys","增量烘焙键","planned"],
+        ["Runtime type registry cooking","运行时类型注册烘焙","planned"],
+        ["Editor content exclusion","编辑器内容排除","planned"],
+        ["Shader target compilation","着色器目标编译","planned"],
+        ["Player startup preload lists","Player 启动预载列表","planned"],
+        ["Native extension collection","原生扩展收集","planned"],
+        ["Platform signing configuration","平台签名配置","planned"],
+        ["Build output atomic publication","构建输出原子发布","planned"],
+        ["Build artifact size breakdown","构建产物体积拆解","planned"],
+        ["Build cancellation cleanup","构建取消清理","planned"],
+        ["Clean-export acceptance scenes","全新导出验收场景","planned"],
+        ["Build reproducibility manifests","构建可复现清单","planned"]
+      ]
+    },
+    {
+      "en": "Package resolution details",
+      "zh": "包解析细节",
+      "leaves": [
+        ["Package dependency constraints","包依赖约束","planned"],
+        ["Dependency conflict explanations","依赖冲突解释","planned"],
+        ["Package lockfile updates","包锁定文件更新","planned"],
+        ["Package content role separation","包内容角色分离","planned"],
+        ["Package local-edit detection","包本地编辑检测","planned"],
+        ["Package upgrade preview diffs","包升级预览差异","planned"],
+        ["Package GUID preservation","包 GUID 保留","planned"],
+        ["Package uninstall reference checks","包卸载引用检查","planned"],
+        ["Package activation ordering","包激活顺序","planned"],
+        ["Package native restart requirements","包原生重启要求","planned"],
+        ["Package registry source identities","包注册源标识","planned"],
+        ["Package metadata localization","包元数据本地化","planned"],
+        ["Package license inventory","包许可清单","planned"],
+        ["Package archive path rules","包归档路径规则","planned"],
+        ["Package compatibility diagnostics","包兼容诊断","planned"],
+        ["Package authoring validation","包编写验证","planned"]
+      ]
+    },
+    {
+      "en": "Hub delivery details",
+      "zh": "Hub 交付细节",
+      "leaves": [
+        ["Runtime installation identities","运行时安装标识","planned"],
+        ["Engine version selection rules","引擎版本选择规则","planned"],
+        ["Download queue priorities","下载队列优先级","planned"],
+        ["Download range negotiation","下载区间协商","planned"],
+        ["Download cancellation ownership","下载取消归属","planned"],
+        ["Runtime install staging","运行时安装暂存","planned"],
+        ["Runtime install atomic switch","运行时安装原子切换","planned"],
+        ["Shared toolchain registrations","共享工具链注册","planned"],
+        ["Project environment pin records","项目环境固定记录","planned"],
+        ["Toolchain discovery diagnostics","工具链发现诊断","planned"],
+        ["Installer disk-space estimates","安装器磁盘空间估计","planned"],
+        ["Offline catalog snapshots","离线目录快照","planned"],
+        ["Release channel selection","发布通道选择","planned"],
+        ["Hub background job persistence","Hub 后台任务持久化","planned"],
+        ["Runtime removal reference checks","运行时移除引用检查","planned"],
+        ["Hub installation acceptance matrix","Hub 安装验收矩阵","planned"]
+      ]
+    },
+    {
+      "en": "Automation operation details",
+      "zh": "自动化操作细节",
+      "leaves": [
+        ["Operation capability declarations","操作能力声明","planned"],
+        ["Operation schema introspection","操作结构自省","planned"],
+        ["Operation main-thread routing","操作主线程路由","planned"],
+        ["Operation cancellation tokens","操作取消令牌","planned"],
+        ["Mutation transaction previews","变更事务预览","planned"],
+        ["Mutation target generation checks","变更目标代际检查","planned"],
+        ["Automation undo grouping","自动化撤销分组","planned"],
+        ["Automation request correlation","自动化请求关联","planned"],
+        ["Operation result type contracts","操作结果类型契约","planned"],
+        ["Automation screenshot attribution","自动化截图归因","planned"],
+        ["Automation session ownership","自动化会话归属","planned"],
+        ["Automation action audit records","自动化操作审计记录","planned"],
+        ["Operation progress events","操作进度事件","planned"],
+        ["Automation resource quotas","自动化资源配额","planned"],
+        ["Tool compatibility version gates","工具兼容版本约束","planned"],
+        ["Automation scenario regression suite","自动化场景回归套件","planned"]
+      ]
+    },
+    {
+      "en": "Profiler instrumentation",
+      "zh": "性能分析埋点",
+      "leaves": [
+        ["CPU scope identifier registry","CPU 作用域标识注册","planned"],
+        ["Thread timeline lanes","线程时间线轨道","planned"],
+        ["GPU scope timestamp pairing","GPU 作用域时间戳配对","planned"],
+        ["CPU-GPU clock calibration","CPU GPU 时钟校准","planned"],
+        ["Allocation stack sampling","分配栈采样","planned"],
+        ["Profiler capture ring buffers","分析捕获环形缓冲","planned"],
+        ["Profiler event loss counters","分析事件丢失计数","planned"],
+        ["Frame selection bookmarks","帧选择书签","planned"],
+        ["Subsystem budget annotations","子系统预算注释","planned"],
+        ["Remote trace transport","远程追踪传输","planned"],
+        ["Trace compression chunks","追踪压缩分块","planned"],
+        ["Trace session metadata","追踪会话元数据","planned"],
+        ["Regression baseline comparison","回归基线对比","planned"],
+        ["Percentile frame-time reports","帧耗时分位报告","planned"],
+        ["Hitch attribution views","卡顿归因视图","planned"],
+        ["Profiler overhead measurements","分析器开销测量","planned"]
+      ]
+    },
+    {
+      "en": "Editor workspace details",
+      "zh": "编辑器工作区细节",
+      "leaves": [
+        ["Dock tree serialization","停靠树序列化","planned"],
+        ["Panel instance identities","面板实例标识","planned"],
+        ["Workspace monitor remapping","工作区显示器重映射","planned"],
+        ["Per-project workspace profiles","逐项目工作区配置","planned"],
+        ["Panel minimum-size rules","面板最小尺寸规则","planned"],
+        ["Floating window DPI transitions","浮动窗口 DPI 过渡","planned"],
+        ["Editor focus restoration","编辑器焦点恢复","planned"],
+        ["Workspace reset transactions","工作区重置事务","planned"],
+        ["Panel shortcut scopes","面板快捷键作用域","planned"],
+        ["Inspector field virtualization","检查器字段虚拟化","planned"],
+        ["Inspector mixed-value display","检查器混合值显示","planned"],
+        ["Editor search index refresh","编辑器搜索索引刷新","planned"],
+        ["Editor selection breadcrumbs","编辑器选择路径","planned"],
+        ["Asset preview job cancellation","资产预览任务取消","planned"],
+        ["Panel ownership diagnostics","面板归属诊断","planned"],
+        ["Workspace migration fixtures","工作区迁移夹具","planned"]
+      ]
+    },
+    {
+      "en": "Project collaboration details",
+      "zh": "项目协作细节",
+      "leaves": [
+        ["Text scene canonical ordering","文本场景规范顺序","planned"],
+        ["Stable serialized property paths","稳定序列化属性路径","planned"],
+        ["Scene merge conflict markers","场景合并冲突标记","planned"],
+        ["Prefab override merge rules","Prefab 覆写合并规则","planned"],
+        ["Asset rename merge tracking","资产重命名合并追踪","planned"],
+        ["Shared setting override layers","共享设置覆盖层","planned"],
+        ["Generated file exclusion rules","生成文件排除规则","planned"],
+        ["Binary asset locking adapters","二进制资产锁适配器","planned"],
+        ["Scene change review summaries","场景变更审查摘要","planned"],
+        ["Project dependency review reports","项目依赖审查报告","planned"],
+        ["Collaborative selection presence","协作选择状态","planned"],
+        ["Concurrent edit ownership","并发编辑归属","planned"],
+        ["Collaborative transaction ordering","协作事务顺序","planned"],
+        ["Shared session reconnect rules","共享会话重连规则","planned"],
+        ["Project migration dry runs","项目迁移预演","planned"],
+        ["Merge result acceptance scenes","合并结果验收场景","planned"]
+      ]
+    },
+    {
+      "en": "Learning and API contracts",
+      "zh": "学习与 API 契约",
+      "leaves": [
+        ["Tutorial code extraction","教程代码提取","planned"],
+        ["Tutorial dependency manifests","教程依赖清单","planned"],
+        ["Example project version pins","示例项目版本固定","planned"],
+        ["Example asset license records","示例资产许可记录","planned"],
+        ["API stub implementation matching","API 存根实现匹配","planned"],
+        ["API parameter default checks","API 参数默认值检查","planned"],
+        ["API deprecation inventories","API 弃用清单","planned"],
+        ["Bilingual terminology glossary","双语术语表","planned"],
+        ["Translation key coverage","翻译键覆盖","planned"],
+        ["Versioned tutorial navigation","版本化教程导航","planned"],
+        ["API cross-link validation","API 交叉链接验证","planned"],
+        ["Embedded example execution","嵌入示例执行","planned"],
+        ["Platform tutorial capability notes","平台教程能力说明","planned"],
+        ["Migration example pairs","迁移示例对照","planned"],
+        ["Contextual help topic mapping","上下文帮助主题映射","planned"],
+        ["Documentation feedback routing","文档反馈路由","planned"]
+      ]
+    },
+    {
+      "en": "Engine acceptance tooling",
+      "zh": "引擎验收工具",
+      "leaves": [
+        ["Scene fixture dependency manifests","场景夹具依赖清单","planned"],
+        ["Deterministic test input scripts","确定性测试输入脚本","planned"],
+        ["Player test result transport","Player 测试结果传输","planned"],
+        ["Screenshot comparison tolerances","截图比较容差","planned"],
+        ["GPU test device selection","GPU 测试设备选择","planned"],
+        ["Audio test output capture","音频测试输出捕获","planned"],
+        ["Test timeout attribution","测试超时归因","planned"],
+        ["Test resource ownership cleanup","测试资源归属清理","planned"],
+        ["Flaky scenario seed recording","不稳定场景种子记录","planned"],
+        ["Platform test capability skips","平台测试能力跳过","planned"],
+        ["Cold-install acceptance runs","全新安装验收运行","planned"],
+        ["Upgrade-path acceptance runs","升级路径验收运行","planned"],
+        ["Multi-scene lifecycle stress runs","多场景生命周期压力运行","planned"],
+        ["Performance threshold baselines","性能阈值基线","planned"],
+        ["Acceptance artifact retention","验收产物保留","planned"],
+        ["Failure reproduction command export","失败复现命令导出","planned"]
+      ]
+    }
+  ]
+}

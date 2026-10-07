@@ -10,29 +10,23 @@ from .path_utils import relative_path
 
 _log = logging.getLogger("infernux.library_sync")
 
-_SKIP = {
-    "__pycache__",
-    "__init__.py",
-    "__init__.pyi",
-    "icons.zip",
-    # These are wheel/build inputs, not project-visible engine resources.
-    "player_runtime",
-    "project_templates",
-}
+_SKIP = {"__pycache__"}
 _SYNC_MANIFEST = ".InfernuxResources.json"
+# Distribution metadata and build inputs never enter the asset catalog.
+_ASSET_DIRECTORIES = frozenset({"fonts", "icons", "materials", "shaders"})
 
 
 def _resource_snapshot(root: str) -> dict[str, dict[str, int]]:
     snapshot: dict[str, dict[str, int]] = {}
     for directory, folders, files in os.walk(root):
-        folders[:] = sorted(folder for folder in folders if folder not in _SKIP)
+        folders[:] = sorted(
+            folder for folder in folders
+            if folder not in _SKIP and (directory != root or folder in _ASSET_DIRECTORIES)
+        )
         for filename in sorted(files):
-            if filename in _SKIP or filename.endswith(".meta"):
+            if directory == root:
                 continue
-            # Direct .inxpkg children are wheel-mandatory packages.  Plugin
-            # startup consumes them from the installed Python resources root;
-            # they are not ordinary project-visible engine resources.
-            if directory == root and filename.casefold().endswith(".inxpkg"):
+            if filename in _SKIP or filename.endswith(".meta"):
                 continue
             source = os.path.join(directory, filename)
             relative = relative_path(source, root)

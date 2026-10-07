@@ -6,7 +6,7 @@ import pytest
 from infernux.core.assets import AssetManager
 from infernux.core.material import Material
 from infernux.debug import DebugConsole, LogType
-from infernux.lib import InxMaterial, ScreenUIList
+from infernux.lib import InxMaterial, ScreenUIList, Vector3
 from infernux.engine.runtime_screen_ui_pipeline import RuntimeScreenUIRenderPipeline
 from infernux.renderstack import RenderStackPipeline
 from infernux.ui.ui_render_dispatch import _bind_runtime_material
@@ -59,7 +59,53 @@ void main() { outColor = dependencyColor() * texture(uiTexture, inUV) * inColor 
 '''
 
 
-@pytest.mark.parametrize('draw_list', (ScreenUIList.Overlay, ScreenUIList.Camera), ids=('overlay', 'camera'))
+WORLD_PUSH_CONSTANTS = '''layout(push_constant) uniform WorldUIConstants {
+    mat4 viewProjection;
+    vec4 materialColor;
+    float alphaClipThreshold;
+    float alphaClipEnabled;
+    vec2 screenScale;
+    vec4 cameraRight;
+    vec4 cameraUp;
+} pc;'''
+
+WORLD_VERTEX = '''#version 450
+layout(location=0) in vec3 aPosition;
+layout(location=1) in vec2 aUV;
+layout(location=2) in vec4 aColor;
+layout(location=3) in vec2 aLocalPosition;
+layout(location=4) in vec3 aAnchor;
+layout(location=5) in vec2 aLocalOffset;
+layout(location=6) in float aPolicy;
+''' + WORLD_PUSH_CONSTANTS + '''
+layout(location=0) out vec4 outColor;
+layout(location=1) out vec2 outUV;
+void main() {
+    vec3 position = aPosition;
+    int policy = int(aPolicy + 0.5);
+    if (policy != 0) {
+        vec3 offset = aPosition - aAnchor;
+        if ((policy & 1) != 0)
+            offset = pc.cameraRight.xyz * aLocalOffset.x + pc.cameraUp.xyz * aLocalOffset.y;
+        if ((policy & 2) != 0) {
+            float clipW = (pc.viewProjection * vec4(aAnchor, 1.0)).w;
+            offset *= max(clipW, 0.0) * pc.screenScale.x * 100.0;
+        }
+        position = aAnchor + offset;
+    }
+    gl_Position = pc.viewProjection * vec4(position, 1.0);
+    outColor = aColor;
+    outUV = aUV;
+}
+'''
+
+WORLD_FRAGMENT = (FRAGMENT[:FRAGMENT.index('layout(push_constant)')]
+                  + WORLD_PUSH_CONSTANTS
+                  + FRAGMENT[FRAGMENT.index('layout(location=0) out vec4'):])
+
+
+@pytest.mark.parametrize('draw_list', (ScreenUIList.Overlay, ScreenUIList.Camera, ScreenUIList.World),
+                         ids=('overlay', 'camera', 'world'))
 @pytest.mark.parametrize('material_properties', (False, True), ids=('plain', 'material-buffer'))
 def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
         engine, scene, dependency_sources, capfd, draw_list, material_properties):
@@ -71,15 +117,18 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
     invalid = red.replace('return vec4(1,0,0,1)', 'return missingUiDependencyFunction()')
     library, _ = create('Library', '.glsl', red)
     vertex_name, fragment_name = prefix + ' Vertex', prefix + ' Fragment'
+    world = draw_list == ScreenUIList.World
+    domain = 'WorldUI' if world else 'ScreenUI'
+    vertex_body = WORLD_VERTEX if world else VERTEX
     vertex, vertex_guid = create('Vertex', '.vert',
-        f'#version 450\nShaderInfo {{ Name "{vertex_name}" Capabilities [ScreenUI] }}\n' + VERTEX.removeprefix('#version 450\n'))
+        f'#version 450\nShaderInfo {{ Name "{vertex_name}" Capabilities [{domain}] }}\n' + vertex_body.removeprefix('#version 450\n'))
     properties = ' Properties { Color baseColor = [1,1,1,1] }' if material_properties else ''
-    fragment_body = FRAGMENT.removeprefix('#version 450\n')
+    fragment_body = (WORLD_FRAGMENT if world else FRAGMENT).removeprefix('#version 450\n')
     if material_properties:
         fragment_body = fragment_body.replace('pc.materialColor;', 'pc.materialColor * material.baseColor;')
     fragment, fragment_guid = create('Fragment', '.frag',
         '#version 450\n#extension GL_EXT_control_flow_attributes : require\n'
-        f'ShaderInfo {{ Name "{fragment_name}" Capabilities [ScreenUI] Imports ["{library_name}"]{properties} }}\n' + fragment_body)
+        f'ShaderInfo {{ Name "{fragment_name}" Capabilities [{domain}] Imports ["{library_name}"]{properties} }}\n' + fragment_body)
     roots = {vertex: vertex.read_bytes(), fragment: fragment.read_bytes()}
     document = InxMaterial.create_default_lit().serialize_document()
     document['builtin'] = False
@@ -92,7 +141,10 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
     material = AssetManager.load(material_guid, Material)
     assert engine.refresh_material_pipeline(material._native)
     assert not engine.is_shader_loaded(vertex_name, 'vertex'), 'Pre-draw refresh published an ownerless UI artifact'
-    scene.create_game_object('UI dependency camera').add_component('Camera')
+    camera = scene.create_game_object('UI dependency camera')
+    camera.transform.position = Vector3(0, 0, -2)
+    camera.add_component('Camera')
+    world_object = scene.create_game_object('World UI dependency quad') if world else None
     # Target creation may replace the native UI backend. Borrow the renderer
     # only after the final target signature is established.
     engine.resize_game_render_target(64, 64)
@@ -108,8 +160,12 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
             renderer.begin_frame(64, 64)
             renderer.begin_command_packet()
             try:
+                if world:
+                    renderer.begin_world_object(world_object, 32, 32)
                 _bind_runtime_material(renderer, draw_list, {'_native': material._native, 'color': (1, 1, 1, 1)})
                 renderer.add_filled_rect(draw_list, 8, 8, 56, 56)
+                if world:
+                    renderer.end_world_element()
                 packet = renderer.end_command_packet()
             except BaseException:
                 renderer.abort_command_packet()

@@ -69,6 +69,7 @@ const evidenceRoutes = [
     "/hub-catalog.json",
     "/release.json",
     "/release-notes.json",
+    ...await namedRoutes("data/roadmap", /\.json$/),
     ...await namedRoutes("css", /\.css$/),
     ...await namedRoutes("js", /\.js$/),
     ...fontRoutes,

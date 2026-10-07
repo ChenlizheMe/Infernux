@@ -29,10 +29,10 @@
     <link rel="apple-touch-icon" sizes="180x180" href="assets/infernux-apple-touch-icon.png">
     <link rel="manifest" href="site.webmanifest">
     <link rel="stylesheet" href="css/fonts.css?v=2">
-    <link rel="stylesheet" href="css/style.css?v=23">
-    <link rel="stylesheet" href="css/home.css?v=2">
+    <link rel="stylesheet" href="css/style.css?v=24">
+    <link rel="stylesheet" href="css/home.css?v=3">
     <link rel="stylesheet" href="css/docs-search.css?v=3">
-    <link rel="stylesheet" href="css/mission.css?v=2">
+    <link rel="stylesheet" href="css/mission.css?v=3">
     <link rel="stylesheet" href="css/fontawesome-subset.css?v=6.4.0">
 </head>
 <body>
@@ -117,27 +117,11 @@
                             <i class="hero-panel-rail-line"></i>
                             <span>LIVE INPUT</span>
                         </div>
-                        <div class="code-preview">
-                            <div class="code-header">
-                                <span class="dot red"></span>
-                                <span class="dot yellow"></span>
-                                <span class="dot green"></span>
-                                <span class="filename">spin.py</span>
-                                <button class="code-copy-action" type="button" data-home-code-copy data-state="idle" aria-controls="home-starter-code" aria-describedby="home-code-copy-status" aria-label="Copy starter component" title="Copy starter component">
-                                    <i class="fas fa-copy" aria-hidden="true"></i>
-                                    <span>Copy starter component</span>
-                                </button>
-                            </div>
-                            <pre><code id="home-starter-code"><span class="keyword">from</span> Infernux <span class="keyword">import</span> InxComponent, Vector3, serialized_field
-
-
-<span class="keyword">class</span> <span class="class-name">Spin</span>(InxComponent):
-    speed: float = serialized_field(default=<span class="number">90.0</span>, range=(<span class="number">0.0</span>, <span class="number">360.0</span>))
-
-    <span class="keyword">def</span> <span class="function">update</span>(<span class="param">self</span>, delta_time: float) -&gt; <span class="type">None</span>:
-        <span class="param">self</span>.transform.rotate(Vector3(<span class="number">0.0</span>, <span class="param">self</span>.speed * delta_time, <span class="number">0.0</span>))</code></pre>
-                            <p class="visually-hidden" id="home-code-copy-status" role="status" aria-live="polite" aria-atomic="true"></p>
-                        </div>
+                        <a class="hero-capture" href="#runtime-capture" aria-label="View the Infernux renderer showcase">
+                            <picture><source srcset="assets/demo-runtime.avif" type="image/avif"><img src="assets/demo-runtime.webp" width="1920" height="1032" alt="Infernux editor rendering the Voxel Continent showcase" fetchpriority="high" decoding="async"></picture>
+                            <span class="capture-label"><span>INFERNUX / VIEWPORT</span><span>65,536 OBJECTS ↗</span></span>
+                        </a>
+                    </div>
                         <div class="engineering-board">
                             <div class="engineering-board-head">
                                 <span>ENGINEERING / RUNTIME</span>
@@ -171,7 +155,6 @@
                                 </article>
                             </div>
                         </div>
-                    </div>
                 </div>
                 <div class="hero-signal-band" aria-hidden="true">
                     <span>WORLD DATA / PYTHON / C++ / GPU</span>
@@ -179,6 +162,30 @@
                     <span>PLAYBACK 041</span>
                     <b>LIVE</b>
                 </div>
+            </section>
+
+            <section class="starter-console" aria-label="Python starter component">
+                        <div class="code-preview">
+                            <div class="code-header">
+                                <span class="dot red"></span>
+                                <span class="dot yellow"></span>
+                                <span class="dot green"></span>
+                                <span class="filename">spin.py</span>
+                                <button class="code-copy-action" type="button" data-home-code-copy data-state="idle" aria-controls="home-starter-code" aria-describedby="home-code-copy-status" aria-label="Copy starter component" title="Copy starter component">
+                                    <i class="fas fa-copy" aria-hidden="true"></i>
+                                    <span>Copy starter component</span>
+                                </button>
+                            </div>
+                            <pre><code id="home-starter-code"><span class="keyword">from</span> Infernux <span class="keyword">import</span> InxComponent, Vector3, serialized_field
+
+
+<span class="keyword">class</span> <span class="class-name">Spin</span>(InxComponent):
+    speed: float = serialized_field(default=<span class="number">90.0</span>, range=(<span class="number">0.0</span>, <span class="number">360.0</span>))
+
+    <span class="keyword">def</span> <span class="function">update</span>(<span class="param">self</span>, delta_time: float) -&gt; <span class="type">None</span>:
+        <span class="param">self</span>.transform.rotate(Vector3(<span class="number">0.0</span>, <span class="param">self</span>.speed * delta_time, <span class="number">0.0</span>))</code></pre>
+                            <p class="visually-hidden" id="home-code-copy-status" role="status" aria-live="polite" aria-atomic="true"></p>
+                        </div>
             </section>
 
             <section class="manifesto-strip">
@@ -397,9 +404,9 @@
         </div>
     </footer>
 
-    <script src="js/i18n-index.js?v=2"></script>
+    <script src="js/i18n-index.js?v=3"></script>
     <script src="js/i18n.js?v=20"></script>
-    <script src="js/vendor/gsap.min.js?v=3.13.0"></script><script src="js/vendor/ScrollTrigger.min.js?v=3.13.0"></script><script src="js/main.js?v=16"></script><script src="js/motion.js?v=1"></script>
+    <script src="js/vendor/gsap.min.js?v=3.13.0"></script><script src="js/vendor/ScrollTrigger.min.js?v=3.13.0"></script><script src="js/main.js?v=16"></script><script src="js/motion.js?v=2"></script>
     <script src="js/docs-search.js?v=6"></script>
     <script src="js/home.js?v=2"></script>
     <script type="application/ld+json">

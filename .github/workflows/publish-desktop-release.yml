@@ -227,7 +227,7 @@ jobs:
           PY
 
       - name: Verify Cloudflare destinations against the actual wheel plugin catalog
-        run: node scripts/release/test-r2-upload-worker.mjs dist/official-plugin-upload-catalog.json
+        run: node tests/release/test-r2-upload-worker.mjs dist/official-plugin-upload-catalog.json
 
       - name: Create the release when needed
         id: github_release

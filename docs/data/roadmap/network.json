@@ -1,0 +1,388 @@
+{
+  "key": "network",
+  "titleKey": "roadmap.galaxy.network.title",
+  "branches": [
+    {
+      "en": "TRANSPORT",
+      "zh": "传输",
+      "leaves": [
+        ["Socket layer","Socket 层","future"],
+        ["Reliable channels","可靠通道","future"],
+        ["Datagrams","数据报","future"],
+        ["Encryption","加密","future"],
+        ["Connection lifecycle","连接生命周期","future"],
+        ["Congestion control","拥塞控制","future"],
+        ["Packet pacing","数据包节奏控制","future"],
+        ["Transport capability negotiation","传输能力协商","future"]
+      ]
+    },
+    {
+      "en": "REPLICATION",
+      "zh": "复制",
+      "leaves": [
+        ["Snapshot delta","快照增量","future"],
+        ["Entity ownership","实体所有权","future"],
+        ["Interest filters","兴趣过滤","future"],
+        ["Bandwidth budget","带宽预算","future"],
+        ["Replication schema versions","复制结构版本","future"],
+        ["Spawn / despawn replication","生成与销毁复制","future"],
+        ["State quantization","状态量化","future"],
+        ["Replication diagnostics","复制诊断","future"]
+      ]
+    },
+    {
+      "en": "SERVER",
+      "zh": "服务器",
+      "leaves": [
+        ["Dedicated runtime","专用运行时","future"],
+        ["Headless player","无窗口 Player","future"],
+        ["Match sessions","匹配会话","future"],
+        ["Process supervision","进程监管","future"],
+        ["Server tick budgets","服务器 Tick 预算","future"],
+        ["Session persistence","会话持久化","future"],
+        ["Graceful shutdown","平滑关闭","future"],
+        ["Server telemetry","服务器遥测","future"]
+      ]
+    },
+    {
+      "en": "DIAGNOSTICS",
+      "zh": "诊断",
+      "leaves": [
+        ["Latency traces","延迟追踪","future"],
+        ["Network replay","网络回放","future"],
+        ["Packet inspection","数据包检查","future"],
+        ["Connection health","连接健康度","future"],
+        ["Packet loss simulation","丢包模拟","future"],
+        ["Jitter simulation","抖动模拟","future"],
+        ["Bandwidth traces","带宽追踪","future"],
+        ["Desync inspection","失同步检查","future"]
+      ]
+    },
+    {
+      "en": "Time & synchronization",
+      "zh": "时间与同步",
+      "leaves": [
+        ["Clock offset estimation","时钟偏移估计","future"],
+        ["Tick synchronization","Tick 同步","future"],
+        ["Interpolation buffers","插值缓冲","future"],
+        ["Lag compensation","延迟补偿","future"],
+        ["Client prediction","客户端预测","future"],
+        ["Server reconciliation","服务器协调纠正","future"],
+        ["Rollback history","回滚历史","future"],
+        ["Deterministic input exchange","确定性输入交换","future"]
+      ]
+    },
+    {
+      "en": "Session services",
+      "zh": "会话服务",
+      "leaves": [
+        ["Lobby lifecycle","大厅生命周期","future"],
+        ["Matchmaking contracts","匹配服务契约","future"],
+        ["Player identity","玩家身份","future"],
+        ["Reconnect tokens","重连令牌","future"],
+        ["Host migration","主机迁移","future"],
+        ["Party membership","组队成员管理","future"],
+        ["Spectator sessions","观战会话","future"],
+        ["Session discovery","会话发现","future"]
+      ]
+    },
+    {
+      "en": "Security boundaries",
+      "zh": "网络安全边界",
+      "leaves": [
+        ["Authenticated handshakes","身份认证握手","future"],
+        ["Message validation","消息验证","future"],
+        ["Rate limits","速率限制","future"],
+        ["Replay protection","重放防护","future"],
+        ["Authority validation","权威验证","future"],
+        ["Untrusted payload limits","不可信负载限制","future"],
+        ["Abuse diagnostics","滥用诊断","future"],
+        ["Credential lifecycle","凭证生命周期","future"]
+      ]
+    },
+    {
+      "en": "Networked worlds",
+      "zh": "联网世界",
+      "leaves": [
+        ["Interest regions","兴趣区域","future"],
+        ["Entity relevance policies","实体相关性策略","future"],
+        ["World partition handoff","世界分区交接","future"],
+        ["Cross-scene replication","跨场景复制","future"],
+        ["Persistent entity IDs","持久实体标识","future"],
+        ["Large-session budgets","大规模会话预算","future"],
+        ["Distributed world ownership","分布式世界归属","future"],
+        ["World-state checkpointing","世界状态检查点","future"]
+      ]
+    },
+    {
+      "en": "Protocol tooling",
+      "zh": "协议工具",
+      "leaves": [
+        ["Protocol schema compiler","协议结构编译器","future"],
+        ["Packet inspector","数据包检查器","future"],
+        ["Protocol compatibility tests","协议兼容性测试","future"],
+        ["Network scenario runner","网络场景执行器","future"],
+        ["Multi-client test harness","多客户端测试框架","future"],
+        ["Recorded session playback","录制会话回放","future"],
+        ["Server load generation","服务器负载生成","future"],
+        ["Network regression gates","网络回归检查","future"]
+      ]
+    },
+    {
+      "en": "Remote neural execution",
+      "zh": "远程神经执行",
+      "leaves": [
+        ["Inference RPC contract","推理 RPC 契约","future"],
+        ["Observation serialization","观测序列化","future"],
+        ["Action response deadlines","动作响应时限","future"],
+        ["Model version negotiation","模型版本协商","future"],
+        ["Remote policy provenance","远程策略来源","future"],
+        ["Batched inference transport","批量推理传输","future"],
+        ["Inference cancellation","推理取消","future"],
+        ["Remote execution traces","远程执行追踪","future"]
+      ]
+    },
+    {
+      "en": "Datagram transport details",
+      "zh": "数据报传输细节",
+      "leaves": [
+        ["Connection identifier allocation","连接标识分配","planned"],
+        ["Datagram sequence windows","数据报序号窗口","planned"],
+        ["Acknowledgment bitfields","确认位域","planned"],
+        ["Reliable message fragmentation","可靠消息分片","planned"],
+        ["Fragment reassembly limits","分片重组上限","planned"],
+        ["Retransmission timer estimation","重传计时估计","planned"],
+        ["Congestion window control","拥塞窗口控制","planned"],
+        ["Packet pacing queues","数据包节奏队列","planned"],
+        ["MTU path discovery","路径 MTU 发现","planned"],
+        ["Channel priority scheduling","通道优先级调度","planned"],
+        ["Ordered delivery gaps","有序交付缺口","planned"],
+        ["Unordered reliable delivery","无序可靠交付","planned"],
+        ["Datagram duplication rejection","重复数据报拒绝","planned"],
+        ["Connection idle timeouts","连接空闲超时","planned"],
+        ["Socket backpressure reporting","套接字背压报告","planned"],
+        ["Transport byte accounting","传输字节统计","planned"]
+      ]
+    },
+    {
+      "en": "Replication encoding",
+      "zh": "复制编码细节",
+      "leaves": [
+        ["Network entity generation IDs","网络实体代际标识","planned"],
+        ["Replicated field descriptors","复制字段描述","planned"],
+        ["Snapshot baseline selection","快照基线选择","planned"],
+        ["Field change masks","字段变更遮罩","planned"],
+        ["Quantized position encoding","量化位置编码","planned"],
+        ["Quaternion bit packing","四元数位打包","planned"],
+        ["Velocity range quantization","速度范围量化","planned"],
+        ["Sparse component delta encoding","稀疏组件增量编码","planned"],
+        ["Baseline expiry policy","基线过期策略","planned"],
+        ["Full snapshot resynchronization","完整快照重新同步","planned"],
+        ["Spawn despawn sequence pairing","生成销毁序列配对","planned"],
+        ["Replication schema negotiation","复制结构协商","planned"],
+        ["Replicated reference resolution","复制引用解析","planned"],
+        ["Replication payload budgets","复制载荷预算","planned"],
+        ["Snapshot compression dictionaries","快照压缩字典","planned"],
+        ["Replication bit-cost inspection","复制位成本检查","planned"]
+      ]
+    },
+    {
+      "en": "Prediction mechanics",
+      "zh": "预测细节",
+      "leaves": [
+        ["Client input sequence stamping","客户端输入序号标记","planned"],
+        ["Input acknowledgment tracking","输入确认追踪","planned"],
+        ["Predicted state ring buffers","预测状态环形缓冲","planned"],
+        ["Authoritative correction thresholds","权威修正阈值","planned"],
+        ["Input resimulation windows","输入重模拟时间窗","planned"],
+        ["Predicted event deduplication","预测事件去重","planned"],
+        ["Correction smoothing envelopes","修正平滑包络","planned"],
+        ["Prediction ownership changes","预测归属变化","planned"],
+        ["Prediction dependency closure","预测依赖闭包","planned"],
+        ["Physics prediction state capture","物理预测状态捕获","planned"],
+        ["Prediction history capacity","预测历史容量","planned"],
+        ["Missing-input server policy","服务端缺输入策略","planned"],
+        ["Late input acceptance windows","迟到输入接受时间窗","planned"],
+        ["Prediction error overlays","预测误差叠层","planned"],
+        ["Prediction CPU budgets","预测 CPU 预算","planned"],
+        ["Prediction rollback fixtures","预测回滚夹具","planned"]
+      ]
+    },
+    {
+      "en": "Network clocks",
+      "zh": "网络时钟细节",
+      "leaves": [
+        ["Round-trip sample filtering","往返时延样本过滤","planned"],
+        ["Clock drift regression","时钟漂移回归","planned"],
+        ["Asymmetric latency estimates","非对称延迟估计","planned"],
+        ["Server tick offset smoothing","服务端 Tick 偏移平滑","planned"],
+        ["Jitter buffer adaptation","抖动缓冲适应","planned"],
+        ["Interpolation delay selection","插值延迟选择","planned"],
+        ["Snapshot arrival timestamps","快照到达时间戳","planned"],
+        ["Remote timeline discontinuities","远端时间线不连续","planned"],
+        ["Lag-compensation rewind limits","延迟补偿回溯限制","planned"],
+        ["Hit-query historical poses","命中查询历史姿态","planned"],
+        ["Clock resync on reconnect","重连时钟重同步","planned"],
+        ["Timestamp wraparound rules","时间戳回绕规则","planned"],
+        ["Time dilation correction limits","时间膨胀修正上限","planned"],
+        ["Network tick catch-up budgets","网络 Tick 追赶预算","planned"],
+        ["Clock confidence metrics","时钟置信指标","planned"],
+        ["Network timeline visualization","网络时间线可视化","planned"]
+      ]
+    },
+    {
+      "en": "Interest management details",
+      "zh": "兴趣管理细节",
+      "leaves": [
+        ["Spatial interest grid indexing","空间兴趣网格索引","planned"],
+        ["Observer subscription regions","观察者订阅区域","planned"],
+        ["Relevance enter-exit hysteresis","相关性进出滞后","planned"],
+        ["Distance update frequency tiers","距离更新频率分级","planned"],
+        ["Visibility-based relevance","基于可见性的相关性","planned"],
+        ["Team-based relevance filters","基于队伍的相关性过滤","planned"],
+        ["Dormant entity wake rules","休眠实体唤醒规则","planned"],
+        ["Replication priority accumulation","复制优先级累积","planned"],
+        ["Per-client bandwidth allocation","逐客户端带宽分配","planned"],
+        ["Large-object relevance bounds","大型对象相关性边界","planned"],
+        ["Cross-region reference handoff","跨区域引用交接","planned"],
+        ["Interest query snapshotting","兴趣查询快照化","planned"],
+        ["Relevance change batching","相关性变更批次","planned"],
+        ["Spectator interest policies","观战兴趣策略","planned"],
+        ["Interest churn counters","兴趣频繁切换计数","planned"],
+        ["Interest region debug maps","兴趣区域调试图","planned"]
+      ]
+    },
+    {
+      "en": "Session lifecycle details",
+      "zh": "会话生命周期细节",
+      "leaves": [
+        ["Session admission tickets","会话准入票据","planned"],
+        ["Lobby membership revisions","大厅成员修订号","planned"],
+        ["Ready-state synchronization","准备状态同步","planned"],
+        ["Match allocation requests","对局分配请求","planned"],
+        ["Server assignment leases","服务器分配租约","planned"],
+        ["Player reconnect grace periods","玩家重连宽限期","planned"],
+        ["Session resume state handoff","会话恢复状态交接","planned"],
+        ["Host election priorities","主机选举优先级","planned"],
+        ["Host migration checkpoints","主机迁移检查点","planned"],
+        ["Party invitation lifetimes","组队邀请生命周期","planned"],
+        ["Spectator join snapshots","观战加入快照","planned"],
+        ["Session capacity reservations","会话容量预留","planned"],
+        ["Session shutdown notices","会话关闭通知","planned"],
+        ["Abandoned session cleanup","遗弃会话清理","planned"],
+        ["Session region preferences","会话区域偏好","planned"],
+        ["Session lifecycle trace IDs","会话生命周期追踪标识","planned"]
+      ]
+    },
+    {
+      "en": "Server world operations",
+      "zh": "服务端世界操作",
+      "leaves": [
+        ["Headless world bootstrap","无窗口世界启动","planned"],
+        ["Server world tick isolation","服务端世界 Tick 隔离","planned"],
+        ["World shard ownership leases","世界分片归属租约","planned"],
+        ["Shard boundary transfer records","分片边界转移记录","planned"],
+        ["Cross-shard event ordering","跨分片事件顺序","planned"],
+        ["Server state checkpoint intervals","服务端状态检查点间隔","planned"],
+        ["Checkpoint write backpressure","检查点写入背压","planned"],
+        ["Server process health probes","服务端进程健康探测","planned"],
+        ["Server crash recovery records","服务端崩溃恢复记录","planned"],
+        ["Drain-mode player migration","排空模式玩家迁移","planned"],
+        ["Server deployment version gates","服务端部署版本约束","planned"],
+        ["Per-world CPU quotas","逐世界 CPU 配额","planned"],
+        ["Server memory residency caps","服务端内存驻留上限","planned"],
+        ["Server simulation overload policy","服务端模拟过载策略","planned"],
+        ["World shard load metrics","世界分片负载指标","planned"],
+        ["Server soak scenario suites","服务端耐久场景套件","planned"]
+      ]
+    },
+    {
+      "en": "Protocol trust details",
+      "zh": "协议信任细节",
+      "leaves": [
+        ["Handshake transcript binding","握手记录绑定","planned"],
+        ["Connection key rotation","连接密钥轮换","planned"],
+        ["Packet nonce allocation","数据包随机数分配","planned"],
+        ["Replay window bitmaps","重放窗口位图","planned"],
+        ["Message length bounds","消息长度边界","planned"],
+        ["Decode recursion limits","解码递归上限","planned"],
+        ["RPC capability checks","RPC 能力检查","planned"],
+        ["Entity authority ownership checks","实体权威归属检查","planned"],
+        ["Per-message rate budgets","逐消息速率预算","planned"],
+        ["Burst token bucket limits","突发令牌桶限制","planned"],
+        ["Authentication expiry handling","认证过期处理","planned"],
+        ["Disconnect reason taxonomy","断线原因分类","planned"],
+        ["Untrusted string normalization","不可信字符串规范化","planned"],
+        ["Protocol fuzz input corpus","协议模糊输入语料","planned"],
+        ["Malformed packet attribution","畸形数据包归因","planned"],
+        ["Security event redaction","安全事件脱敏","planned"]
+      ]
+    },
+    {
+      "en": "Network test laboratory",
+      "zh": "网络测试环境",
+      "leaves": [
+        ["Seeded packet loss models","种子化丢包模型","planned"],
+        ["Burst-loss trace injection","突发丢包轨迹注入","planned"],
+        ["Packet reorder windows","数据包乱序窗口","planned"],
+        ["Bandwidth cap emulation","带宽上限模拟","planned"],
+        ["Latency asymmetry scenarios","延迟非对称场景","planned"],
+        ["Disconnect reconnect scripts","断连重连脚本","planned"],
+        ["Multi-client deterministic inputs","多客户端确定性输入","planned"],
+        ["Network capture sanitization","网络捕获清理","planned"],
+        ["Packet-to-entity correlation","数据包实体关联","planned"],
+        ["Protocol version matrix fixtures","协议版本矩阵夹具","planned"],
+        ["Snapshot baseline failure fixtures","快照基线故障夹具","planned"],
+        ["Replication convergence assertions","复制收敛检查","planned"],
+        ["Network memory leak scenarios","网络内存泄漏场景","planned"],
+        ["Server load ramp profiles","服务端负载渐增配置","planned"],
+        ["Network percentile dashboards","网络分位统计面板","planned"],
+        ["Desync trace minimization","失同步轨迹最小化","planned"]
+      ]
+    },
+    {
+      "en": "Remote inference transport details",
+      "zh": "远程推理传输细节",
+      "leaves": [
+        ["Inference request correlation IDs","推理请求关联标识","planned"],
+        ["Observation packet chunking","观测数据包分块","planned"],
+        ["Tensor transport compression","张量传输压缩","planned"],
+        ["Inference deadline propagation","推理截止时间传播","planned"],
+        ["Action response sequence gates","动作响应序列约束","planned"],
+        ["Inference retry idempotency contracts","推理重试幂等契约","planned"],
+        ["Cancelled response disposal","取消响应处置","planned"],
+        ["Remote model capability exchange","远程模型能力交换","planned"],
+        ["Model revision pinning","模型修订固定","planned"],
+        ["Batched request fairness","批量请求公平性","planned"],
+        ["Remote policy state tokens","远程策略状态令牌","planned"],
+        ["Inference transport backpressure","推理传输背压","planned"],
+        ["Inference admission quotas","推理准入配额","planned"],
+        ["Observation privacy filters","观测隐私过滤","planned"],
+        ["Remote inference cost attribution","远程推理成本归因","planned"],
+        ["Remote inference timing traces","远程推理时序追踪","planned"]
+      ]
+    },
+    {
+      "en": "RPC execution details",
+      "zh": "RPC 执行细节",
+      "leaves": [
+        ["RPC method identifier tables","RPC 方法标识表","planned"],
+        ["RPC argument serialization","RPC 参数序列化","planned"],
+        ["RPC return correlation","RPC 返回关联","planned"],
+        ["RPC invocation authority rules","RPC 调用权威规则","planned"],
+        ["RPC target generation binding","RPC 目标代际绑定","planned"],
+        ["RPC reliable-channel selection","RPC 可靠通道选择","planned"],
+        ["RPC ordered execution domains","RPC 有序执行域","planned"],
+        ["RPC tick scheduling stamps","RPC Tick 调度戳","planned"],
+        ["RPC deadline cancellation","RPC 截止取消","planned"],
+        ["RPC duplicate execution policy","RPC 重复执行策略","planned"],
+        ["RPC payload size ceilings","RPC 载荷尺寸上限","planned"],
+        ["RPC fan-out rate budgets","RPC 扇出速率预算","planned"],
+        ["RPC exception result encoding","RPC 异常结果编码","planned"],
+        ["RPC version compatibility tables","RPC 版本兼容表","planned"],
+        ["RPC invocation trace views","RPC 调用追踪视图","planned"],
+        ["RPC replay fixture streams","RPC 回放夹具流","planned"]
+      ]
+    }
+  ]
+}

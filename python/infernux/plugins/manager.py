@@ -281,7 +281,6 @@ class PluginManager:
         manager = cls(normalized, engine=engine, runtime=runtime)
         cls._instance = manager
         if not runtime:
-            mirrored_resources = os.path.join(normalized, "Library", "Resources")
             from .official import (
                 OfficialCatalogError,
                 install_bundled_packages,
@@ -289,7 +288,7 @@ class PluginManager:
             )
 
             try:
-                sync_official_registry(normalized, resources_root=mirrored_resources)
+                sync_official_registry(normalized)
             except OfficialCatalogError as exc:
                 manager.official_catalog_error = str(exc)
                 Debug.log_warning(

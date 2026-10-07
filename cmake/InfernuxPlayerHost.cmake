@@ -9,14 +9,14 @@ if(WIN32)
 endif()
 
 add_executable(InfernuxPlayerHost
-    cpp/infernux/tools/launcher/InfernuxPlayerLauncher.cpp
-    cpp/infernux/tools/launcher/PlayerHost.cpp
-    cpp/infernux/tools/launcher/PlayerHost.h
+    cpp/apps/player/InfernuxPlayerLauncher.cpp
+    cpp/apps/player/PlayerHost.cpp
+    cpp/apps/player/PlayerHost.h
 )
 if(WIN32)
     target_sources(InfernuxPlayerHost PRIVATE
-        cpp/infernux/tools/launcher/InfernuxPlayerLauncher.rc
-        cpp/infernux/tools/launcher/InfernuxPlayerLauncher.manifest
+        cpp/apps/player/InfernuxPlayerLauncher.rc
+        cpp/apps/player/InfernuxPlayerLauncher.manifest
     )
     set_target_properties(InfernuxPlayerHost PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()

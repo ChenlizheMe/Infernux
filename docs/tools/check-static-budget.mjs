@@ -87,6 +87,14 @@ async function rootRoutePayload(pageName) {
 
   let bytes = await size(pageFile);
   for (const file of runtimeFiles) bytes += await size(file);
+  // Only the selected roadmap is requested. Charge the largest category to
+  // the first-view budget so moving content out of JS cannot hide its cost.
+  if (pageName === 'roadmap.html') {
+    const maps = await files(path.join(docsRoot, 'data', 'roadmap'));
+    const sizes = await Promise.all(maps.filter(file => file.endsWith('.json')).map(file => enforce(file, 64 * 1024, 'roadmap category')));
+    bytes += Math.max(...sizes);
+    if (sizes.reduce((sum, value) => sum + value, 0) > 400 * 1024) errors.push('Roadmap catalog exceeds 400 KiB');
+  }
   const deliveredImages = new Set();
 
   const pictureBlocks = [...html.matchAll(/<picture\b[\s\S]*?<\/picture>/gi)].map((match) => match[0]);
@@ -100,7 +108,9 @@ async function rootRoutePayload(pageName) {
     }
     if (candidates.length) {
       const uniqueCandidates = [...new Set(candidates)];
-      bytes += Math.max(...await Promise.all(uniqueCandidates.map(size)));
+      const uncachedCandidates = uniqueCandidates.filter(file => !deliveredImages.has(file));
+      // Reusing the same image in the hero and showcase costs one transfer.
+      if (uncachedCandidates.length) bytes += Math.max(...await Promise.all(uncachedCandidates.map(size)));
       uniqueCandidates.forEach((file) => deliveredImages.add(file));
     }
   }

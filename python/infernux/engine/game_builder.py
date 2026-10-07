@@ -5079,7 +5079,7 @@ os._exit(_exit_code)
         # The complete directory is small and is an engine resource contract,
         # not disposable Editor cache data.
         _queue_dir(
-            os.path.join(final_dir, "infernux", "resources", "project_templates")
+            os.path.join(final_dir, "infernux", "templates", "project")
         )
 
         # Build-time-only video packages — av (PyAV/ffmpeg) and imageio
