@@ -320,12 +320,16 @@ void RegisterResourceBindings(py::module_ &m)
             "friction_combine",
             [](const PhysicMaterial &material) { return static_cast<int>(material.GetFrictionCombine()); },
             [](PhysicMaterial &material, int value) {
+                if (value < 0 || value > static_cast<int>(PhysicsMaterialCombine::Maximum))
+                    throw std::invalid_argument("PhysicMaterial friction_combine is invalid");
                 material.SetFrictionCombine(static_cast<PhysicsMaterialCombine>(value));
             })
         .def_property(
             "bounce_combine",
             [](const PhysicMaterial &material) { return static_cast<int>(material.GetBounceCombine()); },
             [](PhysicMaterial &material, int value) {
+                if (value < 0 || value > static_cast<int>(PhysicsMaterialCombine::Maximum))
+                    throw std::invalid_argument("PhysicMaterial bounce_combine is invalid");
                 material.SetBounceCombine(static_cast<PhysicsMaterialCombine>(value));
             })
         .def("serialize_document",
