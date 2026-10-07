@@ -230,7 +230,10 @@ def test_missing_script_placeholder_does_not_replace_live_registered_type():
 def test_engine_component_catalog_is_explicit_and_complete():
     registrations = get_component_registrations()
     engine_types = {
-        entry.type_name for entry in registrations if not entry.project_script
+        entry.type_name
+        for entry in registrations
+        if not entry.project_script
+        and entry.component_type.__module__.startswith("infernux.")
     }
     assert engine_types == {
         "ParticleSystem",

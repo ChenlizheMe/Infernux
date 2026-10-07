@@ -221,7 +221,8 @@ def test_typed_creation_preserves_an_asset_arriving_during_save(
     sidecar = path.with_name(path.name + ".meta")
     external = b'{"authored":"another author"}\n'
     external_meta = b'{"authored":"their identity"}\n'
-    original_write = document_store.write_document_text
+    writer_name = "submit_document_text" if kind == "particle" else "write_document_text"
+    original_write = getattr(document_store, writer_name)
     attempts = []
 
     def concurrent_write(target, content, **options):
@@ -232,7 +233,7 @@ def test_typed_creation_preserves_an_asset_arriving_during_save(
         attempts.append(target)
         return original_write(target, content, **options)
 
-    monkeypatch.setattr(document_store, "write_document_text", concurrent_write)
+    monkeypatch.setattr(document_store, writer_name, concurrent_write)
     if kind == "data":
         success, error = ops.create_data_asset(
             str(directory), "Shared", SharedCreationData.__serialized_type_id__, database,

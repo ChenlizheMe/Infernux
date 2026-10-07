@@ -580,10 +580,12 @@ def test_particle_graph_save_as_clears_document_dirty_state(
         panel._save_as_dialog.name = "Smoke"
         core.modals.render(_ConfirmSaveAsContext())
 
-        from infernux.core.document_store import DocumentStore
-
         target = tmp_path / "Assets" / "VFX" / "Smoke.particlegraph"
-        DocumentStore.flush(str(target))
+        pending_writes = tuple(panel._authoring_document_controller._pending_writes.values())
+        assert len(pending_writes) == 1
+        # Completion owns the source, compiled artifact and runtime index.
+        # Flushing source IO alone can precede the particle worker's submission.
+        pending_writes[0].io_ticket.wait()
         panel._authoring_document_controller.poll_pending_writes()
 
         document = core.documents.require(panel.document_id)
