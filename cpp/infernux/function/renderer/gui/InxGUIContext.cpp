@@ -1,4 +1,5 @@
 #include "InxGUIContext.h"
+#include "EditorMenuItem.h"
 #include "EditorWindowBounds.h"
 #include "InxGUISemantics.h"
 #include "InxTextLayout.h"
@@ -1059,7 +1060,7 @@ void InxGUIContext::EndMenu()
 bool InxGUIContext::MenuItem(const std::string &label, const std::string &shortcut, bool selected, bool enabled)
 {
     const bool clicked =
-        ImGui::MenuItem(label.c_str(), shortcut.empty() ? nullptr : shortcut.c_str(), selected, enabled);
+        EditorMenuItem(label.c_str(), shortcut.empty() ? nullptr : shortcut.c_str(), selected, enabled);
     if (InxGUISemantics::IsCaptureEnabled())
         RecordSemanticItem("menu_item", label, enabled);
     return clicked;

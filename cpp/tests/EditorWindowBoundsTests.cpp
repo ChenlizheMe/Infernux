@@ -1,8 +1,107 @@
 #include <function/renderer/gui/EditorGuiLayoutReset.h>
 #include <function/renderer/gui/EditorWindowBounds.h>
+#include <function/renderer/gui/EditorWindowPresentation.h>
 
 #include <cassert>
 #include <iostream>
+#include <vector>
+
+static void TestWindowPresentation()
+{
+    ImGui::CreateContext();
+    auto &io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.DisplaySize = ImVec2(1000, 700);
+    io.DeltaTime = 1.0f / 60.0f;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    unsigned char *pixels;
+    int width, height;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+
+    for (int frame = 0; frame < 8; ++frame) {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(io.DisplaySize);
+        ImGui::Begin("Workspace", nullptr, ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoDocking);
+        const ImGuiID main = ImGui::GetID("Main");
+        if (frame == 0) {
+            ImGui::DockBuilderAddNode(main, ImGuiDockNodeFlags_DockSpace);
+            ImGui::DockBuilderSetNodeSize(main, io.DisplaySize);
+            ImGui::DockBuilderDockWindow("Game", main);
+            ImGui::DockBuilderDockWindow("Scene", main);
+            ImGui::DockBuilderFinish(main);
+        }
+        ImGui::DockSpace(main);
+        ImGui::End();
+        for (const char *name : {"Game", "Scene"}) {
+            ImGui::Begin(name);
+            ImGui::TextUnformatted(name);
+            ImGui::End();
+        }
+        ImGui::SetNextWindowPos(ImVec2(120, 100));
+        ImGui::SetNextWindowSize(ImVec2(320, 200));
+        ImGui::Begin("Hello", nullptr, ImGuiWindowFlags_NoDocking);
+        ImGui::TextUnformatted("Floating plugin panel");
+        ImGui::BeginChild("Content", ImVec2(250, 100));
+        ImGui::TextUnformatted("Plugin controls");
+        ImGui::EndChild();
+        ImGui::End();
+
+        ImGuiWindow *game = ImGui::FindWindowByName(frame % 2 ? "Game" : "Scene");
+        assert(game && game->DockNode);
+        ImGui::FocusWindow(game);
+        infernux::BringDockTreeToDisplayFront(game);
+        assert(ImGui::GetCurrentContext()->NavWindow == game);
+        ImGui::Render();
+
+        // Play/Stop switches docked focus repeatedly. The floating plugin
+        // must remain the actual pointer hit target above the workspace.
+        if (frame > 1) {
+            ImGuiWindow *hovered = nullptr;
+            ImGui::FindHoveredWindowEx(ImVec2(270, 180), false, &hovered, nullptr);
+            assert(hovered && hovered->RootWindow == ImGui::FindWindowByName("Hello"));
+        }
+    }
+
+    // Floating dock groups can still be raised, with their host/child order
+    // preserved. This must not turn every editor panel into an always-on-top.
+    for (int frame = 0; frame < 3; ++frame) {
+        ImGui::NewFrame();
+        if (frame == 0) {
+            const ImGuiID group = ImGui::GetID("Floating tools");
+            ImGui::DockBuilderAddNode(group);
+            ImGui::DockBuilderSetNodePos(group, ImVec2(150, 150));
+            ImGui::DockBuilderSetNodeSize(group, ImVec2(500, 300));
+            ImGuiID left, right;
+            ImGui::DockBuilderSplitNode(group, ImGuiDir_Left, 0.5f, &left, &right);
+            ImGui::DockBuilderDockWindow("ToolLeft", left);
+            ImGui::DockBuilderDockWindow("ToolRight", right);
+            ImGui::DockBuilderFinish(group);
+        }
+        for (const char *name : {"ToolLeft", "ToolRight"}) {
+            ImGui::Begin(name);
+            ImGui::TextUnformatted(name);
+            ImGui::End();
+        }
+        ImGui::Render();
+    }
+    ImGuiWindow *tool = ImGui::FindWindowByName("ToolLeft");
+    assert(tool->DockNode && ImGui::DockNodeGetRootNode(tool->DockNode)->IsFloatingNode());
+    ImGuiWindow *toolRoot = tool->RootWindowDockTree;
+    const ImVector<ImGuiWindow *> before = ImGui::GetCurrentContext()->Windows;
+    infernux::BringDockTreeToDisplayFront(tool);
+    std::vector<ImGuiWindow *> oldGroup, newGroup;
+    for (ImGuiWindow *window : before)
+        if (window->RootWindowDockTree == toolRoot)
+            oldGroup.push_back(window);
+    const auto &after = ImGui::GetCurrentContext()->Windows;
+    for (ImGuiWindow *window : after)
+        if (window->RootWindowDockTree == toolRoot)
+            newGroup.push_back(window);
+    assert(oldGroup == newGroup && oldGroup.size() >= 3);
+    assert(after.back()->RootWindowDockTree == toolRoot);
+    ImGui::DestroyContext();
+}
 
 static void RenderWindow(const char *name)
 {
@@ -125,4 +224,5 @@ int main()
     assert(renderPlugin(500).x == 500);
     assert(renderPlugin().x == 500);
     ImGui::DestroyContext();
+    TestWindowPresentation();
 }

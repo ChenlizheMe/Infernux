@@ -619,7 +619,7 @@ def test_native_modal_is_promoted_after_late_dock_focus_processing():
 
 
 def test_dock_presentation_moves_the_complete_tree_without_reordering_its_children():
-    source = Path("cpp/infernux/function/renderer/gui/InxGUI.cpp").read_text(
+    source = Path("cpp/infernux/function/renderer/gui/EditorWindowPresentation.h").read_text(
         encoding="utf-8"
     )
 

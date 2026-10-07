@@ -4,6 +4,7 @@
 #include "InxGUIContext.h"
 #include "InxGUISemantics.h"
 #include "InxTextLayout.h"
+#include "EditorWindowPresentation.h"
 #include <function/editor/EditorTheme.h>
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/TextureUploadBuilder.h>
@@ -78,24 +79,6 @@ class ImGuiBuildFrameGuard
   private:
     bool m_active = true;
 };
-
-void BringDockTreeToDisplayFront(ImGuiWindow *window)
-{
-    if (window == nullptr)
-        return;
-
-    ImGuiWindow *root = window->RootWindowDockTree != nullptr ? window->RootWindowDockTree : window;
-    ImGuiContext &imgui = *ImGui::GetCurrentContext();
-
-    // Dear ImGui's BringWindowToDisplayFront() moves only the supplied root
-    // pointer. A dock tree is represented by several entries in g.Windows;
-    // moving only its root destroys their established relative order and can
-    // leave a DockNode host above a sibling such as the editor toolbar. Move
-    // the complete presentation group instead, preserving its internal order.
-    std::stable_partition(imgui.Windows.begin(), imgui.Windows.end(), [root](ImGuiWindow *candidate) {
-        return candidate == nullptr || candidate->RootWindowDockTree != root;
-    });
-}
 
 void ConfigureEditorStyleDimensions(ImGuiStyle &style)
 {
@@ -848,7 +831,7 @@ void InxGUI::ApplyPendingDockTabSelections()
                 ImGuiWindow *rootWindow = window->RootWindow != nullptr ? window->RootWindow : window;
                 ImGui::FocusWindow(window);
                 ImGui::BringWindowToFocusFront(rootWindow);
-                ImGui::BringWindowToDisplayFront(rootWindow);
+                BringDockTreeToDisplayFront(window);
                 continue;
             }
             // A title-bar close removes the window from its dock node for the
@@ -885,8 +868,8 @@ void InxGUI::ApplyPendingDockTabSelections()
         // editor window can overlap the main dock host, and DockSpaceWindow
         // deliberately carries NoBringToFrontOnFocus. FocusWindow() therefore
         // updates navigation focus without necessarily changing the visible
-        // Z order. Raise the dock tree explicitly so logical focus and the
-        // pixels presented to the user cannot disagree.
+        // Z order. Present floating dock trees explicitly, while the main
+        // workspace retains its background layer below floating panels.
         //
         // A close-confirmation source only needs its dock tab restored. The
         // modal is promoted immediately after this pass and remains the final

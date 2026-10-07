@@ -1,5 +1,6 @@
 #include "MenuBarPanel.h"
 #include <function/renderer/gui/InxGUISemantics.h>
+#include <function/renderer/gui/EditorMenuItem.h>
 
 #include <algorithm>
 #include <cctype>
@@ -23,7 +24,7 @@ bool SemanticMenuItem(InxGUIContext *ctx, const std::string &label, const std::s
                       bool enabled, const std::string &semanticId)
 {
     const bool clicked =
-        ImGui::MenuItem(label.c_str(), shortcut.empty() ? nullptr : shortcut.c_str(), selected, enabled);
+        EditorMenuItem(label.c_str(), shortcut.empty() ? nullptr : shortcut.c_str(), selected, enabled);
     if (ctx && InxGUISemantics::IsCaptureEnabled())
         ctx->RecordSemanticItem("menu_item", label, enabled, semanticId);
     return clicked;
