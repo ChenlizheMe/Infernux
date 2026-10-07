@@ -27,6 +27,8 @@ struct TextLayoutParams
 {
     std::string text;
     std::string fontPath;
+    // Positive sizes are authored em units; zero inherits the current ImGui
+    // raster size and line height without applying em conversion a second time.
     float fontSize = 0.0f;
     float wrapWidth = 0.0f;
     float lineHeight = 1.0f;
@@ -457,10 +459,12 @@ inline TextLayoutResult LayoutText(const TextLayoutParams &params)
     TextLayoutResult result{};
     result.text = params.text;
     result.font = ResolveFont(params.fontPath);
-    const float logicalFontSize = ResolveFontSize(params.fontSize);
+    const float lineFontSize = ResolveFontSize(params.fontSize);
+    const float rasterScale = ResolveEmRasterScale(result.font);
+    const float logicalFontSize = params.fontSize > 0.0f ? lineFontSize : lineFontSize / rasterScale;
     result.logicalFontSize = logicalFontSize;
-    result.fontSize = logicalFontSize * ResolveEmRasterScale(result.font);
-    result.baseLineHeight = logicalFontSize;
+    result.fontSize = params.fontSize > 0.0f ? lineFontSize * rasterScale : lineFontSize;
+    result.baseLineHeight = lineFontSize;
     result.lineAdvance = result.baseLineHeight * std::max(params.lineHeight, 0.1f);
 
     if (result.font != nullptr) {

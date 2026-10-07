@@ -197,6 +197,40 @@ int main()
     assert(infernux::textlayout::ResolveGlyphFont(chainedLayout, static_cast<ImWchar>(0x4E2D)) ==
            chainedLayout.fallbackFonts[0]);
     assert(chainedLayout.totalWidth > 0.0f);
+    // Editor draw-list text with no authored size must match ordinary ImGui
+    // labels, including window scaling. ImGui sizes are already raster sizes;
+    // treating them as authored em sizes enlarges Timeline's labels again.
+    {
+        using namespace infernux::textlayout;
+        ImFont *previousDefault = DefaultFont();
+        ImFont *editorFont = ResolveFont(cjkFont);
+        SetDefaultFont(editorFont);
+        ImGui::Begin("Inherited editor font");
+        ImGui::PushFont(editorFont, 13.f);
+        for (float windowScale : {1.f, 1.25f, 1.75f}) {
+            ImGui::SetWindowFontScale(windowScale);
+            for (const std::string label : {"0.40", "时间轴", "变换", "预览"}) {
+                const auto layout = LayoutText({label});
+                const float size = ImGui::GetFontSize();
+                const auto expected = editorFont->CalcTextSizeA(size, FLT_MAX, 0.f, label.c_str());
+                std::cout << "EDITOR_DEFAULT_TEXT label=" << label << " scale=" << windowScale
+                          << " expected_size=" << size << " actual_size=" << layout.fontSize << std::endl;
+                assert(std::abs(layout.fontSize - size) < .002f);
+                assert(std::abs(layout.totalWidth - expected.x) < .002f);
+                assert(std::abs(layout.totalHeight - expected.y) < .002f);
+                for (const auto &glyph : layout.glyphs)
+                    assert(std::abs(glyph.fontSize - size) < .002f);
+
+                const auto authored = LayoutText({label, "", 18.f});
+                assert(std::abs(authored.fontSize - 18.f * ResolveEmRasterScale(editorFont)) < .002f);
+                assert(authored.logicalFontSize == 18.f);
+            }
+        }
+        ImGui::SetWindowFontScale(1.f);
+        ImGui::PopFont();
+        ImGui::End();
+        SetDefaultFont(previousDefault);
+    }
     for (const auto &fontPath : {std::string(), latinFont, cjkFont}) {
         for (const auto &label : {std::string("Play"), std::string("Agyp"), std::string("开始游戏"),
                                  std::string("Play\nAgain")}) {

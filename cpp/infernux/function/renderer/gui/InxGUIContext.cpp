@@ -170,11 +170,6 @@ ImTextureID ToImTextureID(uint64_t textureId)
     return static_cast<ImTextureID>(textureId);
 }
 
-float ResolveFontSize(float fontSize)
-{
-    return textlayout::ResolveFontSize(fontSize);
-}
-
 ImGuiPopupFlags ContextPopupFlagsForMouseButton(int mouseButton)
 {
     switch (mouseButton) {
@@ -2280,7 +2275,7 @@ void InxGUIContext::DrawText(float x, float y, const std::string &text, float r,
         return;
     ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a));
     const textlayout::TextLayoutResult layout =
-        textlayout::LayoutText({text, "", ResolveFontSize(fontSize), 0.0f, 1.0f, 0.0f});
+        textlayout::LayoutText({text, "", fontSize, 0.0f, 1.0f, 0.0f});
     if (!layout.lines.empty()) {
         drawList->PushTextureID(ImGui::GetIO().Fonts->TexRef);
         textlayout::RenderLine(drawList, layout, layout.lines.front(), x, y, col, 0.0f);
@@ -2296,7 +2291,7 @@ void InxGUIContext::DrawTextAligned(float minX, float minY, float maxX, float ma
         return;
 
     const textlayout::TextLayoutResult layout =
-        textlayout::LayoutText({text, "", ResolveFontSize(fontSize), 0.0f, 1.0f, 0.0f});
+        textlayout::LayoutText({text, "", fontSize, 0.0f, 1.0f, 0.0f});
 
     float boxW = maxX - minX;
     float boxH = maxY - minY;
@@ -2323,7 +2318,7 @@ void InxGUIContext::DrawTextRotated90Aligned(float minX, float minY, float maxX,
         return;
 
     const textlayout::TextLayoutResult layout =
-        textlayout::LayoutText({text, "", ResolveFontSize(fontSize), 0.0f, 1.0f, 0.0f});
+        textlayout::LayoutText({text, "", fontSize, 0.0f, 1.0f, 0.0f});
     const ImVec2 textSize(layout.totalWidth, layout.totalHeight);
 
     float rotatedW = textSize.y;
@@ -2396,7 +2391,7 @@ void InxGUIContext::DrawTextExAligned(float minX, float minY, float maxX, float 
         return;
 
     const textlayout::TextLayoutResult layout = textlayout::LayoutText(
-        {text, fontPath, ResolveFontSize(fontSize), wrapWidth, lineHeight, letterSpacing, fallbackFontPaths});
+        {text, fontPath, fontSize, wrapWidth, lineHeight, letterSpacing, fallbackFontPaths});
     const ImVec2 textSize(layout.totalWidth, layout.totalHeight);
 
     if (std::fabs(rotation) < 0.001f && !mirrorH && !mirrorV) {
@@ -2452,7 +2447,7 @@ std::pair<float, float> InxGUIContext::CalcTextSizeA(const std::string &text, fl
                                                      const std::vector<std::string> &fallbackFontPaths)
 {
     const textlayout::TextLayoutResult layout = textlayout::LayoutText(
-        {text, fontPath, ResolveFontSize(fontSize), 0.0f, lineHeight, letterSpacing, fallbackFontPaths});
+        {text, fontPath, fontSize, 0.0f, lineHeight, letterSpacing, fallbackFontPaths});
     return {layout.totalWidth, layout.totalHeight};
 }
 
@@ -2462,7 +2457,7 @@ std::pair<float, float> InxGUIContext::CalcTextSizeWrappedA(const std::string &t
                                                             const std::vector<std::string> &fallbackFontPaths)
 {
     const textlayout::TextLayoutResult layout = textlayout::LayoutText(
-        {text, fontPath, ResolveFontSize(fontSize), wrapWidth, lineHeight, letterSpacing, fallbackFontPaths});
+        {text, fontPath, fontSize, wrapWidth, lineHeight, letterSpacing, fallbackFontPaths});
     return {layout.totalWidth, layout.totalHeight};
 }
 
