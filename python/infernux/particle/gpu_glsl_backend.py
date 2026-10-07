@@ -2736,7 +2736,7 @@ class _StageCompiler:
                     f"bool {trigger_name} = false;",
                     f"vec4 {material_name} = vec4(0.0);",
                     f"uvec2 {collider_id_name} = uvec2(0u);",
-                    f"bool {hit_name} = inx_collide_scene("
+                    f"bool {hit_name} = inx_collide_scene(particle_index, "
                     f"{position_name}, {velocity_name}, {', '.join(operands[2:])}, "
                     f"{normal_name}, {point_name}, {relative_velocity_name}, "
                     f"{penetration_name}, {trigger_name}, {material_name}, "
@@ -5589,7 +5589,7 @@ def _shader_prelude(
     contact_glsl = _contact_bindings_glsl(7) if contact_enabled else ""
     contact_store_call = (
         """inx_store_contact(
-            gl_GlobalInvocationID.x, contact_hit_order, collider_id,
+            particle_index, contact_hit_order, collider_id,
             corrected_world_position,
             world_normal, relative_velocity, penetration, is_trigger,
             collider.material, simulation_scale);
@@ -6517,7 +6517,7 @@ bool inx_collision_capsule(InxParticleCollider collider, vec3 previous_world_pos
     return true;
 }}
 
-bool inx_collide_scene(inout vec3 simulation_position, inout vec3 simulation_velocity,
+bool inx_collide_scene(uint particle_index, inout vec3 simulation_position, inout vec3 simulation_velocity,
                        float particle_radius, uint layer_mask, bool include_triggers,
                        float restitution_scale, float friction_scale,
                        out vec3 simulation_collision_normal,

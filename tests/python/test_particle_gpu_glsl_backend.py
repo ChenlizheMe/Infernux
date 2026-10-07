@@ -1541,7 +1541,8 @@ def test_scene_collision_uses_shared_grid_abi_and_compiles_to_spirv():
     assert "uvec4(collider_id, contact_order, 1u)" in update_source
     assert "atomicMin(contact_counters.contact_min_particle_index, particle_index);" in update_source
     assert "atomicMax(contact_counters.contact_max_particle_index, particle_index);" in update_source
-    assert "gl_GlobalInvocationID.x, contact_hit_order, collider_id" in update_source
+    assert "inx_collide_scene(particle_index, " in update_source
+    assert "particle_index, contact_hit_order, collider_id" in update_source
     assert "struct InxParticleContactRecord" in update_source
 
     contact_solve_source = source.emitters[0].contact_solve
