@@ -409,7 +409,7 @@ Assets/
 | `modifies` | 读写资源，同时也算作需求 |
 | `creates` | 新建并发布给后续步骤的语义资源 |
 
-构建管线前，RenderStack 会收集所有启用 Slot 的 `requires ∪ modifies`。这样法线、Motion 等可选几何 Buffer 只会在有 Effect 需要时生成。到了挂载点，`EffectStage` 契约决定局部 Bus 能拿到哪些 Handle。需要深度或 Motion 的 Effect 应绑定并检查这些阶段局部资源；内置实现发现资源缺失时，会生成带 Stage 与 Slot 的编译诊断。
+构建管线前，RenderStack 会收集所有启用 Slot 的 `requires ∪ modifies`。这样法线、Motion 等可选几何 Buffer，以及只读、每相机的 `light_list`，只会在有 Effect 需要时准备。到了挂载点，`EffectStage` 契约决定局部 Bus 能拿到哪些 Handle。需要深度、Motion 或 `light_list` 的 Effect 应绑定并检查这些阶段局部资源；内置实现发现资源缺失时，会生成带 Stage 与 Slot 的编译诊断。`light_list` 是原生逐帧 View 资源，不是可写入或从项目导入的 Buffer。
 
 声明必须和 `setup_passes()` 一致。写下 `modifies = {"color"}` 不会自动修改颜色，Feature 仍要把替换后的 Handle 发布回 Bus。
 
