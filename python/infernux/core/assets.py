@@ -1133,13 +1133,17 @@ class AssetManager:
             pass
 
     @classmethod
-    def _compile_shader_dependency_runtime(cls, path: str) -> str:
-        if os.path.splitext(path)[1].lower() not in SHADER_DEPENDENCY_EXTENSIONS:
+    def _compile_shader_dependency_runtime(cls, path: str, previous_path: str = "") -> str:
+        if not any(os.path.splitext(source)[1].lower() in SHADER_DEPENDENCY_EXTENSIONS
+                   for source in (path, previous_path)):
             return ""
         native = cls._native_engine()
         if native is None or not native.has_renderer:
             return ""
-        error = native.reload_shader_runtime(path, "")
+        error = (native.reload_shader_runtime(path, "", previous_path) if previous_path
+                 else native.reload_shader_runtime(path, ""))
+        if previous_path:
+            cls._publish_compile_diagnostic(previous_path)
         cls._publish_compile_diagnostic(path, error)
         return error
 
@@ -1180,7 +1184,7 @@ class AssetManager:
             if mutations is not None and plan is not None:
                 mutations.abort_relocation(plan)
             return result
-        cls._finalize_asset_move(
+        runtime_error = cls._finalize_asset_move(
             old_path,
             new_path,
             guid=guid,
@@ -1197,6 +1201,11 @@ class AssetManager:
                     origin=origin,
                     operation_id=operation_id,
                 )
+        if runtime_error:
+            from infernux.lib import AssetMutationErrorCode
+            result.succeeded = False
+            result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+            result.error = runtime_error
         return result
 
     @classmethod
@@ -1207,7 +1216,7 @@ class AssetManager:
         *,
         guid: str = "",
         suppress_watcher_echo: bool = True,
-    ) -> None:
+    ) -> str:
         """Apply loaded-runtime and editor-cache consequences of a catalog move."""
         cls._invalidate_font_ui_cache(old_path)
         cls._invalidate_font_ui_cache(new_path)
@@ -1221,7 +1230,7 @@ class AssetManager:
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("moved", old_path, new_path)
         cls._invalidate_shader_authoring_cache(old_path)
-        cls._compile_shader_dependency_runtime(new_path)
+        runtime_error = cls._compile_shader_dependency_runtime(new_path, old_path)
         if os.path.splitext(old_path)[1].lower() != os.path.splitext(new_path)[1].lower():
             cls._invalidate_shader_authoring_cache(new_path)
         cls._invalidate_project_panel_cache()
@@ -1233,6 +1242,7 @@ class AssetManager:
             resources = ResourcesManager.instance()
             if resources is not None:
                 resources.reload_moved_script(old_path, new_path)
+        return runtime_error
 
     @classmethod
     def move_assets_batch(
@@ -1249,12 +1259,17 @@ class AssetManager:
         if len(results) != len(pairs) or any(not result for result in results):
             return results
         for (old_path, new_path), result in zip(pairs, results):
-            cls._finalize_asset_move(
+            runtime_error = cls._finalize_asset_move(
                 old_path,
                 new_path,
                 guid=str(result.guid or ""),
                 suppress_watcher_echo=suppress_watcher_echo,
             )
+            if runtime_error:
+                from infernux.lib import AssetMutationErrorCode
+                result.succeeded = False
+                result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+                result.error = runtime_error
         return results
 
     @classmethod

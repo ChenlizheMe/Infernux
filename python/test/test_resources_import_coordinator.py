@@ -674,6 +674,49 @@ def test_rejected_effect_relocation_retains_recovery_until_publication(monkeypat
     assert not handler._rejected_compiled_assets
 
 
+@pytest.mark.parametrize("extension", [".glsl", ".shadingmodel"])
+def test_rejected_dependency_move_is_terminal_and_exact_revert_can_recover(monkeypatch, tmp_path, extension):
+    from infernux.engine.interaction import DocumentRegistry
+
+    database = _AssetDatabaseProbe()
+    handler = ResourceChangeHandler(_EngineProbe(database))
+    _patch_asset_manager(monkeypatch, [])
+    old = tmp_path / ("Before" + extension)
+    new = tmp_path / ("After" + extension)
+    new.write_text("invalid source", encoding="utf-8")
+    database.guid_by_path[str(old)] = "stable-guid"
+    publications, notifications, errors = [], [], []
+    monkeypatch.setattr(AssetManager, "_compile_shader_dependency_runtime", classmethod(
+        lambda _cls, path, previous_path="": publications.append((path, previous_path)) or "dependency rejected"
+    ))
+    monkeypatch.setattr(AssetManager, "_publish_compile_diagnostic", staticmethod(lambda *_args: None))
+    monkeypatch.setattr(handler, "_notify_shader_reloaded", notifications.append)
+    monkeypatch.setattr(Debug, "log_error", errors.append)
+    handler._rejected_compiled_assets.add(path_key(str(old)))
+    handler.on_moved(_event(old, destination=new))
+    assert handler.process_pending_reloads(force=True) == 1
+    assert handler.pending_count == 0
+    assert handler.process_pending_reloads(force=True) == 0
+    assert publications == [(str(new), str(old))]
+    assert database.guid_by_path[str(new)] == "stable-guid"
+    assert handler._rejected_compiled_assets == {path_key(str(new))}
+    assert not notifications and not errors
+
+    # A restored durable document may have identical bytes; the outstanding
+    # rejected candidate still requires one successful runtime publication.
+    monkeypatch.setattr(DocumentRegistry.instance(), "durable_resource_content_changed", lambda *_a, **_kw: False)
+    reimports = []
+    monkeypatch.setattr(AssetManager, "reimport_asset", classmethod(
+        lambda _cls, path, **_kw: reimports.append(path) or _mutation("reimport", path, "stable-guid")
+    ))
+    new.write_text("valid original source", encoding="utf-8")
+    handler.on_modified(_event(new))
+    assert handler.process_pending_reloads(force=True) == 1
+    assert reimports == [str(new)]
+    assert notifications == [str(new)]
+    assert not handler._rejected_compiled_assets
+
+
 def test_document_store_atomic_replace_ignores_temp_events_and_reimports_target(monkeypatch, tmp_path):
     database = _AssetDatabaseProbe()
     handler = ResourceChangeHandler(_EngineProbe(database))

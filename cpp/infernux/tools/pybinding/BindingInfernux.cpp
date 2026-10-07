@@ -2169,7 +2169,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("is_shader_loaded", &Infernux::IsShaderLoaded, py::arg("shader_id"), py::arg("shader_type"),
              "Query published standalone stages and linked material programs without loading resources.")
         .def("reload_shader_runtime", &Infernux::ReloadShaderRuntime, py::arg("shader_path"),
-             py::arg("previous_shader_id"),
+             py::arg("previous_shader_id"), py::arg("previous_source_path") = "",
              "Compile an already-imported shader and refresh renderer state. Returns empty string on success.")
         .def("reload_texture", &Infernux::ReloadTexture, py::arg("texture_path"),
              "Invalidate cached texture and force materials to reload it")

@@ -4210,12 +4210,12 @@ bool Infernux::IsShaderLoaded(const std::string &shaderId, const std::string &sh
     return false;
 }
 
-std::string Infernux::ReloadShaderDependencies(const std::string &shaderPath)
+std::string Infernux::ReloadShaderDependencies(const std::string &shaderPath, const std::string &previousSourcePath)
 {
     auto &registry = AssetRegistry::Instance();
     auto *adb = registry.GetAssetDatabase();
     const auto ext = FromFsPath(ToFsPath(shaderPath).extension());
-    InxShaderLoader::SourceDependencyPublication dependencyPublication;
+    const InxShaderLoader::CompilationGuard compileGuard;
     // Query compiler subscriptions before rebuilding declaration maps.
     // Path subscriptions handle removal/rename; declaration subscriptions
     // handle newly created imports that were missing in a rejected root.
@@ -4228,9 +4228,23 @@ std::string Infernux::ReloadShaderDependencies(const std::string &shaderPath)
         if (!info.name.empty())
             declarationId = ext == ".shadingmodel" ? "shadingmodel/" + info.name : info.name;
     }
-    const auto roots = InxShaderLoader::GetDependentStageSources(shaderPath, declarationId);
+    auto roots = InxShaderLoader::GetDependentStageSources(shaderPath, declarationId);
+    if (!previousSourcePath.empty()) {
+        const auto previousRoots = InxShaderLoader::GetDependentStageSources(previousSourcePath);
+        roots.insert(roots.end(), previousRoots.begin(), previousRoots.end());
+        std::sort(roots.begin(), roots.end());
+        roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+    }
     InxShaderLoader::InvalidateDirectoryCache();
     InxShaderLoader::InvalidateTemplateCache();
+    return ReloadShaderSourceBatch(roots);
+}
+
+std::string Infernux::ReloadShaderSourceBatch(const std::vector<std::string> &roots)
+{
+    auto &registry = AssetRegistry::Instance();
+    auto *adb = registry.GetAssetDatabase();
+    InxShaderLoader::SourceDependencyPublication dependencyPublication;
     struct PreparedStage {
         std::string guid;
         std::shared_ptr<ShaderAsset> asset;
@@ -4410,7 +4424,8 @@ std::string Infernux::ReloadShaderDependencies(const std::string &shaderPath)
     return "";
 }
 
-std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const std::string &previousShaderId)
+std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const std::string &previousShaderId,
+                                        const std::string &previousSourcePath)
 {
     const InxShaderLoader::SourceDiagnosticScope sourceDiagnostics;
     // INXLOG_INFO("Infernux::ReloadShaderRuntime called: ", shaderPath);
@@ -4429,22 +4444,13 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
     std::filesystem::path path = ToFsPath(shaderPath);
     std::string ext = FromFsPath(path.extension());
 
-    if (ext == ".glsl" || ext == ".shadingmodel")
-        return ReloadShaderDependencies(shaderPath);
+    const auto previousExt = FromFsPath(ToFsPath(previousSourcePath).extension());
+    if (ext == ".glsl" || ext == ".shadingmodel" || previousExt == ".glsl" || previousExt == ".shadingmodel")
+        return ReloadShaderDependencies(shaderPath, previousSourcePath);
 
     if (ext != ".vert" && ext != ".frag") {
         INXLOG_ERROR("Infernux::ReloadShaderRuntime: unsupported shader extension: ", ext);
         return "Unsupported shader extension: " + ext;
-    }
-
-    // A failed edit must not leave a previously cached UI pipeline serving
-    // pixels from an obsolete shader. The next UI draw validates the edited
-    // source and fails explicitly if publication cannot succeed.
-    if (!previousShaderId.empty()) {
-        for (const auto &[stages, entry] : m_linkedShaderProgramCache) {
-            if (stages.UsesShader(previousShaderId))
-                m_renderer->InvalidateUIMaterialProgram(stages);
-        }
     }
 
     const std::string guid = adb->GetGuidFromPath(shaderPath);
@@ -4616,121 +4622,8 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
             return "";
         }
 
-        if (IsDirectStructuredStage(changedDescriptor)) {
-            registry.InvalidateAsset(guid);
-            auto shaderAsset = registry.LoadAsset<ShaderAsset>(guid, ResourceType::Shader);
-            if (!shaderAsset || !shaderAsset->HasVariant(ShaderCompileTarget::Forward)) {
-                const std::string compileError = InxShaderLoader::GetLastCompileError();
-                return compileError.empty() ? "Standalone ShaderInfo stage compilation failed" : compileError;
-            }
-            m_renderer->InvalidateShaderCache(changedShaderId, shaderAsset->shaderType);
-            RegisterShaderToRenderer(*shaderAsset);
-            m_renderer->RefreshMaterialsUsingShader(changedShaderId);
-            INXLOG_INFO("Infernux::ReloadShaderRuntime: reloaded standalone ShaderInfo stage '", changedShaderId, "'");
-            return "";
-        }
+        return ReloadShaderSourceBatch({shaderPath});
 
-        std::vector<ShaderStagePair> affectedPairs;
-        for (auto &[stages, cacheEntry] : m_linkedShaderProgramCache) {
-            if (!stages.UsesShader(changedShaderId))
-                continue;
-            affectedPairs.push_back(stages);
-            // Force regeneration even when only an imported library or a
-            // compiler template changed and the two root source files did not.
-            cacheEntry.sourceStamp = 0;
-            cacheEntry.failedSourceStamp = 0;
-            cacheEntry.lastError.clear();
-        }
-
-        registry.InvalidateAsset(guid);
-        std::unordered_set<ShaderStagePair, ShaderStagePairHash> preparedPairs;
-        std::string firstError;
-        bool foundMaterial = false;
-        const auto materials = registry.GetAllMaterials();
-        std::unordered_map<ShaderStagePair, std::shared_ptr<InxMaterial>, ShaderStagePairHash> materialForPair;
-        for (const auto &material : materials) {
-            if (!material)
-                continue;
-            const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
-            if (stages.UsesShader(changedShaderId))
-                materialForPair.try_emplace(stages, material);
-        }
-        // A linked UI program is published only by an actual UI draw, which
-        // also acquires its owner. Reload must inspect source domain without
-        // calling EnsureLinkedShaderProgramArtifact or RefreshMaterialPipeline
-        // for that pair: both publish ownerless artifacts.
-        const auto isUIProgramPair = [&](const ShaderStagePair &stages, const std::shared_ptr<InxMaterial> &material) {
-            const auto parseStage = [&](const std::string &shaderId, const char *stage,
-                                        const ShaderAssetReference *reference) {
-                if (shaderId == changedShaderId && ext == (std::string(stage) == "vertex" ? ".vert" : ".frag"))
-                    return changedDescriptor;
-                std::string stagePath;
-                if (reference && !reference->guid.empty())
-                    stagePath = adb->GetPathFromGuid(reference->guid);
-                else if (!reference || reference->pathHint.empty())
-                    stagePath = adb->FindShaderPathById(shaderId, stage);
-                std::vector<char> bytes;
-                if (stagePath.empty() || !adb->ReadFile(stagePath, bytes) || bytes.empty())
-                    return ShaderDescriptor{};
-                if (bytes.back() == '\0')
-                    bytes.pop_back();
-                return sourceParser.ParseShaderSource(std::string(bytes.begin(), bytes.end()), stagePath);
-            };
-            const auto vertex =
-                parseStage(stages.vertexShaderId, "vertex", material ? &material->GetVertShaderReference() : nullptr);
-            const auto fragment = parseStage(stages.fragmentShaderId, "fragment",
-                                             material ? &material->GetFragShaderReference() : nullptr);
-            return ShaderStageLinker::IsUIStagePair(vertex, fragment);
-        };
-        std::unordered_map<ShaderStagePair, bool, ShaderStagePairHash> uiPairs;
-        const auto preparePair = [&](const ShaderStagePair &stages) {
-            if (!preparedPairs.insert(stages).second)
-                return;
-            const auto materialIt = materialForPair.find(stages);
-            const auto material = materialIt != materialForPair.end() ? materialIt->second : nullptr;
-            const bool isUI = isUIProgramPair(stages, material);
-            uiPairs.emplace(stages, isUI);
-            if (isUI) {
-                m_renderer->InvalidateUIMaterialProgram(stages);
-                return;
-            }
-            const LinkedShaderProgramPreparation prepared =
-                material ? EnsureLinkedShaderProgramArtifact(material) : EnsureLinkedShaderProgramArtifact(stages);
-            if (!prepared.success) {
-                // The reload caller owns the returned source diagnostic.
-                // Material/preview draws consume this same failed revision
-                // without reporting it again for every referencing material.
-                m_linkedShaderProgramCache.at(stages).failureReported = true;
-                if (firstError.empty())
-                    firstError = prepared.error;
-            }
-        };
-        for (const auto &stages : affectedPairs) {
-            preparePair(stages);
-        }
-        for (auto &material : materials) {
-            if (!material)
-                continue;
-            const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
-            if (!stages.UsesShader(changedShaderId))
-                continue;
-            foundMaterial = true;
-            preparePair(stages);
-            if (uiPairs.at(stages))
-                continue;
-            // This refresh consumes either the newly published artifact or the
-            // previous last-known-good artifact when compilation failed.
-            m_renderer->RefreshMaterialPipeline(material);
-        }
-
-        if (!firstError.empty()) {
-            // The asset publication owner reports the returned diagnostic
-            // against the authored source, once for this candidate.
-            return firstError;
-        }
-        // INXLOG_INFO("Infernux::ReloadShaderRuntime: published ShaderInfo program revisions for '", changedShaderId,
-        //             "' (material pairs=", preparedPairs.size(), ", referenced=", foundMaterial ? "yes" : "no", ")");
-        return "";
     }
 }
 

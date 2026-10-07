@@ -51,9 +51,10 @@ def _reject_failed_compiled_asset(path, result) -> None:
     from infernux.lib import AssetMutationErrorCode
 
     lower = path.lower()
-    compiled_source = (
-        os.path.splitext(lower)[1] in SHADER_SOURCE_EXTENSIONS | RENDER_EFFECT_EXTENSIONS
-        or lower.endswith((".particlegraph", ".particle.py"))
+    compiled_source = any(
+        os.path.splitext(source.lower())[1] in SHADER_SOURCE_EXTENSIONS | RENDER_EFFECT_EXTENSIONS
+        or source.lower().endswith((".particlegraph", ".particle.py"))
+        for source in (lower, result.previous_path)
     )
     if compiled_source and result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED:
         raise _CompiledAssetRejected(result.error)
@@ -1500,13 +1501,14 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 self._commit_deleted(old_path, guid_hint=source_guid)
             return
         from infernux.core.assets import AssetManager
-        if not AssetManager.move_asset(
+        result = AssetManager.move_asset(
             old_path,
             new_path,
             database=self._asset_database,
             suppress_watcher_echo=False,
             origin="external",
-        ):
+        )
+        if not result and not result.database_committed:
             raise RuntimeError(f"asset move failed: {old_path} -> {new_path}")
         if path_key(old_path) in self._rejected_compiled_assets:
             self._rejected_compiled_assets.remove(path_key(old_path))
@@ -1516,6 +1518,9 @@ class ResourceChangeHandler(FileSystemEventHandler):
             # The source has already left the script domain. Even a rejected
             # import of its new asset type must not keep the old code alive.
             self._publish_script_path_move(old_path, new_path, origin="watchdog")
+        if not result:
+            _reject_failed_compiled_asset(new_path, result)
+            raise RuntimeError(f"moved asset runtime publication failed: {new_path}: {result.error}")
         if os.path.splitext(old_path)[1].lower() != os.path.splitext(new_path)[1].lower():
             # A real move preserves GUID identity, but changing the extension
             # changes the authoritative importer and resource metadata type.
