@@ -2664,9 +2664,7 @@ class TestWindowManager:
 
 class TestSceneViewMath:
     def test_dot_and_cross(self):
-        from infernux.engine.ui import _scene_view_math as m
-        if not hasattr(m, "_dot3"):
-            pytest.skip("helper not present")
+        from infernux.engine.ui._scene_view_math import SceneViewMathMixin as m
         assert m._dot3((1, 0, 0), (0, 1, 0)) == 0
         assert m._dot3((1, 2, 3), (4, 5, 6)) == 32
         cx, cy, cz = m._cross3((1, 0, 0), (0, 1, 0))
