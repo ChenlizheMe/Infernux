@@ -76,6 +76,7 @@ class CloseCoordinator:
         self._on_complete: Optional[Callable[[], None]] = None
         self._on_cancel: Optional[Callable[[], None]] = None
         self._autosave_attempted_document_ids: set[str] = set()
+        self._terminal_discards: dict[str, tuple[str, int]] = {}
 
     @property
     def registry(self) -> DocumentRegistry:
@@ -162,11 +163,12 @@ class CloseCoordinator:
             CloseIntentKind.CLOSE_PROJECT,
             CloseIntentKind.EXIT_EDITOR,
         }:
-            try:
-                self.registry.abandon_session_changes(document.document_id)
-            except Exception as exc:
-                self._set_issue(CloseIssue.DISCARD_FAILED, str(exc))
+            if self.registry.is_save_pending(document.document_id):
+                self._set_issue(CloseIssue.DISCARD_FAILED, "cannot abandon content while document is saving")
                 return
+            # Record the decision within this close intent. Other documents may
+            # still cancel it; the live draft must remain restorable until then.
+            self._terminal_discards[document.document_id] = (document.stable_id, document.revision)
             self._cursor += 1
             self._advance()
             return
@@ -288,6 +290,11 @@ class CloseCoordinator:
                 self._clear_issue()
                 return
             if document is not None and document.is_dirty:
+                accepted = self._terminal_discards.get(document.document_id)
+                if (accepted == (document.stable_id, document.revision)
+                        and not self.registry.is_save_pending(document.document_id)):
+                    self._cursor += 1
+                    continue
                 controller = document.controller
                 should_drain_autosave = bool(
                     getattr(controller, "autosave_on_close", False)
@@ -321,6 +328,24 @@ class CloseCoordinator:
                 self._clear_issue()
                 return
             self._cursor += 1
+        # Do not let an earlier discard decision consume later authored content.
+        # This preflight and publication run on the editor owner thread.
+        for document_id, accepted in tuple(self._terminal_discards.items()):
+            document = self.registry.get(document_id)
+            if document is None:
+                continue
+            if (document.state is DocumentState.CONFLICT
+                    or (document.is_dirty and (
+                        (document.stable_id, document.revision) != accepted
+                        or self.registry.is_save_pending(document_id)))):
+                self._terminal_discards.pop(document_id)
+                self._cursor = self._document_ids.index(document_id)
+                self._advance()
+                return
+        for document_id in self._terminal_discards:
+            document = self.registry.get(document_id)
+            if document is not None and document.is_dirty:
+                self.registry.abandon_session_changes(document_id)
         callback = self._on_complete
         self._reset()
         self._invoke(callback, "complete")
@@ -343,6 +368,7 @@ class CloseCoordinator:
         self._on_complete = None
         self._on_cancel = None
         self._autosave_attempted_document_ids.clear()
+        self._terminal_discards.clear()
 
     @staticmethod
     def _invoke(callback: Optional[Callable[[], None]], action: str) -> None:

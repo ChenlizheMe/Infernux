@@ -9,6 +9,13 @@ from infernux.engine.interaction import DocumentLocator, DocumentRegistry
 from infernux.engine.undo._base import UndoCommand
 
 
+def _can_merge_across_revision(registry, document, revision: int) -> bool:
+    if document is None or document.saved_revision == revision:
+        return False
+    ticket = registry.active_save_ticket(document.document_id)
+    return ticket is None or ticket.captured_revision != revision
+
+
 class DocumentRevisionCommand(UndoCommand):
     """Bind one already-defined command to an authoritative document revision.
 
@@ -112,10 +119,7 @@ class DocumentRevisionCommand(UndoCommand):
         document = registry.resolve_locator(self._locator)
         if document is None or document.stable_id != self._locator.stable_id:
             return False
-        if document.saved_revision == self._after_revision:
-            return False
-        ticket = registry.active_save_ticket(document.document_id)
-        return ticket is None or ticket.captured_revision != self._after_revision
+        return _can_merge_across_revision(registry, document, self._after_revision)
 
     def merge(self, other: "DocumentRevisionCommand") -> None:
         self._command.merge(other._command)
@@ -172,12 +176,19 @@ class AuthoringDocumentSnapshotCommand(UndoCommand):
         self.execute()
 
     def can_merge(self, other: UndoCommand) -> bool:
-        return (
+        compatible = (
             bool(self._merge_key)
             and isinstance(other, AuthoringDocumentSnapshotCommand)
             and self._document_id == other._document_id
             and self._merge_key == other._merge_key
+            and self._after_revision == other._before_revision
             and (other.timestamp - self.timestamp) <= self.MERGE_WINDOW
+        )
+        if not compatible:
+            return False
+        registry = DocumentRegistry.instance()
+        return _can_merge_across_revision(
+            registry, registry.get(self._document_id), self._after_revision,
         )
 
     def merge(self, other: "AuthoringDocumentSnapshotCommand") -> None:

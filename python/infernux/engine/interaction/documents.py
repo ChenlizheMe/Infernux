@@ -616,7 +616,7 @@ class DocumentRegistry:
             revision = int(raw_record["revision"])
             saved_revision = int(raw_record["saved_revision"])
             external_revision = int(raw_record["external_revision"])
-            if revision < 0 or saved_revision < 0 or saved_revision > revision:
+            if revision < 0 or saved_revision < 0:
                 raise ValueError("document session revisions are invalid")
             if external_revision < 0:
                 raise ValueError("document external revision is invalid")
@@ -782,8 +782,8 @@ class DocumentRegistry:
         clean_revision = (
             current_revision if saved_revision is None else max(0, int(saved_revision))
         )
-        if clean_revision > current_revision:
-            raise ValueError("saved_revision cannot exceed revision")
+        # Revisions identify history positions. Undo can move before a newer
+        # saved position; allocation below resumes after both known tokens.
         current_external_revision = max(0, int(external_revision))
         initial_state = DocumentState(state)
         if initial_state in {DocumentState.SAVING, DocumentState.CLOSED}:
