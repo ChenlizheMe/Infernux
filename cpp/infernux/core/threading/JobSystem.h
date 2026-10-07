@@ -234,6 +234,9 @@ class JobSystem
 
     [[nodiscard]] JobProfilerCounters GetProfilerCounters() const;
     [[nodiscard]] JobProfilerCounters GetProfilerCounters(JobDomain domain) const;
+    /** Clear accumulated observations while preserving queued/running gauges.
+     * Jobs crossing this boundary count when they start/finish; totals are not
+     * a cohort of jobs submitted since reset. Safe while work is in flight. */
     void ResetProfilerCounters();
 
     /** Execute queued work on the calling thread. Zero drains the queue. */

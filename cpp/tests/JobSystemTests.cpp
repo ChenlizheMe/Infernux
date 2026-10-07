@@ -2,6 +2,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <core/threading/JobSystem.h>
+#include <future>
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
@@ -481,6 +482,76 @@ void TestInlineExecutionMode()
     Require(batchCount.load(std::memory_order_relaxed) == 9, "inline shutdown dropped queued work");
 }
 
+void TestProfilerResetPreservesInlineWork()
+{
+    infernux::JobSystem::InitializeInline();
+    auto &jobs = infernux::JobSystem::Get();
+    infernux::JobProfilerCounters insideGlobal, insideDomain;
+    auto first = jobs.Schedule(
+        [&] {
+            jobs.ResetProfilerCounters();
+            insideGlobal = jobs.GetProfilerCounters();
+            insideDomain = jobs.GetProfilerCounters(infernux::JobDomain::Asset);
+        },
+        infernux::JobDomain::Asset);
+    auto second = jobs.Schedule([] {}, infernux::JobDomain::Runtime);
+    jobs.ResetProfilerCounters();
+    const auto queued = jobs.GetProfilerCounters();
+    const auto queuedAsset = jobs.GetProfilerCounters(infernux::JobDomain::Asset);
+    jobs.RunPendingJobs();
+    const auto complete = jobs.GetProfilerCounters();
+    const auto completeAsset = jobs.GetProfilerCounters(infernux::JobDomain::Asset);
+    Require(first.IsComplete() && second.IsComplete(), "profiler reset changed inline execution");
+    Require(queued.queued == 2 && queued.running == 0 && queuedAsset.queued == 1, "profiler reset erased queued work");
+    Require(insideGlobal.running == 1 && insideGlobal.queued == 1 && insideDomain.running == 1,
+            "reset from inside a job erased running work");
+    Require(complete.running == 0 && complete.queued == 0 && completeAsset.running == 0 && completeAsset.queued == 0,
+            "profiler live counts did not return to zero");
+    Require(complete.completed == 2 && complete.started == 1 && complete.submitted == 0,
+            "profiler accumulated counters were not reset independently of live work");
+    jobs.ResetProfilerCounters();
+    Require(jobs.GetProfilerCounters().completed == 0 && jobs.GetProfilerCounters().running == 0,
+            "idle profiler reset was not empty");
+    infernux::JobSystem::Shutdown();
+}
+
+void TestProfilerResetWhileWorkerIsRunning()
+{
+    infernux::JobSystem::Initialize(1);
+    auto &jobs = infernux::JobSystem::Get();
+    auto entered = std::make_shared<std::promise<void>>();
+    auto release = std::make_shared<std::promise<void>>();
+    auto started = entered->get_future();
+    auto gate = release->get_future().share();
+    auto active = jobs.Schedule(
+        [entered, gate] {
+            entered->set_value();
+            gate.wait();
+        },
+        infernux::JobDomain::Asset);
+    const bool didStart = started.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+    auto asset = jobs.ScheduleBatch(2, [](uint32_t) { return [] {}; }, infernux::JobDomain::Asset);
+    auto runtime = jobs.Schedule([] {}, infernux::JobDomain::Runtime);
+    jobs.ResetProfilerCounters();
+    jobs.ResetProfilerCounters();
+    const auto global = jobs.GetProfilerCounters();
+    const auto domain = jobs.GetProfilerCounters(infernux::JobDomain::Asset);
+    release->set_value();
+    jobs.WaitPassive(active);
+    jobs.WaitPassive(asset);
+    jobs.WaitPassive(runtime);
+    Require(didStart, "profiler worker did not enter its gate");
+    Require(global.running == 1 && global.queued == 3 && domain.running == 1 && domain.queued == 2,
+            "busy profiler reset erased live worker counts");
+    for (const auto counters : {jobs.GetProfilerCounters(), jobs.GetProfilerCounters(infernux::JobDomain::Asset),
+                                jobs.GetProfilerCounters(infernux::JobDomain::Runtime)}) {
+        Require(counters.running == 0 && counters.queued == 0, "busy profiler reset underflowed after completion");
+        Require(counters.submitted == 0, "busy reset kept old submission totals");
+    }
+    Require(jobs.GetProfilerCounters().completed == 4, "jobs crossing reset were not counted when completed");
+    infernux::JobSystem::Shutdown();
+}
+
 void TestParallelForChunksCoversEachIndexOnce()
 {
     infernux::JobSystem::Initialize(2);
@@ -523,6 +594,8 @@ int main()
         TestPriorityAgingPreventsStarvation();
         TestWaitHelpIsProfiled();
         TestInlineExecutionMode();
+        TestProfilerResetPreservesInlineWork();
+        TestProfilerResetWhileWorkerIsRunning();
         TestParallelForChunksCoversEachIndexOnce();
     } catch (const std::exception &error) {
         std::cerr << "JobSystem test failed: " << error.what() << '\n';
