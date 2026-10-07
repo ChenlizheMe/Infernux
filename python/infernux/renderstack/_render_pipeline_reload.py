@@ -14,8 +14,7 @@ class PipelineReloadMixin:
 
         if not Application.is_editor():
             return
-        import sys as _sys
-        mod = _sys.modules.get(pipeline_cls.__module__)
+        mod = sys.modules.get(pipeline_cls.__module__)
         if mod is None:
             return
         src = getattr(mod, '__file__', None)
@@ -57,13 +56,11 @@ class PipelineReloadMixin:
             self._pipeline = None
             self.invalidate_graph()
             return
-        print("[RenderStack] Pipeline file changed, reloading...", file=sys.stderr)
         self._save_current_pipeline_params()
         invalidate_discovery_cache()
         self._pipeline_module = published_module
         self._pipeline = None   # re-instantiate on next .pipeline access
         self.invalidate_graph() # clears _build_failed + _graph_desc
-        print("[RenderStack] Pipeline reloaded.", file=sys.stderr)
 
     def _sync_pipeline_catalog(self) -> None:
         """Refresh the available pipeline catalog without changing selection."""
