@@ -815,6 +815,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     static uint64_t AllocateRuntimeId() noexcept;
     void TrackRuntimeShaderReferences();
     bool ApplyDocument(const nlohmann::json &document);
+    void PublishDocument(InxMaterial &&staged);
     void SetPropertyValue(const std::string &name, MaterialPropertyType type, MaterialPropertyValue value);
 
     friend class MaterialLoader;

@@ -549,10 +549,44 @@ void VerifyReflectedArrayRoundTripAndLengthAuthority()
     assert(rejected);
 }
 
+void VerifyLineWidthParticipatesInPipelineState()
+{
+    infernux::RenderState original;
+    original.lineWidth = 1.25f;
+    for (const float width : {0.5f, 1.0f, 2.0f, 4.0f}) {
+        auto changed = original;
+        changed.lineWidth = width;
+        assert(!(original == changed));
+        assert(original.Hash() != changed.Hash());
+        assert(changed.Hash() == infernux::RenderState(changed).Hash());
+    }
+}
+
+void VerifyDocumentRepublishesTextureReadiness()
+{
+    InxMaterial material("TexturePublication", "Unlit");
+    material.SetTextureGuid("texSampler", "white");
+    material.PublishTextureAssets({});
+    assert(!material.NeedsTextureAssetResolution());
+    auto document = material.SerializeDocument();
+    document["properties"]["texSampler"]["guid"] = "black";
+    assert(material.DeserializeDocument(document));
+    assert(material.NeedsTextureAssetResolution());
+    material.PublishTextureAssets({});
+    const auto version = material.GetVersion();
+    document["renderState"]["lineWidth"] = 0;
+    assert(!material.DeserializeDocument(document));
+    assert(!material.NeedsTextureAssetResolution());
+    assert(material.GetVersion() == version);
+    assert(std::get<std::string>(material.GetProperty("texSampler")->value) == "black");
+}
+
 } // namespace
 
 int main()
 {
+    VerifyLineWidthParticipatesInPipelineState();
+    VerifyDocumentRepublishesTextureReadiness();
     VerifyEveryAuthoredDepthAndStencilComparison();
     VerifyGizmoIconPreservesAuthoredAlpha();
     VerifyRetiredFieldsAreIgnored();

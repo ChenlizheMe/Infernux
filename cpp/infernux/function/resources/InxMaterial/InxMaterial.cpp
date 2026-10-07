@@ -498,7 +498,8 @@ void InxMaterial::NotifyRoutingChanged() noexcept
 bool RenderState::operator==(const RenderState &other) const
 {
     return cullMode == other.cullMode && frontFace == other.frontFace && polygonMode == other.polygonMode &&
-           depthBiasEnable == other.depthBiasEnable && depthBiasConstantFactor == other.depthBiasConstantFactor &&
+           lineWidth == other.lineWidth && depthBiasEnable == other.depthBiasEnable &&
+           depthBiasConstantFactor == other.depthBiasConstantFactor &&
            depthBiasSlopeFactor == other.depthBiasSlopeFactor && depthBiasClamp == other.depthBiasClamp &&
            topology == other.topology && depthTestEnable == other.depthTestEnable &&
            depthWriteEnable == other.depthWriteEnable && depthCompareOp == other.depthCompareOp &&
@@ -519,6 +520,7 @@ size_t RenderState::Hash() const
     hashCombine(static_cast<size_t>(cullMode));
     hashCombine(static_cast<size_t>(frontFace));
     hashCombine(static_cast<size_t>(polygonMode));
+    hashCombine(std::hash<float>{}(lineWidth));
     hashCombine(static_cast<size_t>(depthBiasEnable));
     if (depthBiasEnable) {
         hashCombine(std::hash<float>{}(depthBiasConstantFactor));
@@ -1400,7 +1402,12 @@ bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
     if (!staged.ApplyDocument(document)) {
         return false;
     }
+    PublishDocument(std::move(staged));
+    return true;
+}
 
+void InxMaterial::PublishDocument(InxMaterial &&staged)
+{
     m_name = std::move(staged.m_name);
     m_builtin = staged.m_builtin;
     m_vertexShader = std::move(staged.m_vertexShader);
@@ -1413,12 +1420,23 @@ bool InxMaterial::DeserializeDocument(const nlohmann::json &document)
     // Runtime buffer publications do not belong to the serialized asset.
     m_buffers.clear();
     m_shaderPropertyOrder = std::move(staged.m_shaderPropertyOrder);
+    // Resolve authored texture GUIDs again after publication. Explicit runtime
+    // overrides survive only while their slot remains a texture property.
+    m_textureAssetsPending = true;
+    for (auto it = m_renderTextures.begin(); it != m_renderTextures.end();) {
+        const auto property = m_properties.find(it->first);
+        if (!HasRuntimeTextureOverride(it->first) || property == m_properties.end() ||
+            property->second.type != MaterialPropertyType::Texture2D) {
+            m_runtimeTextureOverrides.erase(it->first);
+            it = m_renderTextures.erase(it);
+        } else
+            ++it;
+    }
     m_pipelineDirty = true;
     m_propertiesDirty = true;
     ++m_version;
     NotifyRoutingChanged();
     TrackRuntimeShaderReferences();
-    return true;
 }
 
 bool InxMaterial::ApplyDocument(const nlohmann::json &document)
@@ -1562,18 +1580,6 @@ bool InxMaterial::ApplyDocument(const nlohmann::json &document)
             }
         }
 
-        m_pipelineDirty = true;
-        m_propertiesDirty = true;
-        m_textureAssetsPending = true;
-        for (auto it = m_renderTextures.begin(); it != m_renderTextures.end();) {
-            const auto property = m_properties.find(it->first);
-            if (!HasRuntimeTextureOverride(it->first) || property == m_properties.end() ||
-                property->second.type != MaterialPropertyType::Texture2D) {
-                m_runtimeTextureOverrides.erase(it->first);
-                it = m_renderTextures.erase(it);
-            } else
-                ++it;
-        }
         SyncAlphaClipProperty();
 
         return true;
