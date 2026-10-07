@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import runpy
 import json
+import ntpath
 import platform
 import tomllib
 import zipfile
@@ -92,12 +93,14 @@ def _payload_files(root: Path) -> list[Path]:
     )
 
 
-def _safe_relative_path(value: str) -> PurePosixPath:
-    path = PurePosixPath(value.replace("\\", "/"))
-    if path.is_absolute() or not path.parts or any(
-        part in ("", ".", "..") for part in path.parts
+def safe_update_path(value: str) -> PurePosixPath:
+    """Accept one canonical file identity, portable across all Hub hosts."""
+    if not isinstance(value, str) or not value or "\\" in value or ":" in value or any(
+        part in ("", ".", "..") or ntpath.isreserved(part)
+        for part in value.split("/")
     ):
         raise ValueError(f"Unsafe update path: {value!r}")
+    path = PurePosixPath(value)
     if tuple(part.casefold() for part in path.parts[:2]) == ("infernuxhubdata", "shared"):
         raise ValueError("Hub updates cannot own user shared resources")
     return path
@@ -144,8 +147,10 @@ def validate_manifest(document: object) -> dict[str, object]:
     for entry in document["files"]:
         if not isinstance(entry, dict) or set(entry) != {"path"}:
             raise ValueError("Infernux Hub manifest file entry is invalid")
-        path = _safe_relative_path(entry["path"])
+        path = safe_update_path(entry["path"])
         normalized = path.as_posix()
+        if document["platform"] == "windows-x64":
+            normalized = normalized.casefold()
         if normalized in seen:
             raise ValueError(f"Duplicate Hub manifest path: {normalized}")
         seen.add(normalized)

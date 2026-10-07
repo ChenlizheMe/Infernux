@@ -12,7 +12,7 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Callable
 
 from packaging.version import Version
@@ -26,6 +26,7 @@ from hub_release import (
     manifest_asset_name,
     validate_manifest,
     project_hub_version,
+    safe_update_path,
 )
 from style import StyleManager
 
@@ -279,15 +280,6 @@ def check_for_update(
     )
 
 
-def _safe_path(value: str) -> PurePosixPath:
-    path = PurePosixPath(value.replace("\\", "/"))
-    if path.is_absolute() or not path.parts or any(part in ("", ".", "..") for part in path.parts):
-        raise ValueError(f"Unsafe update path: {value!r}")
-    if tuple(part.casefold() for part in path.parts[:2]) == ("infernuxhubdata", "shared"):
-        raise ValueError("Hub updates cannot own user shared resources")
-    return path
-
-
 def _download(
     update: HubUpdate,
     destination: Path,
@@ -375,9 +367,15 @@ def stage_update(
                 "Hub update archive does not match its manifest: "
                 f"missing={missing}, unexpected={unexpected}"
             )
+        stage_root = stage.resolve()
+        destinations = []
         for entry in target_entries:
-            relative = _safe_path(entry["path"])
-            destination = stage.joinpath(*relative.parts)
+            relative = safe_update_path(entry["path"])
+            destination = stage.joinpath(*relative.parts).resolve()
+            if not destination.is_relative_to(stage_root):
+                raise ValueError(f"Update path resolves outside the staging directory: {entry['path']!r}")
+            destinations.append((relative, destination))
+        for relative, destination in destinations:
             destination.parent.mkdir(parents=True, exist_ok=True)
             archive_entry = archive.getinfo(relative.as_posix())
             with archive.open(archive_entry) as source, destination.open("wb") as target:
@@ -385,8 +383,6 @@ def stage_update(
             archived_mode = (archive_entry.external_attr >> 16) & 0o777
             if archived_mode:
                 destination.chmod(archived_mode)
-        for relative in metadata["delete"]:
-            _safe_path(relative)
 
     shutil.copy2(manifest_path, stage / manifest_name)
     metadata["files"] = target_entries + [{"path": manifest_name}]

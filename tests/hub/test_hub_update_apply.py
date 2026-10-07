@@ -72,12 +72,10 @@ def test_linux_applier_replaces_owned_files_and_restarts(tmp_path: Path, monkeyp
     "infernuxhubdata/SHARED/PlatformKits/android/sdk.bin",
 ])
 def test_updates_cannot_replace_or_delete_shared_resources(tmp_path, operation, relative):
-    from hub_release import _safe_relative_path
-    from hub_updater import _safe_path
+    from hub_release import safe_update_path
 
-    for validator in (_safe_relative_path, _safe_path):
-        with pytest.raises(ValueError, match="shared resources"):
-            validator(relative)
+    with pytest.raises(ValueError, match="shared resources"):
+        safe_update_path(relative)
     metadata = _metadata(
         tmp_path / "hub-update.json",
         files=[relative] if operation == "files" else [],
