@@ -18,6 +18,11 @@ def move_points(domain, positions, amount):
 class ResidentGizmoProbe(inx.InxComponent):
     def on_draw_gizmos(self):
         Gizmos.matrix = self._matrix
+        Gizmos.draw_line((0, 0, 0), (1, 0, 0))
+        Gizmos.matrix = list(self._matrix)
+        Gizmos.matrix[12] += .5
+        Gizmos.draw_line((0, 0, 0), (0, 1, 0))
+        Gizmos.matrix = self._matrix
         Gizmos.color = (1, 0, 0)
         Gizmos.draw_lines(self._positions, self._edges)
         Gizmos.draw_wire_spheres(self._positions, 0.05, segments=8)

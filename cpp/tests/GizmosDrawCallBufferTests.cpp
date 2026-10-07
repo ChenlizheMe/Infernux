@@ -2,6 +2,7 @@
 #include <function/resources/AssetDatabase/BuiltinSceneIconMetadata.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
 #include <function/resources/InxTexture/TextureArtifact.h>
+#include "GizmoIdentityTests.h"
 
 #include <cassert>
 #include <cmath>
@@ -32,6 +33,8 @@ std::vector<infernux::Vertex> Line(float end)
 
 int main()
 {
+    if (!gizmo_identity_test::Run())
+        return 1;
     infernux::GizmosDrawCallBuffer buffer;
     buffer.SetData(Line(1.0f), {0, 1}, {Descriptor(0.0f)});
     auto first = buffer.GetDrawCalls(nullptr);
