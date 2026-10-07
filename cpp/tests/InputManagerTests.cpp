@@ -3,6 +3,8 @@
 #include <SDL3/SDL.h>
 #include <array>
 #include <cassert>
+#include <cmath>
+#include <iostream>
 #include <stdexcept>
 
 using infernux::InputManager;
@@ -43,10 +45,85 @@ SDL_Event TouchEvent(SDL_EventType type, Uint64 touchId, Uint64 fingerId, float 
     event.tfinger.pressure = pressure;
     return event;
 }
+
+bool CheckInputFrameContracts()
+{
+    auto &input = InputManager::Instance();
+    int passed = 0, failed = 0;
+    auto check = [&](bool ok, const std::string &name) {
+        std::cout << "INPUT_FRAME " << name << (ok ? " PASS\n" : " FAIL\n");
+        ok ? ++passed : ++failed;
+    };
+    constexpr SDL_Scancode keypad[] = {SDL_SCANCODE_KP_0, SDL_SCANCODE_KP_1, SDL_SCANCODE_KP_2,
+        SDL_SCANCODE_KP_3, SDL_SCANCODE_KP_4, SDL_SCANCODE_KP_5, SDL_SCANCODE_KP_6,
+        SDL_SCANCODE_KP_7, SDL_SCANCODE_KP_8, SDL_SCANCODE_KP_9};
+    for (int digit = 0; digit < 10; ++digit) {
+        input.ResetAll();
+        const int code = InputManager::NameToScancode("Keypad " + std::to_string(digit));
+        input.BeginFrame();
+        input.ProcessSDLEvent(KeyEvent(SDL_EVENT_KEY_DOWN, keypad[digit]));
+        bool ok = code == keypad[digit] && input.GetKey(code) && input.GetKeyDown(code);
+        input.BeginFrame();
+        input.ProcessSDLEvent(KeyEvent(SDL_EVENT_KEY_UP, keypad[digit]));
+        ok = ok && input.GetKeyUp(code) && !input.GetKey(code);
+        check(ok, "keypad_" + std::to_string(digit));
+    }
+    const auto near = [](float a, float b) { return std::abs(a - b) < 1.0e-6f; };
+    for (const bool sdl : {false, true}) {
+        for (const auto phase : {TouchPhase::Moved, TouchPhase::Ended, TouchPhase::Canceled}) {
+            input.ResetAll();
+            auto send = [&](TouchPhase next, float x, float y, float dx, float dy, uint64_t time) {
+                if (sdl) {
+                    const auto type = next == TouchPhase::Began ? SDL_EVENT_FINGER_DOWN :
+                        next == TouchPhase::Moved ? SDL_EVENT_FINGER_MOTION :
+                        next == TouchPhase::Ended ? SDL_EVENT_FINGER_UP : SDL_EVENT_FINGER_CANCELED;
+                    input.ProcessSDLEvent(TouchEvent(type, 1, 2, x, y, dx, dy, 1, time));
+                } else {
+                    input.ProcessTouchEvent(1, 2, time, 7, x, y, dx, dy, 1, next);
+                }
+            };
+            send(TouchPhase::Began, .1f, .2f, 0, 0, 1'000'000'000);
+            input.BeginFrame();
+            send(TouchPhase::Moved, .15f, .23f, .05f, .03f, 1'010'000'000);
+            send(TouchPhase::Moved, .22f, .22f, .07f, -.01f, 1'020'000'000);
+            if (phase != TouchPhase::Moved)
+                send(phase, .22f, .22f, 0, 0, 1'030'000'000);
+            const auto contact = input.GetTouch(0);
+            bool ok = near(contact.deltaX, .12f) && near(contact.deltaY, .02f) &&
+                near(contact.x, .22f) && near(contact.y, .22f) && contact.phase == phase;
+            input.BeginFrame();
+            ok = ok && (phase == TouchPhase::Moved ? input.GetTouchCount() == 1 &&
+                input.GetTouch(0).deltaX == 0 && input.GetTouch(0).deltaY == 0 : input.GetTouchCount() == 0);
+            check(ok, std::string(sdl ? "sdl_" : "semantic_") + std::to_string(static_cast<int>(phase)));
+        }
+    }
+    input.ResetAll();
+    input.ProcessTouchEvent(1, 2, 1, 7, .1f, .2f, 0, 0, 1, TouchPhase::Began);
+    input.ProcessTouchEvent(1, 2, 2, 7, .18f, .24f, .08f, .04f, 1, TouchPhase::Moved);
+    input.ProcessTouchEvent(1, 2, 3, 7, .18f, .24f, 0, 0, 0, TouchPhase::Ended);
+    check(near(input.GetTouch(0).deltaX, .08f) && near(input.GetTouch(0).deltaY, .04f) &&
+          input.GetTouch(0).beganThisFrame && near(input.GetTouch(0).beginX, .1f), "same_frame_tap");
+    input.ProcessTouchEvent(1, 2, 4, 7, .4f, .5f, 0, 0, 1, TouchPhase::Began);
+    check(input.GetTouch(0).deltaX == 0 && input.GetTouch(0).deltaY == 0 &&
+          near(input.GetTouch(0).beginX, .4f), "new_contact_resets_displacement");
+    input.ProcessTouchEvent(2, 2, 5, 7, .4f, .5f, 0, 0, 1, TouchPhase::Began);
+    input.BeginFrame();
+    input.ProcessTouchEvent(1, 2, 6, 7, .3f, .6f, -.1f, .1f, 1, TouchPhase::Moved);
+    input.ProcessTouchEvent(2, 2, 7, 7, .6f, .3f, .2f, -.2f, 1, TouchPhase::Moved);
+    input.ProcessTouchEvent(1, 2, 8, 7, .2f, .7f, -.1f, .1f, 1, TouchPhase::Moved);
+    check(input.GetTouchCount() == 2 && near(input.GetTouch(0).deltaX, -.2f) &&
+          near(input.GetTouch(0).deltaY, .2f) && near(input.GetTouch(1).deltaX, .2f) &&
+          near(input.GetTouch(1).deltaY, -.2f), "devices_accumulate_independently");
+    input.ResetAll();
+    std::cout << "INPUT_FRAME_SUMMARY passed=" << passed << " failed=" << failed << '\n';
+    return failed == 0;
+}
 } // namespace
 
 int main()
 {
+    if (!CheckInputFrameContracts())
+        return 1;
     auto &input = InputManager::Instance();
     input.ResetAll();
 
