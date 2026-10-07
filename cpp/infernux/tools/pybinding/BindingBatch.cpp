@@ -22,9 +22,20 @@ static std::vector<Transform *> ExtractTransforms(const py::list &pyList)
     std::vector<Transform *> out;
     out.reserve(n);
     for (size_t i = 0; i < n; ++i) {
-        out.push_back(pyList[i].cast<Transform *>());
+        auto *transform = pyList[i].cast<Transform *>();
+        if (!transform)
+            throw py::type_error("targets[" + std::to_string(i) + "] must be a Transform, not None");
+        out.push_back(transform);
     }
     return out;
+}
+
+static void ValidateTransformDataShape(const py::array &data, size_t rows, py::ssize_t columns)
+{
+    if (data.ndim() != 2 || data.shape(1) != columns)
+        throw py::value_error("data must have shape (N, " + std::to_string(columns) + ")");
+    if (static_cast<size_t>(data.shape(0)) < rows)
+        throw py::value_error("data array has fewer rows than targets");
 }
 
 // ── TransformBatchHandle ─────────────────────────────────────────────────
@@ -116,8 +127,7 @@ static py::array_t<float> BatchReadVec3(const py::list &targets, GatherVec3Fn ga
     auto transforms = ExtractTransforms(targets);
     const size_t n = transforms.size();
     auto result = py::array_t<float>({static_cast<py::ssize_t>(n), py::ssize_t(3)});
-    auto buf = result.mutable_unchecked<2>();
-    float *outPtr = buf.mutable_data(0, 0);
+    float *outPtr = result.mutable_data();
     Transform *const *tPtr = transforms.data();
     {
         py::gil_scoped_release release;
@@ -136,11 +146,8 @@ static void BatchWriteVec3(const py::list &targets, py::array data, ScatterVec3F
     }
     auto transforms = ExtractTransforms(targets);
     const size_t n = transforms.size();
-    auto buf = fdata.unchecked<2>();
-    if (static_cast<size_t>(buf.shape(0)) < n) {
-        throw py::value_error("data array has fewer rows than targets");
-    }
-    const float *inPtr = buf.data(0, 0);
+    ValidateTransformDataShape(fdata, n, 3);
+    const float *inPtr = fdata.data();
     Transform *const *tPtr = transforms.data();
     {
         py::gil_scoped_release release;
@@ -154,8 +161,7 @@ static py::array_t<float> BatchReadQuat(const py::list &targets, GatherQuatFn ga
     auto transforms = ExtractTransforms(targets);
     const size_t n = transforms.size();
     auto result = py::array_t<float>({static_cast<py::ssize_t>(n), py::ssize_t(4)});
-    auto buf = result.mutable_unchecked<2>();
-    float *outPtr = buf.mutable_data(0, 0);
+    float *outPtr = result.mutable_data();
     Transform *const *tPtr = transforms.data();
     {
         py::gil_scoped_release release;
@@ -173,11 +179,8 @@ static void BatchWriteQuat(const py::list &targets, py::array data, ScatterQuatF
     }
     auto transforms = ExtractTransforms(targets);
     const size_t n = transforms.size();
-    auto buf = fdata.unchecked<2>();
-    if (static_cast<size_t>(buf.shape(0)) < n) {
-        throw py::value_error("data array has fewer rows than targets");
-    }
-    const float *inPtr = buf.data(0, 0);
+    ValidateTransformDataShape(fdata, n, 4);
+    const float *inPtr = fdata.data();
     Transform *const *tPtr = transforms.data();
     {
         py::gil_scoped_release release;
@@ -269,7 +272,7 @@ static py::object HandleBatchRead(const TransformBatchHandle &handle, const std:
         auto it = kTransformVec3Ops.find(prop);
         if (it != kTransformVec3Ops.end()) {
             auto result = py::array_t<float>({static_cast<py::ssize_t>(n), py::ssize_t(3)});
-            float *outPtr = result.mutable_unchecked<2>().mutable_data(0, 0);
+            float *outPtr = result.mutable_data();
             {
                 py::gil_scoped_release release;
                 (TransformECSStore::Instance().*(it->second.gather))(tPtr, outPtr, n);
@@ -283,7 +286,7 @@ static py::object HandleBatchRead(const TransformBatchHandle &handle, const std:
         auto it = kTransformQuatOps.find(prop);
         if (it != kTransformQuatOps.end()) {
             auto result = py::array_t<float>({static_cast<py::ssize_t>(n), py::ssize_t(4)});
-            float *outPtr = result.mutable_unchecked<2>().mutable_data(0, 0);
+            float *outPtr = result.mutable_data();
             {
                 py::gil_scoped_release release;
                 (TransformECSStore::Instance().*(it->second.gather))(tPtr, outPtr, n);
@@ -308,11 +311,8 @@ static py::object HandleBatchWrite(const TransformBatchHandle &handle, py::array
     {
         auto it = kTransformVec3Ops.find(prop);
         if (it != kTransformVec3Ops.end()) {
-            auto buf = fdata.unchecked<2>();
-            if (static_cast<size_t>(buf.shape(0)) < inputRows) {
-                throw py::value_error("data array has fewer rows than targets");
-            }
-            const float *inPtr = buf.data(0, 0);
+            ValidateTransformDataShape(fdata, inputRows, 3);
+            const float *inPtr = fdata.data();
             if (handle.IsCompact()) {
                 handle.valueScratch.resize(n * 3);
                 for (size_t i = 0; i < n; ++i) {
@@ -333,11 +333,8 @@ static py::object HandleBatchWrite(const TransformBatchHandle &handle, py::array
     {
         auto it = kTransformQuatOps.find(prop);
         if (it != kTransformQuatOps.end()) {
-            auto buf = fdata.unchecked<2>();
-            if (static_cast<size_t>(buf.shape(0)) < inputRows) {
-                throw py::value_error("data array has fewer rows than targets");
-            }
-            const float *inPtr = buf.data(0, 0);
+            ValidateTransformDataShape(fdata, inputRows, 4);
+            const float *inPtr = fdata.data();
             if (handle.IsCompact()) {
                 handle.valueScratch.resize(n * 4);
                 for (size_t i = 0; i < n; ++i) {
