@@ -1156,6 +1156,9 @@ def test_android_engine_staging_excludes_desktop_runtime_payloads(
     shader = package / "resources/shaders/standard.vert"
     shader.parent.mkdir(parents=True)
     shader.write_text("void main() {}\n", encoding="utf-8")
+    shader_template = package / "resources/shaders/_templates/surface_main.glsl"
+    shader_template.parent.mkdir()
+    shader_template.write_text("void main() {}\n", encoding="utf-8")
     excluded = (
         package / "_runtime_packs/Runtime.inxrt",
         package / "_runtime_modules/Parallel.inxmod",
@@ -1192,6 +1195,7 @@ def test_android_engine_staging_excludes_desktop_runtime_payloads(
         )
     ).is_file()
     assert (destination / "resources/shaders/standard.vert").is_file()
+    assert (destination / "resources/shaders/_templates/surface_main.glsl").is_file()
     assert not (destination / "_runtime_packs").exists()
     assert not (destination / "_runtime_modules").exists()
     assert not (destination / "resources/official_packages").exists()
