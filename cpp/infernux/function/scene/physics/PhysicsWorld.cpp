@@ -2914,6 +2914,9 @@ bool PhysicsWorld::ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origi
         JPH::Vec3(dir.x * maxDistance, dir.y * maxDistance, dir.z * maxDistance));
 
     JPH::ShapeCastSettings castSettings;
+    // Initial overlap also promises a target surface point. Jolt otherwise
+    // permits an interior GJK point; EPA runs only for penetrating starts.
+    castSettings.mReturnDeepestPoint = true;
     JPH::AllHitCollisionCollector<JPH::CastShapeCollector> collector;
     LayerMaskObjectFilter objectFilter(layerMask);
 
@@ -2946,7 +2949,10 @@ bool PhysicsWorld::ShapeCastImpl(const JPH::Shape &shape, const glm::vec3 &origi
     uint32_t bodyId = result.mBodyID2.GetIndexAndSequenceNumber();
 
     outHit.distance = result.mFraction * maxDistance;
-    outHit.point = origin + dir * outHit.distance;
+    // CastShape reports contacts relative to its base offset (origin above).
+    // Distance is shape travel; point belongs to the selected target surface.
+    const auto &contact = result.mContactPointOn2;
+    outHit.point = origin + glm::vec3(contact.GetX(), contact.GetY(), contact.GetZ());
     outHit.bodyId = bodyId;
     outHit.normal =
         glm::vec3(-result.mPenetrationAxis.GetX(), -result.mPenetrationAxis.GetY(), -result.mPenetrationAxis.GetZ());
