@@ -37,7 +37,7 @@ The file uses the public `inx.renderstack.RenderPipeline` base; do not import it
 These names have different jobs:
 
 - `SimpleForwardPipeline` is the Python class name. It identifies the implementation in code.
-- `name = "Simple Forward"` is the discovery key, Inspector label, saved pipeline selection, and key for saved pipeline parameters. Keep it unique and stable. Two classes with the same `name` collide in the discovery dictionary; renaming it makes existing scenes look for the old selection.
+- `name = "Simple Forward"` is the discovery key, Inspector label, saved pipeline selection, and key for saved pipeline parameters. Keep it unique and stable. Two live declarations with the same `name` make that name unavailable until the conflict is resolved; renaming it makes existing scenes look for the old selection.
 - Strings passed to `effects()`, such as `"after_opaque"`, are EffectStage stable IDs. They bind saved Effect slots to topology. A stage `label` may change without breaking that binding; changing its stable ID leaves the old slots orphaned until they are remapped.
 
 There is currently no separate stable-ID field for a pipeline. Despite the serialized field name `pipeline_class_name`, RenderStack stores the pipeline's `name` value.
@@ -272,7 +272,7 @@ class SimpleForwardPipeline(inx.renderstack.RenderPipeline):
 这三个名字各有用途：
 
 - `SimpleForwardPipeline` 是 Python 类名，用于在代码中标识实现。
-- `name = "Simple Forward"` 是发现键、Inspector 标签、场景保存的管线选择，也是管线参数的保存键。它应当全项目唯一并保持稳定。两个类使用同一个 `name` 会在发现字典中冲突；修改 `name` 后，旧场景仍会查找原来的值。
+- `name = "Simple Forward"` 是发现键、Inspector 标签、场景保存的管线选择，也是管线参数的保存键。它应当全项目唯一并保持稳定。两个活动声明使用同一个 `name` 时，该名称在冲突解决前不可用；修改 `name` 后，旧场景仍会查找原来的值。
 - `effects()` 的第一个字符串，例如 `"after_opaque"`，是 EffectStage 稳定 ID。场景靠它把已保存的 Effect Slot 重新挂到拓扑上。`label` 可以改而不破坏绑定；稳定 ID 改名后，旧 Slot 会成为 orphan，直到显式重映射。
 
 当前管线本身没有另一套 stable ID。虽然序列化字段名叫 `pipeline_class_name`，RenderStack 实际保存的是管线 `name`。
