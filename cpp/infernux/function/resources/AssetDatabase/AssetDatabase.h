@@ -555,6 +555,8 @@ class AssetDatabase
         ResourceType resourceType = ResourceType::DefaultText;
         const IAssetLoader *loader = nullptr;
         std::string fallbackGuid;
+        std::string createdGuid;
+        bool inheritedGuid = false;
         std::optional<InxResourceMeta> metadata;
         std::optional<AtomicFileState> expectedMetadata;
         std::string error;
@@ -635,6 +637,8 @@ class AssetDatabase
         std::chrono::steady_clock::time_point commitStarted;
         std::chrono::steady_clock::time_point importStarted;
         std::chrono::steady_clock::time_point metadataWriteStarted;
+        size_t metadataIdentityCursor = 0;
+        std::unordered_map<std::string, std::string> authoredGuidPaths;
         size_t metadataMergeCursor = 0;
         size_t importRequestCursor = 0;
         size_t importResultMergeCursor = 0;

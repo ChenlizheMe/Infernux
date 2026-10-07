@@ -397,6 +397,116 @@ void TestRegisteredScriptKeepsGuidWhenSidecarAndDerivedIndexAreMissing(bool keep
     std::filesystem::remove_all(root);
 }
 
+void TestMovedSidecarOwnsGuidWhenOldPathIsReused(bool keepIndex, bool replacementSortsFirst)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+                      (std::string("infernux-moved-sidecar-reused-path-") + (keepIndex ? "indexed-" : "unindexed-") +
+                       (replacementSortsFirst ? "replacement-first" : "moved-first"));
+    std::filesystem::remove_all(root);
+    const auto source = root / "Assets" / (replacementSortsFirst ? "A.py" : "Z.py");
+    const auto moved = root / "Assets" / (replacementSortsFirst ? "Z.py" : "A.py");
+    WriteText(source, "VALUE = 'original'\n");
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::Script, std::make_unique<infernux::InxPythonScriptLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        auto *assetDatabase = registry.GetAssetDatabase();
+        assetDatabase->Refresh();
+        const std::string sourcePath = infernux::FromFsPath(source);
+        const std::string movedPath = infernux::FromFsPath(moved);
+        const std::string originalGuid = assetDatabase->GetGuidFromPath(sourcePath);
+        const std::string originalHash =
+            assetDatabase->GetMetaByGuid(originalGuid)->GetDataAs<std::string>("content_hash");
+        assetDatabase->FlushDerivedIndex();
+        std::filesystem::rename(source, moved);
+        std::filesystem::rename(infernux::ToFsPath(sourcePath + ".meta"), infernux::ToFsPath(movedPath + ".meta"));
+        WriteText(source, "VALUE = 'replacement'\n");
+        if (!keepIndex)
+            Require(std::filesystem::remove(root / "Library" / "AssetIndex.json"),
+                    "reused-path fixture index was not removed");
+
+        assetDatabase->Refresh();
+        const std::string replacementGuid = assetDatabase->GetGuidFromPath(sourcePath);
+        Require(!replacementGuid.empty() && replacementGuid != originalGuid,
+                "new source at a reused path inherited the moved asset's GUID");
+        Require(assetDatabase->GetGuidFromPath(movedPath) == originalGuid &&
+                    assetDatabase->GetPathFromGuid(originalGuid) == movedPath,
+                "moved authored sidecar did not retain its original identity");
+        Require(assetDatabase->GetMetaByGuid(originalGuid)->GetDataAs<std::string>("content_hash") == originalHash,
+                "moved GUID was published with replacement source content");
+        Require(assetDatabase->GetMetaByGuid(replacementGuid)->GetDataAs<std::string>("content_hash") != originalHash,
+                "replacement GUID was published with moved source content");
+        assetDatabase->Refresh();
+        Require(assetDatabase->GetGuidFromPath(sourcePath) == replacementGuid &&
+                    assetDatabase->GetGuidFromPath(movedPath) == originalGuid,
+                "repeated refresh changed the resolved moved/replacement identities");
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
+void TestCopiedAuthoredSidecarStillRejectsDuplicateGuid(bool keepIndex)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+                      (keepIndex ? "infernux-authored-duplicate-indexed" : "infernux-authored-duplicate-unindexed");
+    std::filesystem::remove_all(root);
+    const auto source = root / "Assets" / "Original.py";
+    const auto copy = root / "Assets" / "Copied.py";
+    WriteText(source, "VALUE = 1\n");
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::Script, std::make_unique<infernux::InxPythonScriptLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        auto *assetDatabase = registry.GetAssetDatabase();
+        assetDatabase->Refresh();
+        const std::string sourcePath = infernux::FromFsPath(source);
+        const std::string copyPath = infernux::FromFsPath(copy);
+        const std::string originalGuid = assetDatabase->GetGuidFromPath(sourcePath);
+        assetDatabase->FlushDerivedIndex();
+        WriteText(copy, "VALUE = 2\n");
+        std::filesystem::copy_file(infernux::ToFsPath(sourcePath + ".meta"),
+                                   infernux::ToFsPath(copyPath + ".meta"));
+        if (!keepIndex)
+            Require(std::filesystem::remove(root / "Library" / "AssetIndex.json"),
+                    "duplicate-sidecar fixture index was not removed");
+        bool rejected = false;
+        try {
+            assetDatabase->Refresh();
+        } catch (const std::runtime_error &error) {
+            rejected = std::string(error.what()).find("Duplicate asset GUID") != std::string::npos;
+        }
+        Require(rejected, "copied authored GUID was silently reassigned instead of rejected");
+        Require(assetDatabase->GetGuidFromPath(sourcePath) == originalGuid &&
+                    assetDatabase->GetPathFromGuid(originalGuid) == sourcePath &&
+                    assetDatabase->GetGuidFromPath(copyPath).empty(),
+                "rejected authored GUID collision changed the accepted catalog");
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
 void TestStartupCatalogSurvivesLiveIndexInvalidation()
 {
     const auto root = std::filesystem::temp_directory_path() / "infernux-asset-startup-catalog";
@@ -1066,6 +1176,11 @@ int main()
                 for (const bool packageScript : {false, true})
                     TestRegisteredScriptKeepsGuidWhenSidecarAndDerivedIndexAreMissing(keepIndex, changeSource,
                                                                                      packageScript);
+        for (const bool keepIndex : {true, false})
+            for (const bool replacementSortsFirst : {false, true})
+                TestMovedSidecarOwnsGuidWhenOldPathIsReused(keepIndex, replacementSortsFirst);
+        for (const bool keepIndex : {true, false})
+            TestCopiedAuthoredSidecarStillRejectsDuplicateGuid(keepIndex);
         TestStartupCatalogSurvivesLiveIndexInvalidation();
         TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar();
         TestCompositeModelPublishesExternalTextureGuidDependencies();

@@ -1618,6 +1618,8 @@ void AssetDatabase::PrepareMetadata(WorkerMetadataPrepare &item)
         const char *contentData = content.empty() ? &emptySource : content.data();
         item.loader->CreateMeta(contentData, content.size(), item.file.path, metadata);
         metadata.AddMetadata("file_path", InxResourceMeta::NormalizeFilePath(item.file.path));
+        item.createdGuid = metadata.GetGuid();
+        item.inheritedGuid = !previousMetadataLoaded && !item.file.readOnly && !preservedGuid.empty();
 
         if (item.mode == WorkerMetadataPrepare::Mode::Rebuild && previousMetadataLoaded) {
             for (const auto &[key, value] : previousMetadata.GetMetadata())
@@ -1843,7 +1845,27 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
     auto &workingSet = state->stagedWorkingSet;
     if (state->metadataMergeCursor == 0 && state->pendingImports.empty())
         state->pendingImports.reserve(state->workerMetadata.size());
-    while (state->metadataMergeCursor < state->workerMetadata.size() && HasOwnerMergeBudget(ownerStarted, processed)) {
+
+    // Resolve authored identities for the complete batch before assigning a
+    // missing sidecar's inherited path identity. An external move carries its
+    // GUID in the sidecar; a new source at the old path is a different asset.
+    // Keep both passes inside the existing owner-thread merge budget.
+    while (state->metadataIdentityCursor < state->workerMetadata.size() && HasOwnerMergeBudget(ownerStarted, processed)) {
+        const auto &item = state->workerMetadata[state->metadataIdentityCursor++];
+        if (!item.error.empty())
+            throw std::runtime_error("Metadata preparation failed for '" + item.file.path + "': " + item.error);
+        if (!item.metadata)
+            throw std::logic_error("Metadata worker completed without an artifact");
+        if (!item.inheritedGuid) {
+            const std::string guid = item.metadata->GetGuid();
+            const auto [existing, inserted] = state->authoredGuidPaths.emplace(guid, item.file.path);
+            if (!inserted && existing->second != item.file.path)
+                throw std::runtime_error("Duplicate asset GUID produced during refresh: " + guid);
+        }
+        ++processed;
+    }
+    while (state->metadataIdentityCursor == state->workerMetadata.size() &&
+           state->metadataMergeCursor < state->workerMetadata.size() && HasOwnerMergeBudget(ownerStarted, processed)) {
         auto &item = state->workerMetadata[state->metadataMergeCursor++];
         if (item.producerThread != m_ownerThread)
             ++m_lastRefreshWorkerMetadataCount;
@@ -1852,6 +1874,17 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
         if (!item.metadata)
             throw std::logic_error("Metadata worker completed without an artifact");
 
+        if (item.inheritedGuid) {
+            const std::string inherited = item.metadata->GetGuid();
+            const auto authored = state->authoredGuidPaths.find(inherited);
+            const auto restored = workingSet.guidToPath.find(inherited);
+            if ((authored != state->authoredGuidPaths.end() && authored->second != item.file.path) ||
+                (restored != workingSet.guidToPath.end() && restored->second != item.file.path)) {
+                if (item.createdGuid.empty())
+                    throw std::logic_error("Metadata worker produced no identity for a replacement asset");
+                item.metadata->AddMetadata("guid", item.createdGuid);
+            }
+        }
         const std::string guid = item.metadata->GetGuid();
         if (guid.empty())
             throw std::logic_error("Metadata worker produced an empty GUID");
