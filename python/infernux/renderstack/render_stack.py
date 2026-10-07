@@ -1089,11 +1089,21 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
     @staticmethod
     def _upgrade_legacy_pipeline_enum(value, meta, path):
-        """Migrate the enum-name record written by earlier RenderStack saves."""
+        """Migrate enum records written by earlier RenderStack saves."""
         from infernux.components.fields import FieldType
         from infernux.components.value_codec import VALUE_CODECS
 
-        if meta.field_type == FieldType.ENUM and type(value) is dict and set(value) == {"__enum_name__"}:
+        if meta.field_type != FieldType.ENUM:
+            return value
+        if type(value) is int:
+            # The previous parameter setter accepted integer enum input and
+            # saved it unchanged. Only a declared member can be migrated.
+            try:
+                member = meta.enum_type(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{path}: unknown legacy enum value {value!r}") from exc
+            return VALUE_CODECS.encode(member, path)
+        if type(value) is dict and set(value) == {"__enum_name__"}:
             name = value["__enum_name__"]
             enum_type = meta.enum_type
             if type(name) is not str or enum_type is None or name not in enum_type.__members__:

@@ -266,5 +266,52 @@ def test_previous_enum_save_with_unknown_member_is_rejected(typed_stack):
         RenderStack()._deserialize_fields_document(saved)
 
 
+@pytest.mark.parametrize("pipeline_name,field", [("__default__", "msaa_samples"), (ParameterDocumentPipeline.name, "samples")])
+def test_previous_integer_enum_save_is_upgraded_on_load(typed_stack, pipeline_name, field):
+    saved = typed_stack._serialize_fields_document()
+    saved["pipeline_class_name"] = RenderStack.DEFAULT_PIPELINE_NAME if pipeline_name == "__default__" else pipeline_name
+    saved["pipeline_params_json"] = json.dumps({pipeline_name: {field: 8}})
+    restored = RenderStack()
+    restored._deserialize_fields_document(saved)
+    assert getattr(restored.pipeline, field) is MSAASamples.X8
+    canonical = json.loads(restored._serialize_fields_document()["pipeline_params_json"])
+    assert canonical[pipeline_name][field] == VALUE_CODECS.encode(MSAASamples.X8)
+
+
+def test_previous_integer_enum_save_with_unknown_value_is_rejected(typed_stack):
+    saved = typed_stack._serialize_fields_document()
+    saved["pipeline_params_json"] = json.dumps({ParameterDocumentPipeline.name: {"samples": 16}})
+    with pytest.raises(ValueError, match="unknown legacy enum value"):
+        RenderStack()._deserialize_fields_document(saved)
+
+
+@pytest.mark.parametrize("value", [True, 8.0, "8", None])
+def test_legacy_enum_migration_does_not_coerce_other_values(typed_stack, value):
+    saved = typed_stack._serialize_fields_document()
+    saved["pipeline_params_json"] = json.dumps({ParameterDocumentPipeline.name: {"samples": value}})
+    with pytest.raises(TypeError, match="ENUM field"):
+        RenderStack()._deserialize_fields_document(saved)
+
+
+def test_public_enum_parameter_input_publishes_only_declared_members(typed_stack):
+    assert typed_stack.pipeline.samples is MSAASamples.X4
+    before = typed_stack._serialize_fields_document()
+    with pytest.raises(ValueError, match="unknown MSAASamples value"):
+        typed_stack.set_pipeline_parameter("samples", 16)
+    assert typed_stack._serialize_fields_document() == before
+    typed_stack.set_pipeline_parameter("samples", 8)
+    assert typed_stack.pipeline.samples is MSAASamples.X8
+    assert json.loads(typed_stack.pipeline_params_json)[ParameterDocumentPipeline.name]["samples"] == VALUE_CODECS.encode(MSAASamples.X8)
+
+
+@pytest.mark.parametrize("value", [8, {"__enum_name__": "X8"}])
+def test_legacy_enum_store_restores_when_provider_returns(typed_stack, value):
+    typed_stack._pipeline = None
+    typed_stack._pipeline_param_store = {ParameterDocumentPipeline.name: {"samples": value}}
+    assert typed_stack.pipeline.samples is MSAASamples.X8
+    canonical = json.loads(typed_stack._serialize_fields_document()["pipeline_params_json"])
+    assert canonical[ParameterDocumentPipeline.name]["samples"] == VALUE_CODECS.encode(MSAASamples.X8)
+
+
 if __name__ == "__main__":
     exercise_missing_provider(Path(sys.argv[1]), bool(int(sys.argv[2])))
