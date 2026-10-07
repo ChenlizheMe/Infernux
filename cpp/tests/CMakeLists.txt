@@ -929,6 +929,15 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.model_animation_import_settings COMMAND infernux_model_animation_import_settings_tests)
 
+    add_executable(infernux_skinned_bind_pose_tests cpp/tests/SkinnedBindPoseTests.cpp)
+    target_include_directories(infernux_skinned_bind_pose_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_skinned_bind_pose_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_skinned_bind_pose_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.skinned_bind_pose COMMAND infernux_skinned_bind_pose_tests)
+
     add_executable(infernux_particle_gpu_runtime_tests
         cpp/tests/ParticleGpuRuntimeTests.cpp
         cpp/infernux/function/renderer/particle/ParticleGpuBillboardRenderer.cpp

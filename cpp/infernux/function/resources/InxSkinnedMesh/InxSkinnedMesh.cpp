@@ -126,6 +126,12 @@ static void DecomposeTRS(const glm::mat4 &m, glm::vec3 &t, glm::quat &r, glm::ve
         rot[1] = glm::vec3(m[1]) / s.y;
     if (s.z > kEpsilon)
         rot[2] = glm::vec3(m[2]) / s.z;
+    // A quaternion can only encode a proper rotation. Keep reflections in a
+    // deterministic scale axis, matching the importer's strict TRS convention.
+    if (glm::determinant(rot) < 0.0f) {
+        rot[0] = -rot[0];
+        s.x = -s.x;
+    }
     r = glm::normalize(glm::quat_cast(rot));
 }
 
@@ -134,6 +140,20 @@ static SkinnedNodePose BindNodePose(const SkinnedRuntimeNode &node)
     SkinnedNodePose pose;
     DecomposeTRS(node.bindLocal, pose.translation, pose.rotation, pose.scale);
     return pose;
+}
+
+static void ApplyNodeTrack(SkinnedNodePose &pose, const SkinnedRuntimeAnimation &animation, size_t nodeIndex,
+                          double timeTicks)
+{
+    if (nodeIndex >= animation.trackByNodeIndex.size())
+        return;
+    const int trackIndex = animation.trackByNodeIndex[nodeIndex];
+    if (trackIndex < 0 || static_cast<size_t>(trackIndex) >= animation.tracks.size())
+        return;
+    const auto &track = animation.tracks[static_cast<size_t>(trackIndex)];
+    pose.translation = SampleVec3(track.positions, timeTicks, pose.translation);
+    pose.rotation = SampleQuat(track.rotations, timeTicks, pose.rotation);
+    pose.scale = SampleVec3(track.scales, timeTicks, pose.scale);
 }
 
 static double ToAnimationTicks(const SkinnedRuntimeAnimation *anim, float seconds, bool loop)
@@ -738,24 +758,22 @@ std::vector<SkinnedNodePose> InxSkinnedMesh::BuildRetargetedLocalPoses(const Ske
                                                                        double timeTicks) const
 {
     std::vector<SkinnedNodePose> targetPoses(skeleton.nodes.size());
-    for (size_t index = 0; index < skeleton.nodes.size(); ++index)
+    const bool sameSkeleton = &sourceSkeleton == &skeleton;
+    for (size_t index = 0; index < skeleton.nodes.size(); ++index) {
         targetPoses[index] = BindNodePose(skeleton.nodes[index]);
-    if (!animation || sourceSkeleton.nodes.empty())
+        if (sameSkeleton && animation)
+            ApplyNodeTrack(targetPoses[index], *animation, index, timeTicks);
+    }
+    // An asset's own tracks already use its local joint coordinates. Retargeting
+    // them through global TRS loses shear introduced by scaled ancestors.
+    if (!animation || sameSkeleton || sourceSkeleton.nodes.empty())
         return targetPoses;
 
     std::vector<SkinnedNodePose> sourcePoses(sourceSkeleton.nodes.size());
     std::vector<glm::mat4> sourceGlobals(sourceSkeleton.nodes.size(), glm::mat4(1.0f));
     for (size_t index = 0; index < sourceSkeleton.nodes.size(); ++index) {
         sourcePoses[index] = BindNodePose(sourceSkeleton.nodes[index]);
-        if (index < animation->trackByNodeIndex.size()) {
-            const int trackIndex = animation->trackByNodeIndex[index];
-            if (trackIndex >= 0 && static_cast<size_t>(trackIndex) < animation->tracks.size()) {
-                const auto &track = animation->tracks[static_cast<size_t>(trackIndex)];
-                sourcePoses[index].translation = SampleVec3(track.positions, timeTicks, sourcePoses[index].translation);
-                sourcePoses[index].rotation = SampleQuat(track.rotations, timeTicks, sourcePoses[index].rotation);
-                sourcePoses[index].scale = SampleVec3(track.scales, timeTicks, sourcePoses[index].scale);
-            }
-        }
+        ApplyNodeTrack(sourcePoses[index], *animation, index, timeTicks);
         const glm::mat4 local =
             MakeTRS(sourcePoses[index].translation, sourcePoses[index].rotation, sourcePoses[index].scale);
         const int parent = sourceSkeleton.nodes[index].parent;
@@ -833,11 +851,17 @@ std::vector<SkinnedNodePose> InxSkinnedMesh::BuildRetargetedLocalPoses(const Ske
 
             const SkinnedNodePose sourceBindLocal =
                 BindNodePose(sourceSkeleton.nodes[static_cast<size_t>(sourceIndex)]);
+            // Global rotations above use the X-reflection convention. Compare
+            // scale deltas in that same representation, not the authored signs.
+            const glm::vec3 authoredScale = sourcePoses[static_cast<size_t>(sourceIndex)].scale;
+            glm::vec3 canonicalScale = glm::abs(authoredScale);
+            if ((authoredScale.x < 0.0f) ^ (authoredScale.y < 0.0f) ^ (authoredScale.z < 0.0f))
+                canonicalScale.x = -canonicalScale.x;
             for (glm::length_t component = 0; component < targetPoses[targetIndex].scale.length(); ++component) {
                 const float denominator = sourceBindLocal.scale[component];
                 const float scaleDelta =
                     std::abs(denominator) > kEpsilon
-                        ? sourcePoses[static_cast<size_t>(sourceIndex)].scale[component] / denominator
+                        ? canonicalScale[component] / denominator
                         : 1.0f;
                 targetPoses[targetIndex].scale[component] *= scaleDelta;
             }
@@ -874,9 +898,10 @@ std::vector<glm::mat4> InxSkinnedMesh::BuildBoneMatrices(const SkinnedSampleRequ
     // Same-take cross-fades at different times are valid (e.g. restarting a
     // clip with a fade) — only a missing blend animation disables blending.
     const float w = blendAnim ? glm::clamp(request.blendWeight, 0.0f, 1.0f) : 0.0f;
-    const SkeletonRetargetMap activeMapping = anim ? BuildRetargetMap(*activeSource, *anim) : SkeletonRetargetMap{};
+    const SkeletonRetargetMap activeMapping =
+        anim && activeSource != this ? BuildRetargetMap(*activeSource, *anim) : SkeletonRetargetMap{};
     const SkeletonRetargetMap blendMapping =
-        blendAnim ? BuildRetargetMap(*blendSource, *blendAnim) : SkeletonRetargetMap{};
+        blendAnim && blendSource != this ? BuildRetargetMap(*blendSource, *blendAnim) : SkeletonRetargetMap{};
     const std::vector<SkinnedNodePose> activePoses =
         BuildRetargetedLocalPoses(activeSource->skeleton, anim, activeMapping, tTicks);
     const std::vector<SkinnedNodePose> blendPoses =
@@ -941,7 +966,8 @@ std::vector<glm::mat4> InxSkinnedMesh::BuildBoneMatricesFromPoseStack(
                                             compatibilityReason);
         }
         const double tTicks = ToAnimationTicks(anim, layer.timeSeconds, layer.loop);
-        const SkeletonRetargetMap retarget = anim ? BuildRetargetMap(*source, *anim) : SkeletonRetargetMap{};
+        const SkeletonRetargetMap retarget =
+            anim && source != this ? BuildRetargetMap(*source, *anim) : SkeletonRetargetMap{};
         const std::vector<SkinnedNodePose> retargetedPoses =
             BuildRetargetedLocalPoses(source->skeleton, anim, retarget, tTicks);
 
