@@ -1283,9 +1283,20 @@ def test_ui_editor_component_is_a_revision_cached_global_selection_projection(
             return objects.get(object_id)
 
     class _SceneManager:
+        scene_count = 1
+
         @staticmethod
         def instance():
             return _SceneManager()
+
+        @staticmethod
+        def get_scene_at(index):
+            assert index == 0
+            return _Scene()
+
+        @staticmethod
+        def get_runtime_persistent_scene():
+            return None
 
         @staticmethod
         def get_active_scene():

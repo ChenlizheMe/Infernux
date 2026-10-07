@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Iterable, Mapping
 from urllib.parse import unquote, urlsplit
 
-from infernux.engine.path_utils import is_path_within, lexical_path, portable_path, resolved_path
+from infernux.engine.path_utils import (
+    is_lexical_path_within, is_path_within, lexical_path, lexical_path_key, portable_path, resolved_path,
+)
 
 
 PLUGIN_PAGES_DIRECTORY = "plugin_pages"
@@ -307,9 +309,10 @@ def resolve_plugin_page_asset(
         root = lexical_path(plugin_root)
         observations.watch(root)
         observations.watch(raw)
-        if raw != root and os.path.commonpath((raw, root)) == root:
+        if is_lexical_path_within(raw, root, allow_root=False):
             parent = os.path.dirname(raw)
-            while parent != root:
+            root_key = lexical_path_key(root)
+            while lexical_path_key(parent) != root_key:
                 observations.watch(parent)
                 parent = os.path.dirname(parent)
     candidate = resolved_path(raw)

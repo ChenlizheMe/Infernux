@@ -19,6 +19,8 @@ from typing import Iterable
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
+from .path_utils import resolved_path
+
 
 @dataclass(frozen=True)
 class DependencyFile:
@@ -39,14 +41,14 @@ def _installed_files(distribution: metadata.Distribution) -> tuple[tuple[Depende
     record = distribution.read_text("RECORD")
     if record is None:
         raise RuntimeError(f"Player dependency has no installed RECORD inventory: {name}")
-    base = Path(distribution.locate_file("")).resolve()
+    base = Path(resolved_path(distribution.locate_file("")))
     result = []
     record_path = ""
     for row in csv.reader(io.StringIO(record)):
         if not row:
             continue
         relative = PurePosixPath(row[0])
-        source = Path(distribution.locate_file(row[0])).resolve()
+        source = Path(resolved_path(distribution.locate_file(row[0])))
         # pip console wrappers are installation tools, not Player entrypoints.
         if not source.is_relative_to(base):
             if source.parent.name.casefold() in {"scripts", "bin"}:

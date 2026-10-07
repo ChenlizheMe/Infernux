@@ -8,9 +8,10 @@ import tempfile
 import numpy as np
 import infernux as inx
 from infernux.core.assets import AssetManager
+from infernux.engine.path_utils import resolved_path
 from infernux.lib import ConsolePanel, LightShadows, SceneManager, Vector3
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(resolved_path(__file__)).parents[3]
 
 
 def main():

@@ -17,7 +17,7 @@ _PLAYER_MODE = os.environ.get("_INFERNUX_PLAYER_MODE")
 from infernux.lib import InxGUIRenderable, InxGUIContext, TextureLoader, TextureData
 from infernux import resources as _resources
 from .engine import Engine, LogLevel
-from .path_utils import resolved_path
+from .path_utils import resolved_path, same_path
 
 from .headless import run_headless
 
@@ -86,7 +86,7 @@ def _acquire_project_lock(project_path: str, mode: str) -> tuple[str, str]:
     from infernux_project_lock import claim
     expected_path = _default_lock_path(project_path)
     configured = os.environ.get("_INFERNUX_PROJECT_LOCK_PATH", "").strip()
-    if configured and os.path.normcase(os.path.realpath(configured)) != os.path.normcase(expected_path):
+    if configured and not same_path(configured, expected_path):
         raise ValueError("Project lock path must identify this project's canonical lock file")
     token = os.environ.get("_INFERNUX_PROJECT_LOCK_TOKEN", "").strip() or uuid.uuid4().hex
     lock_path = claim(project_path, token, mode, probe=_is_pid_running, require_reservation=bool(configured))

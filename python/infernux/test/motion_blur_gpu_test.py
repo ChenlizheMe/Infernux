@@ -9,10 +9,11 @@ import tempfile
 import numpy as np
 import infernux as inx
 from infernux.core.assets import AssetManager
+from infernux.engine.path_utils import resolved_path
 from infernux.lib import ConsolePanel, InxMaterial, SceneManager, Vector3
 from infernux.renderstack.resource_bus import ResourceBus
 
-ROOT=Path(__file__).resolve().parents[3]
+ROOT=Path(resolved_path(__file__)).parents[3]
 sys.path.append(str(ROOT/'python/infernux/test'))
 from skinned_mesh_gpu_fixture import write_skinned_quad
 

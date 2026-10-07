@@ -89,7 +89,7 @@ class ModelSourceIO final : public Assimp::IOSystem
         auto candidate = ToFsPath(NormalizePortablePath(path));
         if (candidate.is_relative())
             candidate = m_directory / candidate;
-        return candidate.lexically_normal();
+        return ToFsPath(NormalizeFilesystemPathLexically(FromFsPath(candidate)));
     }
 
     std::filesystem::path m_directory;
