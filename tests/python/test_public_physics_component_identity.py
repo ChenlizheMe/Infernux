@@ -112,3 +112,9 @@ def test_trigger_component_identity_does_not_select_first_same_type_collider(sce
 @pytest.mark.parametrize('value_type', [CollisionInfo, RaycastHit])
 def test_empty_native_value_has_no_public_collider(value_type):
     assert value_type().collider is None
+
+
+def test_collision_record_rejects_the_unsupported_tutorial_impulse_attribute():
+    record = CollisionInfo()
+    with pytest.raises(AttributeError):
+        record.impulse

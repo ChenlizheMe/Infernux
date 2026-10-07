@@ -134,7 +134,7 @@ For an explicit API check, temporarily change `"Level01"` to `"MissingScene"`. T
 
 **The click runs twice.** Check for both a persistent **On Click ()** entry and a runtime `on_click.add_listener(...)` subscription for the same action. Keep one registration.
 
-**The Button never receives pointer input.** Confirm the Button and Canvas are enabled, `interactable` is enabled, the Button lies inside the Canvas, and no frontmost UI element configured as a raycast target covers it.
+**The Button never receives pointer input.** Confirm the Button is a child of the Canvas and lies in its visible area. Both components must be enabled, and the Button's `interactable` and `raycast_target` settings must be enabled. Check that no frontmost UI element configured as a raycast target covers it.
 
 **Code after `load_scene` assumes the new scene is active.** Treat a `True` return as an accepted request. Put new-scene setup in components belonging to the destination scene, using their `awake` and `start` callbacks.
 
@@ -278,7 +278,7 @@ class RuntimeButtonBinding(inx.InxComponent):
 
 **一次点击运行两次。** 检查同一操作是否同时存在持久化 **On Click ()** 记录和运行时 `on_click.add_listener(...)` 订阅，保留一处注册。
 
-**Button 收不到指针输入。** 确认 Button 与 Canvas 已启用、`interactable` 已开启、Button 位于 Canvas 内，并检查前方是否有启用 Raycast Target 的 UI 元素遮挡它。
+**Button 收不到指针输入。** 确认 Button 是 Canvas 的子物体，并位于其可见区域内。两个组件都需要启用，Button 的 `interactable` 与 `raycast_target` 也要开启；再检查前方是否有启用 Raycast Target 的 UI 元素遮挡它。
 
 **`load_scene` 后的代码立即使用新场景。** `True` 表示请求已接受。新场景初始化应放在目标场景组件的 `awake` 与 `start` 中。
 

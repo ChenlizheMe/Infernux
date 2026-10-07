@@ -137,7 +137,7 @@
 <p><strong>The callback method does not appear.</strong> Use a public method name without a leading underscore. Lifecycle methods are filtered from the picker. Save the script and confirm the Console has no compilation or import error.</p>
 <p><strong>Clicking logs “scene not found in build list.”</strong> Add the saved <code>.scene</code> asset through <strong>Project &gt; Build Settings</strong>. The bare string must match its filename; <code>"Level01"</code> resolves <code>Level01.scene</code>.</p>
 <p><strong>The click runs twice.</strong> Check for both a persistent <strong>On Click ()</strong> entry and a runtime <code>on_click.add_listener(...)</code> subscription for the same action. Keep one registration.</p>
-<p><strong>The Button never receives pointer input.</strong> Confirm the Button and Canvas are enabled, <code>interactable</code> is enabled, the Button lies inside the Canvas, and no frontmost UI element configured as a raycast target covers it.</p>
+<p><strong>The Button never receives pointer input.</strong> Confirm the Button is a child of the Canvas and lies in its visible area. Both components must be enabled, and the Button's <code>interactable</code> and <code>raycast_target</code> settings must be enabled. Check that no frontmost UI element configured as a raycast target covers it.</p>
 <p><strong>Code after <code>load_scene</code> assumes the new scene is active.</strong> Treat a <code>True</code> return as an accepted request. Put new-scene setup in components belonging to the destination scene, using their <code>awake</code> and <code>start</code> callbacks.</p>
 <h2 id="next-chapter">Next chapter</h2>
 <p>You now have a complete authored action path: pointer click, serialized component method, accepted scene request, and destination lifecycle. <a href="gameplay-audio-events.html">Audio and gameplay signals</a> uses the same event-oriented structure to trigger one-off sound while keeping continuous state updates separate.</p></div>
@@ -246,7 +246,7 @@
 <p><strong>方法没有出现在列表中。</strong> 使用不以下划线开头的公开方法名。生命周期方法会被选择器过滤。保存脚本，并确认 Console 没有编译或导入错误。</p>
 <p><strong>点击后提示场景不在构建列表。</strong> 通过 <strong>项目 &gt; 构建设置（Project &gt; Build Settings）</strong> 添加已保存的 <code>.scene</code> 资产。裸字符串要与文件名一致；<code>"Level01"</code> 会解析 <code>Level01.scene</code>。</p>
 <p><strong>一次点击运行两次。</strong> 检查同一操作是否同时存在持久化 <strong>On Click ()</strong> 记录和运行时 <code>on_click.add_listener(...)</code> 订阅，保留一处注册。</p>
-<p><strong>Button 收不到指针输入。</strong> 确认 Button 与 Canvas 已启用、<code>interactable</code> 已开启、Button 位于 Canvas 内，并检查前方是否有启用 Raycast Target 的 UI 元素遮挡它。</p>
+<p><strong>Button 收不到指针输入。</strong> 确认 Button 是 Canvas 的子物体，并位于其可见区域内。两个组件都需要启用，Button 的 <code>interactable</code> 与 <code>raycast_target</code> 也要开启；再检查前方是否有启用 Raycast Target 的 UI 元素遮挡它。</p>
 <p><strong><code>load_scene</code> 后的代码立即使用新场景。</strong> <code>True</code> 表示请求已接受。新场景初始化应放在目标场景组件的 <code>awake</code> 与 <code>start</code> 中。</p>
 <h2 id="_2">下一章</h2>
 <p>现在已经形成完整的用户操作路径：指针点击、持久化组件方法、场景请求与目标场景生命周期。下一章 <a href="gameplay-audio-events.html">音频与游戏信号</a> 会沿用事件驱动结构触发一次性声音，并把持续状态更新单独管理。</p></div>
