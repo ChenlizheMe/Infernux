@@ -839,6 +839,23 @@ if(INFERNUX_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "Validation Error:;SYNC-HAZARD")
     endforeach()
 
+    add_executable(infernux_vulkan_descriptor_lease_tests tests/native/VulkanDescriptorLeaseTests.cpp)
+    target_include_directories(infernux_vulkan_descriptor_lease_tests PRIVATE ${CMAKE_SOURCE_DIR}/cpp/infernux)
+    target_link_libraries(infernux_vulkan_descriptor_lease_tests PRIVATE InfernuxVulkanBackend)
+    if(MSVC)
+        target_compile_options(infernux_vulkan_descriptor_lease_tests PRIVATE /utf-8)
+    endif()
+    foreach(_case IN ITEMS own deferred native_mark device_owns device_retire device_mark
+            identity_owns identity_retire identity_mark
+            owner_owns owner_retire owner_mark reset_owns reset_retire reset_mark
+            recreate_owns recreate_retire recreate_mark)
+        add_test(NAME infernux.descriptor_lease.${_case}
+            COMMAND infernux_vulkan_descriptor_lease_tests ${_case})
+        set_tests_properties(infernux.descriptor_lease.${_case} PROPERTIES
+            LABELS "requires_vulkan_device" TIMEOUT 45 RUN_SERIAL TRUE
+            FAIL_REGULAR_EXPRESSION "Validation Error:;SYNC-HAZARD")
+    endforeach()
+
     add_executable(infernux_scene_render_graph_validation_tests
         tests/native/SceneRenderGraphValidationTests.cpp
     )

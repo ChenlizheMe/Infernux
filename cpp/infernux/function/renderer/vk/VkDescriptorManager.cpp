@@ -1,10 +1,33 @@
 #include "VkDescriptorManager.h"
 
 #include <algorithm>
+#include <atomic>
 #include <core/log/InxLog.h>
 
 namespace infernux::vk
 {
+namespace
+{
+uint64_t AllocateLeaseId() noexcept
+{
+    // Shared by all managers, including replacements constructed at the same
+    // address. Zero permanently exhausts the sequence instead of reusing IDs.
+    static std::atomic<uint64_t> next{1};
+    auto candidate = next.load(std::memory_order_relaxed);
+    while (candidate != 0) {
+        if (next.compare_exchange_weak(candidate, candidate + 1, std::memory_order_relaxed))
+            return candidate;
+    }
+    return 0;
+}
+
+bool MatchesLease(const DescriptorLease &provided, const DescriptorLease &owned) noexcept
+{
+    return provided.IsValid() && provided.id == owned.id && provided.device == owned.device &&
+           provided.arena == owned.arena && provided.poolGeneration == owned.poolGeneration &&
+           provided.setGeneration == owned.setGeneration;
+}
+} // namespace
 
 VkDescriptorManager::VkDescriptorManager(VkDevice device, rhi::DeviceId deviceId) noexcept
     : m_device(device), m_deviceId(deviceId)
@@ -30,6 +53,12 @@ DescriptorLease VkDescriptorManager::Allocate(VkDescriptorSetLayout layout, Desc
     if (m_device == VK_NULL_HANDLE || m_deviceId == rhi::InvalidDeviceId || layout == VK_NULL_HANDLE ||
         arena == DescriptorArena::Count)
         return {};
+
+    const auto leaseId = AllocateLeaseId();
+    if (leaseId == 0) {
+        ++m_allocationFailures;
+        return {};
+    }
 
     auto &pages = m_pools[ArenaIndex(arena)];
     VkDescriptorSetAllocateInfo allocateInfo{};
@@ -63,7 +92,7 @@ DescriptorLease VkDescriptorManager::Allocate(VkDescriptorSetLayout layout, Desc
     }
 
     DescriptorLease lease;
-    lease.id = m_nextLeaseId++;
+    lease.id = leaseId;
     lease.device = m_deviceId;
     lease.arena = arena;
     lease.poolGeneration = owner->generation;
@@ -84,6 +113,12 @@ DescriptorLease VkDescriptorManager::AllocateBindlessTextureSet(VkDescriptorSetL
     if (m_device == VK_NULL_HANDLE || m_deviceId == rhi::InvalidDeviceId || layout == VK_NULL_HANDLE ||
         descriptorCount == 0)
         return {};
+
+    const auto leaseId = AllocateLeaseId();
+    if (leaseId == 0) {
+        ++m_allocationFailures;
+        return {};
+    }
 
     auto &pages = m_pools[ArenaIndex(DescriptorArena::BindlessGlobal)];
     // The global table is deliberately one dedicated manager page. This keeps
@@ -115,7 +150,7 @@ DescriptorLease VkDescriptorManager::AllocateBindlessTextureSet(VkDescriptorSetL
     }
 
     DescriptorLease lease;
-    lease.id = m_nextLeaseId++;
+    lease.id = leaseId;
     lease.device = m_deviceId;
     lease.arena = DescriptorArena::BindlessGlobal;
     lease.poolGeneration = page.generation;
@@ -175,8 +210,7 @@ void VkDescriptorManager::MarkUsed(const DescriptorLease &lease, rhi::Submission
         return;
     std::lock_guard lock(m_mutex);
     const auto found = m_leases.find(lease.id);
-    if (found == m_leases.end() || found->second.lease.device != lease.device ||
-        found->second.lease.setGeneration != lease.setGeneration)
+    if (found == m_leases.end() || !MatchesLease(lease, found->second.lease))
         return;
     found->second.lastUse = (std::max)(found->second.lastUse, serial);
     if (found->second.retired)
@@ -189,8 +223,7 @@ void VkDescriptorManager::Retire(const DescriptorLease &lease, rhi::SubmissionSe
         return;
     std::lock_guard lock(m_mutex);
     const auto found = m_leases.find(lease.id);
-    if (found == m_leases.end() || found->second.lease.device != m_deviceId ||
-        found->second.lease.setGeneration != lease.setGeneration)
+    if (found == m_leases.end() || !MatchesLease(lease, found->second.lease))
         return;
     found->second.retired = true;
     const auto currentSerial = m_retirementSerialSource ? m_retirementSerialSource() : 0;
@@ -240,7 +273,6 @@ void VkDescriptorManager::Destroy() noexcept
         arena.clear();
     m_device = VK_NULL_HANDLE;
     m_deviceId = rhi::InvalidDeviceId;
-    m_nextLeaseId = 1;
     m_nextPoolGeneration = 1;
     m_nextSetGeneration = 1;
     m_peakLiveSets = 0;
@@ -252,8 +284,7 @@ bool VkDescriptorManager::Owns(const DescriptorLease &lease) const noexcept
 {
     std::lock_guard lock(m_mutex);
     const auto found = m_leases.find(lease.id);
-    return found != m_leases.end() && found->second.lease.device == m_deviceId &&
-           found->second.lease.setGeneration == lease.setGeneration;
+    return found != m_leases.end() && MatchesLease(lease, found->second.lease);
 }
 
 VkDescriptorManager::Stats VkDescriptorManager::GetStats() const noexcept

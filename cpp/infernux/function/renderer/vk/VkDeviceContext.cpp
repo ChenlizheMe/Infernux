@@ -227,6 +227,8 @@ static void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMesse
 // Constructor / Destructor / Move
 // ============================================================================
 
+VkDeviceContext::VkDeviceContext() = default;
+
 VkDeviceContext::~VkDeviceContext()
 {
     Destroy();

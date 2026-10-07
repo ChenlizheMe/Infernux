@@ -50,7 +50,7 @@ class VkDeviceContext
 {
   public:
     /// @brief Default constructor - creates uninitialized context
-    VkDeviceContext() = default;
+    VkDeviceContext();
 
     /// @brief Destructor - automatically cleans up all Vulkan objects
     ~VkDeviceContext();
