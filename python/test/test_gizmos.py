@@ -555,6 +555,8 @@ class TestGizmosCollectorWorkGates:
             active_in_hierarchy=True,
             get_cpp_component=lambda name: SimpleNamespace(enabled=True)
             if name == "Light" else None,
+            get_cpp_components=lambda name: [SimpleNamespace(enabled=True)]
+            if name == "Light" else [],
             get_transform=lambda: SimpleNamespace(
                 position=SimpleNamespace(x=0.0, y=1.0, z=0.0)
             ),
@@ -866,6 +868,11 @@ class TestGizmosCollectorWorkGates:
                 return SimpleNamespace(enabled=False) if type_name == "Light" else None
 
             @staticmethod
+            def get_cpp_components(type_name):
+                component = GameObject.get_cpp_component(type_name)
+                return [] if component is None else [component]
+
+            @staticmethod
             def get_transform():
                 raise AssertionError("disabled component read its world transform")
 
@@ -954,6 +961,10 @@ class TestGizmosCollectorWorkGates:
 
             def get_cpp_component(self, requested):
                 return SimpleNamespace(enabled=True) if requested == type_name else None
+
+            def get_cpp_components(self, requested):
+                component = self.get_cpp_component(requested)
+                return [] if component is None else [component]
 
             def get_transform(self):
                 return SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0, z=0.0))

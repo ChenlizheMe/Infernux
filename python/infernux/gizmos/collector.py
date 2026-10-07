@@ -405,72 +405,72 @@ class GizmosCollector:
                     is_selected = go_id in selected_ancestors
                     # Always use C++ lookup — _type_map stores Python wrappers
                     # which can become stale after component removal.
-                    cpp_comp = go.get_cpp_component(type_name)
+                    cpp_components = go.get_cpp_components(type_name)
                 except Exception as exc:
                     _log_gizmo_warning(f"Gizmo: failed to query component '{type_name}': {exc}")
                     continue
-                if cpp_comp is None:
-                    continue
+                icon_registered = False
+                for cpp_comp in cpp_components:
+                    try:
+                        enabled = cpp_comp.enabled
+                    except Exception as exc:
+                        _log_gizmo_warning(f"Gizmo: failed to read enabled on '{type_name}': {exc}")
+                        continue
+                    if not enabled:
+                        skipped_disabled += 1
+                        continue
 
-                try:
-                    enabled = cpp_comp.enabled
-                except Exception as exc:
-                    _log_gizmo_warning(f"Gizmo: failed to read enabled on '{type_name}': {exc}")
-                    continue
-                if not enabled:
-                    skipped_disabled += 1
-                    continue
+                    # ---- Icon registration (always, regardless of selection) ----
+                    if icon_color is not None and not icon_registered:
+                        transform = go.get_transform()
+                        if transform is not None:
+                            pos = transform.position
+                            tint = icon_color
+                            if type_name == 'Light':
+                                tint = _light_gizmo_color(cpp_comp)
+                            if timing_enabled:
+                                invoke_geometry(
+                                    Gizmos.draw_icon,
+                                    (pos.x, pos.y, pos.z), go_id, tint, icon_kind=icon_kind)
+                            else:
+                                Gizmos.draw_icon(
+                                    (pos.x, pos.y, pos.z), go_id, tint, icon_kind=icon_kind)
+                            icon_registered = True
 
-                # ---- Icon registration (always, regardless of selection) ----
-                if icon_color is not None:
-                    transform = go.get_transform()
-                    if transform is not None:
-                        pos = transform.position
-                        tint = icon_color
-                        if type_name == 'Light':
-                            tint = _light_gizmo_color(cpp_comp)
-                        if timing_enabled:
-                            invoke_geometry(
-                                Gizmos.draw_icon,
-                                (pos.x, pos.y, pos.z), go_id, tint, icon_kind=icon_kind)
-                        else:
-                            Gizmos.draw_icon(
-                                (pos.x, pos.y, pos.z), go_id, tint, icon_kind=icon_kind)
+                    # ---- Gizmo lifecycle ----
+                    if not has_gizmos or (
+                        not is_selected
+                        and wrapper_cls.on_draw_gizmos is InxComponent.on_draw_gizmos
+                    ):
+                        continue
 
-                # ---- Gizmo lifecycle ----
-                if not has_gizmos or (
-                    not is_selected
-                    and wrapper_cls.on_draw_gizmos is InxComponent.on_draw_gizmos
-                ):
-                    continue
+                    try:
+                        wrapper = wrapper_cls._get_or_create_wrapper(cpp_comp, go)
+                    except Exception as exc:
+                        _log_gizmo_warning(f"Gizmo: failed to create wrapper for '{type_name}': {exc}")
+                        continue
+                    if wrapper is None:
+                        continue
 
-                try:
-                    wrapper = wrapper_cls._get_or_create_wrapper(cpp_comp, go)
-                except Exception as exc:
-                    _log_gizmo_warning(f"Gizmo: failed to create wrapper for '{type_name}': {exc}")
-                    continue
-                if wrapper is None:
-                    continue
+                    try:
+                        always_show_inst = getattr(wrapper, '_always_show', True)
+                        should_draw = always_show_inst or is_selected
+                        if should_draw:
+                            if timing_enabled:
+                                invoke_callback(wrapper._call_on_draw_gizmos)
+                            else:
+                                wrapper._call_on_draw_gizmos()
+                            builtin_callbacks += 1
 
-                try:
-                    always_show_inst = getattr(wrapper, '_always_show', True)
-                    should_draw = always_show_inst or is_selected
-                    if should_draw:
-                        if timing_enabled:
-                            invoke_callback(wrapper._call_on_draw_gizmos)
-                        else:
-                            wrapper._call_on_draw_gizmos()
-                        builtin_callbacks += 1
-
-                    if is_selected:
-                        if timing_enabled:
-                            invoke_callback(wrapper._call_on_draw_gizmos_selected)
-                        else:
-                            wrapper._call_on_draw_gizmos_selected()
-                        builtin_callbacks += 1
-                except Exception as exc:
-                    _log_gizmo_warning(f"Gizmo callback failed for '{type_name}': {exc}")
-                    wrapper._invalidate_native_binding()
+                        if is_selected:
+                            if timing_enabled:
+                                invoke_callback(wrapper._call_on_draw_gizmos_selected)
+                            else:
+                                wrapper._call_on_draw_gizmos_selected()
+                            builtin_callbacks += 1
+                    except Exception as exc:
+                        _log_gizmo_warning(f"Gizmo callback failed for '{type_name}': {exc}")
+                        wrapper._invalidate_native_binding()
 
         # Project and plugin handles share the exact Gizmo publication frame.
         # Their registry owns interaction/callback lifetimes; this collector
