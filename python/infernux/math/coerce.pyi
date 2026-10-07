@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from typing import Sequence, Union
 
-from infernux.lib import Vector3
+from infernux.lib import Vector3, quatf
+
+def coerce_quat(value: quatf | Sequence[float] | None) -> quatf:
+    """Convert an (x, y, z, w) sequence; None produces identity."""
+    ...
 
 def coerce_vec3(value: Union[Vector3, Sequence[float]]) -> Vector3:
     """Convert a tuple / list / Vector3 to a :class:`Vector3`.

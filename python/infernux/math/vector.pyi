@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, ClassVar
+
 from infernux.lib import Vector2, Vector3, vec4f, quatf
 
 
@@ -31,9 +33,9 @@ class vector3(metaclass=_VecMeta):
     right: Vector3
     """Shorthand for writing vector3(1, 0, 0)."""
     forward: Vector3
-    """Shorthand for writing vector3(0, 0, -1)."""
-    back: Vector3
     """Shorthand for writing vector3(0, 0, 1)."""
+    back: Vector3
+    """Shorthand for writing vector3(0, 0, -1)."""
     positive_infinity: Vector3
     """Shorthand for writing vector3(inf, inf, inf)."""
     negative_infinity: Vector3
@@ -85,7 +87,7 @@ class vector3(metaclass=_VecMeta):
         """Return the vector with a magnitude of 1."""
         ...
     @staticmethod
-    def ortho_normalize(v1: Vector3, v2: Vector3, v3: Vector3) -> Vector3:
+    def ortho_normalize(v1: Vector3, v2: Vector3, v3: Vector3) -> tuple[Vector3, Vector3, Vector3]:
         """Make vectors normalized and orthogonal to each other."""
         ...
     @staticmethod
@@ -128,17 +130,13 @@ class vector3(metaclass=_VecMeta):
         smooth_time: float,
         max_speed: float,
         delta_time: float,
-    ) -> Vector3:
-        """Gradually change a vector towards a desired goal over time."""
+    ) -> tuple[Vector3, Vector3]:
+        """Return the updated position and velocity."""
         ...
-    @staticmethod
-    def magnitude(v: Vector3) -> float:
-        """Return the length of the vector."""
-        ...
-    @staticmethod
-    def sqr_magnitude(v: Vector3) -> float:
-        """Return the squared length of the vector."""
-        ...
+    # Class lookup forwards native descriptors; constructed Vector3 instances
+    # expose their native read-only float properties.
+    magnitude: ClassVar[property]
+    sqr_magnitude: ClassVar[property]
 
 
 class vector2(metaclass=_VecMeta):
@@ -236,17 +234,11 @@ class vector2(metaclass=_VecMeta):
         smooth_time: float,
         max_speed: float,
         delta_time: float,
-    ) -> Vector2:
-        """Gradually change a vector towards a desired goal over time."""
+    ) -> tuple[Vector2, Vector2]:
+        """Return the updated position and velocity."""
         ...
-    @staticmethod
-    def magnitude(v: Vector2) -> float:
-        """Return the length of the vector."""
-        ...
-    @staticmethod
-    def sqr_magnitude(v: Vector2) -> float:
-        """Return the squared length of the vector."""
-        ...
+    magnitude: ClassVar[property]
+    sqr_magnitude: ClassVar[property]
 
 
 class vector4(metaclass=_VecMeta):
@@ -316,17 +308,11 @@ class vector4(metaclass=_VecMeta):
         smooth_time: float,
         max_speed: float,
         delta_time: float,
-    ) -> vec4f:
-        """Gradually change a vector towards a desired goal over time."""
+    ) -> tuple[vec4f, vec4f]:
+        """Return the updated position and velocity."""
         ...
-    @staticmethod
-    def magnitude(v: vec4f) -> float:
-        """Return the length of the vector."""
-        ...
-    @staticmethod
-    def sqr_magnitude(v: vec4f) -> float:
-        """Return the squared length of the vector."""
-        ...
+    magnitude: ClassVar[property]
+    sqr_magnitude: ClassVar[property]
 
 
 class quaternion(metaclass=_VecMeta):
