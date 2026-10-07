@@ -213,6 +213,22 @@ def is_current_private_runtime_root(
     )
 
 
+def _replace_runtime_directory(source: Path, destination: Path) -> None:
+    # Windows can briefly retain image/scanner handles after the candidate
+    # interpreter exits. Retry the atomic rename, never recopy or delete the
+    # live runtime. Persistent permissions/sharing failures still propagate.
+    delays = (0.05, 0.1, 0.2, 0.4, 0.8, 0.8)
+    for attempt in range(len(delays) + 1):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            if (sys.platform != "win32" or getattr(exc, "winerror", None) not in {5, 32, 33}
+                    or attempt == len(delays)):
+                raise
+            time.sleep(delays[attempt])
+
+
 @contextmanager
 def runtime_publication(destination: str | os.PathLike[str], *, replace_existing: bool = True):
     """Prepare an owned candidate, then replace the live tree on successful exit."""
@@ -235,13 +251,13 @@ def runtime_publication(destination: str | os.PathLike[str], *, replace_existing
         if target.exists():
             if not replace_existing:
                 raise FileExistsError(str(target))
-            os.replace(target, backup)
+            _replace_runtime_directory(target, backup)
         try:
-            os.replace(unpacked_runtime, target)
+            _replace_runtime_directory(unpacked_runtime, target)
         except BaseException:
             if backup.exists():
                 try:
-                    os.replace(backup, target)
+                    _replace_runtime_directory(backup, target)
                 except OSError as exc:
                     raise RuntimeError(
                         f"Runtime publication and restoration failed; the previous runtime is preserved at {backup}"

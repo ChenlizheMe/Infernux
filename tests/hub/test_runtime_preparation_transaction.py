@@ -8,11 +8,70 @@ import subprocess
 import sys
 import tarfile
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 
 import embed_runtime_manager as module
 import private_python_runtime as runtime
+
+
+@pytest.mark.parametrize("error_code", [5, 32, 33])
+@pytest.mark.parametrize("phase", ["backup", "publish", "restore"])
+def test_windows_runtime_rename_waits_for_transient_handles(tmp_path, monkeypatch, error_code, phase):
+    target = tmp_path / "python313"
+    target.mkdir()
+    (target / "identity").write_text("old")
+    replace = runtime.os.replace
+    calls = []
+    delays = []
+    def interrupted(source, destination):
+        stage = "restore" if source.name == "previous-runtime" else "backup" if source == target else "publish"
+        calls.append(stage)
+        if phase == "restore" and stage == "publish":
+            raise OSError("publication failed")
+        if stage == phase and calls.count(stage) < 3:
+            error = PermissionError("temporary image handle")
+            error.winerror = error_code
+            raise error
+        replace(source, destination)
+    monkeypatch.setattr(runtime, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(runtime.os, "replace", interrupted)
+    monkeypatch.setattr(runtime.time, "sleep", delays.append)
+    def publish():
+        with runtime.runtime_publication(target) as candidate:
+            candidate.mkdir()
+            (candidate / "identity").write_text("new")
+    if phase == "restore":
+        with pytest.raises(OSError, match="publication failed"):
+            publish()
+    else:
+        publish()
+    assert (target / "identity").read_text() == ("old" if phase == "restore" else "new")
+    assert delays == [0.05, 0.1]
+    assert not list(tmp_path.glob(".python313.extract-*"))
+
+
+@pytest.mark.parametrize("platform,error_code,retry_count", [("win32", 5, 7), ("win32", 2, 1), ("linux", 5, 1)])
+def test_runtime_rename_does_not_hide_permanent_failures(tmp_path, monkeypatch, platform, error_code, retry_count):
+    target = tmp_path / "python313"
+    target.mkdir()
+    (target / "identity").write_text("old")
+    calls = []
+    def fail(source, destination):
+        calls.append((source, destination))
+        error = PermissionError("permanent failure")
+        error.winerror = error_code
+        raise error
+    monkeypatch.setattr(runtime, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(runtime.os, "replace", fail)
+    monkeypatch.setattr(runtime.time, "sleep", lambda delay: None)
+    with pytest.raises(PermissionError, match="permanent failure"):
+        with runtime.runtime_publication(target) as candidate:
+            candidate.mkdir()
+    assert len(calls) == retry_count
+    assert (target / "identity").read_text() == "old"
+    assert not list(tmp_path.glob(".python313.extract-*"))
 
 
 def write_runtime(root: Path, label: str) -> None:
