@@ -527,7 +527,7 @@ def _find_pycharm_executable() -> str | None:
 
 
 def _ensure_pycharm_project_files(project_root: str) -> bool:
-    """Create a minimal PyCharm project structure and a bilingual setup guide.
+    """Create missing PyCharm helpers without changing existing author files.
 
     The generated project:
 
@@ -558,22 +558,21 @@ def _ensure_pycharm_project_files(project_root: str) -> bool:
     runtime_python = os.path.join(
         project_root, '.runtime', PYTHON_RUNTIME_DIRECTORY, 'python.exe'
     )
+    runtime_relative = f'.runtime/{PYTHON_RUNTIME_DIRECTORY}/python.exe'
 
     if not os.path.isfile(runtime_python):
         raise FileNotFoundError(f"project Python runtime not found: {runtime_python}")
 
     os.makedirs(idea_dir, exist_ok=True)
 
-    def _write_if_changed(path: str, content: str) -> None:
-        old = None
-        if os.path.isfile(path):
-            with open(path, 'r', encoding='utf-8') as f:
-                old = f.read()
-
-        if old == content:
+    def _write_if_missing(path: str, content: str) -> None:
+        # Opening a script does not grant ownership of any existing IDE file.
+        # Exclusive creation also preserves a file created by the IDE meanwhile.
+        try:
+            stream = open(path, 'x', encoding='utf-8', newline='\n')
+        except FileExistsError:
             return
-
-        with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        with stream as f:
             f.write(content)
 
     source_entries = []
@@ -581,20 +580,20 @@ def _ensure_pycharm_project_files(project_root: str) -> bool:
 
     if os.path.isdir(os.path.join(project_root, 'Assets')):
         source_entries.append(
-            '      <sourceFolder url="file://$MODULE_DIR$/Assets" isTestSource="false" />'
+            '      <sourceFolder url="file://$MODULE_DIR$/../Assets" isTestSource="false" />'
         )
 
     for name in ('Library', 'Logs', '.vscode', '.runtime'):
         if os.path.isdir(os.path.join(project_root, name)):
             exclude_entries.append(
-                f'      <excludeFolder url="file://$MODULE_DIR$/{name}" />'
+                f'      <excludeFolder url="file://$MODULE_DIR$/../{name}" />'
             )
 
     iml_xml = '\n'.join([
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<module type="PYTHON_MODULE" version="4">',
         '  <component name="NewModuleRootManager">',
-        '    <content url="file://$MODULE_DIR$">',
+        '    <content url="file://$MODULE_DIR$/..">',
         *source_entries,
         *exclude_entries,
         '    </content>',
@@ -659,7 +658,7 @@ def _ensure_pycharm_project_files(project_root: str) -> bool:
     '6. 选择下面这个解释器文件：',
     '',
     '```text',
-    runtime_python,
+    runtime_relative,
     '```',
     '',
     '配置完成后，PyCharm 就会使用与引擎一致的 Python 环境。',
@@ -690,7 +689,7 @@ def _ensure_pycharm_project_files(project_root: str) -> bool:
     '6. Select this interpreter executable:',
     '',
     '```text',
-    runtime_python,
+    runtime_relative,
     '```',
     '',
     'After that, PyCharm should use the same Python environment as the engine.',
@@ -703,11 +702,11 @@ def _ensure_pycharm_project_files(project_root: str) -> bool:
     '',
 ])
 
-    _write_if_changed(os.path.join(idea_dir, 'modules.xml'), modules_xml)
-    _write_if_changed(os.path.join(idea_dir, 'misc.xml'), misc_xml)
-    _write_if_changed(os.path.join(idea_dir, f'{module_name}.iml'), iml_xml)
-    _write_if_changed(os.path.join(idea_dir, '.gitignore'), idea_gitignore)
-    _write_if_changed(setup_guide_path, setup_md)
+    _write_if_missing(os.path.join(idea_dir, 'modules.xml'), modules_xml)
+    _write_if_missing(os.path.join(idea_dir, 'misc.xml'), misc_xml)
+    _write_if_missing(os.path.join(idea_dir, f'{module_name}.iml'), iml_xml)
+    _write_if_missing(os.path.join(idea_dir, '.gitignore'), idea_gitignore)
+    _write_if_missing(setup_guide_path, setup_md)
     return True
 
 
@@ -742,23 +741,11 @@ def open_in_pycharm(file_path: str, line: int = 0, project_root: str = "") -> bo
             project_root = ""
 
     
-    project_initialized = False
+    show_setup_guide = False
     if project_root:
-        idea_dir = os.path.join(project_root, '.idea')
         setup_guide_path = os.path.join(project_root, 'PYCHARM_SETUP.zh-CN.en.md')
-        module_file = os.path.join(idea_dir, 'project.iml')
-        modules_file = os.path.join(idea_dir, 'modules.xml')
-        misc_file = os.path.join(idea_dir, 'misc.xml')
-
-        project_initialized = (
-            os.path.isfile(setup_guide_path) and
-            os.path.isfile(module_file) and
-            os.path.isfile(modules_file) and
-            os.path.isfile(misc_file)
-        )
-
-        if not project_initialized:
-            _ensure_pycharm_project_files(project_root)
+        show_setup_guide = not os.path.isfile(setup_guide_path)
+        _ensure_pycharm_project_files(project_root)
 
     setup_guide_path = os.path.join(project_root, 'PYCHARM_SETUP.zh-CN.en.md') if project_root else ""
 
@@ -772,7 +759,7 @@ def open_in_pycharm(file_path: str, line: int = 0, project_root: str = "") -> bo
 
     # Then open the setup guide so the user sees the interpreter instructions.
     # open it first-time initialization only
-    if setup_guide_path and os.path.isfile(setup_guide_path) and not project_initialized:
+    if show_setup_guide and os.path.isfile(setup_guide_path):
         cmd.append(setup_guide_path)
 
     # Finally open the target file.
