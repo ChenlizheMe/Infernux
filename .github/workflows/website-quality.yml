@@ -138,6 +138,9 @@ jobs:
       - name: Test learning course filters
         run: node docs/tools/test-learning-course-filter.mjs
 
+      - name: Test tutorial entry tabs and chapter return links
+        run: node docs/tools/test-tutorial-tabs.mjs
+
       - name: Test website health reporting
         run: node docs/tools/test-website-health-report.mjs
 
