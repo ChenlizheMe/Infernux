@@ -486,17 +486,21 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
     def set_effect_stage_slots(self, stage_id: str, slots) -> None:
         """Replace one stage list while preserving all other stage bindings."""
+        import copy
+
         stage = self._resolve_effect_stage(stage_id)
         replacement = []
         for slot in slots:
             if not isinstance(slot, EffectSlot):
                 raise TypeError("RenderStack stage slots must be EffectSlot values")
+            slot = copy.deepcopy(slot)
             slot.stage_id = stage.stable_id
             replacement.append(slot)
-        self.effect_slots = [
+        candidate = [
             slot for slot in self.effect_slots if stage.stable_id != slot.stage_id
         ] + replacement
-        self._normalize_effect_slots()
+        self._normalize_effect_slots(candidate)
+        self.effect_slots = candidate
         self.invalidate_graph()
 
     def add_effect_slot(self, stage_id: str, effect=None, *, enabled: bool = True) -> EffectSlot:
@@ -536,20 +540,26 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             self.invalidate_graph()
         return remapped
 
-    def _normalize_effect_slots(self) -> None:
+    def _normalize_effect_slots(self, slots=None) -> None:
         import uuid
         from infernux.renderstack.effect_stage import validate_effect_stage_id
 
         slot_ids = set()
-        for slot in self.effect_slots or []:
+        normalized = []
+        for slot in (self.effect_slots or []) if slots is None else slots:
             if not isinstance(slot, EffectSlot):
                 raise TypeError("RenderStack.effect_slots must contain EffectSlot values")
-            slot.stage_id = validate_effect_stage_id(slot.stage_id)
-            if not slot.slot_id:
-                slot.slot_id = uuid.uuid4().hex
-            if slot.slot_id in slot_ids:
-                raise ValueError(f"duplicate effect slot_id: {slot.slot_id!r}")
-            slot_ids.add(slot.slot_id)
+            stage_id = validate_effect_stage_id(slot.stage_id)
+            slot_id = slot.slot_id or uuid.uuid4().hex
+            if slot_id in slot_ids:
+                raise ValueError(f"duplicate effect slot_id: {slot_id!r}")
+            slot_ids.add(slot_id)
+            normalized.append((slot, stage_id, slot_id))
+        # Publish normalization only after the complete list is valid, including
+        # IDs owned by other stages. Rejection must not mutate live/caller slots.
+        for slot, stage_id, slot_id in normalized:
+            slot.stage_id = stage_id
+            slot.slot_id = slot_id
 
     @staticmethod
     def discover_pipelines() -> Dict[str, type]:
