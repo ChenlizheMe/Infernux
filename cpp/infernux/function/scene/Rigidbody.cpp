@@ -22,6 +22,7 @@
 #include "MeshCollider.h"
 #include "SceneManager.h"
 #include "Transform.h"
+#include "TransformECSStore.h"
 #include "physics/PhysicsECSStore.h"
 #include "physics/PhysicsWorld.h"
 
@@ -862,6 +863,8 @@ void Rigidbody::SyncPhysicsToTransform()
             c->SetLastSyncedTransform(cachePos, cacheRot);
         }
     }
+    if (d.interpolation == static_cast<int>(RigidbodyInterpolation::None) || firstPose)
+        PreserveDescendantPhysicsPoses();
 }
 
 void Rigidbody::ApplyInterpolatedTransform(float alpha)
@@ -905,6 +908,36 @@ void Rigidbody::ApplyInterpolatedTransform(float alpha)
             c->SetLastSyncedTransform(presentedPos, d.lastSyncedRotation);
         }
     }
+    PreserveDescendantPhysicsPoses();
+}
+
+void Rigidbody::PreserveDescendantPhysicsPoses()
+{
+    auto *go = GetGameObject();
+    if (!go)
+        return;
+    auto &transforms = TransformECSStore::Instance();
+    const auto preserve = [&](auto &&self, GameObject *child) -> void {
+        if (!child->IsActive())
+            return;
+        auto *body = child->GetComponent<Rigidbody>();
+        if (body && body->IsEnabled() && !body->IsKinematic() && body->Data().hasPhysicsPose &&
+            body->HasLinkedColliders()) {
+            const auto handle = child->GetTransform()->GetECSHandle();
+            // An already published solver/interpolated or authored target is
+            // authoritative. Do not replace it with an older interpolation
+            // sample. Its own publication already handled its descendants.
+            if (!transforms.IsFrameCacheActiveFor(handle) || !transforms.HasFrameCacheWorldPoseOverride(handle))
+                body->ApplyInterpolatedTransform(1.0f);
+            return;
+        }
+        for (size_t i = 0; i < child->GetChildCount(); ++i)
+            self(self, child->GetChild(i));
+    };
+    // Only traverse this moving actor's descendants, never the whole physics
+    // pool. Cached solver poses need no Jolt read, wake-up or teleport.
+    for (size_t i = 0; i < go->GetChildCount(); ++i)
+        preserve(preserve, go->GetChild(i));
 }
 
 void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)

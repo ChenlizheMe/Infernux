@@ -4,6 +4,7 @@
 #include <functional>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <utility>
 #include <vector>
 
 namespace infernux
@@ -414,6 +415,8 @@ class TransformECSStore
     std::vector<uint8_t> m_fcDirty;
     std::vector<uint64_t> m_fcStamp;
     std::vector<uint32_t> m_fcDirtyIndices;
+    // Retained sparse work list: only dirty non-root transforms need ordering.
+    std::vector<std::pair<uint32_t, uint32_t>> m_fcChildCommits;
     uint64_t m_frameCacheSerial = 0;
     bool m_frameCacheActive = false;
     bool m_fcPublishedPhysicsPose = false;

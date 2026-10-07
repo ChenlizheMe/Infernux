@@ -2,6 +2,7 @@
 #include "GameObject.h"
 #include "Scene.h"
 #include "Transform.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <glm/gtc/constants.hpp>
@@ -619,16 +620,16 @@ bool TransformECSStore::EndFrameCache()
     m_frameCacheActive = false;
     bool requiresFullSync = false;
 
-    for (uint32_t i : m_fcDirtyIndices) {
+    const auto commitSlot = [&](uint32_t i) {
         const uint8_t d = m_fcDirty[i];
         m_fcDirty[i] = 0;
         if (d == 0 || i >= m_alive.size() || !m_alive[i]) {
-            continue;
+            return;
         }
 
         Transform *owner = m_owners[i];
         if (!owner) {
-            continue;
+            return;
         }
 
         Transform *parent = owner->GetParent();
@@ -676,7 +677,7 @@ bool TransformECSStore::EndFrameCache()
             m_worldMatrixDirty[i] = 0;
             if (notifyOwner && m_invalidationObserver)
                 m_invalidationObserver(owner);
-            continue;
+            return;
         }
 
         requiresFullSync = true;
@@ -687,7 +688,27 @@ bool TransformECSStore::EndFrameCache()
         } else if (notifyOwner && m_invalidationObserver) {
             m_invalidationObserver(owner);
         }
+    };
+
+    // A world-space target must be converted against the committed parent,
+    // including dirty ancestors above unchanged intermediary transforms.
+    // Body allocation / write order is not hierarchy order. Keep independent
+    // roots on the existing linear fast path; sort only nested dirty entries.
+    m_fcChildCommits.clear();
+    for (const uint32_t i : m_fcDirtyIndices) {
+        if (i >= m_alive.size() || !m_alive[i] || !m_owners[i])
+            continue;
+        uint32_t depth = 0;
+        for (auto *parent = m_owners[i]->GetParent(); parent; parent = parent->GetParent())
+            ++depth;
+        if (depth == 0)
+            commitSlot(i);
+        else
+            m_fcChildCommits.emplace_back(depth, i);
     }
+    std::sort(m_fcChildCommits.begin(), m_fcChildCommits.end());
+    for (const auto &[depth, i] : m_fcChildCommits)
+        commitSlot(i);
 
     m_fcDirtyIndices.clear();
 

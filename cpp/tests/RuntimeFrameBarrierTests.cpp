@@ -7,6 +7,7 @@
 
 #include <cassert>
 #include <vector>
+#include "TransformHierarchyPublicationTests.h"
 
 using infernux::GameObject;
 using infernux::PhysicsECSStore;
@@ -207,6 +208,8 @@ int main()
         if (gameObject)
             PhysicsECSStore::Instance().MarkGameObjectDirty(gameObject);
     });
+
+    TestTransformHierarchyPublication(*scene);
 
     manager.ClearRuntimeLifecycleCallbacks();
     manager.EmitRuntimeFrameBarrier(Barrier::SnapshotPublication);
