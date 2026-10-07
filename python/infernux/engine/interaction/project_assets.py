@@ -92,6 +92,7 @@ class ProjectAssetCommandService:
             replacement = self._project_path(replace_path)
             if not os.path.exists(replacement):
                 raise FileNotFoundError(f"Asset replacement target does not exist: {replacement}")
+            self.preflight_delete((replacement,))
             delete_command = ProjectAssetDeleteCommand(
                 [replacement],
                 project_root=self._project_root,
@@ -334,65 +335,17 @@ class ProjectAssetCommandService:
         allowed: the committed AssetMutation is then consumed by the common
         WindowManager/DocumentRegistry deletion contract, which closes their
         views and discards their dormant state.  This check is shared by the
-        visible Project panel and MCP because both eventually call ``delete``.
+        visible Project panel, MCP, and replacement operations. History also
+        checks the same policy when it is about to remove an asset.
         """
         self._require_configured()
         normalized = tuple(self._project_path(path) for path in paths)
         if not normalized:
             raise ValueError("Asset deletion requires at least one path")
 
-        from .documents import DocumentKind, DocumentRegistry
+        from .asset_mutations import validate_asset_deletion
 
-        registry = DocumentRegistry._instance
-        registered_guids = self._registered_guids_under(normalized)
-        opened_by_id = {
-            document.document_id: document
-            for root in normalized
-            if registry is not None
-            for document in registry.documents_under_resource(
-                root,
-                guids=registered_guids,
-            )
-        }
-        opened = tuple(opened_by_id.values())
-        opened_scene = next(
-            (
-                document
-                for document in opened
-                if document.kind is DocumentKind.SCENE
-            ),
-            None,
-        )
-
-        active_scene_path = ""
-        try:
-            from infernux.engine.scene_manager import SceneFileManager
-
-            manager = SceneFileManager.instance()
-            active_scene_path = str(
-                getattr(manager, "current_scene_path", "") or ""
-            )
-        except (ImportError, RuntimeError, AttributeError):
-            pass
-
-        if active_scene_path:
-            for root in normalized:
-                if same_path(active_scene_path, root) or is_path_within(
-                    active_scene_path,
-                    root,
-                    allow_root=True,
-                ):
-                    raise ValueError(
-                        "Refusing to delete the active scene. "
-                        "Save/close it through the scene API first."
-                    )
-
-        if opened_scene is not None:
-            raise ValueError(
-                "Refusing to delete an open scene document. "
-                "Close it through the scene API first."
-            )
-
+        validate_asset_deletion(normalized, self._asset_database)
         return normalized
 
     def transfer_to_directory(
@@ -603,6 +556,7 @@ class ProjectAssetCommandService:
 
         commands: list[Any] = []
         if overwrites:
+            self.preflight_delete(overwrites)
             commands.append(
                 ProjectAssetDeleteCommand(
                     list(overwrites),
@@ -749,22 +703,9 @@ class ProjectAssetCommandService:
         )
 
     def _registered_guids_under(self, paths: tuple[str, ...]) -> frozenset[str]:
-        database = self._asset_database
-        if database is None:
-            return frozenset()
-        candidates: list[str] = []
-        for path in paths:
-            if os.path.isdir(path):
-                for root, _directories, files in os.walk(path):
-                    candidates.extend(os.path.join(root, name) for name in files)
-            else:
-                candidates.append(path)
-        return frozenset(
-            guid.casefold()
-            for candidate in candidates
-            if not candidate.lower().endswith(".meta")
-            if (guid := str(database.get_guid_from_path(candidate) or "").strip())
-        )
+        from .asset_mutations import registered_asset_guids_under
+
+        return registered_asset_guids_under(paths, self._asset_database)
 
     def _clear_project_selection_if_needed(self, guids: frozenset[str]) -> None:
         from .descriptors import SelectionDomain

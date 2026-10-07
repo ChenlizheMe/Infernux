@@ -1,8 +1,11 @@
-from typing import Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 from .action_journal import ActionOrigin
 from .documents import DocumentRegistry
 from .selection import SelectionService
 from infernux.engine.runtime_dispatch import ReloadableCallbackRef
+
+def registered_asset_guids_under(paths: Iterable[str], database: Any) -> frozenset[str]: ...
+def validate_asset_deletion(paths: Iterable[str], database: Any) -> None: ...
 
 class AssetMutationKind(str):
     CREATED: AssetMutationKind

@@ -283,6 +283,11 @@ class ProjectAssetCreateCommand(UndoCommand):
         if self._on_changed is not None:
             self._on_changed()
 
+    def preflight_undo(self) -> None:
+        if self._delete_command is None:
+            raise RuntimeError("asset creation has not been executed")
+        self._delete_command.preflight_execute()
+
     def undo(self) -> None:
         if self._delete_command is None:
             raise RuntimeError("asset creation has not been executed")
@@ -686,9 +691,17 @@ class ProjectAssetDeleteCommand(UndoCommand):
                 ) from delete_error
             raise
 
-    def execute(self) -> None:
+    def preflight_execute(self) -> None:
         if self._disposed:
             raise RuntimeError("asset delete command has already been disposed")
+        from infernux.engine.interaction.asset_mutations import validate_asset_deletion
+
+        # A scene may have been opened since this command was recorded. This
+        # boundary also protects Copy/Create Undo and replacement Redo.
+        validate_asset_deletion(self._paths, self._asset_database)
+
+    def execute(self) -> None:
+        self.preflight_execute()
         self._create_backup()
         self._delete_entries()
         if self._on_deleted is not None:
@@ -977,6 +990,11 @@ class ProjectAssetCopyCommand(UndoCommand):
         finally:
             delete_command.dispose()
 
+    def preflight_undo(self) -> None:
+        if self._delete_command is None:
+            raise RuntimeError("asset copy has not been executed")
+        self._delete_command.preflight_execute()
+
     def undo(self) -> None:
         if self._delete_command is None:
             raise RuntimeError("asset copy has not been executed")
@@ -1014,6 +1032,13 @@ class ProjectAssetPasteCommand(UndoCommand):
             raise ValueError("asset paste command requires at least one result path")
         self._compound = CompoundCommand(list(commands), description)
         self._compound.bind_operation_id(self.operation_id)
+        # These Undo operations remove newly created files. Validate the whole
+        # batch before any removal can close an unrelated authoring document.
+        # Moves only relocate identity and must remain legal for open scenes.
+        self._undo_removals = tuple(
+            command for command in commands
+            if isinstance(command, (ProjectAssetCreateCommand, ProjectAssetCopyCommand, ProjectAssetPasteCommand))
+        )
         self._result_paths = [resolved_path(path) for path in result_paths]
         self._on_applied = on_applied
         self._on_reverted = on_reverted
@@ -1031,7 +1056,12 @@ class ProjectAssetPasteCommand(UndoCommand):
         self._compound.execute()
         self._notify_applied_or_rollback()
 
+    def preflight_undo(self) -> None:
+        for command in self._undo_removals:
+            command.preflight_undo()
+
     def undo(self) -> None:
+        self.preflight_undo()
         self._compound.undo()
         if self._on_reverted is not None:
             self._on_reverted()

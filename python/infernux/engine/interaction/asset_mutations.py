@@ -6,18 +6,68 @@ from dataclasses import dataclass
 from enum import Enum
 import os
 import uuid
-from typing import Callable, Iterable, Optional, TypeAlias
+from typing import Any, Callable, Iterable, Optional, TypeAlias
 
-from infernux.engine.path_utils import is_case_only_rename, lexical_path, path_key, resolved_path, same_path
+from infernux.engine.path_utils import is_case_only_rename, is_path_within, lexical_path, path_key, resolved_path, same_path
 
 from .action_journal import ActionOrigin
-from .documents import DocumentRegistry
+from .documents import DocumentKind, DocumentRegistry
 from ..runtime_dispatch import (
     ReloadableCallbackRef,
     ReloadableCallbackRegistry,
     current_runtime_epoch,
 )
 from .selection import SelectionService
+
+
+def registered_asset_guids_under(paths: Iterable[str], database: Any) -> frozenset[str]:
+    """Resolve asset identity before a filesystem tree is changed."""
+    if database is None:
+        return frozenset()
+    candidates: list[str] = []
+    for path in paths:
+        if os.path.isdir(path):
+            for root, _directories, files in os.walk(path):
+                candidates.extend(os.path.join(root, name) for name in files)
+        else:
+            candidates.append(path)
+    return frozenset(
+        guid.casefold()
+        for candidate in candidates
+        if not candidate.lower().endswith(".meta")
+        if (guid := str(database.get_guid_from_path(candidate) or "").strip())
+    )
+
+
+def validate_asset_deletion(paths: Iterable[str], database: Any) -> None:
+    """Reject removal of resident scenes, including overwrite and history replay.
+
+    Called before any backup or deletion. Non-scene documents retain the
+    normal committed-deletion contract, which closes their authoring views.
+    """
+    from infernux.engine.scene_manager import SceneFileManager
+
+    roots = tuple(paths)
+    manager = SceneFileManager.instance()
+    active_path = manager.current_scene_path if manager is not None else ""
+    if active_path and any(is_path_within(active_path, root, allow_root=True) for root in roots):
+        raise ValueError(
+            "Refusing to delete the active scene. "
+            "Save/close it through the scene API first."
+        )
+    registry = DocumentRegistry._instance
+    if registry is None:
+        return
+    guids = registered_asset_guids_under(roots, database)
+    if any(
+        document.kind is DocumentKind.SCENE
+        for root in roots
+        for document in registry.documents_under_resource(root, guids=guids)
+    ):
+        raise ValueError(
+            "Refusing to delete an open scene document. "
+            "Close it through the scene API first."
+        )
 
 
 class AssetMutationKind(str, Enum):
