@@ -4,7 +4,6 @@ import os
 import shutil
 import sys
 from enum import Enum
-import infernux_project_lock as project_lock
 
 
 def remove_directory_tree(path: str | os.PathLike[str]) -> None:
@@ -54,6 +53,15 @@ def is_frozen() -> bool:
         return True
     main_module = sys.modules.get("__main__")
     return bool(main_module and "__compiled__" in vars(main_module))
+
+
+# Every source Hub entry point uses this shared protocol, including staging
+# and installer helpers that do not import launcher. Frozen apps bundle it.
+if not is_frozen():
+    _source_python = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "python")
+    sys.path.insert(0, _source_python)
+
+import infernux_project_lock as project_lock
 
 
 def get_bundle_dir() -> str:

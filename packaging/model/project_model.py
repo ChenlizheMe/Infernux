@@ -1,4 +1,6 @@
 import os
+import hashlib
+import ntpath
 import sys
 import json
 import subprocess
@@ -18,6 +20,8 @@ from project_python_runtime import (
 )
 from python_runtime_catalog import PythonRuntimeId
 from python_runtime import PythonRuntimeError, PythonRuntimeManager
+from version_manager import wheel_platform_compatible, wheel_python_version, wheel_release
+from wheel_identity import validate_wheel_identity
 
 # Suppress console windows for all child processes on Windows
 _NO_WINDOW: int = 0x08000000 if sys.platform == "win32" else 0
@@ -173,10 +177,11 @@ _NATIVE_IMPORT_SMOKE_TEST = (
 
 def _wheel_install_fingerprint(wheel_path: str) -> str:
     try:
-        stat = os.stat(wheel_path)
+        with open(wheel_path, "rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
     except OSError:
         return ""
-    return f"{os.path.abspath(wheel_path)}\n{stat.st_size}\n{stat.st_mtime_ns}\n"
+    return f"{os.path.abspath(wheel_path)}\nsha256:{digest}\n"
 
 
 def _project_wheel_marker(project_dir: str) -> str:
@@ -200,10 +205,11 @@ def _distribution_files_present(site_packages: str, distribution_name: str) -> b
 
 
 def _safe_wheel_member_path(name: str) -> str:
-    normalized = name.replace("\\", "/").lstrip("/")
+    normalized = name.replace("\\", "/")
     parts = [part for part in normalized.split("/") if part]
-    if not parts or any(part == ".." for part in parts):
-        return ""
+    if (not parts or normalized.startswith("/") or ntpath.splitdrive(normalized)[0]
+            or any(part in {".", ".."} or ":" in part for part in parts)):
+        raise ValueError(f"Unsafe wheel member path: {name!r}")
     return os.path.join(*parts)
 
 
@@ -243,6 +249,17 @@ def _remove_installed_distribution(site_packages: str, distribution_name: str) -
 
 
 def _install_wheel_direct(wheel_path: str, site_packages: str, distribution_name: str) -> None:
+    # This path deliberately bypasses pip, so it must retain pip's platform
+    # and metadata checks before removing a working project installation.
+    if not wheel_platform_compatible(wheel_path):
+        raise ValueError(f"Wheel is not compatible with this platform: {os.path.basename(wheel_path)}")
+    validate_wheel_identity(wheel_path)
+    with zipfile.ZipFile(wheel_path) as archive:
+        for member in archive.infolist():
+            _wheel_target_relative_path(member.filename)
+        corrupt = archive.testzip()
+        if corrupt:
+            raise ValueError(f"Corrupted wheel member: {corrupt}")
     os.makedirs(site_packages, exist_ok=True)
     _remove_installed_distribution(site_packages, distribution_name)
 
@@ -581,6 +598,24 @@ class ProjectModel:
             raise RuntimeError(
                 f"No downloaded Infernux wheel was found for version {engine_version or '(unknown)'}.\n"
                 "Open the Installs page and install that engine version first."
+            )
+
+        if (not wheel_platform_compatible(wheel) or wheel_release(wheel) != engine_version
+                or wheel_python_version(wheel) != project_python_version):
+            raise RuntimeError(
+                f"Incompatible cached engine wheel: {os.path.basename(wheel)}. "
+                f"Project requires Infernux {engine_version}, Python {project_python_version}, {sys.platform}. "
+                "Update Hub itself and reinstall the matching engine in Installs."
+            )
+        validate_wheel_identity(wheel)
+        actual_python = _run_hidden(
+            [project_python, "-I", "-c", "import sys; print('%s.%s' % sys.version_info[:2])"],
+            timeout=30,
+        ).stdout.strip()
+        if actual_python != project_python_version:
+            raise RuntimeError(
+                f"Project Python ABI mismatch: expected {project_python_version}, got {actual_python} "
+                f"at {project_python}. Repair the project runtime before installing engine files."
             )
 
         if on_status:

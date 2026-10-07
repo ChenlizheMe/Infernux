@@ -1,6 +1,7 @@
 """Metadata identity is checked before an artifact becomes selectable."""
 import io
 import zipfile
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,6 +26,7 @@ def archive_bytes(*, name="infernux", version="0.4.1", build="3", tag="cp313-cp3
 def manager(tmp_path, monkeypatch):
     monkeypatch.setattr(vm, "_VERSIONS_DIR", tmp_path / "cache")
     monkeypatch.setattr(vm, "supported_wheel_platforms", lambda: frozenset({"win_amd64"}))
+    monkeypatch.setattr(vm, "sys", SimpleNamespace(platform="win32"))
     manager = vm.VersionManager()
     monkeypatch.setattr(manager, "_require_installed_python", lambda *args, **kwargs: None)
     return manager
@@ -62,7 +64,7 @@ def test_download_identity_failure_does_not_try_another_channel(manager, tmp_pat
     class Response(io.BytesIO):
         headers = {}
 
-    def download(request):
+    def download(request, **_kwargs):
         seen.append(request.full_url)
         return Response(archive_bytes(build="2"))
 
@@ -169,7 +171,8 @@ def test_local_wheel_reimport_accepts_the_selected_cache_file(manager, tmp_path)
     assert not list(installed.parent.glob('*.tmp-*'))
 
 
-@pytest.mark.parametrize("change", [None, dict(version="0.4.0"), dict(name="other_distribution"), dict(build="2")])
+@pytest.mark.parametrize("change", [None, dict(version="0.4.0"), dict(name="other_distribution"), dict(build="2"),
+                                   dict(tag="cp313-cp313-manylinux_2_35_x86_64"), dict(tag="cp312-cp312-win_amd64")])
 def test_real_http_catalog_download_cache_chain(manager, monkeypatch, change):
     import json
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer

@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.25)
 
+# Minimum only, not an upper bound: newer CMake (including 4.x) is supported.
+# Preset schema 6 and workflow presets require 3.25; lowering this alone would
+# advertise a toolchain that cannot read the checked-in build entry points.
+
 # Resolve platform compiler companion tools before project() performs its IPO
 # probe. Ubuntu installs versioned LLVM binaries without always publishing the
 # unversioned llvm-ar/llvm-ranlib names expected by CMake's Clang integration.

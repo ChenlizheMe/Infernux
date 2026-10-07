@@ -5,7 +5,7 @@ import numpy as np
 import infernux as inx
 from infernux.core.assets import AssetManager
 from infernux.lib import ConsolePanel,SceneManager,Vector3,GraphParameterBlockUpdate
-from infernux.test.shared_camera_gpu_test import Monitor,Router,MONITOR
+from shared_camera_gpu_test import Monitor,Router,MONITOR
 
 
 SOURCE='''#version 450

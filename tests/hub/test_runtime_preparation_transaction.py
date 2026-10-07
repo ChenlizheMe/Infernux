@@ -258,6 +258,7 @@ def test_failed_robocopy_does_not_retry_using_another_copier(tmp_path, monkeypat
     source = tmp_path / "source"
     source.mkdir()
     monkeypatch.setattr(module.sys, "platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData/Local"))
     monkeypatch.setattr(module.shutil, "which", lambda name: "robocopy")
     calls = []
     monkeypatch.setattr(module.subprocess, "run", lambda args, **kw:

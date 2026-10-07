@@ -153,7 +153,7 @@ def test_hub_build_embeds_the_private_runtime_bundle(
     monkeypatch.setattr(build_hub, "_write_toolchain_receipt", lambda *args, **kwargs: None)
 
     def _fake_run(command, **_kwargs):
-        assert _kwargs["env"]["PYTHONPATH"].split(build_hub.os.pathsep)[0] == str(source_root / "python")
+        assert _kwargs["env"]["PYTHONPATH"] == str(source_root / "python")
         assert "--nofollow-import-to=infernux,numpy,scipy,pandas,matplotlib,cv2,PIL,tkinter" in command
         captured.append(command)
         output = build_dir / "nuitka" / "launcher.dist"
@@ -167,7 +167,7 @@ def test_hub_build_embeds_the_private_runtime_bundle(
         build_dir,
         package_dir,
         cmake_generator="Visual Studio 17 2022",
-        build_env={},
+        build_env={"PYTHONPATH": str(tmp_path / "unrelated-python")},
         tools={"visual_studio": "", "msbuild": "", "cl": "", "link": ""},
     )
 
@@ -244,6 +244,30 @@ def test_hub_build_rejects_extra_legacy_runtime_payload(tmp_path: Path):
             build_env=None,
             tools=None,
         )
+
+
+def test_installer_build_resolves_only_its_source_modules(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    build = tmp_path / "build"
+    package = tmp_path / "package"
+    (package / "hub").mkdir(parents=True)
+    monkeypatch.setattr(build_hub, "create_payload_archive", lambda *args: tmp_path / "payload.zip")
+    monkeypatch.setattr(build_hub, "_common_nuitka_command", lambda *args, **kwargs: ["nuitka"])
+    monkeypatch.setattr(build_hub, "_validate_msvc_reports", lambda *args: [])
+    monkeypatch.setattr(build_hub, "_validate_windows_pe", lambda *args: None)
+    monkeypatch.setattr(build_hub, "_project_version", lambda *args: "0.4.1")
+
+    def build_installer(command, **kwargs):
+        assert kwargs["env"]["PYTHONPATH"] == str(source / "python")
+        filename = "InfernuxHubInstaller.exe" if build_hub.os.name == "nt" else "InfernuxHubInstaller"
+        (build / "nuitka" / filename).write_bytes(b"installer fixture")
+
+    monkeypatch.setattr(build_hub, "_run", build_installer)
+    build_hub._build_installer(
+        source, build, package, release_dir=tmp_path / "release",
+        build_env={"PYTHONPATH": str(tmp_path / "unrelated-python")},
+    )
+    assert len(list((tmp_path / "release").iterdir())) == 1
 
 
 def test_msvc_report_validation_accepts_only_msvc(tmp_path: Path):

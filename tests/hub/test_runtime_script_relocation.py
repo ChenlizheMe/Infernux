@@ -72,7 +72,9 @@ def test_installed_and_project_launchers_use_their_own_python(tmp_path, monkeypa
                         "[console_scripts]\ninfernux-entry-probe = infernux_entry_probe:main\n"
                         "[gui_scripts]\ninfernux-gui-probe = infernux_entry_probe:gui\n")
         stream.writestr(info + "RECORD", "")
-    command([source_python, "-I", "-m", "pip", "install", "--no-index", "--no-deps", wheel])
+    # -I ignores PYTHONUTF8/PYTHONIOENCODING; select the encoding explicitly
+    # so pip output containing a Chinese Windows user path remains decodable.
+    command([source_python, "-I", "-X", "utf8", "-m", "pip", "install", "--no-index", "--no-deps", wheel])
     if source_kind == "zip":
         with zipfile.ZipFile(source.parent / "runtime_bundle.zip", "w") as stream:
             for path in source.rglob("*"):
@@ -110,6 +112,6 @@ def test_installed_and_project_launchers_use_their_own_python(tmp_path, monkeypa
     assert (site / launcher_rows[0][0]).is_file()
     assert launcher_rows[0][1] == ""
     assert int(launcher_rows[0][2]) == (site / launcher_rows[0][0]).stat().st_size
-    command([project_python, "-I", "-m", "pip", "uninstall", "-y", "infernux-entry-probe"])
+    command([project_python, "-I", "-X", "utf8", "-m", "pip", "uninstall", "-y", "infernux-entry-probe"])
     assert not (project / scripts / ("infernux-entry-probe" + suffix)).exists()
     assert not (project / scripts / ("infernux-gui-probe" + suffix)).exists()

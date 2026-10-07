@@ -297,6 +297,27 @@ resource references survive export, and the distribution does not expose loose
 source commits. Missing devices or unavailable network services are unverified
 coverage, not successful acceptance.
 
+## Source GPU acceptance
+
+Build the matching native engine first, then run these commands in the
+`infernux` Conda environment. The runner selects this checkout's `python/`
+and GPU helper directory explicitly; no external `PYTHONPATH` is needed.
+An absolute path to the runner also works from another working directory.
+
+```powershell
+python tests/gpu/run.py --list
+python tests/gpu/run.py view_history_gpu_test
+python tests/gpu/run.py motion_blur_gpu_test --help
+```
+
+Arguments after the test name are forwarded to that script. GPU scripts require
+the appropriate Vulkan device/driver and, for windowed tests, an available
+desktop/display. Inspect their rendered output and logs as well as their exit
+status. `--list` only lists scripts; it does not validate the GPU environment.
+These executable tests are deliberately excluded from normal pytest collection.
+The runner is source-only; use the platform Player harnesses and
+`tests/acceptance/build_player.py --installed` for installed-product validation.
+
 ## Python package and reload acceptance
 
 The installed runtime and type declarations belong to the real `infernux`

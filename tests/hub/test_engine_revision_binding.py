@@ -1,5 +1,6 @@
 """A Git project pin must never resolve to a different wheel revision."""
 import zipfile
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,7 @@ def wheel(root, build, *, version="0.4.1"):
 def manager(tmp_path, monkeypatch):
     monkeypatch.setattr(vm, "_VERSIONS_DIR", tmp_path)
     monkeypatch.setattr(vm, "supported_wheel_platforms", lambda: frozenset({"win_amd64"}))
+    monkeypatch.setattr(vm, "sys", SimpleNamespace(platform="win32"))
     return vm.VersionManager()
 
 

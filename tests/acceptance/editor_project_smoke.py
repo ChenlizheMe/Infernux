@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
+
 from infernux import release_engine
 from infernux.engine.path_utils import resolved_path, same_path
 from infernux.host.commands import MainThreadCommandQueue

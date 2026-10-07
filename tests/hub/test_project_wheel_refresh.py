@@ -5,6 +5,18 @@ from types import SimpleNamespace
 import pytest
 
 import model.project_model as project_model
+import version_manager as vm
+
+
+@pytest.fixture(autouse=True)
+def windows_wheels(monkeypatch):
+    monkeypatch.setattr(vm, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(vm, "supported_wheel_platforms", lambda: frozenset({"win_amd64"}))
+
+
+def add_metadata(archive, version):
+    archive.writestr(f"infernux-{version}.dist-info/METADATA", f"Name: infernux\nVersion: {version}\n")
+    archive.writestr(f"infernux-{version}.dist-info/WHEEL", "Wheel-Version: 1.0\nTag: cp313-cp313-win_amd64\n")
 
 
 @pytest.mark.parametrize("distribution_name", ["Infernux", "infernux"])
@@ -32,7 +44,7 @@ def test_lowercase_wheel_upgrade_removes_retired_package_and_typing_entrances(
         archive.writestr("infernux/__init__.pyi", "NEW_TYPES")
         archive.writestr("infernux/py.typed", "")
         archive.writestr("infernux/renderstack/__init__.py", "SUBMODULE")
-        archive.writestr("infernux-0.4.1.dist-info/METADATA", "Name: infernux")
+        add_metadata(archive, "0.4.1")
 
     project_model._install_wheel_direct(str(wheel), str(site_packages), distribution_name)
 
@@ -61,12 +73,13 @@ def test_project_uses_wheel_identity_not_only_distribution_version(tmp_path, mon
     wheel = tmp_path / "infernux-0.4.0-cp313-cp313-win_amd64.whl"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr("infernux/__init__.py", "NEW")
+        add_metadata(archive, "0.4.0")
 
     monkeypatch.setattr(project_model, "is_frozen", lambda: True)
     monkeypatch.setattr(project_model.ProjectModel, "_get_project_python", staticmethod(lambda path: str(python)))
     monkeypatch.setattr(project_model.ProjectModel, "_get_site_packages", staticmethod(lambda path: str(site_packages)))
     monkeypatch.setattr(project_model, "_project_python_version", lambda path: "3.13")
-    monkeypatch.setattr(project_model.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "0.4.0\n", ""))
+    monkeypatch.setattr(project_model.subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "3.13\n", ""))
     validations = []
     monkeypatch.setattr(project_model.ProjectModel, "validate_python_runtime", staticmethod(validations.append))
     marker = project / ".runtime" / ".infernux-wheel"

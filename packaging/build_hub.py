@@ -464,8 +464,8 @@ def _build_hub(
     command.append(str(packaging_dir / "launcher.py"))
     process_env = _nuitka_build_environment(build_env, build_dir)
     process_env = dict(os.environ if process_env is None else process_env)
-    process_env["PYTHONPATH"] = os.pathsep.join(filter(None, (
-        str(source_root / "python"), process_env.get("PYTHONPATH", ""))))
+    # Nuitka needs the shared source module, not arbitrary operator import roots.
+    process_env["PYTHONPATH"] = str(source_root / "python")
     _run(command, cwd=packaging_dir, env=process_env)
     reports = _validate_msvc_reports(output_dir) if os.name == "nt" else []
 
@@ -541,6 +541,8 @@ def _build_installer(
         command.append("--windows-uac-admin")
     command.append(str(packaging_dir / "installer_gui.py"))
     process_env = _nuitka_build_environment(build_env, build_dir)
+    process_env = dict(os.environ if process_env is None else process_env)
+    process_env["PYTHONPATH"] = str(source_root / "python")
     _run(command, cwd=packaging_dir, env=process_env)
     if os.name == "nt":
         _validate_msvc_reports(output_dir)

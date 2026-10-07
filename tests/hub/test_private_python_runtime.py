@@ -27,9 +27,9 @@ from private_python_runtime import (
 )
 
 
-def _write_runtime_archive(path: Path) -> None:
+def _write_runtime_archive(path: Path, executable: str = "python.exe") -> None:
     payload = b"private python"
-    info = tarfile.TarInfo("python/python.exe")
+    info = tarfile.TarInfo("python/" + executable)
     info.size = len(payload)
     with tarfile.open(path, mode="w:gz") as archive:
         archive.addfile(info, io.BytesIO(payload))
@@ -352,10 +352,11 @@ def test_runtime_extraction_does_not_touch_external_python(
     runtime_dir = tmp_path / "hub-owned-runtime"
     private_root = runtime_dir / "python313"
     archive = tmp_path / "private-runtime.tar.gz"
-    _write_runtime_archive(archive)
+    executable = "python.exe" if sys.platform == "win32" else "bin/python"
+    _write_runtime_archive(archive, executable)
 
-    external_python = tmp_path / "user-python" / "python.exe"
-    external_python.parent.mkdir()
+    external_python = tmp_path / "user-python" / executable
+    external_python.parent.mkdir(parents=True)
     external_python.write_bytes(b"user installation")
 
     manager = embed_runtime_manager.PythonRuntimeManager(runtime_dir=str(runtime_dir))
@@ -376,7 +377,7 @@ def test_runtime_extraction_does_not_touch_external_python(
     monkeypatch.setattr(
         embed_runtime_manager,
         "_is_python_version",
-        lambda path, _version: Path(path).name == "python.exe" and Path(path).is_file(),
+        lambda path, _version: Path(path).name == Path(executable).name and Path(path).is_file(),
     )
     monkeypatch.setattr(embed_runtime_manager, "_is_embedded_root", lambda _path: False)
     monkeypatch.setattr(manager, "_prepare_managed_runtime", lambda *a, **kw: None)
@@ -384,7 +385,7 @@ def test_runtime_extraction_does_not_touch_external_python(
 
     installed = manager._extract_runtime_to_root(str(private_root))
 
-    assert Path(installed) == private_root / "python.exe"
+    assert Path(installed) == private_root / executable
     assert Path(installed).read_bytes() == b"private python"
     assert external_python.read_bytes() == b"user installation"
 

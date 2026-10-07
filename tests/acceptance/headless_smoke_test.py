@@ -10,6 +10,8 @@ import tempfile
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
+
 from infernux import Engine, RigidbodyInterpolation, Time, run_headless
 from infernux import resources as engine_resources
 from infernux.lib import AssetRegistry, Physics, RuntimeMode, SceneManager, Vector3
