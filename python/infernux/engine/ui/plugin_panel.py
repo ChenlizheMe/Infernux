@@ -359,25 +359,18 @@ class PluginPanel(EditorPanel):
                     if row.get("_official"):
                         name = f"{name}  [{t('plugins.official')}]"
                     selected = key == self._selected_reference.casefold()
-                    start_x = ctx.get_cursor_pos_x()
                     width = ctx.get_content_region_avail_width()
                     status_w = ctx.calc_text_width(status)
-                    status_x = start_x + width - status_w - _metric(ctx, 8.0)
+                    padding = _metric(ctx, 10.0)
                     display_name = self._fit_text(
                         ctx, name,
-                        max(0.0, status_x - start_x - _metric(ctx, Theme.INSPECTOR_TITLE_GAP)),
+                        max(0.0, width - status_w - 3.0 * padding),
                     )
-                    # Measure and render with the same editor font. Runtime UI
-                    # text uses em-normalized sizing and is not an editor label.
-                    ctx.align_text_to_frame_padding()
-                    if ctx.selectable(
-                        f"{display_name}###plugin_row_{key}", selected, 0, 0.0, _metric(ctx, 26.0)
+                    if ctx.selectable_row(
+                        f"{display_name}###plugin_row_{key}", selected, status, status_color,
+                        _metric(ctx, 28.0), padding,
                     ):
                         self._selected_reference = reference
-                    ctx.same_line(status_x)
-                    ctx.push_style_color(ImGuiCol.Text, *status_color)
-                    ctx.label(status)
-                    ctx.pop_style_color()
                 ctx.pop_style_var(1)
         ctx.end_child()
         ctx.pop_style_var(1)

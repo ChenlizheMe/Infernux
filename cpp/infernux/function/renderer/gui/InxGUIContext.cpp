@@ -342,6 +342,38 @@ bool InxGUIContext::Selectable(const std::string &label, bool selected, int flag
     return clicked;
 }
 
+bool InxGUIContext::SelectableRow(const std::string &label, bool selected, const std::string &status,
+                                  const std::array<float, 4> &statusColor, float height, float paddingX)
+{
+    if (ImGui::GetCurrentWindow()->SkipItems)
+        return false;
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float rowHeight = std::max(height, ImGui::GetTextLineHeight());
+    const float inset = std::clamp(paddingX, 0.0f, width * 0.5f);
+    // Selectable owns the full-row input/background. Draw both captions inside
+    // that row using the same font, inset and vertical alignment.
+    const size_t idStart = label.find("###");
+    const std::string widgetId = idStart == std::string::npos ? "##" + label : label.substr(idStart);
+    const bool clicked = ImGui::Selectable(widgetId.c_str(), selected, 0, ImVec2(width, rowHeight));
+    if (InxGUISemantics::IsCaptureEnabled())
+        RecordSemanticItem("selectable", label);
+
+    const ImVec2 statusSize = ImGui::CalcTextSize(status.c_str());
+    const float right = origin.x + width - inset;
+    const float statusLeft = std::max(origin.x + inset, right - statusSize.x);
+    const ImRect nameClip(ImVec2(origin.x + inset, origin.y),
+                          ImVec2(std::max(origin.x + inset, statusLeft - inset), origin.y + rowHeight));
+    ImGui::RenderTextClipped(nameClip.Min, nameClip.Max, label.c_str(),
+                            ImGui::FindRenderedTextEnd(label.c_str()), nullptr, ImVec2(0.0f, 0.5f), &nameClip);
+    const ImRect statusClip(ImVec2(statusLeft, origin.y), ImVec2(right, origin.y + rowHeight));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(statusColor[0], statusColor[1], statusColor[2], statusColor[3]));
+    ImGui::RenderTextClipped(statusClip.Min, statusClip.Max, status.c_str(), nullptr, &statusSize,
+                            ImVec2(1.0f, 0.5f), &statusClip);
+    ImGui::PopStyleColor();
+    return clicked;
+}
+
 int InxGUIContext::SelectableListClipped(size_t itemCount, const std::function<std::string(size_t)> &labelAt)
 {
     if (!labelAt || itemCount == 0)

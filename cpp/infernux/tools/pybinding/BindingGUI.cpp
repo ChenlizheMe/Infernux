@@ -445,6 +445,9 @@ void RegisterGUIBindings(py::module_ &m)
         .def("radio_button", &InxGUIContext::RadioButton)
         .def("selectable", &InxGUIContext::Selectable, py::arg("label"), py::arg("selected") = false,
              py::arg("flags") = 0, py::arg("width") = 0.0f, py::arg("height") = 0.0f)
+        .def("selectable_row", &InxGUIContext::SelectableRow, py::arg("label"), py::arg("selected"),
+             py::arg("status"), py::arg("status_color"), py::arg("height"), py::arg("padding_x"),
+             "Selectable full-width row with inset, vertically centered name and trailing status.")
         .def("checkbox",
              [](InxGUIContext &ctx, const std::string &label, bool value) {
                  ctx.Checkbox(label, &value);

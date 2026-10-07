@@ -132,6 +132,8 @@ class InxGUIContext
     bool RadioButton(const std::string &label, bool active);
     bool Selectable(const std::string &label, bool selected = false, int flags = 0, float width = 0.0f,
                     float height = 0.0f);
+    bool SelectableRow(const std::string &label, bool selected, const std::string &status,
+                       const std::array<float, 4> &statusColor, float height, float paddingX);
     int SelectableListClipped(size_t itemCount, const std::function<std::string(size_t)> &labelAt);
 
     /* value editors */

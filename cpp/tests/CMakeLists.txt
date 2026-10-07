@@ -262,6 +262,17 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.text_layout COMMAND infernux_text_layout_tests)
 
+    add_executable(infernux_selectable_row_tests cpp/tests/SelectableRowTests.cpp)
+    target_include_directories(infernux_selectable_row_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external/imgui)
+    target_link_libraries(infernux_selectable_row_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_selectable_row_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_selectable_row_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.selectable_row COMMAND infernux_selectable_row_tests)
+
     add_executable(infernux_editor_window_bounds_tests cpp/tests/EditorWindowBoundsTests.cpp)
     target_include_directories(infernux_editor_window_bounds_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
