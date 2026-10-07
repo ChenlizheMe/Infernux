@@ -186,6 +186,23 @@ class _PlannedFile:
     owned: bool
 
 
+@dataclass(frozen=True, slots=True)
+class _PluginRequirement:
+    reference: str
+    archive: bytes | None = None
+    preview: InxPackagePreview | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PackageRequirements:
+    plugins: tuple[_PluginRequirement, ...] = ()
+    python_lines: tuple[str, ...] = ()
+
+    @property
+    def references(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(item.reference for item in self.plugins))
+
+
 @dataclass(slots=True)
 class _PipInstallEffect:
     before: dict[str, str]
@@ -238,6 +255,7 @@ class PluginManager:
         self.states: dict[str, PluginState] = {}
         self._resource_manager = None
         self._installing: set[str] = set()
+        self._dependency_plans: dict[str, tuple[str, ...]] = {}
         self._deferred_catalog_changes: set[str] = set()
         self._page_workspaces = ExitStack()
         self._cached_page_roots: dict[tuple[str, tuple[int, ...]], str] = {}
@@ -567,6 +585,15 @@ class PluginManager:
             planned, control, removed = self._plan_update(
                 current, preview, overwrite_modified=overwrite_modified,
             )
+        requirements = self._plan_requirements(preview)
+        dependencies = list(requirements.references)
+        enabled = bool(current.get("enabled", True)) if update else True
+        # Skipping dependency installation does not erase declared edges. The
+        # required plugins must already be present in that mode.
+        self._validate_dependency_plan(
+            reference, dependencies, enabled=enabled,
+            require_installed=not install_dependencies,
+        )
         installed_before = {
             str(item.get("reference", "")).casefold()
             for item in self.registry.installed()
@@ -575,8 +602,25 @@ class PluginManager:
         python_baseline: dict[str, str] | None = None
         stopped = False
         committed = False
-        self._installing.add(key)
-        try:
+        publication_prepared = False
+
+        def prepare_publication() -> None:
+            nonlocal stopped, python_baseline, publication_prepared
+            if publication_prepared:
+                return
+            # Dependencies have now been prepared. Validate their actual state
+            # before retiring the old version or changing its Python environment.
+            self._validate_dependency_plan(
+                reference, dependencies, enabled=enabled, require_installed=True,
+            )
+            if threading.current_thread() is threading.main_thread() and any(
+                dependency.casefold() not in self.states for dependency in dependencies
+            ):
+                # A fresh manager can see installed files before its startup
+                # pass. Initialize them in graph order without restarting live
+                # dependencies, including when installation was skipped.
+                self.preloads.catch_up()
+                self._rebuild_states()
             if update:
                 failures = self.preloads.unload_package(reference)
                 if failures:
@@ -588,6 +632,11 @@ class PluginManager:
                     python_baseline = self._python_environment_snapshot(
                         self._project_python_executable(),
                     )
+            publication_prepared = True
+
+        self._installing.add(key)
+        self._dependency_plans[key] = tuple(dependencies)
+        try:
             cache_path, cache_relative = self._cache_package(
                 package_path,
                 reference,
@@ -598,12 +647,13 @@ class PluginManager:
             resolved_source.setdefault("location", package_path)
             resolved_source["cache_location"] = cache_relative
             resolved_source["cache_scope"] = "hub"
-            dependencies: list[str] = []
             if install_dependencies:
                 _report_progress(progress, "resolve_dependencies", 0.48)
                 requirement_dependencies, pip_effect = self._install_requirements(
                     preview,
                     progress=_scaled_progress(progress, 0.57, 0.66),
+                    plan=requirements,
+                    before_python_install=prepare_publication,
                 )
                 if pip_effect:
                     other_requirements = [
@@ -617,22 +667,14 @@ class PluginManager:
                         raise PackageConflictError(
                             "Plugin Python requirements conflict with another installed package"
                         )
-                dependencies.extend(requirement_dependencies)
-                dependencies = list(
-                    dict.fromkeys(
-                        str(value)
-                        for value in dependencies
-                        if str(value).casefold() != key
-                    )
-                )
+                dependencies = list(requirement_dependencies)
                 if update:
                     self._release_python_dependencies(
                         reference,
                         keep_names={item["name"] for item in pip_effect.requirements}
                         if pip_effect else set(),
                     )
-            elif update:
-                dependencies = list(current.get("dependencies", ()))
+            prepare_publication()
             _report_progress(progress, "plan_assets", 0.68)
             if not update:
                 planned, control = self._plan_install(preview, selected)
@@ -689,7 +731,7 @@ class PluginManager:
                     package_path=cache_path,
                     source=resolved_source,
                     dependencies=dependencies,
-                    enabled=bool(current.get("enabled", True)) if update else True,
+                    enabled=enabled,
                     transaction_id=transaction.id,
                     python_requirements=(
                         pip_effect.requirements if pip_effect else
@@ -752,6 +794,7 @@ class PluginManager:
             raise
         finally:
             self._installing.discard(key)
+            self._dependency_plans.pop(key, None)
 
     def _extend_package_install(
         self,
@@ -1614,22 +1657,9 @@ class PluginManager:
                 raise
             self._rebuild_states()
             return self.states[reference_key]
-        dependencies = {
-            str(item.get("reference", "")).casefold(): item for item in installed
-        }
-        unavailable = [
-            str(dependency)
-            for dependency in record.get("dependencies", [])
-            if str(dependency).casefold() not in dependencies
-            or not bool(
-                dependencies[str(dependency).casefold()].get("enabled", True)
-            )
-        ]
-        if unavailable:
-            raise RuntimeError(
-                f"Plugin {reference} requires enabled plugins: "
-                + ", ".join(sorted(unavailable))
-            )
+        self._validate_dependency_plan(
+            reference, record.get("dependencies", ()), enabled=True, require_installed=True,
+        )
         self.registry.set_enabled(reference, True)
         self._publish_package_runtime_scripts(reference)
         return self.reload(reference)
@@ -1930,12 +1960,49 @@ class PluginManager:
         InxPackage.export_source(path, package)
         return package, dict(source)
 
-    def _install_requirements(
-        self,
-        preview: InxPackagePreview,
-        *,
-        progress: _InstallProgress | None = None,
-    ) -> tuple[tuple[str, ...], _PipInstallEffect | None]:
+    def _validate_dependency_plan(
+        self, reference: str, dependencies: Iterable[str], *, enabled: bool,
+        require_installed: bool = False,
+    ) -> None:
+        """Validate the candidate graph, including outer in-flight installs."""
+        installed = {
+            str(item["reference"]).casefold(): item for item in self.registry.installed()
+        }
+        proposed = tuple(str(item).casefold() for item in dependencies)
+        graph = {
+            key: tuple(str(item).casefold() for item in record.get("dependencies", ()))
+            for key, record in installed.items()
+        }
+        graph.update({key: tuple(item.casefold() for item in values)
+                      for key, values in self._dependency_plans.items()})
+        graph[reference.casefold()] = proposed
+        visiting: list[str] = []
+        complete: set[str] = set()
+
+        def visit(key: str) -> None:
+            if key in complete:
+                return
+            if key in visiting:
+                raise RuntimeError("Circular plugin dependency: " + " -> ".join(visiting + [key]))
+            visiting.append(key)
+            for dependency in graph.get(key, ()):
+                visit(dependency)
+            visiting.pop()
+            complete.add(key)
+
+        for key in graph:
+            visit(key)
+        unavailable = [
+            key for key in proposed
+            if (key not in installed and require_installed)
+            or (enabled and key in installed and not bool(installed[key].get("enabled", True)))
+        ]
+        if unavailable:
+            raise RuntimeError(
+                f"Plugin {reference} requires enabled plugins: " + ", ".join(sorted(unavailable))
+            )
+
+    def _plan_requirements(self, preview: InxPackagePreview) -> _PackageRequirements:
         requirement_name = "requirements.txt"
         requirement_record = next(
             (
@@ -1946,11 +2013,11 @@ class PluginManager:
             None,
         )
         if requirement_record is None:
-            return (), None
+            return _PackageRequirements()
         text = read_entry(
             preview.package_path, str(requirement_record["archive_path"])
         ).decode("utf-8")
-        dependencies: list[str] = []
+        plugins: list[_PluginRequirement] = []
         pip_lines: list[str] = []
         for line in text.splitlines(keepends=True):
             stripped = line.strip()
@@ -1962,20 +2029,44 @@ class PluginManager:
                 with self._package_cache().workspace("nested") as workspace:
                     path = os.path.join(workspace, "nested.inxpkg")
                     Path(path).write_bytes(nested)
-                    state = self.install_package(path, progress=progress)
-                    dependencies.append(state.reference)
+                    child = InxPackage.inspect(path)
+                    reference = _require_package_identity(child.metadata)
+                    plugins.append(_PluginRequirement(reference, nested, child))
                 continue
             reference = self._registry_reference_for_requirement(stripped)
+            own_reference = str(preview.metadata["reference"])
+            if stripped.removeprefix("inx:").strip().casefold() == own_reference.casefold():
+                reference = own_reference
             if reference is not None:
-                self.install_reference(reference, progress=progress)
-                dependencies.append(reference)
+                plugins.append(_PluginRequirement(reference))
             else:
                 pip_lines.append(line)
+        return _PackageRequirements(tuple(plugins), tuple(pip_lines))
+
+    def _install_requirements(
+        self, preview: InxPackagePreview, *, progress: _InstallProgress | None = None,
+        plan: _PackageRequirements | None = None,
+        before_python_install: Callable[[], None] | None = None,
+    ) -> tuple[tuple[str, ...], _PipInstallEffect | None]:
+        plan = plan if plan is not None else self._plan_requirements(preview)
+        for item in plan.plugins:
+            installed = self.registry.installed_record(item.reference)
+            if item.archive is not None:
+                if installed is not None and _same_install(installed, item.preview):
+                    continue
+                with self._package_cache().workspace("nested") as workspace:
+                    path = os.path.join(workspace, "nested.inxpkg")
+                    Path(path).write_bytes(item.archive)
+                    self.install_package(path, progress=progress, expected_reference=item.reference)
+            elif installed is None:
+                self.install_reference(item.reference, progress=progress)
+        if before_python_install is not None:
+            before_python_install()
         effect = None
-        if any(line.strip() and not line.lstrip().startswith("#") for line in pip_lines):
+        if any(line.strip() and not line.lstrip().startswith("#") for line in plan.python_lines):
             _report_progress(progress, "install_python_dependencies", 0.58)
-            effect = self._install_pip_lines(pip_lines)
-        return tuple(dict.fromkeys(dependencies)), effect
+            effect = self._install_pip_lines(plan.python_lines)
+        return plan.references, effect
 
     def _nested_requirement(
         self, preview: InxPackagePreview, requirement_name: str, requirement: str
@@ -2003,6 +2094,8 @@ class PluginManager:
 
     def _registry_reference_for_requirement(self, requirement: str) -> str | None:
         candidate = requirement.removeprefix("inx:").strip()
+        if candidate.casefold() in self._dependency_plans:
+            return validate_reference(candidate)
         try:
             direct = self.registry.find(candidate)
         except ValueError:
