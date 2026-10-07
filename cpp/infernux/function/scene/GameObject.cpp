@@ -1535,6 +1535,9 @@ std::unique_ptr<GameObject> GameObject::CloneGraph(Scene *scene,
         }
     }
 
+    // Native clones bypass AddComponent. Publish the completed receiver set
+    // before Scene registration/Awake, including joints awaiting their body.
+    obj->RefreshLifecycleDispatchFlags();
     return obj;
 }
 
