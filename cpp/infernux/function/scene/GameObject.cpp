@@ -748,9 +748,9 @@ void GameObject::ActivatePreparedPythonComponent(Component *component)
     component->m_enabled = authoredEnabled;
     proxy->GetPyComponent().attr("enabled") = py::bool_(authoredEnabled);
     component->CallAwake();
-    // Awake/binding hooks must not replace the authored activation state.
-    component->m_enabled = authoredEnabled;
-    proxy->GetPyComponent().attr("enabled") = py::bool_(authoredEnabled);
+    // Lifecycle callbacks may deliberately change enabled or owner activity.
+    // Keep their result, just as normal attachment does; restoring the saved
+    // bit here would resurrect a component that disabled itself in Awake.
     // Async Player scene publication can finish just before the scene's
     // playing flag is raised.  HasStarted is the lifecycle safe-point that
     // matters here; gate on it so the newly attached component cannot miss
