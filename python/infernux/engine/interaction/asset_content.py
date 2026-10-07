@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 import json
 import os
-import re
 from typing import Optional
 
 AssetRenameTransform = Callable[[str, str, str], str]
@@ -17,28 +16,6 @@ def _rename_top_level_json_name(content: str, _source: str, destination: str) ->
         return content
     payload["name"] = os.path.splitext(os.path.basename(destination))[0]
     return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-
-
-def _rename_single_component_class(content: str, source: str, destination: str) -> str:
-    old_stem = os.path.splitext(os.path.basename(source))[0]
-    new_stem = os.path.splitext(os.path.basename(destination))[0]
-    if not old_stem.isidentifier() or not new_stem.isidentifier() or old_stem == new_stem:
-        return content
-
-    def pascal_case(stem: str) -> str:
-        return "".join(part[:1].upper() + part[1:] for part in stem.split("_") if part)
-
-    candidates = []
-    for old_class_name, new_class_name in {
-        old_stem: new_stem,
-        pascal_case(old_stem): pascal_case(new_stem),
-    }.items():
-        pattern = re.compile(rf"^class\s+{re.escape(old_class_name)}\b", re.MULTILINE)
-        candidates.extend((pattern, new_class_name) for _match in pattern.finditer(content))
-    if len(candidates) != 1:
-        return content
-    pattern, new_class_name = candidates[0]
-    return pattern.sub(f"class {new_class_name}", content, count=1)
 
 
 class AssetRenameContentRegistry:
@@ -54,7 +31,8 @@ class AssetRenameContentRegistry:
     def __init__(self) -> None:
         self._adapters: dict[str, AssetRenameTransform] = {}
         self.register((".mat", ".particlegraph"), _rename_top_level_json_name)
-        self.register((".py",), _rename_single_component_class)
+        # Script filenames and component class names are independent. Moving a
+        # Python asset preserves its source bytes; it is not a symbol refactor.
         AssetRenameContentRegistry._instance = self
 
     @classmethod
