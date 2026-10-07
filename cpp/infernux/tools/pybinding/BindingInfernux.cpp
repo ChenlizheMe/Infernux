@@ -40,6 +40,38 @@ namespace py = pybind11;
 namespace
 {
 
+// A shared_ptr from pybind11 keeps the C++ trampoline alive, but not its
+// Python subclass or overrides. Attach that Python owner to the registration's
+// shared ownership, including native snapshots taken during rendering. Unlike
+// engine-wide keep_alive, replacement/unregistration releases it immediately.
+template <typename T> std::shared_ptr<T> RetainPythonRenderable(py::object owner)
+{
+    auto native = owner.cast<std::shared_ptr<T>>();
+    if (!native)
+        return native;
+    struct RegistrationOwner
+    {
+        std::shared_ptr<T> native;
+        py::object python;
+
+        RegistrationOwner(std::shared_ptr<T> value, py::object object)
+            : native(std::move(value)), python(std::move(object))
+        {
+        }
+
+        ~RegistrationOwner()
+        {
+            // Engine cleanup and the last render snapshot can retire outside
+            // Python. Destroy both holders while the GIL is still acquired.
+            py::gil_scoped_acquire acquire;
+            native.reset();
+            python = py::object();
+        }
+    };
+    auto *pointer = native.get();
+    return std::shared_ptr<T>(std::make_shared<RegistrationOwner>(std::move(native), std::move(owner)), pointer);
+}
+
 // MSVC's std::filesystem and a few third-party Windows APIs still format
 // exception text through the active code page.  pybind11 expects UTF-8 when
 // it translates a C++ exception to Python; passing that narrow ``what()``
@@ -2022,10 +2054,11 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("set_log_level", &Infernux::SetLogLevel)
         .def(
             "register_gui_renderable",
-            [](Infernux &self, const std::string &name, std::shared_ptr<InxGUIRenderable> renderable, int priority) {
+            [](Infernux &self, const std::string &name, py::object renderable, int priority) {
                 auto *r = self.GetRenderer();
                 if (r)
-                    r->RegisterGUIRenderable(name.c_str(), std::move(renderable), priority);
+                    r->RegisterGUIRenderable(name.c_str(), RetainPythonRenderable<InxGUIRenderable>(std::move(renderable)),
+                                             priority);
             },
             py::arg("name"), py::arg("renderable"), py::arg("priority") = 0)
         .def(
@@ -3473,7 +3506,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                 if (pipeline.is_none()) {
                     r->SetRenderPipeline(nullptr);
                 } else {
-                    r->SetRenderPipeline(pipeline.cast<std::shared_ptr<RenderPipelineCallback>>());
+                    r->SetRenderPipeline(RetainPythonRenderable<RenderPipelineCallback>(std::move(pipeline)));
                 }
             },
             py::arg("pipeline"),
