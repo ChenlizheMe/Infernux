@@ -60,7 +60,7 @@ The useful boundary is between *what a surface is* and *when it is drawn*. A too
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-render-styles.webp" alt="visual evidence from an Infernux capture showing two characters with contrasting appearances" loading="lazy" decoding="async">
-  <figcaption>Captured from the matching Infernux demo scene, materials, shading models, pipeline, and RenderStack configuration used by this chapter.</figcaption>
+  <figcaption>An Infernux demo capture showing contrasting material styles; follow the baseline above to verify the current authoring path.</figcaption>
 </figure>
 
 <div class="learn-note"><strong>Evidence scope.</strong><p>This capture is visual evidence that the displayed frame existed in that project and session. It does not identify the scene asset, Material or ShadingModel names, active RenderPipeline, RenderStack contents, engine commit, or capture settings. Reproduce architecture claims with the baseline workflow and current source contracts above, not by inferring hidden configuration from the pixels.</p></div>
@@ -171,7 +171,7 @@ Infernux 没有把所有渲染决定塞进一份 Shader。Material、顶点阶�
   <figcaption>来自 Infernux 演示项目的真实画面，用于观察两种材质风格的差异，不用于推断画面背后的管线配置。</figcaption>
 </figure>
 
-<div class="learn-note"><strong>配套工程。</strong><p>这份截图来自本章对应的 Scene、Material、ShadingModel、活动 RenderPipeline 与 RenderStack 配置。上面的基线流程使用同一套资源，便于在当前版本中复现画面并检查渲染契约。</p></div>
+<div class="learn-note"><strong>证据范围。</strong><p>这份截图证明演示项目在对应会话中出现过该画面，但没有标明 Scene 资产、Material 或 ShadingModel 名称、活动 RenderPipeline、RenderStack 内容、引擎提交或捕获设置。请用上面的基线流程和当前源码契约复现架构行为，不要从像素推断画面背后的配置。</p></div>
 
 ## 四个定制层级 {#four-levels_1}
 
