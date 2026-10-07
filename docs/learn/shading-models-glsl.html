@@ -138,7 +138,7 @@ Learn Band --Imports--&gt; Learn Band Math
 <tbody>
 <tr>
 <td>Change <code>Learn Band Math</code> to a missing ID and save the <code>.shadingmodel</code></td>
-<td>The generated source contains <code>shader import not found</code>; unresolved <code>learnBand</code> can follow. The new batch is rejected.</td>
+<td>Import resolution reports <code>shader import not found</code> with the missing ID and rejects the candidate before GLSL compilation. The previous accepted batch remains active.</td>
 </tr>
 <tr>
 <td>Remove <code>Imports ["Lighting", ...]</code> but keep <code>Requires [Lighting]</code></td>
@@ -332,7 +332,7 @@ Learn Band --Imports--&gt; Learn Band Math
 <tbody>
 <tr>
 <td>把 <code>Learn Band Math</code> 改成不存在的 ID，保存 <code>.shadingmodel</code></td>
-<td>生成源码中出现 <code>shader import not found</code>，随后可能报告 <code>learnBand</code> 未解析；新的一批程序会被拒绝。</td>
+<td>导入解析报告 <code>shader import not found</code> 和缺失的 ID，在 GLSL 编译前拒绝候选；之前已接受的一批程序继续有效。</td>
 </tr>
 <tr>
 <td>删除 <code>Imports ["Lighting", ...]</code>，保留 <code>Requires [Lighting]</code></td>

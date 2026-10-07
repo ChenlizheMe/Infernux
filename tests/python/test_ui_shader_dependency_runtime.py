@@ -196,6 +196,7 @@ def test_actual_ui_draw_consumes_prepared_dependency_and_rejects_invalid_saves(
     assert not any(token in captured.out + captured.err for token in (
         'VUID-', 'SYNC-HAZARD', 'Validation Error', 'Screen UI packet outlived',
         'UI material shader publication failed',
+        'Validation layers requested but not available',
     )), captured.out + captured.err
     print(json.dumps({'draw_list': str(draw_list), 'material_properties': material_properties, 'samples': samples,
                       'frames': state['frames'],

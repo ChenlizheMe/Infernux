@@ -120,7 +120,7 @@ Use this failure matrix before debugging pixels:
 
 | Reproduction | Expected diagnostic and behavior |
 | --- | --- |
-| Change `Learn Band Math` to a missing ID and save the `.shadingmodel` | The generated source contains `shader import not found`; unresolved `learnBand` can follow. The new batch is rejected. |
+| Change `Learn Band Math` to a missing ID and save the `.shadingmodel` | Import resolution reports `shader import not found` with the missing ID and rejects the candidate before GLSL compilation. The previous accepted batch remains active. |
 | Remove `Imports ["Lighting", ...]` but keep `Requires [Lighting]` | Lighting declarations/helpers are absent, so symbols such as `Light` or `getMainLight` fail compilation. |
 | Keep the import but remove `Requires [Lighting]` | The lighting library is linked, but its camera-local resources are not bound/injected; the dependent variant fails compilation. |
 | Introduce invalid GLSL and save the library | The Console reports the dependent root compile failure against the library. All previously accepted programs remain active. |
@@ -308,7 +308,7 @@ Learn Band --Imports--> Learn Band Math
 
 | 复现方式 | 预期诊断与行为 |
 | --- | --- |
-| 把 `Learn Band Math` 改成不存在的 ID，保存 `.shadingmodel` | 生成源码中出现 `shader import not found`，随后可能报告 `learnBand` 未解析；新的一批程序会被拒绝。 |
+| 把 `Learn Band Math` 改成不存在的 ID，保存 `.shadingmodel` | 导入解析报告 `shader import not found` 和缺失的 ID，在 GLSL 编译前拒绝候选；之前已接受的一批程序继续有效。 |
 | 删除 `Imports ["Lighting", ...]`，保留 `Requires [Lighting]` | 光照声明与辅助函数缺失，`Light`、`getMainLight` 等符号编译失败。 |
 | 保留 Import，删除 `Requires [Lighting]` | 光照函数库已经链接，相机局部资源没有绑定或注入；相关变体编译失败。 |
 | 在函数库中加入非法 GLSL 并保存 | Console 会将依赖根阶段的编译错误归属到函数库，所有上一份已接受的程序都保持不变。 |
