@@ -20,6 +20,57 @@ namespace infernux
 {
 namespace
 {
+struct ShaderSourceDependencies
+{
+    std::string rootPath;
+    std::set<std::string> paths;
+    std::set<std::string> declarations;
+    bool deferredRegistry = false;
+};
+
+// Compiler-owned subscriptions, not another filesystem scanner. Access is
+// serialized by CompilationGuard along with the declaration caches.
+std::unordered_map<std::string, ShaderSourceDependencies> g_sourceDependencies;
+std::unordered_map<std::string, ShaderSourceDependencies> g_candidateSourceDependencies;
+thread_local bool g_sourceDiagnosticsCaptured = false;
+
+std::string ShaderDependencyPathKey(const std::string &path)
+{
+    return FoldFilesystemPathCase(ResolveFilesystemPath(path));
+}
+
+ShaderSourceDependencies &SourceDependencies(const std::string &rootPath)
+{
+    auto &entry = g_candidateSourceDependencies[ShaderDependencyPathKey(rootPath)];
+    entry.rootPath = ResolveFilesystemPath(rootPath);
+    return entry;
+}
+
+void ResetSourceDependencies(const std::string &rootPath)
+{
+    g_candidateSourceDependencies.erase(ShaderDependencyPathKey(rootPath));
+}
+
+void CommitSourceDependencies(const std::string &rootPath)
+{
+    const auto key = ShaderDependencyPathKey(rootPath);
+    if (auto candidate = g_candidateSourceDependencies.find(key); candidate != g_candidateSourceDependencies.end()) {
+        g_sourceDependencies[key] = std::move(candidate->second);
+        g_candidateSourceDependencies.erase(candidate);
+    } else {
+        g_sourceDependencies.erase(key);
+    }
+}
+
+void RecordSourceDeclaration(const std::string &rootPath, const std::string &id,
+                             const std::unordered_map<std::string, std::string> &declarations)
+{
+    auto &entry = SourceDependencies(rootPath);
+    entry.declarations.insert(id);
+    if (const auto found = declarations.find(id); found != declarations.end())
+        entry.paths.insert(ShaderDependencyPathKey(found->second));
+}
+
 ShaderProgramStageMask ToRuntimeStageMask(ShaderStageVisibility visibility) noexcept
 {
     ShaderProgramStageMask result = ShaderProgramStageMask::None;
@@ -521,6 +572,42 @@ void InxShaderLoader::InvalidateTemplateCache()
     s_templateCache.clear();
 }
 
+InxShaderLoader::SourceDiagnosticScope::SourceDiagnosticScope()
+    : m_previous(g_sourceDiagnosticsCaptured)
+{
+    g_sourceDiagnosticsCaptured = true;
+}
+
+InxShaderLoader::SourceDiagnosticScope::~SourceDiagnosticScope()
+{
+    g_sourceDiagnosticsCaptured = m_previous;
+}
+
+bool InxShaderLoader::AreSourceDiagnosticsCaptured() noexcept
+{
+    return g_sourceDiagnosticsCaptured;
+}
+
+std::vector<std::string> InxShaderLoader::GetDependentStageSources(const std::string &sourcePath,
+                                                                 const std::string &declarationId)
+{
+    const CompilationGuard guard;
+    const auto pathKey = ShaderDependencyPathKey(sourcePath);
+    const bool modelChanged = FromFsPath(ToFsPath(sourcePath).extension()) == ".shadingmodel";
+    std::set<std::string> roots;
+    const auto collect = [&](const auto &subscriptions) {
+        for (const auto &[key, entry] : subscriptions)
+            if (entry.paths.count(pathKey) || (!declarationId.empty() && entry.declarations.count(declarationId)) ||
+                (modelChanged && entry.deferredRegistry))
+                roots.insert(entry.rootPath);
+    };
+    // A rejected edit retains the running program's subscriptions and the
+    // failed candidate's missing declarations. Either can make it recover.
+    collect(g_sourceDependencies);
+    collect(g_candidateSourceDependencies);
+    return {roots.begin(), roots.end()};
+}
+
 void InxShaderLoader::AddShaderSearchPath(const std::string &dir)
 {
     const CompilationGuard guard;
@@ -540,13 +627,17 @@ void InxShaderLoader::AddShaderSearchPath(const std::string &dir)
 void InxShaderLoader::SetProjectShaderSearchPaths(const std::vector<std::string> &directories)
 {
     const CompilationGuard guard;
-    s_projectSearchPaths.clear();
+    std::vector<std::string> roots;
     for (const auto &directory : directories) {
         const auto normalized = ResolveFilesystemPath(directory);
-        if (!normalized.empty() && std::find(s_projectSearchPaths.begin(), s_projectSearchPaths.end(), normalized) ==
-                                       s_projectSearchPaths.end())
-            s_projectSearchPaths.push_back(normalized);
+        if (!normalized.empty() && std::find(roots.begin(), roots.end(), normalized) == roots.end())
+            roots.push_back(normalized);
     }
+    if (roots != s_projectSearchPaths) {
+        g_sourceDependencies.clear();
+        g_candidateSourceDependencies.clear();
+    }
+    s_projectSearchPaths = std::move(roots);
     InvalidateDirectoryCache();
 }
 
@@ -949,7 +1040,8 @@ InxShaderLoader::LoadShadingModel(const std::string &modelName,
     // Use a namespaced key so shading models cannot collide with regular imports.
     auto mapIt = shaderIdMap.find("shadingmodel/" + modelName);
     if (mapIt == shaderIdMap.end()) {
-        INXLOG_ERROR("Shading model '", modelName, "' not found in shader search paths");
+        if (!AreSourceDiagnosticsCaptured())
+            INXLOG_ERROR("Shading model '", modelName, "' not found in shader search paths");
         ShaderDescriptor empty;
         empty.errors.push_back("Shading model not found: " + modelName);
         return empty;
@@ -963,7 +1055,8 @@ InxShaderLoader::LoadShadingModel(const std::string &modelName,
         return cacheIt->second;
     std::ifstream file = OpenInputFile(filePath);
     if (!file.is_open()) {
-        INXLOG_ERROR("Failed to open shading model file: ", filePath);
+        if (!AreSourceDiagnosticsCaptured())
+            INXLOG_ERROR("Failed to open shading model file: ", filePath);
         ShaderDescriptor empty;
         empty.errors.push_back("Failed to open: " + filePath);
         return empty;
@@ -1820,6 +1913,8 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
     if (!filePath.empty()) {
         std::filesystem::path shaderPath = ToFsPath(filePath);
         std::string baseDir = FromFsPath(shaderPath.parent_path());
+        if (DescriptorHasCapability(desc, "DeferredLighting") && desc.isFragmentShader)
+            SourceDependencies(filePath).deferredRegistry = true;
         auto shaderIdMap = BuildShaderIdMap(baseDir);
 
         std::set<std::string> includeStack;
@@ -1829,6 +1924,7 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
 
         // Load the referenced shading model and inject its import dependencies.
         if (!desc.shadingModel.empty() && desc.isFragmentShader && desc.hasSurfaceFunc && !desc.hasMainFunc) {
+            RecordSourceDeclaration(filePath, "shadingmodel/" + desc.shadingModel, shaderIdMap);
             shadingModelDesc = LoadShadingModel(desc.shadingModel, shaderIdMap);
             if (shadingModelDesc.errors.empty()) {
                 shadingModelPtr = &shadingModelDesc;
@@ -1849,6 +1945,11 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
         }
 
         if (DescriptorHasCapability(desc, "DeferredLighting") && desc.isFragmentShader) {
+            // Eligibility changes and new/removed models change the generated
+            // dispatcher too, even when a model currently opts out of Deferred.
+            for (const auto &[id, path] : shaderIdMap)
+                if (id.rfind("shadingmodel/", 0) == 0)
+                    RecordSourceDeclaration(filePath, id, shaderIdMap);
             std::vector<ShaderDescriptor> deferredModels;
             deferredShadingRegistry = BuildDeferredShadingRegistry(shaderIdMap, deferredModels);
             std::set<std::string> existingImports(effectiveImports.begin(), effectiveImports.end());
@@ -1890,6 +1991,9 @@ std::string InxShaderLoader::PreprocessShaderSource(const std::string &source, c
         }
 
         resolvedSource = ResolveImports(resolvedSource, effectiveImports, shaderIdMap, includeStack, importErrors);
+        for (const auto &id : includeStack)
+            if (id != desc.shaderId)
+                RecordSourceDeclaration(filePath, id, shaderIdMap);
     }
 
     if (!importErrors.empty()) {
@@ -1916,18 +2020,22 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
     s_lastCompileError.clear();
 
     if (!content) {
-        INXLOG_ERROR("Invalid shader content");
         s_lastCompileError = "Invalid shader content";
+        if (!AreSourceDiagnosticsCaptured())
+            INXLOG_ERROR(s_lastCompileError);
         return nullptr;
     }
 
     std::string filePath = metaData.GetDataAs<std::string>("file_path");
+    ResetSourceDependencies(filePath);
     std::string type = metaData.GetDataAs<std::string>("type");
     s_compiledVariantCache.erase(filePath);
 
     EShLanguage shaderType = GetShaderType(type);
     if (shaderType == EShLangCount) {
-        INXLOG_ERROR("Invalid shader type: ", type);
+        s_lastCompileError = "Invalid shader type: " + type;
+        if (!AreSourceDiagnosticsCaptured())
+            INXLOG_ERROR(s_lastCompileError);
         return nullptr;
     }
 
@@ -1938,12 +2046,25 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
         for (const auto &error : sourceDescriptor.errors)
             diagnostics << "\n" << error;
         s_lastCompileError = diagnostics.str();
-        INXLOG_ERROR(s_lastCompileError);
+        if (!AreSourceDiagnosticsCaptured())
+            INXLOG_ERROR(s_lastCompileError);
         return nullptr;
     }
 
     // ---- Forward variant compilation ----
-    std::string shaderSource = PreprocessShaderSource(std::string(content), filePath, ShaderCompileTarget::Forward);
+    std::vector<std::string> importErrors;
+    std::string shaderSource = PreprocessShaderSource(std::string(content), filePath, ShaderCompileTarget::Forward,
+                                                       nullptr, &importErrors);
+    if (!importErrors.empty()) {
+        std::ostringstream diagnostic;
+        diagnostic << "Shader import resolution failed:";
+        for (const auto &error : importErrors)
+            diagnostic << '\n' << error;
+        s_lastCompileError = diagnostic.str();
+        if (!AreSourceDiagnosticsCaptured())
+            INXLOG_ERROR(s_lastCompileError);
+        return nullptr;
+    }
 
     std::vector<char> forwardSpirv;
     if (!CompileGLSL(shaderSource, shaderType, filePath, forwardSpirv)) {
@@ -1976,6 +2097,7 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
         }
     }
 
+    CommitSourceDependencies(filePath);
     return compiledData;
 }
 
@@ -2008,6 +2130,8 @@ LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedProgram(const std::
     }
     const std::string vertexCompilePath = StageQualifiedVirtualPath(vertexPath, "vertex");
     const std::string fragmentCompilePath = StageQualifiedVirtualPath(fragmentPath, "fragment");
+    ResetSourceDependencies(vertexCompilePath);
+    ResetSourceDependencies(fragmentCompilePath);
     const ShaderDescriptor vertex = ParseShaderSource(vertexSource, vertexCompilePath);
     const ShaderDescriptor fragment = ParseShaderSource(fragmentSource, fragmentCompilePath);
     compilation.interfaceArtifact = ShaderStageLinker::Link(vertex, fragment);
@@ -2022,6 +2146,7 @@ LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedProgram(const std::
 
     if (target == ShaderCompileTarget::GBuffer && !fragment.shadingModel.empty()) {
         const auto shaderMap = BuildShaderIdMap(FromFsPath(ToFsPath(fragmentCompilePath).parent_path()));
+        RecordSourceDeclaration(fragmentCompilePath, "shadingmodel/" + fragment.shadingModel, shaderMap);
         const ShaderDescriptor model = LoadShadingModel(fragment.shadingModel, shaderMap);
         if (!model.errors.empty()) {
             compilation.errors.insert(compilation.errors.end(), model.errors.begin(), model.errors.end());
@@ -2034,8 +2159,13 @@ LinkedShaderProgramCompilation InxShaderLoader::CompileLinkedProgram(const std::
         }
     }
 
-    return CompileLinkedProgramVariant(vertexSource, vertexCompilePath, fragmentSource, fragmentCompilePath, target,
-                                       compilation.interfaceArtifact);
+    auto compiled = CompileLinkedProgramVariant(vertexSource, vertexCompilePath, fragmentSource, fragmentCompilePath,
+                                                target, compilation.interfaceArtifact);
+    if (compiled.IsValid()) {
+        CommitSourceDependencies(vertexCompilePath);
+        CommitSourceDependencies(fragmentCompilePath);
+    }
+    return compiled;
 }
 
 LinkedShaderProgramArtifactCompilation InxShaderLoader::CompileLinkedProgramArtifact(const std::string &vertexSource,
@@ -2047,6 +2177,8 @@ LinkedShaderProgramArtifactCompilation InxShaderLoader::CompileLinkedProgramArti
     LinkedShaderProgramArtifactCompilation result;
     const std::string vertexCompilePath = StageQualifiedVirtualPath(vertexPath, "vertex");
     const std::string fragmentCompilePath = StageQualifiedVirtualPath(fragmentPath, "fragment");
+    ResetSourceDependencies(vertexCompilePath);
+    ResetSourceDependencies(fragmentCompilePath);
     const ShaderDescriptor vertex = ParseShaderSource(vertexSource, vertexCompilePath);
     const ShaderDescriptor fragment = ParseShaderSource(fragmentSource, fragmentCompilePath);
     result.interfaceArtifact = ShaderStageLinker::Link(vertex, fragment);
@@ -2062,6 +2194,7 @@ LinkedShaderProgramArtifactCompilation InxShaderLoader::CompileLinkedProgramArti
     bool shadingModelSupportsDeferred = true;
     if (!fragment.shadingModel.empty()) {
         const auto shaderMap = BuildShaderIdMap(FromFsPath(ToFsPath(fragmentCompilePath).parent_path()));
+        RecordSourceDeclaration(fragmentCompilePath, "shadingmodel/" + fragment.shadingModel, shaderMap);
         const ShaderDescriptor model = LoadShadingModel(fragment.shadingModel, shaderMap);
         if (!model.errors.empty()) {
             result.errors.insert(result.errors.end(), model.errors.begin(), model.errors.end());
@@ -2105,6 +2238,10 @@ LinkedShaderProgramArtifactCompilation InxShaderLoader::CompileLinkedProgramArti
             continue;
         }
         result.compiledVariants.push_back(std::move(variant));
+    }
+    if (result.IsValid()) {
+        CommitSourceDependencies(vertexCompilePath);
+        CommitSourceDependencies(fragmentCompilePath);
     }
     return result;
 }
@@ -2202,7 +2339,7 @@ bool InxShaderLoader::CompileGLSL(const std::string &glslSource, EShLanguage sha
     EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
     if (!shader.parse(&m_builtInResources, 100, false, messages)) {
         s_lastCompileError = std::string("Shader parse failed:\n") + shader.getInfoLog();
-        if (reportDiagnostics) {
+        if (reportDiagnostics && !AreSourceDiagnosticsCaptured()) {
             INXLOG_ERROR("Shader parse failed for '", filePath, "':\n", shader.getInfoLog());
         }
         return false;
@@ -2212,7 +2349,7 @@ bool InxShaderLoader::CompileGLSL(const std::string &glslSource, EShLanguage sha
     program.addShader(&shader);
     if (!program.link(messages)) {
         s_lastCompileError = std::string("Shader link failed:\n") + program.getInfoLog();
-        if (reportDiagnostics) {
+        if (reportDiagnostics && !AreSourceDiagnosticsCaptured()) {
             INXLOG_ERROR("Shader link failed for '", filePath, "':\n", program.getInfoLog());
         }
         return false;
@@ -2512,14 +2649,15 @@ std::string InxShaderLoader::ResolveImports(const std::string &source, const std
 
     std::ostringstream result;
     for (const auto &importId : imports) {
+        // Retain missing declarations as subscriptions, so creating the library
+        // retries the rejected root without requiring a second root-file save.
+        if (!includeStack.insert(importId).second)
+            continue;
         const auto mapped = shaderIdMap.find(importId);
         if (mapped == shaderIdMap.end()) {
             errors.push_back("shader import not found: " + importId);
             continue;
         }
-        if (!includeStack.insert(importId).second)
-            continue;
-
         std::ifstream importFile = OpenInputFile(mapped->second);
         if (!importFile.is_open()) {
             errors.push_back("Failed to open shader import '" + importId + "': " + mapped->second);
@@ -2532,7 +2670,6 @@ std::string InxShaderLoader::ResolveImports(const std::string &source, const std
         if (!importedDescriptor.errors.empty()) {
             for (const auto &error : importedDescriptor.errors)
                 errors.push_back("Invalid ShaderInfo import '" + importId + "' (" + mapped->second + "): " + error);
-            includeStack.erase(importId);
             continue;
         }
         std::string importedCode = StripShaderInfoDeclaration(importedSource, ParseShaderInfo(importedSource));

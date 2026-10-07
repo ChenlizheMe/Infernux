@@ -79,6 +79,20 @@ class InxShaderLoader
         std::unique_lock<std::recursive_mutex> m_lock;
     };
 
+    /// A publication caller owns returned source diagnostics, so expected
+    /// failures do not leave unrelated C++ Console entries after recovery.
+    class SourceDiagnosticScope
+    {
+      public:
+        SourceDiagnosticScope();
+        ~SourceDiagnosticScope();
+        SourceDiagnosticScope(const SourceDiagnosticScope &) = delete;
+        SourceDiagnosticScope &operator=(const SourceDiagnosticScope &) = delete;
+      private:
+        bool m_previous;
+    };
+    [[nodiscard]] static bool AreSourceDiagnosticsCaptured() noexcept;
+
     /// Register an additional directory to scan for ShaderInfo import resolution.
     static void AddShaderSearchPath(const std::string &dir);
 
@@ -94,6 +108,11 @@ class InxShaderLoader
     /// Invalidate cached shader templates so edits under _templates/ are
     /// picked up on the next compile / reload.
     static void InvalidateTemplateCache();
+
+    /// Root stages that actually consumed this source/declaration during
+    /// preprocessing, including failed imports awaiting a declaration.
+    [[nodiscard]] static std::vector<std::string>
+    GetDependentStageSources(const std::string &sourcePath, const std::string &declarationId = "");
 
     /// Select the device-supported material texture ABI used by generated
     /// shader source. When disabled, shaders that declare BindlessTextures
