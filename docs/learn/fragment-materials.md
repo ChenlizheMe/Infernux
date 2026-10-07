@@ -56,9 +56,9 @@ If the Cube uses the fallback/error appearance, first confirm that both shader f
 
 ## Who owns what: stages, properties, and bindings {#ownership}
 
-A Material is a small document plus two stage references. Project **Vertex** and **Fragment** assets are stored by GUID with a derived `ShaderInfo Name` label; built-in stages use symbolic identifiers. The fragment's `ShaderInfo` block carries the `ShadingModel` entry that picks the lighting model. When the fragment is imported, the engine links the pair, generates the property schema, and compiles the program variants for each material pass; the Material then owns only the values.
+A Material is a small document plus two stage references. Project **Vertex** and **Fragment** assets are stored by GUID with a derived `ShaderInfo Name` label; built-in stages use symbolic identifiers. The fragment's `ShaderInfo` block carries the `ShadingModel` entry that picks the lighting model. Resolving the selected pair links its interfaces and produces the shared property schema and compatible material-pass programs. The Material document stores the stage references and authored values; it does not redefine the stages' property declarations.
 
-Properties are declared in the fragment's `ShaderInfo` block and become typed Material fields serialized into the `.mat` document. At draw time the engine packs the numeric fields into the material uniform block (`material`, set 0, binding 14) and binds each texture property from binding 2 upward, with `white`, `black`, and `normal` as built-in defaults. The fragment reads them through the `material.*` members and the `sample*` helpers. A user shader never declares descriptor sets, buffer bindings, or push constants for ordinary material data; the compiler and the engine binding layer own that layout.
+Both the vertex and fragment stages can declare Properties in their `ShaderInfo` blocks. The linker combines them into one typed Material schema serialized into the `.mat` document. A property declared in both stages must have the same type, default, range, and other contract metadata; incompatible declarations are rejected. At draw time the engine packs the numeric fields into the material uniform block (`material`, set 0, binding 14) and binds each texture property from binding 2 upward, with `white`, `black`, and `normal` as built-in defaults. Each stage reads the properties it declares through `material.*` members and the generated sampling helpers. A user shader never declares descriptor sets, buffer bindings, or push constants for ordinary material data; the compiler and the engine binding layer own that layout.
 
 ShaderInfo entries affect different things:
 
@@ -288,9 +288,9 @@ Cube 显示回退或错误外观时，先确认两个 Shader 字段都有值，�
 
 ## 谁拥有什么：阶段、属性与绑定 {#ownership_1}
 
-Material 是一份小文档加上两个阶段引用。项目中的 **Vertex** 与 **Fragment** 资产按 GUID 保存，并附带由 `ShaderInfo Name` 派生的显示名称；内置阶段使用符号标识。片元 `ShaderInfo` 块里的 `ShadingModel` 条目选择光照模型。片元导入时，引擎链接这对阶段、生成属性 Schema，并为每种材质 Pass 编译程序变体；Material 此后只拥有参数值。
+Material 是一份小文档加上两个阶段引用。项目中的 **Vertex** 与 **Fragment** 资产按 GUID 保存，并附带由 `ShaderInfo Name` 派生的显示名称；内置阶段使用符号标识。片元 `ShaderInfo` 块里的 `ShadingModel` 条目选择光照模型。解析选中的阶段组合时，引擎链接其接口，生成共享属性结构与兼容的材质 Pass 程序。Material 文档保存阶段引用和编辑后的参数值，不会重新定义阶段中的属性声明。
 
-属性在片元的 `ShaderInfo` 块里声明，会变成有类型的 Material 字段，序列化进 `.mat` 文档。绘制时引擎把数值字段打包进材质 Uniform Block（`material`，set 0、binding 14），并从 binding 2 起绑定每个纹理属性，`white`、`black` 与 `normal` 是内置默认值。片元通过 `material.*` 成员与 `sample*` 辅助函数读取它们。用户 Shader 不用为普通材质数据声明描述符集、缓冲绑定或 Push Constant；这份布局由编译器与引擎绑定层持有。
+顶点和片元阶段都可以在各自的 `ShaderInfo` 块里声明 Properties。链接器将它们合并成一份有类型的 Material 字段结构，序列化进 `.mat` 文档。同名属性同时出现在两个阶段时，类型、默认值、范围及其他契约元数据必须一致；不兼容的声明会被拒绝。绘制时引擎把数值字段打包进材质 Uniform Block（`material`，set 0、binding 14），并从 binding 2 起绑定每个纹理属性，`white`、`black` 与 `normal` 是内置默认值。各阶段通过 `material.*` 成员与生成的采样辅助函数读取自己声明的属性。用户 Shader 不用为普通材质数据声明描述符集、缓冲绑定或 Push Constant；这份布局由编译器与引擎绑定层持有。
 
 ShaderInfo 各条目影响不同环节：
 

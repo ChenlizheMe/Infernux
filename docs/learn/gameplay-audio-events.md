@@ -88,7 +88,7 @@ class GameplayAudio(inx.InxComponent):
             self._hit_clip.unload()
 ```
 
-`Application.asset_path()` resolves the authored path through the active project's GUID catalog in Editor and the frozen cooked catalog in Player. Resolve this path before passing it to `AudioClip.load()`, which accepts a physical file path and returns an `AudioClip` or `None`. This avoids depending on the process working directory. Keep the wrapper referenced while its track or one-shot may still use the native clip. The cleanup stops all persistent tracks and one-shots before unloading the clips.
+`Application.asset_path()` resolves the authored path through the active project's GUID catalog in Editor and the frozen cooked catalog in Player. Resolve this path before passing it to `AudioClip.load()`, which accepts a physical file path and returns an `AudioClip` or `None`. This avoids depending on the process working directory. An assigned track retains its native clip; dropping a Python wrapper does not call `unload()`. Keep the wrappers here so the component can explicitly unload its clips during cleanup, after stopping all persistent tracks and one-shots. Calling `unload()` or leaving an `AudioClip` context manager explicitly unloads the shared clip data, so do that only after its users have stopped.
 
 This example explicitly uses 2D audio (`spatial_blend = 0`), normal pitch and an unmuted source, so the Probe moving away from the Camera does not silence the lesson. With track volume `0.35` and source volume `0.8`, the music gain is `0.28` before bus gain; one-shot gain is `0.72` before bus gain. Keep the Master and selected output bus unmuted at gain `1` for the first check.
 
@@ -177,7 +177,7 @@ For a quick API check, add temporary logs for `self._source.is_track_playing(0)`
 
 - **Using `source.clip`**: this property is not public. Assign a numbered track with `set_track_clip()`.
 - **Loading MP3 or OGG based on old UI text**: the runtime decodes OGG/Vorbis, MP3, FLAC, and WAV. WAV remains the simplest choice for the tutorial clips, with native decoding and playback regression coverage.
-- **Unloading too early**: keep each `AudioClip` wrapper alive until every source using it has stopped.
+- **Unloading too early**: stop every source using a clip before calling `unload()` or leaving its `with` block. Retaining a wrapper cannot undo an explicit unload.
 - **Playing in `on_collision_stay()`**: this callback repeats each fixed step. Use `on_collision_enter()` for one sound per contact.
 - **No sound in the scene**: confirm that one active AudioListener exists, the clip loaded, the source is not muted, and the source is inside the attenuation range.
 - **Every new hit cuts off an older hit**: increase `one_shot_pool_size` to the concurrency your game needs, with a deliberate upper bound.
@@ -278,7 +278,7 @@ class GameplayAudio(inx.InxComponent):
             self._hit_clip.unload()
 ```
 
-`Application.asset_path()` 在编辑器中通过当前项目的 GUID 目录解析编写路径，在 Player 中则使用冻结的烘焙目录。先解析该路径，再传给接受物理文件路径的 `AudioClip.load()`；后者返回 `AudioClip` 或 `None`。这样加载不会依赖进程的工作目录。轨道或一次性音效仍可能使用原生音频时，需要保留 Python 封装引用。清理阶段先停止全部持续轨道和一次性音效，再卸载音频。
+`Application.asset_path()` 在编辑器中通过当前项目的 GUID 目录解析编写路径，在 Player 中则使用冻结的烘焙目录。先解析该路径，再传给接受物理文件路径的 `AudioClip.load()`；后者返回 `AudioClip` 或 `None`。这样加载不会依赖进程的工作目录。已赋值的轨道会持有原生音频引用；丢弃 Python 包装器不会调用 `unload()`。本例保留包装器，是为了在清理时先停止全部持续轨道和一次性音效，再显式卸载音频。调用 `unload()` 或退出 `AudioClip` 上下文管理器都会显式卸载共享音频数据，必须先停止其所有使用者。
 
 轨道 0 承载持续音乐。命中音效不会替换轨道 0，多次碰撞进入可通过一次性声部池重叠播放。`loop` 作用于音源的持续轨道；瞬时反应适合使用一次性播放。
 
@@ -367,7 +367,7 @@ AssetRegistry/AssetDatabase 已初始化时，可用 `set_track_clip_by_guid()` 
 
 - **使用 `source.clip`**：当前公开 API 没有这个属性。请用 `set_track_clip()` 分配编号轨道。
 - **根据旧界面文字加载 MP3 或 OGG**：运行时支持解码 OGG/Vorbis、MP3、FLAC 与 WAV。教程音频仍建议使用 WAV，路径最简单；已有原生解码与播放回归。
-- **过早卸载**：每个音频的所有使用者停止后，再调用 `unload()`。
+- **过早卸载**：停止音频的所有使用者后，再调用 `unload()` 或退出它的 `with` 块。保留包装器不能撤销一次显式卸载。
 - **在 `on_collision_stay()` 中播放**：该回调每个固定步都会运行。一次接触一次音效应使用 `on_collision_enter()`。
 - **场景中没有声音**：检查是否存在一个启用的 AudioListener、音频是否加载成功、音源是否静音，以及音源是否位于衰减范围内。
 - **新命中会截断旧音效**：按游戏实际并发需求提高 `one_shot_pool_size`，同时设置明确上限。
