@@ -18,8 +18,12 @@ def move_points(domain, positions, amount):
 class ResidentGizmoProbe(inx.InxComponent):
     def on_draw_gizmos(self):
         Gizmos.matrix = self._matrix
+        Gizmos.color = (1, 0, 0)
         Gizmos.draw_lines(self._positions, self._edges)
         Gizmos.draw_wire_spheres(self._positions, 0.05, segments=8)
+        Gizmos.color = (0, 0, 1)
+        Gizmos.draw_lines(self._positions, self._edges)
+        Gizmos.draw_wire_spheres(self._positions, 0.1, segments=8)
 
 
 def main():
@@ -50,9 +54,9 @@ def main():
                 inx.compute.launch(move_points, params=(domain, positions, 0.25))
                 Gizmos.draw_lines(positions, edges)
                 Gizmos.draw_wire_spheres(positions, 0.05, segments=8)
-                assert len(positions._gizmo_wire_sphere_states) == 1
+                assert len(positions._gizmo_wire_sphere_pool.states) == 1
 
-            line_state = positions._gizmo_line_states[id(edges)]
+            line_state = positions._gizmo_line_pool.states[0]
             line_vertices = line_state.vertices.get_data().numpy(copy=False)
             np.testing.assert_allclose(
                 line_vertices[:, :3], initial + (0.0, 0.25, 0.0), atol=1.0e-5,
@@ -66,7 +70,7 @@ def main():
                 Gizmos.matrix = translated
                 Gizmos.draw_lines(positions, edges)
                 Gizmos.draw_wire_spheres(positions, 0.05, segments=8)
-                assert len(positions._gizmo_wire_sphere_states) == 1
+                assert len(positions._gizmo_wire_sphere_pool.states) == 1
                 engine.clear_component_cpu_gizmos()
                 engine.upload_component_resident_gizmos(Gizmos._get_resident_data())
 
@@ -92,7 +96,9 @@ def main():
                 try:
                     frames += 1
                     if frames == 64:
-                        assert engine.resident_mesh_vertex_buffer_count >= 2
+                        assert engine.resident_mesh_vertex_buffer_count >= 4
+                        assert len(positions._gizmo_line_pool.states) == 2
+                        assert len(positions._gizmo_wire_sphere_pool.states) == 2
                         values = positions.get_data().numpy(copy=False)
                         np.testing.assert_allclose(values[:, 1], initial[:, 1] + 0.75, atol=1.0e-5)
                         engine.exit()

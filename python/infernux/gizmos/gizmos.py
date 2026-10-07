@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import wraps
 from itertools import count
 from typing import Tuple, Optional, List
@@ -151,19 +151,56 @@ def _resident_wire_sphere_vector3_kernel(domain, centers, center_indices, unit_p
 
 @dataclass(slots=True)
 class _ResidentWireSphereState:
-    source_indices: np.ndarray
     domain: Buffer
     center_indices: Buffer
     unit_positions: Buffer
     positions: Buffer
     line_indices: np.ndarray
     unit_count: int
+    all_centers: bool
 
     def close(self) -> None:
         self.domain.close()
         self.center_indices.close()
         self.unit_positions.close()
         self.positions.close()
+
+
+@dataclass(slots=True)
+class _ResidentDrawPool:
+    """Source-owned slots: separate writes within a frame, reuse across frames."""
+
+    states: list = field(default_factory=list)
+    frame: int = -1
+    cursor: int = 0
+
+    def take(self, frame: int):
+        if self.frame != frame:
+            self.frame, self.cursor = frame, 0
+        slot = self.cursor
+        self.cursor += 1
+        return slot, self.states[slot] if slot < len(self.states) else None
+
+    def put(self, slot: int, state) -> None:
+        if slot == len(self.states):
+            self.states.append(state)
+        else:
+            self.states[slot].close()
+            self.states[slot] = state
+
+    def close(self) -> None:
+        for state in self.states:
+            state.close()
+        self.states.clear()
+
+
+def _resident_pool(source: Buffer, attribute: str) -> _ResidentDrawPool:
+    pool = getattr(source, attribute, None)
+    if pool is None:
+        pool = _ResidentDrawPool()
+        source._retain_dependent(pool)
+        setattr(source, attribute, pool)
+    return pool
 
 
 _resident_identity = count(1)
@@ -198,6 +235,7 @@ class Gizmos:
     # (state, current world matrix); state owns immutable topology and a
     # canonical GPU Vertex stream derived directly from the source buffer.
     _resident_draw_batches: list[tuple[_ResidentLineState, List[float]]] = []
+    _frame_serial: int = 0
 
     # Icon entries: (position_vec3, object_id_int, color_vec3, icon_kind_int)
     _icon_entries: List[Tuple[Vec3, int, Tuple[float, float, float], int]] = []
@@ -217,6 +255,7 @@ class Gizmos:
     @classmethod
     def _begin_frame(cls):
         """Reset per-frame state.  Called by GizmosCollector at frame start."""
+        cls._frame_serial += 1
         cls.color = (1.0, 1.0, 1.0)
         cls.matrix = None
         cls._draw_batches.clear()
@@ -294,21 +333,21 @@ class Gizmos:
         if indices.min() < 0 or indices.max() >= position_count:
             raise ValueError("Gizmo line index is outside the position buffer")
 
-        states = getattr(positions, "_gizmo_line_states", None)
-        if states is None:
-            states = {}
-            positions._gizmo_line_states = states
-        key = id(indices)
-        state = states.get(key)
-        if state is None or state.indices is not indices:
+        pool = _resident_pool(positions, "_gizmo_line_pool")
+        slot, state = pool.take(cls._frame_serial)
+        if state is None:
             state = _ResidentLineState(
                 identity=next(_resident_identity),
-                indices=indices,
+                indices=np.array(indices, dtype=np.uint32, order="C", copy=True),
                 domain=buffer(shape=position_count, dtype=np.int32, device="gpu"),
                 vertices=buffer(shape=(position_count, 25), dtype=np.float32, device="gpu"),
             )
-            states[key] = state
-            positions._retain_dependent(state)
+            pool.put(slot, state)
+        elif not np.array_equal(state.indices, indices):
+            # Native topology is immutable for an identity. Keep the GPU
+            # allocation, but publish changed edges under a new identity.
+            state.indices = np.array(indices, dtype=np.uint32, order="C", copy=True)
+            state.identity = next(_resident_identity)
         red, green, blue = (float(value) for value in cls.color)
         position_kernel = (
             _resident_line_vertex_vector3_kernel
@@ -459,10 +498,6 @@ class Gizmos:
             raise TypeError("Resident wire sphere centers must use vector3 or float32 shape (N,3)")
         if not isinstance(segments, int) or segments < 3:
             raise ValueError("Resident wire sphere segments must be at least 3")
-        states = getattr(centers, "_gizmo_wire_sphere_states", None)
-        if states is None:
-            states = {}
-            centers._gizmo_wire_sphere_states = states
         use_all_centers = center_indices is None
         if center_indices is not None:
             if not isinstance(center_indices, np.ndarray) or center_indices.ndim != 1 or center_indices.dtype.kind not in "iu":
@@ -471,9 +506,13 @@ class Gizmos:
                 return
             if center_indices.min() < 0 or center_indices.max() >= center_count:
                 raise ValueError("Resident wire sphere center index is outside the center buffer")
-        key = (("all", center_count) if use_all_centers else id(center_indices), segments)
-        state = states.get(key)
-        if state is None or (not use_all_centers and state.source_indices is not center_indices):
+        selected_count = center_count if use_all_centers else len(center_indices)
+        if not selected_count:
+            return
+        pool = _resident_pool(centers, "_gizmo_wire_sphere_pool")
+        slot, state = pool.take(cls._frame_serial)
+        if (state is None or state.unit_count != segments * 3
+                or state.center_indices.shape[0] != selected_count):
             if use_all_centers:
                 center_indices = np.arange(center_count, dtype=np.int32)
             angle = np.arange(segments, dtype=np.float32) * (2.0 * np.pi / segments)
@@ -496,16 +535,22 @@ class Gizmos:
             ).reshape(-1, 2)
             expanded_count = len(center_indices) * len(unit)
             state = _ResidentWireSphereState(
-                source_indices=center_indices,
                 domain=buffer(shape=expanded_count, dtype=np.int32, device="gpu"),
                 center_indices=buffer(shape=len(center_indices), dtype=np.int32, device="gpu", data=center_indices),
                 unit_positions=buffer(shape=unit.shape, dtype=np.float32, device="gpu", data=unit),
                 positions=buffer(shape=(expanded_count, 3), dtype=np.float32, device="gpu"),
                 line_indices=np.ascontiguousarray(expanded_edges),
                 unit_count=len(unit),
+                all_centers=use_all_centers,
             )
-            states[key] = state
-            centers._retain_dependent(state)
+            pool.put(slot, state)
+        elif not use_all_centers or not state.all_centers:
+            # Selectors are author data, not a cache key. Capture each call,
+            # including in-place edits and transitions to/from all centers.
+            state.center_indices.set_data(
+                np.arange(center_count, dtype=np.int32) if use_all_centers else center_indices
+            )
+            state.all_centers = use_all_centers
         sphere_kernel = (
             _resident_wire_sphere_vector3_kernel
             if centers.dtype == "vector3"
@@ -715,7 +760,7 @@ class Gizmos:
         """Return native GPU line descriptors without reading their vertices."""
         return [
             (state.identity, state.vertices._native, state.vertices.shape[0],
-             np.ascontiguousarray(state.indices, dtype=np.uint32).reshape(-1), matrix)
+             state.indices.reshape(-1), matrix)
             for state, matrix in cls._resident_draw_batches
         ]
 
