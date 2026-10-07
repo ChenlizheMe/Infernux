@@ -260,6 +260,67 @@ def test_finished_session_is_consumed_by_engine_exactly_once(monkeypatch, tmp_pa
     assert RuntimeAcceptance._consume_completion() == {}
 
 
+@pytest.mark.parametrize('state', [
+    'manager_loading', 'native_pending', 'manager_missing', 'wrong_scene',
+    'ready_before_deadline', 'ready_at_deadline', 'ready_after_deadline',
+])
+def test_scene_loading_deadline_publishes_once(monkeypatch, tmp_path, state):
+    """Drive the asynchronous loader boundary; no real disk I/O is stalled."""
+    from types import SimpleNamespace
+    from infernux.engine import scene_manager
+    from infernux.scene import SceneManager
+
+    manifest = tmp_path / 'Assets' / 'Acceptance' / 'Deadline.json'
+    _write_manifest(manifest, tests=[
+        {'id': 'first', 'scene': 'Assets/First.scene', 'run_seconds': .125, 'timeout_seconds': .25},
+        {'id': 'second', 'scene': 'Assets/Second.scene', 'run_seconds': .125},
+    ])
+    output = tmp_path / 'Logs' / 'Deadline.result.json'
+    manager = SimpleNamespace(current_scene_path='', is_loading=state == 'manager_loading')
+    loads = []
+    monkeypatch.setattr(Application, 'data_path', staticmethod(lambda: str(tmp_path)))
+    monkeypatch.setattr(Application, 'persistent_data_path', staticmethod(lambda: str(tmp_path)))
+    monkeypatch.setattr(scene_manager, 'SceneFileManager', SimpleNamespace(
+        instance=lambda: None if state == 'manager_missing' else manager,
+    ))
+    monkeypatch.setattr(SceneManager, 'load_scene', staticmethod(lambda path: loads.append(path) or True))
+    monkeypatch.setattr(SceneManager, 'is_scene_load_pending', staticmethod(lambda: state == 'native_pending'))
+    RuntimeAcceptance.begin(str(manifest), str(output))
+    RuntimeAcceptance.tick(0)
+    assert loads == ['Assets/First.scene']
+    if state == 'ready_before_deadline':
+        manager.current_scene_path = str(tmp_path / 'Assets' / 'First.scene')
+    RuntimeAcceptance.tick(.125)
+    if state == 'ready_at_deadline':
+        manager.current_scene_path = str(tmp_path / 'Assets' / 'First.scene')
+    RuntimeAcceptance.tick(.125)
+    assert RuntimeAcceptance.is_active(), 'the specified deadline is inclusive'
+    if state in ('ready_before_deadline', 'ready_at_deadline'):
+        assert RuntimeAcceptance.current_test()['id'] == 'first'
+        final = RuntimeAcceptance.pass_current({'loaded': True})
+        assert final['tests'][0]['status'] == 'passed'
+        assert final['summary']['pending'] == 1
+        assert RuntimeAcceptance._consume_completion() == {}
+        return
+    if state == 'ready_after_deadline':
+        manager.current_scene_path = str(tmp_path / 'Assets' / 'First.scene')
+    final = RuntimeAcceptance.tick(.125)
+    assert not RuntimeAcceptance.is_active()
+    assert final['status'] == 'failed'
+    assert final['summary'] == {'total': 2, 'passed': 0, 'failed': 1, 'skipped': 0, 'pending': 1}
+    failed = final['tests'][0]
+    assert failed['elapsed_seconds'] == pytest.approx(.375)
+    assert 'scene' in failed['error']
+    assert json.loads(output.read_text(encoding='utf-8')) == final
+    before = output.read_bytes(), output.stat().st_mtime_ns
+    for _ in range(3):
+        assert RuntimeAcceptance.tick(10) == final
+    assert (output.read_bytes(), output.stat().st_mtime_ns) == before
+    assert loads == ['Assets/First.scene']
+    assert RuntimeAcceptance._consume_completion() == final
+    assert RuntimeAcceptance._consume_completion() == {}
+
+
 def test_result_publication_retries_short_lived_reader_lock(monkeypatch, tmp_path):
     manifest_path = tmp_path / "Assets" / "Acceptance" / "All.json"
     _write_manifest(manifest_path)

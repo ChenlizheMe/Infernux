@@ -235,6 +235,16 @@ class _RuntimeAcceptanceSession:
         self._write_result()
 
     def _poll_scene_load(self, current: RuntimeAcceptanceTest) -> None:
+        # The deadline owns completion even while the loader is pending, or
+        # when the requested scene first becomes visible after the deadline.
+        if self.elapsed > current.timeout_seconds:
+            self.complete(
+                "failed",
+                error=f"acceptance scene load timed out after {current.timeout_seconds:g} seconds: {current.scene}",
+                details={"phase": "loading", "elapsed_seconds": self.elapsed},
+            )
+            return
+
         from infernux.engine.scene_manager import SceneFileManager
         from infernux.scene import SceneManager
 
@@ -248,8 +258,6 @@ class _RuntimeAcceptanceSession:
             self.elapsed = 0.0
             self._write_result()
             return
-        if self.elapsed > current.timeout_seconds:
-            self.complete("failed", error=f"acceptance scene did not become active: {current.scene}")
 
     def complete(
         self,
