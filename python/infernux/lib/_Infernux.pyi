@@ -278,22 +278,22 @@ class ResourceType(IntEnum):
 
 
 class PixelFormat(IntEnum):
-    UNDEFINED: int
-    R8_UNORM: int
-    RG8_UNORM: int
-    RGBA8_UNORM: int
-    RGBA8_SRGB: int
-    BGRA8_UNORM: int
-    R16_SFLOAT: int
-    RG16_SFLOAT: int
-    RGBA16_SFLOAT: int
-    R32_SFLOAT: int
-    RG32_UINT: int
-    RGBA32_UINT: int
-    RGBA32_SFLOAT: int
-    RGB10A2_UNORM: int
-    D32_SFLOAT: int
-    D24_UNORM_S8_UINT: int
+    UNDEFINED: PixelFormat
+    R8_UNORM: PixelFormat
+    RG8_UNORM: PixelFormat
+    RGBA8_UNORM: PixelFormat
+    RGBA8_SRGB: PixelFormat
+    BGRA8_UNORM: PixelFormat
+    R16_SFLOAT: PixelFormat
+    RG16_SFLOAT: PixelFormat
+    RGBA16_SFLOAT: PixelFormat
+    R32_SFLOAT: PixelFormat
+    RG32_UINT: PixelFormat
+    RGBA32_UINT: PixelFormat
+    RGBA32_SFLOAT: PixelFormat
+    RGB10A2_UNORM: PixelFormat
+    D32_SFLOAT: PixelFormat
+    D24_UNORM_S8_UINT: PixelFormat
 
     @property
     def is_depth(self) -> bool: ...

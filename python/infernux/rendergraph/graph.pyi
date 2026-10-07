@@ -140,13 +140,12 @@ class RenderPassBuilder:
         self,
         queue_range: Tuple[int, int] = ...,
         light_index: int = ...,
-        shadow_type: str = ...,
     ) -> RenderPassBuilder:
         """Draw shadow-casting geometry for a light."""
         ...
     def draw_screen_ui(
         self,
-        list: str | int = ...,
+        list: str = ...,
     ) -> RenderPassBuilder:
         """Draw screen-space UI elements in this pass."""
         ...
