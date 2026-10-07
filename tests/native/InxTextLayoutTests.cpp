@@ -45,7 +45,8 @@ void ReferenceDraw(ImDrawList &draw, const infernux::textlayout::TextLayoutResul
     for (size_t index = 0; index < layout.lines.size(); ++index) {
         const auto &line = layout.lines[index];
         float x = 7.25f + (220.f - line.width) * alignX;
-        const float y = 9.75f + (180.f - layout.totalHeight) * alignY + index * layout.lineAdvance;
+        const float y = 9.75f + (180.f - (layout.inkMaxY - layout.inkMinY)) * alignY - layout.inkMinY +
+                        index * layout.lineAdvance;
         int count = 0;
         float width = 0;
         for (const char *cursor = base + line.startOffset; cursor < base + line.endOffset;) {
@@ -84,6 +85,34 @@ void WriteU32(unsigned char *target, uint32_t value)
     target[1] = static_cast<unsigned char>(value >> 16u);
     target[2] = static_cast<unsigned char>(value >> 8u);
     target[3] = static_cast<unsigned char>(value);
+}
+
+void CheckVisibleVerticalAlignment(const infernux::textlayout::TextLayoutParams &params)
+{
+    const auto layout = infernux::textlayout::LayoutText(params);
+    ImDrawList draw(ImGui::GetDrawListSharedData());
+    for (float alignment : {0.f, .5f, 1.f}) {
+        draw._ResetForNewFrame();
+        draw.PushTextureID(ImGui::GetIO().Fonts->TexRef);
+        draw.PushClipRectFullScreen();
+        infernux::textlayout::RenderTextBox(&draw, 0, 40, 240, 120, layout, IM_COL32_WHITE, .5f, alignment,
+                                          params.letterSpacing);
+        assert(draw.VtxBuffer.Size > 0);
+        float minY = FLT_MAX;
+        float maxY = -FLT_MAX;
+        for (const auto &vertex : draw.VtxBuffer) {
+            minY = std::min(minY, vertex.pos.y);
+            maxY = std::max(maxY, vertex.pos.y);
+        }
+        const float actualAnchor = minY + (maxY - minY) * alignment;
+        const float expectedAnchor = 40 + 80 * alignment;
+        std::cout << "TEXT_VERTICAL_ALIGNMENT text=" << params.text << " size=" << params.fontSize
+                  << " alignment=" << alignment << " min=" << minY << " max=" << maxY
+                  << " error=" << actualAnchor - expectedAnchor << std::endl;
+        // RenderChar snaps origins to raster pixels; alignment must be within
+        // one pixel, independently of the font's ascender/descender padding.
+        assert(std::abs(actualAnchor - expectedAnchor) < 1.01f);
+    }
 }
 } // namespace
 
@@ -152,8 +181,8 @@ int main()
 
     const std::filesystem::path repositoryRoot =
         std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
-    const std::string latinFont = (repositoryRoot / "external/imgui/misc/fonts/Roboto-Medium.ttf").string();
-    const std::string cjkFont = (repositoryRoot / "python/infernux/resources/fonts/PingFangSC-Regular.ttf").string();
+    const std::string latinFont = infernux::FromFsPath(repositoryRoot / "external/imgui/misc/fonts/Roboto-Medium.ttf");
+    const std::string cjkFont = infernux::FromFsPath(repositoryRoot / "python/infernux/resources/fonts/PingFangSC-Regular.ttf");
     assert(std::filesystem::exists(latinFont));
     assert(std::filesystem::exists(cjkFont));
     infernux::textlayout::TextLayoutParams explicitChain{};
@@ -168,6 +197,19 @@ int main()
     assert(infernux::textlayout::ResolveGlyphFont(chainedLayout, static_cast<ImWchar>(0x4E2D)) ==
            chainedLayout.fallbackFonts[0]);
     assert(chainedLayout.totalWidth > 0.0f);
+    for (const auto &fontPath : {std::string(), latinFont, cjkFont}) {
+        for (const auto &label : {std::string("Play"), std::string("Agyp"), std::string("开始游戏"),
+                                 std::string("Play\nAgain")}) {
+            for (float size : {18.f, 32.22f}) {
+                auto params = explicitChain;
+                params.fontPath = fontPath;
+                params.text = label;
+                params.fontSize = size;
+                params.lineHeight = 1.2f;
+                CheckVisibleVerticalAlignment(params);
+            }
+        }
+    }
     {
         ImDrawList drawList(ImGui::GetDrawListSharedData());
         auto resetDraw = [&] {
@@ -294,12 +336,12 @@ int main()
         std::filesystem::create_directories(folder);
         const auto path = folder / "Shared.ttf";
         const auto cousin = repositoryRoot / "external/imgui/misc/fonts/Cousine-Regular.ttf";
-        assert(ResolveFont(path.string()) == nullptr);
+        assert(ResolveFont(infernux::FromFsPath(path)) == nullptr);
         std::filesystem::copy_file(latinFont, path);
-        assert(InvalidateFontPath(path.string()));
+        assert(InvalidateFontPath(infernux::FromFsPath(path)));
         TextLayoutParams params{};
         params.text = "WWWWWWiiiiii";
-        params.fontPath = path.string();
+        params.fontPath = infernux::FromFsPath(path);
         params.fontSize = 24;
         const auto original = LayoutText(params);
         assert(original.font);
@@ -310,7 +352,7 @@ int main()
             const auto source = iteration % 2 == 0 ? cousin : infernux::ToFsPath(latinFont);
             std::filesystem::copy_file(source, path, std::filesystem::copy_options::overwrite_existing);
             const auto epoch = FontCacheGeneration();
-            assert(InvalidateFontPath((folder / "." / "Shared.ttf").string()));
+            assert(InvalidateFontPath(infernux::FromFsPath(folder / "." / "Shared.ttf")));
             assert(FontCacheGeneration() == epoch + 1);
             const auto changed = LayoutText(params);
             assert(changed.font != old.font && std::abs(changed.totalWidth - old.totalWidth) > 5.f);
@@ -322,16 +364,16 @@ int main()
             assert(io.Fonts->Fonts.Size == retainedCount);
         }
         const auto epoch = FontCacheGeneration();
-        assert(!InvalidateFontPath((folder / "NeverUsed.ttf").string()));
+        assert(!InvalidateFontPath(infernux::FromFsPath(folder / "NeverUsed.ttf")));
         assert(FontCacheGeneration() == epoch);
         std::filesystem::remove(path);
-        assert(InvalidateFontPath(path.string()));
-        assert(ResolveFont(path.string()) == nullptr);
+        assert(InvalidateFontPath(infernux::FromFsPath(path)));
+        assert(ResolveFont(infernux::FromFsPath(path)) == nullptr);
         CollectRetiredFonts();
         std::filesystem::copy_file(cousin, path);
-        assert(InvalidateFontPath(path.string()));
-        assert(ResolveFont(path.string()));
-        assert(InvalidateFontPath(path.string()));
+        assert(InvalidateFontPath(infernux::FromFsPath(path)));
+        assert(ResolveFont(infernux::FromFsPath(path)));
+        assert(InvalidateFontPath(infernux::FromFsPath(path)));
         CollectRetiredFonts();
         std::filesystem::remove_all(folder);
         std::cout << "FONT_RELOAD_LIFETIME cycles=20 missing_restore=passed unrelated_face=stable\n";
