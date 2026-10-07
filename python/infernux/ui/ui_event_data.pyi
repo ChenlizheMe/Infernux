@@ -17,6 +17,12 @@ class PointerButton(IntEnum):
     Middle = 2
 
 
+class PointerType(IntEnum):
+    """Physical source that owns one independent UI pointer."""
+    Mouse = 0
+    Touch = 1
+
+
 class PointerEventData:
     """Data container for a single pointer event.
 
@@ -38,6 +44,9 @@ class PointerEventData:
     position: Tuple[float, float]
     delta: Tuple[float, float]
     canvas_size: Tuple[float, float]
+    pointer_id: int
+    pointer_type: PointerType
+    canceled: bool
     button: PointerButton
     press_position: Tuple[float, float]
     click_count: int

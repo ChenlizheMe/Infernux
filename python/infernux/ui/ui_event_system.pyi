@@ -2,10 +2,28 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple, TYPE_CHECKING
+from dataclasses import dataclass
+from typing import List, Sequence, Tuple, TYPE_CHECKING
+
+from .ui_event_data import PointerType
 
 if TYPE_CHECKING:
     from infernux.ui.ui_canvas import UICanvas
+
+
+@dataclass(frozen=True, slots=True)
+class UIPointerFrame:
+    """One physical pointer snapshot expressed in every canvas's coordinates."""
+
+    pointer_id: int
+    pointer_type: PointerType
+    canvas_positions: Tuple[Tuple[float, float], ...]
+    down: bool = False
+    up: bool = False
+    held: bool = False
+    canceled: bool = False
+    scroll_delta: Tuple[float, float] = (0.0, 0.0)
+    press_canvas_positions: Tuple[Tuple[float, float], ...] = ()
 
 
 class UIEventProcessor:
@@ -49,6 +67,20 @@ class UIEventProcessor:
         """
         ...
 
+    def process_pointers(
+        self, canvases: Sequence[UICanvas], pointers: Sequence[UIPointerFrame], dt: float,
+    ) -> None:
+        """Dispatch one complete physical pointer snapshot."""
+        ...
+
     def reset(self) -> None:
-        """Clear all transient state (e.g. when play mode stops)."""
+        """Cancel every active pointer transaction."""
+        ...
+
+    def discard(self) -> None:
+        """Forget state after the owning scene has retired."""
+        ...
+
+    def debug_state(self) -> dict:
+        """Return the latest transition without polling input."""
         ...
