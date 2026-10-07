@@ -2555,7 +2555,8 @@ void Infernux::ReleasePreviewAuthoring(const std::string &resourceKey)
 
 std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(
     const std::string &resourceKey, const std::string &textureFilePath, uint64_t contentStampHint, bool nearest,
-    bool srgb, int maxSize, const std::string &textureFormat, const std::string &textureType, bool authoring, bool pump)
+    bool srgb, int maxSize, const std::string &textureFormat, const std::string &textureType, bool authoring, bool pump,
+    bool useImportedTexture)
 {
     if (resourceKey.empty() || textureFilePath.empty())
         return {0, 0, 0};
@@ -2565,11 +2566,13 @@ std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(
 
     const std::string key = CanonicalizePreviewKey(resourceKey);
 
-    // Every registered texture preview, including sprite slicing, presents the
+    // Asset texture previews, including sprite slicing, present the
     // final imported GPU publication. This keeps BC formats, sRGB conversion,
     // mip policy and runtime sampling identical across Project, Inspector,
     // sprite authoring and scene rendering.
-    if (auto *database = GetAssetDatabase(); database && m_renderer) {
+    // Document illustrations use source pixels, independently of game asset
+    // compression, channel conversion and sampler settings.
+    if (auto *database = GetAssetDatabase(); useImportedTexture && database && m_renderer) {
         const std::string guid = database->GetGuidFromPath(textureFilePath);
         if (!guid.empty()) {
             int importedWidth = 0;

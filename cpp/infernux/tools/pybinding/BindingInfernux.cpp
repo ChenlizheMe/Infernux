@@ -2323,7 +2323,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              py::arg("texture_file_path"), py::arg("content_stamp_hint"), py::arg("nearest") = false,
              py::arg("srgb") = false, py::arg("max_size") = 2048, py::arg("texture_format") = "auto",
              py::arg("texture_type") = "default", py::arg("authoring") = false,
-             py::arg("pump") = true, py::call_guard<py::gil_scoped_release>(),
+             py::arg("pump") = true, py::arg("use_imported_texture") = true,
+             py::call_guard<py::gil_scoped_release>(),
              "Combined pump + query + schedule for texture preview. Returns (tex_id, width, height). C++ manages "
              "caching via a shared generation counter.")
         .def(

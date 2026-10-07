@@ -270,6 +270,29 @@ def render_resource_preview_rect(ctx: Any, panel: Any, file_path: str, width: fl
     if tex_id == 0:
         return False
 
+    _draw_preview_image(ctx, tex_id, width, height, src_w, src_h, preserve_aspect, center)
+    return True
+
+
+def render_document_image(ctx: Any, panel: Any, file_path: str, width: float, height: float) -> bool:
+    """Display source illustration pixels without game texture import effects."""
+    native = _resolve_native_engine(panel)
+    if native is None or not file_path:
+        return False
+    norm_path = resolved_path(file_path)
+    texture_id, source_w, source_h = native.query_or_schedule_texture_preview(
+        f"document|{norm_path}", norm_path, _cached_mtime_ns(norm_path),
+        nearest=False, srgb=True, max_size=65536, texture_format="rgba8",
+        texture_type="ui", authoring=False, pump=True, use_imported_texture=False,
+    )
+    if not texture_id:
+        return False
+    _draw_preview_image(ctx, int(texture_id), width, height, int(source_w), int(source_h), True, False)
+    return True
+
+
+def _draw_preview_image(ctx: Any, tex_id: int, width: float, height: float,
+                        src_w: int, src_h: int, preserve_aspect: bool, center: bool) -> None:
     draw_w = float(width)
     draw_h = float(height)
 
@@ -294,8 +317,6 @@ def render_resource_preview_rect(ctx: Any, panel: Any, file_path: str, width: fl
         if remaining_y > 0.0:
             ctx.dummy(1.0, remaining_y)
 
-    return True
-
 
 def invalidate_resource_preview(file_path: str) -> None:
     """Invalidate native preview task/cache entries for one file path."""
@@ -314,6 +335,7 @@ def invalidate_resource_preview(file_path: str) -> None:
     ext = os.path.splitext(norm)[1].lower()
     if ext in _IMAGE_EXTS:
         native.invalidate_texture_preview_task(f"tex|{norm}")
+        native.invalidate_texture_preview_task(f"document|{norm}")
     if ext in _MATERIAL_EXTS:
         native.invalidate_material_preview_task(f"mat|{norm}")
 

@@ -341,12 +341,14 @@ class Infernux
     ///
     /// @param contentStampHint Caller-provided content hash (mtime combo, etc.).
     ///        C++ uses this to detect changes and bump the generation counter.
+    /// @param useImportedTexture Use the game asset publication. Document
+    ///        illustrations set false to preserve the source image's pixels.
     std::tuple<uint64_t, int, int> QueryOrScheduleTexturePreview(const std::string &resourceKey,
                                                                  const std::string &textureFilePath,
                                                                  uint64_t contentStampHint, bool nearest, bool srgb,
                                                                  int maxSize, const std::string &textureFormat,
                                                                  const std::string &textureType, bool authoring,
-                                                                 bool pump);
+                                                                 bool pump, bool useImportedTexture = true);
 
     /// @brief Schedule texture preview from in-memory data (JPEG/PNG/etc.).
     ///

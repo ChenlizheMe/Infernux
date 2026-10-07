@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Mapping
 
-from infernux.core.asset_types import TextureImportSettings, TextureType
 from infernux.engine.i18n import get_locale, t
 from infernux.engine.interaction import PanelInteractionDescriptor
 from infernux.engine.path_utils import resolved_path
@@ -19,7 +18,7 @@ from infernux.plugins import (
     normalize_plugin_category,
 )
 
-from .asset_resource_preview import render_resource_preview_rect
+from .asset_resource_preview import render_document_image
 from .dpi import scaled_editor_metric
 from .editor_panel import EditorPanel
 from .panel_registry import editor_panel
@@ -50,7 +49,6 @@ class PluginPanel(EditorPanel):
         self._pending_action = False
         self._selected_reference = ""
         self._detail_reference = ""
-        self._document_texture_settings = TextureImportSettings(texture_type=TextureType.UI)
         self._scope_index = 0
         self._category_index = 0
         self._sort_index = 2
@@ -576,14 +574,12 @@ class PluginPanel(EditorPanel):
             _metric(ctx, 720.0),
             max(_metric(ctx, 1.0), ctx.get_content_region_avail_width()),
         )
-        shown = bool(image_path) and render_resource_preview_rect(
+        shown = bool(image_path) and render_document_image(
             ctx,
             self,
             image_path,
             width,
             min(_metric(ctx, 360.0), width),
-            preserve_aspect=True,
-            texture_settings=self._document_texture_settings,
         )
         if not shown:
             label = str(block.get("alt", "")).strip() or source

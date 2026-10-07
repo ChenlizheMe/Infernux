@@ -3854,7 +3854,8 @@ class Infernux:
                                            nearest: bool = False, srgb: bool = False,
                                            max_size: int = 2048, texture_format: str = "auto",
                                            texture_type: str = "default", authoring: bool = False,
-                                           pump: bool = True) -> Tuple[int, int, int]: ...
+                                           pump: bool = True,
+                                           use_imported_texture: bool = True) -> Tuple[int, int, int]: ...
     def schedule_texture_preview_from_memory(self, resource_key: str, image_data: bytes, stamp: int,
                                              nearest: bool = False) -> bool: ...
 
