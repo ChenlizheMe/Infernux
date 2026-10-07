@@ -89,8 +89,18 @@ class UICommandPackets:
             for index, element in enumerate(group.elements):
                 if index in group.custom:
                     self.flush(renderer)
-                    group.dirty.discard(index)
-                    draw(element, renderer, *args)
+                    # Native object/transform bindings require a command
+                    # packet even for authored draws. Record and enqueue it
+                    # here every submission; do not retain it as a clean draw.
+                    group.capture(index, renderer, draw, args)
+                    self.pending.append(group.geometry[index])
+                    # A custom draw may change any text's intrinsic size.
+                    # Publish those sizes before the next sibling consumes
+                    # layout, including text already drawn earlier this frame.
+                    # Clean groups do no extra work; the text layout key keeps
+                    # unchanged glyph measurements cached.
+                    for dirty_index in sorted(group.dirty):
+                        self.measure(group.elements[dirty_index], renderer, scale)
                     layout_revision = _get_layout_revision()
                     if layout_revision != group.layout_revision:
                         group.dirty.update(range(len(group.elements)))

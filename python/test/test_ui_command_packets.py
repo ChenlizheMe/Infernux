@@ -454,6 +454,70 @@ def test_custom_draw_layout_edit_reaches_later_cached_sibling(ui):
         dispatch.register_ui_renderer('UIText', 'runtime', original)
 
 
+@pytest.mark.parametrize('position', ['before', 'after'])
+@pytest.mark.parametrize('change', ['text', 'font_size'])
+def test_custom_draw_remeasures_text_before_later_layout(ui, position, change):
+    from infernux.ui import UIButton, UIText, UIFrame, UILayoutDirection, TextResizeMode
+    from infernux.ui import ui_render_dispatch as dispatch
+
+    parent = ui.add(UIFrame)
+    parent.layout_direction = UILayoutDirection.Horizontal
+    parent.width = 2000
+    parent.clip_content = True
+    if position == 'before':
+        target = ui.add(UIText, parent.game_object)
+        custom = ui.add(UIButton, parent.game_object)
+    else:
+        custom = ui.add(UIButton, parent.game_object)
+        target = ui.add(UIText, parent.game_object)
+    tail = ui.add(UIText, parent.game_object)
+    tail.text = 'tail'
+    target.text, target.font_size = 'A', 18
+    target.resize_mode = TextResizeMode.AutoWidth
+    original = dispatch.get_ui_renderer('UIButton', 'runtime')
+    mutate = False
+
+    def draw(element, renderer, **kwargs):
+        if mutate:
+            setattr(target, change, 'TenLetters' if change == 'text' else 36)
+
+    def text_command(commands, content):
+        return next(args for name, args, _ in commands if name == 'add_text' and args[5] == content)
+
+    try:
+        dispatch.register_ui_renderer('UIButton', 'runtime', draw)
+        _, before = ui.frame()
+        ui.frame()
+        old_width = target.get_resolved_size()[0]
+        tail_before = text_command(before, 'tail')
+        scale = (tail_before[3] - tail_before[1]) / tail.width
+        mutate = True
+        custom.label = 'Publish mutation'
+        _, after = ui.frame()
+        expected_width = len(target.text) * target.font_size * .5
+        assert target.get_resolved_size()[0] == pytest.approx(expected_width)
+        tail_after = text_command(after, 'tail')
+        if not ui.world:
+            assert tail_after[1] - tail_before[1] == pytest.approx((expected_width - old_width) * scale)
+        if position == 'after':
+            command = text_command(after, target.text)
+            assert command[3] - command[1] == pytest.approx(expected_width * scale)
+        # An already-drawn element changes on the next publication; later
+        # elements use the new layout immediately. Warm custom frames must
+        # neither remeasure native glyphs nor rebuild unchanged packets.
+        mutate = False
+        _, settled = ui.frame()
+        measures, captures = ui.renderer.measures, ui.renderer.captures
+        rebuilt, warm = ui.frame()
+        assert not rebuilt and warm == []
+        assert ui.renderer.measures == measures
+        assert ui.renderer.captures == captures
+        command = text_command(settled, target.text)
+        assert command[3] - command[1] == pytest.approx(expected_width * scale)
+    finally:
+        dispatch.register_ui_renderer('UIButton', 'runtime', original)
+
+
 def test_frame_clip_and_auto_sized_text_refresh_siblings(ui):
     from infernux.ui import UIFrame, UIText, UILayoutDirection, TextResizeMode
     parent = ui.add(UIFrame)
