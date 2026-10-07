@@ -14,6 +14,7 @@ from infernux.components import serialized_field
 from infernux.components.fields import FieldType
 from .inx_ui_screen_component import InxUIScreenComponent
 from .enums import UITransitionType
+from .ui_event_data import PointerType
 from .ui_render_revision import mark_runtime_ui_dirty
 
 
@@ -67,8 +68,29 @@ class UISelectable(InxUIScreenComponent):
         """Initialize transient state (safe to call multiple times)."""
         if not hasattr(self, "_current_state"):
             self._current_state: int = SelectionState.Normal
-            self._is_pointer_inside: bool = False
-            self._is_pointer_down: bool = False
+            self._pointers_inside: set[tuple[PointerType, int]] = set()
+            self._pressed_pointers: set[tuple[PointerType, int]] = set()
+
+    @staticmethod
+    def _pointer_key(event_data):
+        # Direct visual-preview hooks historically accept None as the mouse.
+        # Runtime dispatch always supplies the complete PointerEventData.
+        return ((PointerType.Mouse, -1) if event_data is None else
+                (event_data.pointer_type, event_data.pointer_id))
+
+    def _clear_pointer_state(self):
+        self._init_selectable_state()
+        self._pointers_inside.clear()
+        self._pressed_pointers.clear()
+        self._evaluate_state()
+
+    def on_disable(self):
+        self._clear_pointer_state()
+        super().on_disable()
+
+    def on_destroy(self):
+        self._clear_pointer_state()
+        super().on_destroy()
 
     # ------------------------------------------------------------------
     # Read-only state
@@ -101,9 +123,9 @@ class UISelectable(InxUIScreenComponent):
         old_state = self._current_state
         if not self.interactable:
             self._current_state = SelectionState.Disabled
-        elif self._is_pointer_down:
+        elif self._pressed_pointers:
             self._current_state = SelectionState.Pressed
-        elif self._is_pointer_inside:
+        elif self._pointers_inside:
             self._current_state = SelectionState.Highlighted
         else:
             self._current_state = SelectionState.Normal
@@ -117,20 +139,25 @@ class UISelectable(InxUIScreenComponent):
     def on_pointer_enter(self, event_data):
         if not self.interactable:
             return
-        self._is_pointer_inside = True
+        self._init_selectable_state()
+        self._pointers_inside.add(self._pointer_key(event_data))
         self._evaluate_state()
 
     def on_pointer_exit(self, event_data):
-        self._is_pointer_inside = False
-        self._is_pointer_down = False
+        self._init_selectable_state()
+        key = self._pointer_key(event_data)
+        self._pointers_inside.discard(key)
+        self._pressed_pointers.discard(key)
         self._evaluate_state()
 
     def on_pointer_down(self, event_data):
         if not self.interactable:
             return
-        self._is_pointer_down = True
+        self._init_selectable_state()
+        self._pressed_pointers.add(self._pointer_key(event_data))
         self._evaluate_state()
 
     def on_pointer_up(self, event_data):
-        self._is_pointer_down = False
+        self._init_selectable_state()
+        self._pressed_pointers.discard(self._pointer_key(event_data))
         self._evaluate_state()

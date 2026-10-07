@@ -2,16 +2,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from infernux.ui import UICanvas, UIFillDirection, UIProgressBar, UISlider
+from infernux.ui import PointerEventData, UICanvas, UIFillDirection, UIProgressBar, UISlider
 from infernux.ui.ui_render_dispatch import dispatch
 
 
 def _pointer(x, y):
-    return SimpleNamespace(
-        position=(x, y),
-        canvas=SimpleNamespace(),
-        canvas_size=(1920.0, 1080.0),
-    )
+    event = PointerEventData()
+    event.position = (x, y)
+    event.canvas = SimpleNamespace()
+    event.canvas_size = (1920.0, 1080.0)
+    return event
 
 
 def test_progress_bar_clamps_value_and_normalizes_without_fallback_range():
