@@ -1,26 +1,6 @@
 """ComponentCoroutineMixin — extracted from InxComponent."""
 from __future__ import annotations
 
-"""
-InxComponent - Base class for all Python-defined components.
-
-Provides Unity-style lifecycle methods and property injection.
-Users inherit from this class to create custom game logic.
-
-Example:
-    from infernux.components import InxComponent, serialized_field
-    
-    class PlayerController(InxComponent):
-        speed: float = serialized_field(default=5.0)
-        
-        def start(self):
-            print("Player started!")
-        
-        def update(self, delta_time: float):
-            pos = self.transform.position
-            self.transform.position = Vector3(pos.x + self.speed * delta_time, pos.y, pos.z)
-"""
-
 from typing import Optional, Dict, Any, Type, TYPE_CHECKING, List
 import copy
 import threading
@@ -58,18 +38,18 @@ class ComponentCoroutineMixin:
 
         Example::
 
-            from infernux.coroutine import WaitForSeconds
+            import infernux as inx
 
-            class Enemy(InxComponent):
+            class Enemy(inx.InxComponent):
                 def start(self):
                     self.start_coroutine(self.patrol())
 
                 def patrol(self):
                     while True:
-                        debug.log("Moving left")
-                        yield WaitForSeconds(2)
-                        debug.log("Moving right")
-                        yield WaitForSeconds(2)
+                        inx.Debug.log("Moving left", self)
+                        yield inx.WaitForSeconds(2)
+                        inx.Debug.log("Moving right", self)
+                        yield inx.WaitForSeconds(2)
         """
         cleanup_binding = self.__dict__.get("_native_cleanup_binding")
         if (self._is_destroyed or self.__dict__.get("_is_destroying", False)

@@ -3,18 +3,18 @@ Coroutine system — Unity-style cooperative multitasking for ``InxComponent``.
 
 Usage (inside a component)::
 
-    from infernux.coroutine import WaitForSeconds, WaitUntil
+    import infernux as inx
 
-    class Enemy(InxComponent):
+    class Enemy(inx.InxComponent):
         def start(self):
             self.start_coroutine(self.patrol())
 
         def patrol(self):
             while True:
-                debug.log("Moving left")
-                yield WaitForSeconds(2)
-                debug.log("Moving right")
-                yield WaitForSeconds(2)
+                inx.Debug.log("Moving left", self)
+                yield inx.WaitForSeconds(2)
+                inx.Debug.log("Moving right", self)
+                yield inx.WaitForSeconds(2)
 
 Yield instructions
 ------------------
@@ -23,7 +23,7 @@ Yield instructions
 ``yield None``              Wait one **update** frame (same as bare ``yield``).
 ``yield WaitForSeconds(n)`` Wait *n* seconds of accumulated **scaled** game time.
 ``yield WaitForSecondsRealtime(n)``  Wait *n* seconds of monotonic elapsed time.
-``yield WaitForEndOfFrame(n)``       Resume after *n* frame-end phases (default 1).
+``yield WaitForEndOfFrame(n)``       Resume after *n* late-update passes (default 1).
 ``yield WaitForFrames(n)``           Resume after *n* ``update`` frames.
 ``yield WaitForFixedUpdate()``       Resume at the next ``fixed_update()`` step.
 ``yield WaitUntil(pred)``            Resume when ``pred()`` returns ``True``.
@@ -81,7 +81,7 @@ class WaitForSecondsRealtime:
 
 
 class WaitForEndOfFrame:
-    """Suspend until one or more frame-end phases have completed."""
+    """Suspend until one or more late-update scheduler passes have completed."""
     __slots__ = ("frames", "_remaining")
 
     def __init__(self, frames: int = 1):
@@ -121,7 +121,7 @@ class WaitForFrames:
 
 
 class WaitForFixedUpdate:
-    """Suspend until the next ``fixed_update()`` physics step."""
+    """Suspend until the next fixed-update scheduler pass."""
     __slots__ = ()
 
     def __repr__(self) -> str:

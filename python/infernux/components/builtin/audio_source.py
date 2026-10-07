@@ -10,16 +10,18 @@ while still getting a Unity-style convenience path.
 
 Example::
 
-    from infernux.components.builtin import AudioSource, AudioListener
-    from infernux.core.audio_clip import AudioClip
+    import infernux as inx
 
-    class MusicPlayer(InxComponent):
+    @inx.require_component(inx.AudioSource)
+    class MusicPlayer(inx.InxComponent):
         def start(self):
-            source = self.game_object.get_component(AudioSource)
+            source = self.game_object.get_component(inx.AudioSource)
             source.track_count = 2
+            source.play_on_awake = False
+            source.spatial_blend = 0.0
 
-            bgm = AudioClip.load("Assets/Audio/bgm.wav")
-            sfx = AudioClip.load("Assets/Audio/sfx.wav")
+            bgm = inx.AudioClip.load(inx.Application.asset_path("Assets/Audio/bgm.wav"))
+            sfx = inx.AudioClip.load(inx.Application.asset_path("Assets/Audio/sfx.wav"))
 
             source.set_track_clip(0, bgm)
             source.set_track_clip(1, sfx)
@@ -28,6 +30,9 @@ Example::
             source.play(0)  # play BGM
             source.play(1)  # play SFX simultaneously
             source.play_one_shot(sfx, 0.8)  # pooled transient playback
+
+``Application.asset_path`` resolves project assets in Editor and cooked
+Player catalogs. ``AudioClip.load`` itself expects a physical file path.
 """
 
 from __future__ import annotations
