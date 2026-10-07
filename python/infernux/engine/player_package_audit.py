@@ -21,7 +21,7 @@ from collections import defaultdict
 from pathlib import Path, PureWindowsPath
 from tempfile import TemporaryDirectory
 
-from infernux.core.asset_types import MESH_EXTENSIONS
+from ..core.asset_types import MESH_EXTENSIONS
 
 from .path_utils import resolved_path
 from .player_package_native import (

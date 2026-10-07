@@ -15,7 +15,7 @@ from pathlib import PurePosixPath
 from pathlib import Path
 from typing import Any, Iterable
 
-from infernux.core.asset_types import AUDIO_EXTENSIONS, MESH_EXTENSIONS
+from ..core.asset_types import AUDIO_EXTENSIONS, MESH_EXTENSIONS
 
 from .path_utils import relative_path, resolved_path
 

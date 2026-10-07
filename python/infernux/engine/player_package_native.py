@@ -20,7 +20,7 @@ import time
 from collections.abc import Iterable
 from typing import Any, Callable
 
-from infernux.engine.path_utils import lexical_path
+from .path_utils import lexical_path
 
 
 _test_backend: Any | None = None

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib.machinery
-import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -13,56 +12,38 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE_PYTHON = ROOT / "python"
-sys.path.insert(0, str(SOURCE_PYTHON))
+SOURCE_PACKAGE = ROOT / "python" / "infernux"
 
-# Import the two pure-Python packaging modules without requiring the runtime
-# initializer when this test runs in isolation. Never replace an Infernux
-# package already imported by another test module during collection.
-if "infernux" not in sys.modules:
-    _infernux_stub = types.ModuleType("infernux")
-    _infernux_stub.__path__ = [str(SOURCE_PYTHON / "infernux")]
-    sys.modules["infernux"] = _infernux_stub
-if "infernux.engine" not in sys.modules:
-    _engine_stub = types.ModuleType("infernux.engine")
-    _engine_stub.__path__ = [str(SOURCE_PYTHON / "infernux" / "engine")]
-    sys.modules["infernux.engine"] = _engine_stub
-    setattr(sys.modules["infernux"], "engine", _engine_stub)
-if "infernux.core" not in sys.modules:
-    _core_stub = types.ModuleType("infernux.core")
-    _core_stub.__path__ = [str(SOURCE_PYTHON / "infernux" / "core")]
-    sys.modules["infernux.core"] = _core_stub
-    setattr(sys.modules["infernux"], "core", _core_stub)
-if "infernux.core.asset_types" not in sys.modules:
-    _asset_types_spec = importlib.util.spec_from_file_location(
-        "infernux.core.asset_types",
-        SOURCE_PYTHON / "infernux" / "core" / "asset_types.py",
-    )
-    if _asset_types_spec is None or _asset_types_spec.loader is None:
-        raise RuntimeError("Unable to load the asset type contracts for package tests")
-    _asset_types_module = importlib.util.module_from_spec(_asset_types_spec)
-    sys.modules["infernux.core.asset_types"] = _asset_types_module
-    _asset_types_spec.loader.exec_module(_asset_types_module)
+# Execute the real packaging sources in a private package namespace. This
+# keeps this portable lane independent of the native runtime and allows it
+# to share a process with tests importing the complete public engine API.
+for _suffix in ("", ".engine", ".core"):
+    _name = "_infernux_package_audit_tests" + _suffix
+    _package = types.ModuleType(_name)
+    _package.__path__ = [str(SOURCE_PACKAGE / _suffix.lstrip("."))]
+    sys.modules[_name] = _package
+    if _suffix:
+        setattr(sys.modules["_infernux_package_audit_tests"], _suffix[1:], _package)
 
-from infernux.engine.player_package_audit import (
+from _infernux_package_audit_tests.engine.player_package_audit import (
     BOOTSTRAP_NATIVE_ROOT_ALLOWLIST,
     RUNTIME_CONDITIONAL_NATIVE_FILES,
     RUNTIME_REQUIRED_NATIVE_FILES,
     audit_player_package,
 )
-import infernux.engine.player_package_audit as player_package_audit
-from infernux.engine.player_package_native import read_entry, read_manifest, set_test_backend, write_pack
-from infernux.engine.python_abi import (
+import _infernux_package_audit_tests.engine.player_package_audit as player_package_audit
+from _infernux_package_audit_tests.engine.player_package_native import read_entry, read_manifest, set_test_backend, write_pack
+from _infernux_package_audit_tests.engine.python_abi import (
     BOOTSTRAP_NATIVE_MANIFEST_FILENAME,
     BOOTSTRAP_NATIVE_MANIFEST_SCHEMA,
 )
-from infernux.engine.player_service_graph import (
+from _infernux_package_audit_tests.engine.player_service_graph import (
     RuntimeFeatureSet,
     RuntimeFlavor,
     player_runtime_contract_sections,
     runtime_service_graph_for,
 )
-from infernux.engine.runtime_artifact_catalog import (
+from _infernux_package_audit_tests.engine.runtime_artifact_catalog import (
     RuntimeArtifactError,
     WINDOWS_FILETIME_EPOCH_OFFSET_TICKS,
     build_catalog,
