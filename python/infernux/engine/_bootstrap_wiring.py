@@ -1661,6 +1661,17 @@ class BootstrapWiringMixin:
         default_shortcuts.extend(
             (
                 ShortcutBinding(
+                    "interaction.cancel",
+                    KeyChord.parse("Escape"),
+                    ShortcutScope.CHILD_CONTEXT,
+                    owner_id=self.interaction_core.transient_interactions.CONTEXT_ID,
+                    priority=10_000,
+                    allow_when_text_input=True,
+                    allow_when_modal=True,
+                    allow_when_captured=True,
+                    binding_id="default.interaction.cancel.transient",
+                ),
+                ShortcutBinding(
                     "command_palette.previous",
                     KeyChord.parse("Up"),
                     ShortcutScope.CHILD_CONTEXT,
