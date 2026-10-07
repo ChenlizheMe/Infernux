@@ -11,6 +11,7 @@ from dataclasses import replace
 from typing import Optional
 
 from infernux.core.node_graph import (
+    GraphLink,
     NodeGraph,
     NodeGraphAuthoringState,
     NodeGraphElementKind,
@@ -1997,24 +1998,13 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 f"Particle Graph Exec connection is invalid ({validation.code}): "
                 f"{validation.message}"
             )
-        self._on_link_created(source_uid, source_port, target_uid, target_port)
-        created = next(
-            (
-                link
-                for link in self._model.links
-                if link.source_node == source_uid
-                and link.source_pin == source_port
-                and link.target_node == target_uid
-                and link.target_pin == target_port
-            ),
-            None,
-        )
+        created = self._on_link_created(source_uid, source_port, target_uid, target_port)
         if created is None:
             raise RuntimeError(
                 f"Particle Graph could not connect {source_uid!r} to {target_uid!r}"
             )
-        self._select_canvas_node(target_uid)
-        stage = self._model.stage_for_uid(target_uid)
+        self._select_canvas_node(created.target_node)
+        stage = self._model.stage_for_uid(created.target_node)
         if stage:
             self._select_stage(stage)
         return {
@@ -2092,7 +2082,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 f"{validation.message}"
             )
         if existing is not None:
-            self._on_link_replaced(
+            created = self._on_link_replaced(
                 existing.uid,
                 endpoints[0],
                 source_port,
@@ -2100,24 +2090,13 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 target_port,
             )
         else:
-            self._on_link_created(
+            created = self._on_link_created(
                 endpoints[0], source_port, endpoints[1], target_port
             )
-        created = next(
-            (
-                link
-                for link in self._model.links
-                if link.source_node == endpoints[0]
-                and link.source_pin == source_port
-                and link.target_node == endpoints[1]
-                and link.target_pin == target_port
-            ),
-            None,
-        )
         if created is None:
             raise RuntimeError("Particle Graph could not connect the value ports")
-        self._select_canvas_node(endpoints[1])
-        stage = self._model.stage_for_uid(endpoints[1])
+        self._select_canvas_node(created.target_node)
+        stage = self._model.stage_for_uid(created.target_node)
         if stage:
             self._select_stage(stage)
         return {"link_uid": str(created.uid), "changed": True}
@@ -2433,21 +2412,23 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
 
     @staticmethod
     def _remove_parameter_nodes(
-        emitter: ParticleEmitterAsset, parameter_id: str
+        emitter: ParticleEmitterAsset, parameter_id: str, *, stores_only: bool = False
     ) -> ParticleEmitterAsset:
-        updates = {}
-        for stage in _STAGES:
-            document = getattr(emitter, stage)
+        node_types = {"particle.parameter.set"} if stores_only else {
+            "particle.parameter", "particle.parameter.set"
+        }
+
+        def remove_references(document):
             if document is None:
-                continue
+                return None
             node_ids = {
                 node.uid
                 for node in document.nodes
-                if node.type_id in {"particle.parameter", "particle.parameter.set"}
+                if node.type_id in node_types
                 and node.properties.get("parameter") == parameter_id
             }
             if node_ids:
-                updates[stage] = replace(
+                return replace(
                     document,
                     nodes=tuple(node for node in document.nodes if node.uid not in node_ids),
                     links=tuple(
@@ -2456,37 +2437,22 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                         if link.source_node not in node_ids and link.target_node not in node_ids
                     ),
                 )
-        return replace(emitter, **updates) if updates else emitter
+            return document
+
+        updates = {stage: remove_references(getattr(emitter, stage)) for stage in _STAGES}
+        updates["event_flows"] = tuple(
+            replace(flow, graph=remove_references(flow.graph))
+            for flow in emitter.event_flows
+        )
+        return replace(emitter, **updates)
 
     @staticmethod
     def _remove_parameter_store_nodes(
         emitter: ParticleEmitterAsset, parameter_id: str
     ) -> ParticleEmitterAsset:
-        updates = {}
-        for stage in _STAGES:
-            document = getattr(emitter, stage)
-            if document is None:
-                continue
-            node_ids = {
-                node.uid
-                for node in document.nodes
-                if node.type_id == "particle.parameter.set"
-                and node.properties.get("parameter") == parameter_id
-            }
-            if node_ids:
-                updates[stage] = replace(
-                    document,
-                    nodes=tuple(
-                        node for node in document.nodes if node.uid not in node_ids
-                    ),
-                    links=tuple(
-                        link
-                        for link in document.links
-                        if link.source_node not in node_ids
-                        and link.target_node not in node_ids
-                    ),
-                )
-        return replace(emitter, **updates) if updates else emitter
+        return ParticleGraphEditorPanel._remove_parameter_nodes(
+            emitter, parameter_id, stores_only=True
+        )
 
     @staticmethod
     def _decode_event_fields(
@@ -3431,15 +3397,18 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
                 selection_after=() if selected & deleted else None,
             )
 
-    def _on_link_created(self, src_node, src_pin, dst_node, dst_pin) -> None:
+    def _on_link_created(self, src_node, src_pin, dst_node, dst_pin) -> GraphLink | None:
         if self._model is None:
             return
         before = self._model.capture_authoring_state()
-        if self._model.add_link(src_node, src_pin, dst_node, dst_pin) is not None:
-            self._commit_node_graph_change(
+        created = self._model.add_link(src_node, src_pin, dst_node, dst_pin)
+        if created is not None:
+            if self._commit_node_graph_change(
                 "Connect Particle Graph nodes",
                 before,
-            )
+            ):
+                return self._model.find_link(created.uid)
+        return None
 
     def _on_link_deleted(self, link_uid: str) -> None:
         if self._model is None:
@@ -3453,17 +3422,20 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
 
     def _on_link_replaced(
         self, link_uid: str, src_node: str, src_pin: str, dst_node: str, dst_pin: str
-    ) -> None:
+    ) -> GraphLink | None:
         if self._model is None:
             return
         before = self._model.capture_authoring_state()
-        if self._model.replace_link(
+        created = self._model.replace_link(
             link_uid, src_node, src_pin, dst_node, dst_pin
-        ) is not None:
-            self._commit_node_graph_change(
+        )
+        if created is not None:
+            if self._commit_node_graph_change(
                 "Replace Particle Graph connection",
                 before,
-            )
+            ):
+                return self._model.find_link(created.uid)
+        return None
 
     def _node_graph_drag_description(self, _stable_id: str) -> str:
         return "Move Particle Graph node"
@@ -3538,7 +3510,10 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         self._emitter_index = min(
             max(0, self._emitter_index), len(self._asset.emitters) - 1
         )
-        if self._stage not in _STAGES:
+        valid_stages = set(_STAGES) | {
+            f"event.{flow.stable_id}" for flow in self._selected_emitter().event_flows
+        }
+        if self._stage not in valid_stages:
             raise ValueError(f"invalid Particle Graph stage View State: {self._stage}")
         self._workspace_tab_index = max(0, min(self._workspace_tab_index, 3))
         self._bind_stage()

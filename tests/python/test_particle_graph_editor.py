@@ -2346,6 +2346,146 @@ def _particle_panel_with_history():
     return panel, manager
 
 
+@pytest.mark.parametrize("target_type,target_port", [
+    ("common.vector.compose3", "x"),
+    ("particle.attribute.size", "value"),
+])
+@pytest.mark.parametrize("replace_existing", [False, True])
+def test_cross_stage_connection_returns_committed_identity(target_type, target_port, replace_existing):
+    panel, manager = _particle_panel_with_history()
+    source = panel.add_authoring_node("init", "common.random.f32")
+    target = panel.add_authoring_node("update", target_type)
+    if replace_existing:
+        old_source = panel.add_authoring_node("update", "common.random.f32")
+        panel.connect_value(old_source["uid"], "value", target["uid"], target_port)
+    before = panel.asset.to_dict()
+    manager.clear()
+    revision = panel._particle_document().revision
+
+    result = panel.connect_value(source["uid"], "value", target["uid"], target_port)
+
+    assert result["changed"]
+    link = panel._model.find_link(result["link_uid"])
+    assert link is not None
+    assert link.source_node.split("::")[1] == source["uid"].split("::")[1]
+    assert link.target_node.split("::")[1] == target["uid"].split("::")[1]
+    assert panel._selected_node_uid == link.target_node
+    assert panel._stage == panel._model.stage_for_uid(link.target_node)
+    assert panel._particle_document().revision == revision + 1
+    assert len(tuple(manager.action_journal.applied_entries())) == 1
+    after = panel.asset.to_dict()
+    same = panel.connect_value(link.source_node, link.source_pin, link.target_node, link.target_pin)
+    assert same == {"link_uid": result["link_uid"], "changed": False}
+    manager.undo()
+    assert panel.asset.to_dict() == before
+    manager.redo()
+    assert panel.asset.to_dict() == after
+    assert panel._model.find_link(result["link_uid"]) is not None
+
+
+@pytest.mark.parametrize("remove", [True, False])
+def test_parameter_removal_covers_multiple_emitters_and_event_flows(remove):
+    panel, manager = _particle_panel_with_history()
+    parameter = panel.add_authoring_parameter("Intensity", "f32", 0.5)
+    keep = panel.add_authoring_parameter("Keep", "f32", 0.25)
+    panel.update_authoring_parameter(parameter["stable_id"], {"writable": True})
+    event = panel.add_event_type("OnDoorOpen", 16, [])
+    for emitter_index in range(2):
+        if emitter_index:
+            panel.add_authoring_emitter("Second")
+        stages = ["init"]
+        for _ in range(2):
+            flow = panel.add_authoring_event_flow(event["stable_id"])
+            stages.append("event." + flow["flow_id"])
+        for stage in stages:
+            source = panel.add_authoring_parameter_node(parameter["stable_id"], 100, 100, stage=stage)
+            target = panel.add_authoring_node(stage, "common.vector.compose3")
+            panel.connect_value(source["uid"], "value", target["uid"], "x")
+            panel.add_authoring_parameter_node(keep["stable_id"], 200, 100, stage=stage)
+            store = panel.add_authoring_node(stage, "particle.parameter.set")
+            panel.set_node_property(store["uid"], "parameter", parameter["stable_id"])
+            panel.connect_value(source["uid"], "value", store["uid"], "value")
+    manager.clear()
+    before = panel.asset.to_dict()
+    if remove:
+        panel.remove_authoring_parameter(parameter["stable_id"])
+    else:
+        panel.update_authoring_parameter(parameter["stable_id"], {"writable": False})
+    assert len(tuple(manager.action_journal.applied_entries())) == 1
+    after = panel.asset.to_dict()
+    for emitter in panel.asset.emitters:
+        for graph in (emitter.init, *(flow.graph for flow in emitter.event_flows)):
+            matching = [node for node in graph.nodes if node.properties.get("parameter") == parameter["stable_id"]]
+            assert len(matching) == (0 if remove else 1)
+            assert all(node.type_id == "particle.parameter" for node in matching)
+            assert sum(node.properties.get("parameter") == keep["stable_id"] for node in graph.nodes) == 1
+            ids = {node.uid for node in graph.nodes}
+            assert all(link.source_node in ids and link.target_node in ids for link in graph.links)
+    manager.undo()
+    assert panel.asset.to_dict() == before
+    manager.redo()
+    assert panel.asset.to_dict() == after
+
+
+@pytest.mark.parametrize("event_stage", [False, True])
+@pytest.mark.parametrize("restore_session", [False, True])
+def test_particle_event_view_state_roundtrip(event_stage, restore_session):
+    from infernux.engine.ui.particle_graph_editor_panel import ParticleGraphEditorPanel
+
+    panel, _manager = _particle_panel_with_history()
+    if event_stage:
+        event = panel.add_event_type("OnDoorOpen", 16, [])
+        flow = panel.add_authoring_event_flow(event["stable_id"])
+        assert panel._stage == "event." + flow["flow_id"]
+    before = panel.asset.to_dict()
+    state = panel.save_state()
+    expected = panel._stage
+    if restore_session:
+        session = DocumentRegistry.instance().capture_session_state()
+        assert DocumentRegistry().queue_session_restore(session) == 1
+        panel = ParticleGraphEditorPanel()
+        assert panel.restore_persisted_session_document()
+    panel.load_state(state)
+    assert panel.asset.to_dict() == before
+    assert panel._stage == expected
+
+
+@pytest.mark.parametrize("invalid_stage", ["event.missing", "foreign_emitter", "unknown"])
+def test_particle_view_state_rejects_stage_not_owned_by_restored_emitter(invalid_stage):
+    panel, _manager = _particle_panel_with_history()
+    event = panel.add_event_type("OnDoorOpen", 16, [])
+    flow = panel.add_authoring_event_flow(event["stable_id"])
+    state = panel.save_state()
+    if invalid_stage == "foreign_emitter":
+        panel.add_authoring_emitter("Second")
+        state["values"]["emitter_index"] = 1
+        assert state["values"]["stage"] == "event." + flow["flow_id"]
+    else:
+        state["values"]["stage"] = invalid_stage
+    before = panel.asset.to_dict()
+    with pytest.raises(ValueError, match="invalid Particle Graph stage"):
+        panel.load_state(state)
+    assert panel.asset.to_dict() == before
+
+
+def test_cross_stage_invalid_port_preserves_document_history_and_selection():
+    from infernux.engine.interaction import SelectionService
+
+    panel, manager = _particle_panel_with_history()
+    source = panel.add_authoring_node("init", "common.random.f32")
+    target = panel.add_authoring_node("update", "common.vector.compose3")
+    manager.clear()
+    before = panel.asset.to_dict()
+    selection = SelectionService.instance().snapshot
+    revision = panel._particle_document().revision
+    with pytest.raises(ValueError, match="invalid"):
+        panel.connect_value(source["uid"], "missing", target["uid"], "x")
+    assert panel.asset.to_dict() == before
+    assert panel._particle_document().revision == revision
+    assert SelectionService.instance().snapshot == selection
+    assert not tuple(manager.action_journal.applied_entries())
+
+
 def test_six_way_output_exposes_texture_ports_but_not_internal_controls():
     from infernux.engine.ui.particle_graph_editor_panel import (
         ParticleGraphEditorPanel,
