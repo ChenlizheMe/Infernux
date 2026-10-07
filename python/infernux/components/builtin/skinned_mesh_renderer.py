@@ -58,7 +58,13 @@ class SkinnedMeshRenderer(MeshRenderer):
         self, take_name: str, from_seconds: float, to_seconds: float,
         loop: bool = True, animation_source_guid: str = "",
     ) -> Tuple[object, object]:
-        """Sample one imported root-motion interval as (translation, rotation)."""
+        """Return (translation, rotation) relative to the root's from-time frame.
+
+        Translation is in engine units. Apply it along the owner's current
+        axes, then multiply its rotation by the returned rotation. Looping
+        composes the full cycle motion, including turns; reverse intervals
+        return the inverse motion. Non-looping times clamp to clip bounds.
+        """
         return self._require_cpp_component().get_root_motion_delta(
             take_name, from_seconds, to_seconds, loop, animation_source_guid,
         )

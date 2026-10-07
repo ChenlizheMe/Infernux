@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -79,6 +80,39 @@ static glm::quat SampleQuat(const std::vector<std::pair<double, glm::quat>> &key
     const double span = std::max(b.first - a.first, 1e-8);
     const float f = static_cast<float>((t - a.first) / span);
     return glm::normalize(glm::slerp(a.second, b.second, glm::clamp(f, 0.0f, 1.0f)));
+}
+
+struct RootMotionPose
+{
+    glm::dvec3 translation{0.0};
+    glm::dquat rotation{1.0, 0.0, 0.0, 0.0};
+};
+
+static RootMotionPose ComposeRootMotion(const RootMotionPose &a, const RootMotionPose &b)
+{
+    return {a.translation + a.rotation * b.translation, glm::normalize(a.rotation * b.rotation)};
+}
+
+static RootMotionPose RelativeRootMotion(const RootMotionPose &from, const RootMotionPose &to)
+{
+    const glm::dquat inverse = glm::conjugate(from.rotation);
+    return {inverse * (to.translation - from.translation), glm::normalize(inverse * to.rotation)};
+}
+
+static RootMotionPose RootMotionPower(RootMotionPose cycle, uint64_t count)
+{
+    RootMotionPose result;
+    // A long frame can cross many loops. Compose the exact cycle transform in
+    // O(log(count)), including its rotated translation, rather than stepping
+    // through loops or multiplying translation and rotation independently.
+    while (count != 0) {
+        if (count & 1u)
+            result = ComposeRootMotion(result, cycle);
+        count >>= 1u;
+        if (count != 0)
+            cycle = ComposeRootMotion(cycle, cycle);
+    }
+    return result;
 }
 
 static void DecomposeTRS(const glm::mat4 &m, glm::vec3 &t, glm::quat &r, glm::vec3 &s)
@@ -188,53 +222,70 @@ float SkinnedRuntimeAnimation::DurationSeconds() const
 RootMotionDelta InxSkinnedMesh::SampleRootMotionDelta(const std::string &takeName, float fromSeconds, float toSeconds,
                                                       bool loop) const
 {
+    if (!std::isfinite(fromSeconds) || !std::isfinite(toSeconds))
+        throw std::invalid_argument("root motion sample times must be finite");
     RootMotionDelta delta;
     const auto *animation = FindAnimation(takeName);
     if (!animation || animation->rootMotionNodeIndex < 0 || animation->durationTicks <= 0.0 ||
         animation->ticksPerSecond <= 0.0)
         return delta;
 
+    const double duration = animation->durationTicks;
+    const auto poseAt = [&](double ticks) {
+        return RootMotionPose{glm::dvec3(SampleVec3(animation->rootMotionPositions, ticks, glm::vec3(0.0f))),
+                              glm::normalize(glm::dquat(SampleQuat(animation->rootMotionRotations, ticks,
+                                                                   glm::quat(1.0f, 0.0f, 0.0f, 0.0f))))};
+    };
     struct Sample
     {
-        glm::vec3 translation{0.0f};
-        glm::quat rotation{1.0f, 0.0f, 0.0f, 0.0f};
+        RootMotionPose pose;
+        int64_t cycle = 0;
     };
     const auto sample = [&](float seconds) {
-        const double duration = animation->durationTicks;
         double ticks = static_cast<double>(seconds) * animation->ticksPerSecond;
         int64_t cycle = 0;
         if (loop) {
-            cycle = static_cast<int64_t>(std::floor(ticks / duration));
-            ticks -= static_cast<double>(cycle) * duration;
-            if (ticks < 0.0) {
+            const double cycles = std::floor(ticks / duration);
+            // Guard the conversion before it can overflow. The positive
+            // bound is exclusive because int64 max rounds up as a double.
+            constexpr double cycleLimit = 9223372036854775808.0;
+            if (!(cycles >= -cycleLimit && cycles < cycleLimit))
+                throw std::out_of_range("root motion loop count exceeds the supported time range");
+            cycle = static_cast<int64_t>(cycles);
+            ticks = std::fmod(ticks, duration);
+            if (ticks < 0.0)
                 ticks += duration;
-                --cycle;
-            }
         } else {
             ticks = std::clamp(ticks, 0.0, duration);
         }
-        Sample value;
-        const glm::vec3 startTranslation = SampleVec3(animation->rootMotionPositions, 0.0, glm::vec3(0.0f));
-        const glm::vec3 endTranslation = SampleVec3(animation->rootMotionPositions, duration, startTranslation);
-        value.translation = SampleVec3(animation->rootMotionPositions, ticks, startTranslation);
-        const glm::quat startRotation =
-            SampleQuat(animation->rootMotionRotations, 0.0, glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
-        const glm::quat endRotation = SampleQuat(animation->rootMotionRotations, duration, startRotation);
-        value.rotation = SampleQuat(animation->rootMotionRotations, ticks, startRotation);
-        if (loop && cycle != 0) {
-            value.translation += static_cast<float>(cycle) * (endTranslation - startTranslation);
-            const glm::quat cycleRotation = glm::normalize(glm::inverse(startRotation) * endRotation);
-            const float cycleAngle = glm::angle(cycleRotation);
-            const glm::vec3 cycleAxis = cycleAngle > kEpsilon ? glm::axis(cycleRotation) : glm::vec3(0.0f, 1.0f, 0.0f);
-            const glm::quat accumulated = glm::angleAxis(cycleAngle * static_cast<float>(cycle), cycleAxis);
-            value.rotation = glm::normalize(startRotation * accumulated * glm::inverse(startRotation) * value.rotation);
-        }
-        return value;
+        return Sample{poseAt(ticks), cycle};
     };
     const Sample from = sample(fromSeconds);
     const Sample to = sample(toSeconds);
-    delta.translation = (to.translation - from.translation) * scaleFactor;
-    delta.rotation = glm::normalize(glm::inverse(from.rotation) * to.rotation);
+    RootMotionPose relative;
+    if (from.cycle == to.cycle) {
+        relative = RelativeRootMotion(from.pose, to.pose);
+    } else {
+        const RootMotionPose start = poseAt(0.0);
+        RootMotionPose cycle = RelativeRootMotion(start, poseAt(duration));
+        const bool forward = to.cycle > from.cycle;
+        if (!forward)
+            cycle = RelativeRootMotion(cycle, RootMotionPose{});
+        // Unsigned subtraction is the exact magnitude even when the signed
+        // endpoints straddle zero and their difference exceeds INT64_MAX.
+        const uint64_t count =
+            forward ? uint64_t(to.cycle) - uint64_t(from.cycle) : uint64_t(from.cycle) - uint64_t(to.cycle);
+        const RootMotionPose end = ComposeRootMotion(RootMotionPower(cycle, count), RelativeRootMotion(start, to.pose));
+        relative = RelativeRootMotion(RelativeRootMotion(start, from.pose), end);
+    }
+    relative.translation *= static_cast<double>(scaleFactor);
+    for (int axis = 0; axis < 3; ++axis) {
+        if (!std::isfinite(relative.translation[axis]) ||
+            std::abs(relative.translation[axis]) > std::numeric_limits<float>::max())
+            throw std::out_of_range("root motion displacement exceeds the supported float range");
+    }
+    delta.translation = glm::vec3(relative.translation);
+    delta.rotation = glm::quat(relative.rotation);
     return delta;
 }
 

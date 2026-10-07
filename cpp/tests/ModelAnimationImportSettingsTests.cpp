@@ -6,6 +6,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <cassert>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -155,13 +156,57 @@ int main()
     assert(glm::length(linearDelta.translation - glm::vec3(2.0f, 0.0f, 0.0f)) < 1e-6f);
     assert(std::abs(glm::degrees(glm::angle(linearDelta.rotation)) - 90.0f) < 1e-4f);
     const auto wrappedDelta = rooted.SampleRootMotionDelta("Processed", 1.5f, 2.5f, true);
-    assert(glm::length(wrappedDelta.translation - glm::vec3(1.0f, 0.0f, 0.0f)) < 1e-6f);
+    const glm::vec3 expectedWrapped =
+        glm::angleAxis(glm::radians(-67.5f), glm::vec3(0, 1, 0)) * glm::vec3(0.5f, 0.0f, -0.5f);
+    assert(glm::length(wrappedDelta.translation - expectedWrapped) < 1e-6f);
+    for (const auto interval :
+         {glm::vec2(0, 2), glm::vec2(0, 5), glm::vec2(1.5f, 2.5f), glm::vec2(-3, 3), glm::vec2(5, -1)}) {
+        const auto single = rooted.SampleRootMotionDelta("Processed", interval.x, interval.y, true);
+        for (const int steps : {1, 2, 20, 120}) {
+            glm::vec3 position(0.0f);
+            glm::quat rotation(1, 0, 0, 0);
+            for (int step = 0; step < steps; ++step) {
+                const auto part =
+                    rooted.SampleRootMotionDelta("Processed", interval.x + (interval.y - interval.x) * step / steps,
+                                                 interval.x + (interval.y - interval.x) * (step + 1) / steps, true);
+                position += rotation * part.translation;
+                rotation = glm::normalize(rotation * part.rotation);
+            }
+            assert(glm::length(position - single.translation) < 1e-4f);
+            assert(std::abs(glm::dot(rotation, single.rotation)) > 0.99999f);
+        }
+    }
+    const auto manyTurns = rooted.SampleRootMotionDelta("Processed", 0.0f, 2000000.0f, true);
+    assert(glm::length(manyTurns.translation) < 1e-3f);
+    assert(std::abs(manyTurns.rotation.w) > 0.99999f);
+    const auto reverse = rooted.SampleRootMotionDelta("Processed", 2.0f, 0.0f, false);
+    assert(glm::length(linearDelta.translation + linearDelta.rotation * reverse.translation) < 1e-6f);
+    assert(std::abs((linearDelta.rotation * reverse.rotation).w) > 0.99999f);
+    for (float invalid : {std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(),
+                          std::numeric_limits<float>::quiet_NaN()}) {
+        bool rejectedTime = false;
+        try {
+            (void)rooted.SampleRootMotionDelta("Processed", 0.0f, invalid, true);
+        } catch (const std::invalid_argument &) {
+            rejectedTime = true;
+        }
+        assert(rejectedTime);
+    }
+    bool rejectedCycles = false;
+    try {
+        (void)rooted.SampleRootMotionDelta("Processed", 0.0f, std::numeric_limits<float>::max(), true);
+    } catch (const std::out_of_range &) {
+        rejectedCycles = true;
+    }
+    assert(rejectedCycles);
 
     const auto rootedBytes = infernux::SkinnedMeshArtifact::Serialize(rooted, "rooted");
     const auto rootedLoaded = infernux::SkinnedMeshArtifact::Deserialize(rootedBytes, "rooted");
     assert(!rootedLoaded->animations[0].defaultLoop);
     assert(rootedLoaded->animations[0].rootMotionNodeIndex == 0);
     assert(rootedLoaded->animations[0].rootMotionPositions.size() == 3);
+    const auto cookedWrapped = rootedLoaded->SampleRootMotionDelta("Processed", 1.5f, 2.5f, true);
+    assert(glm::length(cookedWrapped.translation - expectedWrapped) < 1e-6f);
 
     auto firstFrame = MakeAnimationModel();
     settings.animationLoopTime = true;
