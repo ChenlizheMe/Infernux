@@ -92,6 +92,14 @@ class PreloadState:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class _ModuleOnlyImport:
+    source_path: str
+    package_reference: str
+    contribution_owner: str
+    module_names: tuple[str, ...]
+
+
 class PreloadManager:
     """Project-scoped authority for early-import lifecycle candidates."""
 
@@ -110,6 +118,7 @@ class PreloadManager:
         self.runtime = bool(runtime)
         self.registry = registry or PluginRegistry(self.project_root)
         self.states: dict[str, PreloadState] = {}
+        self._module_only_imports: dict[str, _ModuleOnlyImport] = {}
         self.failures: dict[str, str] = {}
         self._ownership_cache: dict[str, dict[str, object]] | None = None
         self._declarations_by_path: dict[str, tuple[_ClassDeclaration, ...]] = {}
@@ -254,6 +263,7 @@ class PreloadManager:
             if not self._unload_state(state):
                 return (state,)
             self.states.pop(state.identity, None)
+        self._unload_module_only_imports(package_reference, paths=affected_paths)
         if package_reference:
             self._unregister_package_translations(package_reference)
         candidates_by_path: dict[str, set[str]] = {}
@@ -281,6 +291,8 @@ class PreloadManager:
                 self.states.pop(state.identity, None)
             else:
                 failures.append(state)
+        if not failures:
+            self._unload_module_only_imports()
         live_packages = {
             state.package_reference.casefold()
             for state in self.states.values()
@@ -307,6 +319,7 @@ class PreloadManager:
             else:
                 failures.append(state)
         if not failures:
+            self._unload_module_only_imports(reference)
             self._unregister_package_translations(reference)
         return tuple(failures)
 
@@ -985,8 +998,35 @@ class PreloadManager:
                     "Loaded native extension modules: " + ", ".join(native_modules),
                 )
         if not classes:
-            sys.modules.pop(module_name, None)
+            # An abstract candidate may also be an authored parent package.
+            # Keep its import identity until explicit retirement; descendants
+            # must reuse it, and module-level contributions still need an owner.
+            key = path_key(path)
+            previous = self._module_only_imports.get(key)
+            module_names = set(imported_project_modules) | {module_name}
+            if previous is not None:
+                module_names.update(previous.module_names)
+            self._module_only_imports[key] = _ModuleOnlyImport(
+                path, package_reference, contribution_owner, tuple(sorted(module_names)),
+            )
         return states
+
+    def _unload_module_only_imports(
+        self, reference: str = "", *, paths: set[str] | None = None,
+    ) -> None:
+        for key, record in reversed(tuple(self._module_only_imports.items())):
+            if reference:
+                if record.package_reference.casefold() != reference.casefold():
+                    continue
+            elif paths is not None and key not in paths:
+                continue
+            if not _remove_editor_contribution_owner(record.contribution_owner, runtime=self.runtime):
+                raise RuntimeError(
+                    f"Cannot unload preload module '{record.source_path}': contributed editor panel refused to close"
+                )
+            for name in reversed(record.module_names):
+                _unpublish_module(name)
+            self._module_only_imports.pop(key)
 
     @staticmethod
     def _translation_owner(reference: str) -> str:
@@ -1105,7 +1145,7 @@ class PreloadManager:
         from infernux.engine.project_context import release_preload_python_libraries
         release_preload_python_libraries(f"{self.project_root}:{state.identity}")
         if state.module_name:
-            sys.modules.pop(state.module_name, None)
+            _unpublish_module(state.module_name)
         module_names = set(state.module_names)
         if state.package_reference:
             module_names.update(
@@ -1114,7 +1154,7 @@ class PreloadManager:
                 )
             )
         for name in reversed(sorted(module_names)):
-            sys.modules.pop(name, None)
+            _unpublish_module(name)
         return True
 
 
@@ -1263,7 +1303,7 @@ def _load_module(
         # Only one project is active in an Editor process. A manager created
         # for a new project must not inherit a loose-script module from the
         # preceding project merely because the copied asset kept its GUID.
-        sys.modules.pop(module_name, None)
+        _unpublish_module(module_name)
         existing = None
         existing_path = ""
     if existing is not None and (
@@ -1274,47 +1314,68 @@ def _load_module(
             f"{existing_path or type(existing).__name__}"
         )
 
-    created_parents = _ensure_module_parents(module_name, path)
+    if existing is not None:
+        return existing
+    modules_before = set(sys.modules)
+    try:
+        with _temporary_import_paths(path, project_root, package_reference):
+            _ensure_module_parents(module_name, path, package_reference)
+            # An authored parent may import its child as part of __init__.
+            # Reuse that completed import instead of executing the child twice.
+            existing = sys.modules.get(module_name)
+            if existing is not None:
+                if path_key(str(getattr(existing, "__file__", "") or "")) != path_key(path):
+                    raise ImportError(f"InxPreload module identity '{module_name}' changed during parent import")
+                return existing
+            return _execute_module_file(module_name, path)
+    except BaseException:
+        for name in reversed(_new_project_modules(project_root, modules_before)):
+            _unpublish_module(name)
+        raise
+
+
+def _execute_module_file(module_name: str, path: str) -> types.ModuleType:
+    """Execute one selected source/bytecode module without stale source bytecode."""
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Cannot load InxPreload candidate: {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    try:
-        with _temporary_import_paths(path, project_root, package_reference):
-            if path.casefold().endswith(".pyc"):
-                spec.loader.exec_module(module)
-            else:
-                with open(path, "rb") as stream:
-                    code = compile(stream.read(), path, "exec")
-                exec(code, module.__dict__)
-    except BaseException:
-        sys.modules.pop(module_name, None)
-        for parent_name in reversed(created_parents):
-            if not any(
-                name.startswith(parent_name + ".")
-                for name in sys.modules
-            ):
-                sys.modules.pop(parent_name, None)
-        raise
+    if path.casefold().endswith(".pyc"):
+        spec.loader.exec_module(module)
+    else:
+        with open(path, "rb") as stream:
+            code = compile(stream.read(), path, "exec")
+        exec(code, module.__dict__)
+    parent_name, _, child_name = module_name.rpartition(".")
+    if parent_name:
+        setattr(sys.modules[parent_name], child_name, module)
     return module
 
 
-def _ensure_module_parents(module_name: str, path: str) -> tuple[str, ...]:
-    """Create path-bound namespace parents required by isolated plugin names."""
+def _unpublish_module(name: str) -> None:
+    module = sys.modules.pop(name, None)
+    parent_name, _, child_name = name.rpartition(".")
+    parent = sys.modules.get(parent_name)
+    if module is not None and parent is not None and getattr(parent, child_name, None) is module:
+        delattr(parent, child_name)
+
+
+def _ensure_module_parents(module_name: str, path: str, package_reference: str) -> None:
+    """Bind isolated namespace prefixes and execute authored package parents."""
 
     parts = module_name.split(".")
     parent_names = [".".join(parts[:index]) for index in range(1, len(parts))]
     directory = os.path.dirname(path)
-    if os.path.basename(path) == "__init__.py":
+    if os.path.basename(path) in {"__init__.py", "__init__.pyc"}:
         directory = os.path.dirname(directory)
     directories: dict[str, str] = {}
     for name in reversed(parent_names):
         directories[name] = resolved_path(directory)
         directory = os.path.dirname(directory)
 
-    created: list[str] = []
-    for name in parent_names:
+    synthetic_count = 1 + len(package_reference.split("/")) if package_reference else 0
+    for index, name in enumerate(parent_names):
         expected = directories[name]
         existing = sys.modules.get(name)
         if existing is not None:
@@ -1333,6 +1394,15 @@ def _ensure_module_parents(module_name: str, path: str) -> tuple[str, ...]:
                 f"InxPreload package identity '{name}' is already owned by "
                 f"{existing_path or type(existing).__name__}"
             )
+        if index >= synthetic_count:
+            source = os.path.join(expected, "__init__.py")
+            bytecode = source + "c"
+            if os.path.isfile(source):
+                _execute_module_file(name, source)
+                continue
+            if os.path.isfile(bytecode):
+                _execute_module_file(name, bytecode)
+                continue
         package = types.ModuleType(name)
         package.__package__ = name
         package.__path__ = [expected]
@@ -1343,8 +1413,9 @@ def _ensure_module_parents(module_name: str, path: str) -> tuple[str, ...]:
             is_package=True,
         )
         sys.modules[name] = package
-        created.append(name)
-    return tuple(created)
+        parent_name, _, child_name = name.rpartition(".")
+        if parent_name:
+            setattr(sys.modules[parent_name], child_name, package)
 
 
 def _new_project_modules(
