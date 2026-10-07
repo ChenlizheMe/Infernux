@@ -765,6 +765,9 @@ void InxRenderer::Init(int width, int height, InxAppMetadata appMetaData)
         throw std::runtime_error("Startup cancelled");
 
     m_view->CreateSurface(&m_vkCore->m_instance, &m_vkCore->m_surface);
+    // Publish ownership before pumping cancellation: a close request here
+    // must release the surface even though PrepareSurface has not run yet.
+    m_vkCore->GetDeviceContext().SetExternalSurface(m_vkCore->m_surface);
     if (!PumpStartupEvents())
         throw std::runtime_error("Startup cancelled");
 

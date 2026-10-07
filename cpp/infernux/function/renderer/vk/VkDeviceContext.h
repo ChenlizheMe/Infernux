@@ -168,6 +168,8 @@ class VkDeviceContext
         return m_surface;
     }
 
+    /// Adopt the externally-created surface, including before device creation.
+    /// Destroy releases this surface before releasing its instance.
     /// Replace the externally-created presentation surface without rebuilding
     /// the logical device. The caller must retire the old swapchain and destroy
     /// the old surface before publishing the replacement.
@@ -247,6 +249,11 @@ class VkDeviceContext
     /// capabilities expose the generic attachment baseline; render targets
     /// with transfer/resolve usage must validate the exact usage combination.
     [[nodiscard]] rhi::SampleCountMask GetImageSampleCountMask(VkFormat format, VkImageUsageFlags usage) const noexcept;
+
+    [[nodiscard]] bool HasRhiDevice() const noexcept
+    {
+        return m_rhiDevice != nullptr;
+    }
 
     [[nodiscard]] VulkanRhiDevice &GetRhiDevice() noexcept
     {

@@ -185,7 +185,10 @@ InxVkCoreModular::~InxVkCoreModular()
     ShaderProgram::SetBindlessTextureEnabled(false);
     ShaderProgram::SetBindlessTextureDescSetLayout(VK_NULL_HANDLE);
     InxShaderLoader::SetBindlessTextureABIEnabled(false);
-    m_backend.Device().GetRhiDevice().ClearBindlessTextureTable();
+    // Instance/surface creation and logical-device creation can fail before
+    // the RHI exists. All earlier stages still need their normal RAII cleanup.
+    if (m_backend.Device().HasRhiDevice())
+        m_backend.Device().GetRhiDevice().ClearBindlessTextureTable();
     m_bindlessTextureTable.DestroyAfterDeviceIdle();
     m_textureCache.Clear();
     m_shaderCache.Clear();
@@ -492,8 +495,8 @@ void InxVkCoreModular::SuspendPresentationSurface()
         presentation.SetSkipWaitIdle(true);
         presentation.Destroy();
         presentation.SetSkipWaitIdle(false);
-        m_backend.Device().SetExternalSurface(VK_NULL_HANDLE);
     }
+    m_backend.Device().SetExternalSurface(VK_NULL_HANDLE);
     if (m_surface != VK_NULL_HANDLE) {
         SDL_Vulkan_DestroySurface(m_instance, m_surface, nullptr);
         m_surface = VK_NULL_HANDLE;

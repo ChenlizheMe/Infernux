@@ -823,6 +823,22 @@ if(INFERNUX_BUILD_TESTS)
         FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:"
     )
 
+    add_executable(infernux_vulkan_startup_lifecycle_tests tests/native/VulkanStartupLifecycleTests.cpp)
+    target_include_directories(infernux_vulkan_startup_lifecycle_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_vulkan_startup_lifecycle_tests PRIVATE infernux_runtime_test_support)
+    if(MSVC)
+        target_compile_options(infernux_vulkan_startup_lifecycle_tests PRIVATE /utf-8)
+    endif()
+    foreach(_stage IN ITEMS default rejected_init instance_failure instance_only missing_surface
+            surface_only surface_suspend device_ready destroy_twice)
+        add_test(NAME infernux.vulkan_startup.${_stage}
+            COMMAND infernux_vulkan_startup_lifecycle_tests ${_stage})
+        set_tests_properties(infernux.vulkan_startup.${_stage} PROPERTIES
+            LABELS "requires_vulkan_device" TIMEOUT 45 RUN_SERIAL TRUE
+            FAIL_REGULAR_EXPRESSION "Validation Error:;SYNC-HAZARD")
+    endforeach()
+
     add_executable(infernux_scene_render_graph_validation_tests
         tests/native/SceneRenderGraphValidationTests.cpp
     )
