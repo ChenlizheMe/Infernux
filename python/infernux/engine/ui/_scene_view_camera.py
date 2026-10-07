@@ -57,6 +57,7 @@ class SceneViewCameraMixin:
 
         restore_pos = self._camera_capture_restore_pos
         self._camera_capture_active = False
+        self._is_camera_dragging = False
         self._camera_capture_restore_pos = None
 
         if restore_cursor and ctx is not None and restore_pos is not None:

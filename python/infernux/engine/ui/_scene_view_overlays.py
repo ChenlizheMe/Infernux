@@ -179,8 +179,7 @@ class SceneViewOverlaysMixin:
             from infernux.engine.interaction import SelectionService
 
             object_id = int(SelectionService.instance().primary_scene_object_id() or 0)
-            scene = SceneManager.instance().get_active_scene()
-            selected = scene.find_by_id(object_id) if scene and object_id else None
+            selected = SceneManager.instance().find_runtime_object_by_id(object_id) if object_id else None
         except (AttributeError, ReferenceError, RuntimeError):
             selected = None
         self._on_particle_preview_selection(selected)

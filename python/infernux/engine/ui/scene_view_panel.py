@@ -333,6 +333,10 @@ class SceneViewPanel(
         self._interrupt_gizmo_drag(commit=True)
         self._cancel_custom_handle_capture()
         self._particle_preview_resize_drag = False
+        if (self._camera_capture_active or self._is_camera_dragging
+                or self._was_right_down or self._was_middle_down):
+            self._end_camera_capture(restore_cursor=False)
+            self._force_camera_input_release()
         if self._engine:
             self._engine.set_scene_view_visible(False)
 

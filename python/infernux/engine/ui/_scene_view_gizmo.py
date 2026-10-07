@@ -1029,8 +1029,8 @@ class SceneViewGizmoMixin:
             ss = snapshot["scale"]
             new_scale = list(ss)
             if self._coord_space == 1:
-                new_scale[axis_a - 1] = max(ss[axis_a - 1] * factor_u, 0.001)
-                new_scale[axis_b - 1] = max(ss[axis_b - 1] * factor_v, 0.001)
+                new_scale[axis_a - 1] = ss[axis_a - 1] * factor_u
+                new_scale[axis_b - 1] = ss[axis_b - 1] * factor_v
             else:
                 r = obj.transform.right
                 u = obj.transform.up
@@ -1045,7 +1045,7 @@ class SceneViewGizmoMixin:
                     dot_v = self._dot3(self._gizmo_drag_plane_v, local_axes[i])
                     local_factor_u = 1.0 + (factor_u - 1.0) * dot_u * dot_u
                     local_factor_v = 1.0 + (factor_v - 1.0) * dot_v * dot_v
-                    new_scale[i] = max(ss[i] * local_factor_u * local_factor_v, 0.001)
+                    new_scale[i] = ss[i] * local_factor_u * local_factor_v
 
             obj.transform.local_scale = Vector3(new_scale[0], new_scale[1], new_scale[2])
         self._sync_gizmo_rigidbody_transforms()
@@ -1076,9 +1076,9 @@ class SceneViewGizmoMixin:
                 continue
             ss = snapshot["scale"]
             obj.transform.local_scale = Vector3(
-                max(ss[0] * factor, 0.001),
-                max(ss[1] * factor, 0.001),
-                max(ss[2] * factor, 0.001),
+                ss[0] * factor,
+                ss[1] * factor,
+                ss[2] * factor,
             )
         self._sync_gizmo_rigidbody_transforms()
 
@@ -1122,7 +1122,7 @@ class SceneViewGizmoMixin:
             if self._coord_space == 1:
                 # Local mode: scale directly on the axis component (1=X, 2=Y, 3=Z)
                 axis_idx = self._gizmo_drag_axis - 1  # 0, 1, or 2
-                new_scale[axis_idx] = max(ss[axis_idx] * factor, 0.001)
+                new_scale[axis_idx] = ss[axis_idx] * factor
             else:
                 # Global mode: decompose world-axis scale onto local axes
                 r = obj.transform.right
@@ -1138,7 +1138,7 @@ class SceneViewGizmoMixin:
                                ad[1] * local_axes[i][1] +
                                ad[2] * local_axes[i][2])
                     local_factor = 1.0 + (factor - 1.0) * dot_val * dot_val
-                    new_scale[i] = max(ss[i] * local_factor, 0.001)
+                    new_scale[i] = ss[i] * local_factor
 
             obj.transform.local_scale = Vector3(new_scale[0], new_scale[1], new_scale[2])
         self._sync_gizmo_rigidbody_transforms()
