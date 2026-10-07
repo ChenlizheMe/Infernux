@@ -3890,21 +3890,32 @@ def _render_sprite_body(ctx: InxGUIContext, panel, state: _State):
         "asset.texture.sprite.columns",
     )
 
+    valid_grid = _valid_sprite_grid(ss)
+    if not valid_grid:
+        ctx.push_style_color(ImGuiCol.Text, *Theme.WARNING_TEXT)
+        ctx.text_wrapped(t("sprite.invalid_grid").format(width=ss.tex_w, height=ss.tex_h))
+        ctx.pop_style_color(1)
+    ctx.begin_disabled(not valid_grid)
     ctx.button(t("sprite.auto_slice"), lambda: _auto_slice_and_save(state, ss))
     ctx.record_semantic_item(
-        "button", t("sprite.auto_slice"), True, "asset.texture.sprite.auto_slice",
+        "button", t("sprite.auto_slice"), valid_grid, "asset.texture.sprite.auto_slice",
     )
+    ctx.end_disabled()
     ctx.dummy(0, 4)
 
     # ── Visual preview with divider lines ────────────────────────────────
     _render_sprite_preview(ctx, settings, ss, state)
 
 
+def _valid_sprite_grid(ss: _SpriteEditorState) -> bool:
+    return 1 <= ss.slice_rows <= ss.tex_h and 1 <= ss.slice_cols <= ss.tex_w
+
+
 def _auto_slice(settings: TextureImportSettings, ss: _SpriteEditorState):
     """Generate uniform sprite_frames from rows × cols grid."""
     rows, cols = ss.slice_rows, ss.slice_cols
-    if rows < 1 or cols < 1 or ss.tex_w < 1 or ss.tex_h < 1:
-        return
+    if not _valid_sprite_grid(ss):
+        raise ValueError("Sprite grid must have at least one pixel in every row and column")
     fw = ss.tex_w // cols
     fh = ss.tex_h // rows
     existing = {
@@ -3935,8 +3946,8 @@ def _auto_slice(settings: TextureImportSettings, ss: _SpriteEditorState):
 
 def _auto_slice_and_save(state: _State, ss: _SpriteEditorState):
     settings = state.settings
-    if not isinstance(settings, TextureImportSettings):
-        return
+    if not isinstance(settings, TextureImportSettings) or not _valid_sprite_grid(ss):
+        return False
     if _edit_import_settings(
         state,
         "sprite_frames.auto_slice",

@@ -993,6 +993,7 @@
   "sprite.rows": "行数",
   "sprite.cols": "列数",
   "sprite.auto_slice": "自动切割",
+  "sprite.invalid_grid": "行数须为 1–{height}，列数须为 1–{width}；每个切片至少需要一个像素。",
   "sprite.preview_none": "无",
   "sprite.preview_status": "缩放 {zoom}x  当前选中 {selected}  Ctrl+滚轮：缩放  右键/中键拖拽：平移  左键拖拽边缘：裁剪",
   "sprite.frame_list": "帧列表 ({n})",

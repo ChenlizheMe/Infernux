@@ -993,6 +993,7 @@
   "sprite.rows": "Rows",
   "sprite.cols": "Columns",
   "sprite.auto_slice": "Auto Slice",
+  "sprite.invalid_grid": "Rows must be 1–{height} and columns 1–{width}; each slice needs at least one pixel.",
   "sprite.preview_none": "None",
   "sprite.preview_status": "Zoom {zoom}x  Selected {selected}  Ctrl+Wheel: Zoom  Right/Middle Drag: Pan  Left Drag: Crop Edge",
   "sprite.frame_list": "Frames ({n})",
