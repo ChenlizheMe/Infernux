@@ -927,6 +927,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     if (runtime.HasContactRuntime()) {
         graph.AddComputePass(StageName(namePrefix, "ContactPrepare"), [&](vk::PassBuilder &builder) {
             readMeshBuffers(builder);
+            builder.ReadStorageBuffer(spawnResources.playingStates);
             builder.ReadStorageBuffer(states);
             contactHashSlots = builder.WriteStorageBuffer(contactHashSlots);
             contactParticleRecordIndices = builder.WriteStorageBuffer(contactParticleRecordIndices);
@@ -1124,6 +1125,8 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     if (runtime.HasContactRuntime()) {
         graph.AddComputePass(StageName(namePrefix, "ContactSolve"), [&](vk::PassBuilder &builder) {
             readMeshBuffers(builder);
+            builder.ReadStorageBuffer(spawnResources.playingStates);
+            builder.ReadStorageBuffer(states);
             contactRecords = builder.ReadWrite(contactRecords, rhi::PipelineStage::ComputeShader);
             contactHashSlots = builder.ReadWrite(contactHashSlots, rhi::PipelineStage::ComputeShader);
             builder.ReadStorageBuffer(contactParticleRecordIndices);
@@ -1143,6 +1146,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         simulationTail = graph.AddComputePass(StageName(namePrefix, "ContactDispatch"), [&](vk::PassBuilder &builder) {
             readMeshBuffers(builder);
             spawnResources.DeclareKernelWrite(builder);
+            builder.ReadUniformBuffer(transforms);
             states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
             freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
             counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);

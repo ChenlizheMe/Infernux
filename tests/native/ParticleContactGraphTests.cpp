@@ -156,10 +156,14 @@ int main() {
             const auto resources = runtime.ContactResources();
             VkBuffer records = device.registry.Resolve(resources.contactRecords);
             VkBuffer states = device.registry.Resolve(resources.particleStates);
+            VkBuffer particleStates = device.registry.Resolve(runtime.StateBuffer());
+            VkBuffer transforms = device.registry.Resolve(runtime.TransformBuffer());
             VkBuffer work = device.registry.Resolve(resources.workItems);
             record("solve_declares_record_write", Declares(graph, solve.writes, records, rhi::Access::ShaderWrite));
             record("solve_declares_particle_state_write", Declares(graph, solve.writes, states, rhi::Access::ShaderWrite));
             record("dispatch_declares_particle_state_read", Declares(graph, dispatch.reads, states, rhi::Access::ShaderRead));
+            record("solve_reads_particle_generation", Declares(graph, solve.reads, particleStates, rhi::Access::ShaderRead));
+            record("dispatch_reads_transforms", Declares(graph, dispatch.reads, transforms, rhi::Access::UniformRead));
             (graph.*audit_member(CullTag{}))();
             if (!(graph.*audit_member(SortTag{}))()) throw std::runtime_error("graph TopologicalSort");
             const auto order = graph.GetExecutionPassNames();
@@ -170,7 +174,10 @@ int main() {
                 auto& pass = FindPass(graph, name);
                 captured.clear();
                 (graph.*audit_member(InsertTag{}))(VK_NULL_HANDLE, pass.id);
-                if (pass.name == solve.name) sawSolve = true;
+                if (pass.name == solve.name) {
+                    sawSolve = true;
+                    record("update_to_solve_particle_generation_visibility", HasVisibility(particleStates));
+                }
                 if (pass.name == dispatch.name) {
                     if (!sawSolve) throw std::runtime_error("contact dispatch before solve");
                     sawDispatch = true;
