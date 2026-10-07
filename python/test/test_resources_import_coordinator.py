@@ -509,7 +509,7 @@ def test_modified_asset_failure_surfaces_runtime_compile_detail(monkeypatch, tmp
         handler._commit_modified(resolved)
 
 
-@pytest.mark.parametrize("extension", [".vert", ".frag", ".effect", ".effectgroup", ".particlegraph", ".particle.py"])
+@pytest.mark.parametrize("extension", [".vert", ".frag", ".glsl", ".shadingmodel", ".effect", ".effectgroup", ".particlegraph", ".particle.py"])
 @pytest.mark.parametrize("echo_kind", ["watcher", "local_write"])
 def test_rejected_compiled_asset_waits_for_next_save_without_retrying(monkeypatch, tmp_path, extension, echo_kind):
     from infernux.lib import AssetMutationErrorCode
@@ -563,11 +563,11 @@ def test_rejected_compiled_asset_waits_for_next_save_without_retrying(monkeypatc
     assert handler.process_pending_reloads(force=True) == 1
     assert handler.pending_count == 0
     assert attempts == [str(path), str(path)]
-    assert notifications == ([str(path)] if extension in (".vert", ".frag") else [])
+    assert notifications == ([str(path)] if extension in (".vert", ".frag", ".glsl", ".shadingmodel") else [])
     assert not handler._rejected_compiled_assets
 
 
-@pytest.mark.parametrize("extension", [".effect", ".effectgroup", ".particlegraph", ".particle.py"])
+@pytest.mark.parametrize("extension", [".glsl", ".shadingmodel", ".effect", ".effectgroup", ".particlegraph", ".particle.py"])
 def test_new_compiled_asset_rejection_is_terminal(monkeypatch, tmp_path, extension):
     from infernux.lib import AssetMutationErrorCode
 

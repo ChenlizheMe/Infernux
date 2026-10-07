@@ -33,6 +33,15 @@ struct ShaderSourceDependencies
 std::unordered_map<std::string, ShaderSourceDependencies> g_sourceDependencies;
 std::unordered_map<std::string, ShaderSourceDependencies> g_candidateSourceDependencies;
 thread_local bool g_sourceDiagnosticsCaptured = false;
+thread_local std::unordered_map<std::string, ShaderSourceDependencies> *g_dependencyPublication = nullptr;
+
+void MergeSourceDependencies(ShaderSourceDependencies &target, const ShaderSourceDependencies &source)
+{
+    target.rootPath = source.rootPath;
+    target.paths.insert(source.paths.begin(), source.paths.end());
+    target.declarations.insert(source.declarations.begin(), source.declarations.end());
+    target.deferredRegistry |= source.deferredRegistry;
+}
 
 std::string ShaderDependencyPathKey(const std::string &path)
 {
@@ -55,8 +64,13 @@ void CommitSourceDependencies(const std::string &rootPath)
 {
     const auto key = ShaderDependencyPathKey(rootPath);
     if (auto candidate = g_candidateSourceDependencies.find(key); candidate != g_candidateSourceDependencies.end()) {
-        g_sourceDependencies[key] = std::move(candidate->second);
+        if (g_dependencyPublication)
+            MergeSourceDependencies((*g_dependencyPublication)[key], candidate->second);
+        else
+            g_sourceDependencies[key] = std::move(candidate->second);
         g_candidateSourceDependencies.erase(candidate);
+    } else if (g_dependencyPublication) {
+        (*g_dependencyPublication)[key].rootPath = ResolveFilesystemPath(rootPath);
     } else {
         g_sourceDependencies.erase(key);
     }
@@ -588,6 +602,40 @@ bool InxShaderLoader::AreSourceDiagnosticsCaptured() noexcept
     return g_sourceDiagnosticsCaptured;
 }
 
+struct InxShaderLoader::SourceDependencyPublication::State
+{
+    std::unordered_map<std::string, ShaderSourceDependencies> compiled;
+    bool committed = false;
+};
+
+InxShaderLoader::SourceDependencyPublication::SourceDependencyPublication()
+    : m_state(std::make_unique<State>())
+{
+    if (g_dependencyPublication)
+        throw std::logic_error("Shader dependency publication cannot be nested");
+    g_dependencyPublication = &m_state->compiled;
+}
+
+InxShaderLoader::SourceDependencyPublication::~SourceDependencyPublication()
+{
+    g_dependencyPublication = nullptr;
+    if (!m_state->committed)
+        for (const auto &[key, dependencies] : m_state->compiled)
+            MergeSourceDependencies(g_candidateSourceDependencies[key], dependencies);
+}
+
+void InxShaderLoader::SourceDependencyPublication::Commit()
+{
+    if (m_state->committed)
+        throw std::logic_error("Shader dependency publication was already committed");
+    for (auto &[key, dependencies] : m_state->compiled) {
+        g_sourceDependencies[key] = std::move(dependencies);
+        g_candidateSourceDependencies.erase(key);
+    }
+    m_state->committed = true;
+    g_dependencyPublication = nullptr;
+}
+
 std::vector<std::string> InxShaderLoader::GetDependentStageSources(const std::string &sourcePath,
                                                                  const std::string &declarationId)
 {
@@ -605,6 +653,8 @@ std::vector<std::string> InxShaderLoader::GetDependentStageSources(const std::st
     // failed candidate's missing declarations. Either can make it recover.
     collect(g_sourceDependencies);
     collect(g_candidateSourceDependencies);
+    if (g_dependencyPublication)
+        collect(*g_dependencyPublication);
     return {roots.begin(), roots.end()};
 }
 

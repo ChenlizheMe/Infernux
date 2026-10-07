@@ -435,6 +435,8 @@ class Infernux
         std::string error;
     };
 
+    std::string ReloadShaderDependencies(const std::string &shaderPath);
+
     struct LinkedShaderProgramCacheEntry
     {
         uint64_t sourceStamp = 0;
@@ -442,6 +444,8 @@ class Infernux
         uint64_t failedSourceStamp = 0;
         std::string lastError;
         bool failureReported = false;
+        // Compiled UI candidates wait for an actual draw to acquire GPU ownership.
+        std::shared_ptr<const ShaderProgramArtifact> preparedArtifact;
     };
 
     [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages);

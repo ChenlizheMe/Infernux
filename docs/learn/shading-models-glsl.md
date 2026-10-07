@@ -114,18 +114,18 @@ This example has a deliberately narrow lighting promise. `getMainLight()` evalua
 
 The loader recursively scans the project's `Assets` and `Packages` roots, the dependent `.frag` file's parent directory, and the built-in shader roots for `.vert`, `.frag`, `.glsl`, and `.shadingmodel` files; `_templates` directories are excluded. `Name` values are exact, case-sensitive IDs. Project declarations take precedence over built-ins and are also visible to the built-in Deferred lighting program. A Player discovers these declarations in its cooked `Library/Artifacts` tree. Duplicate project library or shading-model IDs are rejected with a diagnostic naming both files; keep those IDs unique across `Assets` and `Packages`.
 
-Runtime reload currently accepts `.vert` and `.frag` assets only. After editing `learn_band_math.glsl` or `learn_band.shadingmodel`, save, touch, or reimport `learn_band_surface.frag`; restarting the Editor also rebuilds discovery. This exact limitation means a dependency save can leave the previous GPU program visible until a dependent root stage is reloaded.
+Saving `learn_band_math.glsl` or `learn_band.shadingmodel` automatically recompiles the root stages that consumed that declaration, including transitive imports and the generated Deferred model registry. Every affected candidate must compile before the batch is published. If one candidate fails, the entire previous accepted batch remains active, and the Console reports the error against the edited dependency. Save the repaired dependency to retry; a root-stage save or Editor restart is unnecessary.
 
 Use this failure matrix before debugging pixels:
 
 | Reproduction | Expected diagnostic and behavior |
 | --- | --- |
-| Change `Learn Band Math` to a missing ID, then reimport the `.frag` | The generated source contains `shader import not found`; unresolved `learnBand` can follow. The new program is rejected. |
+| Change `Learn Band Math` to a missing ID and save the `.shadingmodel` | The generated source contains `shader import not found`; unresolved `learnBand` can follow. The new batch is rejected. |
 | Remove `Imports ["Lighting", ...]` but keep `Requires [Lighting]` | Lighting declarations/helpers are absent, so symbols such as `Light` or `getMainLight` fail compilation. |
 | Keep the import but remove `Requires [Lighting]` | The lighting library is linked, but its camera-local resources are not bound/injected; the dependent variant fails compilation. |
-| Introduce invalid GLSL in the library, then reimport the `.frag` | The Console reports the dependent root `.frag` compile failure and the last-known-good program remains active. |
+| Introduce invalid GLSL and save the library | The Console reports the dependent root compile failure against the library. All previously accepted programs remain active. |
 
-Imports are expanded recursively, with cycle suppression and a maximum nesting depth of 16. Current generated shader diagnostics do not add source-file `#line` mapping for imported text, so a compiler line number may refer to the expanded/root source. Start with the first import error, inspect the named library, and reimport the root `.frag` after the fix. A visible old result proves only that last-known-good fallback worked; a cleared Console plus a deliberate Threshold change proves the new program became active.
+Imports are expanded recursively, with cycle suppression and a maximum nesting depth of 16. Current generated shader diagnostics do not add source-file `#line` mapping for imported text, so a compiler line number may refer to the expanded/root source. Start with the first import error, inspect the named library, and save that dependency after the fix. Its Console error should clear. Seeing the old result while a batch is rejected does not prove that the edit was accepted; a clean Console plus a deliberate Threshold change verifies the repaired program.
 
 ## How one model becomes many pass variants {#pass-variants}
 
@@ -302,18 +302,18 @@ Learn Band --Imports--> Learn Band Math
 
 加载器会递归扫描项目的 `Assets` 与 `Packages` 根目录、依赖 `.frag` 所在目录及内置 Shader 根目录，识别 `.vert`、`.frag`、`.glsl` 和 `.shadingmodel`，同时排除 `_templates` 目录。`Name` 是区分大小写的精确 ID。项目声明优先于内置声明，内置 Deferred 光照程序也能发现这些模型。Player 从打包后的 `Library/Artifacts` 目录发现同一份声明。项目函数库或光照模型的 ID 重复时，加载器会拒绝编译并报告两个文件的位置；请保证这些 ID 在 `Assets` 与 `Packages` 中唯一。
 
-运行时重载目前只接受 `.vert` 与 `.frag` 资产。修改 `learn_band_math.glsl` 或 `learn_band.shadingmodel` 后，请保存、触碰或重新导入 `learn_band_surface.frag`；重启 Editor 也会重建发现结果。受此限制，只保存依赖文件时，画面可能继续显示旧 GPU Program，直到依赖它的根阶段发生重载。
+保存 `learn_band_math.glsl` 或 `learn_band.shadingmodel` 后，引擎会自动重新编译使用该声明的根阶段，包括递归导入和生成的 Deferred 模型注册表。所有受影响的候选都编译成功后，才会统一发布。任何一个候选失败，整批上一份已接受的程序都保持不变，Console 会把错误归属到本次修改的依赖文件。修复后再次保存该依赖即可重试，无需保存根阶段或重启 Editor。
 
 调试像素之前，先按此故障矩阵检查：
 
 | 复现方式 | 预期诊断与行为 |
 | --- | --- |
-| 把 `Learn Band Math` 改成不存在的 ID，再重新导入 `.frag` | 生成源码中出现 `shader import not found`，随后可能报告 `learnBand` 未解析；新 Program 会被拒绝。 |
+| 把 `Learn Band Math` 改成不存在的 ID，保存 `.shadingmodel` | 生成源码中出现 `shader import not found`，随后可能报告 `learnBand` 未解析；新的一批程序会被拒绝。 |
 | 删除 `Imports ["Lighting", ...]`，保留 `Requires [Lighting]` | 光照声明与辅助函数缺失，`Light`、`getMainLight` 等符号编译失败。 |
 | 保留 Import，删除 `Requires [Lighting]` | 光照函数库已经链接，相机局部资源没有绑定或注入；相关变体编译失败。 |
-| 在函数库中加入非法 GLSL，再重新导入 `.frag` | Console 报告依赖根 `.frag` 的编译失败，并继续使用上一份有效 Program。 |
+| 在函数库中加入非法 GLSL 并保存 | Console 会将依赖根阶段的编译错误归属到函数库，所有上一份已接受的程序都保持不变。 |
 
-Import 会递归展开，循环导入会被抑制，最大嵌套深度为 16。当前生成的 Shader 诊断不会为导入文本增加源文件 `#line` 映射，因此编译器行号可能指向展开后的源码或根文件。请先处理第一条 Import 错误，检查其中点名的函数库，修复后重新导入根 `.frag`。画面仍显示旧结果只能证明上一份有效版本继续工作；Console 清空后再故意修改 Threshold，才能证明新 Program 已经生效。
+Import 会递归展开，循环导入会被抑制，最大嵌套深度为 16。当前生成的 Shader 诊断不会为导入文本增加源文件 `#line` 映射，因此编译器行号可能指向展开后的源码或根文件。请先处理第一条 Import 错误，检查其中点名的函数库，修复后保存该依赖，其 Console 错误应当消失。候选被拒绝时仍显示旧结果，不能证明修改已经被接受；Console 无错误后再故意修改 Threshold，才能验证修复后的 Program。
 
 ## 一个模型如何变成多套 Pass 变体 {#pass-variants_1}
 

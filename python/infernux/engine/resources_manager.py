@@ -47,12 +47,12 @@ class _CompiledAssetRejected(RuntimeError):
 
 
 def _reject_failed_compiled_asset(path, result) -> None:
-    from infernux.core.asset_types import RENDER_EFFECT_EXTENSIONS, SHADER_EXTENSIONS
+    from infernux.core.asset_types import RENDER_EFFECT_EXTENSIONS, SHADER_SOURCE_EXTENSIONS
     from infernux.lib import AssetMutationErrorCode
 
     lower = path.lower()
     compiled_source = (
-        os.path.splitext(lower)[1] in SHADER_EXTENSIONS | RENDER_EFFECT_EXTENSIONS
+        os.path.splitext(lower)[1] in SHADER_SOURCE_EXTENSIONS | RENDER_EFFECT_EXTENSIONS
         or lower.endswith((".particlegraph", ".particle.py"))
     )
     if compiled_source and result.error_code == AssetMutationErrorCode.RUNTIME_APPLY_FAILED:
@@ -1267,6 +1267,8 @@ class ResourceChangeHandler(FileSystemEventHandler):
                 )
                 raise _AssetImportNotReady(f"shader publish failed: {path}: {detail}")
             self._notify_shader_reloaded(path)
+        elif path.lower().endswith((".glsl", ".shadingmodel")):
+            self._notify_shader_reloaded(path)
         elif path.lower().endswith(".prefab"):
             # A restored GUID is a new catalog entry, but existing instances
             # and variants still depend on it across all resident scenes.
@@ -1404,7 +1406,7 @@ class ResourceChangeHandler(FileSystemEventHandler):
             manager = ResourcesManager.instance()
             if manager is not None:
                 manager.notify_script_catalog_changed(path, "modified")
-        elif path.lower().endswith((".vert", ".frag")):
+        elif path.lower().endswith((".vert", ".frag", ".glsl", ".shadingmodel")):
             self._notify_shader_reloaded(path)
         elif path.lower().endswith(".prefab"):
             from infernux.engine.scene_manager import SceneFileManager
@@ -1518,6 +1520,9 @@ class ResourceChangeHandler(FileSystemEventHandler):
             if not result:
                 _reject_failed_compiled_asset(new_path, result)
                 raise RuntimeError(f"moved shader reimport failed: {new_path}")
+            self._notify_shader_reloaded(new_path)
+            self._rejected_compiled_assets.discard(path_key(new_path))
+        elif new_path.lower().endswith((".glsl", ".shadingmodel")):
             self._notify_shader_reloaded(new_path)
             self._rejected_compiled_assets.discard(path_key(new_path))
 

@@ -227,6 +227,7 @@ class InxVkCoreModular
     [[nodiscard]] bool EnsureShaderAvailable(const std::string &name, const std::string &type);
     [[nodiscard]] uint64_t GetShaderCodeFingerprint(const std::string &name, const std::string &type) const;
     bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
+    bool PublishShaderProgramArtifacts(const std::vector<ShaderProgramArtifact> &artifacts);
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
     ShareShaderProgramArtifact(const ShaderStagePair &stages) const;

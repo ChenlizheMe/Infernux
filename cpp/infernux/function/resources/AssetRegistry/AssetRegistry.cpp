@@ -6,6 +6,7 @@
 #include <function/resources/InxMesh/InxMesh.h>
 #include <function/resources/InxTexture/InxTexture.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
+#include <function/resources/ShaderAsset/ShaderAsset.h>
 
 #include <platform/filesystem/InxPath.h>
 
@@ -210,6 +211,45 @@ bool AssetRegistry::ReloadAsset(const std::string &guid)
     it->second.version = NextRuntimeVersion(guid);
     (void)TrimCpuBudget();
     return true;
+}
+
+void AssetRegistry::PublishShader(const std::string &guid, std::shared_ptr<ShaderAsset> candidate)
+{
+    if (!m_initialized || std::this_thread::get_id() != m_ownerThread)
+        throw std::logic_error("Shader publication requires the initialized registry owner thread");
+    if (guid.empty() || !candidate || !candidate->HasVariant(ShaderCompileTarget::Forward) ||
+        (candidate->shaderType != "vertex" && candidate->shaderType != "fragment"))
+        throw std::invalid_argument("Shader publication requires a compiled imported stage");
+    const auto path = m_assetDb->GetPathFromGuid(guid);
+    if (path.empty() || FoldFilesystemPathCase(ResolveFilesystemPath(path)) !=
+                            FoldFilesystemPathCase(ResolveFilesystemPath(candidate->filePath)))
+        throw std::invalid_argument("Shader candidate does not belong to its imported GUID");
+    auto entry = m_loadedAssets.find(guid);
+    if (entry != m_loadedAssets.end() && entry->second.type != ResourceType::Shader)
+        throw std::invalid_argument("Shader publication conflicts with the resident resource type");
+    const size_t previousBytes = entry == m_loadedAssets.end() ? 0 : entry->second.cpuBytes;
+    const size_t remainingBytes = m_totalCpuBytes - previousBytes;
+    const size_t bytes = candidate->GetRuntimeMemoryBytes();
+    if (bytes > std::numeric_limits<size_t>::max() - remainingBytes)
+        throw std::overflow_error("Shader publication CPU residency byte total overflow");
+    const auto version = NextRuntimeVersion(guid);
+    if (entry == m_loadedAssets.end()) {
+        m_loadedAssets.emplace(guid, AssetEntry{RuntimeAssetPayload(candidate), ResourceType::Shader, version,
+                                              bytes, ++m_accessSerial, 0});
+    } else {
+        auto resident = entry->second.payload.Get<ShaderAsset>();
+        static_assert(std::is_nothrow_move_assignable_v<ShaderAsset>);
+        if (resident != candidate)
+            *resident = std::move(*candidate);
+        entry->second.cpuBytes = bytes;
+        entry->second.version = version;
+        entry->second.lastAccessSerial = ++m_accessSerial;
+    }
+    m_assetRuntimeTypes[guid] = ResourceType::Shader;
+    m_totalCpuBytes = remainingBytes + bytes;
+    ++m_assetMutationGenerations[guid];
+    ++m_assetContentGenerations[guid];
+    (void)TrimCpuBudget();
 }
 
 void AssetRegistry::UpdateMeshPositions(const std::string &guid, size_t first, const std::vector<glm::vec3> &positions,

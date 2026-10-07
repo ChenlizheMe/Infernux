@@ -38,7 +38,8 @@ from infernux.core.mesh import Mesh
 from infernux.core.audio_clip import AudioClip
 from infernux.core.physic_material import PhysicMaterial
 from infernux.core.asset_types import (
-    IMAGE_EXTENSIONS, SHADER_EXTENSIONS, MATERIAL_EXTENSIONS, AUDIO_EXTENSIONS,
+    IMAGE_EXTENSIONS, SHADER_EXTENSIONS, SHADER_DEPENDENCY_EXTENSIONS,
+    SHADER_SOURCE_EXTENSIONS, MATERIAL_EXTENSIONS, AUDIO_EXTENSIONS,
     MESH_EXTENSIONS, FONT_EXTENSIONS,
     ANIMCLIP_EXTENSIONS,
     ANIMCLIP3D_EXTENSIONS,
@@ -819,6 +820,14 @@ class AssetManager:
             cls._meta_write_suppression.pop(cls._normalize_asset_path(path), None)
             return result
 
+        dependency_error = cls._compile_shader_dependency_runtime(path)
+        if dependency_error:
+            from infernux.lib import AssetMutationErrorCode
+            result.succeeded = False
+            result.error_code = AssetMutationErrorCode.RUNTIME_APPLY_FAILED
+            result.error = dependency_error
+            return result
+
         effect_error = cls._compile_render_effect_runtime(path, result.guid)
         if effect_error:
             from infernux.lib import AssetMutationErrorCode
@@ -874,7 +883,7 @@ class AssetManager:
                 previous_shader_id = metadata.get_string("shader_id")
         native = cls._native_engine()
         has_shader_runtime = bool(
-            ext in SHADER_EXTENSIONS and native is not None and native.has_renderer
+            ext in SHADER_SOURCE_EXTENSIONS and native is not None and native.has_renderer
         )
 
         # Persist metadata before touching runtime state. Pre-reload used to run
@@ -1114,7 +1123,7 @@ class AssetManager:
     @staticmethod
     def _invalidate_shader_authoring_cache(path: str) -> None:
         """Publish shader catalog changes independently of runtime renderer state."""
-        if os.path.splitext(path)[1].lower() not in SHADER_EXTENSIONS:
+        if os.path.splitext(path)[1].lower() not in SHADER_SOURCE_EXTENSIONS:
             return
         try:
             from infernux.engine.ui import inspector_shader_utils
@@ -1122,6 +1131,17 @@ class AssetManager:
             inspector_shader_utils.bump_shader_property_generation()
         except ImportError:
             pass
+
+    @classmethod
+    def _compile_shader_dependency_runtime(cls, path: str) -> str:
+        if os.path.splitext(path)[1].lower() not in SHADER_DEPENDENCY_EXTENSIONS:
+            return ""
+        native = cls._native_engine()
+        if native is None or not native.has_renderer:
+            return ""
+        error = native.reload_shader_runtime(path, "")
+        cls._publish_compile_diagnostic(path, error)
+        return error
 
     @classmethod
     def move_asset(
@@ -1201,6 +1221,7 @@ class AssetManager:
         if suppress_watcher_echo:
             cls._suppress_watcher_echo("moved", old_path, new_path)
         cls._invalidate_shader_authoring_cache(old_path)
+        cls._compile_shader_dependency_runtime(new_path)
         if os.path.splitext(old_path)[1].lower() != os.path.splitext(new_path)[1].lower():
             cls._invalidate_shader_authoring_cache(new_path)
         cls._invalidate_project_panel_cache()
@@ -1290,6 +1311,7 @@ class AssetManager:
         cls._invalidate_shader_authoring_cache(path)
         cls._invalidate_project_panel_cache()
         cls._publish_asset_content_change(path, "deleted", guid=guid)
+        cls._compile_shader_dependency_runtime(path)
         return result
 
     @classmethod

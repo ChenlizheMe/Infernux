@@ -198,22 +198,8 @@ ShaderProgramArtifactPublishResult VkShaderCache::PublishProgramArtifact(const S
         return result;
     }
 
-    // Validate the mandatory Forward program before replacing last-known-good.
-    // Optional semantic passes stay as SPIR-V until their first real consumer.
-    const auto *forward = artifact.FindVariant(ShaderCompileTarget::Forward);
-    if (!forward) {
-        INXLOG_ERROR("VkShaderCache: shader program artifact has no Forward variant");
+    if (!PrepareProgramArtifact(artifact))
         return result;
-    }
-
-    const ShaderProgramVariantKey forwardKey{artifact.key, ShaderCompileTarget::Forward};
-    ShaderProgramPublication forwardProgram =
-        m_programCache.GetOrCreateProgram(forwardKey, forward->vertexSpirv, forward->fragmentSpirv);
-    if (!forwardProgram || !forwardProgram->IsValid()) {
-        INXLOG_ERROR("VkShaderCache: failed to materialize shader program variant '", forwardKey.ToString(), "'");
-        (void)m_programCache.TakePrograms(artifact.key);
-        return result;
-    }
 
     if (sameRevision) {
         result.accepted = true;
@@ -227,6 +213,38 @@ ShaderProgramArtifactPublishResult VkShaderCache::PublishProgramArtifact(const S
     result.accepted = true;
     result.changed = true;
     return result;
+}
+
+bool VkShaderCache::PrepareProgramArtifact(const ShaderProgramArtifact &artifact)
+{
+    if (!artifact.IsValid())
+        return false;
+    if (m_programCache.HasProgram({artifact.key, ShaderCompileTarget::Forward}))
+        return true;
+    // Optional semantic passes stay as SPIR-V until their first real consumer.
+    const auto *forward = artifact.FindVariant(ShaderCompileTarget::Forward);
+    if (!forward) {
+        INXLOG_ERROR("VkShaderCache: shader program artifact has no Forward variant");
+        return false;
+    }
+
+    const ShaderProgramVariantKey forwardKey{artifact.key, ShaderCompileTarget::Forward};
+    ShaderProgramPublication forwardProgram =
+        m_programCache.GetOrCreateProgram(forwardKey, forward->vertexSpirv, forward->fragmentSpirv);
+    if (!forwardProgram || !forwardProgram->IsValid()) {
+        INXLOG_ERROR("VkShaderCache: failed to materialize shader program variant '", forwardKey.ToString(), "'");
+        (void)m_programCache.TakePrograms(artifact.key);
+        return false;
+    }
+
+    return true;
+}
+
+void VkShaderCache::DiscardPreparedProgramArtifact(const ShaderProgramKey &key)
+{
+    const auto *active = FindProgramArtifact(key.stages);
+    if (!active || active->key != key)
+        (void)m_programCache.TakePrograms(key);
 }
 
 const ShaderProgramArtifact *VkShaderCache::FindProgramArtifact(const ShaderStagePair &stages) const

@@ -2633,6 +2633,22 @@ bool InxRenderer::PublishShaderProgramArtifact(const ShaderProgramArtifact &arti
     return true;
 }
 
+bool InxRenderer::PublishShaderProgramArtifacts(const std::vector<ShaderProgramArtifact> &artifacts)
+{
+    if (!m_vkCore)
+        return false;
+    std::vector<ShaderStagePair> changed;
+    for (const auto &artifact : artifacts)
+        if (!m_vkCore->HasShaderProgramArtifact(artifact.key))
+            changed.push_back(artifact.key.stages);
+    if (!m_vkCore->PublishShaderProgramArtifacts(artifacts))
+        return false;
+    if (m_screenUIRenderer)
+        for (const auto &stages : changed)
+            m_screenUIRenderer->InvalidateMaterialProgram(stages);
+    return true;
+}
+
 void InxRenderer::InvalidateUIMaterialProgram(const ShaderStagePair &stages)
 {
     // Reload can touch a UI pair that was never drawn. Such a pair has no UI

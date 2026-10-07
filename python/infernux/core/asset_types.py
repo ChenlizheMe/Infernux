@@ -980,6 +980,8 @@ IMAGE_EXTENSIONS = frozenset({
 SHADER_EXTENSIONS = frozenset({
     ".vert", ".frag",
 })
+SHADER_DEPENDENCY_EXTENSIONS = frozenset({".glsl", ".shadingmodel"})
+SHADER_SOURCE_EXTENSIONS = SHADER_EXTENSIONS | SHADER_DEPENDENCY_EXTENSIONS
 
 # Material extension
 MATERIAL_EXTENSIONS = frozenset({".mat"})

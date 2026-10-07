@@ -28,6 +28,7 @@ class InxMesh;
 class InxTexture;
 class AssetRegistry;
 struct TextureCpuData;
+struct ShaderAsset;
 enum class MeshGeometryView : uint8_t;
 
 struct AssetResidencyRecord
@@ -213,6 +214,10 @@ class AssetRegistry
 
     /// Reload an already-loaded asset in-place from disk.
     bool ReloadAsset(const std::string &guid);
+
+    /// Publish an already compiled candidate without compiling it again.
+    /// Keeps any resident ShaderAsset instance and advances its runtime version.
+    void PublishShader(const std::string &guid, std::shared_ptr<ShaderAsset> candidate);
 
     /// Publish position edits to a loaded mesh without importing or recooking.
     /// Preserves its shared instance and topology; optional normals publish atomically.

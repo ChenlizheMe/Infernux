@@ -102,6 +102,9 @@ class VkShaderCache
     [[nodiscard]] uint64_t GetCodeFingerprint(const std::string &name, const std::string &type) const;
 
     [[nodiscard]] ShaderProgramArtifactPublishResult PublishProgramArtifact(const ShaderProgramArtifact &artifact);
+    /// Materialize the mandatory program without changing the active artifact.
+    [[nodiscard]] bool PrepareProgramArtifact(const ShaderProgramArtifact &artifact);
+    void DiscardPreparedProgramArtifact(const ShaderProgramKey &key);
     [[nodiscard]] const ShaderProgramArtifact *FindProgramArtifact(const ShaderStagePair &stages) const;
     [[nodiscard]] std::shared_ptr<const ShaderProgramArtifact>
     ShareProgramArtifact(const ShaderStagePair &stages) const;

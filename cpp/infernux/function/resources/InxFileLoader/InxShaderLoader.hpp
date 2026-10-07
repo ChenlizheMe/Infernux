@@ -11,6 +11,7 @@
 #include <functional>
 #include <glslang/Public/ShaderLang.h>
 #include <mutex>
+#include <memory>
 #include <set>
 #include <string_view>
 #include <unordered_map>
@@ -92,6 +93,22 @@ class InxShaderLoader
         bool m_previous;
     };
     [[nodiscard]] static bool AreSourceDiagnosticsCaptured() noexcept;
+
+    /// Keep the running programs' subscriptions until their entire reload
+    /// batch is accepted. Rejected candidates remain subscribed for recovery.
+    class SourceDependencyPublication
+    {
+      public:
+        SourceDependencyPublication();
+        ~SourceDependencyPublication();
+        SourceDependencyPublication(const SourceDependencyPublication &) = delete;
+        SourceDependencyPublication &operator=(const SourceDependencyPublication &) = delete;
+        void Commit();
+      private:
+        struct State;
+        CompilationGuard m_guard;
+        std::unique_ptr<State> m_state;
+    };
 
     /// Register an additional directory to scan for ShaderInfo import resolution.
     static void AddShaderSearchPath(const std::string &dir);

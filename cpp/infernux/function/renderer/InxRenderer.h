@@ -340,6 +340,7 @@ class InxRenderer
     void LoadShader(const char *name, const std::vector<char> &code, const char *type);
     void SetShaderAssetResolver(std::function<bool(const std::string &, const std::string &)> resolver);
     bool PublishShaderProgramArtifact(const ShaderProgramArtifact &artifact);
+    bool PublishShaderProgramArtifacts(const std::vector<ShaderProgramArtifact> &artifacts);
     void InvalidateUIMaterialProgram(const ShaderStagePair &stages);
     void RetireShaderProgramArtifact(const ShaderProgramKey &key);
     [[nodiscard]] bool HasShaderProgramArtifact(const ShaderProgramKey &programKey) const;

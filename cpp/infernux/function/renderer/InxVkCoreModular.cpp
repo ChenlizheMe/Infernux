@@ -594,6 +594,27 @@ bool InxVkCoreModular::PublishShaderProgramArtifact(const ShaderProgramArtifact 
     return true;
 }
 
+bool InxVkCoreModular::PublishShaderProgramArtifacts(const std::vector<ShaderProgramArtifact> &artifacts)
+{
+    std::unordered_set<ShaderStagePair, ShaderStagePairHash> pairs;
+    for (const auto &artifact : artifacts)
+        if (!artifact.IsValid() || !pairs.insert(artifact.key.stages).second)
+            return false;
+    for (const auto &artifact : artifacts) {
+        if (m_shaderCache.PrepareProgramArtifact(artifact))
+            continue;
+        for (const auto &candidate : artifacts)
+            m_shaderCache.DiscardPreparedProgramArtifact(candidate.key);
+        return false;
+    }
+    // All Forward modules exist before an active program changes. The commit
+    // reuses those modules and performs the existing retirement protocol.
+    for (const auto &artifact : artifacts)
+        if (!PublishShaderProgramArtifact(artifact))
+            throw std::logic_error("Prepared shader program rejected during batch commit");
+    return true;
+}
+
 bool InxVkCoreModular::HasShaderProgramArtifact(const ShaderProgramKey &programKey) const
 {
     const auto *artifact = m_shaderCache.FindProgramArtifact(programKey.stages);

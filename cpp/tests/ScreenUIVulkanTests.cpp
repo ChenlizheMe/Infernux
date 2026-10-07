@@ -638,6 +638,40 @@ int main(int argc, char **argv)
         ownershipCache.Clear();
         // Core owns a program across UI renderer generations. Only the last
         // renderer owner may evict its artifact and Forward program.
+        {
+            auto batchCore = std::make_unique<InxVkCoreModular>();
+            batchCore->GetRetirementQueue().BindSerialSource([&] { return epoch; });
+            auto &cache = batchCore->GetShaderCache();
+            cache.GetProgramCache().Initialize(context.GetDevice());
+            assert(batchCore->PublishShaderProgramArtifacts({*screenProgram, *worldProgram}));
+            const auto replacement = CompileUiProgram(false, true, true);
+            assert(replacement->key != screenProgram->key);
+            auto invalid = *worldProgram;
+            invalid.variants.clear();
+            assert(!batchCore->PublishShaderProgramArtifacts({*replacement, invalid}));
+            assert(cache.ShareProgramArtifact(screenProgram->key.stages)->key == screenProgram->key);
+            assert(cache.ShareProgramArtifact(worldProgram->key.stages)->key == worldProgram->key);
+            assert(!cache.GetProgramCache().HasProgram(replacement->key));
+
+            // Preparing modules is distinct from activating an artifact. An
+            // abandoned candidate must release only its unpublished modules.
+            assert(cache.PrepareProgramArtifact(*replacement));
+            assert(cache.GetProgramCache().HasProgram(replacement->key));
+            assert(cache.ShareProgramArtifact(screenProgram->key.stages)->key == screenProgram->key);
+            cache.DiscardPreparedProgramArtifact(replacement->key);
+            assert(!cache.GetProgramCache().HasProgram(replacement->key));
+            assert(cache.GetProgramCache().HasProgram(screenProgram->key));
+            assert(cache.PrepareProgramArtifact(*replacement));
+            assert(batchCore->PublishShaderProgramArtifacts({*replacement, *worldProgram}));
+            assert(cache.ShareProgramArtifact(replacement->key.stages)->key == replacement->key);
+            assert(!cache.GetProgramCache().HasProgram(screenProgram->key));
+            assert(cache.GetProgramCache().HasProgram(replacement->key));
+            batchCore->RetireShaderProgramArtifact(replacement->key);
+            batchCore->RetireShaderProgramArtifact(worldProgram->key);
+            batchCore->GetRetirementQueue().Collect(epoch);
+            cache.GetProgramCache().Shutdown();
+            cache.Clear();
+        }
         auto ownerCore = std::make_unique<InxVkCoreModular>();
         ownerCore->GetRetirementQueue().BindSerialSource([&] { return epoch; });
         auto &coreShaderCache = ownerCore->GetShaderCache();

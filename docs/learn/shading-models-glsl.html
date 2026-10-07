@@ -126,7 +126,7 @@ Learn Band --Imports--&gt; Learn Band Math
 <p>This example has a deliberately narrow lighting promise. <code>getMainLight()</code> evaluates the first directional light and includes its attenuation/shadow term. Additional directional, point, spot, and area lights, ambient probes, and indirect lighting do not contribute. There is no declaration that automatically upgrades a model to full light support. Use the loops in the built-in <code>PBR</code> and <code>Toon</code> models when the intended model must cover those lights.</p>
 <h2 id="discovery-diagnostics">Placement, discovery, and diagnostics</h2>
 <p>The loader recursively scans the project's <code>Assets</code> and <code>Packages</code> roots, the dependent <code>.frag</code> file's parent directory, and the built-in shader roots for <code>.vert</code>, <code>.frag</code>, <code>.glsl</code>, and <code>.shadingmodel</code> files; <code>_templates</code> directories are excluded. <code>Name</code> values are exact, case-sensitive IDs. Project declarations take precedence over built-ins and are also visible to the built-in Deferred lighting program. A Player discovers these declarations in its cooked <code>Library/Artifacts</code> tree. Duplicate project library or shading-model IDs are rejected with a diagnostic naming both files; keep those IDs unique across <code>Assets</code> and <code>Packages</code>.</p>
-<p>Runtime reload currently accepts <code>.vert</code> and <code>.frag</code> assets only. After editing <code>learn_band_math.glsl</code> or <code>learn_band.shadingmodel</code>, save, touch, or reimport <code>learn_band_surface.frag</code>; restarting the Editor also rebuilds discovery. This exact limitation means a dependency save can leave the previous GPU program visible until a dependent root stage is reloaded.</p>
+<p>Saving <code>learn_band_math.glsl</code> or <code>learn_band.shadingmodel</code> automatically recompiles the root stages that consumed that declaration, including transitive imports and the generated Deferred model registry. Every affected candidate must compile before the batch is published. If one candidate fails, the entire previous accepted batch remains active, and the Console reports the error against the edited dependency. Save the repaired dependency to retry; a root-stage save or Editor restart is unnecessary.</p>
 <p>Use this failure matrix before debugging pixels:</p>
 <table>
 <thead>
@@ -137,8 +137,8 @@ Learn Band --Imports--&gt; Learn Band Math
 </thead>
 <tbody>
 <tr>
-<td>Change <code>Learn Band Math</code> to a missing ID, then reimport the <code>.frag</code></td>
-<td>The generated source contains <code>shader import not found</code>; unresolved <code>learnBand</code> can follow. The new program is rejected.</td>
+<td>Change <code>Learn Band Math</code> to a missing ID and save the <code>.shadingmodel</code></td>
+<td>The generated source contains <code>shader import not found</code>; unresolved <code>learnBand</code> can follow. The new batch is rejected.</td>
 </tr>
 <tr>
 <td>Remove <code>Imports ["Lighting", ...]</code> but keep <code>Requires [Lighting]</code></td>
@@ -149,12 +149,12 @@ Learn Band --Imports--&gt; Learn Band Math
 <td>The lighting library is linked, but its camera-local resources are not bound/injected; the dependent variant fails compilation.</td>
 </tr>
 <tr>
-<td>Introduce invalid GLSL in the library, then reimport the <code>.frag</code></td>
-<td>The Console reports the dependent root <code>.frag</code> compile failure and the last-known-good program remains active.</td>
+<td>Introduce invalid GLSL and save the library</td>
+<td>The Console reports the dependent root compile failure against the library. All previously accepted programs remain active.</td>
 </tr>
 </tbody>
 </table>
-<p>Imports are expanded recursively, with cycle suppression and a maximum nesting depth of 16. Current generated shader diagnostics do not add source-file <code>#line</code> mapping for imported text, so a compiler line number may refer to the expanded/root source. Start with the first import error, inspect the named library, and reimport the root <code>.frag</code> after the fix. A visible old result proves only that last-known-good fallback worked; a cleared Console plus a deliberate Threshold change proves the new program became active.</p>
+<p>Imports are expanded recursively, with cycle suppression and a maximum nesting depth of 16. Current generated shader diagnostics do not add source-file <code>#line</code> mapping for imported text, so a compiler line number may refer to the expanded/root source. Start with the first import error, inspect the named library, and save that dependency after the fix. Its Console error should clear. Seeing the old result while a batch is rejected does not prove that the edit was accepted; a clean Console plus a deliberate Threshold change verifies the repaired program.</p>
 <h2 id="pass-variants">How one model becomes many pass variants</h2>
 <p>One vertex/fragment pair compiles into several programs. The engine enumerates nine material pass targets: <code>Forward</code>, <code>ForwardPlus</code>, <code>GBuffer</code>, <code>Shadow</code>, <code>Depth</code>, <code>Picking</code>, <code>Motion</code>, <code>Normal</code>, and <code>BaseColor</code> (<code>ShaderTypes.h</code>). For each target, <code>InxShaderLoader</code> regenerates the GLSL with a matching <code>main()</code> template:</p>
 <ul>
@@ -320,7 +320,7 @@ Learn Band --Imports--&gt; Learn Band Math
 <p>这个示例有意限定光源范围。<code>getMainLight()</code> 只计算第一盏方向光，并包含它的衰减与阴影项。其它方向光、点光、聚光灯、面光源、环境探针和间接光都不会贡献结果。当前没有能自动升级为完整光源支持的声明。若模型需要覆盖这些光源，请采用内置 <code>PBR</code> 与 <code>Toon</code> 模型中的遍历方式。</p>
 <h2 id="discovery-diagnostics_1">放置、发现与诊断</h2>
 <p>加载器会递归扫描项目的 <code>Assets</code> 与 <code>Packages</code> 根目录、依赖 <code>.frag</code> 所在目录及内置 Shader 根目录，识别 <code>.vert</code>、<code>.frag</code>、<code>.glsl</code> 和 <code>.shadingmodel</code>，同时排除 <code>_templates</code> 目录。<code>Name</code> 是区分大小写的精确 ID。项目声明优先于内置声明，内置 Deferred 光照程序也能发现这些模型。Player 从打包后的 <code>Library/Artifacts</code> 目录发现同一份声明。项目函数库或光照模型的 ID 重复时，加载器会拒绝编译并报告两个文件的位置；请保证这些 ID 在 <code>Assets</code> 与 <code>Packages</code> 中唯一。</p>
-<p>运行时重载目前只接受 <code>.vert</code> 与 <code>.frag</code> 资产。修改 <code>learn_band_math.glsl</code> 或 <code>learn_band.shadingmodel</code> 后，请保存、触碰或重新导入 <code>learn_band_surface.frag</code>；重启 Editor 也会重建发现结果。受此限制，只保存依赖文件时，画面可能继续显示旧 GPU Program，直到依赖它的根阶段发生重载。</p>
+<p>保存 <code>learn_band_math.glsl</code> 或 <code>learn_band.shadingmodel</code> 后，引擎会自动重新编译使用该声明的根阶段，包括递归导入和生成的 Deferred 模型注册表。所有受影响的候选都编译成功后，才会统一发布。任何一个候选失败，整批上一份已接受的程序都保持不变，Console 会把错误归属到本次修改的依赖文件。修复后再次保存该依赖即可重试，无需保存根阶段或重启 Editor。</p>
 <p>调试像素之前，先按此故障矩阵检查：</p>
 <table>
 <thead>
@@ -331,8 +331,8 @@ Learn Band --Imports--&gt; Learn Band Math
 </thead>
 <tbody>
 <tr>
-<td>把 <code>Learn Band Math</code> 改成不存在的 ID，再重新导入 <code>.frag</code></td>
-<td>生成源码中出现 <code>shader import not found</code>，随后可能报告 <code>learnBand</code> 未解析；新 Program 会被拒绝。</td>
+<td>把 <code>Learn Band Math</code> 改成不存在的 ID，保存 <code>.shadingmodel</code></td>
+<td>生成源码中出现 <code>shader import not found</code>，随后可能报告 <code>learnBand</code> 未解析；新的一批程序会被拒绝。</td>
 </tr>
 <tr>
 <td>删除 <code>Imports ["Lighting", ...]</code>，保留 <code>Requires [Lighting]</code></td>
@@ -343,12 +343,12 @@ Learn Band --Imports--&gt; Learn Band Math
 <td>光照函数库已经链接，相机局部资源没有绑定或注入；相关变体编译失败。</td>
 </tr>
 <tr>
-<td>在函数库中加入非法 GLSL，再重新导入 <code>.frag</code></td>
-<td>Console 报告依赖根 <code>.frag</code> 的编译失败，并继续使用上一份有效 Program。</td>
+<td>在函数库中加入非法 GLSL 并保存</td>
+<td>Console 会将依赖根阶段的编译错误归属到函数库，所有上一份已接受的程序都保持不变。</td>
 </tr>
 </tbody>
 </table>
-<p>Import 会递归展开，循环导入会被抑制，最大嵌套深度为 16。当前生成的 Shader 诊断不会为导入文本增加源文件 <code>#line</code> 映射，因此编译器行号可能指向展开后的源码或根文件。请先处理第一条 Import 错误，检查其中点名的函数库，修复后重新导入根 <code>.frag</code>。画面仍显示旧结果只能证明上一份有效版本继续工作；Console 清空后再故意修改 Threshold，才能证明新 Program 已经生效。</p>
+<p>Import 会递归展开，循环导入会被抑制，最大嵌套深度为 16。当前生成的 Shader 诊断不会为导入文本增加源文件 <code>#line</code> 映射，因此编译器行号可能指向展开后的源码或根文件。请先处理第一条 Import 错误，检查其中点名的函数库，修复后保存该依赖，其 Console 错误应当消失。候选被拒绝时仍显示旧结果，不能证明修改已经被接受；Console 无错误后再故意修改 Threshold，才能验证修复后的 Program。</p>
 <h2 id="pass-variants_1">一个模型如何变成多套 Pass 变体</h2>
 <p>一对 Vert/Frag 会编译成多套程序。引擎枚举九种材质 Pass 目标：<code>Forward</code>、<code>ForwardPlus</code>、<code>GBuffer</code>、<code>Shadow</code>、<code>Depth</code>、<code>Picking</code>、<code>Motion</code>、<code>Normal</code> 与 <code>BaseColor</code>（<code>ShaderTypes.h</code>）。每个目标都由 <code>InxShaderLoader</code> 重新生成 GLSL，并配上对应的 <code>main()</code> 模板：</p>
 <ul>

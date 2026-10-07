@@ -92,6 +92,28 @@ void main() {}
     assert(!HasRoot(missing, root));
     assert(HasRoot(directory / "moved.glsl", root));
 
+    // One successful sibling compile cannot drop the running program's
+    // dependency closure while another candidate in the batch is rejected.
+    Write(outer, "ShaderInfo { Name \"Outer\" Imports [\"Leaf\"] }\nfloat outer() { return leaf(); }\n");
+    InxShaderLoader::InvalidateDirectoryCache();
+    {
+        InxShaderLoader::SourceDependencyPublication rejectedBatch;
+        assert(compile());
+        assert(HasRoot(directory / "moved.glsl", root));
+        assert(HasRoot(leaf, root));
+    }
+    assert(HasRoot(directory / "moved.glsl", root));
+    assert(HasRoot(leaf, root));
+    Write(outer, "ShaderInfo { Name \"Outer\" Imports [\"Arriving\"] }\nfloat outer() { return arriving(); }\n");
+    InxShaderLoader::InvalidateDirectoryCache();
+    {
+        InxShaderLoader::SourceDependencyPublication acceptedBatch;
+        assert(compile());
+        acceptedBatch.Commit();
+    }
+    assert(!HasRoot(leaf, root));
+    assert(HasRoot(directory / "moved.glsl", root));
+
     // Invalid declaration syntax must still leave its dependency subscription.
     Write(directory / "moved.glsl", "ShaderInfo { Name \"Arriving\" Imports [123] }\nfloat arriving() { return 1.0; }\n");
     InxShaderLoader::InvalidateDirectoryCache();
