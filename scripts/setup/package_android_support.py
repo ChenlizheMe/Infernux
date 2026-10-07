@@ -22,9 +22,11 @@ MODULE = ROOT / "packaging/android_support.py"
 
 
 def _support_module():
-    packaging_dir = str(MODULE.parent)
-    if packaging_dir not in sys.path:
-        sys.path.insert(0, packaging_dir)
+    # Hub utilities share the stdlib project-lock protocol with the engine.
+    # Release commands must resolve both source roots without shell PYTHONPATH.
+    for source_root in (ROOT / "python", MODULE.parent):
+        if str(source_root) not in sys.path:
+            sys.path.insert(0, str(source_root))
     spec = importlib.util.spec_from_file_location("infernux_android_support", MODULE)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load Android compatibility contract: {MODULE}")

@@ -471,7 +471,13 @@ def test_release_packager_creates_the_exact_hub_installable_asset(tmp_path: Path
         str(output),
     ]
 
-    subprocess.run(command, check=True, capture_output=True, text=True)
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    command.insert(1, "-I")
+    completed = subprocess.run(
+        command, cwd=tmp_path, env=environment, capture_output=True, text=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
     first = output.read_bytes()
     subprocess.run(command, check=True, capture_output=True, text=True)
 
