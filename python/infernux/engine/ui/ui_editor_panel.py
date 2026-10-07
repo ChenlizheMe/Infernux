@@ -279,7 +279,11 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
         from infernux.ui.ui_canvas_utils import runtime_ui_scenes
 
         scenes = runtime_ui_scenes(scene_manager)
-        scene_key = tuple(scene_canvas_cache_key(candidate) for candidate in scenes)
+        # Selection also caches the absence of a screen component. Component
+        # add/remove/reorder publishes the scene structure revision without
+        # changing the selection or Canvas membership epoch.
+        scene_key = tuple((scene_canvas_cache_key(candidate), candidate.structure_version)
+                          for candidate in scenes)
         cached_component = getattr(self, "_selected_element_cache", None)
         if (
             self._selected_element_cache_revision == selection.revision
@@ -498,10 +502,13 @@ class UIEditorPanel(UIEditorCanvasOps, UIEditorGeometryMixin, UIEditorAlignmentM
 
     def _on_not_visible(self, ctx):
         self._commit_pending_view_edits()
-        self._finish_element_manipulation(commit=True)
+        self._clear_interaction_state()
+        self._is_panning = False
+        self._dragging_canvas = False
+        self._drag_canvas_id = 0
 
     def on_disable(self) -> None:
-        self._commit_pending_view_edits()
+        self._on_not_visible(None)
 
     def on_render_content(self, ctx: InxGUIContext):
         all_canvases = self._get_all_canvases()
