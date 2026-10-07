@@ -3635,12 +3635,14 @@ def _selected_sprite_frame_index(
         SelectionService,
     )
 
+    asset_guid = str((state.meta or {}).get("guid", "") or "").strip()
     primary = SelectionService.instance().snapshot.primary
     if (
-        primary is None
+        not asset_guid
+        or primary is None
         or primary.domain is not SelectionDomain.ASSET_SUBRESOURCE
         or primary.sub_kind != "sprite_frame"
-        or not same_path(primary.document_id, state.file_path)
+        or primary.document_id.casefold() != asset_guid.casefold()
     ):
         return -1
     index = next(
