@@ -459,6 +459,11 @@ def _shader_value_token(value):
     return (type(value).__name__, str(value or ""))
 
 
+def _shader_annotation_key(vertex, fragment):
+    return (_shader_value_token(vertex), _shader_value_token(fragment),
+            shader_utils.get_shader_property_generation())
+
+
 def _bump_material_schema_revision(state) -> int:
     revision = int(state.extra.get("_material_schema_revision", 0)) + 1
     state.extra["_material_schema_revision"] = revision
@@ -614,11 +619,10 @@ def _render_shader_section(ctx, mat_data, state, is_builtin, default_open,
             requires_deserialize = True
             requires_pipeline_refresh = True
             if new_ref != old_val:
-                other_id = shader_utils.shader_ref_id(shaders.get(other_key, ""))
-                new_id = shader_utils.shader_ref_id(new_ref)
-                v, f = (new_id, other_id) if shader_key == "vertex" else (other_id, new_id)
+                other_ref = shaders.get(other_key, "")
+                v, f = (new_ref, other_ref) if shader_key == "vertex" else (other_ref, new_ref)
                 shader_utils.sync_all_shader_properties(mat_data, v, f, remove_unknown=True)
-                state.extra["shader_sync_key"] = f"{v}|{f}:{shader_utils.get_shader_property_generation()}"
+                state.extra["shader_sync_key"] = _shader_annotation_key(v, f)
 
         # Vertex shader
         shader_ui = _get_material_shader_ui_cache(state, vert_ref, frag_ref)
@@ -1179,19 +1183,6 @@ def _sync_shader_annotations(mat_data, state):
     shaders = mat_data.get("shaders", {})
     vert_ref = shaders.get("vertex", "")
     frag_ref = shaders.get("fragment", "")
-    ref_token = (_shader_value_token(vert_ref), _shader_value_token(frag_ref))
-    cached_ids = state.extra.get("_material_shader_ids")
-    if isinstance(cached_ids, dict) and cached_ids.get("refs") == ref_token:
-        vert_shader_id = cached_ids["vertex"]
-        frag_shader_id = cached_ids["fragment"]
-    else:
-        vert_shader_id = shader_utils.shader_ref_id(vert_ref)
-        frag_shader_id = shader_utils.shader_ref_id(frag_ref)
-        state.extra["_material_shader_ids"] = {
-            "refs": ref_token,
-            "vertex": vert_shader_id,
-            "fragment": frag_shader_id,
-        }
     prop_gen = shader_utils.get_shader_property_generation()
     if state.extra.get("_shader_catalog_generation", -1) != prop_gen:
         state.extra["_shader_catalog_generation"] = prop_gen
@@ -1199,7 +1190,7 @@ def _sync_shader_annotations(mat_data, state):
             state.extra["shader_cache"][".vert"] = None
             state.extra["shader_cache"][".frag"] = None
         state.extra.pop("_material_shader_ui_cache", None)
-    sync_key = f"{vert_shader_id}|{frag_shader_id}:{prop_gen}"
+    sync_key = _shader_annotation_key(vert_ref, frag_ref)
     last_sync_key = state.extra.get("shader_sync_key", "")
     last_validation_key = state.extra.get("shader_validation_key", "")
     current_property_names = tuple(sorted(
@@ -1208,13 +1199,13 @@ def _sync_shader_annotations(mat_data, state):
         state.extra.get("shader_validation_property_names", ()))
     needs_validation = (
         sync_key != last_validation_key
-        or not mat_data.get("_shader_property_order")
+        or "_shader_property_order" not in mat_data
         or current_property_names != last_validation_property_names
     )
     missing_shader_props = False
-    if needs_validation and (vert_shader_id or frag_shader_id):
+    if needs_validation and (vert_ref or frag_ref):
         current_props = mat_data.get("properties", {})
-        expected_shader_props = shader_utils.get_all_shader_property_names(vert_shader_id, frag_shader_id)
+        expected_shader_props = shader_utils.get_all_shader_property_names(vert_ref, frag_ref)
         missing_shader_props = any(name not in current_props for name in expected_shader_props)
         state.extra["shader_validation_key"] = sync_key
         state.extra["shader_validation_property_names"] = current_property_names
@@ -1223,18 +1214,16 @@ def _sync_shader_annotations(mat_data, state):
     requires_deserialize = False
     if sync_key != last_sync_key:
         _bump_material_schema_revision(state)
-    if (vert_shader_id or frag_shader_id) and (sync_key != last_sync_key or missing_shader_props):
-        old_key = last_sync_key.rsplit(":", 1)[0] if last_sync_key else ""
-        remove = (f"{vert_shader_id}|{frag_shader_id}" == old_key) and bool(old_key)
+    if (vert_ref or frag_ref) and (sync_key != last_sync_key or missing_shader_props):
+        remove = bool(last_sync_key) and last_sync_key[:2] == sync_key[:2]
         state.extra["shader_sync_key"] = sync_key
-        if vert_shader_id or frag_shader_id:
-            old_prop_names = set(mat_data.get("properties", {}).keys())
-            shader_utils.sync_all_shader_properties(mat_data, vert_shader_id, frag_shader_id,
-                                                    remove_unknown=remove)
-            new_prop_names = set(mat_data.get("properties", {}).keys())
-            if new_prop_names != old_prop_names:
-                changed = True
-                requires_deserialize = True
+        old_prop_names = set(mat_data.get("properties", {}).keys())
+        shader_utils.sync_all_shader_properties(mat_data, vert_ref, frag_ref,
+                                                remove_unknown=remove)
+        new_prop_names = set(mat_data.get("properties", {}).keys())
+        if new_prop_names != old_prop_names:
+            changed = True
+            requires_deserialize = True
     return changed, requires_deserialize
 
 
@@ -1383,15 +1372,12 @@ def _render_material_top_native(ctx, panel, state, mat_data, section_readonly,
         requires_deserialize = True
         requires_pipeline_refresh = True
         if stored_ref != old_identity:
-            other_id = shader_utils.shader_ref_id(shaders.get(other_key, ""))
-            new_id = shader_utils.shader_ref_id(stored_ref)
-            vert_id, frag_id = ((new_id, other_id) if shader_key == "vertex"
-                                else (other_id, new_id))
+            other_ref = shaders.get(other_key, "")
+            vert_id, frag_id = ((stored_ref, other_ref) if shader_key == "vertex"
+                                else (other_ref, stored_ref))
             shader_utils.sync_all_shader_properties(
                 mat_data, vert_id, frag_id, remove_unknown=True)
-            state.extra["shader_sync_key"] = (
-                f"{vert_id}|{frag_id}:{shader_utils.get_shader_property_generation()}"
-            )
+            state.extra["shader_sync_key"] = _shader_annotation_key(vert_id, frag_id)
 
     from .igui import IGUI
     from infernux.engine.interaction import AssetReferenceFieldModel
@@ -1731,8 +1717,8 @@ def _on_shader_drop(path: str, required_ext: str, shaders_dict: dict):
         reference = shader_utils.make_shader_reference(path, required_ext)
         shaders_dict[key] = reference
         if reference != old and _cached_data:
-            vert_id = shader_utils.shader_ref_id(shaders_dict.get("vertex", ""))
-            frag_id = shader_utils.shader_ref_id(shaders_dict.get("fragment", ""))
+            vert_id = shaders_dict.get("vertex", "")
+            frag_id = shaders_dict.get("fragment", "")
             shader_utils.sync_all_shader_properties(_cached_data, vert_id, frag_id, remove_unknown=True)
 
 

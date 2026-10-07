@@ -221,7 +221,7 @@ def _read_source_shader_metadata(filepath: str) -> dict[str, object]:
 # Inspector sync keys include this so that property lists refresh automatically.
 _shader_property_generation: int = 0
 _shader_catalog_cache: dict[tuple[str, tuple[str, ...]], dict[str, object]] = {}
-_shader_properties_cache: dict[tuple[str, str], list] = {}
+_shader_properties_cache: dict[tuple[str, ...], list | None] = {}
 _shader_visibility_cache: dict[str, tuple[int, int, bool]] = {}
 
 
@@ -247,6 +247,7 @@ def _get_shader_search_roots() -> list[str]:
     search_roots = []
     if project_root:
         search_roots.append(os.path.join(project_root, "Assets"))
+        search_roots.append(os.path.join(project_root, "Packages"))
 
     from infernux.resources import resources_path
     builtin_root = os.path.join(resources_path, "shaders")
@@ -329,21 +330,28 @@ def _get_shader_catalog(ext: str) -> dict[str, object]:
     return catalog
 
 
-def _get_shader_properties_cached(shader_id: str, ext: str) -> list:
-    """Return cached ShaderInfo property metadata for a shader id."""
-    if not shader_id:
-        return []
+def _get_shader_properties_cached(reference, ext: str) -> list | None:
+    """Resolve the imported GUID; only name-only references use the catalog.
 
-    cache_key = (shader_id, ext)
-    cached = _shader_properties_cache.get(cache_key)
-    if cached is not None:
-        return cached
-
-    shader_path = get_shader_file_path(shader_id, ext)
-    if not shader_path:
-        return []
-
-    props = parse_shader_properties(shader_path)
+    None means an unavailable stage, distinct from a valid empty schema.
+    Both are cached until the shader publication generation changes.
+    """
+    from infernux.engine.project_context import get_project_root
+    guid = str(reference.get("guid", "") or "").strip() if isinstance(reference, dict) else ""
+    shader_id = shader_ref_id(reference)
+    if not shader_id and isinstance(reference, dict):
+        shader_id = str(reference.get("builtin", "") or "").strip()
+    cache_key = (get_project_root() or "", "guid" if guid else "name", guid or shader_id, ext)
+    if cache_key in _shader_properties_cache:
+        return _shader_properties_cache[cache_key]
+    if guid:
+        from infernux.lib import AssetRegistry
+        database = AssetRegistry.instance().get_asset_database()
+        shader_path = database.get_path_from_guid(guid) if database else None
+    else:
+        shader_path = get_shader_file_path(shader_id, ext)
+    props = (parse_shader_properties(shader_path)
+             if shader_path and shader_path.lower().endswith(ext) else None)
     _shader_properties_cache[cache_key] = props
     return props
 
@@ -588,9 +596,6 @@ def _apply_shader_props_to_mat(mat_data: dict, all_props: list[dict],
     Shared implementation for `sync_properties_from_shader` and
     `sync_all_shader_properties`.
     """
-    if not all_props:
-        return
-
     props = mat_data.setdefault("properties", {})
 
     seen_names: set[str] = set()
@@ -667,15 +672,27 @@ def sync_properties_from_shader(mat_data: dict, shader_id: str, ext: str,
     If *remove_unknown* is True, removes properties not defined in shader.
     """
     shader_props = _get_shader_properties_cached(shader_id, ext)
-    if not shader_props:
-        # Shader file may be temporarily incomplete during hot-reload.
-        # Do NOT clear properties or ordering metadata — preserve existing
-        # state so the inspector doesn't flicker.
+    if shader_props is None:
+        # An unavailable stage must preserve the last published schema.
         return
     _apply_shader_props_to_mat(mat_data, shader_props, remove_unknown=remove_unknown)
 
 
-def sync_all_shader_properties(mat_data: dict, vert_shader_id: str, frag_shader_id: str,
+def _merged_shader_properties(vertex, fragment) -> list[dict] | None:
+    all_props = []
+    has_stage = False
+    for reference, ext in ((vertex, ".vert"), (fragment, ".frag")):
+        if not reference:
+            continue
+        has_stage = True
+        properties = _get_shader_properties_cached(reference, ext)
+        if properties is None:
+            return None
+        all_props.extend(properties)
+    return all_props if has_stage else None
+
+
+def sync_all_shader_properties(mat_data: dict, vert_shader_id, frag_shader_id,
                                remove_unknown: bool = False):
     """Sync material properties from both vertex and fragment shader annotations.
 
@@ -683,27 +700,21 @@ def sync_all_shader_properties(mat_data: dict, vert_shader_id: str, frag_shader_
     first in the display order, followed by fragment properties.
     If *remove_unknown* is True, removes properties not defined in either shader.
     """
-    all_props: list[dict] = []
-    if vert_shader_id:
-        all_props.extend(_get_shader_properties_cached(vert_shader_id, ".vert"))
-    if frag_shader_id:
-        all_props.extend(_get_shader_properties_cached(frag_shader_id, ".frag"))
-    _apply_shader_props_to_mat(mat_data, all_props, remove_unknown=remove_unknown)
+    all_props = _merged_shader_properties(vert_shader_id, frag_shader_id)
+    if all_props is not None:
+        _apply_shader_props_to_mat(mat_data, all_props, remove_unknown=remove_unknown)
 
 
-def get_all_shader_property_names(vert_shader_id: str, frag_shader_id: str) -> list[str]:
+def get_all_shader_property_names(vert_shader_id, frag_shader_id) -> list[str]:
     """Return all declared material property names from the active vertex and fragment shaders."""
     ordered_names: list[str] = []
     seen_names: set[str] = set()
 
-    for shader_id, ext in ((vert_shader_id, ".vert"), (frag_shader_id, ".frag")):
-        if not shader_id:
-            continue
-        for sp in _get_shader_properties_cached(shader_id, ext):
-            name = sp.get("name", "")
-            if name and name not in seen_names:
-                ordered_names.append(name)
-                seen_names.add(name)
+    for sp in _merged_shader_properties(vert_shader_id, frag_shader_id) or ():
+        name = sp.get("name", "")
+        if name and name not in seen_names:
+            ordered_names.append(name)
+            seen_names.add(name)
 
     return ordered_names
 
