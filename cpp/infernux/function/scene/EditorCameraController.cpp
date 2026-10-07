@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <glm/gtc/quaternion.hpp>
+#include <stdexcept>
 
 namespace infernux
 {
@@ -156,19 +157,33 @@ void EditorCameraController::FocusOn(const glm::vec3 &point, float distance)
     if (!m_camera || !m_camera->GetGameObject())
         return;
 
+    Transform *transform = m_camera->GetGameObject()->GetTransform();
+    const auto finite = [](const glm::vec3 &value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    };
+    const glm::vec3 position = transform->GetPosition();
+    if (!finite(point) || !finite(position) || !std::isfinite(distance) || distance <= 0.0f)
+        throw std::invalid_argument("Camera focus requires finite positions and a positive finite distance");
+
+    // Normalize only a nonzero offset. Double precision also prevents valid
+    // float positions from overflowing or underflowing the length calculation.
+    const glm::dvec3 offset = glm::dvec3(position) - glm::dvec3(point);
+    const double length = glm::length(offset);
+    const glm::dvec3 direction = length > 0.0 ? offset / length : glm::dvec3(0.0, 0.0, 1.0);
+    const glm::vec3 focusedPosition(glm::dvec3(point) + direction * static_cast<double>(distance));
+    if (!finite(focusedPosition) || focusedPosition == point)
+        throw std::invalid_argument("Camera focus distance cannot be represented at the requested position");
+
+    // Use the represented position for the final aim, without a second
+    // float-length normalization inside Transform::LookAt.
+    const glm::dvec3 aim = glm::dvec3(point) - glm::dvec3(focusedPosition);
+    const glm::vec3 forward(aim / glm::length(aim));
+    const glm::vec3 up = std::abs(forward.y) > 0.999f ? glm::vec3(0.0f, 0.0f, 1.0f)
+                                                    : glm::vec3(0.0f, 1.0f, 0.0f);
     m_focusPoint = point;
     m_focusDistance = distance;
-
-    Transform *transform = m_camera->GetGameObject()->GetTransform();
-
-    // Position camera at distance from focus point, looking at it
-    glm::vec3 direction = glm::normalize(transform->GetPosition() - point);
-    if (glm::length(direction) < 0.001f) {
-        direction = glm::vec3(0.0f, 0.0f, 1.0f);
-    }
-
-    transform->SetPosition(point + direction * distance);
-    transform->LookAt(point);
+    transform->SetPosition(focusedPosition);
+    transform->SetWorldRotation(glm::quatLookAt(forward, up));
 
     SyncAnglesFromTransform();
 }

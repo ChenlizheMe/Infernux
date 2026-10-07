@@ -11,6 +11,19 @@ def camera(scene):
     return scene.create_game_object('View Camera').add_component('Camera')
 
 
+@pytest.mark.parametrize('position', [(1.e8, 2.e8, -3.e8), (0., 0., 1.e25), (-1.e25, 1.e25, 1.e25)])
+@pytest.mark.parametrize('yaw', [0., 123.])
+def test_distant_camera_view_keeps_orientation_and_finite_translation(camera, position, yaw):
+    camera.transform.euler_angles = lib.Vector3(20., yaw, 0.)
+    orientation = camera.view_matrix[:3, :3].copy()
+    camera.transform.position = lib.Vector3(*position)
+    actual_position = np.array(tuple(camera.transform.position))
+    view = camera.view_matrix
+    assert np.isfinite(view).all()
+    np.testing.assert_allclose(view[:3, :3], orientation, atol=1.e-6)
+    np.testing.assert_allclose(view[:3, 3], -orientation @ actual_position, rtol=2.e-6)
+
+
 def test_history_reset_does_not_edit_camera_pose_or_serialized_settings(camera):
     camera.transform.position = lib.Vector3(1, 2, -3)
     camera.view_matrix = np.diag([1., -1., 1., 1.])

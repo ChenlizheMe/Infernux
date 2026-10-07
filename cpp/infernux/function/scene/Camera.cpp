@@ -582,7 +582,11 @@ glm::mat4 Camera::GetViewMatrix() const
     glm::vec3 forward = transform->GetWorldForward();
     glm::vec3 up = transform->GetWorldUp();
 
-    return glm::lookAt(position, position + forward, up);
+    // Build orientation independently of translation. At distant coordinates,
+    // position + forward can round back to position and make lookAt normalize
+    // a zero vector even though the authored direction is perfectly valid.
+    const glm::mat4 orientation = glm::lookAt(glm::vec3(0.0f), forward, up);
+    return glm::translate(orientation, -position);
 }
 
 glm::mat4 Camera::GetCameraToWorldMatrix() const
