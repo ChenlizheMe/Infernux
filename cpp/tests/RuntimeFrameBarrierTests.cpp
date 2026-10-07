@@ -10,6 +10,7 @@
 #include "TransformHierarchyPublicationTests.h"
 #include "CompoundColliderPublicationTests.h"
 #include "BroadphaseQueuePublicationTests.h"
+#include "PhysicsQueryDefaultMaskTests.h"
 
 using infernux::GameObject;
 using infernux::PhysicsECSStore;
@@ -220,8 +221,9 @@ int main()
     try {
         TestBroadphaseQueuePublication();
         TestCompoundColliderPublication();
+        TestPhysicsQueryDefaultMask();
     } catch (const std::exception &error) {
-        std::cerr << "Compound publication test failed: " << error.what() << std::endl;
+        std::cerr << "Physics publication test failed: " << error.what() << std::endl;
         return 1;
     }
     return 0;

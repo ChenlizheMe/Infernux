@@ -56,12 +56,12 @@ class Physics:
                                  *, query_triggers: bool = ...) -> dict[str, Any]: ...
     @staticmethod
     def query_rigidbody_box_states_in_bounds(
-        minimum: Any, maximum: Any, out: dict[str, Any], layer_mask: int = ...,
+        minimum: Any, maximum: Any, out: dict[str, Any], layer_mask: Optional[int] = ...,
         *, query_triggers: bool = ...,
     ) -> dict[str, Any]: ...
     @staticmethod
     def query_rigidbody_states_and_box_states_in_bounds(
-        minimum: Any, maximum: Any, state_out: dict[str, Any], box_out: dict[str, Any], layer_mask: int = ...,
+        minimum: Any, maximum: Any, state_out: dict[str, Any], box_out: dict[str, Any], layer_mask: Optional[int] = ...,
         *, query_triggers: bool = ...,
     ) -> tuple[dict[str, Any], dict[str, Any]]: ...
 
@@ -79,7 +79,7 @@ class Physics:
 
     @staticmethod
     def query_rigidbodies_in_bounds(
-        minimum: Any, maximum: Any, layer_mask: int = ..., query_triggers: bool = ...,
+        minimum: Any, maximum: Any, layer_mask: Optional[int] = ..., query_triggers: bool = ...,
     ) -> List[Any]: ...
 
     @classmethod
@@ -117,7 +117,7 @@ class Physics:
         origin: Any,
         direction: Any,
         max_distance: float = ...,
-        layer_mask: int = ...,
+        layer_mask: Optional[int] = ...,
         query_triggers: bool = ...,
     ) -> Optional[RaycastHit]:
         """Cast a ray and return the first hit, or None."""
@@ -129,7 +129,7 @@ class Physics:
         screen_position: Tuple[float, float],
         viewport_size: Tuple[float, float],
         max_distance: float = ...,
-        layer_mask: int = ...,
+        layer_mask: Optional[int] = ...,
         query_triggers: bool = ...,
     ) -> Optional[RaycastHit]:
         """Cast from a top-left-origin camera viewport pixel position."""
@@ -141,7 +141,7 @@ class Physics:
         directions: npt.NDArray[np.float32],
         out: RaycastBatchOutput,
         max_distance: float = ...,
-        layer_mask: int = ...,
+        layer_mask: Optional[int] = ...,
         query_triggers: bool = ...,
         profile: bool = ...,
     ) -> RaycastBatchOutput: ...
@@ -151,7 +151,7 @@ class Physics:
         origin: Any,
         direction: Any,
         max_distance: float = ...,
-        layer_mask: int = ...,
+        layer_mask: Optional[int] = ...,
         query_triggers: bool = ...,
     ) -> List[RaycastHit]:
         """Cast a ray and return all hits."""
@@ -161,7 +161,7 @@ class Physics:
     def overlap_sphere(
         center: Any,
         radius: float,
-        layer_mask: int = ...,
+        layer_mask: Optional[int] = ...,
         query_triggers: bool = ...,
     ) -> List[Collider]:
         """Find all colliders within a sphere."""
@@ -172,14 +172,14 @@ class Physics:
         center: Any,
         half_extents: Any,
         orientation: Any = ...,
-        layer_mask: int = ...,
+        layer_mask: Optional[int] = ...,
         query_triggers: bool = ...,
     ) -> List[Collider]:
         """Find all colliders within an oriented box."""
         ...
 
     @staticmethod
-    def overlap_capsule(point0: Any, point1: Any, radius: float, layer_mask: int = ..., query_triggers: bool = ...) -> List[Collider]: ...
+    def overlap_capsule(point0: Any, point1: Any, radius: float, layer_mask: Optional[int] = ..., query_triggers: bool = ...) -> List[Collider]: ...
 
     @staticmethod
     def sphere_cast(
@@ -187,7 +187,7 @@ class Physics:
         radius: float,
         direction: Any,
         max_distance: float = ...,
-        layer_mask: int = ...,
+        layer_mask: Optional[int] = ...,
         query_triggers: bool = ...,
     ) -> Optional[RaycastHit]:
         """Cast a sphere along a direction and return the first hit, or None."""
@@ -200,14 +200,14 @@ class Physics:
         direction: Any,
         orientation: Any = ...,
         max_distance: float = ...,
-        layer_mask: int = ...,
+        layer_mask: Optional[int] = ...,
         query_triggers: bool = ...,
     ) -> Optional[RaycastHit]:
         """Cast a box along a direction and return the first hit, or None."""
         ...
 
     @staticmethod
-    def capsule_cast(point0: Any, point1: Any, radius: float, direction: Any, max_distance: float = ..., layer_mask: int = ..., query_triggers: bool = ...) -> Optional[RaycastHit]: ...
+    def capsule_cast(point0: Any, point1: Any, radius: float, direction: Any, max_distance: float = ..., layer_mask: Optional[int] = ..., query_triggers: bool = ...) -> Optional[RaycastHit]: ...
 
     @staticmethod
     def ignore_layer_collision(layer1: int, layer2: int, ignore: bool = ...) -> None:

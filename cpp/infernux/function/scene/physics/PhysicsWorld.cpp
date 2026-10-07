@@ -549,6 +549,11 @@ struct PhysicsWorld::LayerInterfaces
 // Singleton
 // ============================================================================
 
+uint32_t PhysicsWorld::GetDefaultQueryLayerMask()
+{
+    return EngineConfig::Get().defaultQueryLayerMask;
+}
+
 PhysicsWorld &PhysicsWorld::Instance()
 {
     // Intentionally leaked: Shutdown() is called explicitly from

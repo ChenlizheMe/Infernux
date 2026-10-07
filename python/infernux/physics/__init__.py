@@ -25,6 +25,10 @@ from infernux.lib import Physics as _CppPhysics
 from infernux.lib import _wrap_native_builtin_component
 
 
+def _query_layer_mask(value: Optional[int]) -> Optional[int]:
+    return None if value is None else int(value)
+
+
 def _gpu_state_output(out, names, *, flush: bool = True):
     from infernux.compute import Buffer, _flush_commands
 
@@ -72,6 +76,9 @@ class Physics(metaclass=_PhysicsMeta):
     """Static physics query interface (mirrors Unity's Physics class).
 
     All methods delegate to the C++ ``PhysicsWorld`` singleton via pybind11.
+    Omitted or ``None`` query masks use ``EngineConfig.default_query_layer_mask``
+    at the query boundary. Explicit masks are literal: zero selects no layers,
+    and ``0xFFFFFFFF`` selects all 32 layers.
     """
 
     @staticmethod
@@ -150,7 +157,7 @@ class Physics(metaclass=_PhysicsMeta):
 
     @staticmethod
     def query_rigidbodies_in_bounds(minimum, maximum,
-                                    layer_mask: int = (0xFFFFFFFF & ~(1 << 2)),
+                                    layer_mask: Optional[int] = None,
                                     query_triggers: bool = False):
         """Return Rigidbody broad-phase candidates inside a world AABB.
 
@@ -162,7 +169,7 @@ class Physics(metaclass=_PhysicsMeta):
         from infernux.components.builtin import Rigidbody
 
         native = _CppPhysics.query_rigidbodies_in_bounds(
-            coerce_vec3(minimum), coerce_vec3(maximum), int(layer_mask), bool(query_triggers)
+            coerce_vec3(minimum), coerce_vec3(maximum), _query_layer_mask(layer_mask), bool(query_triggers)
         )
         return [Rigidbody._get_or_create_wrapper(body, body.game_object) for body in native]
 
@@ -210,7 +217,7 @@ class Physics(metaclass=_PhysicsMeta):
         return out
 
     @staticmethod
-    def query_rigidbody_box_states_in_bounds(minimum, maximum, out, layer_mask: int = (0xFFFFFFFF & ~(1 << 2)),
+    def query_rigidbody_box_states_in_bounds(minimum, maximum, out, layer_mask: Optional[int] = None,
                                              *, query_triggers: bool = False):
         """Query nearby rigidbodies and write BoxCollider descriptors in one native pass.
 
@@ -228,7 +235,7 @@ class Physics(metaclass=_PhysicsMeta):
         if gpu_output is None:
             raise TypeError("query_rigidbody_box_states_in_bounds requires inx.buffer outputs")
         native_bodies, count = _CppPhysics._query_rigidbody_box_state_buffers(
-            coerce_vec3(minimum), coerce_vec3(maximum), int(layer_mask), bool(query_triggers), gpu_output
+            coerce_vec3(minimum), coerce_vec3(maximum), _query_layer_mask(layer_mask), bool(query_triggers), gpu_output
         )
         out["count"] = int(count)
         from infernux.components.builtin import Rigidbody
@@ -238,7 +245,7 @@ class Physics(metaclass=_PhysicsMeta):
     @staticmethod
     def query_rigidbody_states_and_box_states_in_bounds(
         minimum, maximum, state_out, box_out,
-        layer_mask: int = (0xFFFFFFFF & ~(1 << 2)), *, query_triggers: bool = False,
+        layer_mask: Optional[int] = None, *, query_triggers: bool = False,
     ):
         """Query Jolt broad-phase candidates and upload both GPU state sets.
 
@@ -267,7 +274,7 @@ class Physics(metaclass=_PhysicsMeta):
                 name: box_out[name].numpy(copy=False) for name in box_names
             }
             native_bodies, count = _CppPhysics._query_rigidbody_state_and_box_state_arrays(
-                coerce_vec3(minimum), coerce_vec3(maximum), int(layer_mask),
+                coerce_vec3(minimum), coerce_vec3(maximum), _query_layer_mask(layer_mask),
                 bool(query_triggers), state_arrays, box_arrays,
             )
             from infernux.components.builtin import Rigidbody
@@ -287,7 +294,7 @@ class Physics(metaclass=_PhysicsMeta):
         if int(state_host.identity) != int(box_host.identity):
             raise ValueError("Combined rigidbody query outputs must use the same compute host")
         native_bodies, count = _CppPhysics._query_rigidbody_state_and_box_state_buffers(
-            coerce_vec3(minimum), coerce_vec3(maximum), int(layer_mask), bool(query_triggers),
+            coerce_vec3(minimum), coerce_vec3(maximum), _query_layer_mask(layer_mask), bool(query_triggers),
             state_gpu, box_gpu,
         )
         box_out["count"] = int(count)
@@ -421,7 +428,7 @@ class Physics(metaclass=_PhysicsMeta):
         )
 
     @staticmethod
-    def raycast(origin, direction, max_distance: float = 1000.0, layer_mask: int = (0xFFFFFFFF & ~(1 << 2)),
+    def raycast(origin, direction, max_distance: float = 1000.0, layer_mask: Optional[int] = None,
                 query_triggers: bool = True):
         """Cast a ray and return the closest RaycastHit, or None.
 
@@ -438,11 +445,11 @@ class Physics(metaclass=_PhysicsMeta):
         """
         o = coerce_vec3(origin)
         d = coerce_vec3(direction)
-        return _CppPhysics.raycast(o, d, max_distance, int(layer_mask), bool(query_triggers))
+        return _CppPhysics.raycast(o, d, max_distance, _query_layer_mask(layer_mask), bool(query_triggers))
 
     @staticmethod
     def raycast_screen(camera, screen_position, viewport_size, max_distance: float = 1000.0,
-                       layer_mask: int = (0xFFFFFFFF & ~(1 << 2)), query_triggers: bool = True):
+                       layer_mask: Optional[int] = None, query_triggers: bool = True):
         """Raycast from a camera viewport pixel position.
 
         ``screen_position`` and ``viewport_size`` use top-left-origin pixels,
@@ -465,7 +472,7 @@ class Physics(metaclass=_PhysicsMeta):
 
     @staticmethod
     def raycast_batch(origins, directions, out, max_distance: float = 1000.0,
-                      layer_mask: int = (0xFFFFFFFF & ~(1 << 2)), query_triggers: bool = True,
+                      layer_mask: Optional[int] = None, query_triggers: bool = True,
                       profile: bool = False):
         """Cast many rays into reusable NumPy result storage.
 
@@ -494,11 +501,11 @@ class Physics(metaclass=_PhysicsMeta):
         Worker CPU timings are summed; ``dispatch_wall_ms`` is wall time.
         """
         return _CppPhysics.raycast_batch(
-            origins, directions, out, float(max_distance), int(layer_mask), bool(query_triggers), bool(profile)
+            origins, directions, out, float(max_distance), _query_layer_mask(layer_mask), bool(query_triggers), bool(profile)
         )
 
     @staticmethod
-    def raycast_all(origin, direction, max_distance: float = 1000.0, layer_mask: int = (0xFFFFFFFF & ~(1 << 2)),
+    def raycast_all(origin, direction, max_distance: float = 1000.0, layer_mask: Optional[int] = None,
                     query_triggers: bool = True):
         """Cast a ray and return all hits.
 
@@ -507,14 +514,14 @@ class Physics(metaclass=_PhysicsMeta):
         """
         o = coerce_vec3(origin)
         d = coerce_vec3(direction)
-        return _CppPhysics.raycast_all(o, d, max_distance, int(layer_mask), bool(query_triggers))
+        return _CppPhysics.raycast_all(o, d, max_distance, _query_layer_mask(layer_mask), bool(query_triggers))
 
     # ------------------------------------------------------------------
     # Overlap queries
     # ------------------------------------------------------------------
 
     @staticmethod
-    def overlap_sphere(center, radius: float, layer_mask: int = (0xFFFFFFFF & ~(1 << 2)),
+    def overlap_sphere(center, radius: float, layer_mask: Optional[int] = None,
                        query_triggers: bool = True):
         """Find all colliders within a sphere.
 
@@ -529,10 +536,10 @@ class Physics(metaclass=_PhysicsMeta):
         """
         c = coerce_vec3(center)
         return [_wrap_native_builtin_component(collider) for collider in
-                _CppPhysics.overlap_sphere(c, float(radius), int(layer_mask), bool(query_triggers))]
+                _CppPhysics.overlap_sphere(c, float(radius), _query_layer_mask(layer_mask), bool(query_triggers))]
 
     @staticmethod
-    def overlap_box(center, half_extents, orientation=None, layer_mask: int = (0xFFFFFFFF & ~(1 << 2)),
+    def overlap_box(center, half_extents, orientation=None, layer_mask: Optional[int] = None,
                     query_triggers: bool = True):
         """Find all colliders within an oriented box.
 
@@ -548,14 +555,14 @@ class Physics(metaclass=_PhysicsMeta):
         c = coerce_vec3(center)
         he = coerce_vec3(half_extents)
         return [_wrap_native_builtin_component(collider) for collider in
-                _CppPhysics.overlap_box(c, he, coerce_quat(orientation), int(layer_mask), bool(query_triggers))]
+                _CppPhysics.overlap_box(c, he, coerce_quat(orientation), _query_layer_mask(layer_mask), bool(query_triggers))]
 
     @staticmethod
-    def overlap_capsule(point0, point1, radius: float, layer_mask: int = (0xFFFFFFFF & ~(1 << 2)),
+    def overlap_capsule(point0, point1, radius: float, layer_mask: Optional[int] = None,
                         query_triggers: bool = True):
         """Find all colliders within a capsule defined by two segment endpoints."""
         return [_wrap_native_builtin_component(collider) for collider in _CppPhysics.overlap_capsule(
-            coerce_vec3(point0), coerce_vec3(point1), float(radius), int(layer_mask), bool(query_triggers)
+            coerce_vec3(point0), coerce_vec3(point1), float(radius), _query_layer_mask(layer_mask), bool(query_triggers)
         )]
 
     # ------------------------------------------------------------------
@@ -564,7 +571,7 @@ class Physics(metaclass=_PhysicsMeta):
 
     @staticmethod
     def sphere_cast(origin, radius: float, direction, max_distance: float = 1000.0,
-                    layer_mask: int = (0xFFFFFFFF & ~(1 << 2)), query_triggers: bool = True):
+                    layer_mask: Optional[int] = None, query_triggers: bool = True):
         """Cast a sphere along a direction and return closest RaycastHit, or None.
 
         Args:
@@ -578,11 +585,11 @@ class Physics(metaclass=_PhysicsMeta):
         """
         o = coerce_vec3(origin)
         d = coerce_vec3(direction)
-        return _CppPhysics.sphere_cast(o, float(radius), d, max_distance, int(layer_mask), bool(query_triggers))
+        return _CppPhysics.sphere_cast(o, float(radius), d, max_distance, _query_layer_mask(layer_mask), bool(query_triggers))
 
     @staticmethod
     def box_cast(center, half_extents, direction, orientation=None, max_distance: float = 1000.0,
-                 layer_mask: int = (0xFFFFFFFF & ~(1 << 2)), query_triggers: bool = True):
+                 layer_mask: Optional[int] = None, query_triggers: bool = True):
         """Cast a box along a direction and return closest RaycastHit, or None.
 
         Args:
@@ -598,16 +605,16 @@ class Physics(metaclass=_PhysicsMeta):
         he = coerce_vec3(half_extents)
         d = coerce_vec3(direction)
         return _CppPhysics.box_cast(
-            c, he, d, coerce_quat(orientation), max_distance, int(layer_mask), bool(query_triggers)
+            c, he, d, coerce_quat(orientation), max_distance, _query_layer_mask(layer_mask), bool(query_triggers)
         )
 
     @staticmethod
     def capsule_cast(point0, point1, radius: float, direction, max_distance: float = 1000.0,
-                     layer_mask: int = (0xFFFFFFFF & ~(1 << 2)), query_triggers: bool = True):
+                     layer_mask: Optional[int] = None, query_triggers: bool = True):
         """Cast a capsule and return the closest RaycastHit, or None."""
         return _CppPhysics.capsule_cast(
             coerce_vec3(point0), coerce_vec3(point1), float(radius), coerce_vec3(direction), max_distance,
-            int(layer_mask), bool(query_triggers)
+            _query_layer_mask(layer_mask), bool(query_triggers)
         )
 
     # ------------------------------------------------------------------

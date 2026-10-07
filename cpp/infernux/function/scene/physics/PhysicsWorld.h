@@ -389,9 +389,12 @@ class PhysicsWorld
     // Raycast API (Unity: Physics.Raycast)
     // ========================================================================
 
+    /// Resolve omitted query masks at the call boundary, after project configuration.
+    [[nodiscard]] static uint32_t GetDefaultQueryLayerMask();
+
     /// Cast a ray and return the closest hit.  Returns true if hit.
     bool Raycast(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance, RaycastHit &outHit,
-                 uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)), bool queryTriggers = true) const;
+                 uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true) const;
 
     /// Cast a contiguous batch of XYZ float rays against one stable world epoch.
     /// The owner thread first publishes pending authoring state; worker callers
@@ -401,7 +404,7 @@ class PhysicsWorld
     /// Every input row produces one mask entry and one initialized result row;
     /// caller-owned storage must contain @p count elements.
     void RaycastBatch(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
-                      RaycastHit *outHits, uint8_t *outHitMask, uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                      RaycastHit *outHits, uint8_t *outHitMask, uint32_t layerMask = GetDefaultQueryLayerMask(),
                       bool queryTriggers = true, uint64_t *outQueryGeneration = nullptr,
                       RaycastBatchProfile *outProfile = nullptr) const;
 
@@ -416,7 +419,7 @@ class PhysicsWorld
     /// background workers call this method directly.
     void RaycastBatchPublished(const float *originsXYZ, const float *directionsXYZ, size_t count, float maxDistance,
                                RaycastHit *outHits, uint8_t *outHitMask,
-                               uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)), bool queryTriggers = true,
+                               uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true,
                                uint64_t *outQueryGeneration = nullptr, RaycastBatchProfile *outProfile = nullptr,
                                bool directionsNormalized = false) const;
 
@@ -440,7 +443,7 @@ class PhysicsWorld
 
     /// Cast a ray and return all hits.
     std::vector<RaycastHit> RaycastAll(const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance,
-                                       uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                                       uint32_t layerMask = GetDefaultQueryLayerMask(),
                                        bool queryTriggers = true) const;
 
     // ========================================================================
@@ -449,25 +452,25 @@ class PhysicsWorld
 
     /// Find all Colliders within a sphere. Returns list of Collider*.
     std::vector<Collider *> OverlapSphere(const glm::vec3 &center, float radius,
-                                          uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                                          uint32_t layerMask = GetDefaultQueryLayerMask(),
                                           bool queryTriggers = true) const;
 
     /// Find all Colliders within an oriented box.
     std::vector<Collider *> OverlapBox(const glm::vec3 &center, const glm::vec3 &halfExtents,
                                        const glm::quat &orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
-                                       uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                                       uint32_t layerMask = GetDefaultQueryLayerMask(),
                                        bool queryTriggers = true) const;
 
     /// Find all Colliders within a capsule defined by world-space segment endpoints.
     std::vector<Collider *> OverlapCapsule(const glm::vec3 &point0, const glm::vec3 &point1, float radius,
-                                           uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                                           uint32_t layerMask = GetDefaultQueryLayerMask(),
                                            bool queryTriggers = true) const;
 
     /// Return Rigidbody components whose resident Jolt body bounds intersect
     /// the supplied world-space AABB. This is a broad-phase candidate query:
     /// callers perform their own exact contact test against the body shape.
     std::vector<Rigidbody *> QueryRigidbodiesInBounds(const glm::vec3 &minimum, const glm::vec3 &maximum,
-                                                      uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                                                      uint32_t layerMask = GetDefaultQueryLayerMask(),
                                                       bool queryTriggers = false) const;
 
     // ========================================================================
@@ -476,17 +479,17 @@ class PhysicsWorld
 
     /// Cast a sphere along a direction. Returns closest RaycastHit or empty.
     bool SphereCast(const glm::vec3 &origin, float radius, const glm::vec3 &direction, float maxDistance,
-                    RaycastHit &outHit, uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                    RaycastHit &outHit, uint32_t layerMask = GetDefaultQueryLayerMask(),
                     bool queryTriggers = true) const;
 
     /// Cast a box along a direction. Returns closest RaycastHit or empty.
     bool BoxCast(const glm::vec3 &center, const glm::vec3 &halfExtents, const glm::vec3 &direction,
                  const glm::quat &orientation, float maxDistance, RaycastHit &outHit,
-                 uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)), bool queryTriggers = true) const;
+                 uint32_t layerMask = GetDefaultQueryLayerMask(), bool queryTriggers = true) const;
 
     /// Cast a capsule defined by world-space segment endpoints.
     bool CapsuleCast(const glm::vec3 &point0, const glm::vec3 &point1, float radius, const glm::vec3 &direction,
-                     float maxDistance, RaycastHit &outHit, uint32_t layerMask = (0xFFFFFFFFu & ~(1u << 2)),
+                     float maxDistance, RaycastHit &outHit, uint32_t layerMask = GetDefaultQueryLayerMask(),
                      bool queryTriggers = true) const;
 
     // ========================================================================

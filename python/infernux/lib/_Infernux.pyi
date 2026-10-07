@@ -4249,19 +4249,19 @@ class Physics:
 
     @staticmethod
     def _query_rigidbody_box_state_buffers(
-        minimum: Vector3, maximum: Vector3, layer_mask: int, query_triggers: bool,
+        minimum: Vector3, maximum: Vector3, layer_mask: Optional[int], query_triggers: bool,
         output: dict[str, _ComputeBuffer],
     ) -> tuple[List[Rigidbody], int]: ...
 
     @staticmethod
     def _query_rigidbody_state_and_box_state_buffers(
-        minimum: Vector3, maximum: Vector3, layer_mask: int, query_triggers: bool,
+        minimum: Vector3, maximum: Vector3, layer_mask: Optional[int], query_triggers: bool,
         state_output: dict[str, _ComputeBuffer], box_output: dict[str, _ComputeBuffer],
     ) -> tuple[List[Rigidbody], int]: ...
 
     @staticmethod
     def _query_rigidbody_state_and_box_state_arrays(
-        minimum: Vector3, maximum: Vector3, layer_mask: int, query_triggers: bool,
+        minimum: Vector3, maximum: Vector3, layer_mask: Optional[int], query_triggers: bool,
         state_output: dict[str, npt.NDArray[np.float32]],
         box_output: dict[str, npt.NDArray[Any]],
     ) -> tuple[List[Rigidbody], int]: ...
@@ -4289,54 +4289,54 @@ class Physics:
     @staticmethod
     def query_rigidbodies_in_bounds(
         minimum: Vector3, maximum: Vector3,
-        layer_mask: int = ..., query_triggers: bool = False,
+        layer_mask: Optional[int] = ..., query_triggers: bool = False,
     ) -> List[Rigidbody]: ...
 
     @staticmethod
     def raycast(
         origin: Vector3, direction: Vector3,
-        max_distance: float = 1000.0, layer_mask: int = ..., query_triggers: bool = True,
+        max_distance: float = 1000.0, layer_mask: Optional[int] = ..., query_triggers: bool = True,
     ) -> Optional[RaycastHit]: ...
     @staticmethod
     def raycast_batch(
         origins: npt.NDArray[np.float32], directions: npt.NDArray[np.float32],
         output: dict[str, Any], max_distance: float = 1000.0,
-        layer_mask: int = ..., query_triggers: bool = True, profile: bool = False,
+        layer_mask: Optional[int] = ..., query_triggers: bool = True, profile: bool = False,
     ) -> dict[str, Any]: ...
     @staticmethod
     def raycast_all(
         origin: Vector3, direction: Vector3,
-        max_distance: float = 1000.0, layer_mask: int = ..., query_triggers: bool = True,
+        max_distance: float = 1000.0, layer_mask: Optional[int] = ..., query_triggers: bool = True,
     ) -> List[RaycastHit]: ...
     @staticmethod
     def overlap_sphere(
         center: Vector3, radius: float,
-        layer_mask: int = ..., query_triggers: bool = True,
+        layer_mask: Optional[int] = ..., query_triggers: bool = True,
     ) -> List[Collider]: ...
     @staticmethod
     def overlap_box(
         center: Vector3, half_extents: Vector3, orientation: quatf = ...,
-        layer_mask: int = ..., query_triggers: bool = True,
+        layer_mask: Optional[int] = ..., query_triggers: bool = True,
     ) -> List[Collider]: ...
     @staticmethod
     def overlap_capsule(
         point0: Vector3, point1: Vector3, radius: float,
-        layer_mask: int = ..., query_triggers: bool = True,
+        layer_mask: Optional[int] = ..., query_triggers: bool = True,
     ) -> List[Collider]: ...
     @staticmethod
     def sphere_cast(
         origin: Vector3, radius: float, direction: Vector3,
-        max_distance: float = 1000.0, layer_mask: int = ..., query_triggers: bool = True,
+        max_distance: float = 1000.0, layer_mask: Optional[int] = ..., query_triggers: bool = True,
     ) -> Optional[RaycastHit]: ...
     @staticmethod
     def box_cast(
         center: Vector3, half_extents: Vector3, direction: Vector3, orientation: quatf = ...,
-        max_distance: float = 1000.0, layer_mask: int = ..., query_triggers: bool = True,
+        max_distance: float = 1000.0, layer_mask: Optional[int] = ..., query_triggers: bool = True,
     ) -> Optional[RaycastHit]: ...
     @staticmethod
     def capsule_cast(
         point0: Vector3, point1: Vector3, radius: float, direction: Vector3,
-        max_distance: float = 1000.0, layer_mask: int = ..., query_triggers: bool = True,
+        max_distance: float = 1000.0, layer_mask: Optional[int] = ..., query_triggers: bool = True,
     ) -> Optional[RaycastHit]: ...
     @staticmethod
     def get_gravity() -> Vector3: ...

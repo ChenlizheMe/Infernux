@@ -41,6 +41,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -56,6 +57,11 @@ class ComponentBindingRegistry;
 
 namespace
 {
+uint32_t ResolveQueryLayerMask(const std::optional<uint32_t> &mask)
+{
+    return mask ? *mask : PhysicsWorld::GetDefaultQueryLayerMask();
+}
+
 void RequireFinite(const glm::vec3 &value, const char *name)
 {
     if (!std::isfinite(value.x) || !std::isfinite(value.y) || !std::isfinite(value.z))
@@ -132,9 +138,10 @@ py::array_t<T> RaycastBatchOutput(py::dict &output, const char *name, py::ssize_
     return py::reinterpret_borrow<py::array_t<T>>(value);
 }
 
-py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, float maxDistance, uint32_t layerMask,
-                      bool queryTriggers, bool profileEnabled)
+py::dict RaycastBatch(py::array origins, py::array directions, py::dict output, float maxDistance,
+                     std::optional<uint32_t> requestedMask, bool queryTriggers, bool profileEnabled)
 {
+    const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
     const auto profileNowNs = []() noexcept {
         return static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -675,9 +682,10 @@ uint64_t WriteRigidbodyStateAndBoxStateBuffers(const std::vector<Rigidbody *> &b
     return boxCount;
 }
 
-py::tuple QueryRigidbodyBoxStateBuffers(const glm::vec3 &minimum, const glm::vec3 &maximum, uint32_t layerMask,
-                                        bool queryTriggers, py::dict output)
+py::tuple QueryRigidbodyBoxStateBuffers(const glm::vec3 &minimum, const glm::vec3 &maximum,
+                                       std::optional<uint32_t> requestedMask, bool queryTriggers, py::dict output)
 {
+    const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
     RequireFinite(minimum, "minimum");
     RequireFinite(maximum, "maximum");
     if (minimum.x > maximum.x || minimum.y > maximum.y || minimum.z > maximum.z)
@@ -690,9 +698,11 @@ py::tuple QueryRigidbodyBoxStateBuffers(const glm::vec3 &minimum, const glm::vec
     return py::make_tuple(result, count);
 }
 
-py::tuple QueryRigidbodyStateAndBoxStateBuffers(const glm::vec3 &minimum, const glm::vec3 &maximum, uint32_t layerMask,
-                                                bool queryTriggers, py::dict stateOutput, py::dict boxOutput)
+py::tuple QueryRigidbodyStateAndBoxStateBuffers(const glm::vec3 &minimum, const glm::vec3 &maximum,
+                                               std::optional<uint32_t> requestedMask, bool queryTriggers,
+                                               py::dict stateOutput, py::dict boxOutput)
 {
+    const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
     RequireFinite(minimum, "minimum");
     RequireFinite(maximum, "maximum");
     if (minimum.x > maximum.x || minimum.y > maximum.y || minimum.z > maximum.z)
@@ -710,9 +720,11 @@ py::tuple QueryRigidbodyStateAndBoxStateBuffers(const glm::vec3 &minimum, const 
     return py::make_tuple(result, boxCount);
 }
 
-py::tuple QueryRigidbodyStateAndBoxStateArrays(const glm::vec3 &minimum, const glm::vec3 &maximum, uint32_t layerMask,
-                                               bool queryTriggers, py::dict stateOutput, py::dict boxOutput)
+py::tuple QueryRigidbodyStateAndBoxStateArrays(const glm::vec3 &minimum, const glm::vec3 &maximum,
+                                              std::optional<uint32_t> requestedMask, bool queryTriggers,
+                                              py::dict stateOutput, py::dict boxOutput)
 {
+    const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
     RequireFinite(minimum, "minimum");
     RequireFinite(maximum, "maximum");
     if (minimum.x > maximum.x || minimum.y > maximum.y || minimum.z > maximum.z)
@@ -1278,7 +1290,9 @@ void RegisterPhysicsBindings(py::module_ &m)
                     "Return actual velocity-solver contact impulses from the most recent fixed step")
         .def_static(
             "query_rigidbodies_in_bounds",
-            [](const glm::vec3 &minimum, const glm::vec3 &maximum, uint32_t layerMask, bool queryTriggers) {
+            [](const glm::vec3 &minimum, const glm::vec3 &maximum, std::optional<uint32_t> requestedMask,
+               bool queryTriggers) {
+                const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
                 RequireFinite(minimum, "minimum");
                 RequireFinite(maximum, "maximum");
                 if (minimum.x > maximum.x || minimum.y > maximum.y || minimum.z > maximum.z)
@@ -1289,7 +1303,7 @@ void RegisterPhysicsBindings(py::module_ &m)
                     result.append(py::cast(body, py::return_value_policy::reference));
                 return result;
             },
-            "minimum"_a, "maximum"_a, "layer_mask"_a = EngineConfig::Get().defaultQueryLayerMask,
+            "minimum"_a, "maximum"_a, "layer_mask"_a = py::none(),
             "query_triggers"_a = false,
             "Return Rigidbody broad-phase candidates whose body bounds intersect a world AABB")
         .def_property_readonly_static("body_count", [](py::object) { return PhysicsWorld::Instance().GetBodyCount(); })
@@ -1298,8 +1312,9 @@ void RegisterPhysicsBindings(py::module_ &m)
             "Monotonic token for the currently published physics query world")
         .def_static(
             "raycast",
-            [](const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance, uint32_t layerMask,
-               bool queryTriggers) -> py::object {
+            [](const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance,
+               std::optional<uint32_t> requestedMask, bool queryTriggers) -> py::object {
+                const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
                 RequireFinite(origin, "origin");
                 RequireDirectionAndDistance(direction, maxDistance);
                 RaycastHit hit;
@@ -1309,38 +1324,41 @@ void RegisterPhysicsBindings(py::module_ &m)
                 return py::none();
             },
             "origin"_a, "direction"_a, "max_distance"_a = 1000.0f,
-            "layer_mask"_a = EngineConfig::Get().defaultQueryLayerMask, "query_triggers"_a = true,
+            "layer_mask"_a = py::none(), "query_triggers"_a = true,
             "Cast a ray. Returns RaycastHit or None.")
         .def_static("raycast_batch", &RaycastBatch, "origins"_a.noconvert(), "directions"_a.noconvert(), "output"_a,
-                    "max_distance"_a = 1000.0f, "layer_mask"_a = EngineConfig::Get().defaultQueryLayerMask,
+                    "max_distance"_a = 1000.0f, "layer_mask"_a = py::none(),
                     "query_triggers"_a = true, "profile"_a = false,
                     "Cast float32 (N, 3) rays into caller-owned numeric result arrays without per-hit Python objects.")
         .def_static(
             "raycast_all",
-            [](const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance, uint32_t layerMask,
-               bool queryTriggers) {
+            [](const glm::vec3 &origin, const glm::vec3 &direction, float maxDistance,
+               std::optional<uint32_t> requestedMask, bool queryTriggers) {
+                const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
                 RequireFinite(origin, "origin");
                 RequireDirectionAndDistance(direction, maxDistance);
                 return PhysicsWorld::Instance().RaycastAll(origin, direction, maxDistance, layerMask, queryTriggers);
             },
             "origin"_a, "direction"_a, "max_distance"_a = 1000.0f,
-            "layer_mask"_a = EngineConfig::Get().defaultQueryLayerMask, "query_triggers"_a = true,
+            "layer_mask"_a = py::none(), "query_triggers"_a = true,
             "Cast a ray and return all hits.")
         // ---- Overlap queries ----
         .def_static(
             "overlap_sphere",
-            [](const glm::vec3 &center, float radius, uint32_t layerMask, bool queryTriggers) {
+            [](const glm::vec3 &center, float radius, std::optional<uint32_t> requestedMask, bool queryTriggers) {
+                const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
                 RequireFinite(center, "center");
                 RequirePositive(radius, "radius");
                 return BorrowedColliderList(
                     PhysicsWorld::Instance().OverlapSphere(center, radius, layerMask, queryTriggers));
             },
-            "center"_a, "radius"_a, "layer_mask"_a = EngineConfig::Get().defaultQueryLayerMask,
+            "center"_a, "radius"_a, "layer_mask"_a = py::none(),
             "query_triggers"_a = true, "Find all colliders within a sphere. Returns list of Collider.")
         .def_static(
             "overlap_box",
-            [](const glm::vec3 &center, const glm::vec3 &halfExtents, const glm::quat &orientation, uint32_t layerMask,
-               bool queryTriggers) {
+            [](const glm::vec3 &center, const glm::vec3 &halfExtents, const glm::quat &orientation,
+               std::optional<uint32_t> requestedMask, bool queryTriggers) {
+                const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
                 RequireFinite(center, "center");
                 RequirePositiveExtents(halfExtents);
                 RequireOrientation(orientation);
@@ -1348,24 +1366,27 @@ void RegisterPhysicsBindings(py::module_ &m)
                     PhysicsWorld::Instance().OverlapBox(center, halfExtents, orientation, layerMask, queryTriggers));
             },
             "center"_a, "half_extents"_a, "orientation"_a = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
-            "layer_mask"_a = EngineConfig::Get().defaultQueryLayerMask, "query_triggers"_a = true,
+            "layer_mask"_a = py::none(), "query_triggers"_a = true,
             "Find all colliders within an oriented box. Returns list of Collider.")
         .def_static(
             "overlap_capsule",
-            [](const glm::vec3 &point0, const glm::vec3 &point1, float radius, uint32_t layerMask, bool queryTriggers) {
+            [](const glm::vec3 &point0, const glm::vec3 &point1, float radius,
+               std::optional<uint32_t> requestedMask, bool queryTriggers) {
+                const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
                 RequireFinite(point0, "point0");
                 RequireFinite(point1, "point1");
                 RequirePositive(radius, "radius");
                 return BorrowedColliderList(
                     PhysicsWorld::Instance().OverlapCapsule(point0, point1, radius, layerMask, queryTriggers));
             },
-            "point0"_a, "point1"_a, "radius"_a, "layer_mask"_a = EngineConfig::Get().defaultQueryLayerMask,
+            "point0"_a, "point1"_a, "radius"_a, "layer_mask"_a = py::none(),
             "query_triggers"_a = true, "Find all colliders within a capsule. Returns list of Collider.")
         // ---- Shape casts ----
         .def_static(
             "sphere_cast",
-            [](const glm::vec3 &origin, float radius, const glm::vec3 &direction, float maxDistance, uint32_t layerMask,
-               bool queryTriggers) -> py::object {
+            [](const glm::vec3 &origin, float radius, const glm::vec3 &direction, float maxDistance,
+               std::optional<uint32_t> requestedMask, bool queryTriggers) -> py::object {
+                const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
                 RequireFinite(origin, "origin");
                 RequirePositive(radius, "radius");
                 RequireDirectionAndDistance(direction, maxDistance);
@@ -1376,12 +1397,14 @@ void RegisterPhysicsBindings(py::module_ &m)
                 return py::none();
             },
             "origin"_a, "radius"_a, "direction"_a, "max_distance"_a = 1000.0f,
-            "layer_mask"_a = EngineConfig::Get().defaultQueryLayerMask, "query_triggers"_a = true,
+            "layer_mask"_a = py::none(), "query_triggers"_a = true,
             "Cast a sphere and return closest RaycastHit or None.")
         .def_static(
             "box_cast",
             [](const glm::vec3 &center, const glm::vec3 &halfExtents, const glm::vec3 &direction,
-               const glm::quat &orientation, float maxDistance, uint32_t layerMask, bool queryTriggers) -> py::object {
+               const glm::quat &orientation, float maxDistance, std::optional<uint32_t> requestedMask,
+               bool queryTriggers) -> py::object {
+                const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
                 RequireFinite(center, "center");
                 RequirePositiveExtents(halfExtents);
                 RequireDirectionAndDistance(direction, maxDistance);
@@ -1393,12 +1416,13 @@ void RegisterPhysicsBindings(py::module_ &m)
                 return py::none();
             },
             "center"_a, "half_extents"_a, "direction"_a, "orientation"_a = glm::quat(1.0f, 0.0f, 0.0f, 0.0f),
-            "max_distance"_a = 1000.0f, "layer_mask"_a = EngineConfig::Get().defaultQueryLayerMask,
+            "max_distance"_a = 1000.0f, "layer_mask"_a = py::none(),
             "query_triggers"_a = true, "Cast a box and return closest RaycastHit or None.")
         .def_static(
             "capsule_cast",
             [](const glm::vec3 &point0, const glm::vec3 &point1, float radius, const glm::vec3 &direction,
-               float maxDistance, uint32_t layerMask, bool queryTriggers) -> py::object {
+               float maxDistance, std::optional<uint32_t> requestedMask, bool queryTriggers) -> py::object {
+                const uint32_t layerMask = ResolveQueryLayerMask(requestedMask);
                 RequireFinite(point0, "point0");
                 RequireFinite(point1, "point1");
                 RequirePositive(radius, "radius");
@@ -1410,7 +1434,7 @@ void RegisterPhysicsBindings(py::module_ &m)
                 return py::none();
             },
             "point0"_a, "point1"_a, "radius"_a, "direction"_a, "max_distance"_a = 1000.0f,
-            "layer_mask"_a = EngineConfig::Get().defaultQueryLayerMask, "query_triggers"_a = true,
+            "layer_mask"_a = py::none(), "query_triggers"_a = true,
             "Cast a capsule and return closest RaycastHit or None.")
         // ---- Gravity ----
         .def_static(
