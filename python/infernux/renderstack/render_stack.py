@@ -323,7 +323,7 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     def sync_pipeline_parameters(self) -> None:
         """Mirror live pipeline parameters into the serialized component state."""
         self._save_current_pipeline_params()
-        serialized = _json.dumps(self._pipeline_param_store)
+        serialized = _json.dumps(self._pipeline_param_store, allow_nan=False)
         if self.pipeline_params_json != serialized:
             self.pipeline_params_json = serialized
 
@@ -340,7 +340,10 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         editor automation call this API so a graph rebuild never leaves a
         command pointing at a stale Python pipeline object.
         """
-        from enum import Enum
+        from infernux.components.fields import (
+            coerce_serialized_field_input, get_serialized_fields, normalize_runtime_field_value,
+        )
+        from infernux.components.value_codec import VALUE_CODECS
 
         selected_pipeline = (
             self.pipeline_class_name
@@ -348,34 +351,42 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             else str(pipeline_class_name or "").strip() or self.DEFAULT_PIPELINE_NAME
         )
         key = self._pipeline_key(selected_pipeline)
-        if self._pipeline_param_store is None:
-            self._pipeline_param_store = {}
-
-        if selected_pipeline == self.pipeline_class_name:
-            pipeline = self.pipeline
-            from infernux.components.fields import get_serialized_fields
-
-            if field_name not in get_serialized_fields(type(pipeline)):
+        pipeline = self.pipeline if selected_pipeline == self.pipeline_class_name else None
+        if pipeline is not None:
+            pipeline_type = type(pipeline)
+        elif selected_pipeline == self.DEFAULT_PIPELINE_NAME:
+            from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+            pipeline_type = DefaultForwardPipeline
+        else:
+            pipeline_type = self.discover_pipelines().get(selected_pipeline)
+        if pipeline_type is not None:
+            fields = get_serialized_fields(pipeline_type)
+            if field_name not in fields:
                 raise AttributeError(
-                    f"pipeline '{pipeline.name}' has no serialized parameter "
+                    f"pipeline '{selected_pipeline}' has no serialized parameter "
                     f"'{field_name}'"
                 )
+            value = coerce_serialized_field_input(value, fields[field_name], f"{selected_pipeline}.{field_name}")
+            value = normalize_runtime_field_value(value, fields[field_name])
+        if pipeline is not None:
+            params = self._encode_pipeline_params(pipeline, {field_name: value})
+        else:
+            params = dict((self._pipeline_param_store or {}).get(key, {}))
+            params[field_name] = VALUE_CODECS.encode(value, f"{selected_pipeline}.{field_name}")
+
+        candidate = dict(self._pipeline_param_store or {})
+        candidate[key] = params
+        serialized = _json.dumps(candidate, allow_nan=False)
+        # Validate and encode the entire candidate before changing the live
+        # projection or its authoritative saved document.
+        if pipeline is not None:
             previous_deserializing = getattr(pipeline, "_inf_deserializing", False)
             pipeline._inf_deserializing = True
             try:
                 setattr(pipeline, field_name, value)
             finally:
                 pipeline._inf_deserializing = previous_deserializing
-            self._save_current_pipeline_params()
-        else:
-            params = self._pipeline_param_store.setdefault(key, {})
-            params[field_name] = (
-                {"__enum_name__": value.name}
-                if isinstance(value, Enum)
-                else value
-            )
-
-        serialized = _json.dumps(self._pipeline_param_store)
+        self._pipeline_param_store = candidate
         if self.pipeline_params_json != serialized:
             self.pipeline_params_json = serialized
         if selected_pipeline == self.pipeline_class_name:
@@ -401,32 +412,33 @@ class RenderStack(PipelineReloadMixin, InxComponent):
 
         self._normalize_effect_slots()
 
-        if self.pipeline_params_json:
-            data = _json.loads(self.pipeline_params_json)
-            if type(data) is not dict:
-                raise TypeError("RenderStack pipeline parameters must be an object")
-            from infernux.components.fields import get_serialized_fields
-            from infernux.renderstack.default_forward_pipeline import (
-                DefaultForwardPipeline,
-            )
+        data = _json.loads(self.pipeline_params_json) if self.pipeline_params_json else {}
+        if type(data) is not dict:
+            raise TypeError("RenderStack pipeline parameters must be an object")
+        from infernux.components.fields import get_serialized_fields
+        from infernux.components.value_codec import VALUE_CODECS
+        from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
 
-            pipeline_types = {
-                "__default__": DefaultForwardPipeline,
-                **self.discover_pipelines(),
-            }
-            current = {}
-            for pipeline_name, params in data.items():
-                pipeline_type = pipeline_types.get(pipeline_name)
-                if pipeline_type is None or type(params) is not dict:
-                    continue
-                declared = get_serialized_fields(pipeline_type)
-                current[pipeline_name] = {
-                    name: value
-                    for name, value in params.items()
-                    if name in declared
-                }
-            self._pipeline_param_store = current
-            self.pipeline_params_json = _json.dumps(current)
+        pipeline_types = {"__default__": DefaultForwardPipeline, **self.discover_pipelines()}
+        current = {}
+        for pipeline_name, params in data.items():
+            if type(params) is not dict:
+                raise TypeError(f"RenderStack pipeline '{pipeline_name}' parameters must be an object")
+            pipeline_type = pipeline_types.get(pipeline_name)
+            if pipeline_type is None:
+                # Missing implementation is not evidence that author fields
+                # were removed. Preserve them until their provider is restored.
+                current[pipeline_name] = params
+                continue
+            declared = get_serialized_fields(pipeline_type)
+            current[pipeline_name] = {}
+            for name, value in params.items():
+                if name in declared:
+                    VALUE_CODECS.validate(value, declared[name], f"{pipeline_name}.{name}")
+                    current[pipeline_name][name] = value
+        serialized = _json.dumps(current, allow_nan=False)
+        self._pipeline_param_store = current
+        self.pipeline_params_json = serialized
 
         # Deserialization may be repeated on an existing editor component.
         # Recreate the selected pipeline only after its parameter store exists.
@@ -590,8 +602,9 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     def pipeline(self):  # -> RenderPipeline
         """Current pipeline instance, created lazily."""
         if self._pipeline is None:
-            self._pipeline = self._create_pipeline()
-            self._restore_pipeline_params(self._pipeline)
+            candidate = self._create_pipeline()
+            self._restore_pipeline_params(candidate)
+            self._pipeline = candidate
             # Wire back-reference so pipeline param changes can
             # invalidate the graph via self._render_stack.
             if hasattr(self._pipeline, '_render_stack'):
@@ -1055,55 +1068,43 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             self._pipeline_param_store = {}
         if self._pipeline is None:
             return
-        try:
-            from infernux.components.fields import get_serialized_fields
-            from enum import Enum
+        key = self._pipeline_key(self.pipeline_class_name)
+        self._pipeline_param_store[key] = self._encode_pipeline_params(self._pipeline)
 
-            key = self._pipeline_key(self.pipeline_class_name)
-            fields = get_serialized_fields(self._pipeline.__class__)
-            params = {}
-            for field_name in fields.keys():
-                value = getattr(self._pipeline, field_name, None)
-                if isinstance(value, Enum):
-                    params[field_name] = {"__enum_name__": value.name}
-                else:
-                    params[field_name] = value
-            self._pipeline_param_store[key] = params
-        except (ImportError, RuntimeError, AttributeError) as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            return
+    @staticmethod
+    def _encode_pipeline_params(pipeline, overrides=None) -> dict:
+        from infernux.components.fields import get_raw_field_value, get_serialized_fields
+        from infernux.components.value_codec import VALUE_CODECS
+
+        overrides = {} if overrides is None else overrides
+        params = {}
+        for name, meta in get_serialized_fields(type(pipeline)).items():
+            value = overrides[name] if name in overrides else get_raw_field_value(pipeline, name)
+            path = f"{pipeline.name}.{name}"
+            encoded = VALUE_CODECS.encode(value, path)
+            VALUE_CODECS.validate(encoded, meta, path)
+            params[name] = encoded
+        return params
 
     def _restore_pipeline_params(self, pipeline) -> None:
         if self._pipeline_param_store is None:
             self._pipeline_param_store = {}
-        try:
-            from infernux.components.fields import get_serialized_fields, FieldType
-        except ImportError as _exc:
-            Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-            return
+        from infernux.components.fields import get_serialized_fields
+        from infernux.components.value_codec import VALUE_CODECS
 
         key = self._pipeline_key(self.pipeline_class_name)
         saved = self._pipeline_param_store.get(key)
         if not isinstance(saved, dict):
             return
 
-        fields = get_serialized_fields(pipeline.__class__)
+        decoded = {
+            name: VALUE_CODECS.decode(saved[name], meta, f"{pipeline.name}.{name}")
+            for name, meta in get_serialized_fields(type(pipeline)).items() if name in saved
+        }
+        previous_deserializing = getattr(pipeline, "_inf_deserializing", False)
         pipeline._inf_deserializing = True
         try:
-            for field_name, meta in fields.items():
-                if field_name not in saved:
-                    continue
-                value = saved[field_name]
-                try:
-                    if meta.field_type == FieldType.ENUM and isinstance(value, dict) and "__enum_name__" in value:
-                        enum_name = value.get("__enum_name__", "")
-                        enum_cls = meta.enum_type
-                        if enum_cls is not None and enum_name in enum_cls.__members__:
-                            setattr(pipeline, field_name, enum_cls[enum_name])
-                            continue
-                    setattr(pipeline, field_name, value)
-                except (AttributeError, TypeError, ValueError) as _exc:
-                    Debug.log(f"[Suppressed] {type(_exc).__name__}: {_exc}")
-                    continue
+            for name, value in decoded.items():
+                setattr(pipeline, name, value)
         finally:
-            pipeline._inf_deserializing = False
+            pipeline._inf_deserializing = previous_deserializing

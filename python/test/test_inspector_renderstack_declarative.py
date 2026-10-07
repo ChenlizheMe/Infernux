@@ -1,3 +1,4 @@
+import json
 import pytest
 from types import SimpleNamespace
 
@@ -315,7 +316,8 @@ def test_pipeline_parameter_change_is_mirrored_into_serialized_stack_state(actio
     stack._graph_state.description = object()
     control.on_change(pipeline, "msaa_samples", old_value, MSAASamples.X2)
 
-    assert '"msaa_samples": {"__enum_name__": "X2"}' in stack.pipeline_params_json
+    assert json.loads(stack.pipeline_params_json)["__default__"]["msaa_samples"] == {
+        "$type": "enum", "enum_type": "MSAASamples", "name": "X2"}
     assert stack._graph_state.description is None
     assert stack.build_graph().msaa_samples == 2
 
@@ -349,7 +351,8 @@ def test_pipeline_parameter_undo_keeps_serialized_document_and_rebuild_in_sync()
         assert stack.build_graph().msaa_samples == 8
 
         manager.undo()
-        assert '"msaa_samples": {"__enum_name__": "X4"}' in stack.pipeline_params_json
+        assert json.loads(stack.pipeline_params_json)["__default__"]["msaa_samples"] == {
+            "$type": "enum", "enum_type": "MSAASamples", "name": "X4"}
 
         # Recreate the runtime projection from the serialized parameter
         # document. A stale mirror used to restore X8 at this point.
@@ -358,7 +361,8 @@ def test_pipeline_parameter_undo_keeps_serialized_document_and_rebuild_in_sync()
         assert stack.build_graph().msaa_samples == 4
 
         manager.redo()
-        assert '"msaa_samples": {"__enum_name__": "X8"}' in stack.pipeline_params_json
+        assert json.loads(stack.pipeline_params_json)["__default__"]["msaa_samples"] == {
+            "$type": "enum", "enum_type": "MSAASamples", "name": "X8"}
         stack._pipeline = None
         stack.invalidate_graph()
         assert stack.build_graph().msaa_samples == 8

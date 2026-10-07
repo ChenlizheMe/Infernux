@@ -52,6 +52,7 @@ class PipelineReloadMixin:
             # The transactional script loader owns module publication.  A
             # callback must never re-execute source behind that transaction;
             # the catalog callback will recover a module that was retired.
+            self._save_current_pipeline_params()
             self._pipeline_module = None
             self._pipeline = None
             self.invalidate_graph()
@@ -76,6 +77,7 @@ class PipelineReloadMixin:
 
         current = self.pipeline_class_name
         if current != self.DEFAULT_PIPELINE_NAME and current not in names:
+            self._save_current_pipeline_params()
             warnings.warn(
                 f"[RenderStack] Selected pipeline '{current}' was removed. "
                 "The last valid graph remains active until the pipeline is restored "

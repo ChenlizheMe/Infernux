@@ -215,9 +215,14 @@ def test_removed_pipeline_keeps_selection_and_invalidates_for_transactional_rebu
             self._pipeline = object()
             self._cached_ips = object()
             self.invalidations = 0
+            self.saved = 0
 
         def discover_pipelines(self):
             return {}
+
+        def _save_current_pipeline_params(self):
+            assert self._pipeline is not None
+            self.saved += 1
 
         def invalidate_graph(self):
             self.invalidations += 1
@@ -230,6 +235,7 @@ def test_removed_pipeline_keeps_selection_and_invalidates_for_transactional_rebu
     assert subject._pipeline is None
     assert subject._cached_ips is None
     assert subject.invalidations == 1
+    assert subject.saved == 1
 
 
 @pytest.mark.parametrize('name', ['Authored Pipeline', 'Default Forward'])

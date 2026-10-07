@@ -128,16 +128,28 @@ class RenderStackCommandService:
         old_value: Any = _UNSET,
     ) -> bool:
         from infernux.engine.undo import RenderStackFieldCommand
+        from infernux.components.fields import (
+            coerce_serialized_field_input, get_raw_field_value,
+            get_serialized_fields, normalize_runtime_field_value,
+        )
+        from infernux.components.value_codec import VALUE_CODECS
 
         name = str(field_name or "").strip()
         if not name:
             raise ValueError("RenderStack parameter name must not be empty")
         pipeline = stack.pipeline
+        metadata = get_serialized_fields(type(pipeline))[name]
+        path = f"{stack.pipeline_class_name}.{name}"
         previous = copy.deepcopy(
-            getattr(pipeline, name) if old_value is _UNSET else old_value
+            get_raw_field_value(pipeline, name) if old_value is _UNSET else old_value
         )
-        new_value = copy.deepcopy(value)
-        if previous == new_value:
+        previous = normalize_runtime_field_value(
+            coerce_serialized_field_input(previous, metadata, path), metadata
+        )
+        new_value = normalize_runtime_field_value(
+            coerce_serialized_field_input(copy.deepcopy(value), metadata, path), metadata
+        )
+        if VALUE_CODECS.encode(previous, path) == VALUE_CODECS.encode(new_value, path):
             return False
         self._execute(
             RenderStackFieldCommand(
