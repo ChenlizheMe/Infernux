@@ -25,6 +25,104 @@
 
 using namespace infernux;
 
+static void TestAnimatedBoundsInvalidateBothCameraCaches(AssetRegistry &registry, SceneManager &manager)
+{
+    const auto mesh = registry.CreateRuntimeMesh("AnimatedCulling");
+    const std::string guid = mesh->GetGuid();
+    auto skin = std::make_shared<InxSkinnedMesh>();
+    skin->guid = guid;
+    skin->scaleFactor = 1.0f;
+    SkinnedRuntimeNode node;
+    node.name = "Joint";
+    skin->skeleton.nodes.push_back(node);
+    skin->skeleton.nodeByName.emplace(node.name, 0);
+    SkinnedRuntimeBone bone;
+    bone.name = node.name;
+    bone.nodeIndex = 0;
+    skin->skeleton.bones.push_back(bone);
+    skin->skeleton.boneByName.emplace(bone.name, 0);
+    for (const auto position : {glm::vec3(99.5f, -0.5f, 0), glm::vec3(100.5f, -0.5f, 0),
+                                glm::vec3(100.0f, 0.5f, 0)}) {
+        skin->baseVertices.push_back(Vertex::Create(position, {0, 0, -1}, {0, 0}));
+        SkinInfluence influence;
+        influence.weight[0] = 1.0f;
+        skin->influences.push_back(influence);
+    }
+    skin->indices = {0, 1, 2};
+    SubMesh sub;
+    sub.vertexCount = 3;
+    sub.indexCount = 3;
+    sub.boundsMin = {99.5f, -0.5f, 0};
+    sub.boundsMax = {100.5f, 0.5f, 0};
+    skin->subMeshes.push_back(sub);
+    SkinnedRuntimeAnimation animation;
+    animation.name = "Move";
+    animation.id = "culling-move";
+    animation.durationTicks = 1.0;
+    animation.ticksPerSecond = 1.0;
+    animation.defaultLoop = false;
+    SkinnedRuntimeTrack track;
+    track.nodeIndex = 0;
+    track.positions = {{0.0, glm::vec3(0)}, {1.0, glm::vec3(-100, 0, 0)}};
+    track.rotations = {{0.0, glm::quat(1, 0, 0, 0)}};
+    track.scales = {{0.0, glm::vec3(1)}};
+    animation.tracks.push_back(track);
+    animation.trackByNodeIndex = {0};
+    skin->animations.push_back(animation);
+    skin->NormalizeInfluences();
+    assert(skin->IsAssetPayloadValid() && skin->skeleton.IsValid());
+    InxMesh replacement("AnimatedCulling");
+    replacement.SetData(skin->baseVertices, skin->indices, skin->subMeshes);
+    replacement.SetSkinnedData(skin);
+    registry.PublishMesh(guid, std::move(replacement));
+    auto *scene = manager.CreateScene("AnimatedBounds");
+    auto *object = scene->CreateGameObject("AnimatedTriangle");
+    auto *renderer = object->AddComponent<SkinnedMeshRenderer>();
+    renderer->SetSourceModelGuid(guid);
+    auto makeCamera = [&](const char *name, float x) {
+        auto *cameraObject = scene->CreateGameObject(name);
+        cameraObject->GetTransform()->SetPosition({x, 0, -5});
+        auto *camera = cameraObject->AddComponent<Camera>();
+        camera->SetAspectRatio(1.0f);
+        return camera;
+    };
+    Camera *nearCamera = makeCamera("Near", 0);
+    Camera *farCamera = makeCamera("Far", 100);
+    auto &bridge = SceneRenderBridge::Instance();
+    auto contains = [object](const CameraDrawCallResult &result) {
+        const auto &draws = result.visibleDrawCallsRef ? *result.visibleDrawCallsRef : result.visibleDrawCalls;
+        return std::any_of(draws.begin(), draws.end(),
+                           [object](const DrawCall &draw) { return draw.objectId == object->GetID(); });
+    };
+    auto check = [&](bool near) {
+        bridge.PrepareFrame(false);
+        const auto nearResult = bridge.CullAndBuildForCamera(nearCamera, false);
+        const auto farResult = bridge.CullAndBuildForCamera(farCamera, false);
+        assert(contains(nearResult) == near);
+        assert(contains(farResult) == !near);
+        assert(contains(nearResult) == near); // The second camera does not modify the first list.
+        const auto cached = bridge.CullAndBuildForCamera(nearCamera, false);
+        assert(cached.visibleListRevision == nearResult.visibleListRevision);
+        assert(contains(cached) == near);
+    };
+    renderer->SubmitAnimationPose("Move", 0, 0, "", 0, 0, false);
+    check(false);
+    manager.CommitSkinPoseHistories();
+    renderer->SubmitAnimationPose("Move", 1, 1, "", 0, 0, false);
+    check(true); // No object or camera transform changed: only the skeleton moved.
+    manager.CommitSkinPoseHistories();
+    const auto stoppedRevision = manager.GetRenderTransformRevision();
+    check(true);
+    check(true); // A stopped pose remains visible without repeated submissions.
+    assert(manager.GetRenderTransformRevision() == stoppedRevision);
+    renderer->SubmitAnimationPose("Move", 0, 0, "", 0, 0, false);
+    check(false);
+    manager.CommitSkinPoseHistories();
+    check(false);
+    manager.UnloadAllScenes();
+    registry.DestroyRuntimeMesh(guid);
+}
+
 int main()
 {
     auto &registry = AssetRegistry::Instance();
@@ -489,6 +587,7 @@ int main()
     manager.UnloadAllScenes();
     registry.DestroyRuntimeMesh(twoSlotMeshGuid);
     registry.DestroyRuntimeMesh(importedGuid);
+    TestAnimatedBoundsInvalidateBothCameraCaches(registry, manager);
     registry.Shutdown();
     return 0;
 }

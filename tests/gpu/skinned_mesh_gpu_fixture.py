@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import numpy as np
 
-def write_skinned_quad(path, *, envelope=False):
+def write_skinned_quad(path, *, envelope=False, translations=None):
     payload = bytearray()
     views, accessors = [], []
     def add(array, kind, component=5126, bounds=False):
@@ -36,14 +36,17 @@ def write_skinned_quad(path, *, envelope=False):
     indices = add(triangles, 'SCALAR', component=5123)
     inverse = add([np.eye(4).flatten().tolist()], 'MAT4')
     times = add([0,1,2,3], 'SCALAR', bounds=True)
-    scales = add([[1,1,1],[2,.5,1],[-2,.5,1],[1,1,1]], 'VEC3')
+    values = translations if translations is not None else [[1,1,1],[2,.5,1],[-2,.5,1],[1,1,1]]
+    assert len(values) == 4
+    animation_values = add(values, 'VEC3')
+    animation_name, animation_path = ('Translate', 'translation') if translations is not None else ('Scale', 'scale')
     document = {'asset': {'version': '2.0'}, 'scene': 0, 'scenes': [{'nodes':[0]}],
         'nodes': [{'name':'Scene','children':[1,2]}, {'name':'Surface','mesh':0,'skin':0}, {'name':'Joint'}],
         'skins': [{'joints':[2], 'inverseBindMatrices':inverse}],
         'meshes':[{'primitives':[{'attributes':{'POSITION':position,'NORMAL':normal,'TANGENT':tangent,
                     'TEXCOORD_0':uv,'JOINTS_0':joints,'WEIGHTS_0':weights}, 'indices':indices}]}],
-        'animations':[{'name':'Scale', 'samplers':[{'input':times,'output':scales,'interpolation':'LINEAR'}],
-            'channels':[{'sampler':0,'target':{'node':2,'path':'scale'}}]}],
+        'animations':[{'name':animation_name, 'samplers':[{'input':times,'output':animation_values,'interpolation':'LINEAR'}],
+            'channels':[{'sampler':0,'target':{'node':2,'path':animation_path}}]}],
         'buffers':[{'byteLength':len(payload),'uri':'data:application/octet-stream;base64,'+base64.b64encode(payload).decode('ascii')}],
         'bufferViews': views, 'accessors':accessors}
     Path(path).write_text(json.dumps(document), encoding='utf-8')

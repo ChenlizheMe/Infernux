@@ -427,7 +427,9 @@ void SkinnedMeshRenderer::RefreshRuntimeSkinnedMesh()
     }
     m_skinPoseHistory.Publish(std::move(nextPalette), modelChanged);
     SceneManager::Instance().QueueSkinPoseHistoryCommit(this);
-    SceneManager::Instance().NotifyMeshRendererContentChanged(this);
+    // Deformation changes world bounds even when the object transform stays
+    // fixed. Invalidate both coarse groups and per-camera visibility caches.
+    SceneManager::Instance().NotifyMeshRendererGeometryChanged(this);
     if (modelChanged)
         SceneManager::Instance().NotifyMeshRendererChanged(this);
 }
