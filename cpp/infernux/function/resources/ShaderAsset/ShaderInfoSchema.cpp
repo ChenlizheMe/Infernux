@@ -270,8 +270,8 @@ bool IsValueType(std::string_view value)
 
 bool IsResourceType(std::string_view value)
 {
-    return value == "Texture2D" || value == "Texture3D" || value == "Texture2DUInt" ||
-           value == "Texture2DMS" || value == "Texture2DMSUInt" || value == "BufferUInt";
+    return value == "Texture2D" || value == "Texture3D" || value == "Texture2DUInt" || value == "Texture2DMS" ||
+           value == "Texture2DMSUInt" || value == "BufferUInt";
 }
 
 bool IsInterpolation(std::string_view value)

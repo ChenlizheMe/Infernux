@@ -1,7 +1,7 @@
 #pragma once
 
-#include <imgui_internal.h>
 #include <algorithm>
+#include <imgui_internal.h>
 
 namespace infernux
 {

@@ -910,7 +910,7 @@ void MaterialPipelineManager::SetDefaultNormalTexture(VkImageView imageView, VkS
 }
 
 void MaterialPipelineManager::SetDefaultBlackTexture(VkImageView imageView, VkSampler sampler,
-                                                  std::shared_ptr<const rhi::TextureGpuView> gpuView)
+                                                     std::shared_ptr<const rhi::TextureGpuView> gpuView)
 {
     m_descriptorManager.SetDefaultBlackTexture(imageView, sampler, std::move(gpuView));
 }

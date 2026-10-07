@@ -159,9 +159,8 @@ bool AudioEngine::Initialize()
         std::lock_guard<std::mutex> lock(m_sourcesMutex);
         deferredSources.assign(m_registeredSources.begin(), m_registeredSources.end());
     }
-    std::sort(deferredSources.begin(), deferredSources.end(), [](const auto *left, const auto *right) {
-        return left->GetComponentID() < right->GetComponentID();
-    });
+    std::sort(deferredSources.begin(), deferredSources.end(),
+              [](const auto *left, const auto *right) { return left->GetComponentID() < right->GetComponentID(); });
     for (AudioSource *source : deferredSources)
         source->NotifyAudioEngineInitialized();
 

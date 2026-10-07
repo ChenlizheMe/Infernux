@@ -24,7 +24,9 @@ namespace infernux
 class ModelSourceStream final : public Assimp::DefaultIOStream
 {
   public:
-    ModelSourceStream(FILE *file, const std::string &path) : DefaultIOStream(file, path) {}
+    ModelSourceStream(FILE *file, const std::string &path) : DefaultIOStream(file, path)
+    {
+    }
 };
 
 // One importer owns one source directory. Sidecars never resolve against a
@@ -45,7 +47,10 @@ class ModelSourceIO final : public Assimp::IOSystem
         return std::filesystem::is_regular_file(Resolve(path), error);
     }
 
-    char getOsSeparator() const override { return '/'; }
+    char getOsSeparator() const override
+    {
+        return '/';
+    }
 
     Assimp::IOStream *Open(const char *path, const char *mode = "rb") override
     {
@@ -72,16 +77,28 @@ class ModelSourceIO final : public Assimp::IOSystem
         return stream;
     }
 
-    void Close(Assimp::IOStream *stream) override { delete stream; }
+    void Close(Assimp::IOStream *stream) override
+    {
+        delete stream;
+    }
 
     bool ComparePaths(const char *left, const char *right) const override
     {
         return left && right && FilesystemPathsEquivalent(FromFsPath(Resolve(left)), FromFsPath(Resolve(right)));
     }
 
-    bool CreateDirectory(const std::string &) override { return false; }
-    bool ChangeDirectory(const std::string &) override { return false; }
-    bool DeleteFile(const std::string &) override { return false; }
+    bool CreateDirectory(const std::string &) override
+    {
+        return false;
+    }
+    bool ChangeDirectory(const std::string &) override
+    {
+        return false;
+    }
+    bool DeleteFile(const std::string &) override
+    {
+        return false;
+    }
 
   private:
     std::filesystem::path Resolve(const std::string &path) const

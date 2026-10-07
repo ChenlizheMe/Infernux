@@ -207,7 +207,7 @@ class MaterialPipelineManager
     void SetDefaultNormalTexture(VkImageView imageView, VkSampler sampler,
                                  std::shared_ptr<const rhi::TextureGpuView> gpuView);
     void SetDefaultBlackTexture(VkImageView imageView, VkSampler sampler,
-                               std::shared_ptr<const rhi::TextureGpuView> gpuView);
+                                std::shared_ptr<const rhi::TextureGpuView> gpuView);
 
     /**
      * @brief Set texture resolver for material Texture2D properties

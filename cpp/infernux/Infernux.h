@@ -243,8 +243,11 @@ class Infernux
     /// @brief Reload a shader file and refresh materials using it.
     /// @return Empty string on success, or error message on failure.
     std::string ReloadShaderRuntime(const std::string &shaderPath, const std::string &previousShaderId,
-                                   const std::string &previousSourcePath = "");
-    const std::vector<std::string> &GetShaderReloadSources() const { return m_shaderReloadSources; }
+                                    const std::string &previousSourcePath = "");
+    const std::vector<std::string> &GetShaderReloadSources() const
+    {
+        return m_shaderReloadSources;
+    }
 
     /// @brief Invalidate and reload a texture after import settings change
     /// @param texturePath The texture file path whose .meta was updated

@@ -143,7 +143,7 @@ static SkinnedNodePose BindNodePose(const SkinnedRuntimeNode &node)
 }
 
 static void ApplyNodeTrack(SkinnedNodePose &pose, const SkinnedRuntimeAnimation &animation, size_t nodeIndex,
-                          double timeTicks)
+                           double timeTicks)
 {
     if (nodeIndex >= animation.trackByNodeIndex.size())
         return;
@@ -860,9 +860,7 @@ std::vector<SkinnedNodePose> InxSkinnedMesh::BuildRetargetedLocalPoses(const Ske
             for (glm::length_t component = 0; component < targetPoses[targetIndex].scale.length(); ++component) {
                 const float denominator = sourceBindLocal.scale[component];
                 const float scaleDelta =
-                    std::abs(denominator) > kEpsilon
-                        ? canonicalScale[component] / denominator
-                        : 1.0f;
+                    std::abs(denominator) > kEpsilon ? canonicalScale[component] / denominator : 1.0f;
                 targetPoses[targetIndex].scale[component] *= scaleDelta;
             }
         }

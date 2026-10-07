@@ -1,6 +1,6 @@
 #include "MenuBarPanel.h"
-#include <function/renderer/gui/InxGUISemantics.h>
 #include <function/renderer/gui/EditorMenuItem.h>
+#include <function/renderer/gui/InxGUISemantics.h>
 
 #include <algorithm>
 #include <cctype>

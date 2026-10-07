@@ -234,8 +234,8 @@ void AssetRegistry::PublishShader(const std::string &guid, std::shared_ptr<Shade
         throw std::overflow_error("Shader publication CPU residency byte total overflow");
     const auto version = NextRuntimeVersion(guid);
     if (entry == m_loadedAssets.end()) {
-        m_loadedAssets.emplace(guid, AssetEntry{RuntimeAssetPayload(candidate), ResourceType::Shader, version,
-                                              bytes, ++m_accessSerial, 0});
+        m_loadedAssets.emplace(guid, AssetEntry{RuntimeAssetPayload(candidate), ResourceType::Shader, version, bytes,
+                                                ++m_accessSerial, 0});
     } else {
         auto resident = entry->second.payload.Get<ShaderAsset>();
         static_assert(std::is_nothrow_move_assignable_v<ShaderAsset>);

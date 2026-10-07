@@ -1397,7 +1397,8 @@ void MaterialDescriptorManager::ResolveTextureProperties(const std::string &mate
                 }
 
                 const bool hasBinding =
-                    resolvedExplicit || TryGetDefaultTextureBinding(material.GetTextureDefault(binding.name), resolvedBinding);
+                    resolvedExplicit ||
+                    TryGetDefaultTextureBinding(material.GetTextureDefault(binding.name), resolvedBinding);
 
                 if (hasBinding) {
                     const auto previous = candidateBindings.find(binding.binding);
@@ -1618,7 +1619,7 @@ void MaterialDescriptorManager::SetDefaultNormalTexture(VkImageView imageView, V
 }
 
 void MaterialDescriptorManager::SetDefaultBlackTexture(VkImageView imageView, VkSampler sampler,
-                                                     std::shared_ptr<const rhi::TextureGpuView> gpuView)
+                                                       std::shared_ptr<const rhi::TextureGpuView> gpuView)
 {
     m_defaultBlackImageView = imageView;
     m_defaultBlackSampler = sampler;

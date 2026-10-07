@@ -683,11 +683,8 @@ const rhi::ComputeCommandEncoder::DispatchTable VulkanRhiDevice::s_computeDispat
     &VulkanRhiDevice::Dispatch, &VulkanRhiDevice::DispatchIndirect};
 
 const rhi::TransferCommandEncoder::DispatchTable VulkanRhiDevice::s_transferDispatch = {
-    &VulkanRhiDevice::CopyBuffer,
-    &VulkanRhiDevice::CopyTexture,
-    &VulkanRhiDevice::ResolveTexture,
-    &VulkanRhiDevice::FillBuffer,
-    &VulkanRhiDevice::UpdateBuffer,
+    &VulkanRhiDevice::CopyBuffer, &VulkanRhiDevice::CopyTexture,  &VulkanRhiDevice::ResolveTexture,
+    &VulkanRhiDevice::FillBuffer, &VulkanRhiDevice::UpdateBuffer,
 };
 
 VulkanRhiDevice::VulkanRhiDevice() : m_deviceId(rhi::AllocateDeviceId())

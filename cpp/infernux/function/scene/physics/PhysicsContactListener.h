@@ -53,7 +53,7 @@ struct CollisionInfo
 {
     Collider *collider = nullptr;     ///< The other collider involved
     GameObject *gameObject = nullptr; ///< The other GameObject
-    PhysicsTargetReference target;   ///< Safe identity when a script retains this value
+    PhysicsTargetReference target;    ///< Safe identity when a script retains this value
     glm::vec3 contactPoint{0.0f};     ///< World-space contact point (first contact)
     glm::vec3 contactNormal{0.0f};    ///< Contact normal (points from other → this)
     glm::vec3 relativeVelocity{0.0f}; ///< Relative velocity between the bodies

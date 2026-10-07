@@ -372,9 +372,8 @@ bool HasReusableRuntimeArtifact(const AssetIndexEntry &entry, ResourceType type,
     if (entry.metadata.HasKey("model_textures")) {
         const auto textures = nlohmann::json::parse(entry.metadata.GetDataAs<std::string>("model_textures"));
         for (const auto &texture : textures) {
-            const auto path = projectRoot / std::filesystem::u8path(
-                                               RuntimeArtifactRelativePath(texture.at("guid").get<std::string>(),
-                                                                           ResourceType::Texture));
+            const auto path = projectRoot / std::filesystem::u8path(RuntimeArtifactRelativePath(
+                                                texture.at("guid").get<std::string>(), ResourceType::Texture));
             if (!HasCurrentRuntimeArtifactHeader(path, ResourceType::Texture,
                                                  ImportArtifact::RuntimeArtifactKind::Primary))
                 return false;
@@ -2862,8 +2861,9 @@ AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const s
     std::error_code destinationError;
     if (!std::filesystem::exists(ToFsPath(newPath), destinationError)) {
         result.errorCode = destinationError ? AssetMutationErrorCode::InvalidPath : AssetMutationErrorCode::NotFound;
-        result.error = destinationError ? "asset relocation destination cannot be inspected: " + destinationError.message()
-                                        : "asset relocation destination must exist before notification";
+        result.error = destinationError
+                           ? "asset relocation destination cannot be inspected: " + destinationError.message()
+                           : "asset relocation destination must exist before notification";
         return result;
     }
     MoveMetadata(oldPath, newPath);
@@ -2938,8 +2938,9 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
         if (!std::filesystem::exists(ToFsPath(newPath), destinationError))
             return failure(oldPath, newPath,
                            destinationError ? AssetMutationErrorCode::InvalidPath : AssetMutationErrorCode::NotFound,
-                           destinationError ? "asset relocation destination cannot be inspected: " + destinationError.message()
-                                            : "asset relocation destination must exist before notification");
+                           destinationError
+                               ? "asset relocation destination cannot be inspected: " + destinationError.message()
+                               : "asset relocation destination must exist before notification");
         prepared.push_back({oldPath, newPath, oldKey, newKey, guid, GetResourceTypeForPath(newPath)});
     }
 

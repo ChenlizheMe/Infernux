@@ -969,16 +969,15 @@ bool ParticleGpuRuntime::UpdateSkinnedMeshSources(const std::vector<GpuSkinnedMe
 
 bool ParticleGpuRuntime::UpdateTransforms(const GpuParticleTransforms &transforms)
 {
-    const bool transformsChanged = !m_hasCachedTransforms ||
-        std::memcmp(&m_cachedTransforms, &transforms, sizeof(GpuParticleTransforms)) != 0;
+    const bool transformsChanged =
+        !m_hasCachedTransforms || std::memcmp(&m_cachedTransforms, &transforms, sizeof(GpuParticleTransforms)) != 0;
     const bool meshChanged = m_dataInterfaces && m_dataInterfaces->metadataDirty;
     if (!transformsChanged && !meshChanged)
         return true;
     if (!m_device)
         return false;
     m_hasCachedTransforms = false;
-    if (!UpdateMeshInterfaceMetadata(transforms) ||
-        (transformsChanged && !UpdateVectorFieldMetadata(transforms)))
+    if (!UpdateMeshInterfaceMetadata(transforms) || (transformsChanged && !UpdateVectorFieldMetadata(transforms)))
         return false;
     // Publish only after every derived matrix has passed validation. These
     // bytes are CPU preparation, not writes into buffers used by earlier frames.

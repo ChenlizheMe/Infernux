@@ -1303,7 +1303,7 @@ void SkinnedModelImporter::ApplyAnimationSettings(InxSkinnedMesh &model, const M
         animation.rootMotionPositions = rootTrack.positions;
         animation.rootMotionRotations = rootTrack.rotations;
         const auto bind = LocalBindPose(model.skeleton.nodes[static_cast<size_t>(rootTrack.nodeIndex)],
-                                       rootTrack.scales.empty() ? glm::vec3(1.0f) : rootTrack.scales.front().second);
+                                        rootTrack.scales.empty() ? glm::vec3(1.0f) : rootTrack.scales.front().second);
         const glm::vec3 referenceTranslation =
             settings.animationReferencePose == "first_frame" && !rootTrack.positions.empty()
                 ? SampleKeys(rootTrack.positions, 0.0, linear)

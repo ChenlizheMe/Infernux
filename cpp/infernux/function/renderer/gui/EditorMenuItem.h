@@ -26,7 +26,7 @@ inline bool EditorMenuItem(const char *label, const char *shortcut, bool selecte
         const float fontSize = ImGui::GetFontSize();
         const float markSize = fontSize * 0.66f;
         const ImVec2 markPosition(position.x + columns.OffsetMark + stretch + fontSize * 0.503f,
-                                 position.y + baseline + (fontSize - markSize) * 0.5f);
+                                  position.y + baseline + (fontSize - markSize) * 0.5f);
         ImGui::RenderCheckMark(window->DrawList, markPosition, ImGui::GetColorU32(ImGuiCol_Text), markSize);
     }
     if (!enabled)

@@ -2553,10 +2553,11 @@ void Infernux::ReleasePreviewAuthoring(const std::string &resourceKey)
     }
 }
 
-std::tuple<uint64_t, int, int> Infernux::QueryOrScheduleTexturePreview(
-    const std::string &resourceKey, const std::string &textureFilePath, uint64_t contentStampHint, bool nearest,
-    bool srgb, int maxSize, const std::string &textureFormat, const std::string &textureType, bool authoring, bool pump,
-    bool useImportedTexture)
+std::tuple<uint64_t, int, int>
+Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const std::string &textureFilePath,
+                                        uint64_t contentStampHint, bool nearest, bool srgb, int maxSize,
+                                        const std::string &textureFormat, const std::string &textureType,
+                                        bool authoring, bool pump, bool useImportedTexture)
 {
     if (resourceKey.empty() || textureFilePath.empty())
         return {0, 0, 0};
@@ -4246,11 +4247,13 @@ std::string Infernux::ReloadShaderSourceBatch(const std::vector<std::string> &ro
     auto &registry = AssetRegistry::Instance();
     auto *adb = registry.GetAssetDatabase();
     InxShaderLoader::SourceDependencyPublication dependencyPublication;
-    struct PreparedStage {
+    struct PreparedStage
+    {
         std::string guid;
         std::shared_ptr<ShaderAsset> asset;
     };
-    struct PreparedProgram {
+    struct PreparedProgram
+    {
         ShaderProgramArtifact artifact;
         ShaderDescriptor fragment;
         uint64_t sourceStamp;
@@ -4338,8 +4341,8 @@ std::string Infernux::ReloadShaderSourceBatch(const std::vector<std::string> &ro
             const auto owner = owners.find(stages);
             const auto stagePath = [&](const std::string &id, const char *stage, bool vertex) {
                 if (owner != owners.end()) {
-                    const auto &reference = vertex ? owner->second->GetVertShaderReference()
-                                                   : owner->second->GetFragShaderReference();
+                    const auto &reference =
+                        vertex ? owner->second->GetVertShaderReference() : owner->second->GetFragShaderReference();
                     if (!reference.guid.empty())
                         return adb->GetPathFromGuid(reference.guid);
                     if (!reference.pathHint.empty())
@@ -4359,15 +4362,15 @@ std::string Infernux::ReloadShaderSourceBatch(const std::vector<std::string> &ro
             if (IsDirectStructuredStage(vertex) || IsDirectStructuredStage(fragment))
                 continue;
             auto compilation = compiler.CompileLinkedProgramArtifact(
-                vertexSource, InxShaderLoader::StageQualifiedVirtualPath(vertexPath, "vertex"),
-                fragmentSource, InxShaderLoader::StageQualifiedVirtualPath(fragmentPath, "fragment"));
+                vertexSource, InxShaderLoader::StageQualifiedVirtualPath(vertexPath, "vertex"), fragmentSource,
+                InxShaderLoader::StageQualifiedVirtualPath(fragmentPath, "fragment"));
             auto artifact = compilation.CreateRuntimeArtifact();
             if (!compilation.IsValid() || !artifact.IsValid() || artifact.key.stages != stages) {
                 std::ostringstream message;
                 for (const auto &error : compilation.errors)
                     message << error << '\n';
-                reject(fragmentPath, message.str().empty() ? "Dependent linked program compilation failed"
-                                                         : message.str());
+                reject(fragmentPath,
+                       message.str().empty() ? "Dependent linked program compilation failed" : message.str());
                 continue;
             }
             preparedPrograms.push_back(
@@ -4405,10 +4408,10 @@ std::string Infernux::ReloadShaderSourceBatch(const std::vector<std::string> &ro
         }
         m_linkedShaderProgramCache[stages] = std::move(entry);
         const auto &fragment = program.fragment;
-        m_renderer->StoreShaderRenderMeta(
-            stages.fragmentShaderId, fragment.surfaceOptions.cullMode, fragment.depthWrite, fragment.depthTest,
-            fragment.surfaceOptions.blendMode, fragment.renderQueue, fragment.passTag, fragment.stencil,
-            fragment.surfaceOptions.alphaClip);
+        m_renderer->StoreShaderRenderMeta(stages.fragmentShaderId, fragment.surfaceOptions.cullMode,
+                                          fragment.depthWrite, fragment.depthTest, fragment.surfaceOptions.blendMode,
+                                          fragment.renderQueue, fragment.passTag, fragment.stencil,
+                                          fragment.surfaceOptions.alphaClip);
     }
     dependencyPublication.Commit();
     for (const auto &material : materials) {
@@ -4426,7 +4429,7 @@ std::string Infernux::ReloadShaderSourceBatch(const std::vector<std::string> &ro
 }
 
 std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const std::string &previousShaderId,
-                                        const std::string &previousSourcePath)
+                                          const std::string &previousSourcePath)
 {
     m_shaderReloadSources = {shaderPath};
     const InxShaderLoader::SourceDiagnosticScope sourceDiagnostics;
@@ -4494,12 +4497,14 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
             // live material moves to the new program namespace.
             const bool vertexChanged = ext == ".vert";
             const auto materials = registry.GetAllMaterials();
-            struct Migration {
+            struct Migration
+            {
                 std::shared_ptr<InxMaterial> material;
                 ShaderAssetReference reference;
                 ShaderStagePair stages;
             };
-            struct PreparedProgram {
+            struct PreparedProgram
+            {
                 ShaderProgramArtifact artifact;
                 ShaderDescriptor fragment;
                 uint64_t sourceStamp;
@@ -4509,7 +4514,7 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
             std::unordered_map<ShaderStagePair, PreparedProgram, ShaderStagePairHash> programs;
             const auto stagePath = [&](const ShaderAssetReference &reference, const char *stage) {
                 return !reference.guid.empty() ? adb->GetPathFromGuid(reference.guid)
-                                              : adb->FindShaderPathById(reference.shaderId, stage);
+                                               : adb->FindShaderPathById(reference.shaderId, stage);
             };
             const auto readStage = [&](const std::string &path, std::string &text) {
                 std::vector<char> bytes;
@@ -4523,7 +4528,8 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
             for (const auto &material : materials) {
                 if (!material)
                     continue;
-                auto reference = vertexChanged ? material->GetVertShaderReference() : material->GetFragShaderReference();
+                auto reference =
+                    vertexChanged ? material->GetVertShaderReference() : material->GetFragShaderReference();
                 if (reference.guid != guid)
                     continue;
                 reference.shaderId = changedShaderId;
@@ -4541,8 +4547,8 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
                 if (!readStage(vertexPath, vertexSource) || !readStage(fragmentPath, fragmentSource))
                     return "Shader rename requires both referenced stage GUIDs to resolve to readable sources";
                 auto compiled = sourceParser.CompileLinkedProgramArtifact(
-                    vertexSource, InxShaderLoader::StageQualifiedVirtualPath(vertexPath, "vertex"),
-                    fragmentSource, InxShaderLoader::StageQualifiedVirtualPath(fragmentPath, "fragment"));
+                    vertexSource, InxShaderLoader::StageQualifiedVirtualPath(vertexPath, "vertex"), fragmentSource,
+                    InxShaderLoader::StageQualifiedVirtualPath(fragmentPath, "fragment"));
                 if (!compiled.IsValid()) {
                     std::ostringstream errors;
                     for (const auto &error : compiled.errors)
@@ -4554,12 +4560,10 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
                     return "Shader rename produced a mismatched linked program";
                 const auto vertex = sourceParser.ParseShaderSource(vertexSource, vertexPath);
                 const auto fragment = sourceParser.ParseShaderSource(fragmentSource, fragmentPath);
-                programs.emplace(
-                    stages, PreparedProgram{
-                                std::move(artifact), fragment,
-                                ComputeShaderProgramRevision(vertexSource, fragmentSource, ShaderCompileTarget::Forward,
-                                                             0),
-                                ShaderStageLinker::IsUIStagePair(vertex, fragment)});
+                programs.emplace(stages, PreparedProgram{std::move(artifact), fragment,
+                                                         ComputeShaderProgramRevision(vertexSource, fragmentSource,
+                                                                                      ShaderCompileTarget::Forward, 0),
+                                                         ShaderStageLinker::IsUIStagePair(vertex, fragment)});
             }
             registry.InvalidateAsset(guid);
             if (IsDirectStructuredStage(changedDescriptor)) {
@@ -4616,8 +4620,8 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
                 it = m_linkedShaderProgramCache.erase(it);
             }
             const bool oldNameReferenced = std::any_of(materials.begin(), materials.end(), [&](const auto &material) {
-                return material &&
-                       (vertexChanged ? material->GetVertShaderName() : material->GetFragShaderName()) == previousShaderId;
+                return material && (vertexChanged ? material->GetVertShaderName() : material->GetFragShaderName()) ==
+                                       previousShaderId;
             });
             if (!oldNameReferenced)
                 m_renderer->InvalidateShaderCache(previousShaderId, vertexChanged ? "vertex" : "fragment");
@@ -4625,7 +4629,6 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
         }
 
         return ReloadShaderSourceBatch({shaderPath});
-
     }
 }
 

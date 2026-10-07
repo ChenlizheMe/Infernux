@@ -88,7 +88,10 @@ class VkShaderCache
 
     /// Get render-state annotations (nullptr if none stored).
     [[nodiscard]] const ShaderRenderMeta *GetRenderMeta(const std::string &shaderId) const;
-    [[nodiscard]] uint64_t GetRenderMetaRevision() const noexcept { return m_renderMetaRevision; }
+    [[nodiscard]] uint64_t GetRenderMetaRevision() const noexcept
+    {
+        return m_renderMetaRevision;
+    }
 
     // ── SPIR-V Code Lookup ─────────────────────────────────────────────────
 

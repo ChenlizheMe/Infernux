@@ -10,8 +10,8 @@ namespace infernux
 
 // Resolve the identity against one published manifest. A serialized path is
 // deliberately absent: it cannot rescue missing or ambiguous identities.
-inline std::vector<std::string> ResolveModelMeshIdentityPath(
-    const nlohmann::json &manifest, const std::string &subresourceId)
+inline std::vector<std::string> ResolveModelMeshIdentityPath(const nlohmann::json &manifest,
+                                                             const std::string &subresourceId)
 {
     if (!manifest.is_array())
         throw std::invalid_argument("Model mesh identity manifest must be an array");

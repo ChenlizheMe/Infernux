@@ -1,10 +1,10 @@
 #include "InxGUI.h"
 #include "../ProfileConfig.h"
+#include "EditorWindowPresentation.h"
 #include "ImGuiVulkanExtensions.h"
 #include "InxGUIContext.h"
 #include "InxGUISemantics.h"
 #include "InxTextLayout.h"
-#include "EditorWindowPresentation.h"
 #include <function/editor/EditorTheme.h>
 #include <function/editor/EditorThemeRegistry.h>
 #include <function/renderer/TextureUploadBuilder.h>

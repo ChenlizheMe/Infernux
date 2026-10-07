@@ -525,8 +525,8 @@ ResourceHandle PassBuilder::ReadStorageBuffer(ResourceHandle handle, rhi::Pipeli
     return AddBufferRead(handle, ResourceUsage::Read | ResourceUsage::ShaderRead, stages, rhi::Access::ShaderRead);
 }
 
-ResourceHandle PassBuilder::AddBufferRead(ResourceHandle handle, ResourceUsage usage,
-                                         rhi::PipelineStage stages, rhi::Access access)
+ResourceHandle PassBuilder::AddBufferRead(ResourceHandle handle, ResourceUsage usage, rhi::PipelineStage stages,
+                                          rhi::Access access)
 {
     if (!m_graph->Owns(handle) || m_graph->m_resources[handle.id].type != ResourceType::Buffer)
         return handle;
@@ -549,8 +549,8 @@ ResourceHandle PassBuilder::AddBufferRead(ResourceHandle handle, ResourceUsage u
 
 ResourceHandle PassBuilder::ReadUniformBuffer(ResourceHandle handle)
 {
-    return AddBufferRead(handle, ResourceUsage::Read | ResourceUsage::ShaderRead,
-                         rhi::PipelineStage::ComputeShader, rhi::Access::UniformRead);
+    return AddBufferRead(handle, ResourceUsage::Read | ResourceUsage::ShaderRead, rhi::PipelineStage::ComputeShader,
+                         rhi::Access::UniformRead);
 }
 
 ResourceHandle PassBuilder::WriteStorageBuffer(ResourceHandle handle)

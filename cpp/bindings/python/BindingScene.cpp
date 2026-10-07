@@ -1110,9 +1110,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def(
             "get_material_guids", [](const MeshRenderer &mr) { return mr.GetMaterialGuids(); },
             "Get all material slot GUIDs as a list")
-        .def(
-            "set_materials", &MeshRenderer::SetMaterialSlots, py::arg("guids"),
-            "Replace all slots with GUIDs, InxMaterial instances, or None")
+        .def("set_materials", &MeshRenderer::SetMaterialSlots, py::arg("guids"),
+             "Replace all slots with GUIDs, InxMaterial instances, or None")
         .def(
             "set_material_slot_count", [](MeshRenderer &mr, uint32_t count) { mr.SetMaterialSlotCount(count); },
             py::arg("count"), "Set the number of material slots")

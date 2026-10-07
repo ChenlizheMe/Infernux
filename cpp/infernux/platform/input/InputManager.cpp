@@ -121,9 +121,9 @@ void InputManager::BuildNameTable()
     s_nameToScancode["slash"] = SDL_SCANCODE_SLASH;
 
     // Numpad
-    constexpr SDL_Scancode keypad[] = {SDL_SCANCODE_KP_0, SDL_SCANCODE_KP_1, SDL_SCANCODE_KP_2,
-        SDL_SCANCODE_KP_3, SDL_SCANCODE_KP_4, SDL_SCANCODE_KP_5, SDL_SCANCODE_KP_6,
-        SDL_SCANCODE_KP_7, SDL_SCANCODE_KP_8, SDL_SCANCODE_KP_9};
+    constexpr SDL_Scancode keypad[] = {SDL_SCANCODE_KP_0, SDL_SCANCODE_KP_1, SDL_SCANCODE_KP_2, SDL_SCANCODE_KP_3,
+                                       SDL_SCANCODE_KP_4, SDL_SCANCODE_KP_5, SDL_SCANCODE_KP_6, SDL_SCANCODE_KP_7,
+                                       SDL_SCANCODE_KP_8, SDL_SCANCODE_KP_9};
     for (int i = 0; i <= 9; ++i) {
         s_nameToScancode["keypad_" + std::to_string(i)] = keypad[i];
     }

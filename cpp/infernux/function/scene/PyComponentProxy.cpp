@@ -3,10 +3,10 @@
 #include "GameObject.h"
 #include "physics/PhysicsContactListener.h"
 #include <algorithm>
+#include <bindings/python/JsonPyBridge.h>
 #include <core/log/InxLog.h>
 #include <cstdio>
 #include <nlohmann/json.hpp>
-#include <bindings/python/JsonPyBridge.h>
 
 using json = nlohmann::json;
 
@@ -209,8 +209,8 @@ void CallCachedLifecycleNoArg(const py::object &callable, const std::string &typ
     }
 }
 
-void CallCachedLifecycleCleanup(const py::object &pyComponent, const py::object &callable,
-                                Component *nativeComponent, const std::string &typeName, const char *displayName)
+void CallCachedLifecycleCleanup(const py::object &pyComponent, const py::object &callable, Component *nativeComponent,
+                                const std::string &typeName, const char *displayName)
 {
     try {
         pyComponent.attr("_invoke_native_cleanup")(

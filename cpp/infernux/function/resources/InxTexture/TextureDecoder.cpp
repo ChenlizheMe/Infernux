@@ -245,8 +245,8 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeMemory(const std::ve
             sourceHeight = pnm.height;
             pnmPixels = std::move(pnm.pixels);
         } else {
-            decoded = stbi_load_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,
-                                           &sourceHeight, &sourceChannels, STBI_rgb_alpha);
+            decoded = stbi_load_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth, &sourceHeight,
+                                            &sourceChannels, STBI_rgb_alpha);
             if (!decoded)
                 throw std::runtime_error("failed to decode texture: " + sourcePath);
         }

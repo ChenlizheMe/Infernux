@@ -402,10 +402,9 @@ void AudioSource::AssignTrackClipReference(int trackIndex, const std::string &gu
 
     auto &graph = AssetDependencyGraph::Instance();
     const std::string oldGuid = track.clipAsset.GetGuid();
-    const bool oldClipStillReferenced = std::any_of(
-        m_tracks.begin(), m_tracks.end(), [&](const AudioTrack &other) {
-            return &other != &track && other.clipAsset.GetGuid() == oldGuid;
-        });
+    const bool oldClipStillReferenced = std::any_of(m_tracks.begin(), m_tracks.end(), [&](const AudioTrack &other) {
+        return &other != &track && other.clipAsset.GetGuid() == oldGuid;
+    });
     if (!oldGuid.empty() && oldGuid != guid && !oldClipStillReferenced)
         graph.RemoveRuntimeDependency(GetInstanceGuid(), oldGuid);
 

@@ -973,7 +973,7 @@ bool InxMaterial::SynchronizeShaderPropertyDefaults(const ShaderProgramArtifact 
         if (existing == m_properties.end() || !MaterialValueMatchesType(existing->second, *expectedType)) {
             m_properties[binding.name] =
                 MaterialProperty{binding.name, *expectedType, ParseShaderPropertyDefault(binding, *expectedType),
-                                 binding.hdr, binding.range, binding.textureDefault};
+                                 binding.hdr,  binding.range, binding.textureDefault};
             changed = true;
             continue;
         }

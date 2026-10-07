@@ -8,8 +8,8 @@
  * and raycast queries. Integrated with SceneManager::FixedUpdate.
  */
 
-#include "PhysicsTargetReference.h"
 #include "PhysicsConstraintOwner.h"
+#include "PhysicsTargetReference.h"
 
 #include <atomic>
 #include <cstddef>
@@ -305,15 +305,13 @@ class PhysicsWorld
     /// Create a world-space hinge between body A and body B, or body A and
     /// the fixed world when body B is invalid. Limits are radians.
     uint64_t CreateHingeConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                   const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis,
-                                   bool useLimits, float minimumAngle, float maximumAngle,
-                                   bool enableCollision);
+                                   const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis, bool useLimits,
+                                   float minimumAngle, float maximumAngle, bool enableCollision);
     /// Create a prismatic constraint that permits only translation along one
     /// world-space axis. Limits are metres relative to the creation pose.
     uint64_t CreateSliderConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                    const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis,
-                                    bool useLimits, float minimumDistance,
-                                    float maximumDistance, bool enableCollision);
+                                    const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis, bool useLimits,
+                                    float minimumDistance, float maximumDistance, bool enableCollision);
     void DestroyConstraint(uint64_t constraintId);
     [[nodiscard]] float GetHingeConstraintAngle(uint64_t constraintId) const;
     [[nodiscard]] float GetSliderConstraintPosition(uint64_t constraintId) const;

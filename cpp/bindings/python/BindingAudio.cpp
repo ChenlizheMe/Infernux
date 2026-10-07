@@ -25,23 +25,26 @@ namespace infernux
 
 void RegisterAudioBindings(py::module_ &m)
 {
-    m.def("_inspect_audio_file", [](const std::string &filePath) {
-        uint64_t frames;
-        int rate, channels;
-        {
-            py::gil_scoped_release release;
-            AudioStreamDecoder decoder(filePath);
-            frames = decoder.FrameCount();
-            rate = decoder.SampleRate();
-            channels = decoder.Channels();
-        }
-        py::dict info;
-        info["duration"] = static_cast<double>(frames) / rate;
-        info["sample_count"] = frames;
-        info["sample_rate"] = rate;
-        info["channels"] = channels;
-        return info;
-    }, py::arg("file_path"), "Read source codec metadata without loading resident PCM or creating a voice.");
+    m.def(
+        "_inspect_audio_file",
+        [](const std::string &filePath) {
+            uint64_t frames;
+            int rate, channels;
+            {
+                py::gil_scoped_release release;
+                AudioStreamDecoder decoder(filePath);
+                frames = decoder.FrameCount();
+                rate = decoder.SampleRate();
+                channels = decoder.Channels();
+            }
+            py::dict info;
+            info["duration"] = static_cast<double>(frames) / rate;
+            info["sample_count"] = frames;
+            info["sample_rate"] = rate;
+            info["channels"] = channels;
+            return info;
+        },
+        py::arg("file_path"), "Read source codec metadata without loading resident PCM or creating a voice.");
 
     // ========================================================================
     // AudioClip — loaded audio data (Unity: AudioClip)
@@ -75,10 +78,10 @@ void RegisterAudioBindings(py::module_ &m)
     // AudioSource — playback component (Unity: AudioSource, multi-track)
     // ========================================================================
     NativeClass<AudioSource, Component>(m, "AudioSource",
-                                       "Audio playback component with multi-track support.\n"
-                                       "Attach to a GameObject to play AudioClips.\n"
-                                       "Each track can hold a different clip; all tracks\n"
-                                       "share the source-level volume, mute, and spatial settings.")
+                                        "Audio playback component with multi-track support.\n"
+                                        "Attach to a GameObject to play AudioClips.\n"
+                                        "Each track can hold a different clip; all tracks\n"
+                                        "share the source-level volume, mute, and spatial settings.")
         // Track management
         .def_property("track_count", &AudioSource::GetTrackCount, &AudioSource::SetTrackCount,
                       "Number of audio tracks (default 1). Each track can play independently.")
@@ -148,8 +151,8 @@ void RegisterAudioBindings(py::module_ &m)
     // AudioListener — scene listener component (Unity: AudioListener)
     // ========================================================================
     NativeClass<AudioListener, Component>(m, "AudioListener",
-                                         "Audio listener component — the 'ears' in the scene.\n"
-                                         "Attach to the main camera GameObject.")
+                                          "Audio listener component — the 'ears' in the scene.\n"
+                                          "Attach to the main camera GameObject.")
         .def_property_readonly("game_object_id", &AudioListener::GetGameObjectId,
                                "Owning GameObject ID (for Wwise listener registration)")
         // Serialization

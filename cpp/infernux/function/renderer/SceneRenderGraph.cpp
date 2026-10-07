@@ -2397,11 +2397,12 @@ void SceneRenderGraph::EnsureGraphBuilt()
             if (!command || command->type != GraphCommandType::DrawWorldUI ||
                 !m_screenUIRenderer->HasSelectiveWorldOcclusion(cameraMask & command->worldUILayerMask))
                 continue;
-            auto candidate = BuildWorldUIDepthReplay(
-                m_pythonGraphDesc, m_cameraClearFlags == CameraClearFlags::DontClear, pass.name);
+            auto candidate = BuildWorldUIDepthReplay(m_pythonGraphDesc,
+                                                     m_cameraClearFlags == CameraClearFlags::DontClear, pass.name);
             if (!candidate) {
                 INXLOG_ERROR("Selective World UI occlusion requires one cleared Forward scene-depth writer; "
-                             "pass '", pass.name, "' or camera depth-preservation policy cannot be replayed exactly");
+                             "pass '",
+                             pass.name, "' or camera depth-preservation policy cannot be replayed exactly");
                 m_graphBuilt = false;
                 m_needsRebuild = true;
                 return;
@@ -3715,11 +3716,12 @@ void SceneRenderGraph::BuildRenderGraph()
             if (!candidateCommand || candidateCommand->type != GraphCommandType::DrawWorldUI || !m_screenUIRenderer ||
                 !m_screenUIRenderer->HasSelectiveWorldOcclusion(cameraWorldUIMask & candidateCommand->worldUILayerMask))
                 continue;
-            auto source = BuildWorldUIDepthReplay(
-                m_pythonGraphDesc, m_cameraClearFlags == CameraClearFlags::DontClear, candidate.name);
+            auto source = BuildWorldUIDepthReplay(m_pythonGraphDesc, m_cameraClearFlags == CameraClearFlags::DontClear,
+                                                  candidate.name);
             if (!source) {
                 INXLOG_ERROR("Selective World UI occlusion requires one cleared Forward scene-depth writer; "
-                             "pass '", candidate.name, "' or camera depth-preservation policy cannot be replayed exactly");
+                             "pass '",
+                             candidate.name, "' or camera depth-preservation policy cannot be replayed exactly");
                 return;
             }
             worldUIOpaqueSources.emplace(candidate.name, std::move(*source));

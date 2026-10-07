@@ -586,8 +586,7 @@ void InxShaderLoader::InvalidateTemplateCache()
     s_templateCache.clear();
 }
 
-InxShaderLoader::SourceDiagnosticScope::SourceDiagnosticScope()
-    : m_previous(g_sourceDiagnosticsCaptured)
+InxShaderLoader::SourceDiagnosticScope::SourceDiagnosticScope() : m_previous(g_sourceDiagnosticsCaptured)
 {
     g_sourceDiagnosticsCaptured = true;
 }
@@ -608,8 +607,7 @@ struct InxShaderLoader::SourceDependencyPublication::State
     bool committed = false;
 };
 
-InxShaderLoader::SourceDependencyPublication::SourceDependencyPublication()
-    : m_state(std::make_unique<State>())
+InxShaderLoader::SourceDependencyPublication::SourceDependencyPublication() : m_state(std::make_unique<State>())
 {
     if (g_dependencyPublication)
         throw std::logic_error("Shader dependency publication cannot be nested");
@@ -637,7 +635,7 @@ void InxShaderLoader::SourceDependencyPublication::Commit()
 }
 
 std::vector<std::string> InxShaderLoader::GetDependentStageSources(const std::string &sourcePath,
-                                                                 const std::string &declarationId)
+                                                                   const std::string &declarationId)
 {
     const CompilationGuard guard;
     const auto pathKey = ShaderDependencyPathKey(sourcePath);
@@ -2113,8 +2111,8 @@ std::shared_ptr<std::vector<char>> InxShaderLoader::Compile(const char *content,
 
     // ---- Forward variant compilation ----
     std::vector<std::string> importErrors;
-    std::string shaderSource = PreprocessShaderSource(std::string(content), filePath, ShaderCompileTarget::Forward,
-                                                       nullptr, &importErrors);
+    std::string shaderSource =
+        PreprocessShaderSource(std::string(content), filePath, ShaderCompileTarget::Forward, nullptr, &importErrors);
     if (!importErrors.empty()) {
         std::ostringstream diagnostic;
         diagnostic << "Shader import resolution failed:";

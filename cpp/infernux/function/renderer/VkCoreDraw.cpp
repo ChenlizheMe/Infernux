@@ -886,7 +886,8 @@ void InxVkCoreModular::DrawSceneFiltered(VkCommandBuffer cmdBuf, uint32_t width,
 
         if (materialFilter != GraphMaterialFilter::All) {
             const auto *committed = ResolveMeshMaterial(*materialOwner);
-            const auto *artifact = committed ? m_shaderCache.FindProgramArtifact(committed->programKey.stages) : nullptr;
+            const auto *artifact =
+                committed ? m_shaderCache.FindProgramArtifact(committed->programKey.stages) : nullptr;
             const bool deferredCompatible = artifact && artifact->FindVariant(ShaderCompileTarget::GBuffer);
             if ((materialFilter == GraphMaterialFilter::DeferredCompatible && !deferredCompatible) ||
                 (materialFilter == GraphMaterialFilter::DeferredUnsupported && deferredCompatible))

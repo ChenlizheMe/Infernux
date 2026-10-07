@@ -1487,8 +1487,8 @@ void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
     // Publish geometry, aggregate sensor state and its exact member identities
     // under the same query snapshot lock. A single remaining shape has no
     // compound subshape ID, so its primary identity must follow that member.
-    const bool isSensor = std::all_of(members.begin(), members.end(),
-                                      [](const Collider *member) { return member->IsTrigger(); });
+    const bool isSensor =
+        std::all_of(members.begin(), members.end(), [](const Collider *member) { return member->IsTrigger(); });
     const bool sensorChanged = bodyInterface.IsSensor(JPH::BodyID(id)) != isSensor;
     bodyInterface.SetIsSensor(JPH::BodyID(id), isSensor);
     m_bodyToCollider[id] = members.front();
@@ -1578,8 +1578,7 @@ void PhysicsWorld::AddBodiesBatch(const std::vector<uint32_t> &bodies)
 
 bool PhysicsWorld::IsBodyInBroadphase(uint32_t bodyId) const
 {
-    return m_initialized && bodyId != 0xFFFFFFFF &&
-           m_physicsSystem->GetBodyInterface().IsAdded(JPH::BodyID(bodyId));
+    return m_initialized && bodyId != 0xFFFFFFFF && m_physicsSystem->GetBodyInterface().IsAdded(JPH::BodyID(bodyId));
 }
 
 void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t bodyId)
@@ -1912,8 +1911,8 @@ void PhysicsWorld::MoveBodyKinematicRotation(uint32_t bodyId, const glm::quat &t
     std::unique_lock snapshotWrite(m_querySnapshotMutex);
     const auto pending = m_kinematicMoveStates.find(bodyId);
     const glm::vec3 position = pending != m_kinematicMoveStates.end() && pending->second.movedThisStep
-                                  ? pending->second.targetPosition
-                                  : GetBodyPosition(bodyId);
+                                   ? pending->second.targetPosition
+                                   : GetBodyPosition(bodyId);
     MoveBodyKinematicUnlocked(bodyId, position, targetRot, deltaTime, 0.0f);
 }
 
@@ -2119,9 +2118,8 @@ PhysicsBodyMotionState PhysicsWorld::GetBodyMotionState(uint32_t bodyId) const
 }
 
 uint64_t PhysicsWorld::CreateHingeConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                             const glm::vec3 &worldAnchor,
-                                             const glm::vec3 &worldAxis, bool useLimits, float minimumAngle,
-                                             float maximumAngle, bool enableCollision)
+                                             const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis, bool useLimits,
+                                             float minimumAngle, float maximumAngle, bool enableCollision)
 {
     if (!m_initialized || !m_physicsSystem)
         throw std::logic_error("hinge creation requires an initialized physics world");
@@ -2168,17 +2166,16 @@ uint64_t PhysicsWorld::CreateHingeConstraint(PhysicsConstraintOwner &owner, uint
     m_physicsSystem->AddConstraint(constraint);
     const uint64_t constraintId = m_nextConstraintId++;
     const bool ignoresCollision = bodyIdB != 0xFFFFFFFF && !enableCollision;
-    m_constraints.emplace(constraintId,
-                          ConstraintRecord{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Hinge});
+    m_constraints.emplace(
+        constraintId, ConstraintRecord{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Hinge});
     if (ignoresCollision)
         SetConstraintPairSuppressed(bodyIdA, bodyIdB, true);
     return constraintId;
 }
 
 uint64_t PhysicsWorld::CreateSliderConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                              const glm::vec3 &worldAnchor,
-                                              const glm::vec3 &worldAxis, bool useLimits, float minimumDistance,
-                                              float maximumDistance, bool enableCollision)
+                                              const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis, bool useLimits,
+                                              float minimumDistance, float maximumDistance, bool enableCollision)
 {
     if (!m_initialized || !m_physicsSystem)
         throw std::logic_error("slider creation requires an initialized physics world");
@@ -2221,8 +2218,8 @@ uint64_t PhysicsWorld::CreateSliderConstraint(PhysicsConstraintOwner &owner, uin
     m_physicsSystem->AddConstraint(constraint);
     const uint64_t constraintId = m_nextConstraintId++;
     const bool ignoresCollision = bodyIdB != 0xFFFFFFFF && !enableCollision;
-    m_constraints.emplace(constraintId,
-                          ConstraintRecord{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Slider});
+    m_constraints.emplace(
+        constraintId, ConstraintRecord{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Slider});
     if (ignoresCollision)
         SetConstraintPairSuppressed(bodyIdA, bodyIdB, true);
     return constraintId;
@@ -3253,7 +3250,7 @@ void PhysicsWorld::RebindBodyCollider(uint32_t bodyId, Collider *collider)
     // some of them may already have completed destruction.
     auto members = collider->GetGameObject()->GetComponents<Collider>();
     members.erase(std::remove_if(members.begin(), members.end(),
-                                  [](const Collider *member) { return member->IsBeingDestroyed(); }),
+                                 [](const Collider *member) { return member->IsBeingDestroyed(); }),
                   members.end());
     m_bodyColliders[bodyId] = std::move(members);
     PublishBodyQueryIdentitiesUnlocked(bodyId);

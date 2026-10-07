@@ -3,7 +3,8 @@
 
 PYBIND11_MODULE(_Infernux, module)
 {
-    pybind11::register_exception<infernux::InvalidNativeObjectError>(module, "InvalidNativeObjectError", PyExc_RuntimeError);
+    pybind11::register_exception<infernux::InvalidNativeObjectError>(module, "InvalidNativeObjectError",
+                                                                     PyExc_RuntimeError);
     module.def(
         "is_frame_profile_enabled", []() { return INFERNUX_FRAME_PROFILE != 0; },
         "Return whether this native module was built with detailed frame profiling enabled.");

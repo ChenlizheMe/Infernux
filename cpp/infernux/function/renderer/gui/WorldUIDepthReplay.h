@@ -34,8 +34,8 @@ struct WorldUIDepthReplay
         const auto *command = pass.commands.empty() ? nullptr : &pass.commands.front();
         if (command && command->type == GraphCommandType::DrawWorldUI) {
             if (pass.name == worldUIPassName)
-                return pass.commands.size() == 1 && pass.writeDepth == "depth" && !pass.clearDepth
-                           ? source : std::nullopt;
+                return pass.commands.size() == 1 && pass.writeDepth == "depth" && !pass.clearDepth ? source
+                                                                                                   : std::nullopt;
             // Ordinary UI only reads scene depth. Clearing it changes the
             // depth contract seen by a later stage and cannot be replayed.
             if (pass.writeDepth == "depth" && pass.clearDepth)

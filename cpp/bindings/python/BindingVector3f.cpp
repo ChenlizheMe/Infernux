@@ -47,8 +47,7 @@ inline float Angle(const glm::vec3 &from, const glm::vec3 &to)
         throw std::invalid_argument("Vector3.angle requires finite vectors");
     if (lengthA == 0.0 || lengthB == 0.0)
         return 0.f;
-    return static_cast<float>(std::atan2(glm::length(glm::cross(a, b)), glm::dot(a, b)) *
-                              (180.0 / glm::pi<double>()));
+    return static_cast<float>(std::atan2(glm::length(glm::cross(a, b)), glm::dot(a, b)) * (180.0 / glm::pi<double>()));
 }
 inline glm::vec3 ClampMagnitude(const glm::vec3 &v, float maxLength)
 {
@@ -148,7 +147,8 @@ inline glm::vec3 SlerpUnclamped(const glm::vec3 &a, const glm::vec3 &b, float t)
             // coordinate axis with a stable tie order to define that plane.
             const glm::dvec3 alignment = glm::abs(first);
             const int axis = alignment.x <= alignment.y && alignment.x <= alignment.z ? 0
-                             : alignment.y <= alignment.z ? 1 : 2;
+                             : alignment.y <= alignment.z                             ? 1
+                                                                                      : 2;
             glm::dvec3 basis(0.0);
             basis[axis] = 1.0;
             tangent = glm::normalize(glm::cross(first, basis));
@@ -465,8 +465,7 @@ void RegisterVector3Bindings(py::module_ &m)
         .def_static(
             "scale", [](const Vec &a, const Vec &b) { return Vec(a * b); },
             "Multiplies two vectors component-wise. Unity: Vector3.Scale(a, b)")
-        .def_static("signed_angle", &vec3_util::SignedAngle,
-                    py::arg("from_v"), py::arg("to_v"), py::arg("axis"))
+        .def_static("signed_angle", &vec3_util::SignedAngle, py::arg("from_v"), py::arg("to_v"), py::arg("axis"))
         .def_static("smooth_damp", [](const Vec &current, const Vec &target, Vec currentVelocity, float smoothTime,
                                       float maxSpeed, float deltaTime) {
             Vec result = vec3_util::SmoothDamp(current, target, currentVelocity, smoothTime, maxSpeed, deltaTime);

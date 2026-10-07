@@ -24,7 +24,7 @@ bool IsBuiltinTextureToken(const std::string &value)
 }
 
 ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, AssetDatabase *database,
-                                         const char *expectedStage)
+                                           const char *expectedStage)
 {
     if (!database)
         return reference;

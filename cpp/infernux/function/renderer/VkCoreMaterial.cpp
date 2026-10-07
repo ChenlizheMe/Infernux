@@ -812,7 +812,7 @@ void InxVkCoreModular::PrepareMaterialRenderState(const std::shared_ptr<InxMater
         m_shaderProgramArtifactResolver(material, std::nullopt);
     if (const auto *meta = m_shaderCache.GetRenderMeta(fragment)) {
         material->ApplyShaderRenderMeta(meta->cullMode, meta->depthWrite, meta->depthTest, meta->blend, meta->queue,
-                                       meta->passTag, meta->stencil, meta->alphaClip);
+                                        meta->passTag, meta->stencil, meta->alphaClip);
     }
 }
 
@@ -845,8 +845,8 @@ MaterialRenderData *InxVkCoreModular::ResolveMeshMaterial(const std::shared_ptr<
     const ShaderStagePair requestedStages{material->GetVertShaderName(), material->GetFragShaderName()};
     const std::string rejectionKey = materialKey + "|" + requestedStages.ToString() + "|Mesh";
     const auto *requestedArtifact = m_shaderCache.FindProgramArtifact(requestedStages);
-    bool domainRejected = m_rejectedGeometryMaterialPrograms.find(rejectionKey) !=
-                          m_rejectedGeometryMaterialPrograms.end();
+    bool domainRejected =
+        m_rejectedGeometryMaterialPrograms.find(rejectionKey) != m_rejectedGeometryMaterialPrograms.end();
     if (!domainRejected && !requestedArtifact && m_shaderProgramArtifactResolver) {
         try {
             m_shaderProgramArtifactResolver(material, ShaderProgramDomain::Mesh);
@@ -1348,13 +1348,11 @@ VkDescriptorSet InxVkCoreModular::EnsureShadowMaterialBinding(const std::shared_
     // Forward merges an identical vertex/fragment MaterialProperties layout
     // into its canonical material UBO. Shadow remaps those stages to separate
     // bindings, but both bindings still consume that same authored buffer.
-    const MaterialUBO *vertexUbo = hasVertexMaterialUBO
-        ? (forwardProgram && forwardProgram->HasVertexMaterialUBO()
-               ? forwardMaterialDesc->vertexMaterialUBO.get()
-               : forwardMaterialDesc->materialUBO.get())
-        : nullptr;
-    if (hasVertexMaterialUBO &&
-        (!vertexUbo || !vertexUbo->IsValid())) {
+    const MaterialUBO *vertexUbo = hasVertexMaterialUBO ? (forwardProgram && forwardProgram->HasVertexMaterialUBO()
+                                                               ? forwardMaterialDesc->vertexMaterialUBO.get()
+                                                               : forwardMaterialDesc->materialUBO.get())
+                                                        : nullptr;
+    if (hasVertexMaterialUBO && (!vertexUbo || !vertexUbo->IsValid())) {
         INXLOG_WARN("EnsureShadowMaterialBinding: missing vertex material UBO for '", material->GetName(), "'");
         return VK_NULL_HANDLE;
     }

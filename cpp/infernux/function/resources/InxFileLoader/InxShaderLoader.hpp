@@ -10,8 +10,8 @@
 #include <function/resources/ShaderAsset/ShaderStageLinker.h>
 #include <functional>
 #include <glslang/Public/ShaderLang.h>
-#include <mutex>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string_view>
 #include <unordered_map>
@@ -89,6 +89,7 @@ class InxShaderLoader
         ~SourceDiagnosticScope();
         SourceDiagnosticScope(const SourceDiagnosticScope &) = delete;
         SourceDiagnosticScope &operator=(const SourceDiagnosticScope &) = delete;
+
       private:
         bool m_previous;
     };
@@ -104,6 +105,7 @@ class InxShaderLoader
         SourceDependencyPublication(const SourceDependencyPublication &) = delete;
         SourceDependencyPublication &operator=(const SourceDependencyPublication &) = delete;
         void Commit();
+
       private:
         struct State;
         CompilationGuard m_guard;
@@ -128,8 +130,8 @@ class InxShaderLoader
 
     /// Root stages that actually consumed this source/declaration during
     /// preprocessing, including failed imports awaiting a declaration.
-    [[nodiscard]] static std::vector<std::string>
-    GetDependentStageSources(const std::string &sourcePath, const std::string &declarationId = "");
+    [[nodiscard]] static std::vector<std::string> GetDependentStageSources(const std::string &sourcePath,
+                                                                           const std::string &declarationId = "");
 
     /// Select the device-supported material texture ABI used by generated
     /// shader source. When disabled, shaders that declare BindlessTextures
