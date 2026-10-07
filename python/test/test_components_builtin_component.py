@@ -171,18 +171,61 @@ class TestCppPropertyEdgeCases:
         desc = DemoBuiltin.mode
         assert isinstance(desc, CppProperty)
 
-    def test_runtime_error_invalidates_binding_and_raises(self):
+    @pytest.mark.parametrize("operation", ["get", "set"])
+    def test_business_runtime_error_preserves_live_binding(self, operation):
         class BadCpp:
             component_id = 42
 
             @property
             def raw(self):
-                raise RuntimeError("dead")
+                raise RuntimeError("operation rejected")
+
+            @raw.setter
+            def raw(self, value):
+                raise RuntimeError("operation rejected")
         demo = DemoBuiltin()
         demo._cpp_component = BadCpp()
-        with pytest.raises(ReferenceError):
-            _ = demo.raw
-        assert demo._cpp_component is None
+        cpp = demo._cpp_component
+        with pytest.raises(RuntimeError, match="operation rejected"):
+            if operation == "get":
+                _ = demo.raw
+            else:
+                demo.raw = 1
+        assert demo._require_cpp_component() is cpp
+
+    @pytest.mark.parametrize("operation", ["get", "set"])
+    @pytest.mark.parametrize("retirement", ["before", "during", "live"])
+    def test_property_failure_uses_native_handle_lifetime(self, scene, operation, retirement):
+        owner = scene.create_game_object("Property lifetime")
+        body = owner.add_component("Rigidbody")
+        handle = body.handle
+        calls = []
+
+        def fail(cpp, *args):
+            calls.append(cpp.component_id)
+            if retirement == "during":
+                assert owner.remove_component(body)
+            raise RuntimeError("operation rejected")
+
+        descriptor = CppProperty("mass", FieldType.FLOAT, native_getter=fail, native_setter=fail)
+        descriptor.__set_name__(type(body), "probe")
+        if retirement == "before":
+            assert owner.remove_component(body)
+        expected = RuntimeError if retirement == "live" else ReferenceError
+        with pytest.raises(expected):
+            if operation == "get":
+                descriptor.__get__(body, type(body))
+            else:
+                descriptor.__set__(body, 1)
+        assert len(calls) == (0 if retirement == "before" else 1)
+        if retirement == "live":
+            assert scene.resolve_component(handle) is not None
+            body.mass = 2
+            assert body.mass == 2
+        else:
+            assert scene.resolve_component(handle) is None
+            with pytest.raises(ReferenceError):
+                _ = body.mass
 
 
 # ══════════════════════════════════════════════════════════════════════

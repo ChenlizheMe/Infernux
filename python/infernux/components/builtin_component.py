@@ -227,11 +227,12 @@ class CppProperty:
                 if self.native_getter is not None
                 else getattr(cpp, self.cpp_attr)
             )
-        except RuntimeError as exc:
-            instance._invalidate_native_binding()
-            raise ReferenceError(
-                f"{type(instance).__name__}.{self.metadata.name} accessed a destroyed native component"
-            ) from exc
+        except RuntimeError:
+            # Business failures do not retire a component. Only the native
+            # lifetime resolver may invalidate it, including retirement from
+            # inside a custom accessor after the initial resolution above.
+            instance._require_cpp_component()
+            raise
         enum_type = getattr(self.metadata, "enum_type", None)
         if isinstance(enum_type, str):
             try:
@@ -273,11 +274,9 @@ class CppProperty:
                 self.native_setter(cpp, value)
             else:
                 setattr(cpp, self.cpp_attr, value)
-        except RuntimeError as exc:
-            instance._invalidate_native_binding()
-            raise ReferenceError(
-                f"{type(instance).__name__}.{self.metadata.name} accessed a destroyed native component"
-            ) from exc
+        except RuntimeError:
+            instance._require_cpp_component()
+            raise
 
 
 # =============================================================================

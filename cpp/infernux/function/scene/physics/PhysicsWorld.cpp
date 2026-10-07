@@ -2122,7 +2122,8 @@ PhysicsBodyMotionState PhysicsWorld::GetBodyMotionState(uint32_t bodyId) const
     return state;
 }
 
-uint64_t PhysicsWorld::CreateHingeConstraint(uint32_t bodyIdA, uint32_t bodyIdB, const glm::vec3 &worldAnchor,
+uint64_t PhysicsWorld::CreateHingeConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
+                                             const glm::vec3 &worldAnchor,
                                              const glm::vec3 &worldAxis, bool useLimits, float minimumAngle,
                                              float maximumAngle, bool enableCollision)
 {
@@ -2172,13 +2173,14 @@ uint64_t PhysicsWorld::CreateHingeConstraint(uint32_t bodyIdA, uint32_t bodyIdB,
     const uint64_t constraintId = m_nextConstraintId++;
     const bool ignoresCollision = bodyIdB != 0xFFFFFFFF && !enableCollision;
     m_constraints.emplace(constraintId,
-                          ConstraintRecord{constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Hinge});
+                          ConstraintRecord{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Hinge});
     if (ignoresCollision)
         SetConstraintPairSuppressed(bodyIdA, bodyIdB, true);
     return constraintId;
 }
 
-uint64_t PhysicsWorld::CreateSliderConstraint(uint32_t bodyIdA, uint32_t bodyIdB, const glm::vec3 &worldAnchor,
+uint64_t PhysicsWorld::CreateSliderConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
+                                              const glm::vec3 &worldAnchor,
                                               const glm::vec3 &worldAxis, bool useLimits, float minimumDistance,
                                               float maximumDistance, bool enableCollision)
 {
@@ -2224,7 +2226,7 @@ uint64_t PhysicsWorld::CreateSliderConstraint(uint32_t bodyIdA, uint32_t bodyIdB
     const uint64_t constraintId = m_nextConstraintId++;
     const bool ignoresCollision = bodyIdB != 0xFFFFFFFF && !enableCollision;
     m_constraints.emplace(constraintId,
-                          ConstraintRecord{constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Slider});
+                          ConstraintRecord{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Slider});
     if (ignoresCollision)
         SetConstraintPairSuppressed(bodyIdA, bodyIdB, true);
     return constraintId;
@@ -2241,6 +2243,7 @@ void PhysicsWorld::DestroyConstraint(uint64_t constraintId)
         m_physicsSystem->RemoveConstraint(record.constraint);
     if (record.ignoresCollision)
         SetConstraintPairSuppressed(record.bodyIdA, record.bodyIdB, false);
+    record.owner.OnPhysicsConstraintDestroyed();
 }
 
 float PhysicsWorld::GetHingeConstraintAngle(uint64_t constraintId) const
@@ -2274,8 +2277,13 @@ void PhysicsWorld::SetConstraintPairSuppressed(uint32_t bodyIdA, uint32_t bodyId
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
     bodyInterface.InvalidateContactCache(JPH::BodyID(bodyIdA));
     bodyInterface.InvalidateContactCache(JPH::BodyID(bodyIdB));
-    bodyInterface.ActivateBody(JPH::BodyID(bodyIdA));
-    bodyInterface.ActivateBody(JPH::BodyID(bodyIdB));
+    // Constraint retirement also runs after broadphase removal, immediately
+    // before body destruction. Jolt activation requires a resident body;
+    // reactivating a removed body would leave its freed ID in the active set.
+    if (bodyInterface.IsAdded(JPH::BodyID(bodyIdA)))
+        bodyInterface.ActivateBody(JPH::BodyID(bodyIdA));
+    if (bodyInterface.IsAdded(JPH::BodyID(bodyIdB)))
+        bodyInterface.ActivateBody(JPH::BodyID(bodyIdB));
 }
 
 void PhysicsWorld::SetColliderPairIgnored(Collider *colliderA, Collider *colliderB, bool ignored)

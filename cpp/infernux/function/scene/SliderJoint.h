@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Component.h"
+#include "physics/PhysicsConstraintOwner.h"
 #include <glm/glm.hpp>
 
 namespace infernux
@@ -10,7 +11,7 @@ class Rigidbody;
 
 /// A Jolt prismatic joint that permits translation along one local axis and
 /// locks every other translational and rotational degree of freedom.
-class SliderJoint final : public Component
+class SliderJoint final : public Component, private PhysicsConstraintOwner
 {
   public:
     [[nodiscard]] static ComponentTypeConstraints GetTypeConstraints()
@@ -80,6 +81,7 @@ class SliderJoint final : public Component
   private:
     void RebuildConstraint();
     void ReleaseConstraint();
+    void OnPhysicsConstraintDestroyed() noexcept override;
     [[nodiscard]] uint32_t ResolveBodyId(const Rigidbody *body) const;
 
     glm::vec3 m_anchor{0.0f};

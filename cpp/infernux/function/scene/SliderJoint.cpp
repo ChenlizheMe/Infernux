@@ -129,7 +129,7 @@ void SliderJoint::RebuildConstraint()
     auto *transform = gameObject->GetTransform();
     const glm::vec3 worldAnchor = transform->TransformPoint(m_anchor);
     const glm::vec3 worldAxis = transform->TransformDirection(m_axis);
-    m_constraintId = world.CreateSliderConstraint(bodyId, connectedBodyId, worldAnchor, worldAxis, m_useLimits,
+    m_constraintId = world.CreateSliderConstraint(*this, bodyId, connectedBodyId, worldAnchor, worldAxis, m_useLimits,
                                                   m_minimumDistance, m_maximumDistance, m_enableCollision);
     m_boundBodyId = bodyId;
     m_boundConnectedBodyId = connectedBodyId;
@@ -139,6 +139,11 @@ void SliderJoint::ReleaseConstraint()
 {
     if (m_constraintId != 0 && PhysicsWorld::Instance().IsInitialized())
         PhysicsWorld::Instance().DestroyConstraint(m_constraintId);
+    OnPhysicsConstraintDestroyed();
+}
+
+void SliderJoint::OnPhysicsConstraintDestroyed() noexcept
+{
     m_constraintId = 0;
     m_boundBodyId = 0xFFFFFFFF;
     m_boundConnectedBodyId = 0xFFFFFFFF;

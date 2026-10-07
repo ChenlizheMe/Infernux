@@ -137,7 +137,7 @@ void HingeJoint::RebuildConstraint()
     const glm::vec3 worldAnchor = transform->TransformPoint(m_anchor);
     const glm::vec3 worldAxis = transform->TransformDirection(m_axis);
     m_constraintId =
-        world.CreateHingeConstraint(bodyId, connectedBodyId, worldAnchor, worldAxis, m_useLimits,
+        world.CreateHingeConstraint(*this, bodyId, connectedBodyId, worldAnchor, worldAxis, m_useLimits,
                                     glm::radians(m_minimumAngle), glm::radians(m_maximumAngle), m_enableCollision);
     m_boundBodyId = bodyId;
     m_boundConnectedBodyId = connectedBodyId;
@@ -147,6 +147,11 @@ void HingeJoint::ReleaseConstraint()
 {
     if (m_constraintId != 0 && PhysicsWorld::Instance().IsInitialized())
         PhysicsWorld::Instance().DestroyConstraint(m_constraintId);
+    OnPhysicsConstraintDestroyed();
+}
+
+void HingeJoint::OnPhysicsConstraintDestroyed() noexcept
+{
     m_constraintId = 0;
     m_boundBodyId = 0xFFFFFFFF;
     m_boundConnectedBodyId = 0xFFFFFFFF;
