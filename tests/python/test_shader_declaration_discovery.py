@@ -57,6 +57,47 @@ def test_project_library_overrides_the_matching_builtin_declaration(engine, depe
     assert accepted, accepted.error
 
 
+def test_project_shading_model_overrides_builtin_before_linked_compilation(engine, dependency_sources):
+    import json
+
+    from infernux.core.material import Material
+    from infernux.lib import InxMaterial
+
+    prefix, create, _ = dependency_sources
+    helper_name = prefix + ' Model Helper'
+    function = prefix + '_model_color'
+    create('Helper', '.glsl', f'ShaderInfo {{ Name "{helper_name}" }}\n'
+           f'vec4 {function}(vec3 value){{return vec4(value * 0.25,1);}}\n')
+    model_source = (f'ShadingModelInfo {{ Name "Unlit" Imports ["{helper_name}"] }}\n'
+                    f'void shading(in SurfaceData s,out vec4 color){{color={function}(s.albedo);}}\n')
+    override, _ = create('UnlitOverride', '.shadingmodel', model_source)
+    vertex_name, surface_name = prefix + ' Vertex', prefix + ' Surface'
+    _, vertex_guid = create('Vertex', '.vert', f'#version 450\nShaderInfo {{ Name "{vertex_name}" }}\n')
+    _, surface_guid = create('Surface', '.frag',
+                             f'#version 450\nShaderInfo {{ Name "{surface_name}" ShadingModel "Unlit" }}\n'
+                             'void surface(out SurfaceData s){s=InitSurfaceData();s.albedo=vec3(0.8);}\n')
+    document = InxMaterial.create_default_lit().serialize_document()
+    document.update(builtin=False, name=surface_name, shaders={
+        'vertex': {'guid': vertex_guid, 'shader_id': vertex_name},
+        'fragment': {'guid': surface_guid, 'shader_id': surface_name},
+    })
+    _, material_guid = create('Material', '.mat', json.dumps(document))
+    material = AssetManager.load(material_guid, Material)
+    assert engine.refresh_material_pipeline(material._native)
+    retirement = engine.gpu_residency_snapshot['shader_hot_reload_retirement_count']
+    # The project model's helper is proof of which Unlit declaration was linked.
+    # A builtin-selected implementation would not reject this project body.
+    override.write_text(model_source.replace(function + '(s.albedo)', function + '_missing(s.albedo)'),
+                        encoding='utf-8')
+    rejected = AssetManager.reimport_asset(str(override))
+    assert not rejected and function + '_missing' in rejected.error, rejected.error
+    assert engine.gpu_residency_snapshot['shader_hot_reload_retirement_count'] == retirement
+    override.write_text(model_source, encoding='utf-8')
+    accepted = AssetManager.reimport_asset(str(override))
+    assert accepted, accepted.error
+    assert engine.refresh_material_pipeline(material._native)
+
+
 @pytest.mark.parametrize('rejection', ('case-mismatch', 'template-directory', 'duplicate-library', 'duplicate-model'))
 def test_invalid_declaration_discovery_rejects_before_publication_and_recovers(
         engine, dependency_sources, rejection):

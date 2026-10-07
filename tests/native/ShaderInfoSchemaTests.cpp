@@ -118,6 +118,33 @@ vec3 tutorialBand(vec3 value) { return value * 0.75; }
     assert(updated.find("value * 0.75") != std::string::npos);
     RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
 
+    // The actual builtin Deferred stage must use the same project-first model
+    // resolution as linked material variants, even for a builtin model Name.
+    const auto unlitOverride = project / "Models" / "unlit.shadingmodel";
+    write(unlitOverride, R"(
+ShadingModelInfo { Name "Unlit" }
+vec3 inxProjectUnlitMarker(vec3 value) { return value * 0.375; }
+void shading(in SurfaceData s, out vec4 color) {
+    color = vec4(inxProjectUnlitMarker(s.albedo), s.alpha);
+}
+)");
+    infernux::InxShaderLoader::InvalidateDirectoryCache(unlitOverride.parent_path().generic_u8string());
+    const auto overridden = compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath);
+    const std::string unlitHeader = "Deferred shading model: Unlit";
+    const auto unlitBegin = overridden.find(unlitHeader);
+    assert(unlitBegin != std::string::npos);
+    assert(overridden.find(unlitHeader, unlitBegin + unlitHeader.size()) == std::string::npos);
+    const auto nextModel = overridden.find("Deferred shading model:", unlitBegin + unlitHeader.size());
+    const auto unlitBody = overridden.substr(unlitBegin, nextModel - unlitBegin);
+    assert(unlitBody.find("inxProjectUnlitMarker(s.albedo)") != std::string::npos);
+    RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
+    const bool removedOverride = std::filesystem::remove(unlitOverride);
+    assert(removedOverride);
+    infernux::InxShaderLoader::InvalidateDirectoryCache(unlitOverride.parent_path().generic_u8string());
+    assert(compiler.PrepareAuthoredStageGlsl(deferredSource, deferredPath)
+               .find("inxProjectUnlitMarker") == std::string::npos);
+    RequireCompiles(compiler, deferredSource, "deferred_lighting.frag");
+
     const auto packages = root / "Packages";
     std::filesystem::create_directories(packages);
     write(packages / "duplicate.shadingmodel", model);
