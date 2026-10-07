@@ -88,6 +88,37 @@ def test_cleanup_handles_root_and_nested_submodule_outputs(repository, preview):
 
 
 @pytest.mark.parametrize("preview", [True, False], ids=["preview", "delete"])
+def test_test_artifact_cleanup_preserves_builds_evidence_and_authored_files(repository, preview):
+    _write(repository, ".gitignore", "out/\n__pycache__/\n.pytest_cache/\n*.pyc\n/tests/fixtures/*/Library/\n")
+    authored = _write(repository, "tests/fixtures/demo/Assets/scene.scene", "authored scene")
+    pending_test = _write(repository, "tests/python/test_pending_migration.py", "pending authored source")
+    tracked_cache = _write(repository, "tests/fixtures/__pycache__/fixture.txt", "tracked fixture")
+    _git(repository, "add", "-f", str(authored.relative_to(repository)), str(tracked_cache.relative_to(repository)))
+    caches = [
+        _write(repository, "tests/python/__pycache__/test_previous.cpython-313.pyc"),
+        _write(repository, "tests/contracts/__pycache__/test_contract.pyc"),
+        _write(repository, ".pytest_cache/v/cache/lastfailed"),
+        _write(repository, "out/cache/pytest/v/cache/nodeids"),
+        _write(repository, "tests/fixtures/demo/Library/generated.asset"),
+    ]
+    retained = [
+        _write(repository, "out/build/windows-msvc-release/Release/native.dll"),
+        _write(repository, "out/validation/tutorial-walkthrough/current-proof.json"),
+        _write(repository, "external/plugin/__pycache__/plugin.pyc"),
+    ]
+    args = ("-Scope", "TestArtifacts", *(("-WhatIf",) if preview else ()))
+    result = _clean(repository, *args)
+    assert result.returncode == 0, result.stderr
+    for generated in caches:
+        assert generated.exists() == preview, generated
+    for path in retained:
+        assert path.read_text() == "generated"
+    assert pending_test.read_text() == "pending authored source"
+    assert authored.read_text() == "authored scene"
+    assert tracked_cache.read_text() == "tracked fixture"
+
+
+@pytest.mark.parametrize("preview", [True, False], ids=["preview", "delete"])
 def test_cleanup_rejects_tracked_files_inside_output_directory(repository, preview):
     source = _write(repository, "dist/source.txt", "must survive")
     _git(repository, "add", "-f", "dist/source.txt")

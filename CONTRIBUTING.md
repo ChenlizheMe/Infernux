@@ -17,8 +17,24 @@ development ABI, Python 3.13:
 ./scripts/setup/configure_development.ps1
 conda activate infernux
 cmake --preset windows-msvc-release
-cmake --build --preset windows-msvc-wheel
+cmake --build --preset windows-msvc-install-wheel
 ```
+
+The install preset builds the wheel and installs it into the Python environment
+selected when CMake was configured. Activate `infernux` before configuring, and
+close Editors and Players using that environment before replacing its package.
+`windows-msvc-wheel` only builds the artifact; it does not install it.
+
+To validate the installed package, leave `PYTHONPATH` and
+`INFERNUX_NATIVE_MODULE_DIR` unset and disable the repository's source-path
+setting for that test run:
+
+```powershell
+python -m pytest -o pythonpath= tests/python tests/contracts -q -ra
+```
+
+This uses the active interpreter's installation rather than `python/infernux`
+in the checkout. Hub and source-contract tests retain their own source scopes.
 
 On Ubuntu or Debian, run `scripts/setup/install_linux_dependencies.sh` once and
 then `bash scripts/setup/configure_development.sh`. The setup scripts initialize
@@ -48,6 +64,13 @@ plugin payloads, dependency build trees, and caches. Use `-WhatIf` to inspect
 the paths first. Tracked source files are protected. Repository-level
 automation is indexed in `scripts/README.md`; website-only tools remain under
 `docs/tools/`.
+
+For test-state cleanup without deleting native builds or acceptance reports,
+stop running tests and use
+`./scripts/maintenance/clean_workspace.ps1 -Scope TestArtifacts`.
+This removes test bytecode, pytest caches, and generated fixture runtime data;
+it preserves tracked fixtures and pending, untracked test sources. Preview it
+with `-WhatIf` before running a new acceptance pass.
 
 ## What to include in a change
 

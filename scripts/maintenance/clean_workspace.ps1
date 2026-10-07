@@ -1,5 +1,8 @@
 [CmdletBinding(SupportsShouldProcess)]
-param()
+param(
+    [ValidateSet('All', 'TestArtifacts')]
+    [string]$Scope = 'All'
+)
 
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
@@ -83,7 +86,16 @@ $GeneratedRoots = @(
     'python/infernux/_runtime_modules', 'python/infernux/resources/player_runtime'
 )
 foreach ($Relative in $GeneratedRoots) {
-    Remove-GeneratedPath $Root $Relative
+    if ($Scope -eq 'All') {
+        Remove-GeneratedPath $Root $Relative
+    }
+}
+
+if ($Scope -eq 'TestArtifacts') {
+    # These are test state, not native build trees or acceptance evidence.
+    foreach ($Relative in @('.pytest_cache', '.pytest_cache-installed-wheel', 'out/cache/pytest')) {
+        Remove-GeneratedPath $Root $Relative
+    }
 }
 
 foreach ($Repository in $Repositories) {
@@ -93,6 +105,16 @@ foreach ($Repository in $Repositories) {
     foreach ($Relative in $Ignored) {
         $Path = $Relative.Replace('\', '/')
         if ($Repository -eq $Root -and ($Path -eq 'dev' -or $Path.StartsWith('dev/'))) {
+            continue
+        }
+        if ($Scope -eq 'TestArtifacts') {
+            $TestPath = $Repository -eq $Root -and $Path -match '^tests/'
+            $TestCache = $TestPath -and $Path -match '(^|/)(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache)(/|$)'
+            $TestBytecode = $TestPath -and $Path -match '\.(pyc|pyo)$'
+            $FixtureOutput = $Repository -eq $Root -and $Path -match '^tests/fixtures/[^/]+/(Cache|Library|Logs|\.runtime)(/|$)'
+            if ($TestCache -or $TestBytecode -or $FixtureOutput) {
+                Remove-GeneratedPath $Repository $Relative
+            }
             continue
         }
         $GeneratedDirectory = $Path -match '(^|/)(out|build|dist|__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.gradle|node_modules|\.wrangler|CMakeFiles)(/|$)'
@@ -111,5 +133,9 @@ foreach ($Repository in $Repositories) {
 if ($WhatIfPreference) {
     Write-Host 'Cleanup preview complete. No files were deleted.'
 } else {
-    Write-Host ("Deleted {0} generated paths ({1:N1} MiB). No local release archives were retained." -f $RemovedCount, ($RemovedBytes / 1MB))
+    if ($Scope -eq 'TestArtifacts') {
+        Write-Host ("Deleted {0} test-generated paths ({1:N1} MiB). Build outputs and acceptance evidence were retained." -f $RemovedCount, ($RemovedBytes / 1MB))
+    } else {
+        Write-Host ("Deleted {0} generated paths ({1:N1} MiB). No local release archives were retained." -f $RemovedCount, ($RemovedBytes / 1MB))
+    }
 }
