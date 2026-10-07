@@ -685,6 +685,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             -1,
         )
         if index >= 0 and index != self._emitter_index:
+            self._cancel_node_graph_drag()
             self._sync_model_to_asset()
             self._emitter_index = index
             self._bind_stage()
@@ -2997,6 +2998,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
             return
         target_id = self._asset.emitters[index].stable_id
         if index != self._emitter_index:
+            self._cancel_node_graph_drag()
             self._sync_model_to_asset()
         self._select_particle_element(
             GraphElementKind.EMITTER,
@@ -3029,6 +3031,7 @@ class ParticleGraphEditorPanel(NodeGraphEditorPanel):
         generation = get_shader_property_generation()
         if generation == self._shader_definition_generation:
             return
+        self._cancel_node_graph_drag()
         self._sync_model_to_asset()
         self._shader_definition_generation = generation
         self._bind_stage()

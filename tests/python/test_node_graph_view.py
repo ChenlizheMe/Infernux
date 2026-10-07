@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from infernux.core.node_graph import (
     NodeGraph,
     NodeInlineFieldDef,
@@ -1076,6 +1078,38 @@ def test_node_drag_is_a_global_transient_and_cancel_restores_the_graph() -> None
     assert (restored.pos_x, restored.pos_y) == (0.0, 0.0)
     assert not panel._view._dragging_node
     assert panel._node_graph_drag_snapshot is None
+
+
+@pytest.mark.parametrize("end", ["cancel", "release", "rebind"])
+def test_node_drag_never_restores_a_snapshot_into_a_different_graph(end):
+    panel = NodeGraphEditorPanel(
+        title="Test Graph", window_id="test_graph", semantic_namespace="test.graph",
+    )
+    transients = TransientInteractionService(FocusService())
+    graph = NodeGraph()
+    graph.register_type(NodeTypeDef("value", "Value"))
+    node = graph.add_node("value", uid="same-id")
+    panel._bind_node_graph_model(graph)
+    before = graph.capture_authoring_state()
+    panel._on_node_drag_start(node.uid)
+    node.pos_x += 130.0
+    replacement = NodeGraph()
+    replacement.register_type(NodeTypeDef("value", "Value"))
+    replacement.add_node("value", 280.0, 90.0, uid="same-id")
+    expected = replacement.capture_authoring_state()
+    if end == "rebind":
+        panel._bind_node_graph_model(replacement)
+    else:
+        # Even if a view replaces its model before ending the old gesture,
+        # its saved positions belong exclusively to the originating model.
+        panel._view.bind_graph(replacement)
+        if end == "cancel":
+            assert transients.cancel_active()
+        else:
+            panel._on_node_drag_end(node.uid)
+    assert replacement.capture_authoring_state() == expected
+    assert graph.capture_authoring_state() == before
+    assert not transients.can_cancel
 
 
 def test_completed_node_drag_releases_global_transient_before_commit() -> None:

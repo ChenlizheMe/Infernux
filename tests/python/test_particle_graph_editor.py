@@ -2346,6 +2346,47 @@ def _particle_panel_with_history():
     return panel, manager
 
 
+@pytest.mark.parametrize("via_selection", [False, True])
+def test_emitter_switch_cancels_drag_before_serializing_old_emitter(via_selection):
+    from infernux.engine.interaction import GraphElementKind, TransientInteractionService
+
+    panel, manager = _particle_panel_with_history()
+    transients = TransientInteractionService()
+    panel._asset = replace(panel._asset, emitters=(
+        ParticleEmitterAsset(name="First"), ParticleEmitterAsset(name="Second"),
+    ))
+    panel._bind_stage()
+    uid = panel.add_authoring_node("init", "common.random.f32", 120.0, 80.0)["uid"]
+    before = panel.asset.to_dict()
+    original_model = panel._model
+    original = original_model.capture_authoring_state()
+    revision = panel._particle_document().revision
+    manager.clear()
+    panel._on_node_drag_start(uid)
+    original_model.find_node(uid).pos_x += 135.0
+
+    if via_selection:
+        panel._select_particle_element(
+            GraphElementKind.EMITTER, panel._asset.emitters[1].stable_id,
+            reason="test_emitter_switch", record_history=False,
+        )
+    else:
+        panel._select_emitter(1)
+
+    assert panel._emitter_index == 1
+    assert not transients.can_cancel
+    assert original_model.capture_authoring_state() == original
+    assert panel.asset.to_dict() == before
+    panel._on_node_drag_end(uid)
+    assert not transients.cancel_active()
+    assert panel.asset.to_dict() == before
+    assert panel._particle_document().revision == revision
+    panel._select_emitter(0)
+    restored = panel._model.find_node(uid)
+    assert (restored.pos_x, restored.pos_y) == (120.0, 80.0)
+    assert panel.asset.to_dict() == before
+
+
 @pytest.mark.parametrize("target_type,target_port", [
     ("common.vector.compose3", "x"),
     ("particle.attribute.size", "value"),

@@ -2268,6 +2268,8 @@ class AnimFSMEditorPanel(NodeGraphEditorPanel):
 
     def _sync_graph_from_fsm(self):
         """Load an FSM asset through its NodeGraph domain adapter."""
+        # This adapter is reused in place, so cancel before replacing its nodes.
+        self._cancel_node_graph_drag()
         self._view.reset_interaction_state()
         self._name_to_uid.clear()
         self._uid_to_name.clear()

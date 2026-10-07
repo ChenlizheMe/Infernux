@@ -276,6 +276,14 @@ class GraphParameterDetailConfig:
     )
 
 
+@dataclass(frozen=True)
+class _NodeGraphDragSnapshot:
+    graph: NodeGraph
+    document_id: str
+    node_id: str
+    before: NodeGraphAuthoringState
+
+
 class NodeGraphEditorPanel(EditorPanel):
     """Particle-style workspace shared by FSM, Particle, and future graphs."""
 
@@ -300,7 +308,7 @@ class NodeGraphEditorPanel(EditorPanel):
             str, dict[str, GraphWorkspaceAddAction]
         ] = {}
         self._workspace_collections: dict[str, CollectionInteractionModel] = {}
-        self._node_graph_drag_snapshot: Optional[NodeGraphAuthoringState] = None
+        self._node_graph_drag_snapshot: Optional[_NodeGraphDragSnapshot] = None
         self._install_node_graph_view_callbacks()
 
     def on_enable(self) -> None:
@@ -310,10 +318,16 @@ class NodeGraphEditorPanel(EditorPanel):
         selection.bind()
 
     def on_disable(self) -> None:
+        self._cancel_node_graph_drag()
         self._cancel_node_graph_workspace_rename()
         selection = getattr(self, "_graph_selection", None)
         if selection is not None:
             selection.unbind()
+
+    def unbind_document(self) -> None:
+        # Retire previews before the Registry captures the dormant document.
+        self._cancel_node_graph_drag()
+        super().unbind_document()
 
     def _install_graph_selection_controller(
         self,
@@ -341,6 +355,7 @@ class NodeGraphEditorPanel(EditorPanel):
         *,
         preserve_selection: bool = True,
     ) -> None:
+        self._cancel_node_graph_drag()
         self._view.bind_graph(graph, preserve_selection=preserve_selection)
         selection = getattr(self, "_graph_selection", None)
         if selection is not None:
@@ -1344,16 +1359,15 @@ class NodeGraphEditorPanel(EditorPanel):
         return f"node:{stable_id}:position"
 
     def _on_node_drag_start(self, stable_id: str) -> None:
-        if self._node_graph_drag_cancel_token:
-            TransientInteractionService.instance().end(
-                self._node_graph_drag_cancel_token
-            )
-            self._node_graph_drag_cancel_token = ""
+        if self._node_graph_drag_snapshot is not None:
+            self._cancel_node_graph_drag()
         graph = self._node_graph_authoring_model()
         if graph is None or not self._node_graph_can_drag_node(stable_id):
             self._node_graph_drag_snapshot = None
             return
-        self._node_graph_drag_snapshot = graph.capture_authoring_state()
+        self._node_graph_drag_snapshot = _NodeGraphDragSnapshot(
+            graph, self.document_id, stable_id, graph.capture_authoring_state(),
+        )
         self._node_graph_drag_cancel_token = (
             TransientInteractionService.instance().begin(
                 self.window_id,
@@ -1364,30 +1378,38 @@ class NodeGraphEditorPanel(EditorPanel):
             )
         )
 
-    def _cancel_node_graph_drag(self) -> bool:
+    def _take_node_graph_drag(self) -> Optional[_NodeGraphDragSnapshot]:
+        token = self._node_graph_drag_cancel_token
         self._node_graph_drag_cancel_token = ""
-        before = self._node_graph_drag_snapshot
+        snapshot = self._node_graph_drag_snapshot
         self._node_graph_drag_snapshot = None
+        if token:
+            TransientInteractionService.instance().end(token)
+        return snapshot
+
+    def _cancel_node_graph_drag(self) -> bool:
+        snapshot = self._take_node_graph_drag()
         self._view.cancel_node_drag()
-        graph = self._node_graph_authoring_model()
-        if before is None or graph is None:
+        if snapshot is None:
             return False
-        graph.restore_authoring_state(before)
+        snapshot.graph.restore_authoring_state(snapshot.before)
         return True
 
     def _on_node_drag_end(self, stable_id: str) -> None:
-        if self._node_graph_drag_cancel_token:
-            TransientInteractionService.instance().end(
-                self._node_graph_drag_cancel_token
-            )
-            self._node_graph_drag_cancel_token = ""
-        before = self._node_graph_drag_snapshot
-        self._node_graph_drag_snapshot = None
-        if before is None or not self._node_graph_can_drag_node(stable_id):
+        snapshot = self._take_node_graph_drag()
+        if snapshot is None:
+            return
+        if (
+            snapshot.graph is not self._node_graph_authoring_model()
+            or snapshot.document_id != self.document_id
+            or snapshot.node_id != stable_id
+            or not self._node_graph_can_drag_node(stable_id)
+        ):
+            snapshot.graph.restore_authoring_state(snapshot.before)
             return
         self._commit_node_graph_change(
             self._node_graph_drag_description(stable_id),
-            before,
+            snapshot.before,
             merge_key=self._node_graph_drag_merge_key(stable_id),
         )
 

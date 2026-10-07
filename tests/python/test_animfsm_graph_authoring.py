@@ -414,6 +414,58 @@ def test_animfsm_node_move_does_not_snapshot_the_whole_fsm():
     assert document.revision == initial_revision
 
 
+@pytest.mark.parametrize("transition", ["new", "open", "reload", "restore", "unbind", "disable"])
+def test_animfsm_document_transition_retires_node_drag(tmp_path, transition):
+    from infernux.core.anim_state_machine import AnimStateMachine
+    from infernux.engine.interaction import TransientInteractionService
+
+    panel, manager = _panel_with_history()
+    transients = TransientInteractionService()
+    source = AnimStateMachine(
+        name="Original", states=[AnimState(name="Original", position=[40.0, 60.0])],
+    )
+    path = tmp_path / "Original.animfsm"
+    assert source.save(str(path))
+    panel.open_document_resource_immediate(str(path))
+    uid = panel._fsm.states[0].stable_id
+    original = panel._graph.capture_authoring_state()
+    locator = DocumentRegistry.instance().locate(panel.document_id)
+    manager.clear()
+    panel._on_node_drag_start(uid)
+    panel._graph.find_node(uid).pos_x += 130.0
+
+    replacement = AnimStateMachine(
+        name="Replacement", states=[AnimState(name="Replacement", position=[90.0, 50.0])],
+    )
+    if transition == "new":
+        assert panel.command_new_fsm()
+    elif transition in {"open", "reload"}:
+        target = path if transition == "reload" else tmp_path / "Replacement.animfsm"
+        assert replacement.save(str(target))
+        panel.open_document_resource_immediate(str(target))
+    elif transition == "restore":
+        panel.restore_document_restore_state({"fsm": replacement.to_dict()})
+    elif transition == "unbind":
+        panel.unbind_document()
+        assert panel.restore_dormant_document(locator)
+    else:
+        panel.on_disable()
+
+    expected = panel._graph.capture_authoring_state()
+    assert not transients.can_cancel
+    assert not panel._view._dragging_node
+    panel._on_node_drag_end(uid)  # A late mouse-up cannot mutate the replacement.
+    assert not transients.cancel_active()
+    assert panel._graph.capture_authoring_state() == expected
+    assert not manager.can_undo
+    if transition in {"unbind", "disable"}:
+        assert expected == original
+    elif transition == "new":
+        assert panel.capture_document_restore_state(panel.document_id)["fsm"]["states"] == []
+    else:
+        assert panel.capture_document_restore_state(panel.document_id)["fsm"]["states"] == replacement.to_dict()["states"]
+
+
 def test_animfsm_structural_undo_uses_shared_node_graph_payloads():
     panel, manager = _panel_with_history()
     state = AnimState(name="Shared Core", position=[64.0, 96.0])
