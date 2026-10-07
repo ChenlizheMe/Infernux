@@ -55,11 +55,25 @@ def is_frozen() -> bool:
     return bool(main_module and "__compiled__" in vars(main_module))
 
 
-# Every source Hub entry point uses this shared protocol, including staging
-# and installer helpers that do not import launcher. Frozen apps bundle it.
-if not is_frozen():
-    _source_python = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "python")
-    sys.path.insert(0, _source_python)
+# Source Hub tools load only the shared stdlib protocol, without putting the
+# checkout's engine package ahead of the operator's installed environment.
+# Preserve normal module identity when another host already imported it.
+# Frozen apps bundle the canonical import below.
+if not is_frozen() and "infernux_project_lock" not in sys.modules:
+    import importlib.util
+
+    _protocol_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+        "python", "infernux_project_lock.py",
+    )
+    _protocol_spec = importlib.util.spec_from_file_location("infernux_project_lock", _protocol_path)
+    _protocol_module = importlib.util.module_from_spec(_protocol_spec)
+    sys.modules["infernux_project_lock"] = _protocol_module
+    try:
+        _protocol_spec.loader.exec_module(_protocol_module)
+    except BaseException:
+        del sys.modules["infernux_project_lock"]
+        raise
 
 import infernux_project_lock as project_lock
 
