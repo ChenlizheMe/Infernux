@@ -12,7 +12,7 @@ This split lets one `.frag` serve Forward, Forward+, and any Deferred or custom 
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-gold-mountain.webp" alt="gold-coin material style reference" loading="lazy" decoding="async">
-  <figcaption>Captured from the matching Infernux scene and Material setup. The image is the visual target used by this lesson.</figcaption>
+  <figcaption>An Infernux demo capture illustrating a material style. The walkthrough below builds an unlit Cube; it does not recreate this scene.</figcaption>
 </figure>
 
 ## A first surface {#first-surface}
@@ -77,7 +77,7 @@ ShaderInfo entries affect different things:
 
 ## Material properties {#properties}
 
-Properties become typed Material fields and Inspector controls. This is the property block from the built-in `lit.frag`:
+Properties become typed Material fields and Inspector controls. This excerpt selects the basic fields from the built-in `lit.frag`; the complete shader also declares UV selectors, packed-channel controls, roughness conversion, occlusion strength, and an emission texture:
 
 ```glsl
 Properties {
@@ -207,7 +207,7 @@ The zero `normalWS` has a specific job. Leave it untouched when the material has
 
 Surface code uses the following spaces: `v_WorldPos`, `v_Normal`, and `v_Tangent` are world-space values; `v_Tangent.w` carries the bitangent sign; `v_TexCoord` is the primary mesh UV; and `v_ViewDepth` is linear eye-space depth. `sampleNormal()` decodes a tangent-space normal map through the world-space TBN basis and returns a world-space normal. Assign world-space data to `s.normalWS`.
 
-The Lit fragment stage in Infernux follows the same shape:
+The Lit fragment stage in Infernux follows the same shape. This simplified example uses the primary UVs and basic channels; the complete built-in implementation also applies its UV selectors, packed-channel controls, roughness conversion, occlusion strength, and emission texture:
 
 ```glsl
 void surface(out SurfaceData s) {
@@ -244,7 +244,7 @@ This function only assembles the surface. The ShadingModel owns the surface-ligh
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-gold-mountain.webp" alt="金币材质风格参考" loading="lazy" decoding="async">
-  <figcaption>画面来自对应的 Infernux 场景与 Material 配置，也是本章使用的视觉目标。</figcaption>
+  <figcaption>来自 Infernux 演示项目的材质风格参考。下面的练习会创建无光照 Cube，不会复现这份场景。</figcaption>
 </figure>
 
 ## 第一份 Surface {#first-surface_1}
@@ -309,7 +309,7 @@ ShaderInfo 各条目影响不同环节：
 
 ## 材质属性 {#properties_1}
 
-Properties 会成为有类型的 Material 字段和 Inspector 控件。下面就是内置 `lit.frag` 的属性块：
+Properties 会成为有类型的 Material 字段和 Inspector 控件。下面摘录内置 `lit.frag` 的基础字段；完整 Shader 还声明了 UV 选择、打包通道控制、粗糙度转换、遮蔽强度与自发光贴图：
 
 ```glsl
 Properties {
@@ -439,7 +439,7 @@ struct SurfaceData {
 
 Surface 代码使用的空间如下：`v_WorldPos`、`v_Normal`、`v_Tangent` 都在世界空间，`v_Tangent.w` 保存副切线方向符号；`v_TexCoord` 是主 UV；`v_ViewDepth` 是线性眼空间深度。`sampleNormal()` 使用世界空间 TBN 基底解码切线空间法线贴图，返回世界空间法线。写入 `s.normalWS` 的自定义法线也必须处于世界空间。
 
-Infernux 的 Lit Frag 也遵循同样的形状：
+Infernux 的 Lit Frag 也遵循同样的形状。下面的简化示例使用主 UV 与基础通道；内置完整实现还会应用 UV 选择、打包通道控制、粗糙度转换、遮蔽强度与自发光贴图：
 
 ```glsl
 void surface(out SurfaceData s) {

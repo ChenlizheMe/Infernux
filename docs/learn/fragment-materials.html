@@ -40,7 +40,7 @@
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-gold-mountain.webp" alt="gold-coin material style reference" loading="lazy" decoding="async">
-  <figcaption>Captured from the matching Infernux scene and Material setup. The image is the visual target used by this lesson.</figcaption>
+  <figcaption>An Infernux demo capture illustrating a material style. The walkthrough below builds an unlit Cube; it does not recreate this scene.</figcaption>
 </figure>
 
 <h2 id="first-surface">A first surface</h2>
@@ -131,7 +131,7 @@
 </tbody>
 </table>
 <h2 id="properties">Material properties</h2>
-<p>Properties become typed Material fields and Inspector controls. This is the property block from the built-in <code>lit.frag</code>:</p>
+<p>Properties become typed Material fields and Inspector controls. This excerpt selects the basic fields from the built-in <code>lit.frag</code>; the complete shader also declares UV selectors, packed-channel controls, roughness conversion, occlusion strength, and an emission texture:</p>
 <div class="highlight"><pre><span></span><code><span class="n">Properties</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">Color</span><span class="w"> </span><span class="n">baseColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">]</span>
 <span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">metallic</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span>
@@ -313,7 +313,7 @@
 </table>
 <p>The zero <code>normalWS</code> has a specific job. Leave it untouched when the material has no authored normal. The generated pipeline adapter calls <code>ResolveSurfaceNormal()</code> after <code>surface()</code>, replacing the sentinel with the interpolated geometric normal and normalizing authored world-space normals. Normalizing the zero value inside <code>surface()</code> would destroy that signal.</p>
 <p>Surface code uses the following spaces: <code>v_WorldPos</code>, <code>v_Normal</code>, and <code>v_Tangent</code> are world-space values; <code>v_Tangent.w</code> carries the bitangent sign; <code>v_TexCoord</code> is the primary mesh UV; and <code>v_ViewDepth</code> is linear eye-space depth. <code>sampleNormal()</code> decodes a tangent-space normal map through the world-space TBN basis and returns a world-space normal. Assign world-space data to <code>s.normalWS</code>.</p>
-<p>The Lit fragment stage in Infernux follows the same shape:</p>
+<p>The Lit fragment stage in Infernux follows the same shape. This simplified example uses the primary UVs and basic channels; the complete built-in implementation also applies its UV selectors, packed-channel controls, roughness conversion, occlusion strength, and emission texture:</p>
 <div class="highlight"><pre><span></span><code><span class="kt">void</span><span class="w"> </span><span class="n">surface</span><span class="p">(</span><span class="k">out</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">InitSurfaceData</span><span class="p">();</span>
 <span class="w">    </span><span class="kt">vec4</span><span class="w"> </span><span class="n">texColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleAlbedoAlpha</span><span class="p">(</span><span class="n">texSampler</span><span class="p">);</span>
@@ -340,7 +340,7 @@
 
 <figure class="learn-figure">
   <img src="../assets/learn/real-gold-mountain.webp" alt="金币材质风格参考" loading="lazy" decoding="async">
-  <figcaption>画面来自对应的 Infernux 场景与 Material 配置，也是本章使用的视觉目标。</figcaption>
+  <figcaption>来自 Infernux 演示项目的材质风格参考。下面的练习会创建无光照 Cube，不会复现这份场景。</figcaption>
 </figure>
 
 <h2 id="first-surface_1">第一份 Surface</h2>
@@ -431,7 +431,7 @@
 </tbody>
 </table>
 <h2 id="properties_1">材质属性</h2>
-<p>Properties 会成为有类型的 Material 字段和 Inspector 控件。下面就是内置 <code>lit.frag</code> 的属性块：</p>
+<p>Properties 会成为有类型的 Material 字段和 Inspector 控件。下面摘录内置 <code>lit.frag</code> 的基础字段；完整 Shader 还声明了 UV 选择、打包通道控制、粗糙度转换、遮蔽强度与自发光贴图：</p>
 <div class="highlight"><pre><span></span><code><span class="n">Properties</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">Color</span><span class="w"> </span><span class="n">baseColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">1.0</span><span class="p">]</span>
 <span class="w">    </span><span class="n">Float</span><span class="w"> </span><span class="n">metallic</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span>
@@ -613,7 +613,7 @@
 </table>
 <p>零向量 <code>normalWS</code> 有明确用途。材质没有编写法线时，应保留这个值。管线适配器会在 <code>surface()</code> 之后调用 <code>ResolveSurfaceNormal()</code>，把哨兵替换为插值后的几何法线，并归一化用户写入的世界空间法线。不要在 <code>surface()</code> 内归一化这个零向量，否则哨兵信息会丢失。</p>
 <p>Surface 代码使用的空间如下：<code>v_WorldPos</code>、<code>v_Normal</code>、<code>v_Tangent</code> 都在世界空间，<code>v_Tangent.w</code> 保存副切线方向符号；<code>v_TexCoord</code> 是主 UV；<code>v_ViewDepth</code> 是线性眼空间深度。<code>sampleNormal()</code> 使用世界空间 TBN 基底解码切线空间法线贴图，返回世界空间法线。写入 <code>s.normalWS</code> 的自定义法线也必须处于世界空间。</p>
-<p>Infernux 的 Lit Frag 也遵循同样的形状：</p>
+<p>Infernux 的 Lit Frag 也遵循同样的形状。下面的简化示例使用主 UV 与基础通道；内置完整实现还会应用 UV 选择、打包通道控制、粗糙度转换、遮蔽强度与自发光贴图：</p>
 <div class="highlight"><pre><span></span><code><span class="kt">void</span><span class="w"> </span><span class="n">surface</span><span class="p">(</span><span class="k">out</span><span class="w"> </span><span class="n">SurfaceData</span><span class="w"> </span><span class="n">s</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">s</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">InitSurfaceData</span><span class="p">();</span>
 <span class="w">    </span><span class="kt">vec4</span><span class="w"> </span><span class="n">texColor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">sampleAlbedoAlpha</span><span class="p">(</span><span class="n">texSampler</span><span class="p">);</span>
