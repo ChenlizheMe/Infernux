@@ -96,6 +96,79 @@ def test_failed_local_import_preserves_the_installed_artifact(manager, tmp_path)
     assert not list((tmp_path / "cache").rglob("*.tmp-*"))
 
 
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("case", ["bad_zip", "truncated_zip", "missing_metadata", "wrong_identity",
+                                   "copy_interrupted", "replace_denied", "missing_source", "valid"])
+def test_local_wheel_publication_is_atomic(manager, tmp_path, monkeypatch, existing, case):
+    from pathlib import Path
+    import shutil
+
+    source = tmp_path / "中文 空格 & incoming" / NAME
+    source.parent.mkdir()
+    cached = tmp_path / "cache/0.4.1" / NAME
+    cached.parent.mkdir(parents=True)
+    old = archive_bytes()
+    if existing:
+        cached.write_bytes(old)
+    # Another exact revision must remain selectable through every outcome.
+    other = cached.with_name(NAME.replace('-3-cp313', '-2-cp313'))
+    other_bytes = archive_bytes(build="2")
+    other.write_bytes(other_bytes)
+    new = io.BytesIO(archive_bytes())
+    with zipfile.ZipFile(new, 'a') as archive:
+        archive.writestr('infernux/new.txt', b'new payload')
+    incoming = new.getvalue()
+    if case == 'bad_zip':
+        incoming = b'interrupted download'
+    elif case == 'truncated_zip':
+        incoming = incoming[:-30]
+    elif case == 'missing_metadata':
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w') as archive:
+            archive.writestr('infernux/payload', 'payload')
+        incoming = data.getvalue()
+    elif case == 'wrong_identity':
+        incoming = archive_bytes(build='2')
+    if case != 'missing_source':
+        source.write_bytes(incoming)
+    if case == 'copy_interrupted':
+        def interrupted_copy(src, dst):
+            Path(dst).write_bytes(Path(src).read_bytes()[:20])
+            raise OSError('controlled copy failure')
+        monkeypatch.setattr(shutil, 'copyfile', interrupted_copy)
+    if case == 'replace_denied':
+        def replace_denied(src, dst):
+            assert Path(dst) == cached
+            raise PermissionError('controlled publication conflict')
+        monkeypatch.setattr(vm.os, 'replace', replace_denied)
+
+    if case == 'valid':
+        assert manager.install_local_wheel(str(source)) == '0.4.1-v3'
+        assert cached.read_bytes() == incoming
+    else:
+        with pytest.raises((ValueError, OSError)):
+            manager.install_local_wheel(str(source))
+        assert cached.exists() == existing
+        if existing:
+            assert cached.read_bytes() == old
+    assert manager.get_wheel_path('0.4.1-v3') == (str(cached) if existing or case == 'valid' else None)
+    assert manager.get_wheel_path('0.4.1-v2') == str(other)
+    assert other.read_bytes() == other_bytes
+    assert not list(cached.parent.glob('*.tmp-*'))
+
+
+def test_local_wheel_reimport_accepts_the_selected_cache_file(manager, tmp_path):
+    source = tmp_path / NAME
+    payload = archive_bytes()
+    source.write_bytes(payload)
+    manager.install_local_wheel(str(source))
+    from pathlib import Path
+    installed = Path(manager.get_wheel_path('0.4.1-v3'))
+    assert manager.install_local_wheel(str(installed)) == '0.4.1-v3'
+    assert installed.read_bytes() == payload
+    assert not list(installed.parent.glob('*.tmp-*'))
+
+
 @pytest.mark.parametrize("change", [None, dict(version="0.4.0"), dict(name="other_distribution"), dict(build="2")])
 def test_real_http_catalog_download_cache_chain(manager, monkeypatch, change):
     import json

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 import version_manager
 from PySide6.QtTest import QTest
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QDialog
 
 from i18n import configure_language, language_mode
@@ -27,7 +28,8 @@ def engine_dialog(tmp_path, monkeypatch):
         wheel_url="https://example.invalid/infernux.whl",
     )
     monkeypatch.setattr(manager, "list_versions", lambda **kwargs: [engine])
-    dialog = InstallEditorDialog(manager, InstallQueue(app))
+    queue = InstallQueue(app)
+    dialog = InstallEditorDialog(manager, queue)
     try:
         for _ in range(500):
             app.processEvents()
@@ -40,6 +42,9 @@ def engine_dialog(tmp_path, monkeypatch):
         dialog._fetch_thread.quit()
         dialog._fetch_thread.wait()
         dialog.close()
+        dialog.deleteLater()
+        queue.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         configure_language(previous_language)
 
 
@@ -120,6 +125,9 @@ def test_install_page_connects_dependency_action_to_shared_queue(engine_dialog, 
     finally:
         page.close()
         python_page.close()
+        page.deleteLater()
+        python_page.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 @pytest.mark.parametrize("failure", [None, "installation failed", ""])
@@ -146,3 +154,6 @@ def test_runtime_install_completion_follows_worker_cleanup(failure):
     assert cleaned_up == [True]
     assert job.state == ("succeeded" if failure is None else "failed")
     page.close()
+    page.deleteLater()
+    queue.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
