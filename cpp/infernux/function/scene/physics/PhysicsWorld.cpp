@@ -444,7 +444,8 @@ class ProfiledAllHitRayCollector final : public JPH::AllHitCollisionCollector<JP
 };
 
 static JPH::RefConst<JPH::Shape> BuildShapeForColliderSet(GameObject *go, const Collider *exclude,
-                                                          size_t *outShapeCount = nullptr)
+                                                          size_t *outShapeCount = nullptr,
+                                                          std::vector<Collider *> *outMembers = nullptr)
 {
     if (!go) {
         return nullptr;
@@ -456,7 +457,7 @@ static JPH::RefConst<JPH::Shape> BuildShapeForColliderSet(GameObject *go, const 
     bool complete = true;
 
     for (auto *col : colliders) {
-        if (!col || col == exclude || !col->IsEnabled()) {
+        if (!col || col == exclude || col->IsBeingDestroyed() || !col->IsEnabled()) {
             continue;
         }
 
@@ -478,6 +479,11 @@ static JPH::RefConst<JPH::Shape> BuildShapeForColliderSet(GameObject *go, const 
 
     if (outShapeCount)
         *outShapeCount = childShapes.size();
+    if (outMembers) {
+        outMembers->reserve(childShapes.size());
+        for (const auto &child : childShapes)
+            outMembers->push_back(child.first);
+    }
 
     if (childShapes.size() == 1) {
         return childShapes.front().second;
@@ -1452,21 +1458,39 @@ void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
         return;
 
     size_t shapeCount = 0;
-    auto newShape = BuildShapeForColliderSet(collider->GetGameObject(), exclude, &shapeCount);
+    std::vector<Collider *> members;
+    auto newShape = BuildShapeForColliderSet(collider->GetGameObject(), exclude, &shapeCount, &members);
     if (!newShape)
         return;
 
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
     bodyInterface.SetUseManifoldReduction(JPH::BodyID(id), shapeCount <= 1);
+    // The old bounds contain sleepers whose support is about to disappear.
+    // Jolt activates the changed body itself, not those neighbouring bodies.
+    WakeBodiesTouchingStatic(id);
     // SetShape takes Jolt's body write lock and Body owns a RefConst<Shape>.
     // Queries that already hold the read side therefore finish against the
     // previously published immutable shape; its BVH is retired only after
     // the last reference is released.  Never mutate a published mesh shape.
     bodyInterface.SetShape(JPH::BodyID(id), newShape, true, JPH::EActivation::Activate);
-    if (auto *go = collider->GetGameObject())
-        m_bodyColliders[id] = go->GetComponents<Collider>();
+    // Publish geometry, aggregate sensor state and its exact member identities
+    // under the same query snapshot lock. A single remaining shape has no
+    // compound subshape ID, so its primary identity must follow that member.
+    const bool isSensor = std::all_of(members.begin(), members.end(),
+                                      [](const Collider *member) { return member->IsTrigger(); });
+    const bool sensorChanged = bodyInterface.IsSensor(JPH::BodyID(id)) != isSensor;
+    bodyInterface.SetIsSensor(JPH::BodyID(id), isSensor);
+    m_bodyToCollider[id] = members.front();
+    bodyInterface.SetUserData(JPH::BodyID(id), reinterpret_cast<uint64_t>(members.front()));
+    m_bodyColliders[id] = std::move(members);
     PublishBodyQueryIdentitiesUnlocked(id);
     m_queryGeneration.fetch_add(1, std::memory_order_release);
+    // Expanded or newly solid geometry can also reach sleeping bodies outside
+    // the old bounds. These queries run only on authored shape changes.
+    WakeBodiesTouchingStatic(id);
+    if (sensorChanged) {
+        InvalidateContactPairsForBody(id);
+    }
 }
 
 void PhysicsWorld::SetBodyIsSensor(uint32_t bodyId, bool isSensor)
@@ -1546,6 +1570,7 @@ void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t bodyId)
         return;
 
     JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
+    WakeBodiesTouchingStatic(bodyId);
     bodyInterface.RemoveBody(JPH::BodyID(bodyId));
     m_queryGeneration.fetch_add(1, std::memory_order_release);
 }
@@ -3213,6 +3238,14 @@ void PhysicsWorld::RebindBodyCollider(uint32_t bodyId, Collider *collider)
     }
     m_bodyToCollider[bodyId] = collider;
     m_physicsSystem->GetBodyInterface().SetUserData(JPH::BodyID(bodyId), reinterpret_cast<uint64_t>(collider));
+    // This path also runs during owner teardown, when rebuilding geometry is
+    // intentionally skipped. Never republish a prior snapshot's raw members:
+    // some of them may already have completed destruction.
+    auto members = collider->GetGameObject()->GetComponents<Collider>();
+    members.erase(std::remove_if(members.begin(), members.end(),
+                                  [](const Collider *member) { return member->IsBeingDestroyed(); }),
+                  members.end());
+    m_bodyColliders[bodyId] = std::move(members);
     PublishBodyQueryIdentitiesUnlocked(bodyId);
     m_queryGeneration.fetch_add(1, std::memory_order_release);
 }

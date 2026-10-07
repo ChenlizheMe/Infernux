@@ -8,6 +8,7 @@
 #include <cassert>
 #include <vector>
 #include "TransformHierarchyPublicationTests.h"
+#include "CompoundColliderPublicationTests.h"
 
 using infernux::GameObject;
 using infernux::PhysicsECSStore;
@@ -215,5 +216,11 @@ int main()
     manager.EmitRuntimeFrameBarrier(Barrier::SnapshotPublication);
     assert(observed.empty());
     manager.UnloadAllScenes();
+    try {
+        TestCompoundColliderPublication();
+    } catch (const std::exception &error) {
+        std::cerr << "Compound publication test failed: " << error.what() << std::endl;
+        return 1;
+    }
     return 0;
 }

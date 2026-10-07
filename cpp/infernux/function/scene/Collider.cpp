@@ -531,11 +531,12 @@ void Collider::UnregisterBody()
     if (go) {
         auto colliders = go->GetComponents<Collider>();
         for (auto *col : colliders) {
-            if (!col || col == this)
+            if (!col || col == this || col->IsBeingDestroyed())
                 continue;
             if (col->GetBodyId() == actor.bodyId) {
                 replacement = col;
-                break;
+                if (col->IsEnabled())
+                    break;
             }
         }
     }
@@ -564,6 +565,11 @@ void Collider::UnregisterBody()
 
             if (hasOtherEnabledSibling) {
                 PhysicsWorld::Instance().UpdateBodyShape(replacement, this);
+            } else {
+                // The allocation belongs to the surviving disabled members,
+                // but the removed member's geometry must no longer participate.
+                RemoveFromBroadphase();
+                actor.primaryCollider = nullptr;
             }
         }
     } else {
@@ -655,13 +661,6 @@ void Collider::RebuildShape()
 
     PhysicsWorld::Instance().UpdateBodyShape(this);
     ++actor.shapeRevision;
-
-    // If this is a static body (no Rigidbody), wake nearby dynamic
-    // bodies so they react to the shape change immediately.
-    bool isStatic = (actor.rigidbody == nullptr || !actor.rigidbody->IsEnabled());
-    if (isStatic) {
-        PhysicsWorld::Instance().WakeBodiesTouchingStatic(actor.bodyId);
-    }
 }
 
 void Collider::SyncTransformToPhysics(float fixedDeltaTime, std::vector<PhysicsBodyPoseUpdate> *staticPoseBatch)
