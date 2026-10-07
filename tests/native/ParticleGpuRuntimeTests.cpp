@@ -1499,6 +1499,8 @@ int main()
         firstMesh.edgeCount = 30;
         firstMesh.vertices = {0xfa01u, 1};
         firstMesh.triangles = {0xfa02u, 1};
+        firstMesh.vertexBufferBytes = 1920;
+        firstMesh.triangleBufferBytes = 672;
         firstMesh.keepAlive = meshLease;
         firstMesh.meshToSpace = {
             -2.0f, 0.0f, 0.0f, 0.0f, 0.0f, 3.0f, 0.0f, 0.0f, 0.0f, 0.0f, 4.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
@@ -1521,12 +1523,30 @@ int main()
         secondMesh.boneCount = 1;
         secondMesh.poseRevision = 4;
         secondMesh.influences = {0xfa05u, 1};
+        secondMesh.vertexBufferBytes = 2880;
+        secondMesh.triangleBufferBytes = 1056;
+        secondMesh.influenceBufferBytes = 1152;
         secondMesh.initialPalette = {glm::mat4(1.0f)};
         meshInterfaceDesc.meshInterfaces = {firstMesh, secondMesh};
 
         particle::ParticleGpuRuntime meshInterfaceRuntime;
         assert(meshInterfaceRuntime.Create(meshInterfaceDevice, meshInterfaceDesc));
         assert(meshInterfaceRuntime.IsValid());
+        assert(meshInterfaceRuntime.MeshBufferBindings().size() == 9);
+        for (uint32_t invalidRange = 0; invalidRange < 4; ++invalidRange) {
+            auto invalidDesc = meshInterfaceDesc;
+            if (invalidRange == 0)
+                invalidDesc.meshInterfaces[0].vertexBufferBytes = 0;
+            else if (invalidRange == 1)
+                invalidDesc.meshInterfaces[0].triangleBufferBytes = 0;
+            else if (invalidRange == 2)
+                invalidDesc.meshInterfaces[1].influenceBufferBytes = 0;
+            else
+                invalidDesc.meshInterfaces[0].influenceBufferBytes = 32;
+            particle::ParticleGpuRuntime rejected;
+            assert(!rejected.Create(meshInterfaceDevice, invalidDesc));
+            assert(rejected.MeshBufferBindings().empty() && !rejected.HasPendingUploads());
+        }
         assert(std::find(meshInterfaceDevice.layoutEntryCounts.begin(), meshInterfaceDevice.layoutEntryCounts.end(),
                          9u) != meshInterfaceDevice.layoutEntryCounts.end());
         assert(std::find(meshInterfaceDevice.groupBufferCounts.begin(), meshInterfaceDevice.groupBufferCounts.end(),

@@ -1,7 +1,8 @@
 // Uses the enclosing real Vulkan fixture; the probe reads the runtime-owned
 // descriptor set, rather than a separately prepared copy of its metadata.
 bool VerifyParticleMeshMetadata(TestResources &resources, infernux::InxShaderLoader &compiler,
-                                const infernux::particle::GpuParticleSpawnProgram &spawnProgram)
+                                const infernux::particle::GpuParticleSpawnProgram &spawnProgram,
+                                const infernux::particle::GpuParticleBoundsProgram &boundsProgram)
 {
     using namespace infernux;
     const auto code = SpirvWords(compiler.CompileComputeGlsl(R"glsl(
@@ -49,6 +50,7 @@ void main() {
     mesh.boneCount = 1;
     mesh.worldSpace = true;
     mesh.vertices = mesh.triangles = mesh.influences = owners.geometry;
+    mesh.vertexBufferBytes = mesh.triangleBufferBytes = mesh.influenceBufferBytes = geometryDesc.byteSize;
     mesh.keepAlive = std::make_shared<int>(1);
     mesh.initialPalette = {glm::mat4(1.0f)};
     desc.meshInterfaces = {mesh};
@@ -56,6 +58,30 @@ void main() {
     particle::ParticleGpuGraphSpawnDomain spawn;
     if (!Require(runtime.Create(device, desc) && spawn.Create(device, 99501, 1, spawnProgram, {}) &&
                  spawn.RegisterEmitter(0, runtime), "Particle metadata runtime creation failed")) return false;
+    {
+        particle::GpuParticleBoundsDesc boundsDesc;
+        boundsDesc.capacity = runtime.Capacity();
+        boundsDesc.visibility = runtime.VisibilityBuffer();
+        boundsDesc.sourceIndices = runtime.RenderIndexBuffer();
+        boundsDesc.sourceIndirectArguments = runtime.IndirectBuffer();
+        boundsDesc.simulationControl = runtime.SimulationControlBuffer();
+        boundsDesc.program = boundsProgram;
+        particle::ParticleGpuBounds bounds;
+        if (!Require(bounds.Create(device, boundsDesc), "Mesh dependency bounds creation failed")) return false;
+        RenderGraph dependencies;
+        dependencies.Initialize(&resources.context);
+        particle::ParticleGpuGraphSpawnDomain::GraphResources spawnResources;
+        particle::ParticleRenderGraph emitter;
+        if (!Require(spawn.Attach(dependencies, "MeshDependencies/Spawn", spawnResources) &&
+                         emitter.Attach(dependencies, runtime, bounds, spawn, spawnResources, 0, "MeshDependencies/Emitter") &&
+                         dependencies.Compile(), "Mesh dependency graph compilation failed")) return false;
+        if (!Require(dependencies.GetImportedBufferAccessStages(owners.geometry) == rhi::PipelineStage::ComputeShader,
+                     "Particle Mesh descriptor buffers are missing from RenderGraph consumer declarations")) return false;
+        for (const auto &binding : runtime.MeshBufferBindings())
+            if (!Require(binding.byteSize > 0 &&
+                             dependencies.GetImportedBufferAccessStages(binding.buffer) == rhi::PipelineStage::ComputeShader,
+                         "Mesh metadata, palette or geometry binding was omitted from the graph")) return false;
+    }
     RenderGraph graph;
     graph.Initialize(&resources.context);
     graph.AddComputePass("Metadata/ReadDescriptor", [&](PassBuilder &builder) {

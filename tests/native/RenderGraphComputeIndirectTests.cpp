@@ -878,7 +878,7 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
     };
     if (!VerifyGpuParticleMigration(resources, migrationProgram))
         return false;
-    if (!VerifyParticleMeshMetadata(resources, sortCompiler, spawnProgram))
+    if (!VerifyParticleMeshMetadata(resources, sortCompiler, spawnProgram, boundsProgram))
         return false;
     if (!VerifyParticleRuntimeInputSnapshots(resources, sortCompiler, spawnProgram))
         return false;

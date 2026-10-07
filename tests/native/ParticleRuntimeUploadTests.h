@@ -90,6 +90,7 @@ void main() {
     mesh.boneCount = boneCount;
     mesh.worldSpace = true;
     mesh.vertices = mesh.triangles = mesh.influences = owner.geometry;
+    mesh.vertexBufferBytes = mesh.triangleBufferBytes = mesh.influenceBufferBytes = 256;
     mesh.keepAlive = std::make_shared<int>(1);
     mesh.initialPalette.assign(boneCount, glm::mat4(1));
     desc.meshInterfaces = {mesh};

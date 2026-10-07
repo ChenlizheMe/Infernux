@@ -679,8 +679,24 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     vk::ResourceHandle ribbonHistograms;
     vk::ResourceHandle ribbonBlockOffsets;
     vk::ResourceHandle ribbonGlobalOffsets;
+    std::vector<vk::ResourceHandle> meshBuffers;
+    meshBuffers.reserve(runtime.MeshBufferBindings().size());
+    const auto readMeshBuffers = [&](vk::PassBuilder &builder) {
+        for (const auto buffer : meshBuffers)
+            builder.ReadStorageBuffer(buffer);
+    };
 
     m_firstPass = graph.AddComputePass(StageName(namePrefix, "Bootstrap"), [&](vk::PassBuilder &builder) {
+        for (const auto &binding : runtime.MeshBufferBindings()) {
+            const auto buffer = builder.ImportBuffer(StageName(namePrefix, "Mesh/") + std::to_string(binding.binding),
+                                                      binding.buffer, binding.byteSize);
+            if (!buffer.IsValid())
+                return vk::PassExecuteCallback{};
+            if (std::none_of(meshBuffers.begin(), meshBuffers.end(),
+                             [buffer](auto existing) { return existing.id == buffer.id; }))
+                meshBuffers.push_back(buffer);
+        }
+        readMeshBuffers(builder);
         const uint64_t capacity = runtime.Capacity();
         states = builder.ImportBuffer(StageName(namePrefix, "States"), runtime.StateBuffer(),
                                       capacity * runtime.StateStride());
@@ -910,6 +926,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
 
     if (runtime.HasContactRuntime()) {
         graph.AddComputePass(StageName(namePrefix, "ContactPrepare"), [&](vk::PassBuilder &builder) {
+            readMeshBuffers(builder);
             builder.ReadStorageBuffer(states);
             contactHashSlots = builder.WriteStorageBuffer(contactHashSlots);
             contactParticleRecordIndices = builder.WriteStorageBuffer(contactParticleRecordIndices);
@@ -952,6 +969,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     }
 
     graph.AddComputePass(StageName(namePrefix, "Init"), [&](vk::PassBuilder &builder) {
+        readMeshBuffers(builder);
         spawnResources.DeclareInitRead(builder);
         spawnResources.DeclareKernelWrite(builder);
         states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
@@ -1004,6 +1022,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         });
 
         graph.AddComputePass(StageName(namePrefix, "ContinuationDispatch"), [&](vk::PassBuilder &builder) {
+            readMeshBuffers(builder);
             spawnResources.DeclareKernelWrite(builder);
             states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
             freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
@@ -1036,6 +1055,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     }
 
     graph.AddComputePass(StageName(namePrefix, "AlivePrepareUpdate"), [&](vk::PassBuilder &builder) {
+        readMeshBuffers(builder);
         counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
         indirect = builder.ReadWrite(indirect, rhi::PipelineStage::ComputeShader);
         aliveDispatch = builder.WriteStorageBuffer(aliveDispatch);
@@ -1054,6 +1074,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
 
     vk::PassHandle simulationTail =
         graph.AddComputePass(StageName(namePrefix, "Update"), [&](vk::PassBuilder &builder) {
+            readMeshBuffers(builder);
             spawnResources.DeclareKernelWrite(builder);
             states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
             freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
@@ -1102,6 +1123,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
 
     if (runtime.HasContactRuntime()) {
         graph.AddComputePass(StageName(namePrefix, "ContactSolve"), [&](vk::PassBuilder &builder) {
+            readMeshBuffers(builder);
             builder.ReadStorageBuffer(contactRecords);
             contactHashSlots = builder.ReadWrite(contactHashSlots, rhi::PipelineStage::ComputeShader);
             builder.ReadStorageBuffer(contactParticleRecordIndices);
@@ -1119,6 +1141,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
         });
 
         simulationTail = graph.AddComputePass(StageName(namePrefix, "ContactDispatch"), [&](vk::PassBuilder &builder) {
+            readMeshBuffers(builder);
             spawnResources.DeclareKernelWrite(builder);
             states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
             freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
@@ -1156,6 +1179,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
 
     const auto renderExportBoundary =
         graph.AddComputePass(StageName(namePrefix, "RenderReset"), [&](vk::PassBuilder &builder) {
+            readMeshBuffers(builder);
             counters = builder.ReadWrite(counters, rhi::PipelineStage::ComputeShader);
             indirect = builder.ReadWrite(indirect, rhi::PipelineStage::ComputeShader);
             aliveDispatch = builder.WriteStorageBuffer(aliveDispatch);
@@ -1178,6 +1202,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
 
     if (runtime.SupportsFusedUpdateRendering()) {
         graph.AddComputePass(StageName(namePrefix, "UpdateRenderingFused"), [&](vk::PassBuilder &builder) {
+            readMeshBuffers(builder);
             spawnResources.DeclareKernelWrite(builder);
             states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
             freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);
@@ -1221,6 +1246,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     }
 
     graph.AddComputePass(StageName(namePrefix, "Rendering"), [&](vk::PassBuilder &builder) {
+        readMeshBuffers(builder);
         spawnResources.DeclareKernelWrite(builder);
         states = builder.ReadWrite(states, rhi::PipelineStage::ComputeShader);
         freeList = builder.ReadWrite(freeList, rhi::PipelineStage::ComputeShader);

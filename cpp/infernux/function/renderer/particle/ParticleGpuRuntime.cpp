@@ -143,6 +143,7 @@ struct ParticleGpuRuntime::DataInterfaceState
     rhi::BufferHandle metadataBuffer;
     std::vector<rhi::BufferHandle> ownedBuffers;
     std::vector<GpuMeshInterfaceDesc> meshInterfaces;
+    std::vector<rhi::BufferBinding> bufferBindings;
     std::vector<uint32_t> metadataWords;
     bool metadataDirty = true;
 };
@@ -449,8 +450,11 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
                     [&](uint32_t binding) { return binding >= usedBindings.size() || usedBindings[binding]; }) ||
                 duplicateBinding || mesh.vertexCount == 0 || mesh.triangleCount == 0 || mesh.edgeCount == 0 ||
                 !mesh.vertices.IsValid() || !mesh.triangles.IsValid() || !mesh.keepAlive ||
-                (mesh.boneCount == 0 && (!mesh.initialPalette.empty() || mesh.influences.IsValid())) ||
-                (mesh.boneCount != 0 && (!mesh.influences.IsValid() || mesh.initialPalette.size() != mesh.boneCount))) {
+                mesh.vertexBufferBytes == 0 || mesh.triangleBufferBytes == 0 ||
+                (mesh.boneCount == 0 && (!mesh.initialPalette.empty() || mesh.influences.IsValid() ||
+                                         mesh.influenceBufferBytes != 0)) ||
+                (mesh.boneCount != 0 && (!mesh.influences.IsValid() || mesh.influenceBufferBytes == 0 ||
+                                         mesh.initialPalette.size() != mesh.boneCount))) {
                 Destroy();
                 return false;
             }
@@ -478,6 +482,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
                 influenceDesc.initialData = dummyInfluence.data();
                 influenceDesc.initialDataBytes = influenceDesc.byteSize;
                 runtimeMesh.influences = device.CreateBuffer(influenceDesc);
+                runtimeMesh.influenceBufferBytes = influenceDesc.byteSize;
                 if (!runtimeMesh.influences.IsValid()) {
                     Destroy();
                     return false;
@@ -506,13 +511,14 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
             dataLayoutDesc.entries[dataLayoutDesc.entryCount++] = {mesh.paletteBinding, rhi::BindingType::StorageBuffer,
                                                                    rhi::ShaderStage::Compute, 1};
             dataGroupDesc.buffers[dataGroupDesc.bufferCount++] = {mesh.vertexBinding, rhi::BindingType::StorageBuffer,
-                                                                  mesh.vertices};
+                                                                  mesh.vertices, 0, mesh.vertexBufferBytes};
             dataGroupDesc.buffers[dataGroupDesc.bufferCount++] = {mesh.triangleBinding, rhi::BindingType::StorageBuffer,
-                                                                  mesh.triangles};
+                                                                  mesh.triangles, 0, mesh.triangleBufferBytes};
             dataGroupDesc.buffers[dataGroupDesc.bufferCount++] = {
-                mesh.influenceBinding, rhi::BindingType::StorageBuffer, runtimeMesh.influences};
+                mesh.influenceBinding, rhi::BindingType::StorageBuffer, runtimeMesh.influences, 0,
+                runtimeMesh.influenceBufferBytes};
             dataGroupDesc.buffers[dataGroupDesc.bufferCount++] = {mesh.paletteBinding, rhi::BindingType::StorageBuffer,
-                                                                  runtimeMesh.palette};
+                                                                  runtimeMesh.palette, 0, paletteBytes};
         }
 
         rhi::BufferDesc metadataBufferDesc;
@@ -528,6 +534,9 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         PrepareUpload(dataInterfaces->metadataBuffer, dataInterfaces->metadataWords.data(),
                       static_cast<size_t>(metadataBufferDesc.byteSize));
         dataGroupDesc.buffers[0].buffer = dataInterfaces->metadataBuffer;
+        dataGroupDesc.buffers[0].byteSize = metadataBufferDesc.byteSize;
+        dataInterfaces->bufferBindings.assign(dataGroupDesc.buffers.begin(),
+                                               dataGroupDesc.buffers.begin() + dataGroupDesc.bufferCount);
         dataInterfaces->layout = device.CreateBindingLayout(dataLayoutDesc);
         if (!dataInterfaces->layout.IsValid()) {
             Destroy();
@@ -1056,6 +1065,12 @@ bool ParticleGpuRuntime::UpdateVectorFieldMetadata(const GpuParticleTransforms &
         m_vectorFields->metadataWords[base + 28] = FloatBits(scalar);
     }
     return true;
+}
+
+const std::vector<rhi::BufferBinding> &ParticleGpuRuntime::MeshBufferBindings() const noexcept
+{
+    static const std::vector<rhi::BufferBinding> empty;
+    return m_dataInterfaces ? m_dataInterfaces->bufferBindings : empty;
 }
 
 rhi::BufferHandle ParticleGpuRuntime::StateBuffer() const noexcept

@@ -970,6 +970,8 @@ struct ParticleGpuSystemManager::Impl
             runtimeMesh.edgeCount = meshResources->samplingEdgeCount;
             runtimeMesh.vertices = meshResources->vertices->GetBuffer();
             runtimeMesh.triangles = meshResources->samplingTriangles->GetBuffer();
+            runtimeMesh.vertexBufferBytes = meshResources->vertices->GetByteSize();
+            runtimeMesh.triangleBufferBytes = meshResources->samplingTriangles->GetByteSize();
             if (mesh.skinnedRendererHandle) {
                 if (!skinnedMeshResolver) {
                     SetError(error, "GPU particle SkinnedMeshRenderer resolver is unavailable");
@@ -988,6 +990,7 @@ struct ParticleGpuSystemManager::Impl
                 runtimeMesh.boneCount = static_cast<uint32_t>(snapshot->currentPalette->size());
                 runtimeMesh.poseRevision = snapshot->revision;
                 runtimeMesh.influences = meshResources->skinInfluences->GetBuffer();
+                runtimeMesh.influenceBufferBytes = meshResources->skinInfluences->GetByteSize();
                 runtimeMesh.initialPalette.assign(snapshot->currentPalette->begin(), snapshot->currentPalette->end());
             }
             runtimeMesh.keepAlive = meshResources;

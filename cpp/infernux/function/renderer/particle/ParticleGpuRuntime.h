@@ -103,6 +103,9 @@ struct GpuMeshInterfaceDesc
     rhi::BufferHandle triangles;
     rhi::BufferHandle influences;
     rhi::BufferHandle palette;
+    uint64_t vertexBufferBytes = 0;
+    uint64_t triangleBufferBytes = 0;
+    uint64_t influenceBufferBytes = 0;
     std::vector<glm::mat4> initialPalette;
     std::shared_ptr<const void> keepAlive;
 };
@@ -323,6 +326,9 @@ class ParticleGpuRuntime
         const uint64_t totalWords = BaseCounterWordCount + eventCounterWords;
         return ((totalWords + 3u) / 4u) * 16u;
     }
+    /// The exact Mesh storage bindings consumed by particle kernels. Their
+    /// byte ranges are shared by descriptor creation and RenderGraph imports.
+    [[nodiscard]] const std::vector<rhi::BufferBinding> &MeshBufferBindings() const noexcept;
     [[nodiscard]] rhi::BufferHandle StateBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle FreeListBuffer() const noexcept;
     [[nodiscard]] rhi::BufferHandle CounterBuffer() const noexcept;
