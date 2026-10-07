@@ -1,5 +1,6 @@
 #include <function/renderer/InxVkCoreModular.h>
 #include <function/renderer/RendererList.h>
+#include <function/renderer/lighting/ForwardPlusLightGrid.h>
 #include <function/renderer/particle/ParticleGpuBillboardRenderer.h>
 #include <function/renderer/particle/ParticleGpuBounds.h>
 #include <function/renderer/particle/ParticleGpuCollisionScene.h>
@@ -708,6 +709,7 @@ void main() {
     return Require(matches, "Vector Field GPU samples diverged from the CPU sampling contract");
 }
 
+#include "ForwardPlusTileCoverageTests.h"
 #include "FrameSubmissionFailureTests.h"
 #include "ParticleCollisionUploadTests.h"
 #include "ParticleCullConservationTests.h"
@@ -770,6 +772,8 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
         return false;
 
     infernux::InxShaderLoader sortCompiler(false, true, false, true, false, true, false, false, false, false);
+    if (!VerifyForwardPlusTileCoverage(resources, sortCompiler))
+        return false;
     if (!VerifyVectorFieldSampling(resources, sortCompiler))
         return false;
     const std::array<std::string_view, 5> sortSources = {
