@@ -137,7 +137,7 @@
 </code></pre></div>
 
 <p>At 4 units per second, a <code>0.025</code> second frame moves <code>0.1</code> units. Four such frames still cover <code>0.4</code> units. Faster frames produce smaller individual steps and more of them, so distance over the same elapsed time stays consistent.</p>
-<p>The current lifecycle contract distinguishes two time values:</p>
+<p>In Play mode, the lifecycle contract distinguishes two time values:</p>
 <ul>
 <li>The <code>delta_time</code> argument passed to <code>update()</code> and <code>late_update()</code> is the clamped, scaled gameplay delta and follows <code>Time.time_scale</code>.</li>
 <li><code>Time.delta_time</code> exposes the scaled gameplay clock; <code>Time.unscaled_delta_time</code> exposes the clamped frame delta before scaling.</li>
@@ -280,7 +280,7 @@
 </code></pre></div>
 
 <p>速度为每秒 4 个单位时，时长 <code>0.025</code> 秒的一帧移动 <code>0.1</code> 个单位。连续四帧仍会移动 <code>0.4</code> 个单位。帧越快，单步距离越短、步数越多，因此同样的经过时间会得到稳定距离。</p>
-<p>当前生命周期契约区分两种时间值：</p>
+<p>Play 模式下的生命周期契约区分两种时间值：</p>
 <ul>
 <li>传给 <code>update()</code> 与 <code>late_update()</code> 的 <code>delta_time</code> 参数，是经过上限约束和时间缩放的游戏帧间隔，会跟随 <code>Time.time_scale</code>。</li>
 <li><code>Time.delta_time</code> 提供缩放后的游戏时钟；<code>Time.unscaled_delta_time</code> 提供经过上限约束、尚未缩放的帧间隔。</li>

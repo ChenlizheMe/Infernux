@@ -101,7 +101,7 @@ frame distance = units per second × seconds this frame
 
 At 4 units per second, a `0.025` second frame moves `0.1` units. Four such frames still cover `0.4` units. Faster frames produce smaller individual steps and more of them, so distance over the same elapsed time stays consistent.
 
-The current lifecycle contract distinguishes two time values:
+In Play mode, the lifecycle contract distinguishes two time values:
 
 - The `delta_time` argument passed to `update()` and `late_update()` is the clamped, scaled gameplay delta and follows `Time.time_scale`.
 - `Time.delta_time` exposes the scaled gameplay clock; `Time.unscaled_delta_time` exposes the clamped frame delta before scaling.
@@ -256,7 +256,7 @@ class ClickProbe(inx.InxComponent):
 
 速度为每秒 4 个单位时，时长 `0.025` 秒的一帧移动 `0.1` 个单位。连续四帧仍会移动 `0.4` 个单位。帧越快，单步距离越短、步数越多，因此同样的经过时间会得到稳定距离。
 
-当前生命周期契约区分两种时间值：
+Play 模式下的生命周期契约区分两种时间值：
 
 - 传给 `update()` 与 `late_update()` 的 `delta_time` 参数，是经过上限约束和时间缩放的游戏帧间隔，会跟随 `Time.time_scale`。
 - `Time.delta_time` 提供缩放后的游戏时钟；`Time.unscaled_delta_time` 提供经过上限约束、尚未缩放的帧间隔。
