@@ -120,7 +120,7 @@ class ParticleGpuSurfaceBinding
         std::string name;
         std::string defaultGuid;
         std::string requestedGuid;
-        uint64_t requestedVersion = 0;
+        uint64_t requestedTextureAssetRevision = 0;
         rhi::TextureViewHandle texture;
         rhi::SamplerHandle sampler;
         std::shared_ptr<rhi::TextureGpuViewSlot> gpuSlot;

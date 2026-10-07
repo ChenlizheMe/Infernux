@@ -4295,6 +4295,8 @@ void InxRenderer::InvalidateTextureCache(const std::string &texturePath)
     }
 
     m_vkCore->InvalidateTextureCache(texturePath);
+    if (m_particleGpuSystemManager)
+        m_particleGpuSystemManager->InvalidateTextureAssets(texturePath);
 }
 
 void InxRenderer::InvalidateMeshCache(const std::string &meshGuid)

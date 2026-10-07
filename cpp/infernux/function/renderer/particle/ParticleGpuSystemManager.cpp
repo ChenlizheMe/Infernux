@@ -12,6 +12,7 @@
 #include <function/renderer/vk/VkPipelineManager.h>
 #include <function/renderer/vk/VkResourceManager.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
+#include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxSkinnedMesh/InxSkinnedMesh.h>
 
 #include <algorithm>
@@ -2238,6 +2239,28 @@ uint32_t ParticleGpuSystemManager::CollisionSceneColliderCount() const noexcept
 bool ParticleGpuSystemManager::RequiresCollisionScene() const noexcept
 {
     return m_impl && m_impl->requiresCollisionScene;
+}
+
+void ParticleGpuSystemManager::InvalidateTextureAssets(const std::string &textureGuid)
+{
+    if (!m_impl || textureGuid.empty())
+        return;
+    std::unordered_set<InxMaterial *> invalidated;
+    for (const auto &[id, emitter] : m_impl->emitters) {
+        for (const auto &output : emitter->outputs) {
+            const auto &material = output.material;
+            if (!material || material->IsDeleted() || invalidated.count(material.get()))
+                continue;
+            for (const auto &[name, property] : material->GetAllProperties()) {
+                if (property.type == MaterialPropertyType::Texture2D &&
+                    std::get<std::string>(property.value) == textureGuid) {
+                    material->InvalidateTextureAssets(textureGuid, false);
+                    invalidated.insert(material.get());
+                    break;
+                }
+            }
+        }
+    }
 }
 
 bool ParticleGpuSystemManager::RefreshMaterialProgram(const std::shared_ptr<InxMaterial> &material,

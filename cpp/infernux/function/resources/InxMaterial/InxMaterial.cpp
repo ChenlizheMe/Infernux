@@ -829,6 +829,7 @@ void InxMaterial::PublishTextureAssets(std::unordered_map<std::string, std::shar
 
 void InxMaterial::InvalidateTextureAssets(const std::string &guid, bool deleted)
 {
+    ++m_textureAssetRevision;
     // Modified assets publish into their existing graphics owner. Keep that
     // lease until resolution publishes the complete new binding set.
     if (deleted) {

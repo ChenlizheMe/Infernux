@@ -553,16 +553,22 @@ bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
         return false;
 
     auto candidate = m_textures;
+    const uint64_t textureAssetRevision =
+        m_material && !m_material->IsDeleted() ? m_material->GetTextureAssetRevision() : 0;
     std::vector<size_t> changed;
     changed.reserve(candidate.size());
     for (size_t index = 0; index < candidate.size(); ++index) {
         auto &binding = candidate[index];
         const std::string textureGuid = ResolveMaterialTextureGuid(binding);
         GpuBillboardTextureLease lease;
-        if (!force && !binding.pending && textureGuid == binding.requestedGuid && binding.gpuSlot &&
+        bool usingFallback = false;
+        if (!force && (!binding.pending || !binding.fallback) &&
+            textureGuid == binding.requestedGuid && binding.gpuSlot &&
+            (!binding.fallback || binding.requestedTextureAssetRevision == textureAssetRevision) &&
             !binding.gpuSlot->NeedsRefresh()) {
             auto published = binding.gpuSlot->Acquire();
             if (published && published->IsValid()) {
+                binding.pending = false;
                 if (binding.gpuView && binding.gpuView->GetRevision() == published->GetRevision() &&
                     binding.gpuView->GetSourceId() == published->GetSourceId())
                     continue;
@@ -571,6 +577,7 @@ bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
                 lease.sampler = published->GetSampler();
                 lease.gpuSlot = binding.gpuSlot;
                 lease.gpuView = std::move(published);
+                usingFallback = binding.fallback;
             }
         }
         if (lease.status != GpuBillboardTextureStatus::Ready)
@@ -581,7 +588,6 @@ bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
             binding.pending = true;
             continue;
         }
-        bool usingFallback = false;
         if (lease.status != GpuBillboardTextureStatus::Ready || !lease.texture.IsValid() || !lease.sampler.IsValid() ||
             !lease.gpuView || !lease.gpuView->IsValid()) {
             const std::string fallbackGuid = !binding.defaultGuid.empty() && binding.defaultGuid != textureGuid
@@ -598,7 +604,13 @@ bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
             }
             return m_group.IsValid();
         }
-        if (!force && !binding.pending && textureGuid == binding.requestedGuid && binding.gpuView &&
+        // The displayed fallback's revision does not describe the requested
+        // asset. Remember a failed request until its texture is invalidated,
+        // without rebuilding identical descriptors or retrying every frame.
+        binding.pending = pending;
+        binding.fallback = usingFallback;
+        binding.requestedTextureAssetRevision = textureAssetRevision;
+        if (!force && textureGuid == binding.requestedGuid && binding.gpuView &&
             binding.gpuView->GetSourceId() == lease.gpuView->GetSourceId() &&
             binding.gpuView->GetRevision() == lease.gpuView->GetRevision())
             continue;
@@ -612,13 +624,12 @@ bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
         if (m_usesBindlessTextures && !binding.resourceIndex.IsValid())
             return false;
         binding.requestedGuid = textureGuid;
-        binding.requestedVersion = binding.gpuView->GetRevision();
-        binding.pending = pending;
-        binding.fallback = usingFallback;
         changed.push_back(index);
     }
-    if (changed.empty())
+    if (changed.empty()) {
+        m_textures = std::move(candidate);
         return m_group.IsValid();
+    }
 
     const auto indices = m_usesBindlessTextures ? CreateTextureIndexBuffer(candidate) : rhi::BufferHandle{};
     if (m_usesBindlessTextures && !indices.IsValid())

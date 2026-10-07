@@ -590,6 +590,12 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     {
         return m_textureAssetsPending;
     }
+    /// Transient notification revision; ordinary animated properties do not
+    /// request another resolution of a failed texture asset.
+    [[nodiscard]] uint64_t GetTextureAssetRevision() const noexcept
+    {
+        return m_textureAssetRevision;
+    }
     [[nodiscard]] bool HasRuntimeTextureOverride(const std::string &name) const
     {
         return m_runtimeTextureOverrides.count(name) != 0;
@@ -847,6 +853,7 @@ class InxMaterial : public std::enable_shared_from_this<InxMaterial>
     std::unordered_map<std::string, std::shared_ptr<rhi::ComputeBuffer>> m_buffers;
     std::unordered_set<std::string> m_runtimeTextureOverrides;
     bool m_textureAssetsPending = true;
+    uint64_t m_textureAssetRevision = 0;
     std::vector<std::string> m_shaderPropertyOrder;
 
     // Vulkan-only multi-pass pipeline storage.
