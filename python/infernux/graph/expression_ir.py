@@ -388,6 +388,17 @@ class ExpressionCompiler:
             seen_targets.add(target_key)
         return diagnostics
 
+    def infer_output_type(
+        self,
+        definition,
+        node: GraphNodeRecord,
+        output: PortDef,
+        inputs: Mapping[str, TypeRef],
+    ) -> TypeRef:
+        """Resolve an authoring output with the compiler's input coercion rules."""
+        targets = self._resolve_input_targets(definition.ports, inputs)
+        return self._resolve_output_type(definition, node, output, targets)
+
     def _resolve_output_type(
         self,
         definition,
@@ -439,6 +450,8 @@ class ExpressionCompiler:
             if vector_type.value_type is not ValueType.VEC3:
                 raise TypeError(f"{type_id} requires matching vec3 inputs")
             return vector_type
+        if type_id == "common.vector.normalize":
+            return inputs["value"]
         if output.value_type is not None:
             return output.value_type
         if output.type_property:

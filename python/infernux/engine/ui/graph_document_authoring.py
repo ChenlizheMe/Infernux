@@ -34,6 +34,7 @@ from infernux.graph.registry import (
     PortKind,
 )
 from infernux.graph.parameters import graph_parameter_allows_hdr
+from infernux.graph.expression_ir import ExpressionCompiler
 from infernux.graph.types import CoordinateSpace, PORTABLE_TYPE_SYSTEM, TypeRef, ValueType
 
 
@@ -69,6 +70,66 @@ def _value_port_accepts(source_type: TypeRef, target_type: TypeRef, target_port)
     except TypeError:
         return False
     return False
+
+
+def _expression_output_type(model, node, port):
+    """Infer a connected expression on an authoring query, never per frame.
+
+    Property-typed leaves stay owned by the domain. Numeric coercion and output
+    semantics come from ExpressionCompiler; incomplete or cyclic edits have no
+    inferred type until they become a valid expression.
+    """
+    if node is None or port.direction is not PortDirection.OUTPUT or port.type_property:
+        return None
+    nodes = {item.uid: item for item in model.nodes}
+    incoming = {(link.target_node, link.target_pin): link for link in model.links}
+    compiler = ExpressionCompiler(model._definitions)
+    resolved = {}
+    active = set()
+
+    def resolve(current, output):
+        if current is None or output is None:
+            return None
+        if output.value_type is not None or output.type_property:
+            return model._effective_port_type(current, output)
+        key = (current.uid, output.id)
+        if key in active:
+            return None
+        if key in resolved:
+            return resolved[key]
+        definition = model._definitions.get(current.type_id)
+        if definition is None or not definition.target_opcodes.get("expression"):
+            return None
+        active.add(key)
+        try:
+            inputs = {}
+            for input_port in definition.ports:
+                if input_port.direction is not PortDirection.INPUT or input_port.kind is not PortKind.VALUE:
+                    continue
+                link = incoming.get((current.uid, input_port.id))
+                if link is None:
+                    if input_port.required:
+                        return None
+                    value_type = input_port.value_type or TypeRef(ValueType.F32)
+                else:
+                    source = nodes.get(link.source_node)
+                    source_def = model._definitions.get(source.type_id) if source else None
+                    value_type = resolve(source, source_def.port(link.source_pin) if source_def else None)
+                    if value_type is None:
+                        return None
+                inputs[input_port.id] = value_type
+            try:
+                value_type = compiler.infer_output_type(
+                    definition, GraphNodeRecord(current.uid, current.type_id, properties=current.data), output, inputs,
+                )
+            except TypeError:
+                return None
+            resolved[key] = value_type
+            return value_type
+        finally:
+            active.remove(key)
+
+    return resolve(node, port)
 
 
 def _compatible_creation_pin(
@@ -418,7 +479,7 @@ class GraphDocumentAuthoringModel(NodeGraph):
                     return TypeRef(ValueType.VEC3, CoordinateSpace(selected or "world"))
                 except ValueError:
                     return None
-        return None
+        return _expression_output_type(self, node, port)
 
     def compatible_creation_pin(self, type_id: str, request: dict):
         """Return the first palette pin that the live drag source can feed."""
@@ -1529,7 +1590,7 @@ class ParticleEmitterGraphAuthoringModel(NodeGraph):
                 )
             except ValueError:
                 return None
-        return None
+        return _expression_output_type(self, node, port)
 
     def validate_link(
         self,

@@ -425,7 +425,7 @@ COMMON_NODE_DEFINITIONS = (
                 default=[0.0, 0.0, 0.0],
                 dimension_policy=PortDimensionPolicy.FIXED,
             ),
-            _output("result", TypeRef(ValueType.VEC3)),
+            _output("result", variable="T"),
         ),
         target_opcodes={"expression": "normalize"},
     ),
