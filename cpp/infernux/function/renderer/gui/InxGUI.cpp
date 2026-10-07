@@ -898,6 +898,20 @@ void InxGUI::PromoteActiveModal()
     ImGui::BringWindowToDisplayFront(modal);
 }
 
+void InxGUI::PrepareRuntimeFontTextures()
+{
+    // Runtime extraction follows ImGui::Render(), so its newly requested
+    // glyphs/atlas pages may not yet appear in that frame's PlatformIO list.
+    // Consume the context-owned font atlases; texture destruction remains
+    // owned by the normal backend frame/retirement path.
+    for (ImFontAtlas *atlas : ImGui::GetCurrentContext()->FontAtlases) {
+        for (ImTextureData *texture : atlas->TexList) {
+            if (texture->Status == ImTextureStatus_WantCreate || texture->Status == ImTextureStatus_WantUpdates)
+                ImGui_ImplVulkan_UpdateTexture(texture);
+        }
+    }
+}
+
 void InxGUI::RecordCommand(VkCommandBuffer cmdBuf)
 {
     ImDrawData *drawData = ImGui::GetDrawData();

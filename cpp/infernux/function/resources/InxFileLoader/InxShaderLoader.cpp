@@ -1225,17 +1225,27 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             declarations += "\nlayout(std140, set = 1, binding = 0) uniform MaterialProperties {\n" +
                             GlslStageInterfaceEmitter::EmitMaterialBlockMembers(*linkedInterface) + "} material;\n";
         declarations += GlslStageInterfaceEmitter::EmitTextureDeclarations(*linkedInterface, stage, 1, 1);
-        if (declarations.empty())
-            return resolvedSource;
-        const auto version = resolvedSource.find("#version");
-        if (version == std::string::npos)
+        // Import resolution prepends library bodies. GLSL requires #version
+        // and extension directives before those bodies, including UI stages
+        // that do not need generated material declarations.
+        std::istringstream lines(resolvedSource);
+        std::string line, versionLine;
+        std::ostringstream extensions, body;
+        while (std::getline(lines, line)) {
+            const auto first = line.find_first_not_of(" \t");
+            if (first != std::string::npos && line.compare(first, 8, "#version") == 0) {
+                if (!versionLine.empty())
+                    throw std::runtime_error("UI shader requires a single #version declaration");
+                versionLine = line;
+            } else if (first != std::string::npos && line.compare(first, 10, "#extension") == 0) {
+                extensions << line << '\n';
+            } else {
+                body << line << '\n';
+            }
+        }
+        if (versionLine.empty())
             throw std::runtime_error("UI shader requires a #version declaration");
-        const auto lineEnd = resolvedSource.find('\n', version);
-        if (lineEnd == std::string::npos)
-            throw std::runtime_error("UI shader requires source after #version");
-        std::string generated = resolvedSource;
-        generated.insert(lineEnd + 1, declarations);
-        return generated;
+        return versionLine + '\n' + extensions.str() + declarations + body.str();
     }
     const auto hasCapability = [&](std::string_view capability) { return DescriptorHasCapability(desc, capability); };
     const bool particleSpriteDomain =

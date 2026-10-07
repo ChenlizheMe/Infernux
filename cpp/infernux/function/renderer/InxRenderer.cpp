@@ -1493,6 +1493,11 @@ void InxRenderer::DrawFrame()
                      "Call engine.set_render_pipeline(DefaultRenderPipelineAsset()) to activate rendering.");
     }
 
+    // All runtime UI packets now exist. Their dynamic font images must be
+    // resident before Scene/Game command recording, including the first draw.
+    if (m_gui)
+        m_gui->PrepareRuntimeFontTextures();
+
     // RenderPipeline::Render() applies the current Python graph. Re-check the
     // requested MSAA here so a newly selected pipeline can switch sample count
     // before any stale render graph executes this frame.
@@ -4813,6 +4818,7 @@ void InxRenderer::SetSceneViewVisible(bool visible)
 
 void InxRenderer::ConfigureScreenUIMaterialResolver(InxScreenUIRenderer &renderer)
 {
+    renderer.SetFontTexturePublisher([this] { m_gui->PrepareRuntimeFontTextures(); });
     renderer.SetMaterialAssetResolver([](const std::string &guid, uint64_t generation) {
         auto material = AssetRegistry::Instance().GetAsset<InxMaterial>(guid);
         if (!material || material->IsDeleted() || material->GetVersion() != generation)

@@ -53,6 +53,9 @@ class InxGUI
     }
 
     void RecordCommand(VkCommandBuffer cmdBuf);
+    // Publish dynamic font images after runtime UI extraction and before any
+    // Scene/Game UI pass consumes their descriptors.
+    void PrepareRuntimeFontTextures();
     void Shutdown();
 
     void SetPlayerMode(bool enabled)

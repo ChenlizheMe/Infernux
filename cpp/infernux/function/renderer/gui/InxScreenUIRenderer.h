@@ -139,6 +139,11 @@ class InxScreenUIRenderer
     {
         m_textureColorSpaceQuery = std::move(query);
     }
+    void SetFontTexturePublisher(std::function<void()> publisher)
+    {
+        m_fontTexturePublisher = std::move(publisher);
+    }
+
     void SetMaterialProgramResolver(
         std::function<std::shared_ptr<const ShaderProgramArtifact>(const std::string &, uint64_t, ShaderProgramDomain)>
             resolver)
@@ -549,6 +554,7 @@ class InxScreenUIRenderer
     std::unordered_set<ShaderProgramKey, ShaderProgramKeyHash> m_ownedMaterialPrograms;
     std::function<std::shared_ptr<const ShaderProgramArtifact>(const std::string &, uint64_t, ShaderProgramDomain)>
         m_materialProgramResolver;
+    std::function<void()> m_fontTexturePublisher;
     std::function<bool(const std::string &, uint64_t)> m_materialIdentityValidator;
     std::function<void(const ShaderProgramKey &)> m_materialProgramRelease;
     std::function<void(const ShaderProgramKey &)> m_materialProgramAcquire;

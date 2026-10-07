@@ -246,7 +246,9 @@ ImTextureID ToImTextureID(uint64_t textureId)
 void ResetDrawListForFrame(ImDrawList &drawList, uint32_t width, uint32_t height, bool screenBounded = true)
 {
     drawList._ResetForNewFrame();
-    drawList.PushTextureID(ImGui::GetIO().Fonts->TexRef.GetTexID());
+    // Keep the atlas reference: its descriptor may be published after packet
+    // extraction, before the frame's UI passes consume the command.
+    drawList.PushTextureID(ImGui::GetIO().Fonts->TexRef);
     if (screenBounded) {
         drawList.PushClipRect(ImVec2(0.0f, 0.0f), ImVec2(static_cast<float>(width), static_cast<float>(height)));
     } else {
@@ -676,6 +678,10 @@ std::shared_ptr<InxScreenUIRenderer::CommandPacket> InxScreenUIRenderer::EndComm
 {
     if (!m_recordingPacket || m_worldElementStart >= 0)
         throw std::logic_error("UI packet capture must close all world elements before publication");
+    // Retained packets store stable descriptor IDs, not borrowed atlas data.
+    // Publish glyph/atlas updates before freezing those IDs into the packet.
+    if (m_fontTexturePublisher)
+        m_fontTexturePublisher();
     for (size_t index = 0; index < 3; ++index) {
         auto &output = m_recordingPacket->m_data->lists[index];
         if (!output.used)
@@ -688,6 +694,8 @@ std::shared_ptr<InxScreenUIRenderer::CommandPacket> InxScreenUIRenderer::EndComm
             output.commands.pop_back();
         // Retained commands must not retain pointers into ImGui's atlas data.
         for (auto &command : output.commands) {
+            if (command.TexRef._TexData && command.GetTexID() == 0 && command.ElemCount != 0)
+                throw std::logic_error("UI command packet atlas texture was not published before sealing");
             command.TexRef = ImTextureRef(command.GetTexID());
             output.hasVertexOffsets |= command.VtxOffset != 0;
         }
