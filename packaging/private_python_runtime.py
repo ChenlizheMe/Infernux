@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import platform
 import shutil
@@ -10,6 +11,7 @@ import tarfile
 import tempfile
 import time
 from dataclasses import dataclass
+from collections.abc import Callable
 from pathlib import Path
 
 from python_runtime_catalog import (
@@ -143,12 +145,6 @@ def verify_runtime_archive(
         )
 
 
-def _remove_tree(path: Path) -> None:
-    if not path.exists():
-        return
-    shutil.rmtree(path)
-
-
 def write_private_runtime_marker(
     runtime_root: str | os.PathLike[str],
     archive_name: str,
@@ -222,6 +218,7 @@ def extract_runtime_archive(
     *,
     expected_sha256: str,
     runtime: str | PythonRuntimeId = DEFAULT_PYTHON_RUNTIME,
+    validate: Callable[[Path], None] | None = None,
 ) -> None:
     archive = Path(archive_path).resolve()
     target = Path(destination).resolve()
@@ -233,6 +230,8 @@ def extract_runtime_archive(
     extract_root = Path(
         tempfile.mkdtemp(prefix=f".{target.name}.extract-", dir=target.parent)
     )
+    backup = extract_root / "previous-runtime"
+    committed = False
     try:
         try:
             with tarfile.open(archive, mode="r:gz") as package:
@@ -246,17 +245,42 @@ def extract_runtime_archive(
                 "Unexpected private Python runtime archive layout: missing the python/ root."
             )
 
-        if target.exists():
-            _remove_tree(target)
-        os.replace(unpacked_runtime, target)
         write_private_runtime_marker(
-            target,
+            unpacked_runtime,
             archive.name,
             expected_sha256,
             runtime=runtime,
         )
+        if validate is not None:
+            validate(unpacked_runtime)
+
+        # Keep the live tree until extraction, its marker, and validation have
+        # all succeeded. A failed rename restores the previous tree once;
+        # this is transaction rollback, never a second installation attempt.
+        if target.exists():
+            os.replace(target, backup)
+        try:
+            os.replace(unpacked_runtime, target)
+        except BaseException:
+            if backup.exists():
+                try:
+                    os.replace(backup, target)
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"Runtime publication and restoration failed; the previous runtime is preserved at {backup}"
+                    ) from exc
+            raise
+        committed = True
     finally:
-        shutil.rmtree(extract_root, ignore_errors=True)
+        # A failed restore must leave its backup available for recovery. Once
+        # committed, cleanup failure cannot turn a valid install into failure.
+        if committed or not backup.exists():
+            try:
+                shutil.rmtree(extract_root)
+            except OSError as exc:
+                logging.getLogger(__name__).warning(
+                    "Could not clean runtime extraction directory %s: %s", extract_root, exc,
+                )
 
 
 def prune_runtime_staging_cache(

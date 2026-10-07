@@ -369,12 +369,13 @@ def test_runtime_extraction_does_not_touch_external_python(
             destination,
             expected_sha256=_archive_sha256(Path(source)),
             runtime=kwargs["runtime"],
+            validate=kwargs["validate"],
         ),
     )
     monkeypatch.setattr(
         embed_runtime_manager,
         "_is_python_version",
-        lambda path, _version: Path(path) == private_root / "python.exe",
+        lambda path, _version: Path(path).name == "python.exe" and Path(path).is_file(),
     )
     monkeypatch.setattr(embed_runtime_manager, "_is_embedded_root", lambda _path: False)
 

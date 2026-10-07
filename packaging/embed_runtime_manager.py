@@ -673,9 +673,6 @@ class PythonRuntimeManager:
                 "Refusing to deploy the private Python runtime outside the Hub-owned "
                 f"{runtime_id.directory_name} directory."
             )
-        if overwrite:
-            shutil.rmtree(runtime_root, ignore_errors=True)
-
         archive_path = self._ensure_runtime_archive(
             runtime_id, on_status=on_status
         )
@@ -684,6 +681,18 @@ class PythonRuntimeManager:
             on_status,
             f"Extracting private Python {runtime_id.series} runtime...",
         )
+
+        def validate_candidate(candidate_root: Path) -> None:
+            candidate = _find_python_in_root(str(candidate_root))
+            if (
+                not candidate
+                or not _is_python_version(candidate, runtime_id)
+                or _is_embedded_root(str(candidate_root))
+            ):
+                raise PythonRuntimeError(
+                    f"Private Python {runtime_id.series} extraction completed, but a valid full runtime was not found afterwards."
+                )
+
         try:
             archive = runtime_archive_for_machine(runtime=runtime_id)
             extract_runtime_archive(
@@ -691,20 +700,12 @@ class PythonRuntimeManager:
                 runtime_root,
                 expected_sha256=archive.sha256,
                 runtime=runtime_id,
+                validate=validate_candidate,
             )
         except RuntimeError as exc:
             raise PythonRuntimeError(str(exc)) from exc
 
-        python_exe = _find_python_in_root(runtime_root)
-        if (
-            not python_exe
-            or not _is_python_version(python_exe, runtime_id)
-            or _is_embedded_root(runtime_root)
-        ):
-            raise PythonRuntimeError(
-                f"Private Python {runtime_id.series} extraction completed, but a valid full runtime was not found afterwards."
-            )
-        return python_exe
+        return self.private_runtime_python(runtime_id)
 
     def reinstall_runtime(
         self,
