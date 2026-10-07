@@ -299,7 +299,7 @@ def _snapshot_object_attributes(owner: object, names: Iterable[str]) -> dict[str
     values = getattr(owner, "__dict__", {})
     return {
         name: (True, getattr(owner, name))
-        if isinstance(owner, type) and name in {"__name__", "__qualname__"}
+        if isinstance(owner, type) and name in {"__name__", "__qualname__", "__bases__"}
         else (name in values, values.get(name))
         for name in names
     }
@@ -850,6 +850,18 @@ def stage_component_body_reload_batch(
         ))
         for request, module_name in zip(normalized_requests, request_modules)
     }
+    live_targets = {
+        component_type
+        for request, module_name in zip(normalized_requests, request_modules)
+        for component_type in (*request.target_types, *published_types_by_module[module_name])
+        if component_type in request.target_types or collect_live_instances(component_type)
+    }
+    # A live subclass also retains its base class objects, even when the bases
+    # have no instances of their own. Preserve those identities across files
+    # before deciding which declarations may publish as fresh candidates.
+    retained_types = live_targets | {
+        base for component_type in live_targets for base in component_type.__mro__[1:]
+    }
     diagnostic_snapshot = _snapshot_script_diagnostics()
     module_snapshot: dict[str, object] = {}
     plans: list[tuple[type, tuple[tuple[str, bool, object], ...]]] = []
@@ -877,7 +889,7 @@ def stage_component_body_reload_batch(
             targets = tuple(dict.fromkeys((
                 *request.target_types,
                 *(component_type for component_type in published_types
-                  if collect_live_instances(component_type)),
+                  if component_type in retained_types),
             )))
             instances_by_type = {
                 target_type: tuple(values)
@@ -1100,10 +1112,23 @@ def stage_component_body_reload_batch(
         plans.extend(
             (
                 target_type,
-                _plan_component_class_body_patch(target_type, candidate_type, publish_identity=True),
+                _plan_component_class_body_patch(
+                    target_type, candidate_type, publish_identity=True,
+                    type_replacements=replacements,
+                ),
             )
             for target_type, candidate_type in matched_types
         )
+        # Newly published or unmounted subclasses must inherit the same live
+        # bases as the patched classes. Apply this only at commit, after schema
+        # preparation has read the complete candidate declarations. The normal
+        # class snapshots cover __bases__ for rollback as well.
+        for candidate_type in registration_publish_types:
+            if candidate_type in replacements:
+                continue
+            bases = tuple(replacements.get(base, base) for base in candidate_type.__bases__)
+            if bases != candidate_type.__bases__:
+                plans.append((candidate_type, (("__bases__", True, bases),)))
         transaction = ComponentBodyReloadTransaction(
             normalized_requests,
             tuple(plans),
@@ -1236,6 +1261,7 @@ def _plan_component_class_body_patch(
     candidate_type: type,
     *,
     publish_identity: bool = False,
+    type_replacements: Optional[dict[type, type]] = None,
 ) -> tuple[tuple[str, bool, object], ...]:
     """Validate one candidate and return its mutation-free body patch plan."""
     # The script GUID and declaration order identify the authored component;
@@ -1243,7 +1269,10 @@ def _plan_component_class_body_patch(
     # the stable live class object and patch its body even when the candidate
     # was renamed.  This preserves native slots, serialized references, and
     # inspector selection across the edit.
-    if target_type.__bases__ != candidate_type.__bases__:
+    candidate_bases = tuple(
+        (type_replacements or {}).get(base, base) for base in candidate_type.__bases__
+    )
+    if target_type.__bases__ != candidate_bases:
         raise ScriptReloadRejected(
             f"component '{target_type.__name__}' base classes changed; reload rejected"
         )
