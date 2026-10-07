@@ -9,6 +9,7 @@
 #include <vector>
 #include "TransformHierarchyPublicationTests.h"
 #include "CompoundColliderPublicationTests.h"
+#include "BroadphaseQueuePublicationTests.h"
 
 using infernux::GameObject;
 using infernux::PhysicsECSStore;
@@ -217,6 +218,7 @@ int main()
     assert(observed.empty());
     manager.UnloadAllScenes();
     try {
+        TestBroadphaseQueuePublication();
         TestCompoundColliderPublication();
     } catch (const std::exception &error) {
         std::cerr << "Compound publication test failed: " << error.what() << std::endl;

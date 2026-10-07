@@ -1212,18 +1212,6 @@ void SceneManager::FlushPendingBroadphase()
     // which is significantly faster than individual AddBody calls.
     pw.AddBodiesBatch(pending);
 
-    // Start() runs before this first physics flush, so force commands may
-    // already be queued on Rigidbodies whose deferred body did not exist yet.
-    // Jolt requires force submission after the body enters the system.
-    for (const auto handle : pendingBodies) {
-        if (!store.IsValid(handle))
-            continue;
-        auto *collider = store.GetCollider(handle).owner;
-        auto *rigidbody = collider ? collider->GetCachedRigidbody() : nullptr;
-        if (rigidbody && rigidbody->IsEnabled() && collider->GetBodyId() != 0xFFFFFFFF)
-            rigidbody->FlushPendingForceCommands();
-    }
-
     double addBodiesMs = ProfileMsSince(t1);
 
     // Jolt incrementally maintains its broad phase when bodies are added.

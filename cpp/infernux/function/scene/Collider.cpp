@@ -213,7 +213,17 @@ void Collider::OnEnable()
     if (!actor.primaryCollider || !actor.primaryCollider->IsEnabled())
         actor.primaryCollider = this;
     // Re-enable after disable — body already exists, normal path.
-    PhysicsWorld::Instance().UpdateBodyShape(this);
+    auto &world = PhysicsWorld::Instance();
+    world.UpdateBodyShape(this);
+    if (!actor.bodyInBroadphase) {
+        // Properties authored while every member was disabled belong to the
+        // next resident body. Reapply them once on the first member's return.
+        auto *body = actor.rigidbody;
+        const bool dynamicOwner = body && body->IsEnabled();
+        world.SetBodyMotionType(actor.bodyId, dynamicOwner ? (body->IsKinematic() ? 1 : 2) : 0);
+        if (dynamicOwner)
+            body->ApplyConfigurationToBody(actor.bodyId);
+    }
     AddToBroadphase();
 }
 
@@ -602,12 +612,10 @@ void Collider::AddToBroadphase()
     if (actor.bodyInBroadphase)
         return;
 
-    bool isStatic = (actor.rigidbody == nullptr || !actor.rigidbody->IsEnabled());
-
     // Defer broadphase addition to the next pre-physics flush (Unity-style).
     // The body exists in Jolt but won't participate in queries/simulation
     // until SceneManager flushes the pending queue.
-    store.QueueBroadphaseAdd(actor.bodyId, isStatic);
+    store.QueueBroadphaseAdd(actor.bodyId);
     actor.bodyInBroadphase = true;
 }
 

@@ -1348,7 +1348,7 @@ uint32_t PhysicsWorld::CreateBody(Collider *collider, bool isStatic, bool isTrig
 
     JPH::BodyID bodyId = body->GetID();
     // NOTE: Body is created but NOT added to broadphase here.
-    // Collider::OnEnable() calls AddBodyToBroadphase() to add it.
+    // Collider::OnEnable() queues broadphase publication separately.
 
     uint32_t id = bodyId.GetIndexAndSequenceNumber();
     m_bodyToCollider[id] = collider;
@@ -1515,18 +1515,7 @@ void PhysicsWorld::InvalidateContactPairsForBody(uint32_t bodyId)
         m_contactListener->InvalidatePairsForBody(bodyId);
 }
 
-void PhysicsWorld::AddBodyToBroadphase(uint32_t bodyId, bool isStatic)
-{
-    std::unique_lock snapshotWrite(m_querySnapshotMutex);
-    if (!m_initialized || bodyId == 0xFFFFFFFF)
-        return;
-
-    JPH::BodyInterface &bodyInterface = m_physicsSystem->GetBodyInterface();
-    bodyInterface.AddBody(JPH::BodyID(bodyId), isStatic ? JPH::EActivation::DontActivate : JPH::EActivation::Activate);
-    m_queryGeneration.fetch_add(1, std::memory_order_release);
-}
-
-void PhysicsWorld::AddBodiesBatch(const std::vector<std::pair<uint32_t, bool>> &bodies)
+void PhysicsWorld::AddBodiesBatch(const std::vector<uint32_t> &bodies)
 {
     std::unique_lock snapshotWrite(m_querySnapshotMutex);
     if (!m_initialized || bodies.empty())
@@ -1538,9 +1527,13 @@ void PhysicsWorld::AddBodiesBatch(const std::vector<std::pair<uint32_t, bool>> &
     staticIds.reserve(bodies.size());
     dynamicIds.reserve(bodies.size() / 4); // most spawned bodies are static
 
-    for (auto &[id, isStatic] : bodies) {
+    // The owner thread publishes bodies outside Step, under the query write
+    // boundary. Read their final motion types, not stale enqueue-time flags.
+    const auto &bodyRead = m_physicsSystem->GetBodyInterfaceNoLock();
+    for (const uint32_t id : bodies) {
         if (id == 0xFFFFFFFF)
             continue;
+        const bool isStatic = bodyRead.GetMotionType(JPH::BodyID(id)) == JPH::EMotionType::Static;
         if (isStatic)
             staticIds.push_back(JPH::BodyID(id));
         else
@@ -1561,6 +1554,21 @@ void PhysicsWorld::AddBodiesBatch(const std::vector<std::pair<uint32_t, bool>> &
     }
     if (!staticIds.empty() || !dynamicIds.empty())
         m_queryGeneration.fetch_add(1, std::memory_order_release);
+    // Start and disabled-body authoring can queue forces before residency.
+    // Submit them only after Jolt has accepted the unique final body set,
+    // for initial creation and reactivation through the same publication path.
+    for (const uint32_t id : bodies) {
+        auto *collider = FindColliderByBodyId(id);
+        auto *rigidbody = collider ? collider->GetCachedRigidbody() : nullptr;
+        if (rigidbody && rigidbody->IsEnabled())
+            rigidbody->FlushPendingForceCommands();
+    }
+}
+
+bool PhysicsWorld::IsBodyInBroadphase(uint32_t bodyId) const
+{
+    return m_initialized && bodyId != 0xFFFFFFFF &&
+           m_physicsSystem->GetBodyInterface().IsAdded(JPH::BodyID(bodyId));
 }
 
 void PhysicsWorld::RemoveBodyFromBroadphase(uint32_t bodyId)
@@ -3304,8 +3312,8 @@ void PhysicsWorld::EnsureSceneBodiesRegistered(Scene *scene)
     // Flush deferred broadphase additions, then rebuild the BVH tree
     // so raycasts can find newly added static bodies.
     auto pending = store.ConsumePendingBroadphaseAdds();
-    for (auto &[bodyId, isStatic] : pending) {
-        AddBodyToBroadphase(bodyId, isStatic);
+    if (!pending.empty()) {
+        AddBodiesBatch(pending);
         anyRegistered = true;
     }
 

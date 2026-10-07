@@ -529,11 +529,12 @@ void Rigidbody::AddForceAtPosition(const glm::vec3 &force, const glm::vec3 &posi
 void Rigidbody::SubmitForceCommand(ForceCommand command)
 {
     const uint32_t bodyId = GetPrimaryBodyId(GetGameObject());
-    if (bodyId == 0xFFFFFFFF) {
+    auto &world = PhysicsWorld::Instance();
+    if (!world.IsBodyInBroadphase(bodyId)) {
         m_pendingForceCommands.push_back(std::move(command));
         return;
     }
-    ApplyForceCommand(PhysicsWorld::Instance(), bodyId, command);
+    ApplyForceCommand(world, bodyId, command);
 }
 
 void Rigidbody::ApplyForceCommand(PhysicsWorld &world, uint32_t bodyId, const ForceCommand &command)
@@ -598,9 +599,12 @@ void Rigidbody::FlushPendingForceCommands()
     if (bodyId == 0xFFFFFFFF)
         throw std::logic_error("cannot flush force commands without a physics body");
 
+    auto &world = PhysicsWorld::Instance();
+    if (!world.IsBodyInBroadphase(bodyId))
+        return;
+
     auto commands = std::move(m_pendingForceCommands);
     m_pendingForceCommands.clear();
-    auto &world = PhysicsWorld::Instance();
     for (const auto &command : commands)
         ApplyForceCommand(world, bodyId, command);
 }

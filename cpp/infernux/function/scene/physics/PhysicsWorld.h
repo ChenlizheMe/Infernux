@@ -234,12 +234,12 @@ class PhysicsWorld
     /// produces fresh Enter events.  Call after changing sensor flag at runtime.
     void InvalidateContactPairsForBody(uint32_t bodyId);
 
-    /// Add an existing body to the broadphase (visible to raycasts/queries).
-    void AddBodyToBroadphase(uint32_t bodyId, bool isStatic);
-
     /// Batch-add bodies to the broadphase using Jolt's AddBodiesPrepare/Finalize.
-    /// Much faster than individual AddBodyToBroadphase for large batches (10k+).
-    void AddBodiesBatch(const std::vector<std::pair<uint32_t, bool>> &bodies);
+    /// Publish final motion state and queued forces once for each resident body.
+    void AddBodiesBatch(const std::vector<uint32_t> &bodies);
+
+    /// True only after publication to Jolt, not merely after an add was queued.
+    [[nodiscard]] bool IsBodyInBroadphase(uint32_t bodyId) const;
 
     /// Remove a body from the broadphase (body stays alive for re-adding later).
     void RemoveBodyFromBroadphase(uint32_t bodyId);
