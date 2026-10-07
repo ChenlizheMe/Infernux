@@ -125,12 +125,16 @@ def _create_start_menu_shortcut(install_dir: str) -> None:
         shortcut_path = os.path.join(shortcut_dir, "Infernux Hub.lnk")
         exe_path = os.path.join(install_dir, "Infernux Hub.exe")
 
+        # Paths are PowerShell literals, never expandable strings or code.
+        def literal(value: str) -> str:
+            return "'" + value.replace("'", "''") + "'"
+
         # Use PowerShell to create .lnk — avoids pywin32 dependency
         ps_script = (
             f'$ws = New-Object -ComObject WScript.Shell; '
-            f'$s = $ws.CreateShortcut("{shortcut_path}"); '
-            f'$s.TargetPath = "{exe_path}"; '
-            f'$s.WorkingDirectory = "{install_dir}"; '
+            f'$s = $ws.CreateShortcut({literal(shortcut_path)}); '
+            f'$s.TargetPath = {literal(exe_path)}; '
+            f'$s.WorkingDirectory = {literal(install_dir)}; '
             f'$s.Description = "Infernux Hub"; '
             f'$s.Save()'
         )
