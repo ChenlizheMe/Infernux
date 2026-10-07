@@ -74,10 +74,93 @@ void EnableCompleteBindless(rhi::BindlessCapabilityStatus &status)
     status.descriptorBindingSampledImageUpdateAfterBind = enabled;
 }
 
+void TestPhysicalDeviceSelection()
+{
+    vk::VulkanCapabilityProbeData core;
+    core.apiVersion = VK_API_VERSION_1_3;
+    core.properties.apiVersion = VK_API_VERSION_1_3;
+    core.coreFeatures.samplerAnisotropy = VK_TRUE;
+    core.vulkan13Features.dynamicRendering = VK_TRUE;
+    core.vulkan13Features.synchronization2 = VK_TRUE;
+
+    auto khr = core;
+    // A 1.3 physical device on a 1.2 instance must use the KHR path.
+    khr.apiVersion = VK_API_VERSION_1_2;
+    khr.dynamicRenderingExtension = true;
+    khr.synchronization2Extension = true;
+    khr.dynamicRenderingFeaturesKHR.dynamicRendering = VK_TRUE;
+    khr.synchronization2FeaturesKHR.synchronization2 = VK_TRUE;
+
+    for (const auto &valid : {core, khr}) {
+        assert(vk::MeetsVulkanDeviceRequirements(valid));
+        vk::VulkanDeviceFeatureChain chain(vk::VulkanCapabilitySnapshot::FromProbe(valid));
+        rhi::DeviceCapabilityRequest request;
+        request.dynamicRendering = true;
+        request.synchronization2 = true;
+        assert(chain.Enable(request));
+    }
+
+    std::vector<vk::VulkanCapabilityProbeData> invalid;
+    auto broken = khr;
+    broken.dynamicRenderingFeaturesKHR.dynamicRendering = VK_FALSE;
+    invalid.push_back(broken);
+    broken = khr;
+    broken.synchronization2FeaturesKHR.synchronization2 = VK_FALSE;
+    invalid.push_back(broken);
+    broken = khr;
+    broken.dynamicRenderingExtension = false;
+    invalid.push_back(broken);
+    broken = khr;
+    broken.synchronization2Extension = false;
+    invalid.push_back(broken);
+    broken = core;
+    broken.vulkan13Features.dynamicRendering = VK_FALSE;
+    invalid.push_back(broken);
+    broken = core;
+    broken.vulkan13Features.synchronization2 = VK_FALSE;
+    invalid.push_back(broken);
+    broken = core;
+    broken.coreFeatures.samplerAnisotropy = VK_FALSE;
+    invalid.push_back(broken);
+    broken = khr;
+    broken.apiVersion = VK_API_VERSION_1_1;
+    invalid.push_back(broken);
+    broken = core;
+    broken.apiVersion = VK_API_VERSION_1_2;
+    invalid.push_back(broken); // Core 1.3 bits cannot replace absent KHR extensions.
+
+    const auto fast = FakeHandle<VkPhysicalDevice>(1);
+    const auto compatible = FakeHandle<VkPhysicalDevice>(2);
+    for (const auto &unsupported : invalid) {
+        assert(!vk::MeetsVulkanDeviceRequirements(unsupported));
+        for (const auto &valid : {core, khr}) {
+            std::vector<vk::VulkanPhysicalDeviceCandidate> candidates{
+                {fast, 10000, unsupported}, {compatible, 100, valid}};
+            assert(vk::SelectVulkanPhysicalDevice(candidates)->device == compatible);
+            std::swap(candidates[0], candidates[1]);
+            assert(vk::SelectVulkanPhysicalDevice(candidates)->device == compatible);
+        }
+    }
+
+    std::vector<vk::VulkanPhysicalDeviceCandidate> candidates{{fast, 10000, khr}, {compatible, 100, core}};
+    assert(vk::SelectVulkanPhysicalDevice(candidates)->device == fast);
+    std::swap(candidates[0], candidates[1]);
+    assert(vk::SelectVulkanPhysicalDevice(candidates)->device == fast);
+    candidates[0].score = 10000;
+    assert(vk::SelectVulkanPhysicalDevice(candidates)->device == compatible); // Stable tie.
+    candidates[0].probe = invalid[0];
+    candidates[1].probe = invalid[1];
+    assert(vk::SelectVulkanPhysicalDevice(candidates) == nullptr);
+    candidates = {{VK_NULL_HANDLE, 10000, core}};
+    assert(vk::SelectVulkanPhysicalDevice(candidates) == nullptr);
+    assert(vk::SelectVulkanPhysicalDevice({}) == nullptr);
+}
+
 } // namespace
 
 int main()
 {
+    TestPhysicalDeviceSelection();
     vk::VulkanCapabilityProbeData numericProbe;
     numericProbe.apiVersion = VK_API_VERSION_1_2;
     numericProbe.coreFeatures.shaderInt16 = VK_TRUE;

@@ -2743,7 +2743,7 @@ void RegisterSceneBindings(py::module_ &m)
     // Scene binding
     // ========================================================================
     py::class_<SceneCommitToken, std::shared_ptr<SceneCommitToken>>(m, "_SceneCommitToken")
-        .def_property_readonly("is_active", &SceneCommitToken::IsActive)
+        .def_property_readonly("is_active", [](const SceneCommitToken &token) { return token.IsActive(); })
         .def_property_readonly("object_id_remap", &SceneCommitToken::GetObjectIdRemap)
         .def_property_readonly("component_id_remap", &SceneCommitToken::GetComponentIdRemap)
         .def("rollback", &SceneCommitToken::Rollback)

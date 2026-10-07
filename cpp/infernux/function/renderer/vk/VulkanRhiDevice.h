@@ -133,6 +133,22 @@ struct VulkanCapabilitySnapshot final
     [[nodiscard]] static VulkanCapabilitySnapshot FromProbe(const VulkanCapabilityProbeData &probe) noexcept;
 };
 
+/// Required features shared by adapter selection and logical-device creation.
+[[nodiscard]] bool MeetsVulkanDeviceRequirements(const VulkanCapabilityProbeData &probe) noexcept;
+
+/// Candidates have already passed the surface, queue and swapchain checks.
+struct VulkanPhysicalDeviceCandidate final
+{
+    VkPhysicalDevice device = VK_NULL_HANDLE;
+    int score = 0;
+    VulkanCapabilityProbeData probe;
+};
+
+/// Returns a candidate owned by the input vector, or nullptr when none qualify.
+/// Equal scores retain enumeration order; unsupported devices never participate.
+[[nodiscard]] const VulkanPhysicalDeviceCandidate *
+SelectVulkanPhysicalDevice(const std::vector<VulkanPhysicalDeviceCandidate> &candidates) noexcept;
+
 /// Builds only the capability feature chain requested by the caller. The
 /// object owns every pNext node, so the returned VkPhysicalDeviceFeatures2
 /// remains valid until this builder is destroyed or reset.

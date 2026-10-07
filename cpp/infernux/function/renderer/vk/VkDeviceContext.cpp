@@ -733,31 +733,31 @@ bool VkDeviceContext::PickPhysicalDevice(const DeviceConfig &config)
     std::vector<VkPhysicalDevice> devices(deviceCount);
     vkEnumeratePhysicalDevices(m_instance, &deviceCount, devices.data());
 
-    // Find the best suitable device
-    int bestScore = 0;
-    VkPhysicalDevice bestDevice = VK_NULL_HANDLE;
-
+    std::vector<VulkanPhysicalDeviceCandidate> candidates;
+    candidates.reserve(devices.size());
     for (const auto &device : devices) {
         if (IsDeviceSuitable(device, config)) {
-            int score = RateDeviceSuitability(device);
-            if (score > bestScore) {
-                bestScore = score;
-                bestDevice = device;
-            }
+            candidates.push_back({device, RateDeviceSuitability(device),
+                                  VulkanCapabilitySnapshot::QueryProbe(device, m_instanceApiVersion)});
         }
     }
 
-    if (bestDevice == VK_NULL_HANDLE) {
-        INXLOG_ERROR("No suitable GPU found");
+    // Rank only devices that can satisfy the same feature contract used below
+    // by CreateLogicalDevice. A faster but incompatible adapter must not mask
+    // a compatible adapter, and device-creation failures are not retried.
+    const auto *best = SelectVulkanPhysicalDevice(candidates);
+    if (best == nullptr) {
+        INXLOG_ERROR("No suitable GPU found: Vulkan 1.2, sampler anisotropy, Dynamic Rendering and "
+                     "Synchronization2 are required together with presentation support");
         return false;
     }
 
-    m_physicalDevice = bestDevice;
+    m_physicalDevice = best->device;
     m_queueIndices = FindQueueFamilies(m_physicalDevice);
 
     // Cache device properties
-    vkGetPhysicalDeviceProperties(m_physicalDevice, &m_deviceProperties);
-    vkGetPhysicalDeviceFeatures(m_physicalDevice, &m_deviceFeatures);
+    m_deviceProperties = best->probe.properties;
+    m_deviceFeatures = best->probe.coreFeatures;
 
     return true;
 }
@@ -789,12 +789,8 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     const auto capabilitySnapshot = VulkanCapabilitySnapshot::FromProbe(capabilityProbe);
     VulkanDeviceFeatureChain featureChain(capabilitySnapshot);
     rhi::DeviceCapabilityRequest capabilityRequest{};
-    if (!capabilitySnapshot.supported.dynamicRendering.supported) {
-        INXLOG_ERROR("The selected Vulkan device does not support the required Dynamic Rendering capability");
-        return false;
-    }
-    if (!capabilitySnapshot.supported.synchronization2.supported) {
-        INXLOG_ERROR("The selected Vulkan device does not support the required Synchronization2 capability");
+    if (!MeetsVulkanDeviceRequirements(capabilityProbe)) {
+        INXLOG_ERROR("The selected Vulkan device does not meet the required device feature contract");
         return false;
     }
     const bool forceBoundedDescriptors = ForceBoundedDescriptors();
@@ -1116,23 +1112,14 @@ bool VkDeviceContext::IsDeviceSuitable(VkPhysicalDevice device, const DeviceConf
         return false;
     }
 
-    // Check required features
-    VkPhysicalDeviceFeatures supportedFeatures;
-    vkGetPhysicalDeviceFeatures(device, &supportedFeatures);
-
-    if (!supportedFeatures.samplerAnisotropy) {
-        return false;
-    }
-
+    // Required rendering features are checked together by SelectVulkanPhysicalDevice.
     return true;
 }
 
 int VkDeviceContext::RateDeviceSuitability(VkPhysicalDevice device) const
 {
     VkPhysicalDeviceProperties deviceProperties;
-    VkPhysicalDeviceFeatures deviceFeatures;
     vkGetPhysicalDeviceProperties(device, &deviceProperties);
-    vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
 
     int score = 0;
 

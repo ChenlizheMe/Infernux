@@ -786,6 +786,7 @@ if(INFERNUX_BUILD_TESTS)
         cpp/infernux/function/renderer/vk/VmaContext.cpp
         cpp/infernux/function/renderer/vk/VkDescriptorManager.cpp
         cpp/infernux/function/renderer/vk/VulkanBindlessTextureTable.cpp
+        cpp/infernux/function/renderer/vk/VulkanCommandUploads.cpp
         cpp/infernux/function/renderer/vk/VulkanRhiDevice.cpp
     )
     target_include_directories(infernux_vulkan_rhi_device_tests PRIVATE

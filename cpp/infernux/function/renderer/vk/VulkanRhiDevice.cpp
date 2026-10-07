@@ -411,6 +411,27 @@ VulkanCapabilitySnapshot VulkanCapabilitySnapshot::FromProbe(const VulkanCapabil
     return result;
 }
 
+bool MeetsVulkanDeviceRequirements(const VulkanCapabilityProbeData &probe) noexcept
+{
+    if (probe.apiVersion < VK_API_VERSION_1_2 || probe.coreFeatures.samplerAnisotropy != VK_TRUE)
+        return false;
+    const auto snapshot = VulkanCapabilitySnapshot::FromProbe(probe);
+    return snapshot.supported.dynamicRendering.supported && snapshot.supported.synchronization2.supported;
+}
+
+const VulkanPhysicalDeviceCandidate *
+SelectVulkanPhysicalDevice(const std::vector<VulkanPhysicalDeviceCandidate> &candidates) noexcept
+{
+    const VulkanPhysicalDeviceCandidate *best = nullptr;
+    for (const auto &candidate : candidates) {
+        if (candidate.device == VK_NULL_HANDLE || !MeetsVulkanDeviceRequirements(candidate.probe))
+            continue;
+        if (best == nullptr || candidate.score > best->score)
+            best = &candidate;
+    }
+    return best;
+}
+
 VulkanDeviceFeatureChain::VulkanDeviceFeatureChain(const VulkanCapabilitySnapshot &supported) noexcept
     : m_supported(supported)
 {
