@@ -371,6 +371,7 @@ class GameEngineLauncher(QMainWindow):
             self.notification_controller.show_pending()
 
     def _on_close(self):
+        self.viewmodel._wait_for_creation()
         self.db.close()
 
 

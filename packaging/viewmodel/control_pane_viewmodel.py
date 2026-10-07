@@ -1,9 +1,9 @@
 import os
 import uuid
 from PySide6.QtWidgets import (
-    QMessageBox, QDialog, QVBoxLayout, QLabel, QProgressBar, QFileDialog
+    QApplication, QMessageBox, QDialog, QVBoxLayout, QLabel, QProgressBar, QFileDialog
 )
-from PySide6.QtCore import QThread, Signal, QObject, QTimer, Qt
+from PySide6.QtCore import QThread, Signal, Slot, QObject, QTimer, Qt
 from model.project_model import ProjectModel, source_engine_version
 from hub_utils import HubLaunchContext, is_project_open, write_project_lock, remove_project_lock
 from project_paths import ProjectPathError
@@ -52,6 +52,20 @@ class CustomProgressDialog(QDialog):
     def _rotate_message(self):
         self.label.setText(random.choice(self.messages))
 
+    def reject(self):
+        # Initialization cannot be cancelled halfway through runtime publication.
+        pass
+
+    def done(self, _result):
+        pass
+
+    def closeEvent(self, event):
+        event.ignore()
+
+    def finish(self):
+        self.timer.stop()
+        super().done(QDialog.Accepted)
+
 
 class InitProjectWorker(QObject):
     """Worker that runs project initialization on a background thread."""
@@ -66,6 +80,7 @@ class InitProjectWorker(QObject):
         self.path = path
         self.engine_version = engine_version
         self.project_dir = ""
+        self.error_message = ""
 
     def run(self):
         try:
@@ -76,7 +91,8 @@ class InitProjectWorker(QObject):
                 on_status=self.progress.emit,
             )
         except Exception as exc:
-            self.error.emit(str(exc))
+            self.error_message = str(exc)
+            self.error.emit(self.error_message)
             return
         self.finished.emit()
 
@@ -217,7 +233,7 @@ class LaunchPreparationWorker(QObject):
         self.finished.emit(python_exe)
 
 
-class ControlPaneViewModel:
+class ControlPaneViewModel(QObject):
     def __init__(
         self,
         model,
@@ -226,6 +242,7 @@ class ControlPaneViewModel:
         runtime_manager=None,
         launch_context=None,
     ):
+        super().__init__()
         self.model = model
         self.project_list = project_list
         self.version_manager = version_manager
@@ -234,6 +251,9 @@ class ControlPaneViewModel:
         self._launch_thread = None
         self._launch_worker = None
         self._launch_splash = None
+        self._creation_thread = None
+        self._creation_worker = None
+        self._creation_dialog = None
 
     def launch_project(self, parent):
         record = self.project_list.get_selected_record()
@@ -402,8 +422,18 @@ class ControlPaneViewModel:
     def create_project(self, parent):
         from view.new_project_view import NewProjectView
 
+        if self._creation_dialog is not None:
+            self._creation_dialog.show()
+            self._creation_dialog.raise_()
+            return
+
         dialog = NewProjectView(self.version_manager, self.runtime_manager, parent)
-        if dialog.exec() != QDialog.Accepted:
+        self._creation_dialog = dialog
+        try:
+            accepted = dialog.exec() == QDialog.Accepted
+        finally:
+            self._creation_dialog = None
+        if not accepted:
             return
 
         new_name, project_path, engine_version = dialog.get_data()
@@ -417,57 +447,57 @@ class ControlPaneViewModel:
             QMessageBox.warning(parent, tr("Missing Version"), tr("Please select an installed engine version."))
             return
         progress_dialog = CustomProgressDialog(parent)
+        self._creation_dialog = progress_dialog
         progress_dialog.show()
 
-        self._init_error: str = ""
-
-        self.thread = QThread()
-        self.worker = InitProjectWorker(
+        self._creation_thread = QThread(self)
+        self._creation_worker = InitProjectWorker(
             self.model, new_name, project_path, engine_version
         )
-        self.worker.moveToThread(self.thread)
+        self._creation_worker.moveToThread(self._creation_thread)
 
-        def _store_error(msg: str):
-            # Called from the worker thread — only store the message.
-            self._init_error = msg
+        self._creation_thread.started.connect(self._creation_worker.run)
+        self._creation_worker.progress.connect(progress_dialog.set_status)
+        # quit() is thread-safe. It must not depend on the GUI event loop,
+        # which is already stopping when aboutToQuit waits for initialization.
+        self._creation_worker.finished.connect(self._creation_thread.quit, Qt.DirectConnection)
+        self._creation_worker.error.connect(self._creation_thread.quit, Qt.DirectConnection)
+        self._creation_thread.finished.connect(self._creation_worker.deleteLater)
+        self._creation_thread.finished.connect(self._finish_creation)
+        QApplication.instance().aboutToQuit.connect(self._wait_for_creation)
+        self._creation_thread.start()
 
-        def _cleanup():
-            # Guaranteed to run on the main thread (QTimer fires in main loop).
-            progress_dialog.accept()
+    @Slot()
+    def _wait_for_creation(self):
+        if self._creation_thread is not None:
+            self._creation_thread.wait()
+            self._finish_creation(show_dialogs=False)
+
+    @Slot()
+    def _finish_creation(self, *, show_dialogs=True):
+        if self._creation_thread is None:
+            return
+        thread, worker, progress = self._creation_thread, self._creation_worker, self._creation_dialog
+        thread.wait()
+        try:
             record = None
-            error_message = self._init_error
-            self._init_error = ""
-            if error_message:
-                QMessageBox.critical(
-                    parent, tr("Project Creation Failed"), error_message,
-                )
-            elif self.worker.project_dir:
-                record = self.model.add_project(new_name, self.worker.project_dir)
-                if record is None:
+            if worker.error_message:
+                if show_dialogs:
+                    QMessageBox.critical(progress, tr("Project Creation Failed"), worker.error_message)
+            elif worker.project_dir:
+                record = self.model.add_project(worker.name, worker.project_dir)
+                if record is None and show_dialogs:
                     QMessageBox.warning(
-                        parent,
-                        tr("Project Created"),
+                        progress, tr("Project Created"),
                         "The project was created successfully, but it is already registered in Hub.\n\n"
-                        f"{self.worker.project_dir}",
+                        f"{worker.project_dir}",
                     )
             self.project_list.refresh()
-            if not error_message and self.worker.project_dir and record is not None:
+            if record is not None:
                 self.project_list.select_project(record.project_id)
-            self.worker.deleteLater()
-            self.thread.deleteLater()
-
-        # QTimer in the main thread — its start() slot is auto-QueuedConnection
-        # when invoked from worker thread, so _cleanup always runs on main thread.
-        self._cleanup_timer = QTimer()
-        self._cleanup_timer.setSingleShot(True)
-        self._cleanup_timer.setInterval(0)
-        self._cleanup_timer.timeout.connect(_cleanup)
-
-        self.thread.started.connect(self.worker.run)
-        self.worker.progress.connect(progress_dialog.set_status)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.error.connect(_store_error)
-        self.worker.error.connect(self.thread.quit)
-        self.thread.finished.connect(self._cleanup_timer.start)
-
-        self.thread.start()
+        finally:
+            QApplication.instance().aboutToQuit.disconnect(self._wait_for_creation)
+            progress.finish()
+            progress.deleteLater()
+            thread.deleteLater()
+            self._creation_thread = self._creation_worker = self._creation_dialog = None
