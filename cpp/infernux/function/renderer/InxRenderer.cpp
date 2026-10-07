@@ -4761,7 +4761,10 @@ void InxRenderer::InvalidateGpuViewStateForSceneBoundary()
 {
     if (m_particleGpuSystemManager) {
         m_particleGpuSystemManager->AbortAsyncRecording();
-        m_particleGpuSystemManager->ResetAll();
+        // View invalidation runs after Scene Update. Particle owners have
+        // already rebuilt and scheduled the new scene's first frame here.
+        // Resetting simulation would discard that frame's initial bursts;
+        // scene/component lifecycle owns simulation resets, not view caches.
     }
     if (m_sceneRenderGraph)
         m_sceneRenderGraph->InvalidateParticleViews();
