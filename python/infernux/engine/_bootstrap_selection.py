@@ -80,6 +80,36 @@ def _project_path_for_target(target) -> str:
 class BootstrapSelectionMixin:
     """BootstrapSelectionMixin method group for EditorBootstrap."""
 
+    def _reconcile_restored_scene_selection(self, snapshot) -> None:
+        """Retain Stop-time selection against the fully restored authored world."""
+        from infernux.engine.interaction import SelectionDomain, SelectionService
+        from infernux.lib import SceneManager
+
+        manager = SceneManager.instance()
+
+        def survives(target):
+            if target.domain is SelectionDomain.SCENE_OBJECT:
+                return manager.find_runtime_object_by_id(target.scene_object_id()) is not None
+            if target.domain is SelectionDomain.COMPONENT:
+                object_id, component_id = target.component_ids()
+                obj = manager.find_runtime_object_by_id(object_id)
+                return obj is not None and any(
+                    int(component.component_id) == component_id
+                    for component in obj.get_components()
+                )
+            # Asset and other document selections are independent of this
+            # Scene replacement and retain their own invalidation owners.
+            return True
+
+        selection = SelectionService.instance()
+        restored = selection.reconciled_snapshot(snapshot, survives)
+        if not selection.apply_snapshot(restored, reason="play_stop_restore", record_history=False):
+            # IDs can be unchanged even though native objects were replaced.
+            # Refresh object-backed views at this boundary, without creating
+            # a new selection/history action or polling in every frame.
+            self._present_selection_snapshot(restored)
+            self._project_ui_editor_selection(restored)
+
     def _wire_selection_system(self):
         from infernux.engine.interaction import (
             DocumentKind,

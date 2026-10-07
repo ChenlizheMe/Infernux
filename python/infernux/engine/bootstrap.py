@@ -501,15 +501,19 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
 
     def _setup_scene_change_cleanup(self):
         def on_scene_changed():
+            from infernux.engine.interaction import SelectionService
+
+            selection = SelectionService.instance()
+            before = selection.snapshot
             document_id = self.scene_file_manager.document_id
             if document_id:
                 for view in (self.scene_view, self.game_view, self.ui_editor):
                     view.bind_document(document_id, preserve_previous=True)
-            from infernux.engine.interaction import SelectionService
-            SelectionService.instance().clear(
-                reason="scene_changed",
-                record_history=False,
-            )
+            play_mode = PlayModeManager.instance()
+            if play_mode is not None and play_mode.state is PlayModeState.RESTORING:
+                self._reconcile_restored_scene_selection(before)
+            else:
+                selection.clear(reason="scene_changed", record_history=False)
             self.scene_view._fly_to_active = False
             self.scene_view._fly_to_last_obj_id = 0
             self.scene_view._fly_to_close = False

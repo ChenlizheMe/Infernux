@@ -40,6 +40,7 @@ def playing_author(engine, scene, tmp_path, monkeypatch):
     core.project_assets.configure(database.project_root, database)
     obj = scene.create_game_object("AuthorDoor")
     object_id = obj.id
+    second_id = scene.create_game_object("AuthorKey").id
     folder = Path(database.assets_root) / tmp_path.name
     folder.mkdir()
     path = folder / "Author.scene"
@@ -57,7 +58,7 @@ def playing_author(engine, scene, tmp_path, monkeypatch):
         assert manager.state is PlayModeState.PLAYING and native.is_playing()
         scene.find_by_id(object_id).name = "RuntimeDoor"
         yield SimpleNamespace(manager=manager, runner=runner, files=files, scene=scene,
-                              native=native, object_id=object_id, path=path,
+                              native=native, object_id=object_id, second_id=second_id, path=path,
                               original_bytes=path.read_bytes())
     finally:
         runner.cancel()
@@ -69,6 +70,140 @@ def playing_author(engine, scene, tmp_path, monkeypatch):
         engine.set_play_mode_rendering(False)
         core.shutdown()
         project_context.set_project_root(previous_root)
+
+
+@pytest.fixture
+def selection_author(playing_author):
+    """Real Stop and scene callbacks; only panel display sinks are isolated."""
+    from infernux.engine.bootstrap import EditorBootstrap
+    from infernux.engine.interaction import SelectionDomain
+    state = playing_author
+    core = EditorInteractionCore.instance()
+    for owner, domain in [('hierarchy', SelectionDomain.SCENE_OBJECT),
+                          ('inspector', SelectionDomain.COMPONENT),
+                          ('project', SelectionDomain.ASSET)]:
+        core.panels.register_selection_authority(owner, (domain,))
+    bootstrap = EditorBootstrap.__new__(EditorBootstrap)
+    bootstrap.scene_file_manager = state.files
+    bound = []
+    bootstrap.scene_view = SimpleNamespace(bind_document=lambda *a, **kw: bound.append(a))
+    bootstrap.game_view = SimpleNamespace(bind_document=lambda *a, **kw: bound.append(a))
+    bootstrap.ui_editor = SimpleNamespace(bind_document=lambda *a, **kw: bound.append(a))
+    projected, ui_projected = [], []
+    bootstrap._present_selection_snapshot = projected.append
+    bootstrap._project_ui_editor_selection = ui_projected.append
+    bootstrap._setup_scene_change_cleanup()
+    def project(change):
+        projected.append(change.after)
+        ui_projected.append(change.after)
+    core.selection.add_listener(project)
+    state.selection = core.selection
+    state.projected = projected
+    state.ui_projected = ui_projected
+    try:
+        yield state
+    finally:
+        core.selection.remove_listener(project)
+
+
+@pytest.mark.parametrize('case', ['single', 'multiple', 'mixed', 'runtime_only', 'empty', 'asset', 'component', 'runtime_component'])
+@pytest.mark.parametrize('paused', [False, True])
+def test_stop_preserves_current_selection_by_authored_identity(selection_author, case, paused):
+    from infernux.engine.interaction import SelectionSnapshot, SelectionTarget
+    state = selection_author
+    if paused:
+        assert state.manager.pause()
+    first = SelectionTarget.scene_object(state.object_id)
+    second = SelectionTarget.scene_object(state.second_id)
+    owner = 'hierarchy'
+    expected = targets = [second]
+    if case == 'multiple':
+        expected = targets = [second, first]
+    elif case in ('mixed', 'runtime_only'):
+        runtime = state.scene.create_game_object('RuntimeSelection')
+        runtime_target = SelectionTarget.scene_object(runtime.id)
+        targets = [runtime_target, second] if case == 'mixed' else [runtime_target]
+        expected = [second] if case == 'mixed' else []
+    elif case == 'empty':
+        expected = targets = []
+    elif case == 'asset':
+        owner = 'project'
+        expected = targets = [SelectionTarget.asset(state.manager._asset_database.get_guid_from_path(str(state.path)))]
+    elif case in ('component', 'runtime_component'):
+        owner = 'inspector'
+        obj = state.scene.find_by_id(state.object_id)
+        component = obj.transform if case == 'component' else obj.add_component('BoxCollider')
+        targets = [SelectionTarget.component(obj.id, component.component_id)]
+        expected = targets if case == 'component' else []
+    snapshot = SelectionSnapshot.create(targets, owner_id=owner if targets else '',
+                                        primary=targets[0] if targets else None,
+                                        anchor=targets[-1] if targets else None)
+    state.selection.apply_snapshot(snapshot, record_history=False)
+    journal = EditorInteractionCore.instance().action_journal
+    before_history = len(tuple(journal.applied_entries()))
+    changes = []
+    state.selection.add_listener(changes.append)
+    assert state.manager.exit_play_mode()
+    state.runner.tick()
+    assert state.manager.is_edit_mode
+    restored = state.selection.snapshot
+    assert restored.targets == tuple(expected)
+    if expected == targets:
+        assert restored == snapshot
+    if expected:
+        assert state.projected[-1] == restored
+        assert state.ui_projected[-1] == restored
+    assert not any(change.record_history for change in changes)
+    assert len(tuple(journal.applied_entries())) == before_history
+    assert state.scene.find_by_id(state.object_id).name == 'AuthorDoor'
+    assert state.path.read_bytes() == state.original_bytes
+
+
+def test_normal_scene_activation_still_clears_selection(selection_author):
+    state = selection_author
+    state.selection.select_scene_object(state.object_id, owner_id='hierarchy', record_history=False)
+    assert state.files.activate_loaded_scene(state.scene)
+    assert state.selection.snapshot.is_empty
+
+
+def test_stop_preserves_selection_across_loaded_scenes(selection_author):
+    state = selection_author
+    assert state.manager.exit_play_mode()
+    state.runner.tick()
+    peer = state.native.create_scene('AuthorPeer')
+    peer_id = peer.create_game_object('AuthorDoor').id
+    state.files.register_loaded_scene(peer, '', dirty=True)
+    assert state.manager.enter_play_mode()
+    state.runner.tick()
+    selected_ids = [peer_id, state.object_id, state.second_id]
+    state.selection.replace_scene_objects(selected_ids, owner_id='hierarchy',
+        primary_object_id=peer_id, anchor_object_id=state.second_id, record_history=False)
+    before = state.selection.snapshot
+    assert state.manager.exit_play_mode()
+    state.runner.tick()
+    assert state.manager.is_edit_mode
+    assert state.selection.snapshot == before
+    assert list(state.selection.scene_object_ids()) == selected_ids
+    assert state.native.get_active_scene() is state.scene
+    assert state.native.find_runtime_object_by_id(peer_id).scene is peer
+
+
+def test_failed_stop_does_not_discard_selection_before_explicit_recovery(selection_author, monkeypatch):
+    state = selection_author
+    state.selection.select_scene_object(state.second_id, owner_id='hierarchy', record_history=False)
+    before = state.selection.snapshot
+    rebuild = state.manager._rebuild_scene
+    monkeypatch.setattr(state.manager, '_rebuild_scene', lambda *a, **kw: False)
+    assert state.manager.exit_play_mode()
+    state.runner.tick()
+    assert state.manager.state is PlayModeState.RECOVERY_REQUIRED
+    assert state.selection.snapshot == before
+    monkeypatch.setattr(state.manager, '_rebuild_scene', rebuild)
+    assert state.manager.exit_play_mode()
+    state.runner.tick()
+    assert state.manager.is_edit_mode
+    assert state.selection.snapshot == before
+    assert state.projected[-1] == before
 
 
 @pytest.mark.parametrize("paused", [False, True])
