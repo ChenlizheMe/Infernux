@@ -130,11 +130,21 @@ int main(int argc, char **argv)
     assert(cloneDescriptor && cloneDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
 
     std::unordered_map<std::string, TextureResolveStatus> statuses = {{"icon-guid", TextureResolveStatus::Pending},
-                                                                      {"detail-guid", TextureResolveStatus::Ready}};
+                                                                      {"detail-guid", TextureResolveStatus::Ready},
+                                                                      {"draw-guid", TextureResolveStatus::Pending}};
+    auto drawTextureSlot = std::make_shared<rhi::TextureGpuViewSlot>("draw-guid");
+    assert(drawTextureSlot->TryPublish(gpuViews[2]));
     descriptors.SetTextureResolver([&](const std::string &guid, const std::string &, const MaterialTextureSampler *) {
         TextureResolveResult result;
         result.status = statuses.at(guid);
         if (result.status == TextureResolveStatus::Ready) {
+            if (guid == "draw-guid") {
+                result.binding.gpuSlot = drawTextureSlot;
+                result.binding.gpuView = drawTextureSlot->Acquire();
+                result.binding.imageView = device.Resolve(result.binding.gpuView->GetView());
+                result.binding.sampler = device.Resolve(sampler);
+                return result;
+            }
             const size_t index = guid == "icon-guid" ? 1 : 2;
             result.binding.imageView = device.Resolve(views[index]);
             result.binding.sampler = device.Resolve(sampler);
@@ -163,6 +173,34 @@ int main(int argc, char **argv)
            rendererDescriptor->textureBindings.at(slots.at("detailTex")).gpuView == gpuViews[3]);
     assert(rendererDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[1]);
     assert(defaultDescriptor->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[0]);
+
+    {
+        // One captured block remains immutable while its texture upload and
+        // later GPU publications advance. An explicit draw cannot use a
+        // default texture while its authored GUID is unresolved.
+        InxMaterial selectedMaterial("selected-texture-publication", "Gizmo Icon");
+        selectedMaterial.SynchronizeShaderPropertyDefaults(defaults);
+        auto selectedParameters = std::make_shared<RendererParameterBlock>();
+        selectedParameters->properties["texSampler"] =
+            MaterialProperty{"texSampler", MaterialPropertyType::Texture2D, std::string{"draw-guid"}};
+        assert(!descriptors.GetOrCreateRendererDescriptorSet(selectedMaterial, program, selectedParameters));
+        statuses["draw-guid"] = TextureResolveStatus::Ready;
+        auto *ready = descriptors.GetOrCreateRendererDescriptorSet(selectedMaterial, program, selectedParameters);
+        assert(ready && ready->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[2]);
+        assert(descriptors.GetOrCreateRendererDescriptorSet(selectedMaterial, program, selectedParameters) == ready);
+        const auto previousDescriptor = ready->descriptorSet;
+        assert(drawTextureSlot->TryPublish(gpuViews[3]));
+        auto *replaced = descriptors.GetOrCreateRendererDescriptorSet(selectedMaterial, program, selectedParameters);
+        assert(replaced && replaced->descriptorSet != previousDescriptor);
+        assert(replaced->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[3]);
+        assert(ready->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[2]);
+        auto missingParameters = std::make_shared<RendererParameterBlock>(*selectedParameters);
+        statuses["draw-guid"] = TextureResolveStatus::Failed;
+        assert(!descriptors.GetOrCreateRendererDescriptorSet(selectedMaterial, program, missingParameters));
+        statuses["draw-guid"] = TextureResolveStatus::Ready;
+        auto *restored = descriptors.GetOrCreateRendererDescriptorSet(selectedMaterial, program, missingParameters);
+        assert(restored && restored->textureBindings.at(slots.at("texSampler")).gpuView == gpuViews[3]);
+    }
 
     {
         // Sprite-derived values exist before material/shader linking. Each

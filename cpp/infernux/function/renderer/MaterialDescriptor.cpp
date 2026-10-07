@@ -782,7 +782,13 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
         // expired block's address. Confirm ownership before accepting a hit so
         // a later draw can never inherit the retired payload.
         const auto owner = cached->second.parameters.lock();
-        if (owner && owner.get() == parameters.get())
+        const bool texturePublicationChanged =
+            std::any_of(cached->second.descriptor->textureBindings.begin(),
+                        cached->second.descriptor->textureBindings.end(), [](const auto &entry) {
+                            const auto &binding = entry.second;
+                            return binding.gpuSlot && binding.gpuSlot->Acquire() != binding.gpuView;
+                        });
+        if (owner && owner.get() == parameters.get() && !texturePublicationChanged)
             return cached->second.descriptor.get();
     }
 
@@ -849,8 +855,9 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
                 return true;
             if (status == TextureResolveStatus::Pending) {
                 descriptor->hasPendingTextures = true;
-                return false;
             }
+            descriptor->hasUnresolvedExplicitTextures = true;
+            return false;
         }
         return TryGetDefaultTextureBinding(material.GetTextureDefault(name), binding);
     };
@@ -927,6 +934,13 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateRendererDescriptorS
         descriptor->textureIndexUBO->UpdateTextureIndices(indices);
     }
 
+    // A captured draw owns its explicit texture references. Publish its
+    // descriptor only after those references resolve, rather than caching
+    // the base material's defaults during the first asynchronous upload.
+    if (descriptor->hasPendingTextures || descriptor->hasUnresolvedExplicitTextures) {
+        RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(descriptor)));
+        return nullptr;
+    }
     if (!UpdateDescriptorBindings(*descriptor, *baseProgram)) {
         RetireDescriptorSet(std::shared_ptr<MaterialDescriptorSet>(std::move(descriptor)));
         return nullptr;
