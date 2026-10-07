@@ -351,8 +351,9 @@ class PluginManager:
         scripts created without a ``.meta`` sidecar still preload on their
         first editor session instead of waiting for the next restart.
         """
+        previous_failures = dict(self.preloads.failures)
         loaded = self.preloads.catch_up()
-        if loaded:
+        if loaded or self.preloads.failures != previous_failures:
             self._rebuild_states()
         return loaded
 
@@ -2272,6 +2273,7 @@ class PluginManager:
             == reference.casefold()
         )
         errors = [str(item.get("error", "")) for item in package_lifecycle if item.get("error")]
+        errors.extend(self.preloads.package_errors(reference))
         enabled = bool(record.get("enabled", True))
         resources = {}
         files = list(record.get("files", []))

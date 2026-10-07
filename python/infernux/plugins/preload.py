@@ -474,14 +474,15 @@ class PreloadManager:
             key = path_key(path)
             try:
                 stamp = _file_stamp(path)
-                stamps[key] = stamp
                 if self._declaration_stamps.get(key) == stamp:
                     declarations[key] = self._declarations_by_path.get(key, ())
+                    stamps[key] = stamp
                     continue
                 # _source_paths already applies the filesystem role rules.
                 declarations[key] = self._read_path_declarations(
                     path, package_files=package_files, role_checked=True
                 )
+                stamps[key] = stamp
                 self.failures.pop(key, None)
             except (OSError, SyntaxError, ValueError) as exc:
                 declarations[key] = ()
@@ -788,6 +789,14 @@ class PreloadManager:
         """Return the installed package that owns *path*, or an empty string."""
 
         return self._package_for_path(resolved_path(path))
+
+    def package_errors(self, reference: str) -> tuple[str, ...]:
+        """Report discovery/import errors owned by one package, including new files."""
+        return tuple(
+            f"{portable_path(relative_path(path, self.project_root))}: {error}"
+            for path, error in sorted(self.failures.items())
+            if self._path_belongs_to_package(path, reference)
+        )
 
     def _ordered_candidate_paths(
         self, candidates: Iterable[_ClassDeclaration]
