@@ -1122,7 +1122,8 @@ def _read_declarations(path: str, project_root: str) -> tuple[_ClassDeclaration,
     for node in tree.body:
         if isinstance(node, ast.Import):
             for alias in node.names:
-                aliases[alias.asname or alias.name.split(".", 1)[0]] = alias.name
+                local_name = alias.asname or alias.name.split(".", 1)[0]
+                aliases[local_name] = alias.name if alias.asname else local_name
         elif isinstance(node, ast.ImportFrom):
             imported_module = _resolve_import_module(module, node.module or "", node.level)
             for alias in node.names:

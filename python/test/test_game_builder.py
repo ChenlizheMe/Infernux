@@ -889,8 +889,9 @@ def test_source_fingerprint_rejects_size_change_without_hashing(tmp_path):
 
 
 @pytest.mark.parametrize("new_runtime_files", [False, True])
+@pytest.mark.parametrize("import_style", ["from", "dotted", "alias"])
 def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(
-    tmp_path, new_runtime_files
+    tmp_path, new_runtime_files, import_style
 ):
     project = _make_project(tmp_path)
     runtime = project / "Packages/vendor/gameplay/runtime/lifecycle.py"
@@ -898,12 +899,16 @@ def test_player_stages_enabled_package_runtime_by_guid_and_excludes_editor(
     editor = project / "Packages/vendor/gameplay/editor/panel.py"
     content = project / "Assets/Plugins/Scenes/Demo.scene"
     control = project / "Packages/vendor/gameplay/inx_package.json"
+    statement, base = {
+        "from": ("from infernux.lifecycle import InxPreload", "InxPreload"),
+        "dotted": ("import infernux.lifecycle", "infernux.lifecycle.InxPreload"),
+        "alias": ("import infernux.lifecycle as lifecycle", "lifecycle.InxPreload"),
+    }[import_style]
     lifecycle_source = (
-        b"from infernux.lifecycle import InxPreload\n"
-        b"class RuntimeLifecycle(InxPreload):\n"
-        b"    def preload(self, context):\n"
-        b"        self.message = context.package_path('runtime/message.txt')\n"
-    )
+        f"{statement}\nclass RuntimeLifecycle({base}):\n"
+        "    def preload(self, context):\n"
+        "        self.message = context.package_path('runtime/message.txt')\n"
+    ).encode("utf-8")
     files = (
         (runtime, "runtime-guid", "runtime/lifecycle.py", "runtime", lifecycle_source),
         (
