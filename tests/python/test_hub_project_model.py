@@ -5,6 +5,7 @@ import json
 import tempfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def _load_project_model(monkeypatch):
@@ -138,7 +139,10 @@ def _write_infernux_wheel(path: Path, version: str = "0.1.6") -> None:
             f"infernux-{version}.dist-info/METADATA",
             f"Name: Infernux\nVersion: {version}\nRequires-Dist: numpy>=1.21.0\n",
         )
-        wheel.writestr(f"infernux-{version}.dist-info/WHEEL", "Wheel-Version: 1.0\n")
+        wheel.writestr(
+            f"infernux-{version}.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: cp312-cp312-win_amd64\n",
+        )
         wheel.writestr(f"infernux-{version}.dist-info/RECORD", "")
 
 
@@ -168,13 +172,16 @@ def test_frozen_project_runtime_installs_infernux_by_extracting_wheel(tmp_path, 
 
     def fake_run_hidden(args: list[str], *, timeout: int):
         captured_args.append(args)
+        assert args[:3] == [str(project_python), "-I", "-c"]
+        assert "sys.version_info" in args[3] and timeout == 30
+        return SimpleNamespace(stdout="3.12\n")
 
     monkeypatch.setattr(project_model, "_run_hidden", fake_run_hidden)
 
     model = project_model.ProjectModel(None, version_manager=_FakeVersionManager(str(wheel_path)))
     model._install_infernux_in_runtime(str(project_dir), "0.1.6")
 
-    assert captured_args == []
+    assert len(captured_args) == 1  # The ABI probe runs; installation does not invoke pip.
     assert (site_packages / "infernux" / "__init__.py").is_file()
     assert (site_packages / "infernux" / "lib" / "_Infernux.cp312-win_amd64.pyd").is_file()
     assert (site_packages / "infernux-0.1.6.dist-info" / "METADATA").is_file()
@@ -187,7 +194,7 @@ def test_matching_frozen_project_runtime_skips_reinstall_when_native_import_vali
     monkeypatch.setattr(project_model.ProjectModel, "validate_python_runtime", staticmethod(lambda _python: None))
 
     wheel_path = tmp_path / "infernux-0.1.6-cp312-cp312-win_amd64.whl"
-    wheel_path.write_bytes(b"wheel")
+    _write_infernux_wheel(wheel_path)
     project_dir = tmp_path / "project"
     _bind_python(project_dir, "3.12")
     runtime_dir = project_dir / ".runtime" / "python312"
@@ -207,10 +214,17 @@ def test_matching_frozen_project_runtime_skips_reinstall_when_native_import_vali
         project_model._wheel_install_fingerprint(str(wheel_path)), encoding="utf-8"
     )
 
-    def fail_run_hidden(_args: list[str], *, timeout: int):
-        raise AssertionError("pip should not run for a valid matching runtime")
+    def fail_run_hidden(args: list[str], *, timeout: int):
+        assert args[:3] == [str(project_python), "-I", "-c"]
+        assert "sys.version_info" in args[3] and timeout == 30
+        return SimpleNamespace(stdout="3.12\n")
 
     monkeypatch.setattr(project_model, "_run_hidden", fail_run_hidden)
+
+    def fail_install(*args):
+        raise AssertionError("matching runtime must not reinstall the wheel")
+
+    monkeypatch.setattr(project_model, "_install_wheel_direct", fail_install)
 
     model = project_model.ProjectModel(None, version_manager=_FakeVersionManager(str(wheel_path)))
     model._install_infernux_in_runtime(str(project_dir), "0.1.6")
@@ -243,6 +257,12 @@ def test_frozen_project_runtime_direct_install_replaces_old_infernux_only(tmp_pa
     project_python.parent.mkdir(parents=True, exist_ok=True)
     project_python.write_text("", encoding="utf-8")
 
+    def version_probe(args: list[str], *, timeout: int):
+        assert args[:3] == [str(project_python), "-I", "-c"]
+        assert "sys.version_info" in args[3] and timeout == 30
+        return SimpleNamespace(stdout="3.12\n")
+
+    monkeypatch.setattr(project_model, "_run_hidden", version_probe)
     model = project_model.ProjectModel(None, version_manager=_FakeVersionManager(str(wheel_path)))
     model._install_infernux_in_runtime(str(project_dir), "0.1.6")
 
