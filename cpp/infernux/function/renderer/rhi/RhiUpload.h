@@ -20,6 +20,8 @@ struct BufferUploadRequest
     const void *data = nullptr;
     size_t byteSize = 0;
     BufferUsage usage = BufferUsage::Storage;
+    /// Queues that consume the uploaded buffer; the uploader adds its own queue.
+    QueueAccessFlags queueAccess = QueueAccessFlags::Graphics;
 };
 
 struct TextureSubresourceUpload

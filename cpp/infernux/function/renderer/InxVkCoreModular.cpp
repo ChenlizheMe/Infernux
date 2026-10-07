@@ -372,7 +372,7 @@ bool InxVkCoreModular::PrepareSurface()
         // texture uploads route through the dedicated DMA queue. Mipmap
         // generation still uses the graphics queue because
         // vkCmdBlitImage is not legal on transfer-only queues.
-        m_resourceManager.SetAsyncTransferContext(&m_asyncTransferContext, graphicsFamily);
+        m_resourceManager.SetAsyncTransferContext(&m_asyncTransferContext);
     } else {
         INXLOG_ERROR("Required GPU upload context initialization failed");
         return false;

@@ -860,13 +860,14 @@ void VulkanRhiDevice::SaveAndDestroyPipelineCache() noexcept
     m_pipelineCache = VK_NULL_HANDLE;
 }
 
-rhi::BufferHandle VulkanRhiDevice::RegisterBuffer(VkBuffer buffer, uint64_t byteSize)
+rhi::BufferHandle VulkanRhiDevice::RegisterBuffer(VkBuffer buffer, uint64_t byteSize, bool concurrentQueueSharing)
 {
     return buffer == VK_NULL_HANDLE
                ? rhi::BufferHandle{}
                : Register<rhi::BufferHandle>(
                      m_buffers, m_freeBuffer,
-                     BufferPayload{buffer, {}, nullptr, byteSize, false, rhi::BufferMemory::DeviceLocal, false});
+                     BufferPayload{buffer, {}, nullptr, byteSize, false, rhi::BufferMemory::DeviceLocal,
+                                   concurrentQueueSharing});
 }
 
 rhi::TextureHandle VulkanRhiDevice::RegisterTexture(VkImage image)

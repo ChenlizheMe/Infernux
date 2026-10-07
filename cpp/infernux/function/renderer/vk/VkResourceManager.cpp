@@ -235,6 +235,9 @@ bool VkResourceManager::Initialize(VkDeviceContext &context, VulkanQueueManager 
     m_rhiDevice = &context.GetRhiDevice();
     m_deviceLifetime = m_rhiDevice->GetLifetime();
     m_queueManager = queueManager;
+    m_graphicsQueueFamily = context.GetQueueIndices().graphicsFamily.value();
+    m_computeQueueFamily = context.GetQueueIndices().computeFamily.value();
+    m_transferQueueFamily = context.GetQueueIndices().transferFamily.value();
 
     // Create command pool
     VkCommandPoolCreateInfo poolInfo{};
@@ -388,6 +391,11 @@ std::shared_ptr<BufferUploadTicket> VkResourceManager::BeginBufferUpload(const r
         throw std::invalid_argument("GPU buffer upload requires non-empty source data");
     if (finalUsage == 0)
         throw std::invalid_argument("GPU buffer upload has no supported destination usage");
+    constexpr auto validQueueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute |
+                                      rhi::QueueAccessFlags::Transfer;
+    if (request.queueAccess == rhi::QueueAccessFlags::None ||
+        (static_cast<uint8_t>(request.queueAccess) & ~static_cast<uint8_t>(validQueueAccess)) != 0)
+        throw std::invalid_argument("GPU buffer upload requires valid consumer queue access");
     auto ticket = std::make_shared<BufferUploadTicket>();
     ticket->m_manager = this;
     ticket->m_size = size;
@@ -399,14 +407,24 @@ std::shared_ptr<BufferUploadTicket> VkResourceManager::BeginBufferUpload(const r
     std::vector<uint32_t> queueFamilies;
     const bool canSubmitAsync = m_asyncTransfer && m_asyncTransfer->IsAsyncCapable() &&
                                 m_asyncTransfer->GetTimelineSemaphore() != VK_NULL_HANDLE;
-    if (canSubmitAsync)
-        queueFamilies = {m_graphicsQueueFamily, m_asyncTransfer->GetQueueFamily()};
+    const auto appendFamily = [&](uint32_t family) {
+        if (std::find(queueFamilies.begin(), queueFamilies.end(), family) == queueFamilies.end())
+            queueFamilies.push_back(family);
+    };
+    appendFamily(canSubmitAsync ? m_asyncTransfer->GetQueueFamily() : m_graphicsQueueFamily);
+    if (rhi::HasQueueAccess(request.queueAccess, rhi::QueueAccessFlags::Graphics))
+        appendFamily(m_graphicsQueueFamily);
+    if (rhi::HasQueueAccess(request.queueAccess, rhi::QueueAccessFlags::Compute))
+        appendFamily(m_computeQueueFamily);
+    if (rhi::HasQueueAccess(request.queueAccess, rhi::QueueAccessFlags::Transfer))
+        appendFamily(m_transferQueueFamily);
     ticket->m_destination =
         std::shared_ptr<VkBufferHandle>(CreateBufferInternal(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | finalUsage,
                                                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, queueFamilies)
                                             .release());
     if (!ticket->m_destination)
         throw std::runtime_error("failed to allocate GPU upload destination buffer");
+    ticket->m_concurrentQueueSharing = queueFamilies.size() > 1;
     ++m_bufferUploadSubmissionCount;
 
     if (!canSubmitAsync) {
@@ -481,7 +499,8 @@ VkResourceManager::GetPublishedRhiBuffer(const std::shared_ptr<BufferUploadTicke
     if (!resource) {
         if (!m_rhiDevice)
             throw std::logic_error("GPU buffer upload has no RHI device");
-        const auto handle = m_rhiDevice->RegisterBuffer(ticket->m_destination->GetBuffer(), ticket->m_size);
+        const auto handle = m_rhiDevice->RegisterBuffer(ticket->m_destination->GetBuffer(), ticket->m_size,
+                                                       ticket->m_concurrentQueueSharing);
         if (!handle.IsValid())
             throw std::runtime_error("failed to register uploaded GPU buffer with the RHI device");
         resource = std::make_shared<rhi::BufferResource>(*m_rhiDevice, handle, ticket->m_size, ticket->m_destination);

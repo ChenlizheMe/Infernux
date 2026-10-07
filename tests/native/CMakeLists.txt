@@ -856,6 +856,28 @@ if(INFERNUX_BUILD_TESTS)
             FAIL_REGULAR_EXPRESSION "Validation Error:;SYNC-HAZARD")
     endforeach()
 
+    set(_buffer_upload_consumer_spirv "${CMAKE_CURRENT_BINARY_DIR}/BufferUploadConsumer.comp.spv")
+    add_custom_command(OUTPUT "${_buffer_upload_consumer_spirv}"
+        COMMAND "${Vulkan_GLSLANG_VALIDATOR_EXECUTABLE}" -V
+            "${CMAKE_SOURCE_DIR}/tests/native/shaders/BufferUploadConsumer.comp"
+            -o "${_buffer_upload_consumer_spirv}"
+        DEPENDS "${CMAKE_SOURCE_DIR}/tests/native/shaders/BufferUploadConsumer.comp" VERBATIM)
+    add_executable(infernux_vulkan_buffer_upload_consumer_tests
+        tests/native/VulkanBufferUploadConsumerTests.cpp "${_buffer_upload_consumer_spirv}")
+    target_include_directories(infernux_vulkan_buffer_upload_consumer_tests PRIVATE ${CMAKE_SOURCE_DIR}/cpp/infernux)
+    target_link_libraries(infernux_vulkan_buffer_upload_consumer_tests PRIVATE InfernuxVulkanBackend)
+    if(MSVC)
+        target_compile_options(infernux_vulkan_buffer_upload_consumer_tests PRIVATE /utf-8)
+    endif()
+    foreach(_case IN ITEMS async_graphics async_compute sync_graphics sync_compute invalid_none invalid_unknown)
+        add_test(NAME infernux.buffer_upload_consumer.${_case}
+            COMMAND infernux_vulkan_buffer_upload_consumer_tests "${_buffer_upload_consumer_spirv}" ${_case})
+        set_tests_properties(infernux.buffer_upload_consumer.${_case} PROPERTIES
+            LABELS "requires_vulkan_device" TIMEOUT 45 RUN_SERIAL TRUE
+            ENVIRONMENT "VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
+            FAIL_REGULAR_EXPRESSION "Validation Error:;SYNC-HAZARD")
+    endforeach()
+
     add_executable(infernux_vulkan_image_readback_tests tests/native/VulkanImageReadbackTests.cpp)
     target_include_directories(infernux_vulkan_image_readback_tests PRIVATE ${CMAKE_SOURCE_DIR}/cpp/infernux)
     target_link_libraries(infernux_vulkan_image_readback_tests PRIVATE InfernuxVulkanBackend)

@@ -821,17 +821,22 @@ struct ParticleGpuSystemManager::Impl
             upload.owner = mesh;
             upload.contentHash = contentHash;
             try {
+                // Inline simulation runs on Graphics; large systems can run on
+                // an independent Compute family. Declare both before allocation.
+                constexpr auto meshQueueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
                 upload.vertexTicket = resources->BeginBufferUpload(
-                    {vertices.data(), vertices.size() * sizeof(PackedParticleMeshVertex), rhi::BufferUsage::Storage});
+                    {vertices.data(), vertices.size() * sizeof(PackedParticleMeshVertex), rhi::BufferUsage::Storage,
+                     meshQueueAccess});
                 upload.indexTicket = resources->BeginBufferUpload(
-                    {sourceIndices.data(), sourceIndices.size() * sizeof(uint32_t), rhi::BufferUsage::Storage});
+                    {sourceIndices.data(), sourceIndices.size() * sizeof(uint32_t), rhi::BufferUsage::Storage,
+                     meshQueueAccess});
                 upload.samplingTriangleTicket = resources->BeginBufferUpload(
                     {samplingPrimitives.data(), samplingPrimitives.size() * sizeof(PackedParticleMeshPrimitive),
-                     rhi::BufferUsage::Storage});
+                     rhi::BufferUsage::Storage, meshQueueAccess});
                 if (!skinInfluences.empty()) {
                     upload.skinInfluenceTicket = resources->BeginBufferUpload(
                         {skinInfluences.data(), skinInfluences.size() * sizeof(PackedParticleSkinInfluence),
-                         rhi::BufferUsage::Storage});
+                         rhi::BufferUsage::Storage, meshQueueAccess});
                 }
             } catch (const std::exception &exception) {
                 upload.failed = true;

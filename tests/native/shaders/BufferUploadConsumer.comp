@@ -1,0 +1,9 @@
+#version 450
+layout(local_size_x = 64) in;
+layout(std430, set = 0, binding = 0) readonly buffer Source { uint sourceWords[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer Destination { uint destinationWords[]; };
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    destinationWords[index] = sourceWords[index] * 7u + 13u;
+}

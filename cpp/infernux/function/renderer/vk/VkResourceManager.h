@@ -94,6 +94,7 @@ class BufferUploadTicket final
     bool m_complete = false;
     bool m_published = false;
     bool m_async = false;
+    bool m_concurrentQueueSharing = false;
 };
 
 class TextureUploadTicket final
@@ -602,10 +603,9 @@ class VkResourceManager
     }
 
     /// Configure the transfer context used by explicit Buffer/TextureUploadTicket submissions.
-    void SetAsyncTransferContext(class AsyncTransferContext *transfer, uint32_t graphicsQueueFamily)
+    void SetAsyncTransferContext(class AsyncTransferContext *transfer)
     {
         m_asyncTransfer = transfer;
-        m_graphicsQueueFamily = graphicsQueueFamily;
     }
 
   private:
@@ -625,6 +625,8 @@ class VkResourceManager
     // never destroys it. nullptr means "always use the synchronous path".
     class AsyncTransferContext *m_asyncTransfer = nullptr;
     uint32_t m_graphicsQueueFamily = 0;
+    uint32_t m_computeQueueFamily = 0;
+    uint32_t m_transferQueueFamily = 0;
     std::vector<std::shared_ptr<BufferUploadTicket>> m_pendingBufferUploads;
     std::vector<std::shared_ptr<TextureUploadTicket>> m_pendingTextureUploads;
     std::vector<std::shared_ptr<ImageReadbackTicket>> m_pendingImageReadbacks;
