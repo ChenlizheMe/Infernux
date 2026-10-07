@@ -747,17 +747,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                              "Access via EngineConfig.get().")
         .def_static("get", &EngineConfig::Get, py::return_value_policy::reference,
                     "Get the singleton EngineConfig instance.")
-        // Rendering — Descriptor Pools
-        .def_readwrite("max_materials_per_pool", &EngineConfig::maxMaterialsPerPool)
-        .def_readwrite("ubo_descriptors_per_material", &EngineConfig::uboDescriptorsPerMaterial)
-        .def_readwrite("sampler_descriptors_per_material", &EngineConfig::samplerDescriptorsPerMaterial)
-        .def_readwrite("fullscreen_descriptor_sets_per_frame", &EngineConfig::fullscreenDescriptorSetsPerFrame)
-        .def_readwrite("fullscreen_sampler_descriptors_per_frame", &EngineConfig::fullscreenSamplerDescriptorsPerFrame)
-        // Rendering — Textures
-        .def_readwrite("enable_mipmap", &EngineConfig::enableMipmap)
-        .def_readwrite("anisotropy_scale", &EngineConfig::anisotropyScale)
         // Rendering — Swapchain
-        .def_readwrite("preferred_swapchain_image_count", &EngineConfig::preferredSwapchainImageCount)
         .def_readwrite("max_frames_in_flight", &EngineConfig::maxFramesInFlight)
         // Physics — Jolt Configuration
         .def_readwrite("physics_temp_allocator_size", &EngineConfig::physicsTempAllocatorSize)
@@ -793,9 +783,8 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def_readwrite("default_max_angular_velocity", &EngineConfig::defaultMaxAngularVelocity)
         .def_readwrite("default_max_linear_velocity", &EngineConfig::defaultMaxLinearVelocity)
         // Physics — Layers
-        .def_readwrite("physics_layer_count", &EngineConfig::physicsLayerCount)
         .def_readwrite("default_query_layer_mask", &EngineConfig::defaultQueryLayerMask)
-        // Render Queue Ranges (read-only from Python; change via code if needed)
+        // Render Queue Ranges
         .def_readwrite("opaque_queue_min", &EngineConfig::opaqueQueueMin)
         .def_readwrite("opaque_queue_max", &EngineConfig::opaqueQueueMax)
         .def_readwrite("transparent_queue_min", &EngineConfig::transparentQueueMin)

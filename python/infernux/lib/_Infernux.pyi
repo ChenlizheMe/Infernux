@@ -3409,14 +3409,6 @@ class EngineConfig:
     def get() -> EngineConfig: ...
 
     # Rendering
-    max_materials_per_pool: int
-    ubo_descriptors_per_material: int
-    sampler_descriptors_per_material: int
-    fullscreen_descriptor_sets_per_frame: int
-    fullscreen_sampler_descriptors_per_frame: int
-    enable_mipmap: bool
-    anisotropy_scale: float
-    preferred_swapchain_image_count: int
     max_frames_in_flight: int
 
     # Physics
@@ -3453,7 +3445,6 @@ class EngineConfig:
     default_max_linear_velocity: float
 
     # Physics layers
-    physics_layer_count: int
     default_query_layer_mask: int
 
     # Render queue ranges
