@@ -114,12 +114,13 @@ const std::string &HierarchyPanel::Tr(const std::string &key)
 void HierarchyPanel::InvalidateSceneStructureCache()
 {
     m_cachedSceneKey.clear();
+    m_cachedSearchKey.clear();
     m_cachedStructureVer = UINT64_MAX;
     m_lastRootRefreshTime = 0.0f;
-    m_orderedIdsDirty = true;
     m_searchVisCache.clear();
     m_itemHeightMeasured = false;
     m_flatItems.clear();
+    m_persistentFlatItems.clear();
     m_cachedScenes.clear();
     m_flatListDirty = true;
 }
@@ -172,12 +173,13 @@ void HierarchyPanel::SetSelectedObjectById(uint64_t id, bool clearSearchFirst)
     if (id) {
         ExpandToObject(id);
         m_scrollToObjectId = id;
+        Scene *scene = SceneManager::Instance().GetActiveScene();
+        RefreshRootObjects(scene, false, m_forceRootRefresh);
         const bool missingFromCache = std::none_of(m_flatItems.begin(), m_flatItems.end(), [id](const FlatItem &item) {
             return item.obj && item.obj->GetID() == id;
         });
         m_forceRootRefresh = missingFromCache;
         if (missingFromCache) {
-            Scene *scene = SceneManager::Instance().GetActiveScene();
             GameObject *selected = SceneManager::Instance().FindRuntimeObjectByID(id);
             if (selected) {
                 // Runtime-only IDs can be recycled after leaving Play Mode.
@@ -257,7 +259,6 @@ void HierarchyPanel::SetExpandedObjectIds(const std::vector<uint64_t> &ids)
     const std::unordered_set<uint64_t> expanded(ids.begin(), ids.end());
     if (m_treeProjection.ReplaceExpanded(expanded)) {
         m_flatListDirty = true;
-        m_orderedIdsDirty = true;
     }
 }
 
@@ -320,8 +321,8 @@ void HierarchyPanel::RefreshRootObjects(Scene *scene, bool allowStale, bool forc
 {
     (void)allowStale;
     if (!scene) {
+        InvalidateSceneStructureCache();
         m_cachedRoots.clear();
-        m_cachedScenes.clear();
         m_cachedRawRootCount = 0;
         m_selectedSceneWorldId = 0;
         m_pendingSceneSelectWorldId = 0;
@@ -344,16 +345,31 @@ void HierarchyPanel::RefreshRootObjects(Scene *scene, bool allowStale, bool forc
         }))
         m_selectedSceneWorldId = 0;
 
-    std::string sceneKey;
+    std::string sceneKey = IsPrefabModeActive() ? "prefab:" : "scenes:";
+    std::string searchKey;
     size_t rawRootCount = 0;
-    for (Scene *loadedScene : scenes) {
+    const auto appendRevision = [&](Scene *loadedScene) {
         sceneKey += std::to_string(loadedScene->GetWorldId());
         sceneKey += ':';
         sceneKey += std::to_string(loadedScene->GetStructureVersion());
         sceneKey += ':';
         sceneKey += std::to_string(loadedScene->GetRootObjects().size());
         sceneKey += ';';
+        searchKey += std::to_string(loadedScene->GetWorldId()) + ':' +
+                     std::to_string(loadedScene->GetObjectNameRevision()) + ';';
+    };
+    for (Scene *loadedScene : scenes) {
+        appendRevision(loadedScene);
         rawRootCount += loadedScene->GetRootObjects().size();
+    }
+    if (Scene *persistentScene = SceneManager::Instance().GetRuntimePersistentScene())
+        appendRevision(persistentScene);
+
+    if (searchKey != m_cachedSearchKey) {
+        m_cachedSearchKey = std::move(searchKey);
+        m_searchVisCache.clear();
+        if (HasActiveSearch())
+            m_flatListDirty = true;
     }
 
     if (forceRefresh || rawRootCount != m_cachedRawRootCount || sceneKey != m_cachedSceneKey) {
@@ -364,10 +380,12 @@ void HierarchyPanel::RefreshRootObjects(Scene *scene, bool allowStale, bool forc
             auto roots = FilterHidden(loadedScene->GetRootObjects());
             m_cachedRoots.insert(m_cachedRoots.end(), roots.begin(), roots.end());
         }
-        m_orderedIdsDirty = true;
         m_searchVisCache.clear();
         m_itemHeightMeasured = false;
         m_flatListDirty = true;
+        // Retire pointers before a selection/reveal callback can inspect them.
+        m_flatItems.clear();
+        m_persistentFlatItems.clear();
         m_cachedSceneKey = sceneKey;
         m_cachedStructureVer = scene->GetStructureVersion();
         m_cachedRawRootCount = rawRootCount;
@@ -457,6 +475,13 @@ void HierarchyPanel::BuildFlatVisibleList(const std::vector<GameObject *> &roots
             }
         }
     }
+    m_persistentFlatItems.clear();
+    if (Scene *persistentScene = SceneManager::Instance().GetRuntimePersistentScene()) {
+        for (const auto &root : persistentScene->GetRootObjects()) {
+            if (!IsHidden(root->GetID()))
+                BuildFlatListRecurse(root.get(), 0, m_persistentFlatItems);
+        }
+    }
     m_flatListDirty = false;
 }
 
@@ -532,24 +557,14 @@ bool HierarchyPanel::IsShift(InxGUIContext *ctx) const
 // Ordered IDs (for shift-range select)
 // ════════════════════════════════════════════════════════════════════
 
-std::vector<uint64_t> HierarchyPanel::CollectOrderedIds(const std::vector<GameObject *> &roots) const
+std::vector<uint64_t> HierarchyPanel::CollectOrderedIds() const
 {
     std::vector<uint64_t> result;
-    // Iterative DFS
-    std::vector<GameObject *> stack;
-    for (auto it = roots.rbegin(); it != roots.rend(); ++it)
-        stack.push_back(*it);
-
-    while (!stack.empty()) {
-        auto *obj = stack.back();
-        stack.pop_back();
-        if (!obj || IsHidden(obj->GetID()))
-            continue;
-        result.push_back(obj->GetID());
-        auto &children = obj->GetChildren();
-        for (auto it = children.rbegin(); it != children.rend(); ++it) {
-            if (!IsHidden(it->get()->GetID()))
-                stack.push_back(it->get());
+    result.reserve(m_flatItems.size() + m_persistentFlatItems.size());
+    for (const auto *items : {&m_flatItems, &m_persistentFlatItems}) {
+        for (const FlatItem &item : *items) {
+            if (item.obj)
+                result.push_back(item.obj->GetID());
         }
     }
     return result;
@@ -1301,10 +1316,15 @@ void HierarchyPanel::VisiblePreRender(InxGUIContext *ctx)
 
     // Refresh hidden IDs
     auto preHiddenStart = Clock::now();
-    if (!m_runtimeHiddenPushMode && getRuntimeHiddenIds)
-        m_hiddenIds = getRuntimeHiddenIds();
-    else if (!m_runtimeHiddenPushMode)
-        m_hiddenIds.clear();
+    if (!m_runtimeHiddenPushMode) {
+        auto hidden = getRuntimeHiddenIds ? getRuntimeHiddenIds() : std::unordered_set<uint64_t>{};
+        if (hidden != m_hiddenIds) {
+            m_hiddenIds = std::move(hidden);
+            m_forceRootRefresh = true;
+            m_searchVisCache.clear();
+            m_flatListDirty = true;
+        }
+    }
     m_subPreHidden += msSince(preHiddenStart);
 
     // Sync selection once per frame
@@ -1315,10 +1335,7 @@ void HierarchyPanel::VisiblePreRender(InxGUIContext *ctx)
         m_scrollToObjectId = m_selPrimary;
         if (m_selPrimary) {
             ExpandToObject(m_selPrimary);
-            const bool selectionMissingFromCache =
-                std::none_of(m_flatItems.begin(), m_flatItems.end(),
-                             [this](const FlatItem &item) { return item.obj && item.obj->GetID() == m_selPrimary; });
-            m_forceRootRefresh = selectionMissingFromCache;
+            m_forceRootRefresh = true;
         }
     }
     m_subPreSelection += msSince(preSelectionStart);
@@ -1335,17 +1352,16 @@ void HierarchyPanel::VisiblePreRender(InxGUIContext *ctx)
                         toggleId(pid);
                 } else if (m_pendingShift) {
                     Scene *scene = SceneManager::Instance().GetActiveScene();
-                    if (scene) {
-                        if (m_orderedIdsDirty) {
-                            m_cachedOrderedIds = CollectOrderedIds(m_cachedRoots);
-                            m_orderedIdsDirty = false;
-                        }
-                        auto searchFiltered =
-                            HasActiveSearch() ? CollectOrderedIds(FilterForSearch(m_cachedRoots)) : m_cachedOrderedIds;
-                        if (setOrderedIds)
-                            setOrderedIds(searchFiltered);
-                    }
-                    if (rangeSelectId)
+                    // Changes between press and release use the same projection
+                    // as rendering, including scene folds and runtime residency.
+                    RefreshRootObjects(scene, false, m_forceRootRefresh);
+                    m_forceRootRefresh = false;
+                    if (scene && m_flatListDirty)
+                        BuildFlatVisibleList(FilterForSearch(m_cachedRoots));
+                    const auto orderedIds = CollectOrderedIds();
+                    if (setOrderedIds)
+                        setOrderedIds(orderedIds);
+                    if (rangeSelectId && std::find(orderedIds.begin(), orderedIds.end(), pid) != orderedIds.end())
                         rangeSelectId(pid);
                 } else {
                     if (selectId)
@@ -1477,25 +1493,6 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
             m_subFlatBuild += msSince(t0);
         }
 
-        // A live, explicitly selected root must never disappear from the
-        // Hierarchy because a stale structure or runtime-hidden snapshot still
-        // carries the same recycled object ID. This path is intentionally
-        // exceptional and O(n); the normal cached list remains untouched.
-        if (!HasActiveSearch() && m_selPrimary != 0) {
-            const bool selectedVisible =
-                std::any_of(m_flatItems.begin(), m_flatItems.end(),
-                            [this](const FlatItem &item) { return item.obj && item.obj->GetID() == m_selPrimary; });
-            if (!selectedVisible) {
-                GameObject *selected = SceneManager::Instance().FindRuntimeObjectByID(m_selPrimary);
-                if (selected && selected->GetParent() == nullptr) {
-                    const bool hasVisibleChildren =
-                        std::any_of(selected->GetChildren().begin(), selected->GetChildren().end(),
-                                    [this](const auto &child) { return child && !IsHidden(child->GetID()); });
-                    m_flatItems.push_back(
-                        {selected, IsPrefabModeActive() ? 0 : 1, hasVisibleChildren, selected->GetScene(), false});
-                }
-            }
-        }
         int nItems = static_cast<int>(m_flatItems.size());
 
         const ImGuiPayload *activePayload = ImGui::GetDragDropPayload();
@@ -1655,26 +1652,15 @@ void HierarchyPanel::OnRenderContent(InxGUIContext *ctx)
 
         // Unity-style runtime residency is a real, separate Scene. Present it
         // after all authored Scene groups.
-        Scene *persistentScene = SceneManager::Instance().GetRuntimePersistentScene();
-        if (persistentScene && !persistentScene->GetRootObjects().empty()) {
-            std::vector<GameObject *> persistentRoots = FilterHidden(persistentScene->GetRootObjects());
-            if (HasActiveSearch())
-                persistentRoots = FilterForSearch(persistentRoots);
-            if (!persistentRoots.empty()) {
-                ctx->Separator();
-                ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::TEXT_DISABLED.x, EditorTheme::TEXT_DISABLED.y,
-                                    EditorTheme::TEXT_DISABLED.z, EditorTheme::TEXT_DISABLED.w);
-                ctx->Label("DontDestroyOnLoad");
-                ctx->PopStyleColor(1);
-
-                std::vector<FlatItem> persistentItems;
-                persistentItems.reserve(persistentRoots.size() * 2);
-                for (GameObject *root : persistentRoots)
-                    BuildFlatListRecurse(root, 0, persistentItems);
-                const float baseIndentX = ctx->GetCursorPosX();
-                for (const FlatItem &item : persistentItems)
-                    RenderFlatItem(ctx, item, baseIndentX, EditorTheme::TREE_INDENT * dpi);
-            }
+        if (!m_persistentFlatItems.empty()) {
+            ctx->Separator();
+            ctx->PushStyleColor(ImGuiCol_Text, EditorTheme::TEXT_DISABLED.x, EditorTheme::TEXT_DISABLED.y,
+                                EditorTheme::TEXT_DISABLED.z, EditorTheme::TEXT_DISABLED.w);
+            ctx->Label("DontDestroyOnLoad");
+            ctx->PopStyleColor(1);
+            const float baseIndentX = ctx->GetCursorPosX();
+            for (const FlatItem &item : m_persistentFlatItems)
+                RenderFlatItem(ctx, item, baseIndentX, EditorTheme::TREE_INDENT * dpi);
         }
 
         auto popupStart = Clock::now();

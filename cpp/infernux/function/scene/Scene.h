@@ -308,6 +308,13 @@ class Scene : public NativeLifetimeOwner
         ++m_structureVersion;
     }
 
+    /// Object-name changes invalidate editor search without rebuilding runtime
+    /// object/component or lifecycle lists. This revision is not serialized.
+    [[nodiscard]] uint64_t GetObjectNameRevision() const
+    {
+        return m_objectNameRevision;
+    }
+
     // ========================================================================
     // Serialization
     // ========================================================================
@@ -496,6 +503,7 @@ class Scene : public NativeLifetimeOwner
 
     // Structure version counter (bumped on add/remove/reparent)
     uint64_t m_structureVersion = 0;
+    uint64_t m_objectNameRevision = 0;
 
     // Runtime lifecycle dispatch is sparse in ordinary scenes: most objects
     // only contain Transform/render data. Rebuild these ordered receiver lists

@@ -49,10 +49,7 @@ class GameObject : public NativeLifetimeOwner
     {
         return m_name;
     }
-    void SetName(const std::string &name)
-    {
-        m_name = name;
-    }
+    void SetName(const std::string &name);
 
     [[nodiscard]] uint64_t GetID() const
     {

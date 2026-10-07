@@ -67,6 +67,15 @@ ObjectHandle GameObject::GetHandle() const
     return ObjectHandle{m_id, m_lifetimeGeneration, m_scene ? m_scene->GetWorldId() : 0};
 }
 
+void GameObject::SetName(const std::string &name)
+{
+    if (m_name == name)
+        return;
+    m_name = name;
+    if (m_scene)
+        ++m_scene->m_objectNameRevision;
+}
+
 void GameObject::SetLayer(int layer)
 {
     if (layer < 0 || layer >= 32) {
