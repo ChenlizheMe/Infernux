@@ -185,3 +185,65 @@ def test_same_name_vertex_save_rejects_all_pairs_before_retiring_any_program(eng
     assert restored,restored.error
     for material in materials:
         assert engine.refresh_material_pipeline(material._native)
+
+
+@pytest.mark.parametrize('recreate_at', ('same-path', 'different-path'))
+def test_recreated_dependency_clears_the_resolved_deleted_source_diagnostic(engine,dependency_sources,recreate_at):
+    from infernux.debug import DebugConsole, LogType
+
+    prefix,create,registry=dependency_sources
+    library_name,good,_,_=sources(prefix)
+    library,library_guid=create('DeletedLibrary','.glsl',good)
+    stage,stage_guid=create('Consumer','.frag',
+        f'#version 450\nShaderInfo {{ Name "{prefix} Consumer" Capabilities [Fullscreen] '
+        f'Imports ["{library_name}"] Outputs {{ Float4 outColor }} }}\n'
+        'void main(){outColor=optionalColor();}\n')
+    assert Shader.reload(str(stage))
+    version=registry.get_asset_version(stage_guid)
+    library.unlink()  # External delete notification follows the filesystem mutation.
+    deleted=AssetManager.delete_asset(str(library))
+    assert deleted and not engine.get_asset_database().get_path_from_guid(library_guid)
+    assert registry.get_asset_version(stage_guid)==version
+    console=DebugConsole.instance()
+    own=lambda: [entry for entry in console.get_entries()
+                 if entry.log_type==LogType.ERROR and Path(entry.source_file)==library]
+    assert len(own())==1 and 'shader import not found' in own()[0].message
+    label='DeletedLibrary' if recreate_at=='same-path' else 'ReplacementLibrary'
+    replacement,replacement_guid=create(label,'.glsl',good)
+    assert replacement_guid!=library_guid
+    assert registry.get_asset_version(stage_guid)==version+1
+    # A successful new-path declaration resolves the original missing import;
+    # its previous source-owned error must no longer remain in Console.
+    assert not own(), [entry.message for entry in own()]
+
+
+@pytest.mark.parametrize('consumer_count', (1, 2))
+def test_repaired_roots_retire_only_their_resolved_dependency_diagnostic(engine,dependency_sources,consumer_count):
+    from infernux.debug import DebugConsole, LogType
+
+    prefix,create,registry=dependency_sources
+    library_name,good,bad,_=sources(prefix)
+    library,_=create('Library','.glsl',good)
+    stages=[]
+    for index in range(consumer_count):
+        original=(f'#version 450\nShaderInfo {{ Name "{prefix}{index}" Capabilities [Fullscreen] '
+                  f'Imports ["{library_name}"] Outputs {{ Float4 outColor }} }}\n'
+                  'void main(){outColor=optionalColor();}\n')
+        root,guid=create(str(index),'.frag',original)
+        assert Shader.reload(str(root))
+        stages.append((root,guid,original))
+    versions=[registry.get_asset_version(guid) for _,guid,_ in stages]
+    library.write_text(bad,encoding='utf-8')
+    rejected=AssetManager.reimport_asset(str(library))
+    assert not rejected and 'optionalColor' in rejected.error
+    console=DebugConsole.instance()
+    own=lambda: [entry for entry in console.get_entries()
+                 if entry.log_type==LogType.ERROR and Path(entry.source_file)==library]
+    assert len(own())==1
+    for index,(root,guid,original) in enumerate(stages):
+        repaired=original.replace(f'Imports ["{library_name}"] ', '').replace('optionalColor()', 'vec4(1)')
+        root.write_text(repaired,encoding='utf-8')
+        accepted=AssetManager.reimport_asset(str(root))
+        assert accepted,accepted.error
+        assert registry.get_asset_version(guid)==versions[index]+1
+        assert bool(own())==(index+1 < consumer_count)

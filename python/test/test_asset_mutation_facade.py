@@ -87,6 +87,7 @@ class _Metadata:
 
 class _NativeEngine:
     has_renderer = True
+    _shader_reload_sources = ('old.vert',)
 
     def __init__(self, order):
         self.order = order
@@ -411,6 +412,40 @@ def test_successful_managed_load_retires_compile_diagnostic(monkeypatch, extensi
     monkeypatch.setattr(registry, method, classmethod(lambda _cls, *_args, **_kwargs: result))
     assert AssetManager.load_by_guid("guid") is not None
     assert [entry.message for entry in DebugConsole.instance().get_entries()] == ["unrelated error"]
+
+
+def test_shader_diagnostic_is_retired_only_when_every_rejected_consumer_recovers(monkeypatch):
+    from infernux.debug import Debug, DebugConsole
+
+    monkeypatch.setattr(DebugConsole, '_instance', None)
+    monkeypatch.setattr(AssetManager, '_shader_diagnostic_roots', {})
+    receipt = SimpleNamespace(_shader_reload_sources=['One.frag', 'Two.frag'])
+    AssetManager._publish_shader_compile_result('Deleted.glsl', 'both consumers rejected', receipt)
+    Debug.log_error('unrelated error')
+
+    receipt._shader_reload_sources = ['One.frag']
+    AssetManager._publish_shader_compile_result('One.frag', '', receipt)
+    assert {entry.message for entry in DebugConsole.instance().get_entries()} == {
+        'both consumers rejected', 'unrelated error'}
+    # A failure for the remaining root is not a successful receipt.
+    receipt._shader_reload_sources = ['Two.frag']
+    AssetManager._publish_shader_compile_result('Two.frag', 'still rejected', receipt)
+    assert len(DebugConsole.instance().get_entries()) == 3
+    AssetManager._publish_shader_compile_result('Two.frag', '', receipt)
+    assert [entry.message for entry in DebugConsole.instance().get_entries()] == ['unrelated error']
+    assert not AssetManager._shader_diagnostic_roots
+
+
+def test_shader_receipt_keeps_errors_from_unrelated_consumer_sets(monkeypatch):
+    from infernux.debug import DebugConsole
+
+    monkeypatch.setattr(DebugConsole, '_instance', None)
+    monkeypatch.setattr(AssetManager, '_shader_diagnostic_roots', {})
+    receipt = SimpleNamespace(_shader_reload_sources=['Other.frag'])
+    AssetManager._publish_shader_compile_result('Other.glsl', 'unrelated rejection', receipt)
+    receipt._shader_reload_sources = ['Repaired.frag']
+    AssetManager._publish_shader_compile_result('Replacement.glsl', '', receipt)
+    assert [entry.message for entry in DebugConsole.instance().get_entries()] == ['unrelated rejection']
 
 
 def test_internal_python_reimport_only_submits_collector_after_catalog_mutation(

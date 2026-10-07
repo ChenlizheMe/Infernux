@@ -234,6 +234,9 @@ class AssetManager:
         tuple[int, int, int] | None,
     ] = {}
     _pending_model_previous_scales: Dict[str, float] = {}
+    # A dependency error may outlive its file. Accepted compiler receipts
+    # resolve it when all of its rejected consumers have been repaired.
+    _shader_diagnostic_roots: Dict[str, tuple[str, frozenset[str]]] = {}
 
     @classmethod
     def initialize(cls, engine) -> None:
@@ -286,6 +289,7 @@ class AssetManager:
         cls._meta_write_suppression.clear()
         cls._watcher_echo_suppression.clear()
         cls._pending_model_previous_scales.clear()
+        cls._shader_diagnostic_roots.clear()
         cls._asset_database = None
         cls._registry = None
         cls._engine = None
@@ -950,7 +954,7 @@ class AssetManager:
 
         if has_shader_runtime:
             error = native.reload_shader_runtime(path, previous_shader_id)
-            cls._publish_compile_diagnostic(path, error)
+            cls._publish_shader_compile_result(path, error, native)
             if error:
                 from infernux.lib import AssetMutationErrorCode
                 result.succeeded = False
@@ -1009,6 +1013,25 @@ class AssetManager:
                 timestamp=datetime.now(),
                 source_file=path,
             ))
+
+    @classmethod
+    def _publish_shader_compile_result(cls, path: str, error: str, native) -> None:
+        """Retire source diagnostics only after their consumers accept a candidate."""
+        roots = frozenset(path_key(source) for source in native._shader_reload_sources)
+        key = path_key(path)
+        cls._publish_compile_diagnostic(path, error)
+        cls._shader_diagnostic_roots.pop(key, None)
+        if error:
+            if roots:
+                cls._shader_diagnostic_roots[key] = (path, roots)
+            return
+        for owner, (source, outstanding) in tuple(cls._shader_diagnostic_roots.items()):
+            remaining = outstanding - roots
+            if not remaining:
+                cls._publish_compile_diagnostic(source)
+                del cls._shader_diagnostic_roots[owner]
+            elif remaining != outstanding:
+                cls._shader_diagnostic_roots[owner] = (source, remaining)
 
     @classmethod
     def _compile_render_effect_runtime(cls, path: str, guid: str) -> str:
@@ -1144,7 +1167,8 @@ class AssetManager:
                  else native.reload_shader_runtime(path, ""))
         if previous_path:
             cls._publish_compile_diagnostic(previous_path)
-        cls._publish_compile_diagnostic(path, error)
+            cls._shader_diagnostic_roots.pop(path_key(previous_path), None)
+        cls._publish_shader_compile_result(path, error, native)
         return error
 
     @classmethod

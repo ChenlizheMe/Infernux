@@ -244,6 +244,7 @@ class Infernux
     /// @return Empty string on success, or error message on failure.
     std::string ReloadShaderRuntime(const std::string &shaderPath, const std::string &previousShaderId,
                                    const std::string &previousSourcePath = "");
+    const std::vector<std::string> &GetShaderReloadSources() const { return m_shaderReloadSources; }
 
     /// @brief Invalidate and reload a texture after import settings change
     /// @param texturePath The texture file path whose .meta was updated
@@ -438,6 +439,9 @@ class Infernux
 
     std::string ReloadShaderDependencies(const std::string &shaderPath, const std::string &previousSourcePath);
     std::string ReloadShaderSourceBatch(const std::vector<std::string> &roots);
+    // Sources checked by the last synchronous candidate publication. Diagnostic
+    // owners use this receipt to retire only errors resolved by that result.
+    std::vector<std::string> m_shaderReloadSources;
 
     struct LinkedShaderProgramCacheEntry
     {

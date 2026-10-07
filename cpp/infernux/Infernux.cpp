@@ -4221,7 +4221,7 @@ std::string Infernux::ReloadShaderDependencies(const std::string &shaderPath, co
     // handle newly created imports that were missing in a rejected root.
     std::string declarationId;
     std::vector<char> bytes;
-    if (adb->ReadFile(shaderPath, bytes) && !bytes.empty()) {
+    if (!adb->GetGuidFromPath(shaderPath).empty() && adb->ReadFile(shaderPath, bytes) && !bytes.empty()) {
         if (bytes.back() == '\0')
             bytes.pop_back();
         const auto info = ParseShaderInfo(std::string(bytes.begin(), bytes.end()));
@@ -4242,6 +4242,7 @@ std::string Infernux::ReloadShaderDependencies(const std::string &shaderPath, co
 
 std::string Infernux::ReloadShaderSourceBatch(const std::vector<std::string> &roots)
 {
+    m_shaderReloadSources = roots;
     auto &registry = AssetRegistry::Instance();
     auto *adb = registry.GetAssetDatabase();
     InxShaderLoader::SourceDependencyPublication dependencyPublication;
@@ -4427,6 +4428,7 @@ std::string Infernux::ReloadShaderSourceBatch(const std::vector<std::string> &ro
 std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const std::string &previousShaderId,
                                         const std::string &previousSourcePath)
 {
+    m_shaderReloadSources = {shaderPath};
     const InxShaderLoader::SourceDiagnosticScope sourceDiagnostics;
     // INXLOG_INFO("Infernux::ReloadShaderRuntime called: ", shaderPath);
     if (!CheckEngineValid("reload shader") || !m_renderer) {
