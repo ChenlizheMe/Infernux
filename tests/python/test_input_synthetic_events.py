@@ -9,10 +9,27 @@ from infernux.input import Input
 from infernux.lib import (
     InputManager,
     InxGUIRenderable,
+    RenderPipelineCallback,
     get_gui_semantic_snapshot,
     request_gui_semantic_snapshot,
     set_gui_semantic_capture_enabled,
 )
+
+
+@pytest.fixture(autouse=True)
+def _gui_only_pipeline(engine):
+    # These tests render real editor controls, without authoring a Scene graph.
+    # Install that explicit pipeline instead of running with a missing pipeline
+    # and emitting a renderer configuration error on every frame.
+    class GuiOnlyPipeline(RenderPipelineCallback):
+        def render(self, context, camera):
+            pass
+
+    engine.set_render_pipeline(GuiOnlyPipeline())
+    try:
+        yield
+    finally:
+        engine.set_render_pipeline(None)
 
 
 @pytest.fixture(autouse=True)
@@ -136,7 +153,8 @@ def test_semantic_snapshot_request_captures_exactly_one_rendered_frame(engine):
     assert state["last_frame"] == state["first_frame"]
 
 
-def test_synthetic_pointer_click_invokes_python_button_callback(engine):
+@pytest.mark.parametrize('close_timing', ['none', 'before_batch', 'within_batch'])
+def test_synthetic_pointer_click_invokes_python_button_callback(engine, close_timing):
     """A replayed release must retain the synthetic pointer position for Python UI callbacks."""
 
     class _ButtonProbe(InxGUIRenderable):
@@ -168,14 +186,21 @@ def test_synthetic_pointer_click_invokes_python_button_callback(engine):
 
     def on_update(_delta_time: float) -> None:
         state["frame"] += 1
+        if close_timing == 'before_batch' and 'close_sequence' not in state:
+            state['close_sequence'] = engine.queue_synthetic_close_request()
+            return
         target = _find_target()
         if not state["queued"] and target:
+            if close_timing == 'before_batch':
+                assert engine.is_close_requested()
             rect = target["rect"]
             x = float(rect[0]) + float(rect[2]) * 0.5
             y = float(rect[1]) + float(rect[3]) * 0.5
+            if close_timing == 'within_batch':
+                state['close_sequence'] = engine.queue_synthetic_close_request()
             engine.queue_synthetic_mouse_motion_input(x, y, 0.0, 0.0)
             engine.queue_synthetic_mouse_button_input(0, True, x, y)
-            engine.queue_synthetic_mouse_button_input(0, False, x, y)
+            state['release_sequence'] = engine.queue_synthetic_mouse_button_input(0, False, x, y)
             state["queued"] = True
             state["target"] = target
         elif probe.clicks:
@@ -190,9 +215,12 @@ def test_synthetic_pointer_click_invokes_python_button_callback(engine):
     finally:
         engine.set_pre_scene_update_callback(None)
         engine.unregister_gui_renderable("test.synthetic_button_callback")
+        engine.cancel_close()
 
     assert state["target"] is not None
     assert probe.clicks == 1
+    assert engine.last_processed_synthetic_input_sequence == state['release_sequence']
+    assert engine.pending_synthetic_input_count == 0
 
 
 def test_synthetic_pointer_click_invokes_callback_when_events_span_frames(engine):

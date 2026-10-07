@@ -801,8 +801,9 @@ void InxView::DrainSyntheticInputEvents(bool &hadInputEvent)
             m_syntheticMouseButtonsReadyForRelease &= static_cast<uint8_t>(~mouseButtonMask);
         }
         m_lastProcessedSyntheticInputSequence.store(synthetic.sequence, std::memory_order_release);
-        if (m_closeRequested)
-            break;
+        // A close request may remain pending throughout a Save/Discard/Cancel
+        // modal. Its input batch still belongs to the live window; never drop
+        // the remaining transitions merely because confirmation is pending.
     }
 
     if (!deferredEvents.empty()) {
