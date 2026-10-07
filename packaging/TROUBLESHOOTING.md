@@ -60,6 +60,15 @@ cache long enough to compare it against the release digest. A CDN problem cannot
 be diagnosed from the engine version alone: engine wheels come from PyPI/GitHub,
 while the Hub installer/update archive can come from the Cloudflare mirror.
 
+Download/runtime compatibility is not the same as the project-template contract.
+The current development Hub reads `infernux/templates/project/` from its selected
+engine wheel and launches the lowercase `infernux` package. Historical public
+`0.4.1-v3` wheels still contain `Infernux` and do not include those templates.
+Their platform/ABI selection and native import can be verified, but they cannot
+serve as a new-project acceptance fixture for the current development Hub.
+Release a matching current engine wheel alongside this Hub; do not advertise a
+download-only smoke test as complete project creation/launch acceptance.
+
 ## CMake versions
 
 Installing an engine wheel and creating a Hub project do not require CMake.
