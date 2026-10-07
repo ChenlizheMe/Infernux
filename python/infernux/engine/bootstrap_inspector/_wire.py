@@ -942,9 +942,28 @@ def _wire_clipboard_and_context(ctx):
 
             old_document = _python_component_clipboard_document(comp)
             fresh = type(comp)()
-            if hasattr(fresh, "_call_reset"):
-                fresh._call_reset()
-            new_document = _python_component_clipboard_document(fresh)
+            # Defaults have no owner yet. Only read their declared field
+            # values; serialization/reset hooks belong to the live component.
+            from infernux.components.fields import get_raw_field_value, get_serialized_fields
+            from infernux.components.value_codec import VALUE_CODECS
+
+            defaults = {
+                name: VALUE_CODECS.encode(get_raw_field_value(fresh, name), f"{type_name}.{name}")
+                for name in get_serialized_fields(type(comp))
+            }
+            with _component_commands().suppress_replay():
+                try:
+                    _apply_python_component_clipboard_document(
+                        comp, defaults, invoke_after_deserialize=False,
+                    )
+                    if not comp._call_reset():
+                        raise RuntimeError(f"Cannot reset {type_name}: reset callback failed")
+                    new_document = _python_component_clipboard_document(comp)
+                finally:
+                    # Prepare the result without publishing a partial user
+                    # action. Batch history is committed only after every
+                    # selected component has produced a valid document.
+                    _apply_python_component_clipboard_document(comp, old_document)
             if old_document != new_document:
                 edits.append(
                     (

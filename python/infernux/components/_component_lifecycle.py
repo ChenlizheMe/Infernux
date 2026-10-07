@@ -1260,9 +1260,9 @@ class ComponentLifecycleMixin:
         """Internal: Trigger on_validate lifecycle (editor only)."""
         self._safe_lifecycle_call("on_validate")
 
-    def _call_reset(self):
-        """Internal: Trigger reset lifecycle (editor only)."""
-        self._safe_lifecycle_call("reset")
+    def _call_reset(self) -> bool:
+        """Trigger editor Reset and report whether the callback succeeded."""
+        return self._safe_lifecycle_call("reset")
 
     def _call_on_after_deserialize(self):
         """Trigger the transactional post-deserialize hook and propagate failure."""
