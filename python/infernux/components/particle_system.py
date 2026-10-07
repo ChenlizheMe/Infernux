@@ -31,6 +31,7 @@ from infernux.graph import (
     builtin_mesh_name,
 )
 from infernux.graph.ramp import AnimationCurve, Gradient
+from infernux.graph.types import PORTABLE_TYPE_SYSTEM
 from infernux.particle import (
     GpuParticleEmitterController,
     EmitterShapeKind,
@@ -2844,14 +2845,18 @@ class ParticleSystem(InxComponent):
                 material.vert_shader_name = "Particle Sprite"
                 material.frag_shader_name = str(output.shader)
                 self._output_materials[cache_key] = material
-            parameter_defaults = {parameter.stable_id: parameter.default for parameter in parameters}
+            parameters_by_id = {parameter.stable_id: parameter for parameter in parameters}
             for binding in output.shader_properties:
                 # A connected graph parameter owns the value even before the
                 # first override, and after reset. Shader defaults only apply
                 # to unconnected shader inputs.
-                value = self._parameter_overrides.get(
-                    binding.parameter_id, parameter_defaults[binding.parameter_id]
-                ) if binding.parameter_id else binding.default
+                if binding.parameter_id:
+                    parameter = parameters_by_id[binding.parameter_id]
+                    value = self._parameter_overrides.get(binding.parameter_id, parameter.default)
+                    if parameter.value_type.value_type is not binding.value_type.value_type:
+                        value = PORTABLE_TYPE_SYSTEM.resize_numeric_value(value, parameter.value_type, binding.value_type)
+                else:
+                    value = binding.default
                 kind = binding.value_type.value_type
                 if kind is ValueType.TEXTURE2D:
                     material.native.set_texture_guid(

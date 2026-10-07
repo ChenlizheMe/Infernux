@@ -24,7 +24,7 @@ from infernux.graph.document import (
     GraphSourceLocation,
 )
 from infernux.graph.parameters import graph_parameter_allows_hdr
-from infernux.graph.types import AssetReference, CoordinateSpace, TypeRef, ValueType
+from infernux.graph.types import AssetReference, CoordinateSpace, PORTABLE_TYPE_SYSTEM, TypeRef, ValueType
 
 from .asset import (
     EmitterSettings,
@@ -1262,34 +1262,9 @@ class ParticleGraphCompiler:
         missing_literal = object()
 
         def resize_literal(value, source_type: TypeRef, target_type: TypeRef):
-            dimensions = {
-                ValueType.I32: 1,
-                ValueType.U32: 1,
-                ValueType.F32: 1,
-                ValueType.VEC2: 2,
-                ValueType.VEC3: 3,
-                ValueType.VEC4: 4,
-                ValueType.COLOR: 4,
-            }
-            source_dimension = dimensions.get(source_type.value_type)
-            target_dimension = dimensions.get(target_type.value_type)
-            if source_dimension is None or target_dimension is None:
+            if not PORTABLE_TYPE_SYSTEM.can_resize_numeric(source_type, target_type):
                 return missing_literal
-            source = list(value) if source_dimension > 1 else [value]
-            if target_dimension == 1:
-                scalar = source[0]
-                return (
-                    float(scalar)
-                    if target_type.value_type is ValueType.F32
-                    else int(scalar)
-                )
-            if source_dimension == 1:
-                scalar = float(source[0])
-                return [scalar] * target_dimension
-            return [
-                float(source[index]) if index < source_dimension else 0.0
-                for index in range(target_dimension)
-            ]
+            return PORTABLE_TYPE_SYSTEM.resize_numeric_value(value, source_type, target_type)
 
         def compile_time_literal(value_id: str, visited=None):
             """Resolve immutable output bindings without inventing runtime state."""

@@ -70,6 +70,34 @@ def test_connected_numeric_output_parameter_uses_graph_default():
     assert restored is initial and restored.get_float("glow") == 2.5
 
 
+@pytest.mark.parametrize("source_type, default, override, property_name, expected_default, expected_override", [
+    ("f32", .25, .75, "baseColor", [.25] * 4, [.75] * 4),
+    ("vec2", [.25, .5], [.5, .75], "baseColor", [.25, .5, 0, 0], [.5, .75, 0, 0]),
+    ("vec3", [.25, .5, .75], [.5, .75, 1], "baseColor", [.25, .5, .75, 0], [.5, .75, 1, 0]),
+    ("vec4", [.25, .5, .75, 1], [.5, .75, 1, .25], "glow", .25, .5),
+    ("color", [.25, .5, .75, 1], [.5, .75, 1, .25], "glow", .25, .5),
+    ("i32", 2, 3, "glow", 2., 3.),
+    ("u32", 2, 3, "baseColor", [2.] * 4, [3.] * 4),
+])
+def test_connected_numeric_output_matches_compiled_port_shape(
+    source_type, default, override, property_name, expected_default, expected_override,
+):
+    source = particle_source("Particle Unlit", property_name, "white")
+    source = source.replace('"texture2d", AssetReference(guid=\'white\')', f'{source_type!r}, {default!r}')
+    compiled = ParticleScriptCompiler().compile(source)
+    output = compiled.emitters[0].render_plan.outputs[0]
+    component = ParticleSystem()
+    component._ensure_runtime_state()
+    material = None
+    for overrides, expected in (({}, expected_default), ({"surface": override}, expected_override), ({}, expected_default)):
+        component._parameter_overrides = overrides
+        published = component._gpu_material_binding(output, "emitter", compiled.parameters)["native"]
+        if material is not None:
+            assert published is material
+        material = published
+        assert material.serialize_document()["properties"][property_name]["value"] == expected
+
+
 def test_six_way_smoke_material_keeps_independent_axis_defaults():
     source = particle_source("Particle Six-Way Smoke", "negativeAxesMap", "black")
     compiled = ParticleScriptCompiler().compile(source)

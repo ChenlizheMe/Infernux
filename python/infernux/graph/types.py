@@ -287,6 +287,22 @@ class TypeSystem:
             return source.value_type is target.value_type
         return True
 
+    def resize_numeric_value(self, value, source: TypeRef, target: TypeRef):
+        """Apply the numeric_resize IR contract to a host-side value."""
+        if not self.can_resize_numeric(source, target):
+            raise TypeError(f"cannot resize numeric value from {source} to {target}")
+        source_dimension = self.numeric_dimension(source)
+        target_dimension = self.numeric_dimension(target)
+        components = list(value) if source_dimension > 1 else [value]
+        if len(components) != source_dimension:
+            raise ValueError(f"numeric value requires {source_dimension} components")
+        if target_dimension == 1:
+            return float(components[0]) if target.value_type is ValueType.F32 else int(components[0])
+        if source_dimension == 1:
+            return [float(components[0])] * target_dimension
+        return [float(components[index]) if index < source_dimension else 0.0
+                for index in range(target_dimension)]
+
     def fixed_numeric_target(self, source: TypeRef, declared: TypeRef) -> TypeRef:
         """Resolve a fixed port shape while preserving a compatible vector space."""
         target_space = declared.space
