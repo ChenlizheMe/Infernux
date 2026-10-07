@@ -108,7 +108,7 @@ On Linux, install native prerequisites with `scripts/setup/install_linux_depende
 
 Build a game, share a plugin, or show us a workflow that should feel better. Bring questions and demos to the [community](https://infernux-engine.discourse.group/); report reproducible bugs on [GitHub](https://github.com/ChenlizheMe/Infernux/issues). Contributions to the engine, documentation and examples are welcome.
 
-Infernux is released under the [MIT license](LICENSE). Free code signing is provided by [SignPath.io](https://signpath.io/), with a certificate from [SignPath Foundation](https://signpath.org/). See the [code signing policy](CODE_SIGNING_POLICY.md).
+Infernux is released under the [MIT license](LICENSE). Third-party notices are indexed in [licenses](licenses/README.md). Free code signing is provided by [SignPath.io](https://signpath.io/), with a certificate from [SignPath Foundation](https://signpath.org/). See the [code signing policy](licenses/signing/CODE_SIGNING_POLICY.md).
 
 ## Citation
 

@@ -108,7 +108,7 @@ Linux 先运行 `scripts/setup/install_linux_dependencies.sh` 安装原生依赖
 
 做一款游戏，分享一个插件，或展示你希望改进的工作流。欢迎在[社区](https://infernux-engine.discourse.group/)讨论和展示作品，在 [GitHub](https://github.com/ChenlizheMe/Infernux/issues) 提交可复现的问题，也欢迎参与引擎、文档和示例的建设。
 
-Infernux 使用 [MIT 协议](LICENSE)。[SignPath.io](https://signpath.io/) 提供免费代码签名，[SignPath Foundation](https://signpath.org/) 提供证书，详见[代码签名政策](CODE_SIGNING_POLICY.md)。
+Infernux 使用 [MIT 协议](LICENSE)。第三方版权声明集中索引在 [licenses](licenses/README.md)。[SignPath.io](https://signpath.io/) 提供免费代码签名，[SignPath Foundation](https://signpath.org/) 提供证书，详见[代码签名政策](licenses/signing/CODE_SIGNING_POLICY-zh.md)。
 
 ## 引用
 

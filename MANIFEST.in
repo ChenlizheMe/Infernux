@@ -1,4 +1,5 @@
 recursive-include python/infernux *
+recursive-include licenses *.txt *.md
 include python/infernux_project_lock.py
 recursive-exclude python/infernux/_runtime_packs *
 recursive-exclude python/infernux/_runtime_modules *
