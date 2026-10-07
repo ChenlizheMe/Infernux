@@ -4,6 +4,60 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.parametrize("read_only", [False, True])
+@pytest.mark.parametrize("gesture", ["menu", "enter", "double_click"])
+def test_asset_reveal_uses_navigation_once_without_changing_single_click(read_only, gesture):
+    from infernux.engine.interaction import EditorCommandRegistry, FocusService, SelectionService
+    from infernux.engine.interaction.context_menus import ContextMenuBuilder, ContextMenuCommand
+    from infernux.engine.interaction.object_fields import (
+        ASSET_REFERENCE_REVEAL_COMMAND, AssetReferenceFieldModel, ObjectFieldGesture,
+        asset_reference_command_payload, register_asset_reference_commands,
+    )
+
+    calls = []
+    model = AssetReferenceFieldModel(
+        field_id="stone", display_text="Stone", type_hint="Material", asset_type="Material",
+        has_value=True, field_read_only=read_only, on_locate=lambda: calls.append("locate"),
+        on_open=lambda: calls.append("open"),
+    )
+    model.dispatch_chrome(int(ObjectFieldGesture.LOCATE))
+    assert not calls
+    if gesture == "menu":
+        registry = EditorCommandRegistry(focus=FocusService.instance(), selection=SelectionService.instance())
+        register_asset_reference_commands(registry)
+        builder = ContextMenuBuilder(registry)
+        item, = builder.resolve((ContextMenuCommand(
+            ASSET_REFERENCE_REVEAL_COMMAND, payload=asset_reference_command_payload(model),
+        ),))
+        assert item.enabled
+        assert builder.execute_resolved(item).result.accepted
+    else:
+        flag = ObjectFieldGesture.KEYBOARD_OPEN if gesture == "enter" else ObjectFieldGesture.OPEN
+        model.dispatch_chrome(int(flag))
+    assert calls == ["locate"]
+
+
+def test_empty_asset_reveal_menu_cannot_call_navigation():
+    from infernux.engine.interaction import EditorCommandRegistry, FocusService, SelectionService
+    from infernux.engine.interaction.context_menus import ContextMenuBuilder, ContextMenuCommand
+    from infernux.engine.interaction.object_fields import (
+        ASSET_REFERENCE_REVEAL_COMMAND, AssetReferenceFieldModel,
+        asset_reference_command_payload, register_asset_reference_commands,
+    )
+    calls = []
+    model = AssetReferenceFieldModel("empty", "None", "Material", has_value=False,
+                                     on_locate=lambda: calls.append("locate"))
+    registry = EditorCommandRegistry(focus=FocusService.instance(), selection=SelectionService.instance())
+    register_asset_reference_commands(registry)
+    builder = ContextMenuBuilder(registry)
+    item, = builder.resolve((ContextMenuCommand(
+        ASSET_REFERENCE_REVEAL_COMMAND, payload=asset_reference_command_payload(model),
+    ),))
+    assert not item.enabled
+    assert not builder.execute_resolved(item).result.accepted
+    assert not calls
+
+
 def test_object_field_dispatches_locate_open_and_keyboard_open_once():
     from infernux.engine.interaction.object_fields import (
         ObjectFieldGesture,

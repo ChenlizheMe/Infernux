@@ -643,7 +643,7 @@ def register_asset_reference_commands(registry=None) -> None:
         target = _target(context)
         if target is None:
             return False
-        target.model.dispatch_chrome(int(ObjectFieldGesture.LOCATE))
+        target.model.locate()
         return True
 
     def _copy(context) -> bool:
