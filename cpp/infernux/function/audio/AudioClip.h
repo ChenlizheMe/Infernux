@@ -10,6 +10,7 @@
 namespace infernux
 {
 class AudioStreamBuffer;
+class InxResourceMeta;
 
 struct AudioPlaybackPcm
 {
@@ -51,7 +52,8 @@ class AudioClip
     /// @brief Load audio data from a supported audio file
     /// @param filePath Absolute path to a supported audio file (.wav/.ogg/.mp3/.flac)
     /// @return true on success
-    bool LoadFromFile(const std::string &filePath);
+    /// Catalog metadata takes precedence over sidecars (Player ships no .meta files).
+    bool LoadFromFile(const std::string &filePath, const InxResourceMeta *metadata = nullptr);
 
     /// @brief Unload audio data and free memory
     void Unload();

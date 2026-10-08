@@ -2,6 +2,7 @@
 
 #include <core/log/InxLog.h>
 #include <function/audio/AudioClip.h>
+#include <function/resources/AssetDatabase/AssetDatabase.h>
 
 #include <platform/filesystem/InxPath.h>
 
@@ -14,7 +15,7 @@ namespace infernux
 // Load — decode audio file and create a new AudioClip
 // =============================================================================
 
-RuntimeAssetPayload AudioClipLoader::Load(const std::string &filePath, const std::string &guid, AssetDatabase * /*adb*/)
+RuntimeAssetPayload AudioClipLoader::Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
 {
     if (filePath.empty() || guid.empty()) {
         INXLOG_WARN("AudioClipLoader::Load: empty filePath or guid");
@@ -28,7 +29,8 @@ RuntimeAssetPayload AudioClipLoader::Load(const std::string &filePath, const std
     }
 
     auto clip = std::make_shared<AudioClip>();
-    if (!clip->LoadFromFile(filePath)) {
+    const auto metadata = adb ? adb->GetMetaByGuid(guid) : nullptr;
+    if (!clip->LoadFromFile(filePath, metadata.get())) {
         INXLOG_ERROR("AudioClipLoader::Load: failed to decode: ", filePath);
         return nullptr;
     }
@@ -43,7 +45,7 @@ RuntimeAssetPayload AudioClipLoader::Load(const std::string &filePath, const std
 // =============================================================================
 
 bool AudioClipLoader::Reload(const RuntimeAssetPayload &existing, const std::string &filePath, const std::string &guid,
-                             AssetDatabase * /*adb*/)
+                             AssetDatabase *adb)
 {
     auto clip = existing.Get<AudioClip>();
     if (!clip) {
@@ -53,7 +55,8 @@ bool AudioClipLoader::Reload(const RuntimeAssetPayload &existing, const std::str
 
     // Unload current data and reload from file
     clip->Unload();
-    if (!clip->LoadFromFile(filePath)) {
+    const auto metadata = adb ? adb->GetMetaByGuid(guid) : nullptr;
+    if (!clip->LoadFromFile(filePath, metadata.get())) {
         INXLOG_ERROR("AudioClipLoader::Reload: failed to decode: ", filePath);
         return false;
     }

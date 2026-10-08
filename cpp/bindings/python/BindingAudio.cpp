@@ -12,6 +12,7 @@
 #include "function/audio/AudioListener.h"
 #include "function/audio/AudioSource.h"
 #include "function/audio/AudioStreamDecoder.h"
+#include "function/resources/AssetRegistry/AssetRegistry.h"
 #include "function/scene/Component.h"
 #include "function/scene/GameObject.h"
 
@@ -53,7 +54,11 @@ void RegisterAudioBindings(py::module_ &m)
                                                       "Loaded audio clip data.\n"
                                                       "Use AudioClip() and load_from_file() to load.")
         .def(py::init<>())
-        .def("load_from_file", &AudioClip::LoadFromFile, py::arg("file_path"),
+        .def("load_from_file", [](AudioClip &self, const std::string &path) {
+            const auto *database = AssetRegistry::Instance().GetAssetDatabase();
+            const auto metadata = database ? database->GetMetaByPath(path) : nullptr;
+            return self.LoadFromFile(path, metadata.get());
+        }, py::arg("file_path"),
              "Load WAV, Ogg/Vorbis, MP3 or FLAC using the asset's load type.")
         .def("unload", &AudioClip::Unload, "Unload audio data and free memory")
         .def_property_readonly("is_loaded", &AudioClip::IsLoaded, "Whether the clip has loaded data")
