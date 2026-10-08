@@ -41,6 +41,13 @@ try {
     git -C $Source checkout --detach FETCH_HEAD
     if ($LASTEXITCODE -ne 0) { throw "Could not check out SwiftShader $SwiftShaderCommit." }
 
+    # The particle ABI uses eight sets and 240 push-constant bytes. Build the
+    # driver's actual storage/implementation for that ABI; stock SwiftShader
+    # only provides Vulkan's minimum 4/128 limits.
+    $AbiPatch = Join-Path $PSScriptRoot 'patches/swiftshader-infernux-abi.patch'
+    git -C $Source apply $AbiPatch
+    if ($LASTEXITCODE -ne 0) { throw 'Could not apply the pinned Infernux shader ABI profile.' }
+
     cmake -S $Source -B $Build -G 'Visual Studio 17 2022' -A x64 -T host=x64 `
         -DSWIFTSHADER_BUILD_TESTS=OFF `
         -DSWIFTSHADER_BUILD_BENCHMARKS=OFF `
@@ -69,6 +76,7 @@ try {
     }
     Move-Item -LiteralPath $StagedRuntime -Destination $Runtime
     Set-Content -LiteralPath (Join-Path $Root 'commit.txt') -Value $SwiftShaderCommit -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $Root 'profile.txt') -Value 'infernux-8sets-256push-v1' -Encoding ascii
 }
 finally {
     Remove-SwiftShaderWork

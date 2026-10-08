@@ -138,7 +138,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out\toolchains\windows-swiftshader
-          key: windows-swiftshader-694585a05946e1ed49b6bd577ca6537cbb57f025-runtime-only-v1
+          key: windows-swiftshader-694585a05946e1ed49b6bd577ca6537cbb57f025-infernux-8sets-256push-v2
 
       - name: Install Vulkan SDK
         if: steps.cache-vulkan.outputs.cache-hit != 'true'

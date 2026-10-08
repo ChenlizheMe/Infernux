@@ -1,6 +1,7 @@
 # Keep repository and project text deterministic across platforms.
 * text=auto
 *.sh text eol=lf
+*.patch text eol=lf
 .githooks/* text eol=lf
 *.py text eol=lf
 *.pyi text eol=lf
