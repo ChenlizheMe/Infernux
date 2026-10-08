@@ -209,7 +209,6 @@ LineRenderer::LineRenderer()
 {
     SetCastShadows(false);
     SetInlineMeshName("Line");
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -265,7 +264,6 @@ void LineRenderer::SetStartWidth(float width)
         key->value = width;
     else
         m_widthCurve.insert(key, LineWidthKey{0.0f, width, 0.0f, 0.0f});
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -285,7 +283,6 @@ void LineRenderer::SetEndWidth(float width)
         key->value = width;
     else
         m_widthCurve.insert(key, LineWidthKey{1.0f, width, 0.0f, 0.0f});
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -295,7 +292,6 @@ void LineRenderer::SetWidthMultiplier(float multiplier)
     if (m_widthMultiplier == multiplier)
         return;
     m_widthMultiplier = multiplier;
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -303,7 +299,6 @@ void LineRenderer::SetWidthCurve(const std::vector<LineWidthKey> &keys)
 {
     ValidateWidthCurve(keys);
     m_widthCurve = keys;
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -312,7 +307,6 @@ void LineRenderer::SetWidthCurvePreWrap(LineCurveWrapMode mode)
     if (m_widthCurvePreWrap == mode)
         return;
     m_widthCurvePreWrap = mode;
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -321,7 +315,6 @@ void LineRenderer::SetWidthCurvePostWrap(LineCurveWrapMode mode)
     if (m_widthCurvePostWrap == mode)
         return;
     m_widthCurvePostWrap = mode;
-    UpdateMaximumWidth();
     RebuildMesh();
 }
 
@@ -567,26 +560,15 @@ void LineRenderer::ComputeWorldBounds(const glm::mat4 &worldMatrix, glm::vec3 &o
         return;
     }
     MeshRenderer::ComputeWorldBounds(ResolveRenderWorldMatrix(worldMatrix), outMin, outMax);
-    const float radius = 0.5f * m_maximumWidth;
-    outMin -= glm::vec3(radius);
-    outMax += glm::vec3(radius);
-}
-
-void LineRenderer::UpdateMaximumWidth()
-{
-    float maximumWidth = 0.0f;
-    for (uint32_t sample = 0; sample <= 64; ++sample) {
-        const float t = static_cast<float>(sample) / 64.0f;
-        maximumWidth =
-            std::max(maximumWidth, EvaluateWidthCurve(m_widthCurve, t, m_widthCurvePreWrap, m_widthCurvePostWrap));
-    }
-    m_maximumWidth = maximumWidth * m_widthMultiplier;
+    outMin -= glm::vec3(m_maximumHalfWidth);
+    outMax += glm::vec3(m_maximumHalfWidth);
 }
 
 void LineRenderer::RebuildMesh()
 {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
+    m_maximumHalfWidth = 0.0f;
 
     // Consecutive duplicate samples are common in runtime trails while an
     // object is stationary. Keeping them creates degenerate triangles and
@@ -743,6 +725,10 @@ void LineRenderer::RebuildMesh()
         const float halfWidth =
             0.5f * std::max(0.0f, EvaluateWidthCurve(m_widthCurve, t, m_widthCurvePreWrap, m_widthCurvePostWrap)) *
             m_widthMultiplier * sample.widthScale;
+        // Bound the actual GPU expansion, including wrapped curves, Hermite
+        // overshoot and rounded samples. Fixed curve sampling can miss peaks.
+        // Centers (including cap offsets) are bounded by SetProceduralMesh.
+        m_maximumHalfWidth = std::max(m_maximumHalfWidth, halfWidth);
         const glm::vec4 color = EvaluateColorGradient(m_colorGradient, t, m_colorGradientMode);
         float u = t;
         switch (m_textureMode) {
@@ -865,7 +851,6 @@ bool LineRenderer::DeserializeDocument(const nlohmann::json &document)
         m_shadowBias = document["shadowBias"].get<float>();
         m_generateLightingData = document["generateLightingData"].get<bool>();
         SetInlineMeshName("Line");
-        UpdateMaximumWidth();
         RebuildMesh();
         return true;
     } catch (const std::exception &error) {
