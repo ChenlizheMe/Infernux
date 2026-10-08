@@ -1,11 +1,13 @@
-"""Enabled package assets use the same GUID cook boundary as Assets."""
+"""Package shaders are cooked; opaque runtime data keeps its package layout."""
 
 import json
 
 import pytest
 
 from infernux.engine.game_builder import GameBuilder
-from infernux.engine.player_package_native import read_entry, read_manifest
+from infernux.engine.player_package_native import extract_pack, read_entry, read_manifest
+from infernux.engine.player_service_graph import PlayerRuntimeAssetCatalog
+from infernux.engine.runtime_artifact_catalog import build_catalog
 from test_game_builder_asset_closure import _entry, _write_asset_index
 
 
@@ -43,7 +45,9 @@ def test_package_payload_is_guid_addressed_in_sealed_content(tmp_path, suffix):
     builder._write_runtime_asset_records(str(output))
     data = output / "PackageCook_Data"
     (output / "Data").rename(data)
-    runtime_path = f"Library/Artifacts/Blob/package-payload{suffix}"
+    shader = suffix in (".vert", ".frag")
+    runtime_path = (f"Library/Artifacts/Blob/package-payload{suffix}" if shader
+                    else source.relative_to(project).as_posix())
     assert (data / runtime_path).read_bytes() == payload
     builder._pack_content_archive(str(output))
     package = data / "Content.inxpkg"
@@ -51,5 +55,27 @@ def test_package_payload_is_guid_addressed_in_sealed_content(tmp_path, suffix):
     records = json.loads(read_entry(package, "Library/RuntimeAssetRecords.json"))
     record = next(item for item in records["entries"] if item["guid"] == "package-payload")
     assert record["runtime_artifacts"][0]["runtime_path"] == runtime_path
-    assert not any(item["path"].startswith("Packages/") for item in read_manifest(package)["files"])
+    packed_paths = {item["path"] for item in read_manifest(package)["files"]}
+    if shader:
+        assert source.relative_to(project).as_posix() not in packed_paths
+    else:
+        assert source.relative_to(project).as_posix() in packed_paths
+        catalog = build_catalog([
+            {"package": "PackageCook_Data/Content.inxpkg", "runtime_path": runtime_path,
+             "bytes": len(payload), "payload": payload,
+             "asset_binding": builder._runtime_asset_identity_bindings[runtime_path]},
+        ], player_host={"executable": "PackageCook"}, package_records=[])
+        relocated = tmp_path / "Relocated Player/Data"
+        extract_pack(package, relocated)
+        runtime = PlayerRuntimeAssetCatalog.from_documents(
+            str(relocated), catalog, {"entries": [record]},
+        )
+        from pathlib import Path
+        file = Path(runtime.resolve_package(runtime_path))
+        directory = Path(runtime.resolve_package(
+            source.parent.relative_to(project).as_posix(), allow_directory=True,
+        ))
+        assert file.parent == directory
+        assert (directory / source.name).read_bytes() == payload
+        assert runtime.resolve_guid("package-payload") == str(file)
     assert source.read_bytes() == payload

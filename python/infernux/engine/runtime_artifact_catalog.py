@@ -487,10 +487,17 @@ def logical_type_for_path(path: str) -> str:
     if suffix == ".inxeffect":
         return "render_effect_artifact"
     if suffix in {".json", ".yaml", ".yml"}:
-        if lower.startswith(("assets/", "packages/")):
+        if lower.startswith("assets/"):
             return "project_runtime_document"
         return "runtime_metadata"
-    if lower.startswith(("assets/", "packages/")):
+    # Package runtime data is an explicit directory API (package_path), so
+    # opaque files retain their relative layout. Shader sources are compiler
+    # inputs and must enter the same GUID cook path as project shaders.
+    if lower.startswith("packages/") and suffix in {
+        ".vert", ".frag", ".glsl", ".comp", ".geom", ".tesc", ".tese", ".hlsl", ".shader",
+    }:
+        return "project_runtime_blob"
+    if lower.startswith("assets/"):
         return "project_runtime_blob"
     return "runtime_binary"
 

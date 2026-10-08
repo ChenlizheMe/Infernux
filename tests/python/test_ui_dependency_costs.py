@@ -185,3 +185,50 @@ def test_real_native_material_reference_keeps_identity_and_publishes_edits(scene
     material.set_color("baseColor", .25, .5, 1., 1.)
     assert material_visual_revision(image) != before
     assert material_visual_state(image)['color'] == pytest.approx((.25, .5, 1., 1.))
+
+
+@pytest.mark.parametrize("slot", ["material", "text_material"])
+def test_web_material_dependencies_do_not_require_a_desktop_engine(monkeypatch, slot):
+    from infernux.application import Application
+    from infernux.core.material import Material
+    from infernux.engine.player_runtime import PlayerRuntimeSession
+    from infernux.lib import InxMaterial, _Infernux
+    from infernux.ui.ui_render_dispatch import material_visual_revision, material_visual_state
+
+    session = PlayerRuntimeSession()
+    monkeypatch.setattr(Application, "_current_engine", staticmethod(lambda: session))
+    monkeypatch.setattr(_Infernux, "__runtime_profile__", "web-player")
+    def desktop_texture_binding(*_args):
+        raise AssertionError("Web has no bound desktop RenderTexture type")
+    monkeypatch.setattr(InxMaterial, "_get_render_texture", desktop_texture_binding)
+    native = InxMaterial("Web UI dependency", "Unlit")
+    material = Material(native)
+    material.set_color("baseColor", .2, .4, .6, 1.)
+    element = SimpleNamespace(**{slot: material})
+    assert native._texture_assets_pending
+    before = material_visual_revision(element, slot)
+    assert material_visual_state(element, slot)["color"] == pytest.approx((.2, .4, .6, 1.))
+    material.set_color("baseColor", .8, .1, .3, 1.)
+    assert material_visual_revision(element, slot) != before
+    assert material_visual_state(element, slot)["color"] == pytest.approx((.8, .1, .3, 1.))
+
+
+def test_desktop_material_texture_preparation_failure_is_not_hidden(monkeypatch):
+    from infernux.application import Application
+    from infernux.lib import InxMaterial, _Infernux
+    from infernux.ui.ui_render_dispatch import material_visual_revision
+
+    native = InxMaterial("Desktop UI dependency", "Unlit")
+    calls = []
+
+    def prepare(material):
+        calls.append(material)
+        raise RuntimeError("texture allocation failed")
+
+    host = SimpleNamespace(_prepare_material_texture_assets=prepare)
+    engine = SimpleNamespace(get_native_engine=lambda: host)
+    monkeypatch.setattr(Application, "_current_engine", staticmethod(lambda: engine))
+    monkeypatch.setattr(_Infernux, "__runtime_profile__", "desktop")
+    with pytest.raises(RuntimeError, match="texture allocation failed"):
+        material_visual_revision(SimpleNamespace(material=native))
+    assert calls == [native]

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Callable, Dict, Optional
 
+from infernux.lib import _Infernux
 from infernux.ui.enums import TextAlignH, TextAlignV, TextOverflow
 from infernux.ui.ui_render_revision import (
     get_runtime_ui_revision, mark_runtime_ui_dirty, _get_shared_visual_revision,
@@ -41,15 +42,21 @@ def _multiply_rgba(left, right) -> list:
 def _visual_material(elem, slot):
     material = getattr(elem, slot, None)
     if material is None:
-        return None
+        return None, None
     native = getattr(material, "native", material)
-    if native._texture_assets_pending:
-        from infernux.application import Application
+    # Desktop resolves imported RenderTexture bindings through its Vulkan
+    # owner. Web uploads GUID textures in WebScreenUIRenderer and has no
+    # desktop Engine; its material revision must not enter that allocation path.
+    runtime_texture = None
+    if _Infernux.__runtime_profile__ == "desktop":
+        if native._texture_assets_pending:
+            from infernux.application import Application
 
-        engine = Application._current_engine()
-        if engine is not None:
-            engine.get_native_engine()._prepare_material_texture_assets(native)
-    return native
+            engine = Application._current_engine()
+            if engine is not None:
+                engine.get_native_engine()._prepare_material_texture_assets(native)
+        runtime_texture = native._get_render_texture("texSampler")
+    return native, runtime_texture
 
 
 def _material_signature(native, runtime_texture):
@@ -65,10 +72,10 @@ def material_visual_revision(elem, slot: str = "material"):
     native owner is observed in the same frame. Full draw data is read by
     command construction, not by this dependency check.
     """
-    native = _visual_material(elem, slot)
+    native, runtime_texture = _visual_material(elem, slot)
     if native is None:
         return None, 0
-    return _material_signature(native, native._get_render_texture("texSampler"))
+    return _material_signature(native, runtime_texture)
 
 
 def material_visual_state(elem, slot: str = "material") -> dict:
@@ -80,7 +87,7 @@ def material_visual_state(elem, slot: str = "material") -> dict:
     provide the sampled texture. An empty slot means the engine UI material
     (white tint and no authored texture).
     """
-    native = _visual_material(elem, slot)
+    native, runtime_texture = _visual_material(elem, slot)
     if native is None:
         return {
             "color": [1.0, 1.0, 1.0, 1.0],
@@ -89,7 +96,6 @@ def material_visual_state(elem, slot: str = "material") -> dict:
             "signature": (None, 0),
             "_native": None,
         }
-    runtime_texture = native._get_render_texture('texSampler')
     signature = _material_signature(native, runtime_texture)
     color = (
         list(native.get_color("baseColor"))
