@@ -14,7 +14,7 @@ class ModalRegistration:
     modal_id: str
     is_active: Callable[[], bool]
     render: Callable[[Any], object]
-    cancel: Callable[[], None]
+    cancel: Callable[[], bool | None]
     allowed_parent_ids: frozenset[str]
 
 
@@ -45,6 +45,10 @@ class ModalService:
     longer participates in shortcut input capture until a later frame renders
     it successfully. Returning ``None`` remains compatible with presenters
     that do not expose a visibility result and is treated as presented.
+
+    ``cancel`` may return ``False`` while a transaction cannot be interrupted.
+    Its modal and owner barrier remain active until normal completion. Owners
+    must drain that work before calling ``clear`` during teardown.
     """
 
     def __init__(self) -> None:
@@ -87,7 +91,7 @@ class ModalService:
         *,
         is_active: Callable[[], bool],
         render: Callable[[Any], object],
-        cancel: Callable[[], None],
+        cancel: Callable[[], bool | None],
         allowed_parent_ids: Iterable[str] = (),
     ) -> None:
         identifier = self._require_id(modal_id)
@@ -111,7 +115,8 @@ class ModalService:
     def unregister(self, modal_id: str, *, cancel: bool = True) -> None:
         identifier = self._require_id(modal_id)
         if cancel:
-            self.cancel(identifier)
+            if any(entry.modal_id == identifier for entry in self._stack) and not self.cancel(identifier):
+                return
         else:
             self.deactivate(identifier)
         self._registrations.pop(identifier, None)
@@ -167,7 +172,8 @@ class ModalService:
             return False
         registration = self._registrations.get(identifier)
         if registration is not None:
-            registration.cancel()
+            if registration.cancel() is False:
+                return False
         self.deactivate(identifier)
         return True
 
@@ -191,10 +197,8 @@ class ModalService:
         if index < 0:
             return False
         for entry in reversed(self._stack[index:]):
-            registration = self._registrations.get(entry.modal_id)
-            if registration is not None:
-                registration.cancel()
-        del self._stack[index:]
+            if not self.cancel(entry.modal_id):
+                return False
         return True
 
     def render(self, ctx: Any) -> None:
@@ -229,7 +233,8 @@ class ModalService:
     def clear(self, *, cancel: bool = True) -> None:
         if cancel:
             while self._stack:
-                self.cancel_active()
+                if not self.cancel_active():
+                    raise RuntimeError("Modal work must finish before its owner is cleared")
         else:
             self._stack.clear()
         self._registrations.clear()

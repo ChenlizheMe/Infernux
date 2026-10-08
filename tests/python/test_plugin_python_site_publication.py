@@ -137,3 +137,51 @@ def test_background_dependency_install_publishes_on_editor_owner_thread(site_ins
     finally:
         queue.cancel_pending()
         worker.join(2)
+
+
+def test_install_owner_shutdown_cancels_site_request_before_join_and_registry_publication(site_install, monkeypatch):
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui.plugin_install_progress import PluginInstallProgressService
+
+    manager, counter = site_install
+    manager.engine = object()
+    core = EditorInteractionCore()
+    service = PluginInstallProgressService()
+    monkeypatch.setattr(PluginInstallProgressService, "_instance", service)
+    queue = MainThreadCommandQueue()
+    monkeypatch.setattr(MainThreadCommandQueue, "_instance", queue)
+    queue.drain()
+    pending = threading.Event()
+    submit = queue.submit
+
+    def observe(name, fn, **kwargs):
+        future = submit(name, fn, **kwargs)
+        if name == "plugin.python-site-publish":
+            pending.set()
+        return future
+
+    monkeypatch.setattr(queue, "submit", observe)
+    baseline = manager.registry.load()
+    restored = []
+    monkeypatch.setattr(manager, "_restore_python_environment", lambda before, **kwargs: restored.append(before))
+    assert service.begin(label="pip", work=lambda report: manager.install_pip("inx-site-test==1.0", progress=report),
+                         complete=lambda *args: pytest.fail("retired callback ran"))
+    transaction = service._transaction
+    transaction.presented_phase = "opening"
+    service.post_present_tick()
+    try:
+        assert pending.wait(3)
+        service.shutdown(modals=core.modals)
+        assert not transaction.worker.is_alive()
+        assert isinstance(transaction.worker_error, TimeoutError)
+        assert "Host service stopped" in str(transaction.worker_error)
+        queue.drain()
+        assert counter.new == 0
+        assert restored == [{}]
+        assert manager.registry.load() == baseline
+        assert not service.is_active
+    finally:
+        transaction.commands.close()
+        queue.cancel_pending()
+        transaction.worker.join(3)
+        core.shutdown()

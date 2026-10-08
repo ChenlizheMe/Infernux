@@ -10,6 +10,7 @@ from typing import Callable, Optional
 
 from infernux.debug import Debug
 from infernux.engine.i18n import t
+from infernux.host.commands import CommandOwner, command_owner_scope
 
 from .editor_modal import begin_editor_modal, end_editor_modal
 
@@ -19,6 +20,7 @@ class _PluginInstallTransaction:
     label: str
     work: Callable[[Callable[[str, float, str], None]], object]
     complete: Callable[[bool, object | None, str], None]
+    owner_engine: object | None = None
     phase: str = "opening"
     stage: str = "preparing"
     progress: float = 0.02
@@ -31,6 +33,7 @@ class _PluginInstallTransaction:
     worker: threading.Thread | None = None
     worker_done: threading.Event = field(default_factory=threading.Event)
     worker_error: BaseException | None = None
+    commands: CommandOwner = field(default_factory=lambda: CommandOwner("Plugin installation"))
 
 
 class PluginInstallProgressService:
@@ -67,7 +70,7 @@ class PluginInstallProgressService:
             self.MODAL_ID,
             is_active=lambda: self.is_active,
             render=self.render,
-            cancel=lambda: None,
+            cancel=self.cancel,
         )
         self._registered_service = modals
         return modals
@@ -82,10 +85,13 @@ class PluginInstallProgressService:
         if self._transaction is not None:
             return False
         modals = self._ensure_registered()
+        from infernux.application import Application
+
         transaction = _PluginInstallTransaction(
             label=str(label),
             work=work,
             complete=complete,
+            owner_engine=Application._current_engine(),
             history=[t("plugins.install_progress.preparing")],
         )
         self._transaction = transaction
@@ -93,6 +99,41 @@ class PluginInstallProgressService:
             self._transaction = None
             return False
         return True
+
+    def cancel(self) -> bool:
+        """Only an unstarted install can be cancelled without a disk transaction.
+
+        Workers may already be publishing package files or a Python environment.
+        Keep the modal/exit barrier until their owner-thread completion runs.
+        """
+        transaction = self._transaction
+        if transaction is not None and transaction.worker is not None:
+            return False
+        self._transaction = None
+        return True
+
+    def shutdown(self, *, engine=None, modals=None) -> None:
+        """Drain this owner's work before any services it uses are destroyed."""
+        transaction = self._transaction
+        if engine is not None and (transaction is None or transaction.owner_engine is not engine):
+            return
+        if modals is not None and self._registered_service is not modals:
+            return
+        if transaction is not None:
+            # A pip worker can be waiting to publish .pth hooks on this thread.
+            # Retire its own requests before joining; unrelated Host work stays
+            # owned by its service and is not executed inside teardown.
+            transaction.commands.close()
+        if transaction is not None and transaction.worker is not None:
+            # Forced teardown is the only blocking path. Dropping a live worker
+            # would let it keep writing after the project/AssetDatabase retires.
+            transaction.worker.join()
+            if transaction.worker_error is not None:
+                Debug.log_error(f"Plugin installation failed during shutdown: {transaction.worker_error}")
+        self._transaction = None
+        if self._registered_service is not None:
+            self._registered_service.deactivate(self.MODAL_ID)
+        self._registered_service = None
 
     @staticmethod
     def _apply_report(
@@ -117,7 +158,8 @@ class PluginInstallProgressService:
             transaction.events.put((str(stage), float(progress), str(detail or "")))
 
         try:
-            transaction.result = transaction.work(report)
+            with command_owner_scope(transaction.commands):
+                transaction.result = transaction.work(report)
         except BaseException as exc:
             transaction.worker_error = exc
         finally:
@@ -179,18 +221,18 @@ class PluginInstallProgressService:
                 self._finish(True, "")
         except Exception as exc:
             Debug.log_error(f"Plugin installation failed: {exc}")
-            self._finish(False, f"{type(exc).__name__}: {exc}")
+            if self._transaction is transaction:
+                self._finish(False, f"{type(exc).__name__}: {exc}")
 
     def _finish(self, success: bool, message: str) -> None:
         transaction = self._transaction
         if transaction is None:
             return
         self._transaction = None
-        try:
-            transaction.complete(success, transaction.result, str(message or ""))
-        finally:
-            if self._registered_service is not None:
-                self._registered_service.deactivate(self.MODAL_ID)
+        transaction.commands.close()
+        if self._registered_service is not None:
+            self._registered_service.deactivate(self.MODAL_ID)
+        transaction.complete(success, transaction.result, str(message or ""))
 
     def render(self, ctx) -> bool:
         transaction = self._transaction

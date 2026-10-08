@@ -958,6 +958,13 @@ class Engine():
         ):
             return
 
+        if not _PLAYER_MODE:
+            from infernux.engine.ui.plugin_install_progress import PluginInstallProgressService
+
+            progress = PluginInstallProgressService._instance
+            if progress is not None:
+                progress.shutdown(engine=self)
+
         if callable(self._before_exit_callback):
             try:
                 self._before_exit_callback()

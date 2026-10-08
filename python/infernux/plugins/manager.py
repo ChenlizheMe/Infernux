@@ -1242,6 +1242,7 @@ class PluginManager:
             if not _requirements_satisfied(requested, after):
                 raise RuntimeError("pip completed but requested Python requirements remain unresolved")
             changes = _python_environment_changes(before, after)
+            self._activate_installed_python_paths(before, after, executable=executable)
             self.registry.record_python_install(
                 syntax=raw,
                 command=command,
@@ -1252,7 +1253,6 @@ class PluginManager:
                 owner="@project",
                 python_environment=after,
             )
-            self._activate_installed_python_paths(before, after, executable=executable)
         except BaseException as install_error:
             try:
                 self._restore_python_environment(before, executable=executable)

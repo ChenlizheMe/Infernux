@@ -137,6 +137,11 @@ class EditorInteractionCore:
         return cls._instance
 
     def shutdown(self) -> None:
+        from infernux.engine.ui.plugin_install_progress import PluginInstallProgressService
+
+        progress = PluginInstallProgressService._instance
+        if progress is not None:
+            progress.shutdown(modals=self.modals)
         self.continuous_edits.clear(commit=True)
         self.transient_interactions.clear()
         self.command_palette.shutdown()
