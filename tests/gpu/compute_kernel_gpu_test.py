@@ -91,6 +91,13 @@ def _wave_kernel(values):
     values[i] = _wave_term(values[i])
 
 
+@inx.compute.kernel
+def _intrinsic_components(values, sine, root):
+    i = inx.compute.index(values)
+    sine[i] = math.sin(values[i])
+    root[i] = math.sqrt(values[i] * values[i] + 1.0)
+
+
 def main() -> int:
     # The embedded compiler must not claim or temporarily replace another
     # package's import namespace. GPU execution below still uses the real RHI.
@@ -108,7 +115,7 @@ def main() -> int:
         rows = matrix = gathered = gather_rows = None
         explicit_domain = explicit_output = local_loop_output = atomic_total = None
         explicit_domain_kernel = local_loops = atomic_reduce = None
-        wave_values = None
+        wave_values = wave_repeat = intrinsic_source = sine_values = root_values = None
         failure = None
         try:
             try:
@@ -546,11 +553,28 @@ def main() -> int:
             wave_source = np.linspace(-2.0, 2.0, 33, dtype=np.float32)
             wave_values = inx.buffer(shape=33, dtype=np.float32, device="gpu", data=wave_source)
             inx.compute.launch(_wave_kernel, params=(wave_values,))
+            wave_actual = wave_values.get_data().numpy().copy()
+            intrinsic_source = inx.buffer(shape=33, dtype=np.float32, device="gpu", data=wave_source)
+            sine_values = inx.buffer(shape=33, dtype=np.float32, device="gpu")
+            root_values = inx.buffer(shape=33, dtype=np.float32, device="gpu")
+            inx.compute.launch(_intrinsic_components, params=(intrinsic_source, sine_values, root_values))
+            sine_actual = sine_values.get_data().numpy().copy()
+            root_actual = root_values.get_data().numpy().copy()
+            # Vulkan's GLSL.std.450 single-precision Sin contract permits an
+            # absolute error of 2^-11 on [-pi, pi]. CPU libm equality is not
+            # its contract. Keep arithmetic/root and composition checks tight.
+            # https://docs.vulkan.org/spec/latest/appendices/spirvenv.html#precision-of-glsl-std-450-instructions
+            np.testing.assert_allclose(sine_actual, np.sin(wave_source.astype(np.float64)),
+                                       rtol=0, atol=2.0 ** -11)
+            np.testing.assert_allclose(root_actual, np.sqrt(wave_source * wave_source + 1.0),
+                                       rtol=2e-6, atol=2e-6)
             np.testing.assert_allclose(
-                wave_values.get_data().numpy(),
-                np.sqrt(wave_source * wave_source + 1.0) + np.sin(wave_source),
+                wave_actual, root_actual + sine_actual,
                 rtol=2e-6, atol=2e-6,
             )
+            wave_repeat = inx.buffer(shape=33, dtype=np.float32, device="gpu", data=wave_source)
+            inx.compute.launch(_wave_kernel, params=(wave_repeat,))
+            np.testing.assert_array_equal(wave_repeat.get_data().numpy(), wave_actual)
             statistics = inx.compute.statistics()
             assert statistics.submission_count > 0
             assert statistics.dispatch_count >= 7
@@ -674,6 +698,10 @@ def main() -> int:
                     explicit_domain, explicit_output, local_loop_output, atomic_total,
                     view_source, view, read_only_view, velocities_readonly,
                     wave_values,
+                    wave_repeat,
+                    intrinsic_source,
+                    sine_values,
+                    root_values,
                 ):
                     if resource is not None:
                         assert resource.closed

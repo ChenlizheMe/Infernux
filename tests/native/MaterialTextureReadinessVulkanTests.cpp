@@ -84,6 +84,7 @@ int main(int argc, char **argv)
     GpuRetirementQueue retirement;
     rhi::SubmissionSerial serial = 1;
     retirement.BindSerialSource([&] { return serial; });
+    descriptorAllocator.UseSubmissionSerials([&] { return serial; });
     MaterialDescriptorManager descriptors;
     descriptors.Initialize(context.GetVmaAllocator(), context.GetDevice(), context.GetPhysicalDevice(),
                            &descriptorAllocator);
