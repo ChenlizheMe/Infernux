@@ -172,7 +172,9 @@ class ShaderLibraryCase:
             half_step = 1. - float(np.nextafter(np.float16(1.), np.float16(0.)))
             np.testing.assert_allclose(pixels[...,0][interior], expected[interior].astype(float),
                                        atol=half_step, rtol=0.)
-            edge = (mask > .001) & (mask < .999)
+            # The quantized white endpoint is still an interior pixel, never
+            # evidence of antialiasing. Only genuine intermediate coverage counts.
+            edge = (mask > .001) & (pixels[...,0] < 1. - half_step)
             assert edge.sum() > 10, 'Antialiasing removed from strip edges'
             result = dict(phase=self.phase, checked=int(interior.sum()), inside=int(expected[interior].sum()), antialiased=int(edge.sum()))
         self.results.append(result)
