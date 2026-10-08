@@ -1077,6 +1077,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         m, "LinkedShaderProgramLoadTicket")
         .def_property_readonly("complete", &LinkedShaderProgramLoadTicket::IsComplete)
         .def_property_readonly("committed", &LinkedShaderProgramLoadTicket::IsCommitted)
+        .def_property_readonly("superseded", &LinkedShaderProgramLoadTicket::IsSuperseded)
         .def_property_readonly("produced_on_worker", &LinkedShaderProgramLoadTicket::WasProducedOnWorker)
         .def("cancel", &LinkedShaderProgramLoadTicket::Cancel);
 

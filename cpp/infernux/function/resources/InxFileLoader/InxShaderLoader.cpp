@@ -5,10 +5,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <core/log/InxLog.h>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <function/renderer/shader/ShaderReflection.h>
 #include <function/resources/ShaderAsset/GlslStageInterfaceEmitter.h>
 #include <nlohmann/json.hpp>
@@ -34,6 +36,17 @@ std::unordered_map<std::string, ShaderSourceDependencies> g_sourceDependencies;
 std::unordered_map<std::string, ShaderSourceDependencies> g_candidateSourceDependencies;
 thread_local bool g_sourceDiagnosticsCaptured = false;
 thread_local std::unordered_map<std::string, ShaderSourceDependencies> *g_dependencyPublication = nullptr;
+thread_local std::unordered_map<std::string, ShaderSourceDependencies> *g_candidateDependencyPublication = nullptr;
+std::atomic<uint64_t> g_sourceEnvironmentRevision{1};
+
+void AdvanceSourceEnvironmentRevision()
+{
+    // Called under CompilationGuard. Never reuse a preparation identity.
+    const auto revision = g_sourceEnvironmentRevision.load(std::memory_order_relaxed);
+    if (revision == std::numeric_limits<uint64_t>::max())
+        throw std::overflow_error("Shader source environment revision exhausted");
+    g_sourceEnvironmentRevision.store(revision + 1, std::memory_order_release);
+}
 
 void MergeSourceDependencies(ShaderSourceDependencies &target, const ShaderSourceDependencies &source)
 {
@@ -50,25 +63,28 @@ std::string ShaderDependencyPathKey(const std::string &path)
 
 ShaderSourceDependencies &SourceDependencies(const std::string &rootPath)
 {
-    auto &entry = g_candidateSourceDependencies[ShaderDependencyPathKey(rootPath)];
+    auto &candidates = g_candidateDependencyPublication ? *g_candidateDependencyPublication : g_candidateSourceDependencies;
+    auto &entry = candidates[ShaderDependencyPathKey(rootPath)];
     entry.rootPath = ResolveFilesystemPath(rootPath);
     return entry;
 }
 
 void ResetSourceDependencies(const std::string &rootPath)
 {
-    g_candidateSourceDependencies.erase(ShaderDependencyPathKey(rootPath));
+    auto &candidates = g_candidateDependencyPublication ? *g_candidateDependencyPublication : g_candidateSourceDependencies;
+    candidates.erase(ShaderDependencyPathKey(rootPath));
 }
 
 void CommitSourceDependencies(const std::string &rootPath)
 {
     const auto key = ShaderDependencyPathKey(rootPath);
-    if (auto candidate = g_candidateSourceDependencies.find(key); candidate != g_candidateSourceDependencies.end()) {
+    auto &candidates = g_candidateDependencyPublication ? *g_candidateDependencyPublication : g_candidateSourceDependencies;
+    if (auto candidate = candidates.find(key); candidate != candidates.end()) {
         if (g_dependencyPublication)
             MergeSourceDependencies((*g_dependencyPublication)[key], candidate->second);
         else
             g_sourceDependencies[key] = std::move(candidate->second);
-        g_candidateSourceDependencies.erase(candidate);
+        candidates.erase(candidate);
     } else if (g_dependencyPublication) {
         (*g_dependencyPublication)[key].rootPath = ResolveFilesystemPath(rootPath);
     } else {
@@ -577,13 +593,21 @@ void InxShaderLoader::InvalidateDirectoryCache(const std::string &dir)
     // Every map includes shared roots. A nested edit can change the imports
     // of a sibling material or the built-in DeferredLighting program.
     (void)dir;
+    AdvanceSourceEnvironmentRevision();
     s_shaderIdMapCache.clear();
     s_shadingModelCache.clear();
 }
 
 void InxShaderLoader::InvalidateTemplateCache()
 {
+    const CompilationGuard guard;
+    AdvanceSourceEnvironmentRevision();
     s_templateCache.clear();
+}
+
+uint64_t InxShaderLoader::GetSourceEnvironmentRevision() noexcept
+{
+    return g_sourceEnvironmentRevision.load(std::memory_order_acquire);
 }
 
 InxShaderLoader::SourceDiagnosticScope::SourceDiagnosticScope() : m_previous(g_sourceDiagnosticsCaptured)
@@ -601,9 +625,14 @@ bool InxShaderLoader::AreSourceDiagnosticsCaptured() noexcept
     return g_sourceDiagnosticsCaptured;
 }
 
-struct InxShaderLoader::SourceDependencyPublication::State
+struct InxShaderLoader::SourceDependencyPublication::Prepared
 {
     std::unordered_map<std::string, ShaderSourceDependencies> compiled;
+    std::unordered_map<std::string, ShaderSourceDependencies> candidates;
+};
+
+struct InxShaderLoader::SourceDependencyPublication::State : Prepared
+{
     bool committed = false;
 };
 
@@ -612,14 +641,19 @@ InxShaderLoader::SourceDependencyPublication::SourceDependencyPublication() : m_
     if (g_dependencyPublication)
         throw std::logic_error("Shader dependency publication cannot be nested");
     g_dependencyPublication = &m_state->compiled;
+    g_candidateDependencyPublication = &m_state->candidates;
 }
 
 InxShaderLoader::SourceDependencyPublication::~SourceDependencyPublication()
 {
     g_dependencyPublication = nullptr;
-    if (!m_state->committed)
+    g_candidateDependencyPublication = nullptr;
+    if (!m_state->committed) {
         for (const auto &[key, dependencies] : m_state->compiled)
             MergeSourceDependencies(g_candidateSourceDependencies[key], dependencies);
+        for (const auto &[key, dependencies] : m_state->candidates)
+            MergeSourceDependencies(g_candidateSourceDependencies[key], dependencies);
+    }
 }
 
 void InxShaderLoader::SourceDependencyPublication::Commit()
@@ -630,8 +664,38 @@ void InxShaderLoader::SourceDependencyPublication::Commit()
         g_sourceDependencies[key] = std::move(dependencies);
         g_candidateSourceDependencies.erase(key);
     }
+    for (const auto &[key, dependencies] : m_state->candidates)
+        MergeSourceDependencies(g_candidateSourceDependencies[key], dependencies);
     m_state->committed = true;
     g_dependencyPublication = nullptr;
+    g_candidateDependencyPublication = nullptr;
+}
+
+std::shared_ptr<const InxShaderLoader::SourceDependencyPublication::Prepared>
+InxShaderLoader::SourceDependencyPublication::Detach()
+{
+    if (m_state->committed)
+        throw std::logic_error("Shader dependencies were already published or detached");
+    auto prepared = std::make_shared<Prepared>();
+    prepared->compiled = std::move(m_state->compiled);
+    prepared->candidates = std::move(m_state->candidates);
+    m_state->committed = true;
+    g_dependencyPublication = nullptr;
+    g_candidateDependencyPublication = nullptr;
+    return prepared;
+}
+
+void InxShaderLoader::SourceDependencyPublication::Publish(const std::shared_ptr<const Prepared> &prepared)
+{
+    if (!prepared)
+        return;
+    const CompilationGuard guard;
+    for (const auto &[key, dependencies] : prepared->compiled) {
+        g_sourceDependencies[key] = dependencies;
+        g_candidateSourceDependencies.erase(key);
+    }
+    for (const auto &[key, dependencies] : prepared->candidates)
+        MergeSourceDependencies(g_candidateSourceDependencies[key], dependencies);
 }
 
 std::vector<std::string> InxShaderLoader::GetDependentStageSources(const std::string &sourcePath,
@@ -653,6 +717,8 @@ std::vector<std::string> InxShaderLoader::GetDependentStageSources(const std::st
     collect(g_candidateSourceDependencies);
     if (g_dependencyPublication)
         collect(*g_dependencyPublication);
+    if (g_candidateDependencyPublication)
+        collect(*g_candidateDependencyPublication);
     return {roots.begin(), roots.end()};
 }
 

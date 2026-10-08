@@ -49,10 +49,12 @@ class LinkedShaderProgramLoadTicket final
   public:
     [[nodiscard]] bool IsComplete() const noexcept;
     [[nodiscard]] bool IsCommitted() const noexcept;
+    [[nodiscard]] bool IsSuperseded() const noexcept;
     [[nodiscard]] bool WasProducedOnWorker() const noexcept;
     bool Cancel() noexcept;
 
   private:
+    struct SourceIdentity;
     struct State;
     friend class Infernux;
     std::shared_ptr<State> m_state;
@@ -463,6 +465,7 @@ class Infernux
         bool failureReported = false;
         // Compiled UI candidates wait for an actual draw to acquire GPU ownership.
         std::shared_ptr<const ShaderProgramArtifact> preparedArtifact;
+        uint64_t sourceEnvironmentRevision = 0;
     };
 
     [[nodiscard]] LinkedShaderProgramPreparation EnsureLinkedShaderProgramArtifact(const ShaderStagePair &stages);
@@ -476,6 +479,10 @@ class Infernux
     InspectMaterialShaderDomain(const std::shared_ptr<InxMaterial> &material) const;
 
     std::unordered_map<ShaderStagePair, LinkedShaderProgramCacheEntry, ShaderStagePairHash> m_linkedShaderProgramCache;
+    // Concurrent scene loads share the same immutable source identity; a
+    // changed identity retires old work without retaining jobs/artifacts.
+    std::unordered_map<ShaderStagePair, std::shared_ptr<const LinkedShaderProgramLoadTicket::SourceIdentity>, ShaderStagePairHash>
+        m_linkedShaderPreparations;
 
     struct TexturePreviewCompleted
     {

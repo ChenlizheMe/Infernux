@@ -598,6 +598,25 @@ bool IsPrefabPreviewPath(const std::string &filePath)
 
 } // namespace
 
+struct LinkedShaderProgramLoadTicket::SourceIdentity
+{
+    uint64_t sourceStamp = 0;
+    uint64_t sourceEnvironmentRevision = 0;
+    std::shared_ptr<const InxResourceMeta> vertexMetadata;
+    std::shared_ptr<const InxResourceMeta> fragmentMetadata;
+
+    bool operator==(const SourceIdentity &other) const noexcept
+    {
+        return sourceStamp == other.sourceStamp && sourceEnvironmentRevision == other.sourceEnvironmentRevision &&
+               vertexMetadata == other.vertexMetadata && fragmentMetadata == other.fragmentMetadata;
+    }
+
+    bool operator!=(const SourceIdentity &other) const noexcept
+    {
+        return !(*this == other);
+    }
+};
+
 struct LinkedShaderProgramLoadTicket::State
 {
     struct Work
@@ -607,6 +626,9 @@ struct LinkedShaderProgramLoadTicket::State
         std::string fragmentPath;
         std::string vertexSource;
         std::string fragmentSource;
+        std::shared_ptr<const InxResourceMeta> vertexMetadata;
+        std::shared_ptr<const InxResourceMeta> fragmentMetadata;
+        std::shared_ptr<const SourceIdentity> identity;
         uint64_t sourceStamp = 0;
         bool directStructuredStage = false;
         bool skipScenePrewarm = false;
@@ -615,13 +637,24 @@ struct LinkedShaderProgramLoadTicket::State
         std::string error;
     };
 
+    struct MaterialBinding
+    {
+        std::string guid;
+        ShaderAssetReference vertex;
+        ShaderAssetReference fragment;
+    };
     std::vector<Work> work;
+    std::vector<MaterialBinding> materials;
+    std::shared_ptr<const InxShaderLoader::SourceDependencyPublication::Prepared> dependencies;
+    const Infernux *owner = nullptr;
+    uint64_t sourceEnvironmentRevision = 0;
     JobHandle job;
     std::exception_ptr failure;
     std::thread::id ownerThread;
     std::thread::id producerThread;
     std::atomic<bool> cancelRequested{false};
     bool committed = false;
+    bool superseded = false;
 };
 
 bool LinkedShaderProgramLoadTicket::IsComplete() const noexcept
@@ -632,6 +665,11 @@ bool LinkedShaderProgramLoadTicket::IsComplete() const noexcept
 bool LinkedShaderProgramLoadTicket::IsCommitted() const noexcept
 {
     return m_state && m_state->committed;
+}
+
+bool LinkedShaderProgramLoadTicket::IsSuperseded() const noexcept
+{
+    return m_state && m_state->superseded;
 }
 
 bool LinkedShaderProgramLoadTicket::WasProducedOnWorker() const noexcept
@@ -738,6 +776,8 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
     ticket->m_state = std::make_shared<LinkedShaderProgramLoadTicket::State>();
     auto state = ticket->m_state;
     state->ownerThread = std::this_thread::get_id();
+    state->owner = this;
+    state->sourceEnvironmentRevision = InxShaderLoader::GetSourceEnvironmentRevision();
 
     if (!m_renderer)
         return ticket;
@@ -769,27 +809,38 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
         if (!material)
             continue;
 
+        state->materials.push_back({guid, material->GetVertShaderReference(), material->GetFragShaderReference()});
         const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
         if (!stages.IsValid() || !scheduled.insert(stages).second)
             continue;
         const auto cached = m_linkedShaderProgramCache.find(stages);
-        if (cached != m_linkedShaderProgramCache.end() && cached->second.sourceStamp != 0 &&
-            cached->second.programKey.IsValid() && m_renderer->HasShaderProgramArtifact(cached->second.programKey)) {
-            continue;
-        }
-
         LinkedShaderProgramLoadTicket::State::Work work;
         work.stages = stages;
         work.vertexPath = resolvePath(material->GetVertShaderReference(), "vertex");
         work.fragmentPath = resolvePath(material->GetFragShaderReference(), "fragment");
         if (work.vertexPath.empty() || work.fragmentPath.empty() || !readSource(work.vertexPath, work.vertexSource) ||
             !readSource(work.fragmentPath, work.fragmentSource)) {
+            m_linkedShaderPreparations.erase(stages);
             continue;
         }
         work.sourceStamp =
             ComputeShaderProgramRevision(work.vertexSource, work.fragmentSource, ShaderCompileTarget::Forward, 0);
-        if (cached != m_linkedShaderProgramCache.end() && cached->second.failedSourceStamp == work.sourceStamp)
-            continue;
+        work.vertexMetadata = adb->GetMetaByPath(work.vertexPath);
+        work.fragmentMetadata = adb->GetMetaByPath(work.fragmentPath);
+        const LinkedShaderProgramLoadTicket::SourceIdentity identity{
+            work.sourceStamp, state->sourceEnvironmentRevision, work.vertexMetadata, work.fragmentMetadata};
+        auto &currentIdentity = m_linkedShaderPreparations[stages];
+        if (!currentIdentity || *currentIdentity != identity)
+            currentIdentity = std::make_shared<const LinkedShaderProgramLoadTicket::SourceIdentity>(identity);
+        work.identity = currentIdentity;
+        if (cached != m_linkedShaderProgramCache.end() &&
+            cached->second.sourceEnvironmentRevision == state->sourceEnvironmentRevision) {
+            if ((cached->second.sourceStamp == work.sourceStamp && cached->second.programKey.IsValid() &&
+                 m_renderer->HasShaderProgramArtifact(cached->second.programKey)) ||
+                cached->second.failedSourceStamp == work.sourceStamp) {
+                continue;
+            }
+        }
         state->work.push_back(std::move(work));
     }
 
@@ -798,6 +849,8 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
 
     auto compile = [state]() {
         state->producerThread = std::this_thread::get_id();
+        const InxShaderLoader::SourceDiagnosticScope diagnostics;
+        InxShaderLoader::SourceDependencyPublication dependencies;
         try {
             // One job compiles the scene's unique pairs serially. This keeps
             // compiler memory bounded on low-end machines while the shared
@@ -806,7 +859,7 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
             InxShaderLoader compiler(true, false, false, false, false, true, false, false, false, false);
             for (auto &work : state->work) {
                 if (state->cancelRequested.load(std::memory_order_acquire))
-                    return;
+                    break;
                 const std::string vertexCompilePath =
                     InxShaderLoader::StageQualifiedVirtualPath(work.vertexPath, "vertex");
                 const std::string fragmentCompilePath =
@@ -844,6 +897,7 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
         } catch (...) {
             state->failure = std::current_exception();
         }
+        state->dependencies = dependencies.Detach();
     };
 
     if (JobSystem::IsAvailable()) {
@@ -865,10 +919,33 @@ bool Infernux::TryCommitLinkedShaderPrograms(const std::shared_ptr<LinkedShaderP
         return false;
     if (state.committed)
         return true;
-    if (state.failure)
-        std::rethrow_exception(state.failure);
     if (state.cancelRequested.load(std::memory_order_acquire))
         return false;
+
+    // Validate the whole preparation before touching GPU programs, render
+    // metadata or the error cache. This is publication identity, not a second
+    // filesystem scan/hash, and also retires old failed compilations.
+    auto *database = GetAssetDatabase();
+    bool current = !state.superseded && state.owner == this && !m_isCleaningUp && !m_isCleanedUp &&
+                   state.sourceEnvironmentRevision == InxShaderLoader::GetSourceEnvironmentRevision();
+    for (const auto &binding : state.materials) {
+        const auto material = AssetRegistry::Instance().GetAsset<InxMaterial>(binding.guid);
+        current = current && material && material->GetVertShaderReference() == binding.vertex &&
+                  material->GetFragShaderReference() == binding.fragment;
+    }
+    for (const auto &work : state.work) {
+        const auto prepared = m_linkedShaderPreparations.find(work.stages);
+        current = current && database && prepared != m_linkedShaderPreparations.end() &&
+                  prepared->second == work.identity &&
+                  database->GetMetaByPath(work.vertexPath) == work.vertexMetadata &&
+                  database->GetMetaByPath(work.fragmentPath) == work.fragmentMetadata;
+    }
+    if (!current) {
+        state.superseded = true;
+        return false;
+    }
+    if (state.failure)
+        std::rethrow_exception(state.failure);
 
     for (auto &work : state.work) {
         if (work.skipScenePrewarm)
@@ -882,6 +959,7 @@ bool Infernux::TryCommitLinkedShaderPrograms(const std::shared_ptr<LinkedShaderP
             entry.failedSourceStamp = work.sourceStamp;
             entry.lastError = work.error;
             entry.failureReported = true;
+            entry.sourceEnvironmentRevision = state.sourceEnvironmentRevision;
             INXLOG_ERROR("Linked shader prewarm rejected '", work.stages.ToString(), "': ", work.error);
             continue;
         }
@@ -895,17 +973,20 @@ bool Infernux::TryCommitLinkedShaderPrograms(const std::shared_ptr<LinkedShaderP
             entry.failedSourceStamp = work.sourceStamp;
             entry.lastError = "Renderer rejected the prewarmed linked shader program artifact";
             entry.failureReported = true;
+            entry.sourceEnvironmentRevision = state.sourceEnvironmentRevision;
             INXLOG_ERROR("Linked shader prewarm publication failed for '", work.stages.ToString(), "'");
             continue;
         }
 
         m_linkedShaderProgramCache[work.stages] = LinkedShaderProgramCacheEntry{work.sourceStamp, artifact.key, 0, {}};
+        m_linkedShaderProgramCache[work.stages].sourceEnvironmentRevision = state.sourceEnvironmentRevision;
         const auto &fragment = work.fragmentDescriptor;
         m_renderer->StoreShaderRenderMeta(work.stages.fragmentShaderId, fragment.surfaceOptions.cullMode,
                                           fragment.depthWrite, fragment.depthTest, fragment.surfaceOptions.blendMode,
                                           fragment.renderQueue, fragment.passTag, fragment.stencil,
                                           fragment.surfaceOptions.alphaClip);
     }
+    InxShaderLoader::SourceDependencyPublication::Publish(state.dependencies);
     state.committed = true;
     return true;
 }
@@ -4134,11 +4215,16 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
             m_renderer->HasShaderProgramArtifact(cached->second.programKey))
             return result;
     }
+    // A synchronous compile now owns publication for this pair, including a
+    // rejected candidate; an older scene worker must not publish afterward.
+    m_linkedShaderPreparations.erase(stages);
+    const auto sourceEnvironmentRevision = InxShaderLoader::GetSourceEnvironmentRevision();
     auto rememberFailure = [&](const std::string &error) {
         auto &entry = m_linkedShaderProgramCache[stages];
         entry.failedSourceStamp = sourceStamp;
         entry.lastError = error;
         entry.failureReported = false;
+        entry.sourceEnvironmentRevision = sourceEnvironmentRevision;
     };
 
     InxShaderLoader compiler(true, false, false, false, false, true, false, false, false, false);
@@ -4206,6 +4292,7 @@ Infernux::LinkedShaderProgramPreparation Infernux::EnsureLinkedShaderProgramArti
     }
 
     m_linkedShaderProgramCache[stages] = LinkedShaderProgramCacheEntry{sourceStamp, artifact.key, 0, {}};
+    m_linkedShaderProgramCache[stages].sourceEnvironmentRevision = sourceEnvironmentRevision;
     m_renderer->StoreShaderRenderMeta(
         stages.fragmentShaderId, fragmentDescriptor.surfaceOptions.cullMode, fragmentDescriptor.depthWrite,
         fragmentDescriptor.depthTest, fragmentDescriptor.surfaceOptions.blendMode, fragmentDescriptor.renderQueue,
@@ -4539,6 +4626,7 @@ std::string Infernux::ReloadShaderSourceBatch(const std::vector<std::string> &ro
     for (auto &program : preparedPrograms) {
         const auto stages = program.artifact.key.stages;
         LinkedShaderProgramCacheEntry entry{program.sourceStamp, program.artifact.key, 0, {}};
+        entry.sourceEnvironmentRevision = InxShaderLoader::GetSourceEnvironmentRevision();
         if (program.ui) {
             m_renderer->InvalidateUIMaterialProgram(stages);
             entry.preparedArtifact = std::make_shared<const ShaderProgramArtifact>(std::move(program.artifact));
@@ -4722,6 +4810,8 @@ std::string Infernux::ReloadShaderRuntime(const std::string &shaderPath, const s
                 if (program.ui)
                     continue;
                 m_linkedShaderProgramCache[stages] = {program.sourceStamp, program.artifact.key, 0, {}};
+                m_linkedShaderProgramCache[stages].sourceEnvironmentRevision =
+                    InxShaderLoader::GetSourceEnvironmentRevision();
                 const auto &fragment = program.fragment;
                 m_renderer->StoreShaderRenderMeta(
                     stages.fragmentShaderId, fragment.surfaceOptions.cullMode, fragment.depthWrite, fragment.depthTest,

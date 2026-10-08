@@ -105,6 +105,10 @@ class InxShaderLoader
         SourceDependencyPublication(const SourceDependencyPublication &) = delete;
         SourceDependencyPublication &operator=(const SourceDependencyPublication &) = delete;
         void Commit();
+        struct Prepared;
+        /// Move compiler subscriptions to the owner without publishing them.
+        [[nodiscard]] std::shared_ptr<const Prepared> Detach();
+        static void Publish(const std::shared_ptr<const Prepared> &prepared);
 
       private:
         struct State;
@@ -127,6 +131,10 @@ class InxShaderLoader
     /// Invalidate cached shader templates so edits under _templates/ are
     /// picked up on the next compile / reload.
     static void InvalidateTemplateCache();
+
+    /// In-memory revision of shared declarations, search roots and templates.
+    /// Async preparations cannot publish across an invalidation of this input.
+    [[nodiscard]] static uint64_t GetSourceEnvironmentRevision() noexcept;
 
     /// Root stages that actually consumed this source/declaration during
     /// preprocessing, including failed imports awaiting a declaration.

@@ -299,6 +299,12 @@ class SceneDocumentTransaction:
                     self._native_engine, "try_commit_linked_shader_programs", None
                 )
                 if not callable(commit) or not commit(ticket):
+                    if ticket.superseded:
+                        # A source/import/reference changed during preparation.
+                        # Discard that immutable result and prepare the current
+                        # revision on the next poll, through the same main path.
+                        self._linked_shader_ticket = None
+                        self._linked_shader_preload_started = False
                     return False
             self._linked_shader_ticket = None
         return True

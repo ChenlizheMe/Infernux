@@ -6,6 +6,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <thread>
 
 namespace
 {
@@ -113,6 +114,49 @@ void main() {}
     }
     assert(!HasRoot(leaf, root));
     assert(HasRoot(directory / "moved.glsl", root));
+
+    // Worker compilation may prepare a different closure, but only the owner
+    // accepting that program can change the live dependency subscriptions.
+    using Publication = InxShaderLoader::SourceDependencyPublication;
+    std::shared_ptr<const Publication::Prepared> prepared;
+    Write(outer, "ShaderInfo { Name \"Outer\" Imports [\"Leaf\"] }\nfloat outer() { return leaf(); }\n");
+    InxShaderLoader::InvalidateDirectoryCache();
+    std::thread worker([&] {
+        Publication batch;
+        assert(compile());
+        prepared = batch.Detach();
+    });
+    worker.join();
+    assert(!HasRoot(leaf, root));
+    assert(HasRoot(directory / "moved.glsl", root));
+    // Dropping a superseded result does not install candidate subscriptions.
+    prepared.reset();
+    assert(!HasRoot(leaf, root));
+    {
+        Publication batch;
+        assert(compile());
+        prepared = batch.Detach();
+    }
+    assert(!HasRoot(leaf, root));
+    Publication::Publish(prepared);
+    assert(HasRoot(leaf, root));
+    assert(!HasRoot(directory / "moved.glsl", root));
+    // Rejected worker candidates are isolated too, until explicitly accepted.
+    Write(outer, "ShaderInfo { Name \"Outer\" Imports [\"NotHere\"] }\n");
+    InxShaderLoader::InvalidateDirectoryCache();
+    {
+        Publication batch;
+        assert(!compile());
+        prepared = batch.Detach();
+    }
+    assert(!HasRoot(directory / "not-here.glsl", root, "NotHere"));
+    Publication::Publish(prepared);
+    assert(HasRoot(directory / "not-here.glsl", root, "NotHere"));
+    assert(HasRoot(leaf, root));
+    Write(outer, "ShaderInfo { Name \"Outer\" Imports [\"Arriving\"] }\nfloat outer() { return arriving(); }\n");
+    InxShaderLoader::InvalidateDirectoryCache();
+    assert(compile());
+    assert(!HasRoot(directory / "not-here.glsl", root, "NotHere"));
 
     // Invalid declaration syntax must still leave its dependency subscription.
     Write(directory / "moved.glsl", "ShaderInfo { Name \"Arriving\" Imports [123] }\nfloat arriving() { return 1.0; }\n");
