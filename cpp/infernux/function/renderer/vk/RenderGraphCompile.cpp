@@ -997,8 +997,8 @@ bool RenderGraph::AllocateResources()
             if (supported != VK_SUCCESS || (limits.sampleCounts & imageInfo.samples) == 0 ||
                 imageInfo.extent.width == 0 || imageInfo.extent.height == 0 ||
                 imageInfo.extent.width > limits.maxExtent.width || imageInfo.extent.height > limits.maxExtent.height ||
-                imageInfo.mipLevels == 0 || imageInfo.mipLevels > limits.maxMipLevels ||
-                imageInfo.arrayLayers == 0 || imageInfo.arrayLayers > limits.maxArrayLayers) {
+                imageInfo.mipLevels == 0 || imageInfo.mipLevels > limits.maxMipLevels || imageInfo.arrayLayers == 0 ||
+                imageInfo.arrayLayers > limits.maxArrayLayers) {
                 INXLOG_ERROR("RenderGraph texture descriptor is unsupported by the device: ", resource.name,
                              " (format=", imageInfo.format, ", samples=", imageInfo.samples,
                              ", extent=", imageInfo.extent.width, "x", imageInfo.extent.height, ")");
