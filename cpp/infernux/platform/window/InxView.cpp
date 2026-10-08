@@ -1040,7 +1040,16 @@ void InxView::SetWindowResizable(bool resizable)
 
 void InxView::SDLInit()
 {
+#if INFERNUX_COMPILE_OUT_DEBUG_LOGS
+    // A development Player explicitly opts into platform diagnostics. The
+    // shipping Editor/Player otherwise keeps SDL startup chatter out of logs.
+    const char *debugPlayerFlag = std::getenv("_INFERNUX_PLAYER_DEBUG_BUILD");
+    const bool debugPlayer =
+        debugPlayerFlag != nullptr && debugPlayerFlag[0] == '1' && debugPlayerFlag[1] == '\0';
+    SDL_SetLogPriorities(debugPlayer ? SDL_LOG_PRIORITY_VERBOSE : SDL_LOG_PRIORITY_WARN);
+#else
     SDL_SetLogPriorities(SDL_LOG_PRIORITY_VERBOSE);
+#endif
     // The Editor and Windows Player are Per-Monitor V2 applications. Make the
     // process contract explicit before SDL initializes video; silently using
     // system DPI awareness would make monitor transitions geometrically wrong.

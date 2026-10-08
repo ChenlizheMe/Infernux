@@ -193,17 +193,12 @@ bool VkSwapchainManager::BuildGeneration(const VkDeviceContext &context, uint32_
     createInfo.oldSwapchain = oldSwapchain;
 
     const auto &capabilities = swapchainSupport.capabilities;
-    INXLOG_INFO("Vulkan surface contract: requested=", width, "x", height,
-                ", currentExtent=", capabilities.currentExtent.width, "x", capabilities.currentExtent.height,
-                ", chosenExtent=", extent.width, "x", extent.height,
-                ", currentTransform=", static_cast<uint32_t>(capabilities.currentTransform),
-                ", preTransform=", static_cast<uint32_t>(preTransform),
-                ", supportedTransforms=", static_cast<uint32_t>(capabilities.supportedTransforms));
-    SDL_Log("INFERNUX_VULKAN_SURFACE requested=%ux%u current=%ux%u extent=%ux%u currentTransform=%u "
-            "preTransform=%u supportedTransforms=%u",
-            width, height, capabilities.currentExtent.width, capabilities.currentExtent.height, extent.width,
-            extent.height, static_cast<uint32_t>(capabilities.currentTransform), static_cast<uint32_t>(preTransform),
-            static_cast<uint32_t>(capabilities.supportedTransforms));
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                 "INFERNUX_VULKAN_SURFACE requested=%ux%u current=%ux%u extent=%ux%u currentTransform=%u "
+                 "preTransform=%u supportedTransforms=%u",
+                 width, height, capabilities.currentExtent.width, capabilities.currentExtent.height, extent.width,
+                 extent.height, static_cast<uint32_t>(capabilities.currentTransform), static_cast<uint32_t>(preTransform),
+                 static_cast<uint32_t>(capabilities.supportedTransforms));
 
     VkResult result = vkCreateSwapchainKHR(m_device, &createInfo, nullptr, &generation.swapchain);
     if (result != VK_SUCCESS) {
