@@ -2653,6 +2653,36 @@ bool Run(const std::filesystem::path &computePath, const std::filesystem::path &
                  "Graph-owned outline passes did not publish the selected rendering contract"))
         return false;
 
+    VkImageFormatProperties graphImageLimits{};
+    if (!Require(vkGetPhysicalDeviceImageFormatProperties(
+                     resources.context.GetPhysicalDevice(), VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D,
+                     VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                     0, &graphImageLimits) == VK_SUCCESS,
+                 "RenderGraph image format limits query failed"))
+        return false;
+    const auto rejectsImage = [&](uint32_t width, VkSampleCountFlagBits samples) {
+        RenderGraph rejected;
+        rejected.Initialize(&resources.context);
+        ResourceHandle output;
+        rejected.AddPass("UnsupportedImage", [&](PassBuilder &builder) {
+            output = builder.CreateTexture("UnsupportedColor", width, 8, VK_FORMAT_R8G8B8A8_UNORM, samples);
+            output = builder.WriteColor(output);
+            builder.SetRenderArea(width, 8);
+            return [](RenderContext &) {};
+        });
+        rejected.SetOutput(output);
+        return !rejected.Compile();
+    };
+    if (!Require(rejectsImage(graphImageLimits.maxExtent.width + 1, VK_SAMPLE_COUNT_1_BIT),
+                 "RenderGraph accepted an image wider than the device format limit"))
+        return false;
+    for (const auto samples : {VK_SAMPLE_COUNT_2_BIT, VK_SAMPLE_COUNT_4_BIT, VK_SAMPLE_COUNT_8_BIT,
+                               VK_SAMPLE_COUNT_16_BIT, VK_SAMPLE_COUNT_32_BIT, VK_SAMPLE_COUNT_64_BIT}) {
+        if ((graphImageLimits.sampleCounts & samples) == 0 &&
+            !Require(rejectsImage(8, samples), "RenderGraph accepted an unsupported image sample count"))
+            return false;
+    }
+
     RenderGraph sparseMrtGraph;
     sparseMrtGraph.Initialize(&resources.context);
     ResourceHandle sparseMrtOutput;

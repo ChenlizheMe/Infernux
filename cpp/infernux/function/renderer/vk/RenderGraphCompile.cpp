@@ -987,6 +987,24 @@ bool RenderGraph::AllocateResources()
             imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
             imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
+            // Graph declarations may request explicit sample counts and
+            // extents independently of the camera's accepted settings. Reject
+            // unsupported images at compilation, before passing them to Vulkan.
+            VkImageFormatProperties limits{};
+            const VkResult supported = vkGetPhysicalDeviceImageFormatProperties(
+                m_context->GetPhysicalDevice(), imageInfo.format, imageInfo.imageType, imageInfo.tiling,
+                imageInfo.usage, imageInfo.flags, &limits);
+            if (supported != VK_SUCCESS || (limits.sampleCounts & imageInfo.samples) == 0 ||
+                imageInfo.extent.width == 0 || imageInfo.extent.height == 0 ||
+                imageInfo.extent.width > limits.maxExtent.width || imageInfo.extent.height > limits.maxExtent.height ||
+                imageInfo.mipLevels == 0 || imageInfo.mipLevels > limits.maxMipLevels ||
+                imageInfo.arrayLayers == 0 || imageInfo.arrayLayers > limits.maxArrayLayers) {
+                INXLOG_ERROR("RenderGraph texture descriptor is unsupported by the device: ", resource.name,
+                             " (format=", imageInfo.format, ", samples=", imageInfo.samples,
+                             ", extent=", imageInfo.extent.width, "x", imageInfo.extent.height, ")");
+                return false;
+            }
+
             if (vkCreateImage(device, &imageInfo, nullptr, &resource.allocatedImage) != VK_SUCCESS) {
                 INXLOG_ERROR("Failed to create image for resource: ", resource.name);
                 return false;
