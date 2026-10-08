@@ -466,6 +466,13 @@ class RenderStack(PipelineReloadMixin, InxComponent):
     @property
     def effect_stages(self):
         """Pipeline-declared EffectStages in topology order."""
+        if getattr(_Infernux, "__runtime_profile__", "") == "web-player":
+            from infernux.renderstack.forward_parameters import _WEB_EFFECT_STAGES
+
+            # Validate the selected backend pipeline without constructing the
+            # desktop RenderGraph or importing its native callbacks.
+            self.pipeline
+            return _WEB_EFFECT_STAGES
         return tuple(self._build_full_topology_probe().effect_stages)
 
     @property

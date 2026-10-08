@@ -160,7 +160,7 @@
     {
       "reference": "infernux/platform-web",
       "name": "Infernux Web Platform",
-      "version": "0.2.10",
+      "version": "0.2.11",
       "intro": "Build Infernux games for browsers with WebGPU.",
       "intros": {
         "zh-CN": "使用 WebGPU 将 Infernux 游戏构建到浏览器。"
@@ -171,7 +171,7 @@
       "repository": "https://github.com/ChenlizheMe/infernux_web",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-web/0.2.10/infernux.platform-web.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-web/0.2.11/infernux.platform-web.inxpkg"
       },
       "category": "platform_build",
       "targets": [

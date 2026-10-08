@@ -45,6 +45,7 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         self._canvas = None
         self._last_screen_view = None
         self._back_reported = False
+        self._render_settings_stack = None
 
     def start(self):
         inx.jit.warmup(cpu_jit_probe, 7)
@@ -168,6 +169,7 @@ class PlatformFixtureBootstrap(inx.InxComponent):
     def update(self, delta_time: float):
         del delta_time
         self._validate_camera_clear()
+        self._validate_render_settings()
         self._validate_screen_state()
         self._validate_cancel_action()
         self._validate_touch_input()
@@ -188,6 +190,34 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         if inx.input.Input.get_key_down("4"):
             camera.clear_flags = CameraClearFlags.Skybox
             inx.Debug.log("INFERNUX_CAMERA_PROBE 4")
+
+    def _validate_render_settings(self):
+        from infernux.renderstack import RenderStack
+        from infernux.renderstack.forward_parameters import MSAASamples
+        from infernux.renderstack.render_effect import RenderEffect
+        from infernux.renderstack.render_effect_asset import RenderEffectAsset
+
+        for key in "5678":
+            if not inx.input.Input.get_key_down(key):
+                continue
+            camera = inx.SceneManager.get_active_scene().main_camera
+            if key == "5":
+                owner = inx.SceneManager.get_active_scene().create_game_object("Live RenderStack Probe")
+                self._render_settings_stack = owner.add_component(RenderStack)
+                self._render_settings_stack.set_pipeline_parameter("msaa_samples", MSAASamples.OFF)
+                tone = RenderEffect(RenderEffectAsset("infernux.post.tonemapping", {"mode": 0, "exposure": .25}))
+                self._render_settings_stack.add_effect_slot("final", tone)
+                camera.clear_flags = CameraClearFlags.SolidColor
+                camera.background_color = (.8, .2, .1, 1.)
+            elif key == "6":
+                self._render_settings_stack.set_pipeline_parameter("msaa_samples", MSAASamples.X4)
+                self._render_settings_stack.get_effect("final").set_param("exposure", 2.)
+            elif key == "7":
+                self._render_settings_stack.effect_slots[0].enabled = False
+            elif key == "8":
+                self._render_settings_stack.enabled = False
+                camera.clear_flags = CameraClearFlags.Skybox
+            inx.Debug.log("INFERNUX_RENDER_SETTINGS_PROBE " + key)
 
     def _validate_screen_state(self):
         revision = inx.Screen.revision

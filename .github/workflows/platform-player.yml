@@ -464,6 +464,7 @@ jobs:
               --verify-native-multitouch `
               --verify-fixture-ui-click `
               --verify-camera-clear `
+              --verify-render-settings `
               --track-object "Render Probe" `
               --movement-key w `
               --min-displacement 0.02 `

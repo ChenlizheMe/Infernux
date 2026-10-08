@@ -5,6 +5,16 @@ from enum import IntEnum
 
 from infernux.components.fields import serialized_field
 from infernux.renderstack._serialized_field_mixin import SerializedFieldCollectorMixin
+from infernux.renderstack.effect_stage import EffectResourceContract, EffectScope, EffectStage
+
+
+_WEB_EFFECT_STAGES = (
+    EffectStage(
+        "final", EffectScope.COMPOSITE, "Final Post Processing",
+        EffectResourceContract(inputs={"color"}, outputs={"color"},
+                               capabilities={"fullscreen", "hdr_to_display"}),
+    ),
+)
 
 
 class MSAASamples(IntEnum):

@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { verifyWebKeyboard } = require("./web_keyboard_contract.cjs");
 const { verifyWebCamera } = require("./web_camera_contract.cjs");
+const { verifyWebRenderSettings } = require("./web_render_settings_contract.cjs");
 
 // Validate engine selection before loading optional browser dependencies.  A
 // malformed CI invocation must report its actionable configuration error even
@@ -205,7 +206,7 @@ async function main() {
       "[--capture-frame-output PATH] [--skip-frame-checks] " +
       "[--capture-only --fixed-delta N --pause-after-frame N] " +
       "[--device-scale-factor N] " +
-      "[--verify-particle-bloom] [--verify-native-multitouch] [--verify-camera-clear] " +
+      "[--verify-particle-bloom] [--verify-native-multitouch] [--verify-camera-clear] [--verify-render-settings] " +
       "[--verify-mobile-ime] [--verify-fixture-ui-click]",
     );
   }
@@ -272,6 +273,7 @@ async function main() {
   const verifyParticleBloom = process.argv.includes("--verify-particle-bloom");
   const verifyNativeMultitouch = process.argv.includes("--verify-native-multitouch");
   const verifyCameraClear = process.argv.includes("--verify-camera-clear");
+  const verifyRenderSettings = process.argv.includes("--verify-render-settings");
   const verifyMobileIme = process.argv.includes("--verify-mobile-ime");
   const verifyFixtureUiClick = process.argv.includes("--verify-fixture-ui-click");
   if (captureOnly && verifyFixtureUiClick) {
@@ -701,6 +703,10 @@ async function main() {
     const cameraClear = verifyCameraClear ? await verifyWebCamera(page, () => readCanvasFrame(canvas)) : null;
     if (cameraClear && !cameraClear.passed) {
       throw new Error(`Web camera clear failed: ${JSON.stringify(cameraClear)}`);
+    }
+    const renderSettings = verifyRenderSettings ? await verifyWebRenderSettings(page, () => readCanvasFrame(canvas)) : null;
+    if (renderSettings && !renderSettings.passed) {
+      throw new Error(`Web live render settings failed: ${JSON.stringify(renderSettings)}`);
     }
     let gameplayMovement = null;
     if (trackedObject) {
@@ -1263,6 +1269,7 @@ async function main() {
     result.initialKeyboardFocus = initialKeyboardFocus;
     result.keyboardMapping = keyboardMapping;
     result.cameraClear = cameraClear;
+    result.renderSettings = renderSettings;
     result.nativeWPressed = nativeWPressed;
     result.nativeWReleased = nativeWReleased;
     result.pythonWPressed = pythonWPressed;
