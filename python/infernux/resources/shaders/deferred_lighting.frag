@@ -45,7 +45,10 @@ vec3 reconstructWorldPosition(vec2 uv, float depth) {
 }
 
 void main() {
-    float depth = texture(_SceneDepth, inUV).r;
+    // GBuffer fields and depth describe the same rasterized sample. Filtering
+    // them independently blends material data across silhouettes.
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    float depth = texelFetch(_SceneDepth, pixel, 0).r;
     if (depth >= 0.999999) {
         outColor = vec4(0.0);
         return;
@@ -53,16 +56,16 @@ void main() {
 
     // Scene depth is shared across routes. Only this route's GBuffer record
     // authorizes deferred shading; model ID zero is cleared/uncovered space.
-    uvec4 objectData = texture(_GObject, inUV);
+    uvec4 objectData = texelFetch(_GObject, pixel, 0);
     if (objectData.y == 0u) {
         outColor = vec4(0.0);
         return;
     }
 
-    vec4 base = texture(_GAlbedo, inUV);
-    vec4 normalData = texture(_GNormal, inUV);
-    vec4 materialData = texture(_GMaterial, inUV);
-    vec4 emissionData = texture(_GEmission, inUV);
+    vec4 base = texelFetch(_GAlbedo, pixel, 0);
+    vec4 normalData = texelFetch(_GNormal, pixel, 0);
+    vec4 materialData = texelFetch(_GMaterial, pixel, 0);
+    vec4 emissionData = texelFetch(_GEmission, pixel, 0);
     _inx_ObjectLayerMask = objectData.x;
     _inx_ReceivesShadows = objectData.z != 0u;
 

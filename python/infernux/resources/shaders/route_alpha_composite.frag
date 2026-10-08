@@ -22,8 +22,9 @@ ShaderInfo {
 // accumulators avoids dark fringes and double-multiplication.
 
 void main() {
-    vec4 base = texture(_BaseTex, inUV);
-    vec4 layer = texture(_LayerTex, inUV);
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    vec4 base = texelFetch(_BaseTex, pixel, 0);
+    vec4 layer = texelFetch(_LayerTex, pixel, 0);
     float inverseAlpha = 1.0 - layer.a;
     outColor = vec4(
         layer.rgb + base.rgb * inverseAlpha,

@@ -47,12 +47,13 @@ ShaderInfo {
     Outputs { Float4 outColor }
 }
 void main() {
-    vec2 stepUV = 1.0 / vec2(textureSize(_SourceTex, 0));
-    vec4 source = texture(_SourceTex, inUV);
-    vec3 dx = texture(_SourceTex, inUV + vec2(stepUV.x, 0.0)).rgb
-            - texture(_SourceTex, inUV - vec2(stepUV.x, 0.0)).rgb;
-    vec3 dy = texture(_SourceTex, inUV + vec2(0.0, stepUV.y)).rgb
-            - texture(_SourceTex, inUV - vec2(0.0, stepUV.y)).rgb;
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    ivec2 last = textureSize(_SourceTex, 0) - 1;
+    vec4 source = texelFetch(_SourceTex, pixel, 0);
+    vec3 dx = texelFetch(_SourceTex, min(pixel + ivec2(1, 0), last), 0).rgb
+            - texelFetch(_SourceTex, max(pixel - ivec2(1, 0), ivec2(0)), 0).rgb;
+    vec3 dy = texelFetch(_SourceTex, min(pixel + ivec2(0, 1), last), 0).rgb
+            - texelFetch(_SourceTex, max(pixel - ivec2(0, 1), ivec2(0)), 0).rgb;
     vec3 edges = vec3(step(0.2, length(dx) + length(dy)));
     outColor = vec4(mix(source.rgb, edges, pc.intensity), source.a);
 }

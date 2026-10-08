@@ -33,7 +33,7 @@ ShaderInfo {
 
 void main() {
     vec3 bloom = texture(_BloomTex, inUV).rgb;
-    vec4 sceneSample = texture(_SceneColor, inUV);
+    vec4 sceneSample = texelFetch(_SceneColor, ivec2(gl_FragCoord.xy), 0);
     vec3 scene = sceneSample.rgb;
 
     // Apply tint and intensity

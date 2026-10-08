@@ -62,7 +62,7 @@ class BloomEffect(FullScreenEffect):
     def get_shader_list(self) -> List[str]:
         return [
             "Fullscreen Triangle",
-            "Fullscreen Blit",
+            "Fullscreen Copy",
             "Bloom Prefilter",
             "Bloom Downsample",
             "Bloom Upsample",
@@ -136,7 +136,7 @@ class BloomEffect(FullScreenEffect):
         with graph.add_pass("Bloom_SceneCopy") as p:
             p.set_texture("_SourceTex", color_handle)
             p.write_color(scene_copy)
-            p.fullscreen_quad("Fullscreen Blit")
+            p.fullscreen_quad("Fullscreen Copy")
 
         # ---- Pass 1: Prefilter (scene_copy → mip0) ----
         with graph.add_pass("Bloom_Prefilter") as p:

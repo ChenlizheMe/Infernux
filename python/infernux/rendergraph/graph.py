@@ -1499,7 +1499,7 @@ class RenderGraph:
         with self.add_pass("_DisplayEncode_Commit") as p:
             p.set_texture("_SourceTex", "_display_encode")
             p.write_color("color")
-            p.fullscreen_quad("Fullscreen Blit")
+            p.fullscreen_quad("Fullscreen Copy")
 
     # ---- Pass management ----
 

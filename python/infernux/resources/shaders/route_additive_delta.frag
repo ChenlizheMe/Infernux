@@ -17,7 +17,8 @@ ShaderInfo {
 }
 
 void main() {
-    vec3 original = texture(_OriginalTex, inUV).rgb;
-    vec3 processed = texture(_ProcessedTex, inUV).rgb;
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    vec3 original = texelFetch(_OriginalTex, pixel, 0).rgb;
+    vec3 processed = texelFetch(_ProcessedTex, pixel, 0).rgb;
     outColor = vec4(max(processed - original, vec3(0.0)), 0.0);
 }

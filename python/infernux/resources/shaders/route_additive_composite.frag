@@ -17,7 +17,8 @@ ShaderInfo {
 }
 
 void main() {
-    vec4 base = texture(_BaseTex, inUV);
-    vec3 additive = texture(_AdditiveTex, inUV).rgb;
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    vec4 base = texelFetch(_BaseTex, pixel, 0);
+    vec3 additive = texelFetch(_AdditiveTex, pixel, 0).rgb;
     outColor = vec4(base.rgb + additive, base.a);
 }

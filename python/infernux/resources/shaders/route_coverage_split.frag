@@ -22,9 +22,10 @@ ShaderInfo {
 void main() {
     // Keep each pixel's premultiplied RGBA intact, including MSAA coverage.
     // Multiplying by coverage again would darken edges and lose Bloom energy.
-    bool geometry = texture(_OriginalTex, inUV).a > 0.0;
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    bool geometry = texelFetch(_OriginalTex, pixel, 0).a > 0.0;
     bool selectOutside = pc.outside > 0.5;
     outColor = (geometry != selectOutside)
-        ? texture(_ProcessedTex, inUV)
+        ? texelFetch(_ProcessedTex, pixel, 0)
         : vec4(0.0);
 }

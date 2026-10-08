@@ -43,7 +43,7 @@ float triangularDither(vec2 pixel, vec2 offset) {
 }
 
 void main() {
-    vec4 source = texture(_SourceTex, inUV);
+    vec4 source = texelFetch(_SourceTex, ivec2(gl_FragCoord.xy), 0);
     if (pc.stopNaNs > 0.5 && (any(isnan(source)) || any(isinf(source)))) {
         source = vec4(0.0, 0.0, 0.0, 1.0);
     }
