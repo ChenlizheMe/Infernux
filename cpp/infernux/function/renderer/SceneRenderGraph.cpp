@@ -78,9 +78,10 @@ lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const s
     if (!camera)
         return result;
 
-    const auto cameraToWorld = camera->GetCameraToWorldMatrix();
-    const glm::vec3 cameraPosition(cameraToWorld[3]);
-    const glm::vec3 cameraForward = glm::normalize(glm::vec3(cameraToWorld[2]));
+    // Cascade selection in the shader uses view-space z, including any
+    // affine view override. A normalized world forward changes those units.
+    const auto view = camera->GetViewMatrix();
+    const glm::vec3 depthAxis(view[0][2], view[1][2], view[2][2]);
     float nearest = std::numeric_limits<float>::max();
     float farthest = 0.0f;
     for (const DrawCall &drawCall : drawCalls) {
@@ -88,8 +89,8 @@ lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const s
             continue;
         const glm::vec3 center = (drawCall.worldBounds.min + drawCall.worldBounds.max) * 0.5f;
         const glm::vec3 extent = (drawCall.worldBounds.max - drawCall.worldBounds.min) * 0.5f;
-        const float centerDepth = glm::dot(center - cameraPosition, cameraForward);
-        const float depthRadius = glm::dot(glm::abs(cameraForward), extent);
+        const float centerDepth = glm::dot(center, depthAxis) + view[3][2];
+        const float depthRadius = glm::dot(glm::abs(depthAxis), extent);
         const float objectFar = centerDepth + depthRadius;
         if (objectFar <= 0.0f)
             continue;
@@ -97,15 +98,17 @@ lighting::ShadowDepthRange VisibleShadowDepthRange(const Camera *camera, const s
         // A huge receiver crossing the camera should not collapse the entire
         // logarithmic distribution onto the near clip plane.
         const float boundedRadius = std::min(depthRadius, std::max(centerDepth * 0.5f, 0.0f));
-        nearest = std::min(nearest, std::max(centerDepth - boundedRadius, camera->GetNearClip()));
+        nearest = std::min(nearest, std::max(centerDepth - boundedRadius, 0.001f));
         farthest = std::max(farthest, objectFar);
     }
     if (farthest <= 0.0f || nearest == std::numeric_limits<float>::max())
         return result;
 
-    const float span = std::max(farthest - nearest, camera->GetNearClip());
+    // These are geometry bounds. ComputeShadowVP intersects them with the
+    // effective projection; dormant authored clipping planes do not apply.
+    const float span = std::max(farthest - nearest, 0.001f);
     result.nearDepth = nearest;
-    result.farDepth = std::min(farthest + span * 0.05f, camera->GetFarClip());
+    result.farDepth = farthest + span * 0.05f;
     return result;
 }
 

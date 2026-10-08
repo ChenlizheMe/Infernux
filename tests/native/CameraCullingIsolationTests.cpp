@@ -231,6 +231,110 @@ static void TestResidentLightShadows(SceneManager &manager)
     }
 }
 
+static void TestEffectiveProjectionShadowCoverage(SceneManager &manager)
+{
+    auto *scene = manager.CreateScene("EffectiveShadowProjection");
+    auto *camera = scene->CreateGameObject("Camera")->AddComponent<Camera>();
+    auto *light = scene->CreateGameObject("Sun")->AddComponent<Light>();
+    light->SetShadows(LightShadows::Hard);
+    light->GetTransform()->SetEulerAngles(30, 45, 0);
+    SceneLightCollector collector;
+    auto collect = [&]() {
+        collector.CollectLights(scene, {});
+        collector.ComputeShadowVP(scene, {}, 4096, camera, {2, 20});
+        return collector.GetShadowFrame();
+    };
+    auto covered = [&](const lighting::ShadowFrame &frame) {
+        assert(frame.views.size() == lighting::DirectionalCascadeCount);
+        const glm::dmat4 projection(camera->GetProjectionMatrix());
+        const auto inverse = glm::inverse(projection);
+        const glm::dmat4 cameraToWorld(camera->GetCameraToWorldMatrix());
+        size_t tested = 0;
+        for (const auto &view : frame.views) {
+            // Independent receiver oracle: interior pixels at three depths
+            // selected by the shader's cascade ranges, intersected with real
+            // projection rays. Ignore points clipped by an oblique near plane.
+            for (double fraction : {0.1, 0.5, 0.9})
+                for (double x : {-0.85, 0.0, 0.85})
+                    for (double y : {-0.85, 0.0, 0.85}) {
+                        const double depth = glm::mix(double(view.splitNear), double(view.splitFar), fraction);
+                        const auto h0 = inverse * glm::dvec4(x, y, 0, 1);
+                        const auto h1 = inverse * glm::dvec4(x, y, 0.5, 1);
+                        assert(h0.w != 0 && h1.w != 0);
+                        const auto p0 = glm::dvec3(h0) / h0.w;
+                        const auto p1 = glm::dvec3(h1) / h1.w;
+                        const auto receiver = p0 + (p1 - p0) * ((depth - p0.z) / (p1.z - p0.z));
+                        const auto clip = projection * glm::dvec4(receiver, 1);
+                        if (clip.w <= 0 || clip.z < 0 || clip.z > clip.w)
+                            continue;
+                        ++tested;
+                        const auto world = cameraToWorld * glm::dvec4(receiver, 1);
+                        const auto shadow = glm::dmat4(view.viewProjection) * world;
+                        assert(std::isfinite(shadow.x) && std::isfinite(shadow.y) && std::isfinite(shadow.z));
+                        assert(std::abs(shadow.x / shadow.w) <= 1.002);
+                        assert(std::abs(shadow.y / shadow.w) <= 1.002);
+                    }
+        }
+        assert(tested >= 36);
+    };
+    for (bool affineView : {false, true}) {
+        glm::mat4 view(1.0f);
+        if (affineView) {
+            view[0][0] = 0.5f;
+            view[1][0] = 0.3f;
+            view[2][2] = 2.0f;
+            view[3] = {4, -3, 1, 1};
+        }
+        camera->SetViewMatrix(view);
+        for (int kind = 0; kind < 5; ++kind) {
+            camera->ResetProjectionMatrix();
+            camera->SetClipPlanes(0.1f, 100.0f);
+            camera->SetAspectRatio(1.3f);
+            camera->SetFieldOfView(60.0f);
+            camera->SetProjectionMode(kind == 1 ? CameraProjection::Orthographic : CameraProjection::Perspective);
+            camera->SetOrthographicSize(5.0f);
+            auto projection = camera->GetProjectionMatrix();
+            if (kind == 2) { // Asymmetric lens shift.
+                projection[2][0] += 0.6f;
+                projection[2][1] -= 0.3f;
+            } else if (kind == 3) {
+                projection = camera->CalculateObliqueMatrix({0.3f, 0.1f, 1.0f, -1.0f});
+            } else if (kind == 4) { // Left-handed ZO infinite far plane.
+                projection[2][2] = 1.0f;
+                projection[3][2] = -0.1f;
+            }
+            const auto ordinary = collect();
+            if (kind <= 1)
+                covered(ordinary);
+            camera->SetProjectionMatrix(projection);
+            const auto original = collect();
+            covered(original);
+            if (kind <= 1)
+                for (size_t index = 0; index < original.views.size(); ++index)
+                    assert(original.views[index].viewProjection == ordinary.views[index].viewProjection);
+
+            // These parameters are dormant until ResetProjectionMatrix. None
+            // may affect cascade geometry, depth selection or atlas placement.
+            camera->SetClipPlanes(0.01f, 5000.0f);
+            camera->SetFieldOfView(20.0f);
+            camera->SetAspectRatio(2.0f);
+            camera->SetProjectionMode(CameraProjection::Orthographic);
+            camera->SetOrthographicSize(20.0f);
+            assert(camera->GetProjectionMatrix() == projection);
+            const auto changed = collect();
+            covered(changed);
+            for (size_t index = 0; index < changed.views.size(); ++index) {
+                const auto &a = original.views[index];
+                const auto &b = changed.views[index];
+                assert(a.splitNear == b.splitNear && a.splitFar == b.splitFar);
+                assert(a.viewProjection == b.viewProjection);
+                assert(a.atlas.x == b.atlas.x && a.atlas.y == b.atlas.y && a.atlas.size == b.atlas.size);
+            }
+        }
+    }
+    manager.UnloadAllScenes();
+}
+
 int main()
 {
     auto &registry = AssetRegistry::Instance();
@@ -697,6 +801,7 @@ int main()
     registry.DestroyRuntimeMesh(importedGuid);
     TestAnimatedBoundsInvalidateBothCameraCaches(registry, manager);
     TestResidentLightShadows(manager);
+    TestEffectiveProjectionShadowCoverage(manager);
     registry.Shutdown();
     return 0;
 }

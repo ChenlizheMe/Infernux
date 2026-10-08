@@ -28,6 +28,7 @@ class AdditiveShadowCase:
         camera_object = self.create_object('Additive Shadow Camera')
         camera_object.transform.position = Vector3(0, 0, -6)
         camera = camera_object.add_component('Camera')
+        self.camera = camera
         camera.set_clip_planes(.1, 100.)
         camera.clear_flags = CameraClearFlags.SolidColor
         camera.background_color = vec4f(0, 0, 0, 1)
