@@ -1,4 +1,5 @@
 #include "LineRenderer.h"
+#include "Camera.h"
 #include "ComponentFactory.h"
 #include "Transform.h"
 #include <algorithm>
@@ -19,6 +20,31 @@ constexpr uint32_t LINE_VERTEX_MARKER = 0x4C494E45u;
 constexpr float DIRECTION_EPSILON = 1.0e-6f;
 constexpr float METRIC_EPSILON = 1.0e-5f;
 constexpr uint32_t MAX_ROUNDING_VERTICES = 1024u;
+
+// Keep expansion identical to the LINE vertex branch in vertex_main.glsl.
+// Camera-plane axes define the width when the tangent approaches the view
+// normal; the geometric hemisphere keeps that transition continuous.
+glm::vec3 RibbonSide(const glm::vec3 &facing, const glm::vec3 &tangent,
+                     const glm::vec3 &cameraRight, const glm::vec3 &cameraUp)
+{
+    glm::vec3 planeSide = cameraRight - tangent * glm::dot(cameraRight, tangent);
+    if (glm::dot(planeSide, planeSide) < 1.0e-8f)
+        planeSide = cameraUp - tangent * glm::dot(cameraUp, tangent);
+    if (glm::dot(planeSide, planeSide) < 1.0e-10f)
+        planeSide = std::abs(tangent.x) < 0.9f ? glm::cross(tangent, glm::vec3(1, 0, 0))
+                                              : glm::cross(tangent, glm::vec3(0, 1, 0));
+    planeSide = glm::normalize(planeSide);
+    glm::vec3 geometricSide = glm::cross(facing, tangent);
+    const float geometricLength = glm::length(geometricSide);
+    if (geometricLength > 0.20f)
+        return geometricSide / geometricLength;
+    if (geometricLength <= 1.0e-6f)
+        return planeSide;
+    geometricSide /= geometricLength;
+    if (glm::dot(planeSide, geometricSide) < 0.0f)
+        planeSide = -planeSide;
+    return glm::normalize(glm::mix(planeSide, geometricSide, glm::smoothstep(0.025f, 0.20f, geometricLength)));
+}
 
 bool ApproximatelyEqual(const glm::mat3 &left, const glm::mat3 &right)
 {
@@ -445,9 +471,23 @@ void LineRenderer::SetGenerateLightingData(bool generate)
     RebuildMesh();
 }
 
-void LineRenderer::BakeMesh(MeshRenderer &target, const glm::vec3 &cameraPosition, bool useTransform) const
+void LineRenderer::BakeMesh(MeshRenderer &target, const Camera *camera, bool useTransform) const
 {
-    RequireFinite(cameraPosition, "LineRenderer bake camera position");
+    glm::mat4 cameraWorld(1.0f);
+    if (camera) {
+        // The view override is authoritative, including reflected/custom
+        // cameras. Transform position/rotation alone cannot describe it.
+        cameraWorld = glm::inverse(camera->GetViewMatrix());
+    } else if (const auto *transform = GetTransform()) {
+        cameraWorld[0] = glm::vec4(transform->GetWorldRight(), 0.0f);
+        cameraWorld[1] = glm::vec4(transform->GetWorldUp(), 0.0f);
+        cameraWorld[2] = glm::vec4(-transform->GetWorldForward(), 0.0f);
+    } else {
+        cameraWorld[2][2] = -1.0f;
+    }
+    const glm::vec3 viewFacing = glm::normalize(-glm::vec3(cameraWorld[2]));
+    const glm::vec3 cameraRight = glm::normalize(glm::vec3(cameraWorld[0]));
+    const glm::vec3 cameraUp = glm::normalize(glm::vec3(cameraWorld[1]));
     const std::vector<Vertex> sourceVertices = GetInlineVertices();
     const std::vector<uint32_t> sourceIndices = GetInlineIndices();
     std::vector<Vertex> bakedVertices;
@@ -466,36 +506,32 @@ void LineRenderer::BakeMesh(MeshRenderer &target, const glm::vec3 &cameraPositio
         Vertex baked = source;
         const glm::vec3 centerWorld = glm::vec3(objectWorld * glm::vec4(source.pos, 1.0f));
         glm::vec3 tangentWorld = glm::mat3(objectWorld) * glm::vec3(source.tangent);
-        if (glm::dot(tangentWorld, tangentWorld) <= DIRECTION_EPSILON * DIRECTION_EPSILON)
+        if (glm::dot(tangentWorld, tangentWorld) <= 1.0e-10f)
             tangentWorld = glm::vec3(1.0f, 0.0f, 0.0f);
         else
             tangentWorld = glm::normalize(tangentWorld);
-        glm::vec3 facing =
-            m_alignment == LineAlignment::View ? cameraPosition - centerWorld : normalMatrix * source.normal;
-        if (glm::dot(facing, facing) <= DIRECTION_EPSILON * DIRECTION_EPSILON)
-            facing = glm::vec3(0.0f, 0.0f, 1.0f);
+        glm::vec3 authoredNormal = normalMatrix * source.normal;
+        if (glm::dot(authoredNormal, authoredNormal) <= 1.0e-10f)
+            authoredNormal = glm::vec3(0.0f, 0.0f, 1.0f);
         else
-            facing = glm::normalize(facing);
-        glm::vec3 side = glm::cross(facing, tangentWorld);
-        if (glm::dot(side, side) <= DIRECTION_EPSILON * DIRECTION_EPSILON)
-            side = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), tangentWorld);
-        if (glm::dot(side, side) <= DIRECTION_EPSILON * DIRECTION_EPSILON)
-            side = glm::vec3(1.0f, 0.0f, 0.0f);
-        else
-            side = glm::normalize(side);
+            authoredNormal = glm::normalize(authoredNormal);
+        const glm::vec3 facing = m_alignment == LineAlignment::View ? viewFacing : authoredNormal;
+        const glm::vec3 side = RibbonSide(facing, tangentWorld, cameraRight, cameraUp);
         const glm::vec3 expandedWorld = centerWorld + side * source.boneWeights.x;
+        const glm::vec3 worldNormal = m_generateLightingData ? facing : authoredNormal;
 
         if (outputWorldSpace) {
             baked.pos = expandedWorld;
-            baked.normal = facing;
+            baked.normal = worldNormal;
             baked.tangent = glm::vec4(tangentWorld, 1.0f);
         } else {
             baked.pos = glm::vec3(inverseWorld * glm::vec4(expandedWorld, 1.0f));
-            glm::vec3 localNormal = glm::transpose(glm::mat3(objectWorld)) * facing;
+            glm::vec3 localNormal = glm::transpose(glm::mat3(objectWorld)) * worldNormal;
             if (glm::dot(localNormal, localNormal) > DIRECTION_EPSILON * DIRECTION_EPSILON)
                 localNormal = glm::normalize(localNormal);
             baked.normal = localNormal;
             baked.tangent = source.tangent;
+            baked.tangent.w = glm::sign(glm::determinant(glm::mat3(objectWorld)));
         }
         baked.boneIndices = glm::uvec4(0u);
         baked.boneWeights = glm::vec4(0.0f);

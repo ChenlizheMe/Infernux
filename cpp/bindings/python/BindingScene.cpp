@@ -1634,15 +1634,7 @@ void RegisterSceneBindings(py::module_ &m)
                       &LineRenderer::SetGenerateLightingData)
         .def(
             "bake_mesh",
-            [](const LineRenderer &renderer, MeshRenderer &target, Camera *camera, bool useTransform) {
-                glm::vec3 cameraPosition(0.0f, 0.0f, 1.0f);
-                if (camera && camera->GetTransform())
-                    cameraPosition = glm::vec3(camera->GetTransform()->GetWorldMatrix()[3]);
-                else if (renderer.GetTransform())
-                    cameraPosition =
-                        glm::vec3(renderer.GetTransform()->GetWorldMatrix() * glm::vec4(0.0f, 0.0f, 1.0f, 1.0f));
-                renderer.BakeMesh(target, cameraPosition, useTransform);
-            },
+            &LineRenderer::BakeMesh,
             py::arg("target"), py::arg("camera") = nullptr, py::arg("use_transform") = false,
             "Bake the expanded line snapshot into a MeshRenderer inline mesh")
         .def("simplify", &LineRenderer::Simplify, py::arg("tolerance"),

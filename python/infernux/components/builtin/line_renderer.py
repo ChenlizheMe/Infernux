@@ -251,7 +251,8 @@ class LineRenderer(MeshRenderer):
     def bake_mesh(self, target, camera=None, use_transform: bool = False) -> None:
         """Bake a static snapshot into a MeshRenderer.
 
-        ``camera`` controls billboard orientation when alignment is ``View``.
+        ``camera`` supplies the rendered view plane, including custom view
+        matrices. Without a camera, the object's orientation defines the plane.
         ``use_transform`` includes this object's transform in the baked data.
         """
         target_cpp = getattr(target, "_cpp_component", target)

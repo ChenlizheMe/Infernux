@@ -8,6 +8,8 @@
 namespace infernux
 {
 
+class Camera;
+
 enum class LineAlignment : uint8_t
 {
     View = 0,
@@ -174,7 +176,7 @@ class LineRenderer final : public MeshRenderer
     void SetGenerateLightingData(bool generate);
 
     /// Snapshot the expanded ribbon into another renderer's inline mesh.
-    void BakeMesh(MeshRenderer &target, const glm::vec3 &cameraPosition, bool useTransform) const;
+    void BakeMesh(MeshRenderer &target, const Camera *camera, bool useTransform) const;
 
     void Simplify(float tolerance);
 
