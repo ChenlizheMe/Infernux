@@ -11,6 +11,7 @@ import shutil
 def prepare(fixture: Path, project: Path, platform_package: Path) -> dict:
     import infernux
     from infernux.lib import _Infernux
+    from infernux.version import ENGINE_RELEASE
     from infernux.engine.project_context import set_project_root
     from infernux.plugins import InxPackage, PluginManager
 
@@ -23,6 +24,8 @@ def prepare(fixture: Path, project: Path, platform_package: Path) -> dict:
     if not (fixture / 'Assets').is_dir() or not (fixture / 'ProjectSettings').is_dir():
         raise ValueError(f'Invalid acceptance fixture: {fixture}')
     shutil.copytree(fixture, project)
+    # This creates a new candidate fixture; it never upgrades an existing project.
+    (project / '.infernux-version').write_text(ENGINE_RELEASE + '\n', encoding='utf-8')
     # A candidate build must not overwrite an immutable published plugin
     # version in the developer's shared Hub cache.
     cache = project / '.runtime/package-cache'
@@ -38,7 +41,8 @@ def prepare(fixture: Path, project: Path, platform_package: Path) -> dict:
             raise RuntimeError(f'Platform package installation failed: {installed.error}')
     finally:
         manager.shutdown()
-    report = dict(project=str(project), installed_origins=origins, platform_package=str(platform_package))
+    report = dict(project=str(project), engine_release=ENGINE_RELEASE,
+                  installed_origins=origins, platform_package=str(platform_package))
     (project / '.runtime/preparation.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     return report
 
