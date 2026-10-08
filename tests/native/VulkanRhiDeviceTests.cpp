@@ -14,6 +14,8 @@
 #include <thread>
 #include <type_traits>
 
+#include "RhiIdentityTests.h"
+
 using namespace infernux;
 
 namespace
@@ -158,8 +160,23 @@ void TestPhysicalDeviceSelection()
 
 } // namespace
 
-int main()
+int main(int argc, char **argv)
 {
+    if (argc > 1) {
+        try {
+            const std::string scenario = argv[1];
+            if (scenario == "identity-release" || scenario == "identity-reset")
+                rhi_identity_test::SlotExhaustion(scenario == "identity-reset");
+            else if (scenario == "identity-device")
+                rhi_identity_test::DeviceExhaustion();
+            else
+                throw std::invalid_argument("Unknown identity scenario");
+            return 0;
+        } catch (const std::exception &error) {
+            std::cerr << error.what() << '\n';
+            return 1;
+        }
+    }
     TestPhysicalDeviceSelection();
     vk::VulkanCapabilityProbeData numericProbe;
     numericProbe.apiVersion = VK_API_VERSION_1_2;
@@ -456,5 +473,9 @@ int main()
     assert(incompleteChain.GetFailure().code == rhi::DeviceCapabilityDiagnosticCode::IncompleteDescriptorIndexing);
     assert(incompleteChain.GetFeatures2().pNext == nullptr);
     assert(!incompleteChain.GetEnabledState().bindless.IsEnabled());
+    rhi_identity_test::SlotExhaustion(false);
+    rhi_identity_test::SlotExhaustion(true);
+    // Last: this intentionally exhausts the process-wide device namespace.
+    rhi_identity_test::DeviceExhaustion();
     return 0;
 }

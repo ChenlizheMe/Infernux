@@ -715,7 +715,7 @@ VulkanRhiDevice::VulkanRhiDevice() : m_deviceId(rhi::AllocateDeviceId())
 VulkanRhiDevice::VulkanRhiDevice(VkDevice device, VmaAllocator allocator, const rhi::DeviceCaps &capabilities,
                                  uint32_t graphicsQueueFamily, uint32_t computeQueueFamily,
                                  uint32_t transferQueueFamily,
-                                 const rhi::DeviceCapabilityState &capabilityState) noexcept
+                                 const rhi::DeviceCapabilityState &capabilityState)
     : m_deviceId(rhi::AllocateDeviceId()), m_device(device), m_allocator(allocator), m_capabilities(capabilities),
       m_graphicsQueueFamily(graphicsQueueFamily), m_computeQueueFamily(computeQueueFamily),
       m_transferQueueFamily(transferQueueFamily), m_capabilityState(capabilityState),
@@ -906,9 +906,10 @@ void VulkanRhiDevice::Release(std::vector<Slot<Payload>> &slots, uint32_t &freeH
 
     slot.payload = {};
     slot.occupied = false;
-    ++slot.generation;
-    if (slot.generation == 0)
-        slot.generation = 1;
+    if (!rhi::AdvanceHandleVersion(slot.generation)) {
+        slot.nextFree = UINT32_MAX;
+        return;
+    }
     slot.nextFree = freeHead;
     freeHead = handle.index;
 }
@@ -920,10 +921,12 @@ void VulkanRhiDevice::ResetSlots(std::vector<Slot<Payload>> &slots, uint32_t &fr
     for (size_t i = slots.size(); i > 0; --i) {
         auto &slot = slots[i - 1];
         slot.payload = {};
+        if (slot.occupied)
+            (void)rhi::AdvanceHandleVersion(slot.generation);
         slot.occupied = false;
-        ++slot.generation;
+        slot.nextFree = UINT32_MAX;
         if (slot.generation == 0)
-            slot.generation = 1;
+            continue;
         slot.nextFree = freeHead;
         freeHead = static_cast<uint32_t>(i - 1);
     }

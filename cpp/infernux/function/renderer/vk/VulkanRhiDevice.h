@@ -212,7 +212,7 @@ class VulkanRhiDevice final : public rhi::Device
     explicit VulkanRhiDevice(VkDevice device, VmaAllocator allocator = VK_NULL_HANDLE,
                              const rhi::DeviceCaps &capabilities = {}, uint32_t graphicsQueueFamily = 0,
                              uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0,
-                             const rhi::DeviceCapabilityState &capabilityState = {}) noexcept;
+                             const rhi::DeviceCapabilityState &capabilityState = {});
 
     VulkanRhiDevice(const VulkanRhiDevice &) = delete;
     VulkanRhiDevice &operator=(const VulkanRhiDevice &) = delete;
@@ -400,7 +400,7 @@ class VulkanRhiDevice final : public rhi::Device
     template <typename Payload> struct Slot
     {
         Payload payload{};
-        uint16_t generation = 1;
+        uint16_t generation = 1; // Zero permanently retires this slot.
         uint32_t nextFree = UINT32_MAX;
         bool occupied = false;
     };
