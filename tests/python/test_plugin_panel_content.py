@@ -72,7 +72,7 @@ def test_document_images_use_source_illustration_renderer(monkeypatch):
     assert requests == [(ctx, panel, "/downloaded/plugin_pages/overview.png", 720, 360)]
 
 
-def test_document_image_is_independent_of_asset_import_and_preserves_aspect(monkeypatch, tmp_path):
+def test_document_image_preserves_aspect_and_ui_preview_ownership(monkeypatch, tmp_path):
     from infernux.engine.ui import asset_resource_preview as preview
 
     path = tmp_path / "diagram.png"
@@ -90,10 +90,9 @@ def test_document_image_is_independent_of_asset_import_and_preserves_aspect(monk
     args, settings = calls[0]
     assert args[0] == f"document|{path}"
     assert args[2] == path.stat().st_mtime_ns
-    assert settings["use_imported_texture"] is False
     assert settings["authoring"] is False
     assert settings["srgb"] is True
-    assert settings["texture_format"] == "rgba8"
+    assert settings["texture_type"] == "ui"
     assert settings["max_size"] >= 1280
     assert draws == [(7, 720, 292.5)]
     assert args[0] not in preview._AUTHORING_PREVIEW_KEYS

@@ -19,8 +19,9 @@ class OwnershipData(DataAsset):
 
 
 @pytest.mark.parametrize("outcome", ["success", "rejected", "exception", "partial_failure"])
-def test_creation_preserves_an_unrelated_concurrent_directory(tmp_path, outcome):
-    assets = tmp_path / "Assets"
+def test_creation_preserves_an_unrelated_concurrent_directory(engine, tmp_path, outcome):
+    database = engine.get_asset_database()
+    assets = Path(database.assets_root) / ("concurrent_ownership_" + tmp_path.name)
     assets.mkdir()
     external = assets / "TeammateLevel"
     owned = assets / "MyLevel"
@@ -49,7 +50,7 @@ def test_creation_preserves_an_unrelated_concurrent_directory(tmp_path, outcome)
         return result
 
     command = ProjectAssetCreateCommand(
-        str(assets), creator, project_root=str(tmp_path),
+        str(assets), creator, project_root=database.project_root, asset_database=database,
         backup_root=str(tmp_path / "Library" / "EditorUndo"),
     )
     error = None
@@ -76,6 +77,7 @@ def test_creation_preserves_an_unrelated_concurrent_directory(tmp_path, outcome)
         publish.set()
         worker.join(timeout=10)
         command.dispose()
+        database.delete_asset(str(assets))
 
 
 @pytest.mark.parametrize("target", ["outside", "directory_itself", "sidecar"])
