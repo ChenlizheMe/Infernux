@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { verifyWebKeyboard } = require("./web_keyboard_contract.cjs");
+const { verifyWebCamera } = require("./web_camera_contract.cjs");
 
 // Validate engine selection before loading optional browser dependencies.  A
 // malformed CI invocation must report its actionable configuration error even
@@ -204,7 +205,7 @@ async function main() {
       "[--capture-frame-output PATH] [--skip-frame-checks] " +
       "[--capture-only --fixed-delta N --pause-after-frame N] " +
       "[--device-scale-factor N] " +
-      "[--verify-particle-bloom] [--verify-native-multitouch] " +
+      "[--verify-particle-bloom] [--verify-native-multitouch] [--verify-camera-clear] " +
       "[--verify-mobile-ime] [--verify-fixture-ui-click]",
     );
   }
@@ -270,6 +271,7 @@ async function main() {
   const captureOnly = process.argv.includes("--capture-only");
   const verifyParticleBloom = process.argv.includes("--verify-particle-bloom");
   const verifyNativeMultitouch = process.argv.includes("--verify-native-multitouch");
+  const verifyCameraClear = process.argv.includes("--verify-camera-clear");
   const verifyMobileIme = process.argv.includes("--verify-mobile-ime");
   const verifyFixtureUiClick = process.argv.includes("--verify-fixture-ui-click");
   if (captureOnly && verifyFixtureUiClick) {
@@ -695,6 +697,10 @@ async function main() {
     const keyboardMapping = await verifyWebKeyboard(page);
     if (!keyboardMapping.passed) {
       throw new Error(`Web keyboard mapping failed: ${JSON.stringify(keyboardMapping)}`);
+    }
+    const cameraClear = verifyCameraClear ? await verifyWebCamera(page, () => readCanvasFrame(canvas)) : null;
+    if (cameraClear && !cameraClear.passed) {
+      throw new Error(`Web camera clear failed: ${JSON.stringify(cameraClear)}`);
     }
     let gameplayMovement = null;
     if (trackedObject) {
@@ -1256,6 +1262,7 @@ async function main() {
     result.contextMenuPrevented = contextMenuPrevented;
     result.initialKeyboardFocus = initialKeyboardFocus;
     result.keyboardMapping = keyboardMapping;
+    result.cameraClear = cameraClear;
     result.nativeWPressed = nativeWPressed;
     result.nativeWReleased = nativeWReleased;
     result.pythonWPressed = pythonWPressed;

@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 
 import infernux as inx
+from infernux.lib import CameraClearFlags
 
 
 @inx.jit.compile(auto_parallel=False)
@@ -166,11 +167,27 @@ class PlatformFixtureBootstrap(inx.InxComponent):
 
     def update(self, delta_time: float):
         del delta_time
+        self._validate_camera_clear()
         self._validate_screen_state()
         self._validate_cancel_action()
         self._validate_touch_input()
         self._validate_text_input()
         self._record_trail_position()
+
+    def _validate_camera_clear(self):
+        camera = inx.SceneManager.get_active_scene().main_camera
+        for key, color in [
+            ("1", (0.8, 0.2, 0.1, 1.0)),
+            ("2", (0.1, 0.35, 0.7, 1.0)),
+            ("3", (0.0, 0.0, 0.0, 1.0)),
+        ]:
+            if inx.input.Input.get_key_down(key):
+                camera.clear_flags = CameraClearFlags.SolidColor
+                camera.background_color = color
+                inx.Debug.log("INFERNUX_CAMERA_PROBE " + key)
+        if inx.input.Input.get_key_down("4"):
+            camera.clear_flags = CameraClearFlags.Skybox
+            inx.Debug.log("INFERNUX_CAMERA_PROBE 4")
 
     def _validate_screen_state(self):
         revision = inx.Screen.revision

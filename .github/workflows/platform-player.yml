@@ -463,6 +463,7 @@ jobs:
               --startup-timeout-ms 360000 `
               --verify-native-multitouch `
               --verify-fixture-ui-click `
+              --verify-camera-clear `
               --track-object "Render Probe" `
               --movement-key w `
               --min-displacement 0.02 `
