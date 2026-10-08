@@ -33,6 +33,10 @@ def dependency_sources(engine, monkeypatch):
     for _,guid in reversed(paths):
         path=database.get_path_from_guid(guid)
         if path:
+            # AssetManager processes a filesystem deletion notification; the
+            # source must already be gone. Leaving an Unlit override on disk
+            # changes the shading model used by subsequent rendering tests.
+            Path(path).unlink()
             result=AssetManager.delete_asset(path)
             assert result,result.error
 

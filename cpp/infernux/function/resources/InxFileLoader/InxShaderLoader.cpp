@@ -1819,7 +1819,7 @@ std::string InxShaderLoader::GenerateGLSL(const ShaderDescriptor &desc, const st
             if (shadowNeedsAlphaClip) {
                 // AlphaClip is a material value, not a shader capability.
                 // Execute the authored surface; never guess an alpha texture
-                // by its name or position. Opaque materials skip the work.
+                // by its name or position. Opaque surfaces may still discard.
                 std::string mainTpl = LoadTemplate("surface_main_shadow.glsl");
                 ReplacePlaceholder(mainTpl, "${SURFACE_CALL}",
                                    linkedInterface ? GlslStageInterfaceEmitter::EmitSurfaceCall(*linkedInterface)
