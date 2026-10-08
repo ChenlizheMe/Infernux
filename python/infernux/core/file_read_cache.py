@@ -8,6 +8,7 @@ their own current document.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -59,6 +60,8 @@ def stamp_reusable(stamp) -> bool:
 
 if os.name == "nt":
     from ._windows_file_observation import FileProbe as _file_probe, file_stamp, stamp_reusable
+elif sys.platform.startswith("linux"):
+    from ._linux_file_observation import FileProbe as _file_probe, stamp_reusable
 
 
 class FileObservations:
