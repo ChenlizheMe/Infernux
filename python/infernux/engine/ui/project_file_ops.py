@@ -1220,6 +1220,22 @@ def delete_item(item_path: str, asset_database=None):
         return False
 
     is_dir = os.path.isdir(item_path)
+    deleted_children = []
+    if is_dir:
+        from infernux.core.assets import AssetManager
+        database = asset_database if asset_database is not None else AssetManager.require_asset_database()
+        # Capture child identities before deleting their sidecars. Directory
+        # deletion must publish the same retirement as deleting each asset;
+        # waiting for filesystem watcher events permits stale same-path imports.
+        for directory, subdirectories, filenames in os.walk(item_path):
+            subdirectories.sort()
+            for filename in sorted(filenames):
+                if filename.lower().endswith('.meta'):
+                    continue
+                path = os.path.join(directory, filename)
+                guid = database.get_guid_from_path(path)
+                if guid:
+                    deleted_children.append((path, guid))
     deleted_script_guid = ""
     if is_dir or item_path.lower().endswith('.py'):
         from infernux.components.script_loader import clear_deleted_script_errors
@@ -1266,6 +1282,10 @@ def delete_item(item_path: str, asset_database=None):
     except OSError as _exc:
         Debug.log_warning(f"Delete failed: {type(_exc).__name__}: {_exc}")
         return False
+
+    for path, guid in deleted_children:
+        if not AssetManager.delete_asset(path, database=database, guid_hint=guid):
+            raise RuntimeError(f"AssetDatabase failed to delete '{path}'")
 
     # Invalidate inspector cache so a recreated file won't reuse stale data
     from . import asset_details_renderer
