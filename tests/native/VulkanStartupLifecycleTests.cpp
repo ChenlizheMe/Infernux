@@ -12,6 +12,8 @@
 #include <Windows.h>
 #endif
 
+#include "SwapchainRecreationTests.h"
+
 int main(int argc, char **argv)
 {
 #ifdef _WIN32
@@ -57,6 +59,7 @@ int main(int argc, char **argv)
             } else if (scenario == "device_ready") {
                 assert(device.InitializeDevice(core->m_surface));
                 assert(device.IsValid() && device.GetDeviceId() != infernux::rhi::InvalidDeviceId);
+                swapchain_recreation_test::Run(device, window);
             } else {
                 assert(scenario == "surface_only");
             }

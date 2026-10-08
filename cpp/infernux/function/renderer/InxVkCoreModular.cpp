@@ -922,20 +922,21 @@ void InxVkCoreModular::RecreateSwapchain()
         return;
     }
 
-    // Presentation first builds a complete unpublished generation. Only at
-    // its commit point do we release aliases that reference
-    // the old image views; creation failure therefore leaves the active GUI
-    // and swapchain generation untouched.
+    // Build the new generation before releasing old GUI aliases on success.
+    // vkCreateSwapchainKHR itself retires the old chain, including on failure;
+    // retaining its image-view storage is not permission to acquire it again.
     const bool recreated =
         m_backend.Presentation().Recreate(m_backend.Device(), m_backend.Queues(), width, height, [this]() {
             // The old render-graph generation is about to retire. Release pass
-            // publications at the commit boundary while their device and
+            // publications at the retirement boundary while their device and
             // material manager are still valid.
             ReleaseMaterialPassResolutionCache();
             DestroyGuiRenderGraphs();
             m_depthImage.reset();
         });
     if (!recreated) {
+        if (!m_backend.Presentation().IsValid())
+            throw std::runtime_error("Swapchain recreation failed after retiring the previous generation");
         return;
     }
 

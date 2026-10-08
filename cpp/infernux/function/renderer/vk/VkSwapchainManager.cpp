@@ -32,7 +32,7 @@ VkSwapchainManager::~VkSwapchainManager()
 
 VkSwapchainManager::VkSwapchainManager(VkSwapchainManager &&other) noexcept
     : m_skipWaitIdle(other.m_skipWaitIdle), m_deviceId(other.m_deviceId),
-      m_preferredPresentMode(other.m_preferredPresentMode), m_device(other.m_device),
+      m_preferredPresentMode(other.m_preferredPresentMode), m_device(other.m_device), m_dispatch(other.m_dispatch),
       m_generation(std::move(other.m_generation)),
       m_imageAvailableSemaphores(std::move(other.m_imageAvailableSemaphores))
 {
@@ -50,6 +50,7 @@ VkSwapchainManager &VkSwapchainManager::operator=(VkSwapchainManager &&other) no
         m_deviceId = other.m_deviceId;
         m_preferredPresentMode = other.m_preferredPresentMode;
         m_device = other.m_device;
+        m_dispatch = other.m_dispatch;
         m_generation = std::move(other.m_generation);
         m_imageAvailableSemaphores = std::move(other.m_imageAvailableSemaphores);
 
@@ -66,8 +67,19 @@ VkSwapchainManager &VkSwapchainManager::operator=(VkSwapchainManager &&other) no
 
 bool VkSwapchainManager::Create(const VkDeviceContext &context, uint32_t width, uint32_t height)
 {
+    // Resolve the process loader only after the device has initialized (Volk
+    // does not publish its device functions during this owner's construction).
+    const Dispatch dispatch{vkCreateSwapchainKHR, vkGetSwapchainImagesKHR, vkCreateImageView, vkCreateSemaphore,
+                            vkAcquireNextImageKHR, vkDestroySwapchainKHR, vkDestroyImageView, vkDestroySemaphore};
+    return Create(context, width, height, dispatch);
+}
+
+bool VkSwapchainManager::Create(const VkDeviceContext &context, uint32_t width, uint32_t height,
+                                const Dispatch &dispatch)
+{
     m_deviceId = context.GetDeviceId();
     m_device = context.GetDevice();
+    m_dispatch = dispatch;
 
     SwapchainGeneration candidate;
     if (!BuildGeneration(context, width, height, VK_NULL_HANDLE, candidate))
@@ -86,7 +98,7 @@ bool VkSwapchainManager::Create(const VkDeviceContext &context, uint32_t width, 
 }
 
 bool VkSwapchainManager::Recreate(const VkDeviceContext &context, VulkanQueueManager &queues, uint32_t width,
-                                  uint32_t height, const BeforeGenerationCommit &beforeCommit)
+                                  uint32_t height, const BeforeGenerationRetire &beforeRetire)
 {
     if (m_deviceId == rhi::InvalidDeviceId || m_deviceId != context.GetDeviceId()) {
         INXLOG_ERROR("Swapchain recreation rejected: presentation device identity changed");
@@ -107,15 +119,23 @@ bool VkSwapchainManager::Recreate(const VkDeviceContext &context, VulkanQueueMan
     }
 
     SwapchainGeneration candidate;
-    if (!BuildGeneration(context, width, height, m_generation.swapchain, candidate)) {
+    if (!BuildGeneration(context, width, height, IsValid() ? m_generation.swapchain : VK_NULL_HANDLE, candidate)) {
+        if (m_generation.retired) {
+            // A retired chain cannot be restored or passed as oldSwapchain.
+            // Release its aliases before freeing it; retaining it can also
+            // keep the native window occupied and prevent a fresh creation.
+            if (beforeRetire)
+                beforeRetire();
+            DestroyGeneration(m_generation);
+        }
         return false;
     }
 
     // The new generation is complete before external framebuffers and aliases
-    // are released. This is the single commit point: ordinary creation
-    // failures leave the published generation untouched.
-    if (beforeCommit) {
-        beforeCommit();
+    // are released. Pre-call rejection retains the active generation; any
+    // failure after retirement tears it down through the same alias boundary.
+    if (m_generation.swapchain != VK_NULL_HANDLE && beforeRetire) {
+        beforeRetire();
     }
 
     SwapchainGeneration retired = std::move(m_generation);
@@ -200,7 +220,11 @@ bool VkSwapchainManager::BuildGeneration(const VkDeviceContext &context, uint32_
                  extent.height, static_cast<uint32_t>(capabilities.currentTransform),
                  static_cast<uint32_t>(preTransform), static_cast<uint32_t>(capabilities.supportedTransforms));
 
-    VkResult result = vkCreateSwapchainKHR(m_device, &createInfo, nullptr, &generation.swapchain);
+    // Vulkan retires oldSwapchain at the call, not at successful publication.
+    // Keep its views alive for external aliases, but revoke acquisition now.
+    if (oldSwapchain != VK_NULL_HANDLE)
+        m_generation.retired = true;
+    VkResult result = m_dispatch.createSwapchain(m_device, &createInfo, nullptr, &generation.swapchain);
     if (result != VK_SUCCESS) {
         INXLOG_ERROR("Failed to create swapchain: ", VkResultToString(result));
         return false;
@@ -213,14 +237,14 @@ bool VkSwapchainManager::BuildGeneration(const VkDeviceContext &context, uint32_
 
     // Get swapchain images
     uint32_t actualImageCount = 0;
-    result = vkGetSwapchainImagesKHR(m_device, generation.swapchain, &actualImageCount, nullptr);
+    result = m_dispatch.getSwapchainImages(m_device, generation.swapchain, &actualImageCount, nullptr);
     if (result != VK_SUCCESS || actualImageCount == 0) {
         INXLOG_ERROR("Failed to query swapchain image count: ", VkResultToString(result));
         DestroyGeneration(generation);
         return false;
     }
     generation.images.resize(actualImageCount);
-    result = vkGetSwapchainImagesKHR(m_device, generation.swapchain, &actualImageCount, generation.images.data());
+    result = m_dispatch.getSwapchainImages(m_device, generation.swapchain, &actualImageCount, generation.images.data());
     if (result != VK_SUCCESS && result != VK_INCOMPLETE) {
         INXLOG_ERROR("Failed to query swapchain images: ", VkResultToString(result));
         DestroyGeneration(generation);
@@ -253,7 +277,7 @@ void VkSwapchainManager::Destroy() noexcept
 
     for (VkSemaphore semaphore : m_imageAvailableSemaphores) {
         if (semaphore != VK_NULL_HANDLE)
-            vkDestroySemaphore(m_device, semaphore, nullptr);
+            m_dispatch.destroySemaphore(m_device, semaphore, nullptr);
     }
     m_imageAvailableSemaphores.clear();
     m_device = VK_NULL_HANDLE;
@@ -266,6 +290,10 @@ void VkSwapchainManager::Destroy() noexcept
 
 SwapchainResult VkSwapchainManager::AcquireNextImage(uint32_t frameSlot, uint32_t &imageIndex)
 {
+    if (!IsValid()) {
+        INXLOG_ERROR("Cannot acquire from a missing or retired swapchain generation");
+        return SwapchainResult::Error;
+    }
     if (frameSlot >= m_imageAvailableSemaphores.size()) {
         INXLOG_ERROR("AcquireNextImage received invalid frame slot ", frameSlot, " for ",
                      m_imageAvailableSemaphores.size(), " acquire semaphores");
@@ -275,7 +303,7 @@ SwapchainResult VkSwapchainManager::AcquireNextImage(uint32_t frameSlot, uint32_
     // Use a finite timeout (500 ms) so we never hang forever when the
     // window is occluded or the compositor is busy (e.g. Alt+Tab).
     constexpr uint64_t kAcquireTimeoutNs = 500'000'000; // 500 ms
-    VkResult result = vkAcquireNextImageKHR(m_device, m_generation.swapchain, kAcquireTimeoutNs,
+    VkResult result = m_dispatch.acquireNextImage(m_device, m_generation.swapchain, kAcquireTimeoutNs,
                                             m_imageAvailableSemaphores[frameSlot], VK_NULL_HANDLE, &imageIndex);
 
     if (result == VK_ERROR_SURFACE_LOST_KHR) {
@@ -444,7 +472,7 @@ bool VkSwapchainManager::CreateImageViews(SwapchainGeneration &generation)
         viewInfo.subresourceRange.baseArrayLayer = 0;
         viewInfo.subresourceRange.layerCount = 1;
 
-        VkResult result = vkCreateImageView(m_device, &viewInfo, nullptr, &generation.imageViews[i]);
+        VkResult result = m_dispatch.createImageView(m_device, &viewInfo, nullptr, &generation.imageViews[i]);
         if (result != VK_SUCCESS) {
             INXLOG_ERROR("Failed to create image view ", i, ": ", VkResultToString(result));
             return false;
@@ -462,11 +490,11 @@ bool VkSwapchainManager::CreateSyncObjects()
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
     for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        if (vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &candidate[i]) != VK_SUCCESS) {
+        if (m_dispatch.createSemaphore(m_device, &semaphoreInfo, nullptr, &candidate[i]) != VK_SUCCESS) {
             INXLOG_ERROR("Failed to create image-acquire semaphore for frame ", i);
             for (VkSemaphore semaphore : candidate) {
                 if (semaphore != VK_NULL_HANDLE) {
-                    vkDestroySemaphore(m_device, semaphore, nullptr);
+                    m_dispatch.destroySemaphore(m_device, semaphore, nullptr);
                 }
             }
             return false;
@@ -485,7 +513,7 @@ bool VkSwapchainManager::CreateRenderFinishedSemaphores(SwapchainGeneration &gen
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
     for (size_t i = 0; i < generation.renderFinishedSemaphores.size(); ++i) {
-        if (vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &generation.renderFinishedSemaphores[i]) !=
+        if (m_dispatch.createSemaphore(m_device, &semaphoreInfo, nullptr, &generation.renderFinishedSemaphores[i]) !=
             VK_SUCCESS) {
             INXLOG_ERROR("Failed to create render-finished semaphore for swapchain image ", i);
             return false;
@@ -499,7 +527,7 @@ void VkSwapchainManager::DestroyGeneration(SwapchainGeneration &generation) noex
 {
     for (VkSemaphore &semaphore : generation.renderFinishedSemaphores) {
         if (semaphore != VK_NULL_HANDLE) {
-            vkDestroySemaphore(m_device, semaphore, nullptr);
+            m_dispatch.destroySemaphore(m_device, semaphore, nullptr);
             semaphore = VK_NULL_HANDLE;
         }
     }
@@ -507,18 +535,20 @@ void VkSwapchainManager::DestroyGeneration(SwapchainGeneration &generation) noex
 
     for (auto &imageView : generation.imageViews) {
         if (imageView != VK_NULL_HANDLE) {
-            vkDestroyImageView(m_device, imageView, nullptr);
+            m_dispatch.destroyImageView(m_device, imageView, nullptr);
         }
     }
     generation.imageViews.clear();
     generation.images.clear();
 
     if (generation.swapchain != VK_NULL_HANDLE) {
-        vkDestroySwapchainKHR(m_device, generation.swapchain, nullptr);
+        m_dispatch.destroySwapchain(m_device, generation.swapchain, nullptr);
         generation.swapchain = VK_NULL_HANDLE;
     }
     generation.imageFormat = VK_FORMAT_UNDEFINED;
     generation.extent = {};
+    generation.imageUsage = 0;
+    generation.retired = false;
 }
 
 } // namespace vk
