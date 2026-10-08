@@ -268,7 +268,8 @@ const FullscreenPipelineEntry &FullscreenPipelineCache::EnsurePipeline(const Ful
         return found->second.rhi;
     }
     if (m_impl->pipelines.size() == m_impl->capacity) {
-        const auto oldest = std::min_element(m_impl->pipelines.begin(), m_impl->pipelines.end(),
+        const auto oldest = std::min_element(
+            m_impl->pipelines.begin(), m_impl->pipelines.end(),
             [](const auto &left, const auto &right) { return left.second.lastUse < right.second.lastUse; });
         m_impl->DestroyPipeline(oldest->second);
         m_impl->pipelines.erase(oldest);

@@ -7,14 +7,14 @@
  */
 
 #include "InxVkCoreModular.h"
-#include "InxError.h"
 #include "FullscreenRenderer.h"
-#include "SceneDepthResolver.h"
-#include "lighting/ForwardPlusLightGrid.h"
+#include "InxError.h"
 #include "ProfileConfig.h"
+#include "SceneDepthResolver.h"
 #include "SceneRenderTarget.h"
 #include "gui/GPUMaterialPreview.h"
 #include "gui/GPUMeshPreview.h"
+#include "lighting/ForwardPlusLightGrid.h"
 #include "vk/RhiVulkanTypes.h"
 
 #include <function/renderer/shader/ShaderProgram.h>
@@ -111,10 +111,10 @@ InxVkCoreModular::InxVkCoreModular(int maxFrameInFlight) : m_maxFramesInFlight(s
 std::shared_ptr<const SceneDepthResolveProgram> InxVkCoreModular::GetSceneDepthResolveProgram()
 {
     if (!m_sceneDepthProgram) {
-        const auto spirv = CompileBuiltinComputeProgram(SceneDepthResolver::ShaderSource(),
-                                                        "Infernux/SceneDepthResolve.comp");
-        m_sceneDepthProgram = SceneDepthResolver::CreateProgram(GetDeviceContext().GetRhiDevice(),
-                                                                spirv.data(), spirv.size());
+        const auto spirv =
+            CompileBuiltinComputeProgram(SceneDepthResolver::ShaderSource(), "Infernux/SceneDepthResolve.comp");
+        m_sceneDepthProgram =
+            SceneDepthResolver::CreateProgram(GetDeviceContext().GetRhiDevice(), spirv.data(), spirv.size());
         if (!m_sceneDepthProgram)
             throw std::runtime_error("Failed to create the built-in scene-depth program");
     }
@@ -127,7 +127,7 @@ std::shared_ptr<const lighting::ForwardPlusGridPipeline> InxVkCoreModular::GetFo
         const auto spirv = CompileBuiltinComputeProgram(lighting::ForwardPlusLightGrid::ShaderSource(),
                                                         "Infernux/ForwardPlusLightGrid.comp");
         m_forwardPlusProgram = lighting::ForwardPlusLightGrid::CreateProgram(GetDeviceContext().GetRhiDevice(),
-                                                                            {spirv.data(), spirv.size()});
+                                                                             {spirv.data(), spirv.size()});
         if (!m_forwardPlusProgram)
             throw std::runtime_error("Failed to create the built-in Forward+ program");
     }

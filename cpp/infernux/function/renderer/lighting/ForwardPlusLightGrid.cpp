@@ -11,7 +11,9 @@ namespace infernux::lighting
 // Geometry and particle views share code and layout, never mutable buffers.
 struct ForwardPlusGridPipeline
 {
-    explicit ForwardPlusGridPipeline(rhi::Device &owner) : device(owner) {}
+    explicit ForwardPlusGridPipeline(rhi::Device &owner) : device(owner)
+    {
+    }
     ~ForwardPlusGridPipeline()
     {
         device.Release(pipeline);

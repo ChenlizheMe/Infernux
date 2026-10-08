@@ -9,7 +9,9 @@ namespace infernux
 // Immutable device program; descriptor groups below remain view-local.
 struct SceneDepthResolveProgram
 {
-    explicit SceneDepthResolveProgram(rhi::Device &owner) : device(owner) {}
+    explicit SceneDepthResolveProgram(rhi::Device &owner) : device(owner)
+    {
+    }
     ~SceneDepthResolveProgram()
     {
         device.Release(pipeline);
