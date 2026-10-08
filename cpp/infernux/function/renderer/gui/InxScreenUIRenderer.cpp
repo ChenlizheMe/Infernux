@@ -1348,6 +1348,7 @@ bool InxScreenUIRenderer::UploadGeometry(ListBuffers &buf, ScreenUIList list, co
         return false;
     }
     buf.uploadedRevision = m_geometryRevision[index];
+    buf.pendingPoseStart = buf.pendingPoseEnd = 0;
     ++m_geometryStats[index].uploads;
     m_geometryStats[index].uploadedBytes += vertexBytes + indexBytes;
     return true;
@@ -1377,7 +1378,8 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
     }
 
     auto &gpuVertices = m_screenVertices[listIndex];
-    if (m_preparedRevision[listIndex] != m_geometryRevision[listIndex]) {
+    const bool geometryPrepared = m_preparedRevision[listIndex] != m_geometryRevision[listIndex];
+    if (geometryPrepared) {
         gpuVertices.resize(static_cast<size_t>(dl->VtxBuffer.Size));
         auto &localPositions = m_screenLocalPositions[listIndex];
         localPositions.resize(static_cast<size_t>(dl->VtxBuffer.Size));
@@ -1416,39 +1418,53 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
     // Pose-only updates stay on the native side. Re-read the immutable local
     // vertex positions and apply each bound Transform delta without invoking
     // Python extraction or rebuilding text/image geometry.
-    bool poseDirty = false;
     int poseMinVertex = static_cast<int>(gpuVertices.size());
     int poseMaxVertex = 0;
     for (auto &span : m_screenElementSpans) {
         if (span.list != list)
             continue;
         const bool spanDirty = ResolveScreenPose(span);
-        poseDirty = spanDirty || poseDirty;
         if (spanDirty) {
             poseMinVertex = std::min(poseMinVertex, std::max(0, span.vertexStart));
             poseMaxVertex = std::max(poseMaxVertex, std::min(span.vertexEnd, static_cast<int>(gpuVertices.size())));
         }
-        const auto &localPositions = m_screenLocalPositions[listIndex];
-        const int end = std::min(span.vertexEnd, static_cast<int>(gpuVertices.size()));
-        for (int i = std::max(0, span.vertexStart); i < end; ++i) {
-            if (i < static_cast<int>(localPositions.size()))
-                ApplyScreenPose(span, localPositions[static_cast<size_t>(i)], gpuVertices[static_cast<size_t>(i)].pos);
+        if (geometryPrepared || spanDirty) {
+            const auto &localPositions = m_screenLocalPositions[listIndex];
+            const int end = std::min(span.vertexEnd, static_cast<int>(gpuVertices.size()));
+            for (int i = std::max(0, span.vertexStart); i < end; ++i) {
+                if (i < static_cast<int>(localPositions.size()))
+                    ApplyScreenPose(span, localPositions[static_cast<size_t>(i)], gpuVertices[static_cast<size_t>(i)].pos);
+            }
         }
     }
 
+    // ResolveScreenPose observes a shared CPU pose only once. Retain its dirty
+    // range independently for every slot until that slot can safely upload it.
+    // Never write another slot's buffer while its commands may be in flight.
+    if (poseMaxVertex > poseMinVertex) {
+        for (auto &frame : m_frameBuffers) {
+            auto &pending = frame[listIndex];
+            if (pending.uploadedRevision != m_geometryRevision[listIndex])
+                continue; // This slot will receive the entire current geometry.
+            pending.pendingPoseStart = pending.pendingPoseEnd > pending.pendingPoseStart
+                ? std::min(pending.pendingPoseStart, poseMinVertex) : poseMinVertex;
+            pending.pendingPoseEnd = std::max(pending.pendingPoseEnd, poseMaxVertex);
+        }
+    }
     const VkDeviceSize vtxSize = gpuVertices.size() * sizeof(GPUVertex);
     ListBuffers &buf = m_frameBuffers[frameSlot][listIndex];
     const bool geometryDirty = buf.uploadedRevision != m_geometryRevision[listIndex];
-    if (poseDirty && !geometryDirty && poseMaxVertex > poseMinVertex) {
-        const size_t firstByte = static_cast<size_t>(poseMinVertex) * sizeof(GPUVertex);
-        const size_t rangeBytes = static_cast<size_t>(poseMaxVertex - poseMinVertex) * sizeof(GPUVertex);
-        if (!UploadAllocationRange(m_allocator, buf.vertexAlloc, firstByte, gpuVertices.data() + poseMinVertex,
+    if (!geometryDirty && buf.pendingPoseEnd > buf.pendingPoseStart) {
+        const size_t firstByte = static_cast<size_t>(buf.pendingPoseStart) * sizeof(GPUVertex);
+        const size_t rangeBytes = static_cast<size_t>(buf.pendingPoseEnd - buf.pendingPoseStart) * sizeof(GPUVertex);
+        if (!UploadAllocationRange(m_allocator, buf.vertexAlloc, firstByte, gpuVertices.data() + buf.pendingPoseStart,
                                    rangeBytes)) {
             INXLOG_ERROR("InxScreenUIRenderer: Failed to upload screen UI pose range");
             return;
         }
         ++m_geometryStats[listIndex].uploads;
         m_geometryStats[listIndex].uploadedBytes += rangeBytes;
+        buf.pendingPoseStart = buf.pendingPoseEnd = 0;
     }
     if (!UploadGeometry(buf, list, gpuVertices.data(), static_cast<size_t>(vtxSize)))
         return;

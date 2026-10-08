@@ -406,6 +406,10 @@ class InxScreenUIRenderer
         VmaAllocation indexAlloc = VK_NULL_HANDLE;
         VkDeviceSize indexBufferSize = 0;
         uint64_t uploadedRevision = 0;
+        // Union of pose changes not yet consumed by this GPU frame slot.
+        // An empty range needs no upload; full geometry publication clears it.
+        int pendingPoseStart = 0;
+        int pendingPoseEnd = 0;
     };
 
     /**
@@ -575,7 +579,7 @@ class InxScreenUIRenderer
     std::array<GeometryStats, 3> m_geometryStats{};
     std::array<std::vector<GPUVertex>, 2> m_screenVertices;
     // Immutable local positions used by the native screen-pose segment. The
-    // GPU vertex array is rewritten every frame with the current pose.
+    // Prepared vertices are updated only when geometry or a bound pose changes.
     std::array<std::vector<ImVec2>, 2> m_screenLocalPositions;
     std::vector<WorldGPUVertex> m_worldVertices;
 

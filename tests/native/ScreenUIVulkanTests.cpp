@@ -1763,6 +1763,97 @@ int main(int argc, char **argv)
         assert(screenAfterRotateScale != screenAfter);
         screenPacket.reset();
 
+        // Cached screen poses are shared CPU state, but each GPU frame slot
+        // must consume every change since its own last draw. Compare all four
+        // slots with freshly published geometry, including overlapping changes
+        // to different spans before a slot is revisited.
+        for (auto kind : {ScreenUIList::Camera, ScreenUIList::Overlay}) {
+            list = kind;
+            buildGraph();
+            auto *first = uiScene->CreateGameObject("Retained screen first");
+            auto *second = uiScene->CreateGameObject("Retained screen second");
+            renderer.BeginFrame(128, 128);
+            renderer.BeginCommandPacket();
+            renderer.BeginScreenObject(first, list, 30, 30);
+            renderer.AddFilledRect(list, 12, 16, 48, 44, 1, 0, 0, 1);
+            renderer.EndScreenObject();
+            renderer.BeginScreenObject(second, list, 88, 82);
+            renderer.AddFilledRect(list, 72, 70, 104, 94, 0, 1, 0, 1);
+            renderer.EndScreenObject();
+            auto packet = renderer.EndCommandPacket();
+            auto pose = [&](int step) {
+                first->GetTransform()->SetLocalPosition(step ? 12.f : 0.f, 0, 0);
+                first->GetTransform()->SetLocalEulerAngles(0, 0, step >= 3 ? 25.f : 0.f);
+                first->GetTransform()->SetLocalScale(step >= 4 ? 1.2f : 1.f, step >= 4 ? .7f : 1.f, 1);
+                second->GetTransform()->SetLocalPosition(0, step >= 2 ? 10.f : 0.f, 0);
+            };
+            auto readPixels = [&] {
+                frame();
+                std::vector<uint8_t> result(128 * 128 * 4);
+                assert(device.ReadBuffer(output, 0, result.data(), result.size()));
+                return result;
+            };
+            std::vector<std::vector<uint8_t>> reference(5);
+            for (int step = 0; step < 5; ++step) {
+                pose(step);
+                renderer.BeginFrame(128, 128);
+                renderer.AppendCommandPackets({packet});
+                reference[step] = readPixels();
+                if (step)
+                    assert(reference[step] != reference[step - 1]);
+            }
+            const auto captures = renderer.GetGeometryStats(list).packetCaptures;
+            const uint64_t revision = 0x2350u + static_cast<uint64_t>(kind);
+            pose(0);
+            assert(!renderer.BeginFrameCached(128, 128, revision));
+            renderer.AppendCommandPackets({packet});
+            for (int iteration = 0; iteration < 8; ++iteration) {
+                assert(renderer.BeginFrameCached(128, 128, revision));
+                assert(readPixels() == reference[0]);
+            }
+            const auto warmed = renderer.GetGeometryStats(list);
+            for (int iteration = 0; iteration < 8; ++iteration) {
+                assert(renderer.BeginFrameCached(128, 128, revision));
+                assert(readPixels() == reference[0]);
+            }
+            assert(renderer.GetGeometryStats(list).uploads == warmed.uploads);
+            for (int step = 1; step < 5; ++step) {
+                pose(step);
+                assert(renderer.BeginFrameCached(128, 128, revision));
+                assert(readPixels() == reference[step]);
+            }
+            for (int iteration = 0; iteration < 8; ++iteration) {
+                assert(renderer.BeginFrameCached(128, 128, revision));
+                assert(readPixels() == reference[4]);
+            }
+            const auto settled = renderer.GetGeometryStats(list);
+            // Four changing draws, then only the other three stale slots.
+            assert(settled.uploads - warmed.uploads == 7);
+            assert(settled.preparations == warmed.preparations);
+            assert(settled.packetCaptures == captures);
+            for (int iteration = 0; iteration < 8; ++iteration) {
+                assert(renderer.BeginFrameCached(128, 128, revision));
+                assert(readPixels() == reference[4]);
+            }
+            assert(renderer.GetGeometryStats(list).uploadedBytes == settled.uploadedBytes);
+            // Replacing content can shrink the buffer while other slots still
+            // have pending ranges from the previous geometry. A full upload
+            // consumes those ranges, rather than replaying their old offsets.
+            pose(0);
+            assert(renderer.BeginFrameCached(128, 128, revision));
+            assert(readPixels() == reference[0]);
+            assert(!renderer.BeginFrameCached(128, 128, revision + 1));
+            renderer.AddFilledRect(list, 40, 40, 50, 50, 0, 0, 1, 1);
+            const auto replacement = readPixels();
+            assert(replacement != reference[0]);
+            for (int iteration = 0; iteration < 8; ++iteration) {
+                assert(renderer.BeginFrameCached(128, 128, revision + 1));
+                assert(readPixels() == replacement);
+            }
+            std::cout << "SCREEN_CACHED_POSE_SLOTS list=" << int(list)
+                      << " slots=4 changes=4 uploads=7 stable_uploads=0\n";
+        }
+
         // No owning scene pointer is retained; recycling a Transform slot
         // must reject an expired packet rather than attach it to a new object.
         uiScene->DestroyGameObject(object);
