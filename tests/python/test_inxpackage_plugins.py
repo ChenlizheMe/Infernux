@@ -4252,7 +4252,7 @@ def test_downloaded_plugin_pages_are_available_before_import(tmp_path, monkeypat
         assert not manager.content_asset_path(record, english[0], "../../../outside.png")
         assert not manager.content_asset_path(record, english[0], "https://example.com/image.png")
         assert manager.content_pages(record, locale="en") == english
-        assert len(manager._cached_page_roots) == 1
+        assert Path(manager.content_asset_path(record, chinese[0], "../images/preview.png")) == image
 
         # Import switches to authored project docs; uninstall restores archive docs.
         manager.install_package(str(package), install_dependencies=False)

@@ -24,7 +24,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import Version
 
-from infernux.core.file_read_cache import FileReadCache, file_stamp, stamp_reusable
+from infernux.core.file_read_cache import FileReadCache
 from infernux.debug import Debug
 from infernux.engine.path_utils import (
     is_path_within,
@@ -258,7 +258,7 @@ class PluginManager:
         self._dependency_plans: dict[str, tuple[str, ...]] = {}
         self._deferred_catalog_changes: set[str] = set()
         self._page_workspaces = ExitStack()
-        self._cached_page_roots: dict[tuple[str, tuple[int, ...]], str] = {}
+        self._cached_page_roots = FileReadCache()
         self._shared_package_cache: SharedPackageCache | None = None
         self._content_reads = FileReadCache()
         self._content_asset_reads = FileReadCache()
@@ -396,41 +396,37 @@ class PluginManager:
         archive = self.cached_reference_path(reference)
         if not archive:
             return package_control_root(self.project_root, reference)
-        stamp = file_stamp(archive)
-        if stamp is None:
-            raise FileNotFoundError(archive)
-        key = (archive, stamp)
-        reusable = stamp_reusable(stamp)
-        if reusable and key in self._cached_page_roots:
-            return self._cached_page_roots[key]
+        def prepare(observed):
+            observed.watch(archive)
+            if not os.path.isfile(archive):
+                raise FileNotFoundError(archive)
+            # Preview documents only: never install or execute a downloaded plugin.
+            preview = InxPackage.inspect(archive)
+            root = self._page_workspaces.enter_context(self._package_cache().workspace("pages"))
+            files = {str(item["logical_path"]): item for item in preview.file_records}
 
-        # Preview documents only: never install or execute a downloaded plugin.
-        preview = InxPackage.inspect(archive)
-        root = self._page_workspaces.enter_context(self._package_cache().workspace("pages"))
-        files = {str(item["logical_path"]): item for item in preview.file_records}
+            def materialize(logical: str) -> None:
+                destination = Path(root, *logical.split("/"))
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(read_entry(archive, str(files[logical]["archive_path"])))
 
-        def materialize(logical: str) -> None:
-            destination = Path(root, *logical.split("/"))
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(read_entry(archive, str(files[logical]["archive_path"])))
+            for logical in files:
+                if logical.startswith("plugin_pages/"):
+                    materialize(logical)
+            for page in read_plugin_pages(root, list(preview.metadata["pages"])):
+                for block in split_markdown_images(page["content"]):
+                    if block["kind"] != "image":
+                        continue
+                    image = resolve_plugin_page_asset(
+                        root, page["path"], block["source"], require_file=False
+                    )
+                    if image:
+                        logical = Path(image).relative_to(root).as_posix()
+                        if logical in files and not os.path.isfile(image):
+                            materialize(logical)
+            return root
 
-        for logical in files:
-            if logical.startswith("plugin_pages/"):
-                materialize(logical)
-        for page in read_plugin_pages(root, list(preview.metadata["pages"])):
-            for block in split_markdown_images(page["content"]):
-                if block["kind"] != "image":
-                    continue
-                image = resolve_plugin_page_asset(
-                    root, page["path"], block["source"], require_file=False
-                )
-                if image:
-                    logical = Path(image).relative_to(root).as_posix()
-                    if logical in files and not os.path.isfile(image):
-                        materialize(logical)
-        if reusable:
-            self._cached_page_roots[key] = root
-        return root
+        return self._cached_page_roots.get(archive, prepare, current=True)
 
     def content_pages(
         self,
