@@ -292,12 +292,15 @@ class OperationRegistry:
         *,
         capabilities: Iterable[str] = (),
         stop_on_error: bool = True,
+        execute: Callable[..., object] | None = None,
     ) -> tuple[dict[str, object], ...]:
+        """Run ordered calls; hosts may wrap execution for transport-specific recording."""
         results: list[dict[str, object]] = []
+        invoke = self.execute if execute is None else execute
         for index, call in enumerate(calls):
             operation_id = str(call.get("operation", ""))
             try:
-                value = self.execute(
+                value = invoke(
                     operation_id,
                     call.get("arguments") if isinstance(call.get("arguments"), Mapping) else {},
                     capabilities=capabilities,
@@ -344,7 +347,10 @@ class OperationJobRegistry:
         arguments: Mapping[str, object] | None = None,
         *,
         capabilities: Iterable[str] = (),
+        execute: Callable[..., object] | None = None,
+        on_done: Callable[[Future], None] | None = None,
     ) -> str:
+        """Preserve caller context and notify retirement, including queued cancellation."""
         with self._lock:
             if not self._accepting:
                 raise OperationError("job.stopped", "Operation job service is stopping")
@@ -369,13 +375,15 @@ class OperationJobRegistry:
             job_id = uuid.uuid4().hex
             future = self._executor.submit(
                 copy_context().run,
-                self.registry.execute,
+                self.registry.execute if execute is None else execute,
                 operation_id,
                 dict(arguments or {}),
                 capabilities=tuple(capabilities),
             )
             self._jobs[job_id] = _Job(job_id, operation_id, time.time(), future)
-            return job_id
+        if on_done is not None:
+            future.add_done_callback(on_done)
+        return job_id
 
     def status(self, job_id: str) -> dict[str, object]:
         with self._lock:
