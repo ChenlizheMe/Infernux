@@ -220,6 +220,16 @@ class EditorBootstrap(BootstrapPanelsMixin, BootstrapSelectionMixin, BootstrapWi
         self.engine.init_renderer(
             width=1600, height=900, project_path=self.project_path
         )
+        # Source Hub and installed Hub can launch different Python/native
+        # runtimes even when their window titles show the same engine version.
+        import sys
+        from infernux.lib import _Infernux
+
+        self._log_startup_profile(
+            f"INFERNUX_RUNTIME python={sys.executable!r} "
+            f"python_version={sys.version.split()[0]} "
+            f"editor={__file__!r} native={_Infernux.__file__!r}"
+        )
         native = self.engine.get_native_engine()
         if native is not None:
             timings = dict(native.startup_phase_timings_ms)
