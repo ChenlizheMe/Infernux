@@ -84,14 +84,15 @@ class PrimitiveMeshes
     /// @brief Get plane vertices (XZ plane, facing up)
     static const std::vector<Vertex> &GetPlaneVertices()
     {
+        // U points +X and V points +Z: cross(+Y, +X) needs negative handedness.
         static std::vector<Vertex> vertices = {
-            Vertex::CreateFull({-0.5f, 0.0f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}, {1.0f, 1.0f, 1.0f},
+            Vertex::CreateFull({-0.5f, 0.0f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, -1.0f}, {1.0f, 1.0f, 1.0f},
                                {0.0f, 0.0f}),
-            Vertex::CreateFull({0.5f, 0.0f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}, {1.0f, 1.0f, 1.0f},
+            Vertex::CreateFull({0.5f, 0.0f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, -1.0f}, {1.0f, 1.0f, 1.0f},
                                {1.0f, 0.0f}),
-            Vertex::CreateFull({0.5f, 0.0f, 0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}, {1.0f, 1.0f, 1.0f},
+            Vertex::CreateFull({0.5f, 0.0f, 0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, -1.0f}, {1.0f, 1.0f, 1.0f},
                                {1.0f, 1.0f}),
-            Vertex::CreateFull({-0.5f, 0.0f, 0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 1.0f}, {1.0f, 1.0f, 1.0f},
+            Vertex::CreateFull({-0.5f, 0.0f, 0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f, 0.0f, -1.0f}, {1.0f, 1.0f, 1.0f},
                                {0.0f, 1.0f}),
         };
         return vertices;
@@ -434,7 +435,7 @@ class PrimitiveMeshes
 
         // Top cap center
         glm::vec3 topNormal(0.0f, 1.0f, 0.0f);
-        glm::vec4 topTangent(1.0f, 0.0f, 0.0f, 1.0f);
+        glm::vec4 topTangent(1.0f, 0.0f, 0.0f, -1.0f);
         vertices.push_back(
             Vertex::CreateFull({0.0f, halfHeight, 0.0f}, topNormal, topTangent, {1.0f, 1.0f, 1.0f}, {0.5f, 0.5f}));
 
@@ -455,7 +456,7 @@ class PrimitiveMeshes
             float x = std::cos(theta) * radius;
             float z = std::sin(theta) * radius;
             glm::vec3 sideNormal = glm::normalize(glm::vec3(x, 0.0f, z));
-            glm::vec4 sideTangent(0.0f, 1.0f, 0.0f, 1.0f);
+            glm::vec4 sideTangent(-std::sin(theta), 0.0f, std::cos(theta), 1.0f);
             float u = static_cast<float>(seg) / segments;
             vertices.push_back(
                 Vertex::CreateFull({x, halfHeight, z}, sideNormal, sideTangent, {1.0f, 1.0f, 1.0f}, {u, 0.0f}));
@@ -467,7 +468,7 @@ class PrimitiveMeshes
             float x = std::cos(theta) * radius;
             float z = std::sin(theta) * radius;
             glm::vec3 sideNormal = glm::normalize(glm::vec3(x, 0.0f, z));
-            glm::vec4 sideTangent(0.0f, 1.0f, 0.0f, 1.0f);
+            glm::vec4 sideTangent(-std::sin(theta), 0.0f, std::cos(theta), 1.0f);
             float u = static_cast<float>(seg) / segments;
             vertices.push_back(
                 Vertex::CreateFull({x, -halfHeight, z}, sideNormal, sideTangent, {1.0f, 1.0f, 1.0f}, {u, 1.0f}));
