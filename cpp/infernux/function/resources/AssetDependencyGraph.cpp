@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <limits>
 #include <stdexcept>
 
 namespace infernux
@@ -313,6 +314,7 @@ void AssetDependencyGraph::RegisterCallback(ResourceType type, AssetEventCallbac
 
 void AssetDependencyGraph::NotifyEvent(const std::string &guid, ResourceType type, AssetEvent event)
 {
+    PublishContentChange(guid);
     std::unordered_set<std::string> dependents;
     const auto snapshot = GetAssetSnapshot();
     const auto asset = snapshot->m_dependents.find(guid);
@@ -335,6 +337,36 @@ void AssetDependencyGraph::NotifyEvent(const std::string &guid, ResourceType typ
     for (const auto &dependentGuid : dependents)
         for (const auto &callback : callbacks)
             callback(dependentGuid, guid, event);
+}
+
+void AssetDependencyGraph::PublishContentChange(const std::string &guid)
+{
+    if (guid.empty())
+        throw std::invalid_argument("Asset content publication requires a GUID");
+    const auto snapshot = GetAssetSnapshot();
+    std::lock_guard<std::mutex> lock(m_runtimeMutex);
+    if (m_contentSerial == std::numeric_limits<uint64_t>::max())
+        throw std::overflow_error("Asset content revision exhausted");
+    const auto revision = ++m_contentSerial;
+    std::vector<std::string> pending{guid};
+    std::unordered_set<std::string> visited;
+    while (!pending.empty()) {
+        auto current = std::move(pending.back());
+        pending.pop_back();
+        if (!visited.insert(current).second)
+            continue;
+        m_contentRevisions[current] = revision;
+        const auto found = snapshot->m_dependents.find(current);
+        if (found != snapshot->m_dependents.end())
+            pending.insert(pending.end(), found->second.begin(), found->second.end());
+    }
+}
+
+uint64_t AssetDependencyGraph::GetContentRevision(const std::string &guid) const
+{
+    std::lock_guard<std::mutex> lock(m_runtimeMutex);
+    const auto found = m_contentRevisions.find(guid);
+    return found == m_contentRevisions.end() ? 1 : found->second;
 }
 
 size_t AssetDependencyGraph::GetEdgeCount() const
@@ -370,6 +402,8 @@ void AssetDependencyGraph::Clear()
     m_runtimeDependencies.clear();
     m_runtimeDependents.clear();
     m_callbacks.clear();
+    m_contentRevisions.clear();
+    m_contentSerial = 1;
 }
 
 } // namespace infernux

@@ -243,7 +243,6 @@ class ProjectPanel : public EditorPanel
     // ── Thumbnail system ─────────────────────────────────────────────
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_materialMtimeCache;
     std::unordered_map<std::string, std::pair<uint64_t, double>> m_textureMtimeCache;
-    std::unordered_map<std::string, std::pair<uint64_t, double>> m_modelMtimeCache;
 
     struct TexturePreviewSizeCacheEntry
     {
@@ -298,7 +297,7 @@ class ProjectPanel : public EditorPanel
     uint64_t GetThumbnail(const std::string &filePath, uint64_t cachedMtimeNs);
     uint64_t GetMaterialThumbnail(const std::string &filePath, uint64_t cachedMtimeNs);
     uint64_t GetEmbeddedMaterialThumbnail(const FileItem &item);
-    uint64_t GetModelThumbnail(const std::string &filePath, uint64_t cachedMtimeNs);
+    uint64_t GetModelThumbnail(const std::string &filePath);
     uint64_t GetMaterialMtimeNs(const std::string &filePath);
     uint64_t GetTextureMtimeNs(const std::string &filePath);
 

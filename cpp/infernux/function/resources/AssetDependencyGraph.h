@@ -105,6 +105,11 @@ class AssetDependencyGraph
     INFERNUX_ASSET_RUNTIME_API void RegisterCallback(ResourceType type, AssetEventCallback callback);
     INFERNUX_ASSET_RUNTIME_API void NotifyEvent(const std::string &guid, ResourceType type, AssetEvent event);
 
+    /// In-memory content publication, including transitive consumers. This
+    /// does not invoke reload callbacks or change serialized asset metadata.
+    INFERNUX_ASSET_RUNTIME_API void PublishContentChange(const std::string &guid);
+    [[nodiscard]] INFERNUX_ASSET_RUNTIME_API uint64_t GetContentRevision(const std::string &guid) const;
+
     [[nodiscard]] INFERNUX_ASSET_RUNTIME_API size_t GetEdgeCount() const;
     [[nodiscard]] INFERNUX_ASSET_RUNTIME_API size_t GetNodeCount() const;
     INFERNUX_ASSET_RUNTIME_API void Clear();
@@ -127,6 +132,8 @@ class AssetDependencyGraph
     std::unordered_map<std::string, std::unordered_set<std::string>> m_runtimeDependencies;
     std::unordered_map<std::string, std::unordered_set<std::string>> m_runtimeDependents;
     std::unordered_map<ResourceType, std::vector<AssetEventCallback>> m_callbacks;
+    std::unordered_map<std::string, uint64_t> m_contentRevisions;
+    uint64_t m_contentSerial = 1;
     mutable std::mutex m_runtimeMutex;
 };
 

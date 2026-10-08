@@ -22,6 +22,32 @@ int main()
         using namespace infernux;
         auto &graph = AssetDependencyGraph::Instance();
         graph.Clear();
+        // Content revisions fan out once on publication. Stable queries do
+        // not walk dependencies; unrelated assets and runtime objects stay out.
+        graph.SetAssetDependencies("mesh", {"material"});
+        graph.SetAssetDependencies("prefab", {"mesh"});
+        graph.SetAssetDependencies("material", {"texture"});
+        graph.AddRuntimeDependency("temporary-component", "texture");
+        const auto baseline = graph.GetContentRevision("mesh");
+        graph.PublishContentChange("texture");
+        const auto changed = graph.GetContentRevision("mesh");
+        Require(changed > baseline, "transitive texture edit did not reach mesh");
+        Require(graph.GetContentRevision("prefab") == changed, "nested prefab missed texture edit");
+        Require(graph.GetContentRevision("unrelated") == 1, "unrelated content was invalidated");
+        Require(graph.GetContentRevision("temporary-component") == 1, "content revisions retained a runtime object");
+        for (int i = 0; i < 1000; ++i)
+            Require(graph.GetContentRevision("mesh") == changed, "reading revision caused a new publication");
+        graph.AddAssetDependency("texture", "prefab");
+        graph.PublishContentChange("texture");
+        Require(graph.GetContentRevision("mesh") > changed, "cyclic dependencies stopped content publication");
+        const auto cyclic = graph.GetContentRevision("mesh");
+        graph.SetAssetDependencies("mesh", {"replacement-material"});
+        graph.PublishContentChange("texture");
+        Require(graph.GetContentRevision("mesh") == cyclic, "old dependency survived material remapping");
+        graph.PublishContentChange("replacement-material");
+        Require(graph.GetContentRevision("mesh") > cyclic, "new material dependency was not observed");
+        graph.Clear();
+        Require(graph.GetContentRevision("mesh") == 1, "new engine retained prior content revisions");
 
         constexpr size_t userCount = 10'000;
         std::unordered_map<std::string, std::vector<std::string>> dependencies;

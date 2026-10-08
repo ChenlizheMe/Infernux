@@ -380,7 +380,7 @@ class Infernux
     ///
     /// Returns the current ImGui texture id (stale-return for anti-flicker).
     /// Internally manages a monotonic generation counter; re-renders only
-    /// when the content changes (file mtime).
+    /// when the asset or any of its published dependencies changes.
     ///
     /// @param resourceKey    Stable cache key (e.g. "mesh|<norm_path>")
     /// @param meshFilePath   Path to the model file (.fbx, .obj, .gltf, ...)
@@ -388,6 +388,7 @@ class Infernux
     /// @return ImGui texture id (0 if not ready yet)
     uint64_t QueryOrScheduleMeshPreview(const std::string &resourceKey, const std::string &meshFilePath,
                                         uint64_t fileMtimeHint = 0);
+    [[nodiscard]] uint64_t GetMeshPreviewDependencyRevision(const std::string &meshFilePath) const;
 
     /// @brief Queue a Timeline cube preview render (non-blocking). Returns the latest
     ///        ImGui texture id immediately; GPU work runs in PumpPreviewTasks().
@@ -589,6 +590,7 @@ class Infernux
         uint64_t readyGeneration = 0;
         uint64_t failedGeneration = 0;
         uint64_t lastFileMtime = 0;
+        uint64_t lastDependencyRevision = 0;
         uint64_t pendingUploadVersion = 0;
         uint64_t pendingPreviewGeneration = 0;
         bool inFlight = false;
@@ -614,6 +616,8 @@ class Infernux
     static std::string BuildTexturePreviewTextureName(const std::string &resourceKey);
     static std::string BuildMeshPreviewTextureName(const std::string &resourceKey);
     void CommitPublishedPreviewTextures();
+    // Caller holds m_previewResultMutex; one task owns each mesh's latest request.
+    void ScheduleDirtyMeshPreview(const std::string &key, MeshPreviewState &state);
     void DrainPreviewJobs();
 
     InxAppMetadata m_metadata{"Infernux", 0, 1, 0, "com.infrenderer.Infernux"};

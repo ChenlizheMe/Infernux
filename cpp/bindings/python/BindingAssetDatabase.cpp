@@ -74,6 +74,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
         .def("get_edge_count", &AssetDependencyGraph::GetEdgeCount, "Total dependency edges")
         .def("get_node_count", &AssetDependencyGraph::GetNodeCount, "Total tracked assets")
         .def_property_readonly("asset_generation", &AssetDependencyGraph::GetAssetGeneration)
+        .def("publish_content_change", &AssetDependencyGraph::PublishContentChange, py::arg("guid"))
+        .def("get_content_revision", &AssetDependencyGraph::GetContentRevision, py::arg("guid"))
         .def("clear", &AssetDependencyGraph::Clear, "Clear the entire graph");
 
     // AssetDatabase

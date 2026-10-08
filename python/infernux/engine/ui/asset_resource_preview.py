@@ -54,22 +54,14 @@ def _try_get_cpp_mesh_preview(native: Any, norm_path: str) -> int:
     if native is None:
         return 0
     cache_key = f"mesh|{norm_path}"
-    # Prefab/model previews are dependency products.  The AssetManager stamp
-    # advances when an in-memory material or imported dependency changes, so a
-    # selected prefab refreshes without polling or ordering by wall-clock mtime.
-    from infernux.core.assets import AssetManager
-
-    dependency_stamp = AssetManager.preview_dependency_signature(norm_path.split("::submesh:", 1)[0])
-    if "::submesh:" in norm_path:
-        from infernux.lib import AssetRegistry
-        mesh = AssetRegistry.instance().load_mesh(norm_path.split("::submesh:", 1)[0])
-        dependency_stamp = mesh.generation if mesh is not None else 1
+    # The native task observes the same published dependency revision used by
+    # Project, including in-memory material edits and transitive texture edits.
     native.pump_preview_tasks()
     return int(
         native.query_or_schedule_mesh_preview(
             cache_key,
             norm_path,
-            int(dependency_stamp),
+            0,
         )
     )
 

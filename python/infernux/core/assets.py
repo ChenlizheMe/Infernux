@@ -1324,6 +1324,12 @@ class AssetManager:
         if not result:
             return result
 
+        # Revision ordering survives deletion, but the deleted document's
+        # content cannot deduplicate edits to a new asset at the same path.
+        revision_state = cls._asset_revision_states.get(path_key(path))
+        if revision_state is not None:
+            revision_state.content_token = ""
+
         registry = cls._get_registry()
         if registry and guid:
             registry.remove_asset(guid)
@@ -1619,6 +1625,10 @@ class AssetManager:
         state = cls._asset_revision_state(normalized)
         state.imported_disk_revision += 1
         state.preview_dependency_revision += 1
+        # Imported content replaces the previous authoring value. A later
+        # edit back to that old value is a new change, not a duplicate.
+        state.content_token = ""
+        cls._publish_preview_dependency_revision(file_path)
         try:
             from infernux.core.document_store import capture_document_file_state
 
@@ -1674,6 +1684,7 @@ class AssetManager:
         )
         state.content_token = token
         state.preview_dependency_revision += 1
+        cls._publish_preview_dependency_revision(file_path)
         metadata["edit_revision"] = state.edit_revision
         if token:
             metadata["content_token"] = token
@@ -1686,57 +1697,20 @@ class AssetManager:
         return state
 
     @classmethod
-    def preview_dependency_signature(cls, file_path: str) -> int:
-        """Return a deterministic stamp for a resource and its dependencies."""
-        normalized = path_key(file_path) if file_path else ""
-        if not normalized:
-            return 0
-        parts = [normalized]
-        state = cls._asset_revision_states.get(normalized)
-        if state is not None:
-            parts.extend(
-                (
-                    str(state.imported_disk_revision),
-                    str(state.preview_dependency_revision),
-                    str(state.persisted_revision),
-                )
-            )
-        try:
-            guid = cls._get_guid_from_path(file_path) or ""
-            from infernux.lib import AssetDependencyGraph
+    def _publish_preview_dependency_revision(cls, file_path: str) -> None:
+        from infernux.lib import AssetDependencyGraph
 
-            graph = AssetDependencyGraph.instance()
-            dependencies = graph.get_dependencies(guid) if guid else set()
-            database = cls._asset_database
-            for dependency_guid in sorted(str(value) for value in dependencies):
-                dependency_path = ""
-                if database is not None:
-                    dependency_path = str(database.get_path_from_guid(dependency_guid) or "")
-                dependency_key = path_key(dependency_path) if dependency_path else dependency_guid
-                dependency_state = cls._asset_revision_states.get(dependency_key)
-                parts.append(
-                    ":".join(
-                        (
-                            dependency_guid,
-                            dependency_key,
-                            str(
-                                getattr(
-                                    dependency_state,
-                                    "preview_dependency_revision",
-                                    0,
-                                )
-                            ),
-                            str(getattr(dependency_state, "imported_disk_revision", 0)),
-                            str(getattr(dependency_state, "persisted_revision", 0)),
-                        )
-                    )
-                )
-        except (ImportError, AttributeError, RuntimeError, TypeError, ValueError):
-            # A project can be inspected before the dependency graph is
-            # initialized.  The asset-local revision remains a valid stamp.
-            pass
-        digest = hashlib.blake2b("|".join(parts).encode("utf-8"), digest_size=8).digest()
-        return int.from_bytes(digest, "little", signed=False)
+        guid = cls._get_guid_from_path(file_path) if file_path else ""
+        if guid:
+            AssetDependencyGraph.instance().publish_content_change(guid)
+
+    @classmethod
+    def preview_dependency_signature(cls, file_path: str) -> int:
+        """Read the shared native content revision; no filesystem scan or hash."""
+        from infernux.lib import AssetDependencyGraph
+
+        guid = cls._get_guid_from_path(file_path) if file_path else ""
+        return AssetDependencyGraph.instance().get_content_revision(guid) if guid else 0
 
     @classmethod
     def set_material_save_snapshot(
@@ -1839,6 +1813,7 @@ class AssetManager:
             state.edit_revision = max(state.edit_revision + 1, 1)
             state.preview_dependency_revision += 1
             state.content_token = content_token
+            cls._publish_preview_dependency_revision(file_path)
 
         cls._document_save_expected_states.pop(normalized, None)
         # Inspector and other editor asset writes replace the current target.

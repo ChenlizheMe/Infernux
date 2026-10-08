@@ -2057,8 +2057,11 @@ void Infernux::CommitPublishedPreviewTextures()
         hasUnpublishedUploads |= commitTexture(state);
     }
     for (auto &[key, state] : m_meshPreviewStates) {
-        (void)key;
-        hasUnpublishedUploads |= commitMesh(state);
+        const uint64_t publishingGeneration = state.pendingPreviewGeneration;
+        const bool stillPublishing = commitMesh(state);
+        hasUnpublishedUploads |= stillPublishing;
+        if (!stillPublishing && publishingGeneration != 0 && publishingGeneration != state.generation)
+            ScheduleDirtyMeshPreview(key, state);
     }
     if (hasUnpublishedUploads)
         m_hasPendingPreviewUploads.store(true, std::memory_order_release);
@@ -2246,6 +2249,8 @@ void Infernux::PumpPreviewTasks()
                 it->second.renderGeneration = 0;
                 if (!rendered || pixels.empty() || it->second.generation != completed.generation) {
                     it->second.inFlight = false;
+                    if (it->second.generation != completed.generation)
+                        ScheduleDirtyMeshPreview(completed.resourceKey, it->second);
                     continue;
                 }
                 if (it->second.textureName.empty())
@@ -2376,6 +2381,19 @@ void Infernux::PumpPreviewTasks()
             }
         }
 
+        // A queued/load-waiting request renders the latest authored content.
+        // Intermediate generations need no render, and no new UI query is
+        // required to finish work superseded while it was in flight.
+        if (!request.resourceKey.empty()) {
+            std::lock_guard<std::mutex> lock(m_previewResultMutex);
+            const auto state = m_meshPreviewStates.find(request.resourceKey);
+            if (state == m_meshPreviewStates.end() || !state->second.inFlight) {
+                request.resourceKey.clear();
+            } else {
+                request.generation = state->second.generation;
+                request.meshFilePath = state->second.meshFilePath;
+            }
+        }
         if (!renderBusy && !request.resourceKey.empty()) {
             std::shared_ptr<InxMesh> mesh;
             std::vector<std::shared_ptr<InxMaterial>> materials;
@@ -3008,6 +3026,15 @@ bool Infernux::ScheduleTexturePreviewFromMemory(const std::string &resourceKey, 
     return true;
 }
 
+uint64_t Infernux::GetMeshPreviewDependencyRevision(const std::string &meshFilePath) const
+{
+    const auto *database = GetAssetDatabase();
+    if (!database)
+        return 0;
+    const auto guid = database->GetGuidFromPath(SplitModelMeshReference(meshFilePath).first);
+    return guid.empty() ? 0 : AssetDependencyGraph::Instance().GetContentRevision(guid);
+}
+
 uint64_t Infernux::QueryOrScheduleMeshPreview(const std::string &resourceKey, const std::string &meshFilePath,
                                               uint64_t fileMtimeHint)
 {
@@ -3015,6 +3042,7 @@ uint64_t Infernux::QueryOrScheduleMeshPreview(const std::string &resourceKey, co
         return 0;
 
     const std::string key = CanonicalizePreviewKey(resourceKey);
+    const auto dependencyRevision = GetMeshPreviewDependencyRevision(meshFilePath);
     std::lock_guard<std::mutex> lock(m_previewResultMutex);
     auto &state = m_meshPreviewStates[key];
     if (state.textureName.empty())
@@ -3022,8 +3050,10 @@ uint64_t Infernux::QueryOrScheduleMeshPreview(const std::string &resourceKey, co
     state.meshFilePath = meshFilePath;
 
     // ── Detect content changes ──────────────────────────────────
-    if (fileMtimeHint != 0 && fileMtimeHint != state.lastFileMtime) {
+    if (dependencyRevision != state.lastDependencyRevision ||
+        (fileMtimeHint != 0 && fileMtimeHint != state.lastFileMtime)) {
         state.lastFileMtime = fileMtimeHint;
+        state.lastDependencyRevision = dependencyRevision;
         state.generation++;
     }
 
@@ -3041,16 +3071,21 @@ uint64_t Infernux::QueryOrScheduleMeshPreview(const std::string &resourceKey, co
         state.readyGeneration = 0;
 
     // ── Schedule render if not already in flight ────────────────
-    if (!state.inFlight && state.readyGeneration < state.generation) {
-        state.inFlight = true;
-        m_meshPreviewRequestQueue.push(MeshPreviewRequest{key, meshFilePath, state.generation});
-        m_hasPreviewPumpWork.store(true, std::memory_order_release);
-        if (m_renderer)
-            m_renderer->RequestFullSpeedFrame();
-    }
+    ScheduleDirtyMeshPreview(key, state);
 
     // Stale-return: keep showing old preview while new one renders (no flicker).
     return state.textureId;
+}
+
+void Infernux::ScheduleDirtyMeshPreview(const std::string &key, MeshPreviewState &state)
+{
+    if (state.inFlight || state.readyGeneration >= state.generation || state.failedGeneration == state.generation)
+        return;
+    state.inFlight = true;
+    m_meshPreviewRequestQueue.push(MeshPreviewRequest{key, state.meshFilePath, state.generation});
+    m_hasPreviewPumpWork.store(true, std::memory_order_release);
+    if (m_renderer)
+        m_renderer->RequestFullSpeedFrame();
 }
 
 void Infernux::PumpTimelineCubePreviewIfDirty()

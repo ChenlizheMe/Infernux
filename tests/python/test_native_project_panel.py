@@ -664,7 +664,8 @@ class TestProjectPanelCallbacks:
 
         assert "if (catalog || (m_frameTimeNow - it->second.lastValidatedAt) < DIR_CACHE_TTL)" in snapshot_cache
         assert "GetMaterialThumbnail(item.path, item.mtimeNs)" in grid_preview
-        assert "GetModelThumbnail(item.path, item.mtimeNs)" in grid_preview
+        # Models use published dependency revisions, exercised by the GPU
+        # model/submesh dependency tests rather than a file-mtime signature.
         assert "IsUiPrefabFile(item.path, item.mtimeNs)" in grid_preview
         assert grid_preview.count("IsUiPrefabFile(") == 1
 
