@@ -610,46 +610,6 @@ void ScriptableRenderContext::ExecuteCommandBuffer(CommandBuffer &cmd)
     m_pendingCommands.insert(m_pendingCommands.end(), commands.begin(), commands.end());
 }
 
-// Names for the unsupported command types so the once-per-process warning is
-// readable. Keep in lockstep with RenderCommandType (CommandBuffer.h).
-namespace
-{
-const char *RenderCommandTypeName(RenderCommandType type)
-{
-    switch (type) {
-    case RenderCommandType::GetTemporaryRT:
-        return "GetTemporaryRT";
-    case RenderCommandType::ReleaseTemporaryRT:
-        return "ReleaseTemporaryRT";
-    case RenderCommandType::SetRenderTarget:
-        return "SetRenderTarget";
-    case RenderCommandType::ClearRenderTarget:
-        return "ClearRenderTarget";
-    case RenderCommandType::DrawMesh:
-        return "DrawMesh";
-    }
-    return "Unknown";
-}
-
-void WarnUnimplementedCommand(RenderCommandType type)
-{
-    // Per-type latch so each unsupported command logs exactly once per process,
-    // instead of either spamming or silently swallowing after a global cap.
-    constexpr size_t kCommandCount = 16; // bounded by RenderCommandType (uint8_t enum); plenty of slack
-    static std::array<std::atomic<bool>, kCommandCount> warned{};
-    const auto idx = static_cast<size_t>(type);
-    if (idx >= warned.size())
-        return;
-    bool expected = false;
-    if (warned[idx].compare_exchange_strong(expected, true)) {
-        INXLOG_WARN("[SRP] CommandBuffer command '", RenderCommandTypeName(type),
-                    "' is not yet implemented in the Vulkan backend — ignoring all "
-                    "subsequent invocations of this command type for the rest of the process. "
-                    "Subsequent rendering may behave unexpectedly until the backend lands.");
-    }
-}
-} // namespace
-
 RenderDomainMask ScriptableRenderContext::ProcessPendingCommandBuffers()
 {
     RenderDomainMask appendedDomains = 0;
@@ -711,13 +671,12 @@ RenderDomainMask ScriptableRenderContext::ProcessPendingCommandBuffers()
             break;
         }
 
-        // Commands that still need the Vulkan command-buffer integration.
-        // See ScriptableRenderContext::IsCommandImplemented for the
-        // canonical "is this safe to call" predicate exposed to bindings.
+        // Public recording rejects these commands. Treat their presence in
+        // a stream as a contract violation, never as successful execution.
         case RenderCommandType::ClearRenderTarget:
         case RenderCommandType::SetRenderTarget:
-            WarnUnimplementedCommand(command.type);
-            break;
+            throw std::logic_error("Unsupported CommandBuffer target command reached execution; "
+                                   "use RenderGraph pass write_color/write_depth and set_clear");
         }
     }
     m_pendingCommands.clear();

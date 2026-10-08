@@ -31,6 +31,27 @@ def _make_graph():
 # ══════════════════════════════════════════════════════════════════════
 
 class TestFormat:
+    @pytest.mark.parametrize("entry", ["set_render_target", "set_render_target_with_depth", "clear_render_target"])
+    @pytest.mark.parametrize("populated", [False, True])
+    def test_unsupported_target_commands_reject_without_mutating_recording(self, entry, populated):
+        commands = CommandBuffer("Unsupported target command")
+        target = commands.get_temporary_rt(64, 64) if populated else native.CAMERA_TARGET
+        count = commands.command_count
+        arguments = {
+            "set_render_target": (target,),
+            "set_render_target_with_depth": (target, target),
+            "clear_render_target": (True, True, .1, .2, .3, 1.),
+        }
+        for _ in range(2):
+            with pytest.raises(RuntimeError, match="RenderGraph.*write_color.*set_clear"):
+                getattr(commands, entry)(*arguments[entry])
+            assert commands.command_count == count
+        if populated:
+            commands.release_temporary_rt(target)
+            assert commands.command_count == 2
+        commands.clear()
+        assert commands.command_count == 0
+
     def test_color_formats(self):
         assert Format is PixelFormat
         assert Format.RGBA8_UNORM.name == "RGBA8_UNORM"

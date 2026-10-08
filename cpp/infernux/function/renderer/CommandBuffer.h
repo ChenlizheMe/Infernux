@@ -144,16 +144,14 @@ struct RenderCommand
 // ============================================================================
 
 /**
- * @brief Deferred-recording command buffer (Unity CommandBuffer equivalent).
+ * @brief Deferred explicit mesh draws and temporary resource lifetime commands.
+ * Attachment selection and clears belong to RenderGraph pass declarations;
+ * SetRenderTarget and ClearRenderTarget reject unsupported recording immediately.
  *
  * Usage from Python:
  * @code
  *   cmd = CommandBuffer("ForwardRenderer")
- *   scene_rt = cmd.get_temporary_rt(w, h)
- *   cmd.set_render_target(scene_rt)
- *   cmd.clear_render_target(True, True, 0.1, 0.1, 0.1, 1.0)
- *   cmd.draw_renderers(culling, opaque_settings, opaque_filter)
- *   cmd.release_temporary_rt(scene_rt)
+ *   cmd.draw_mesh(mesh, world_matrix, material)
  *   context.execute_command_buffer(cmd)
  * @endcode
  */
@@ -181,13 +179,13 @@ class CommandBuffer
     /// @brief Mark a temporary RT for release (returned to pool at frame end).
     void ReleaseTemporaryRT(RenderTargetHandle handle);
 
-    /// @brief Set the active color render target.
+    /// @brief Unsupported: throws std::logic_error; use RenderGraph attachments.
     void SetRenderTarget(RenderTargetHandle colorTarget);
 
-    /// @brief Set active color + depth render targets.
+    /// @brief Unsupported: throws std::logic_error; use RenderGraph attachments.
     void SetRenderTarget(RenderTargetHandle colorTarget, RenderTargetHandle depthTarget);
 
-    /// @brief Clear the currently-bound render target.
+    /// @brief Unsupported: throws std::logic_error; use RenderGraph pass clear values.
     void ClearRenderTarget(bool clearColor, bool clearDepth, float r, float g, float b, float a, float depth = 1.0f);
 
     /// @brief Record one explicit mesh draw and capture parameter values now.

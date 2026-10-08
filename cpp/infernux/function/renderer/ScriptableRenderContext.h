@@ -197,11 +197,9 @@ class ScriptableRenderContext
 
     /// @brief Static predicate: does the Vulkan backend currently honour @p type?
     ///
-    /// The Python-facing CommandBuffer API exposes commands that have not yet
-    /// been wired to the Vulkan backend (multi-RT bind, async readback, etc.).
-    /// Bindings and tools can call this before recording to surface the
-    /// limitation up front instead of relying on the post-hoc warning emitted
-    /// inside ProcessPendingCommandBuffers.
+    /// CommandBuffer rejects unsupported target setters and clears before
+    /// recording. This native predicate describes the accepted command set;
+    /// attachment selection and clear values belong to RenderGraph passes.
     [[nodiscard]] static bool IsCommandImplemented(RenderCommandType type) noexcept;
 
     // ====================================================================

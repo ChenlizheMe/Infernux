@@ -5,7 +5,8 @@
  * Part of the deferred command-buffer binding surface.
  *
  * Exposes the deferred-recording CommandBuffer API to Python, allowing
- * users to write custom render pipelines with explicit render-target commands.
+ * users to capture explicit mesh draws in custom render pipelines.
+ * Attachments and clear values are declared by RenderGraph passes.
  */
 
 #include "BindingRegistration.h"
@@ -147,15 +148,14 @@ void RegisterCommandBufferBindings(py::module_ &m)
                               "Commands are recorded but not immediately executed. Call\n"
                               "context.execute_command_buffer(cmd) to schedule execution,\n"
                               "then context.submit() to finalize the frame.\n"
+                              "Use RenderGraph pass write_color/write_depth and set_clear for\n"
+                              "attachments and clears. CommandBuffer target setters and clears\n"
+                              "are unsupported and raise RuntimeError before recording.\n"
                               "\n"
                               "Example::\n"
                               "\n"
                               "    cmd = CommandBuffer('ForwardRenderer')\n"
-                              "    rt = cmd.get_temporary_rt(1920, 1080)\n"
-                              "    cmd.set_render_target(rt)\n"
-                              "    cmd.clear_render_target(True, True, 0.1, 0.1, 0.1, 1.0)\n"
-                              "    cmd.draw_renderers(culling, drawing, filtering)\n"
-                              "    cmd.release_temporary_rt(rt)\n"
+                              "    cmd.draw_mesh(mesh, world_matrix, material)\n"
                               "    context.execute_command_buffer(cmd)\n")
         .def(py::init<const std::string &>(), py::arg("name") = "",
              "Create a CommandBuffer with an optional debug name")
@@ -168,16 +168,17 @@ void RegisterCommandBufferBindings(py::module_ &m)
              "Mark a temporary render target for release (returned to pool at frame end)")
         .def(
             "set_render_target", [](CommandBuffer &self, RenderTargetHandle color) { self.SetRenderTarget(color); },
-            py::arg("color"), "Set the active color render target")
+            py::arg("color"), "Unsupported: raises RuntimeError. Declare RenderGraph pass attachments with write_color.")
         .def(
             "set_render_target_with_depth",
             [](CommandBuffer &self, RenderTargetHandle color, RenderTargetHandle depth) {
                 self.SetRenderTarget(color, depth);
             },
-            py::arg("color"), py::arg("depth"), "Set active color + depth render targets")
+            py::arg("color"), py::arg("depth"),
+            "Unsupported: raises RuntimeError. Declare RenderGraph pass attachments with write_color/write_depth.")
         .def("clear_render_target", &CommandBuffer::ClearRenderTarget, py::arg("clear_color"), py::arg("clear_depth"),
              py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a"), py::arg("depth") = 1.0f,
-             "Clear the currently-bound render target")
+             "Unsupported: raises RuntimeError. Declare RenderGraph pass clear values with set_clear.")
         .def(
             "draw_mesh",
             [](CommandBuffer &self, const std::shared_ptr<InxMesh> &mesh, py::handle matrix,
