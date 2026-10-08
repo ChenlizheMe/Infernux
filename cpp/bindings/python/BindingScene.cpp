@@ -1355,9 +1355,9 @@ void RegisterSceneBindings(py::module_ &m)
             [](const MeshRenderer &mr) -> py::list {
                 py::list result;
                 if (mr.HasMeshAsset()) {
-                    auto mesh = mr.GetMeshAssetRef().Get();
-                    if (mesh) {
-                        for (const auto &vertex : mesh->GetVertices())
+                    const auto geometry = mr.GetAssetGeometry();
+                    if (geometry) {
+                        for (const auto &vertex : geometry->vertices)
                             result.append(
                                 py::make_tuple(vertex.tangent.x, vertex.tangent.y, vertex.tangent.z, vertex.tangent.w));
                     }
@@ -1368,7 +1368,7 @@ void RegisterSceneBindings(py::module_ &m)
                 }
                 return result;
             },
-            "Get all vertex tangents as (x, y, z, handedness) tuples")
+            "Get tangents in the same geometry space as positions and normals, as (x, y, z, handedness) tuples")
         .def("recalculate_normals", &MeshRenderer::RecalculateInlineNormals,
              "Rebuild CPU inline normals from the authored triangle topology")
         .def("recalculate_tangents", &MeshRenderer::RecalculateInlineTangents,
