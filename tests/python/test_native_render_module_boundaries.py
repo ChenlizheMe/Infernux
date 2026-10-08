@@ -974,23 +974,12 @@ def test_msaa_public_contract_is_exactly_1_2_4_8() -> None:
     assert "for (const int samples : {1, 2, 4, 8})" in renderer_state
 
 
-def test_presentation_recreation_publishes_a_complete_generation() -> None:
-    swapchain = (VULKAN_BACKEND / "VkSwapchainManager.cpp").read_text(encoding="utf-8")
+def test_presentation_retirement_releases_gui_aliases_at_backend_boundary() -> None:
+    # Native SwapchainRecreationTests inject real driver failures and
+    # verify generation retirement; this checks only GUI/backend ownership.
     core = (
         ROOT / "cpp" / "infernux" / "function" / "renderer" / "InxVkCoreModular.cpp"
     ).read_text(encoding="utf-8")
-
-    recreate = swapchain.split("bool VkSwapchainManager::Recreate", 1)[1].split(
-        "bool VkSwapchainManager::BuildGeneration", 1
-    )[0]
-    assert recreate.index("BuildGeneration") < recreate.index("if (beforeCommit)")
-    assert recreate.index("if (beforeCommit)") < recreate.index(
-        "m_generation = std::move(candidate)"
-    )
-    assert recreate.index("m_generation = std::move(candidate)") < recreate.index(
-        "DestroyGeneration(retired)"
-    )
-    assert "CleanupSwapchain" not in recreate
 
     core_recreate = core.split("void InxVkCoreModular::RecreateSwapchain()", 1)[1].split(
         "void InxVkCoreModular::SetPresentMode", 1
