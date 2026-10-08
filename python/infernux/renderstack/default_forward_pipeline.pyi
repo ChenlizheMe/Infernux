@@ -2,24 +2,16 @@
 
 from __future__ import annotations
 
-from enum import IntEnum
 from typing import TYPE_CHECKING
 
 from infernux.renderstack.render_pipeline import RenderPipeline
+from infernux.renderstack.forward_parameters import DefaultForwardParameters, MSAASamples as MSAASamples
 
 if TYPE_CHECKING:
     from infernux.rendergraph.graph import RenderGraph
 
 
-class MSAASamples(IntEnum):
-    """Anti-aliasing sample count."""
-    OFF = 1
-    X2 = 2
-    X4 = 4
-    X8 = 8
-
-
-class DefaultForwardPipeline(RenderPipeline):
+class DefaultForwardPipeline(DefaultForwardParameters, RenderPipeline):
     """Standard forward rendering pipeline (default pipeline).
 
     Defines a standard forward rendering topology::

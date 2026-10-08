@@ -24,7 +24,6 @@ Usage::
 
 from __future__ import annotations
 
-from enum import IntEnum
 from typing import TYPE_CHECKING
 
 from infernux.renderstack.render_pipeline import RenderPipeline
@@ -32,7 +31,7 @@ from infernux.renderstack._platform_quality import (
     effective_msaa_samples,
     effective_shadow_resolution,
 )
-from infernux.components.fields import serialized_field
+from infernux.renderstack.forward_parameters import DefaultForwardParameters, MSAASamples
 from infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
     LIGHT_LIST_BUFFER,
@@ -52,15 +51,7 @@ if TYPE_CHECKING:
     from infernux.rendergraph.graph import RenderGraph
 
 
-class MSAASamples(IntEnum):
-    """Anti-aliasing sample count."""
-    OFF = 1
-    X2 = 2
-    X4 = 4
-    X8 = 8
-
-
-class DefaultForwardPipeline(RenderPipeline):
+class DefaultForwardPipeline(DefaultForwardParameters, RenderPipeline):
     """Standard Forward rendering pipeline.
 
     Defines 3 injection points:
@@ -80,24 +71,6 @@ class DefaultForwardPipeline(RenderPipeline):
 
     name: str = "Default Forward"
     material_pass = "forward"
-
-    # ------------------------------------------------------------------
-    # Exposed parameters (shown in RenderStack inspector)
-    # ------------------------------------------------------------------
-    shadow_resolution: int = serialized_field(
-        default=4096,
-        range=(256, 8192),
-        slider=False,
-        tooltip="Shadow map resolution (width & height)",
-        header="Shadows",
-    )
-
-    msaa_samples: MSAASamples = serialized_field(
-        default=MSAASamples.X4,
-        enum_labels=["X1 (Off)", "X2", "X4", "X8"],
-        tooltip="Anti-aliasing sample count (X1 disables multisample anti-aliasing)",
-        header="Anti-Aliasing",
-    )
 
     # ------------------------------------------------------------------
     # RenderPipeline interface

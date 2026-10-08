@@ -6,6 +6,7 @@ from infernux.components.component import InxComponent
 from infernux.renderstack.effect_slot import EffectSlot
 from infernux.renderstack.render_effect import RenderEffect
 from infernux.renderstack.effect_stage import EffectStage
+from infernux.renderstack.forward_parameters import DefaultForwardParameters
 
 if TYPE_CHECKING:
     from infernux.renderstack.render_pipeline import RenderPipeline
@@ -51,8 +52,8 @@ class RenderStack(InxComponent):
     def remap_orphan_effect_stage(self, old_stage_id: str, new_stage_id: str) -> int: ...
 
     @property
-    def pipeline(self) -> RenderPipeline:
-        """The currently active render pipeline."""
+    def pipeline(self) -> RenderPipeline | DefaultForwardParameters:
+        """The active pipeline, or the Web host's typed parameter projection."""
         ...
     def invalidate_graph(self) -> None:
         """Mark the render graph as dirty, triggering a rebuild."""

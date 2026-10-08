@@ -172,8 +172,8 @@
                 "type_id": "infernux.renderstack.effect_slot:EffectSlot"
               }
             ],
-            "pipeline_class_name": "",
-            "pipeline_params_json": ""
+            "pipeline_class_name": "Default Forward",
+            "pipeline_params_json": "{\"__default__\": {\"shadow_resolution\": 4096, \"msaa_samples\": {\"$type\": \"enum\", \"enum_type\": \"MSAASamples\", \"name\": \"X4\"}}}"
           },
           "enabled": true,
           "execution_order": 0,

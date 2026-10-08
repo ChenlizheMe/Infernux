@@ -37,6 +37,7 @@ from infernux.components.component import InxComponent
 from infernux.components.fields import FieldType, list_field
 from infernux.components.decorators import disallow_multiple, add_component_menu
 from infernux.debug import Debug
+from infernux.lib import _Infernux
 from infernux.renderstack._pipeline_common import (
     COLOR_TEXTURE,
     ensure_standard_post_process_points,
@@ -355,8 +356,8 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         if pipeline is not None:
             pipeline_type = type(pipeline)
         elif selected_pipeline == self.DEFAULT_PIPELINE_NAME:
-            from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
-            pipeline_type = DefaultForwardPipeline
+            from infernux.renderstack.forward_parameters import DefaultForwardParameters
+            pipeline_type = DefaultForwardParameters
         else:
             pipeline_type = self.discover_pipelines().get(selected_pipeline)
         if pipeline_type is not None:
@@ -417,9 +418,9 @@ class RenderStack(PipelineReloadMixin, InxComponent):
             raise TypeError("RenderStack pipeline parameters must be an object")
         from infernux.components.fields import get_serialized_fields
         from infernux.components.value_codec import VALUE_CODECS
-        from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
+        from infernux.renderstack.forward_parameters import DefaultForwardParameters
 
-        pipeline_types = {"__default__": DefaultForwardPipeline, **self.discover_pipelines()}
+        pipeline_types = {"__default__": DefaultForwardParameters, **self.discover_pipelines()}
         current = {}
         for pipeline_name, params in data.items():
             if type(params) is not dict:
@@ -581,6 +582,10 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         Returns:
             A mapping of ``{display_name: class}``.
         """
+        if _Infernux.__runtime_profile__ == "web-player":
+            # The Web host implements Default Forward directly. It cannot
+            # instantiate desktop callback pipelines from project modules.
+            return {}
         from infernux.renderstack.discovery import discover_pipelines
 
         return discover_pipelines()
@@ -1016,6 +1021,12 @@ class RenderStack(PipelineReloadMixin, InxComponent):
         Unknown names are rejected so authored selection is never rewritten.
         The pipeline source file is also registered for hot-reload callbacks.
         """
+        if _Infernux.__runtime_profile__ == "web-player":
+            from infernux.renderstack.forward_parameters import DefaultForwardParameters
+
+            if self.pipeline_class_name != self.DEFAULT_PIPELINE_NAME:
+                raise RuntimeError("Web Player requires the Default Forward RenderStack pipeline")
+            return DefaultForwardParameters()
         import inspect
         from infernux.renderstack.default_forward_pipeline import (
             DefaultForwardPipeline,
