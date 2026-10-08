@@ -13,12 +13,11 @@ if (-not $ReleaseDir.StartsWith($ReleaseRoot, [StringComparison]::OrdinalIgnoreC
 }
 
 Set-Location $Root
-$ProjectText = Get-Content -LiteralPath (Join-Path $Root 'pyproject.toml') -Raw
-$VersionMatch = [regex]::Match($ProjectText, '(?m)^version\s*=\s*"([^"]+)"')
-if (-not $VersionMatch.Success) { throw 'Could not read project.version from pyproject.toml.' }
-if ($VersionMatch.Groups[1].Value -ne $Version) {
-    throw "Requested version $Version does not match pyproject.toml version $($VersionMatch.Groups[1].Value)."
-}
+$IdentityJson = & python (Join-Path $PSScriptRoot 'local_release_identity.py') --version $Version
+if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the requested release identity.' }
+$Identity = $IdentityJson | ConvertFrom-Json
+$BuildNumber = $Identity.build_number
+$HubVersion = $Identity.hub_version
 
 New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
 
@@ -35,17 +34,22 @@ Write-Host '[3/4] Building the Hub distribution and installer...' -ForegroundCol
 if ($LASTEXITCODE -ne 0) { throw 'Hub release build failed.' }
 
 Write-Host '[4/4] Validating local release assets...' -ForegroundColor Cyan
-$RequiredPatterns = @(
-    "infernux-$Version-*-cp313-cp313-win_amd64.whl",
-    "InfernuxHubInstaller-$Version-windows-x64.exe",
-    "InfernuxHub-$Version-windows-x64-full.zip",
+$RequiredNames = @(
+    "infernux-$Version-$BuildNumber-cp313-cp313-win_amd64.whl",
+    "InfernuxHubInstaller-$HubVersion-windows-x64.exe",
+    "InfernuxHub-$HubVersion-windows-x64-full.zip",
     'InfernuxHub-windows-x64-manifest.json'
 )
-foreach ($Pattern in $RequiredPatterns) {
-    $Matches = @(Get-ChildItem -LiteralPath $ReleaseDir -Filter $Pattern -File)
-    if ($Matches.Count -ne 1 -or $Matches[0].Length -eq 0) {
-        throw "Expected exactly one non-empty local release asset matching: $Pattern"
+foreach ($Name in $RequiredNames) {
+    $Asset = Join-Path $ReleaseDir $Name
+    if (-not (Test-Path -LiteralPath $Asset -PathType Leaf) -or (Get-Item -LiteralPath $Asset).Length -eq 0) {
+        throw "Expected a non-empty local release asset: $Name"
     }
+}
+$Manifest = Get-Content -LiteralPath (Join-Path $ReleaseDir 'InfernuxHub-windows-x64-manifest.json') -Raw | ConvertFrom-Json
+if ($Manifest.version -cne $HubVersion -or $Manifest.platform -cne 'windows-x64' -or
+    $Manifest.product -cne 'InfernuxHub' -or $Manifest.'$schema' -cne 'infernux.hub_update') {
+    throw "Local Hub manifest does not describe InfernuxHub $HubVersion for windows-x64."
 }
 
 Get-ChildItem -LiteralPath $ReleaseDir -File | Sort-Object Name | ForEach-Object {

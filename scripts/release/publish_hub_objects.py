@@ -67,7 +67,11 @@ class Publisher:
     def upload(self, source: Path, key: str) -> None:
         with source.open('rb') as stream:
             digest = hashlib.file_digest(stream, 'sha256').hexdigest()
-        if self._verify_public_object(key, digest, allow_missing=True):
+        # The fixed registry is a moving catalog, committed after its advertised
+        # packages exist. All versioned payloads (including JSON) stay immutable.
+        if key != "plugins/official-registry.json" and self._verify_public_object(
+            key, digest, allow_missing=True
+        ):
             print(f"Already published identical object: {key}")
             return
         is_json = source.suffix == ".json"
