@@ -17,6 +17,21 @@ from infernux.engine.model_import.toolchain import export_script
 from infernux.lib import AssetRegistry, Vector3
 
 
+@pytest.fixture(scope="module")
+def blender_matrix(blender_executable, tmp_path_factory):
+    """Author once, copy per test; mutations never leak to another scenario."""
+    folder = tmp_path_factory.mktemp("blender_matrix")
+    script = Path(__file__).with_name("fixtures") / "create_blender_import_matrix.py"
+    subprocess.run(
+        [blender_executable, "--background", "--factory-startup", "--disable-autoexec",
+         "--python-exit-code", "1", "--python", str(script), "--",
+         str(folder / "AuthoringMatrix.blend"), str(folder / "ExternalAlbedo.png")],
+        check=True, capture_output=True, timeout=60,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    return folder
+
+
 def _descendants(root):
     result = {}
 
@@ -29,18 +44,12 @@ def _descendants(root):
     return result
 
 
-@pytest.mark.skipif(not os.environ.get("INFERNUX_TEST_BLENDER"), reason="requires the Blender 5.2 authoring tool")
-def test_blender_external_image_report_matches_exported_glb_identity(tmp_path):
-    tool = os.environ["INFERNUX_TEST_BLENDER"]
+def test_blender_external_image_report_matches_exported_glb_identity(tmp_path, blender_executable, blender_matrix):
+    tool = blender_executable
     source = tmp_path / "AuthoringMatrix.blend"
     external_texture = tmp_path / "ExternalAlbedo.png"
-    fixture_script = Path(__file__).with_name("fixtures") / "create_blender_import_matrix.py"
-    subprocess.run(
-        [tool, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
-         "--python", str(fixture_script), "--", str(source), str(external_texture)],
-        check=True, capture_output=True, timeout=60,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
+    shutil.copy2(blender_matrix / source.name, source)
+    shutil.copy2(blender_matrix / external_texture.name, external_texture)
     glb = tmp_path / "AuthoringMatrix.glb"
     report = tmp_path / "AuthoringMatrix.report.json"
     subprocess.run(
@@ -111,9 +120,8 @@ def test_blender_tool_requires_explicit_absolute_configuration(engine, tmp_path)
         Path(str(source) + ".meta").unlink(missing_ok=True)
 
 
-@pytest.mark.skipif(not os.environ.get("INFERNUX_TEST_BLENDER"), reason="requires the Blender 5.2 authoring tool")
-def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_path, monkeypatch):
-    tool = os.environ["INFERNUX_TEST_BLENDER"]
+def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_path, monkeypatch, blender_executable):
+    tool = blender_executable
     database = engine.get_asset_database()
     registry = AssetRegistry.instance()
     monkeypatch.setattr(AssetManager, "_engine", engine)
@@ -223,91 +231,11 @@ def test_modern_blend_worker_import_reimport_and_failed_publication(engine, tmp_
             Path(str(authored) + ".meta").unlink(missing_ok=True)
 
 
-@pytest.mark.skipif(not os.environ.get("INFERNUX_TEST_BLENDER"), reason="requires the Blender 5.2 authoring tool")
-def test_real_blend_reauthor_preserves_mesh_identity_across_rename_and_reparent(
-    engine, tmp_path
-):
-    tool = os.environ["INFERNUX_TEST_BLENDER"]
-    database = engine.get_asset_database()
-    registry = AssetRegistry.instance()
-    folder = Path(database.assets_root) / tmp_path.name
-    folder.mkdir()
-    source = folder / "EditorSync.blend"
-    fixture_script = (
-        Path(__file__).with_name("fixtures")
-        / "create_blender_editor_sync_matrix.py"
-    )
-
-    def author(revision: str) -> None:
-        subprocess.run(
-            [
-                tool,
-                "--background",
-                "--factory-startup",
-                "--disable-autoexec",
-                "--python-exit-code",
-                "1",
-                "--python",
-                str(fixture_script),
-                "--",
-                str(source),
-                revision,
-            ],
-            check=True,
-            capture_output=True,
-            timeout=60,
-            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-        )
-
-    database.configure_blender_import(tool, export_script())
-    guid = ""
-    try:
-        author("initial")
-        imported = database.import_asset(str(source))
-        assert imported, imported.error
-        guid = imported.guid
-        before = json.loads(
-            database.get_meta_by_guid(guid).get_string("model_meshes")
-        )
-        stable_before = next(item for item in before if item["name"] == "RenameMe")
-        assert stable_before["path"] == [
-            "AuthoringRoot",
-            "AuthoringPivot",
-            "RenameMe",
-        ]
-
-        author("changed")
-        result = AssetManager.reimport_asset(str(source), database=database)
-        assert result, result.error
-        assert result.guid == guid
-        after = json.loads(
-            database.get_meta_by_guid(guid).get_string("model_meshes")
-        )
-        stable_after = next(
-            item for item in after if item["name"] == "RenamedStable"
-        )
-        assert stable_after["path"] == ["AuthoringRoot", "RenamedStable"]
-        assert stable_after["subresource_id"] == stable_before["subresource_id"]
-        assert {item["name"] for item in after} == {
-            "RenamedStable",
-            "AlwaysHere",
-            "AddedFromBlender",
-        }
-    finally:
-        if guid:
-            registry.invalidate_asset(guid)
-        database.configure_blender_import("", "")
-        database.delete_asset(str(source))
-        source.unlink(missing_ok=True)
-        Path(str(source) + ".meta").unlink(missing_ok=True)
-
-
-@pytest.mark.skipif(not os.environ.get("INFERNUX_TEST_BLENDER"), reason="requires the Blender 5.2 authoring tool")
 def test_real_blend_scene_instance_sync_preserves_authoring_and_roundtrips(
-    engine, scene, tmp_path, monkeypatch
+    engine, scene, tmp_path, monkeypatch, blender_executable
 ):
     """A real .blend revision updates source structure without replacing authored state."""
-    tool = os.environ["INFERNUX_TEST_BLENDER"]
+    tool = blender_executable
     database = engine.get_asset_database()
     registry = AssetRegistry.instance()
     monkeypatch.setattr(AssetManager, "_engine", engine)
@@ -345,6 +273,9 @@ def test_real_blend_scene_instance_sync_preserves_authoring_and_roundtrips(
         imported = AssetManager.import_asset(str(source), database=database)
         assert imported, imported.error
         guid = imported.guid
+        before = json.loads(database.get_meta_by_guid(guid).get_string("model_meshes"))
+        stable_before = next(item for item in before if item["name"] == "RenameMe")
+        assert stable_before["path"] == ["AuthoringRoot", "AuthoringPivot", "RenameMe"]
         root = scene.create_from_model(guid, "Authored Blender Instance")
         initial = _descendants(root)
         stable = initial["RenameMe"]
@@ -361,6 +292,12 @@ def test_real_blend_scene_instance_sync_preserves_authoring_and_roundtrips(
         result = AssetManager.reimport_asset(str(source), database=database)
         assert result, result.error
         assert result.guid == guid
+
+        after = json.loads(database.get_meta_by_guid(guid).get_string("model_meshes"))
+        stable_after = next(item for item in after if item["name"] == "RenamedStable")
+        assert stable_after["path"] == ["AuthoringRoot", "RenamedStable"]
+        assert stable_after["subresource_id"] == stable_before["subresource_id"]
+        assert {item["name"] for item in after} == {"RenamedStable", "AlwaysHere", "AddedFromBlender"}
 
         changed = _descendants(root)
         assert "RenameMe" not in changed
@@ -400,22 +337,16 @@ def test_real_blend_scene_instance_sync_preserves_authoring_and_roundtrips(
         Path(str(source) + ".meta").unlink(missing_ok=True)
 
 
-@pytest.mark.skipif(not os.environ.get("INFERNUX_TEST_BLENDER"), reason="requires the Blender 5.2 authoring tool")
-def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_path):
-    tool = os.environ["INFERNUX_TEST_BLENDER"]
+def test_blend_structure_material_rig_and_authoring_boundary_matrix(engine, tmp_path, blender_executable, blender_matrix):
+    tool = blender_executable
     database = engine.get_asset_database()
     registry = AssetRegistry.instance()
     folder = Path(database.assets_root) / tmp_path.name
     folder.mkdir()
     source = folder / "AuthoringMatrix.blend"
     external_texture = folder / "ExternalAlbedo.png"
-    fixture_script = Path(__file__).with_name("fixtures") / "create_blender_import_matrix.py"
-    subprocess.run(
-        [tool, "--background", "--factory-startup", "--disable-autoexec", "--python-exit-code", "1",
-         "--python", str(fixture_script), "--", str(source), str(external_texture)],
-        check=True, capture_output=True, timeout=60,
-        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
-    )
+    shutil.copy2(blender_matrix / source.name, source)
+    shutil.copy2(blender_matrix / external_texture.name, external_texture)
     authored_source = source.read_bytes()
     texture_import = database.import_asset(str(external_texture))
     assert texture_import, texture_import.error

@@ -217,6 +217,10 @@ def main():
     light.parent = root
 
     bpy.ops.wm.save_as_mainfile(filepath=output)
+    # Tests copy this template into isolated projects. Keep external references
+    # relative to that copy, not to the shared fixture generation directory.
+    bpy.ops.file.make_paths_relative()
+    bpy.ops.wm.save_as_mainfile(filepath=output)
 
 
 if __name__ == "__main__":

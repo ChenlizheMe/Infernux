@@ -3111,7 +3111,7 @@ def test_import_rejects_ambiguous_authored_role_before_writing(tmp_path, extract
 
 
 @pytest.mark.parametrize("outside_package", [False, True])
-def test_project_package_destination_rejects_redirected_role(tmp_path, outside_package):
+def test_project_package_destination_rejects_redirected_role(tmp_path, outside_package, directory_junction):
     from infernux.plugins.package import package_destination
 
     project = _project(tmp_path / "project")
@@ -3119,10 +3119,12 @@ def test_project_package_destination_rejects_redirected_role(tmp_path, outside_p
     root.mkdir(parents=True)
     target = tmp_path / "outside" if outside_package else root / "another_directory"
     target.mkdir()
-    try:
+    if os.name == "nt":
+        # Exercise Windows directory redirection without requiring symbolic-link
+        # privileges. This checks the destination boundary, not symlink APIs.
+        directory_junction(root / "Editor", target)
+    else:
         (root / "Editor").symlink_to(target, target_is_directory=True)
-    except OSError as exc:
-        pytest.skip(f"Directory symlink unavailable: {exc}")
     with pytest.raises(ValueError):
         package_destination("vendor/redirected", "editor/new.py", project_root=str(project))
     assert not list(target.iterdir())
