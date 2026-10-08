@@ -280,7 +280,8 @@ static void CheckFullscreenRasterState(vk::VkDeviceContext &context, VkCommandBu
     renderer.Initialize(std::make_shared<FullscreenTestHost>(device, vertex, fragment));
     // Actual fragment-depth writes, disabled writes, rejected fragments and
     // straight-alpha blending on both depth formats and single/MSAA targets.
-    for (auto depthFormat : {rhi::PixelFormat::D32SFloat, rhi::PixelFormat::D24UNormS8UInt}) {
+    for (auto depthFormat : {rhi::PixelFormat::D32SFloat, rhi::PixelFormat::D24UNormS8UInt,
+                            rhi::PixelFormat::D32SFloatS8UInt}) {
         for (auto samples : {rhi::SampleCount::One, rhi::SampleCount::Four}) {
             rhi::RenderTextureDesc desc;
             desc.width = 9;
@@ -288,6 +289,26 @@ static void CheckFullscreenRasterState(vk::VkDeviceContext &context, VkCommandBu
             desc.colorFormat = rhi::PixelFormat::RGBA8UNorm;
             desc.depthFormat = depthFormat;
             desc.samples = samples;
+            const auto &caps = device.GetCapabilities();
+            const auto depthFeatures = rhi::FormatFeature::DepthStencilAttachment |
+                                       rhi::FormatFeature::TransferSource | rhi::FormatFeature::TransferDestination;
+            const bool supported = caps.CheckFormat(depthFormat, depthFeatures).IsSupported() &&
+                                   caps.CheckSampleCount(depthFormat, samples).IsSupported();
+            if (!supported) {
+                // D24S8 is optional on Vulkan (including the CI SwiftShader
+                // device). Verify explicit rejection, while D32 must exercise
+                // the full raster/depth/blend contract at both sample counts.
+                assert(depthFormat != rhi::PixelFormat::D32SFloat);
+                bool rejected = false;
+                try {
+                    rhi::RenderTexture unsupported(device, "unsupported-depth", desc);
+                } catch (const std::invalid_argument &) {
+                    rejected = true;
+                }
+                assert(rejected);
+                std::cout << "PASS unsupported depth format rejected before allocation\n";
+                continue;
+            }
             auto target = std::make_shared<rhi::RenderTexture>(device, "fullscreen-state", desc);
             vk::RenderGraph graph;
             graph.Initialize(&context);
@@ -834,7 +855,7 @@ static void CheckFullscreenVolumeRead(vk::VkDeviceContext &context, VkCommandBuf
     std::cout << "PASS imported Texture3D -> fullscreen sampler3D -> two depth slices -> GPU readback\n";
 }
 
-int main(int argc, char **argv)
+static int RunTests(int argc, char **argv)
 {
     assert(argc == 8);
     std::ifstream input(argv[1], std::ios::binary | std::ios::ate);
@@ -1205,4 +1226,15 @@ int main(int argc, char **argv)
     context.Destroy();
     SDL_DestroyWindow(window);
     SDL_Quit();
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    try {
+        return RunTests(argc, argv);
+    } catch (const std::exception &error) {
+        std::cerr << "RenderTexture Vulkan test failed: " << error.what() << '\n';
+        return 1;
+    }
 }

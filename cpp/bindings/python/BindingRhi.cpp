@@ -92,6 +92,7 @@ void RegisterRhiBindings(py::module_ &m)
         .value("RGB10A2_UNORM", rhi::PixelFormat::RGB10A2UNorm)
         .value("D32_SFLOAT", rhi::PixelFormat::D32SFloat)
         .value("D24_UNORM_S8_UINT", rhi::PixelFormat::D24UNormS8UInt)
+        .value("D32_SFLOAT_S8_UINT", rhi::PixelFormat::D32SFloatS8UInt)
         .def_property_readonly("is_depth", [](rhi::PixelFormat format) { return rhi::IsDepthFormat(format); });
 
     py::enum_<rhi::SampleCount>(m, "SampleCount", "Backend-neutral MSAA sample count")

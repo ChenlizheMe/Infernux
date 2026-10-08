@@ -32,6 +32,7 @@ uint32_t TexelBytes(PixelFormat format)
     case PixelFormat::RGBA16SFloat:
     case PixelFormat::RGBA16UNorm:
     case PixelFormat::RG32UInt:
+    case PixelFormat::D32SFloatS8UInt:
         return 8;
     case PixelFormat::RGBA32SFloat:
     case PixelFormat::RGBA32UInt:

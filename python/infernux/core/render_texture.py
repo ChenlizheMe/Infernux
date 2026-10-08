@@ -32,6 +32,7 @@ except ImportError:
         RGBA32_SFLOAT = 13
         D32_SFLOAT = 25
         D24_UNORM_S8_UINT = 26
+        D32_SFLOAT_S8_UINT = 28
 
     class SampleCount(IntEnum):
         One = 1

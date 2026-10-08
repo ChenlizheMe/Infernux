@@ -200,6 +200,8 @@ struct Synchronization2Commands final
         return VK_FORMAT_D32_SFLOAT;
     case PixelFormat::D24UNormS8UInt:
         return VK_FORMAT_D24_UNORM_S8_UINT;
+    case PixelFormat::D32SFloatS8UInt:
+        return VK_FORMAT_D32_SFLOAT_S8_UINT;
     case PixelFormat::Count:
     case PixelFormat::Undefined:
         return VK_FORMAT_UNDEFINED;
@@ -264,6 +266,8 @@ struct Synchronization2Commands final
         return PixelFormat::D32SFloat;
     case VK_FORMAT_D24_UNORM_S8_UINT:
         return PixelFormat::D24UNormS8UInt;
+    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+        return PixelFormat::D32SFloatS8UInt;
     default:
         return PixelFormat::Undefined;
     }

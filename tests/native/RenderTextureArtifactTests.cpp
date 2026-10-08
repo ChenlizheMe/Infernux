@@ -65,6 +65,10 @@ void TestCodec()
                 relative.samples == rhi::SampleCount::Four && relative.colorFormat == desc.colorFormat &&
                 relative.depthFormat == desc.depthFormat,
             "relative HDR/MSAA descriptor roundtrip failed");
+    desc.depthFormat = rhi::PixelFormat::D32SFloatS8UInt;
+    Require(RenderTextureArtifact::Decode(RenderTextureArtifact::Encode(desc, "fedcba9876543210")).depthFormat ==
+                desc.depthFormat,
+            "floating-point depth/stencil descriptor roundtrip failed");
     for (size_t i = 0; i < bytes.size(); ++i)
         Reject([&] { RenderTextureArtifact::Decode(std::string_view(bytes).substr(0, i)); });
     Reject([&] { RenderTextureArtifact::Decode(bytes + '\0'); });

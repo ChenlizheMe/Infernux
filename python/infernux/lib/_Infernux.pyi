@@ -294,6 +294,7 @@ class PixelFormat(IntEnum):
     RGB10A2_UNORM: PixelFormat
     D32_SFLOAT: PixelFormat
     D24_UNORM_S8_UINT: PixelFormat
+    D32_SFLOAT_S8_UINT: PixelFormat
 
     @property
     def is_depth(self) -> bool: ...

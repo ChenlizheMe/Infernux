@@ -25,7 +25,7 @@ class RasterPipeline(RenderPipelineCallback):
         graph = RenderGraph('Tutorial Raster State')
         graph.set_msaa_samples(1)
         color = graph.create_texture('color', camera_target=True)
-        depth = graph.create_texture('raster_depth', format=Format.D24_UNORM_S8_UINT if stencil else Format.D32_SFLOAT)
+        depth = graph.create_texture('raster_depth', format=Format.D32_SFLOAT_S8_UINT if stencil else Format.D32_SFLOAT)
         graph.add_pass('Clear').write_color(color).write_depth(depth).set_clear(color=(0,0,0,1), depth=1.)
         for name, queue in (('NearOrStencilWriter',1000), ('FarOrStencilReader',2000)):
             graph.add_pass(name).write_color(color).write_depth(depth).draw_renderers(queue_range=(queue,queue), material_pass='forward')
