@@ -623,7 +623,9 @@ def test_web_custom_template_failure_preserves_previous_publication(monkeypatch,
         return replace(source, destination, *args, **kwargs)
 
     def fail_scan(path):
-        if failure == "template_scan" and Path(path) == template / "theme":
+        # POSIX rmtree passes directory descriptors to the same os.scandir.
+        # Inject only the authored-path failure, preserving real cleanup.
+        if failure == "template_scan" and not isinstance(path, int) and Path(path) == template / "theme":
             raise PermissionError("owned template scan failure")
         return scandir(path)
 
@@ -1592,9 +1594,13 @@ def test_web_scene_shader_passes_pinned_tint_validation():
     assert match is not None
     platform_name = "windows-x64" if sys.platform == "win32" else "linux-x64"
     executable = "tint.exe" if sys.platform == "win32" else "tint"
-    tint = PLUGIN_EDITOR / "infernux_web" / "tools" / platform_name / executable
+    configured = os.environ.get("INFERNUX_TEST_TINT")
+    tint = (Path(configured) if configured else
+            PLUGIN_EDITOR / "infernux_web" / "tools" / platform_name / executable)
+    if configured:
+        assert tint.is_file(), f"Configured pinned Tint does not exist: {tint}"
     if not tint.is_file():
-        pytest.skip(f"pinned Tint is unavailable for {platform_name}")
+        pytest.skip(f"pinned Tint is unavailable for {platform_name}; set INFERNUX_TEST_TINT to the built tool")
     with tempfile.TemporaryDirectory(prefix="web-wgsl-", dir=ROOT / "out") as temp_dir:
         shader = Path(temp_dir) / "WebSceneRenderer.wgsl"
         shader.write_text(match.group(1), encoding="utf-8")
