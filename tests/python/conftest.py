@@ -109,7 +109,9 @@ def engine():
     initialised — Vulkan renderer, SDL window, physics world, and input
     subsystem are all live.
     """
-    project = tempfile.mkdtemp(prefix="infernux_test_")
+    # Native authoring paths are canonical. Resolve the disposable project
+    # once, including Windows TEMP paths using an 8.3 name or junction.
+    project = str(Path(tempfile.mkdtemp(prefix="infernux_test_")).resolve())
     os.makedirs(os.path.join(project, "ProjectSettings"), exist_ok=True)
 
     eng = NativeEngine(lib_dir)
