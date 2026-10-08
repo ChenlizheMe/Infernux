@@ -46,14 +46,18 @@ configured development environment, the Windows sequence is:
 cmake --preset windows-msvc-release
 cmake --build --preset windows-msvc-release
 cmake --build --preset windows-msvc-player
+cmake --build --preset windows-msvc-install-wheel
+Remove-Item Env:PYTHONPATH, Env:INFERNUX_NATIVE_MODULE_DIR -ErrorAction SilentlyContinue
 $env:SDL_AUDIODRIVER = 'dummy'
 $env:QT_QPA_PLATFORM = 'offscreen'
-python -m pytest tests/python tests/contracts -q -ra
+python -m pytest -o pythonpath= tests/python tests/contracts -q -ra
 python -m pytest tests/hub -q -ra
 ```
 
-On Linux use `linux-clang-release` and `linux-clang-player`; follow the CI
-display/Vulkan setup when running without a desktop. Configuration alone does
+On Linux use `linux-clang-release`, `linux-clang-player` and
+`linux-clang-install-wheel`, and unset `PYTHONPATH` and
+`INFERNUX_NATIVE_MODULE_DIR`; follow the CI display/Vulkan setup when running
+without a desktop. Configuration alone does
 not build anything. The default build generates the bundled MCP archive at
 `python/infernux/resources/infernux.mcp.inxpkg`. The Player target assembles the
 runtime payload and invokes the host platform submodule's `release.py`, producing
@@ -66,8 +70,11 @@ to skip the tests. Both desktop CI jobs build the Player before pytest. The
 `windows-release` / `linux-release` workflow presets build the release artifacts
 and run CTest, but the full Python suite above is a separate step.
 
-If `INFERNUX_NATIVE_MODULE_DIR` is set, it must point at this checkout's matching
-build, not an older installed wheel. Component batch tests cover shared scalar
+Both desktop CI jobs install a complete wheel before the Python tests and
+disable pytest's source-path setting. Windows CI uses a test wheel containing
+the pinned software Vulkan driver, then rebuilds the shipping wheel without
+that install rule. Local acceptance tests the installed package without source
+or native-module overrides. Component batch tests cover shared scalar
 and batch range/publication semantics, reject mixed concrete types and stale
 layouts before mutation, and preserve the caller's input array. Empty untyped
 lists are rejected explicitly; empty Transform batches use a typed handle.

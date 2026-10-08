@@ -209,13 +209,23 @@ jobs:
           New-Item -ItemType Directory -Path out\test-results -Force | Out-Null
           ctest --preset windows-msvc-release -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure --output-junit out\test-results\ctest-windows.xml
 
+      - name: Install complete Windows test wheel
+        shell: pwsh
+        run: |
+          conda activate infernux
+          $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          # This test wheel includes the pinned software Vulkan install rule.
+          # The shipping wheel is rebuilt below without that rule.
+          cmake --build --preset windows-msvc-install-wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Run Python and platform contract tests
         shell: pwsh
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          $env:PYTHONPATH = "$env:GITHUB_WORKSPACE\python" + $(if ($env:PYTHONPATH) { ";$env:PYTHONPATH" } else { "" })
-          python -m pytest tests\python -q --junitxml out\test-results\pytest-windows.xml
+          Remove-Item Env:PYTHONPATH, Env:INFERNUX_NATIVE_MODULE_DIR -ErrorAction SilentlyContinue
+          python -m pytest -o pythonpath= tests\python tests\contracts -q --junitxml out\test-results\pytest-windows.xml
 
       - name: Run Hub tests
         shell: pwsh
@@ -314,11 +324,16 @@ jobs:
           mkdir -p out/test-results
           ctest --preset linux-clang-release -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure --output-junit out/test-results/ctest-linux.xml
 
+      - name: Install complete Linux test wheel
+        run: |
+          conda activate infernux
+          cmake --build --preset linux-clang-install-wheel
+
       - name: Run Python and platform contract tests
         run: |
           conda activate infernux
-          export PYTHONPATH="$GITHUB_WORKSPACE/python${PYTHONPATH:+:$PYTHONPATH}"
-          xvfb-run --auto-servernum python -m pytest tests/python -q --junitxml out/test-results/pytest-linux.xml
+          unset PYTHONPATH INFERNUX_NATIVE_MODULE_DIR
+          xvfb-run --auto-servernum python -m pytest -o pythonpath= tests/python tests/contracts -q --junitxml out/test-results/pytest-linux.xml
 
       - name: Build Linux editor wheel and Hub distribution
         run: |
