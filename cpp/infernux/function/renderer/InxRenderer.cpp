@@ -3887,8 +3887,9 @@ particle::ParticleGpuSystemManager *InxRenderer::GetParticleGpuSystemManager()
         if (textureGuid.empty() || textureGuid == "white" || textureGuid == "black" || textureGuid == "normal") {
             // SurfaceBinding already resolves ShaderInfo defaults. A property's
             // spelling must never change the meaning of its texture value.
-            const char *textureKey = textureGuid == "normal" ? "_default_normal" :
-                                     textureGuid == "black" ? "_default_black" : "white";
+            const char *textureKey = textureGuid == "normal"  ? "_default_normal"
+                                     : textureGuid == "black" ? "_default_black"
+                                                              : "white";
             auto residentSlot = core->GetTextureCache().Find(textureKey);
             auto resident = residentSlot ? residentSlot->Acquire() : nullptr;
             if (!resident || !resident->IsValid()) {

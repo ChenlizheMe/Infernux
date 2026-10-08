@@ -451,8 +451,8 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
                 duplicateBinding || mesh.vertexCount == 0 || mesh.triangleCount == 0 || mesh.edgeCount == 0 ||
                 !mesh.vertices.IsValid() || !mesh.triangles.IsValid() || !mesh.keepAlive ||
                 mesh.vertexBufferBytes == 0 || mesh.triangleBufferBytes == 0 ||
-                (mesh.boneCount == 0 && (!mesh.initialPalette.empty() || mesh.influences.IsValid() ||
-                                         mesh.influenceBufferBytes != 0)) ||
+                (mesh.boneCount == 0 &&
+                 (!mesh.initialPalette.empty() || mesh.influences.IsValid() || mesh.influenceBufferBytes != 0)) ||
                 (mesh.boneCount != 0 && (!mesh.influences.IsValid() || mesh.influenceBufferBytes == 0 ||
                                          mesh.initialPalette.size() != mesh.boneCount))) {
                 Destroy();
@@ -536,7 +536,7 @@ bool ParticleGpuRuntime::CreateInternal(rhi::Device &device, const GpuEmitterDes
         dataGroupDesc.buffers[0].buffer = dataInterfaces->metadataBuffer;
         dataGroupDesc.buffers[0].byteSize = metadataBufferDesc.byteSize;
         dataInterfaces->bufferBindings.assign(dataGroupDesc.buffers.begin(),
-                                               dataGroupDesc.buffers.begin() + dataGroupDesc.bufferCount);
+                                              dataGroupDesc.buffers.begin() + dataGroupDesc.bufferCount);
         dataInterfaces->layout = device.CreateBindingLayout(dataLayoutDesc);
         if (!dataInterfaces->layout.IsValid()) {
             Destroy();

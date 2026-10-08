@@ -139,8 +139,8 @@ class ParticleGpuCuller
     {
         return m_sortDispatchArguments;
     }
-    void RecordReset(const rhi::ComputeCommandEncoder &encoder,
-                     const std::array<float, PlaneCount * 4> &frustumPlanes, bool viewEnabled = true) const;
+    void RecordReset(const rhi::ComputeCommandEncoder &encoder, const std::array<float, PlaneCount * 4> &frustumPlanes,
+                     bool viewEnabled = true) const;
     void RecordCull(const rhi::ComputeCommandEncoder &encoder,
                     const std::array<float, PlaneCount * 4> &frustumPlanes) const;
     void RecordFinalize(const rhi::ComputeCommandEncoder &encoder) const;

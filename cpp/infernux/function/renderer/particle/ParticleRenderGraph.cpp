@@ -689,7 +689,7 @@ bool ParticleRenderGraph::Attach(vk::RenderGraph &graph, ParticleGpuRuntime &run
     m_firstPass = graph.AddComputePass(StageName(namePrefix, "Bootstrap"), [&](vk::PassBuilder &builder) {
         for (const auto &binding : runtime.MeshBufferBindings()) {
             const auto buffer = builder.ImportBuffer(StageName(namePrefix, "Mesh/") + std::to_string(binding.binding),
-                                                      binding.buffer, binding.byteSize);
+                                                     binding.buffer, binding.byteSize);
             if (!buffer.IsValid())
                 return vk::PassExecuteCallback{};
             if (std::none_of(meshBuffers.begin(), meshBuffers.end(),

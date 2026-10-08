@@ -244,7 +244,7 @@ class VulkanRhiDevice final : public rhi::Device
                const rhi::DeviceCapabilityState &capabilityState = {}) noexcept;
 
     [[nodiscard]] rhi::BufferHandle RegisterBuffer(VkBuffer buffer, uint64_t byteSize = 0,
-                                                  bool concurrentQueueSharing = false);
+                                                   bool concurrentQueueSharing = false);
     [[nodiscard]] rhi::TextureHandle RegisterTexture(VkImage image);
     [[nodiscard]] rhi::TextureViewHandle RegisterTextureView(VkImageView view);
     [[nodiscard]] rhi::SamplerHandle RegisterSampler(VkSampler sampler);

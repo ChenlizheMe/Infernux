@@ -482,7 +482,8 @@ class Infernux
     std::unordered_map<ShaderStagePair, LinkedShaderProgramCacheEntry, ShaderStagePairHash> m_linkedShaderProgramCache;
     // Concurrent scene loads share the same immutable source identity; a
     // changed identity retires old work without retaining jobs/artifacts.
-    std::unordered_map<ShaderStagePair, std::shared_ptr<const LinkedShaderProgramLoadTicket::SourceIdentity>, ShaderStagePairHash>
+    std::unordered_map<ShaderStagePair, std::shared_ptr<const LinkedShaderProgramLoadTicket::SourceIdentity>,
+                       ShaderStagePairHash>
         m_linkedShaderPreparations;
 
     struct TexturePreviewCompleted
@@ -526,11 +527,11 @@ class Infernux
 
     struct MaterialPreviewState
     {
-        uint64_t generation = 0;      ///< Monotonic counter, bumped on detected content change
-        uint64_t readyGeneration = 0; ///< Generation of last completed render
+        uint64_t generation = 0;       ///< Monotonic counter, bumped on detected content change
+        uint64_t readyGeneration = 0;  ///< Generation of last completed render
         uint64_t failedGeneration = 0; ///< Rejected source is retried only after a change
-        uint64_t lastJsonHash = 0;    ///< std::hash of last JSON string seen
-        uint64_t lastFileMtime = 0;   ///< Last file mtime seen from ProjectPanel
+        uint64_t lastJsonHash = 0;     ///< std::hash of last JSON string seen
+        uint64_t lastFileMtime = 0;    ///< Last file mtime seen from ProjectPanel
         uint64_t pendingUploadVersion = 0;
         uint64_t pendingPreviewGeneration = 0;
         bool inFlight = false;

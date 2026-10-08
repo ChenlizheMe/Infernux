@@ -1433,7 +1433,8 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
             const int end = std::min(span.vertexEnd, static_cast<int>(gpuVertices.size()));
             for (int i = std::max(0, span.vertexStart); i < end; ++i) {
                 if (i < static_cast<int>(localPositions.size()))
-                    ApplyScreenPose(span, localPositions[static_cast<size_t>(i)], gpuVertices[static_cast<size_t>(i)].pos);
+                    ApplyScreenPose(span, localPositions[static_cast<size_t>(i)],
+                                    gpuVertices[static_cast<size_t>(i)].pos);
             }
         }
     }
@@ -1447,7 +1448,8 @@ void InxScreenUIRenderer::Render(VkCommandBuffer cmdBuf, ScreenUIList list, uint
             if (pending.uploadedRevision != m_geometryRevision[listIndex])
                 continue; // This slot will receive the entire current geometry.
             pending.pendingPoseStart = pending.pendingPoseEnd > pending.pendingPoseStart
-                ? std::min(pending.pendingPoseStart, poseMinVertex) : poseMinVertex;
+                                           ? std::min(pending.pendingPoseStart, poseMinVertex)
+                                           : poseMinVertex;
             pending.pendingPoseEnd = std::max(pending.pendingPoseEnd, poseMaxVertex);
         }
     }

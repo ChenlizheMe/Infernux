@@ -1632,11 +1632,8 @@ void RegisterSceneBindings(py::module_ &m)
         .def_property("shadow_bias", &LineRenderer::GetShadowBias, &LineRenderer::SetShadowBias)
         .def_property("generate_lighting_data", &LineRenderer::GetGenerateLightingData,
                       &LineRenderer::SetGenerateLightingData)
-        .def(
-            "bake_mesh",
-            &LineRenderer::BakeMesh,
-            py::arg("target"), py::arg("camera") = nullptr, py::arg("use_transform") = false,
-            "Bake the expanded line snapshot into a MeshRenderer inline mesh")
+        .def("bake_mesh", &LineRenderer::BakeMesh, py::arg("target"), py::arg("camera") = nullptr,
+             py::arg("use_transform") = false, "Bake the expanded line snapshot into a MeshRenderer inline mesh")
         .def("simplify", &LineRenderer::Simplify, py::arg("tolerance"),
              "Reduce the position list using Ramer-Douglas-Peucker simplification");
 

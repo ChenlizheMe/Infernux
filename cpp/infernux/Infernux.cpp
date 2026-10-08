@@ -827,8 +827,8 @@ Infernux::BeginPrepareLinkedShaderPrograms(const std::vector<std::string> &mater
             ComputeShaderProgramRevision(work.vertexSource, work.fragmentSource, ShaderCompileTarget::Forward, 0);
         work.vertexMetadata = adb->GetMetaByPath(work.vertexPath);
         work.fragmentMetadata = adb->GetMetaByPath(work.fragmentPath);
-        const LinkedShaderProgramLoadTicket::SourceIdentity identity{
-            work.sourceStamp, state->sourceEnvironmentRevision, work.vertexMetadata, work.fragmentMetadata};
+        const LinkedShaderProgramLoadTicket::SourceIdentity identity{work.sourceStamp, state->sourceEnvironmentRevision,
+                                                                     work.vertexMetadata, work.fragmentMetadata};
         auto &currentIdentity = m_linkedShaderPreparations[stages];
         if (!currentIdentity || *currentIdentity != identity)
             currentIdentity = std::make_shared<const LinkedShaderProgramLoadTicket::SourceIdentity>(identity);
@@ -1838,8 +1838,8 @@ int Infernux::PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown)
 
         meshPreviewApplicable = m_renderer->CanPreviewMaterialOnMesh(material);
         ticket = meshPreviewApplicable
-                          ? m_renderer->BeginMaterialPreviewGPU(material, kMaterialPreviewSize, &texturePending)
-                          : nullptr;
+                     ? m_renderer->BeginMaterialPreviewGPU(material, kMaterialPreviewSize, &texturePending)
+                     : nullptr;
     } catch (const std::exception &error) {
         INXLOG_ERROR("Material preview rejected for '", request.resourceKey, "': ", error.what());
         std::lock_guard<std::mutex> lock(m_previewResultMutex);

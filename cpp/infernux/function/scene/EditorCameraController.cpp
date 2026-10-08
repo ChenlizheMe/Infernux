@@ -178,8 +178,7 @@ void EditorCameraController::FocusOn(const glm::vec3 &point, float distance)
     // float-length normalization inside Transform::LookAt.
     const glm::dvec3 aim = glm::dvec3(point) - glm::dvec3(focusedPosition);
     const glm::vec3 forward(aim / glm::length(aim));
-    const glm::vec3 up = std::abs(forward.y) > 0.999f ? glm::vec3(0.0f, 0.0f, 1.0f)
-                                                    : glm::vec3(0.0f, 1.0f, 0.0f);
+    const glm::vec3 up = std::abs(forward.y) > 0.999f ? glm::vec3(0.0f, 0.0f, 1.0f) : glm::vec3(0.0f, 1.0f, 0.0f);
     m_focusPoint = point;
     m_focusDistance = distance;
     transform->SetPosition(focusedPosition);

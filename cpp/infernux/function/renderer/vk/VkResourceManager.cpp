@@ -391,8 +391,8 @@ std::shared_ptr<BufferUploadTicket> VkResourceManager::BeginBufferUpload(const r
         throw std::invalid_argument("GPU buffer upload requires non-empty source data");
     if (finalUsage == 0)
         throw std::invalid_argument("GPU buffer upload has no supported destination usage");
-    constexpr auto validQueueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute |
-                                      rhi::QueueAccessFlags::Transfer;
+    constexpr auto validQueueAccess =
+        rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute | rhi::QueueAccessFlags::Transfer;
     if (request.queueAccess == rhi::QueueAccessFlags::None ||
         (static_cast<uint8_t>(request.queueAccess) & ~static_cast<uint8_t>(validQueueAccess)) != 0)
         throw std::invalid_argument("GPU buffer upload requires valid consumer queue access");
@@ -500,7 +500,7 @@ VkResourceManager::GetPublishedRhiBuffer(const std::shared_ptr<BufferUploadTicke
         if (!m_rhiDevice)
             throw std::logic_error("GPU buffer upload has no RHI device");
         const auto handle = m_rhiDevice->RegisterBuffer(ticket->m_destination->GetBuffer(), ticket->m_size,
-                                                       ticket->m_concurrentQueueSharing);
+                                                        ticket->m_concurrentQueueSharing);
         if (!handle.IsValid())
             throw std::runtime_error("failed to register uploaded GPU buffer with the RHI device");
         resource = std::make_shared<rhi::BufferResource>(*m_rhiDevice, handle, ticket->m_size, ticket->m_destination);
@@ -1016,10 +1016,11 @@ void VkResourceManager::PollImageReadbacks()
         // Each readback has one completion owner: its standalone graphics
         // submission, or the frame into which the copy was recorded. Cancellation
         // changes the public status, never the lifetime of GPU-referenced staging.
-        const bool complete = ticket && (ticket->m_graphicsSubmission
-            ? ticket->m_graphicsSubmission->IsComplete()
-            : ticket->m_frameCompletionEpoch != rhi::InvalidSubmissionSerial && m_queueManager &&
-              m_queueManager->IsCompletionEpochComplete(ticket->m_frameCompletionEpoch));
+        const bool complete =
+            ticket && (ticket->m_graphicsSubmission
+                           ? ticket->m_graphicsSubmission->IsComplete()
+                           : ticket->m_frameCompletionEpoch != rhi::InvalidSubmissionSerial && m_queueManager &&
+                                 m_queueManager->IsCompletionEpochComplete(ticket->m_frameCompletionEpoch));
         if (complete) {
             FinalizeImageReadback(ticket);
             continue;

@@ -3674,10 +3674,10 @@ void SceneRenderGraph::BuildRenderGraph()
         if (culler == m_particleCullers.end())
             continue;
         const auto sorter = m_particleSorters.find(entry.id);
-        const auto indices = sorter == m_particleSorters.end() ? culler->second->VisibleIndexBuffer()
-                                                               : sorter->second->SortedIndices();
-        auto [binding, inserted] = m_particleViewBindings.try_emplace(
-            entry.id, ParticleViewBinding{entry.renderer, indices});
+        const auto indices =
+            sorter == m_particleSorters.end() ? culler->second->VisibleIndexBuffer() : sorter->second->SortedIndices();
+        auto [binding, inserted] =
+            m_particleViewBindings.try_emplace(entry.id, ParticleViewBinding{entry.renderer, indices});
         if (!inserted && (binding->second.renderer != entry.renderer || binding->second.indices != indices)) {
             binding->second.renderer->ReleaseViewBinding(binding->second.indices);
             binding->second = {entry.renderer, indices};

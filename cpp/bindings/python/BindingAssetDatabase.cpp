@@ -99,8 +99,8 @@ void RegisterAssetDatabaseBindings(py::module_ &m)
              "Persist a dirty derived AssetIndex")
         .def("add_scan_root", &AssetDatabase::AddScanRoot, py::arg("path"),
              "Add an extra directory to scan during Refresh (e.g. Library/Resources)")
-        .def("import_asset", &AssetDatabase::ImportAsset, py::arg("path"),
-             py::call_guard<py::gil_scoped_release>(), "Import a single asset")
+        .def("import_asset", &AssetDatabase::ImportAsset, py::arg("path"), py::call_guard<py::gil_scoped_release>(),
+             "Import a single asset")
         .def(
             "reimport_asset",
             [](AssetDatabase &database, const std::string &path, py::object settings) {

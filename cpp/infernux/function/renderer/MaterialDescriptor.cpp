@@ -1089,8 +1089,7 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
     // shared by other in-flight frames or earlier draws in this command buffer.
     std::unique_ptr<MaterialUBO> replacementMaterialUBO;
     std::unique_ptr<MaterialUBO> replacementVertexMaterialUBO;
-    const auto prepare = [&](const std::unique_ptr<MaterialUBO> &current,
-                             std::unique_ptr<MaterialUBO> &replacement) {
+    const auto prepare = [&](const std::unique_ptr<MaterialUBO> &current, std::unique_ptr<MaterialUBO> &replacement) {
         if (!material || !current)
             return true;
         replacement = std::make_unique<MaterialUBO>();

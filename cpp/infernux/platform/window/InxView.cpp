@@ -1044,8 +1044,7 @@ void InxView::SDLInit()
     // A development Player explicitly opts into platform diagnostics. The
     // shipping Editor/Player otherwise keeps SDL startup chatter out of logs.
     const char *debugPlayerFlag = std::getenv("_INFERNUX_PLAYER_DEBUG_BUILD");
-    const bool debugPlayer =
-        debugPlayerFlag != nullptr && debugPlayerFlag[0] == '1' && debugPlayerFlag[1] == '\0';
+    const bool debugPlayer = debugPlayerFlag != nullptr && debugPlayerFlag[0] == '1' && debugPlayerFlag[1] == '\0';
     SDL_SetLogPriorities(debugPlayer ? SDL_LOG_PRIORITY_VERBOSE : SDL_LOG_PRIORITY_WARN);
 #else
     SDL_SetLogPriorities(SDL_LOG_PRIORITY_VERBOSE);

@@ -562,9 +562,8 @@ bool ParticleGpuSurfaceBinding::RefreshTextureBindings(bool force)
         const std::string textureGuid = ResolveMaterialTextureGuid(binding);
         GpuBillboardTextureLease lease;
         bool usingFallback = false;
-        if (!force && (!binding.pending || !binding.fallback) &&
-            textureGuid == binding.requestedGuid && binding.gpuSlot &&
-            (!binding.fallback || binding.requestedTextureAssetRevision == textureAssetRevision) &&
+        if (!force && (!binding.pending || !binding.fallback) && textureGuid == binding.requestedGuid &&
+            binding.gpuSlot && (!binding.fallback || binding.requestedTextureAssetRevision == textureAssetRevision) &&
             !binding.gpuSlot->NeedsRefresh()) {
             auto published = binding.gpuSlot->Acquire();
             if (published && published->IsValid()) {

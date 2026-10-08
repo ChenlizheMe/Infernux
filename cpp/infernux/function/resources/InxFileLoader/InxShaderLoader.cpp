@@ -10,9 +10,9 @@
 #include <core/log/InxLog.h>
 #include <filesystem>
 #include <fstream>
-#include <limits>
 #include <function/renderer/shader/ShaderReflection.h>
 #include <function/resources/ShaderAsset/GlslStageInterfaceEmitter.h>
+#include <limits>
 #include <nlohmann/json.hpp>
 #include <platform/filesystem/InxPath.h>
 #include <set>
@@ -63,7 +63,8 @@ std::string ShaderDependencyPathKey(const std::string &path)
 
 ShaderSourceDependencies &SourceDependencies(const std::string &rootPath)
 {
-    auto &candidates = g_candidateDependencyPublication ? *g_candidateDependencyPublication : g_candidateSourceDependencies;
+    auto &candidates =
+        g_candidateDependencyPublication ? *g_candidateDependencyPublication : g_candidateSourceDependencies;
     auto &entry = candidates[ShaderDependencyPathKey(rootPath)];
     entry.rootPath = ResolveFilesystemPath(rootPath);
     return entry;
@@ -71,14 +72,16 @@ ShaderSourceDependencies &SourceDependencies(const std::string &rootPath)
 
 void ResetSourceDependencies(const std::string &rootPath)
 {
-    auto &candidates = g_candidateDependencyPublication ? *g_candidateDependencyPublication : g_candidateSourceDependencies;
+    auto &candidates =
+        g_candidateDependencyPublication ? *g_candidateDependencyPublication : g_candidateSourceDependencies;
     candidates.erase(ShaderDependencyPathKey(rootPath));
 }
 
 void CommitSourceDependencies(const std::string &rootPath)
 {
     const auto key = ShaderDependencyPathKey(rootPath);
-    auto &candidates = g_candidateDependencyPublication ? *g_candidateDependencyPublication : g_candidateSourceDependencies;
+    auto &candidates =
+        g_candidateDependencyPublication ? *g_candidateDependencyPublication : g_candidateSourceDependencies;
     if (auto candidate = candidates.find(key); candidate != candidates.end()) {
         if (g_dependencyPublication)
             MergeSourceDependencies((*g_dependencyPublication)[key], candidate->second);

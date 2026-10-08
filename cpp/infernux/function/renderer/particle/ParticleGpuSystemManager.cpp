@@ -825,12 +825,12 @@ struct ParticleGpuSystemManager::Impl
                 // Inline simulation runs on Graphics; large systems can run on
                 // an independent Compute family. Declare both before allocation.
                 constexpr auto meshQueueAccess = rhi::QueueAccessFlags::Graphics | rhi::QueueAccessFlags::Compute;
-                upload.vertexTicket = resources->BeginBufferUpload(
-                    {vertices.data(), vertices.size() * sizeof(PackedParticleMeshVertex), rhi::BufferUsage::Storage,
-                     meshQueueAccess});
-                upload.indexTicket = resources->BeginBufferUpload(
-                    {sourceIndices.data(), sourceIndices.size() * sizeof(uint32_t), rhi::BufferUsage::Storage,
-                     meshQueueAccess});
+                upload.vertexTicket =
+                    resources->BeginBufferUpload({vertices.data(), vertices.size() * sizeof(PackedParticleMeshVertex),
+                                                  rhi::BufferUsage::Storage, meshQueueAccess});
+                upload.indexTicket =
+                    resources->BeginBufferUpload({sourceIndices.data(), sourceIndices.size() * sizeof(uint32_t),
+                                                  rhi::BufferUsage::Storage, meshQueueAccess});
                 upload.samplingTriangleTicket = resources->BeginBufferUpload(
                     {samplingPrimitives.data(), samplingPrimitives.size() * sizeof(PackedParticleMeshPrimitive),
                      rhi::BufferUsage::Storage, meshQueueAccess});
@@ -2391,7 +2391,7 @@ bool ParticleGpuSystemManager::BeginFrame(uint64_t id, const GpuParticleFrameReq
     if (emitter == m_impl->emitters.end())
         return false;
     return BeginFrameBatch(emitter->second->graphInstanceId,
-                            {{id, {}, request, transforms, emitter->second->sourceProgram.ownerLayerMask}});
+                           {{id, {}, request, transforms, emitter->second->sourceProgram.ownerLayerMask}});
 }
 
 bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,

@@ -24,15 +24,15 @@ constexpr uint32_t MAX_ROUNDING_VERTICES = 1024u;
 // Keep expansion identical to the LINE vertex branch in vertex_main.glsl.
 // Camera-plane axes define the width when the tangent approaches the view
 // normal; the geometric hemisphere keeps that transition continuous.
-glm::vec3 RibbonSide(const glm::vec3 &facing, const glm::vec3 &tangent,
-                     const glm::vec3 &cameraRight, const glm::vec3 &cameraUp)
+glm::vec3 RibbonSide(const glm::vec3 &facing, const glm::vec3 &tangent, const glm::vec3 &cameraRight,
+                     const glm::vec3 &cameraUp)
 {
     glm::vec3 planeSide = cameraRight - tangent * glm::dot(cameraRight, tangent);
     if (glm::dot(planeSide, planeSide) < 1.0e-8f)
         planeSide = cameraUp - tangent * glm::dot(cameraUp, tangent);
     if (glm::dot(planeSide, planeSide) < 1.0e-10f)
         planeSide = std::abs(tangent.x) < 0.9f ? glm::cross(tangent, glm::vec3(1, 0, 0))
-                                              : glm::cross(tangent, glm::vec3(0, 1, 0));
+                                               : glm::cross(tangent, glm::vec3(0, 1, 0));
     planeSide = glm::normalize(planeSide);
     glm::vec3 geometricSide = glm::cross(facing, tangent);
     const float geometricLength = glm::length(geometricSide);

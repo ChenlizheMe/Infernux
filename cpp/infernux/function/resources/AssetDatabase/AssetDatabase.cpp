@@ -1850,7 +1850,8 @@ bool AssetDatabase::ContinuePendingMetadataMerge(const std::shared_ptr<PendingRe
     // missing sidecar's inherited path identity. An external move carries its
     // GUID in the sidecar; a new source at the old path is a different asset.
     // Keep both passes inside the existing owner-thread merge budget.
-    while (state->metadataIdentityCursor < state->workerMetadata.size() && HasOwnerMergeBudget(ownerStarted, processed)) {
+    while (state->metadataIdentityCursor < state->workerMetadata.size() &&
+           HasOwnerMergeBudget(ownerStarted, processed)) {
         const auto &item = state->workerMetadata[state->metadataIdentityCursor++];
         if (!item.error.empty())
             throw std::runtime_error("Metadata preparation failed for '" + item.file.path + "': " + item.error);

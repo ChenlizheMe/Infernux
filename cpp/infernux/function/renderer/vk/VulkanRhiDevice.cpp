@@ -866,8 +866,8 @@ rhi::BufferHandle VulkanRhiDevice::RegisterBuffer(VkBuffer buffer, uint64_t byte
                ? rhi::BufferHandle{}
                : Register<rhi::BufferHandle>(
                      m_buffers, m_freeBuffer,
-                     BufferPayload{buffer, {}, nullptr, byteSize, false, rhi::BufferMemory::DeviceLocal,
-                                   concurrentQueueSharing});
+                     BufferPayload{
+                         buffer, {}, nullptr, byteSize, false, rhi::BufferMemory::DeviceLocal, concurrentQueueSharing});
 }
 
 rhi::TextureHandle VulkanRhiDevice::RegisterTexture(VkImage image)
