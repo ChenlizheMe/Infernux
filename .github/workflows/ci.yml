@@ -276,7 +276,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-test-results-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/test-results/*.xml
+          path: |
+            out/test-results/*.xml
+            out/test-results/physics-profile-windows.log
           if-no-files-found: warn
 
   linux-desktop:
@@ -372,12 +374,22 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-test-results-${{ github.run_id }}-${{ github.run_attempt }}
-          path: out/test-results/*.xml
+          path: |
+            out/test-results/*.xml
+            out/test-results/physics-profile-linux.log
           if-no-files-found: warn
+
+  release-player-acceptance:
+    name: Validate Players before publication
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish_release &&
+      (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    uses: ./.github/workflows/platform-player.yml
 
   publish-release:
     name: Publish verified distributions
-    needs: [portable-hub, windows-desktop, linux-desktop]
+    needs: [portable-hub, windows-desktop, linux-desktop, release-player-acceptance]
     if: >-
       github.event_name == 'workflow_dispatch' &&
       inputs.publish_release &&

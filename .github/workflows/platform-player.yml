@@ -35,12 +35,13 @@ on:
   schedule:
     - cron: "17 18 * * 2,5"
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: platform-player-${{ github.event_name }}-${{ github.ref }}
+  group: platform-player-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

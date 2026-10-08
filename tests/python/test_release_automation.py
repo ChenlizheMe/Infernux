@@ -167,7 +167,7 @@ def test_desktop_ci_exposes_one_click_publication():
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "publish_release:" in workflow
     assert "uses: ./.github/workflows/publish-desktop-release.yml" in workflow
-    assert "needs: [portable-hub, windows-desktop, linux-desktop]" in workflow
+    assert "needs: [portable-hub, windows-desktop, linux-desktop, release-player-acceptance]" in workflow
 
 
 def test_release_body_is_english_and_reports_actual_signing_state(tmp_path):
