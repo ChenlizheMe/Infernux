@@ -135,7 +135,7 @@ jobs:
 
       - name: Cache pinned Windows software Vulkan driver
         id: cache-windows-swiftshader
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: out\toolchains\windows-swiftshader
           key: windows-swiftshader-694585a05946e1ed49b6bd577ca6537cbb57f025-infernux-8sets-256push-v2
@@ -162,6 +162,13 @@ jobs:
         run: |
           conda activate infernux
           scripts\setup\build_windows_swiftshader.ps1 out\toolchains\windows-swiftshader
+
+      - name: Save built Windows software Vulkan driver
+        if: steps.cache-windows-swiftshader.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: out\toolchains\windows-swiftshader
+          key: ${{ steps.cache-windows-swiftshader.outputs.cache-primary-key }}
 
       - name: Configure Windows release preset
         shell: pwsh
