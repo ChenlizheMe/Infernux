@@ -28,7 +28,9 @@ def is_unchanged_ui_scalar(instance, name: str, value) -> bool:
     ):
         return False
     try:
-        previous = object.__getattribute__(instance, name)
+        from infernux.components.fields import get_raw_field_value
+
+        previous = get_raw_field_value(instance, name)
     except (AttributeError, KeyError):
         return False
     return type(previous) is type(value) and previous == value

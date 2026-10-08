@@ -5,7 +5,7 @@ Hierarchy:
 """
 
 from infernux.components import serialized_field, list_field, add_component_menu
-from infernux.components.fields import FieldType
+from infernux.components.fields import FieldType, get_raw_field_value
 from .inx_ui_screen_component import InxUIScreenComponent
 from .enums import TextAlignH, TextAlignV, TextOverflow, TextResizeMode
 
@@ -89,9 +89,9 @@ class UIText(InxUIScreenComponent):
         if name not in _TEXT_MEASURE_FIELDS:
             super().__setattr__(name, value)
             return
-        previous = getattr(self, name, object())
+        previous = get_raw_field_value(self, name)
         super().__setattr__(name, value)
-        if previous != value:
+        if previous != get_raw_field_value(self, name):
             object.__setattr__(self, "_text_layout_key", None)
             if name == 'resize_mode':
                 from .inx_ui_screen_component import _invalidate_rect_cache

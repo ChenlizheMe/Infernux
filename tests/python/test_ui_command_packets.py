@@ -750,6 +750,25 @@ def test_explicit_font_chain_and_measured_size_publication(ui, monkeypatch):
         set_runtime_asset_resolver(None)
 
 
+def test_assigning_font_references_does_not_load_assets(ui, monkeypatch):
+    from infernux.core.asset_ref import create_asset_ref
+    from infernux.core.assets import AssetManager
+
+    def unexpected_load(*args, **kwargs):
+        raise AssertionError("Assigning a font reference must not load the previous font")
+
+    monkeypatch.setattr(AssetManager, "load_by_guid", unexpected_load)
+    label = ui.add()
+    first = create_asset_ref("Font", guid="font-first")
+    second = create_asset_ref("Font", guid="font-second")
+    label.font = first
+    label.font = second
+    label.font = None
+    label.fallback_fonts = [first]
+    label.fallback_fonts = [first, second]
+    label.fallback_fonts = []
+
+
 def test_custom_renderer_keeps_its_native_renderer_contract(ui, monkeypatch):
     from infernux.ui import ui_render_dispatch as dispatch
     calls = []
