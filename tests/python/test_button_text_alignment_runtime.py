@@ -36,6 +36,10 @@ def test_button_top_center_bottom_align_visible_text(engine, scene, capfd, label
             state['frames'] += 1
             assert state['frames'] <= 60
             if state['ticket'] is None:
+                # Owner maintenance callbacks also run during MSAA rebuilds,
+                # before the new target has received its first rendered frame.
+                if not engine.renderer_frame_snapshot['game_render_graph_current_executed']:
+                    return
                 state['ticket'] = engine.request_render_target_readback(True)
                 return
             ticket = state['ticket']
@@ -67,6 +71,8 @@ def test_button_top_center_bottom_align_visible_text(engine, scene, capfd, label
             engine.exit()
 
     try:
+        # Exercise the attachment rebuild independently of previous GPU tests.
+        engine.set_msaa_samples(1)
         engine.set_game_camera_enabled(True)
         engine.set_render_pipeline(RuntimeScreenUIRenderPipeline(submission, RenderStackPipeline()))
         engine.set_post_draw_callback(after_draw)

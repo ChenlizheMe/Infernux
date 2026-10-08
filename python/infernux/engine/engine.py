@@ -541,7 +541,8 @@ class Engine():
                     manager.sync_native_gui_focus()
         self._engine.set_pre_gui_callback(_pre_gui_tick)
 
-        # Install a post-draw callback that runs AFTER GPU submit + present.
+        # Install the frame-owner callback: after GPU submission when rendered,
+        # or at the same safe point when presentation is skipped or rebuilt.
         # poll_deferred_load (heavy scene loading) is moved here so it executes
         # between frames, sandwiched by SDL_PumpEvents() in C++.  This prevents
         # Windows from flagging the application as "Not Responding" during long
