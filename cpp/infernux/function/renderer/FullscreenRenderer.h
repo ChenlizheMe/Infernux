@@ -15,6 +15,7 @@ namespace infernux
 {
 
 class InxVkCoreModular;
+class FullscreenPipelineCache;
 
 class FullscreenRendererHost
 {
@@ -89,6 +90,27 @@ struct FullscreenResourceInput
     rhi::SamplerHandle sampler;
 };
 
+/// Immutable pipelines shared by views of one device and one host binding ABI.
+/// Scene teardown releases its bind groups, while this bounded cache survives
+/// to reuse the same compiled programs in the next scene. Eviction uses the
+/// device's normal submission-based retirement.
+class FullscreenPipelineCache
+{
+  public:
+    explicit FullscreenPipelineCache(std::shared_ptr<FullscreenRendererHost> host, size_t capacity = 64);
+    ~FullscreenPipelineCache();
+    FullscreenPipelineCache(const FullscreenPipelineCache &) = delete;
+    FullscreenPipelineCache &operator=(const FullscreenPipelineCache &) = delete;
+
+    const FullscreenPipelineEntry &EnsurePipeline(const FullscreenPipelineKey &key);
+    void InvalidateShader(const std::string &shaderName);
+    [[nodiscard]] rhi::Device &GetDevice() const noexcept;
+
+  private:
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
+};
+
 class FullscreenRenderer
 {
   public:
@@ -98,7 +120,8 @@ class FullscreenRenderer
     FullscreenRenderer(const FullscreenRenderer &) = delete;
     FullscreenRenderer &operator=(const FullscreenRenderer &) = delete;
 
-    void Initialize(std::shared_ptr<FullscreenRendererHost> host);
+    void Initialize(std::shared_ptr<FullscreenRendererHost> host,
+                    std::shared_ptr<FullscreenPipelineCache> pipelines = {});
     void Initialize(InxVkCoreModular *vkCore);
     void Destroy();
 

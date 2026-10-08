@@ -3,6 +3,7 @@
 #include "rhi/RhiDevice.h"
 
 #include <algorithm>
+#include <stdexcept>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -39,36 +40,20 @@ size_t FullscreenPipelineKeyHash::operator()(const FullscreenPipelineKey &key) c
     return hash;
 }
 
-struct FullscreenRenderer::Impl
+struct FullscreenPipelineCache::Impl
 {
     struct PipelineEntry
     {
         FullscreenPipelineEntry rhi;
         rhi::BindingLayoutHandle emptyGapLayout;
+        uint64_t lastUse = 0;
     };
 
     std::shared_ptr<FullscreenRendererHost> host;
     rhi::Device *device = nullptr;
-    rhi::SamplerHandle linearSampler;
-    rhi::SamplerHandle nearestSampler;
     std::unordered_map<FullscreenPipelineKey, PipelineEntry, FullscreenPipelineKeyHash> pipelines;
-    std::vector<std::vector<rhi::BindGroupHandle>> frameBindGroups;
-
-    [[nodiscard]] uint32_t CurrentFrame() const noexcept
-    {
-        if (!host || frameBindGroups.empty())
-            return 0;
-        return host->GetCurrentFrame() % static_cast<uint32_t>(frameBindGroups.size());
-    }
-
-    void ReleaseBindGroups(uint32_t frame)
-    {
-        if (!device || frame >= frameBindGroups.size())
-            return;
-        for (const auto handle : frameBindGroups[frame])
-            device->Release(handle);
-        frameBindGroups[frame].clear();
-    }
+    size_t capacity = 0;
+    uint64_t useSequence = 0;
 
     void DestroyPipeline(PipelineEntry &entry)
     {
@@ -167,13 +152,61 @@ struct FullscreenRenderer::Impl
     }
 };
 
+FullscreenPipelineCache::FullscreenPipelineCache(std::shared_ptr<FullscreenRendererHost> host, size_t capacity)
+{
+    if (!host || capacity == 0)
+        throw std::invalid_argument("Fullscreen pipeline cache requires a host and positive capacity");
+    m_impl = std::make_unique<Impl>();
+    m_impl->host = std::move(host);
+    m_impl->device = &m_impl->host->GetRhiDevice();
+    m_impl->capacity = capacity;
+}
+
+FullscreenPipelineCache::~FullscreenPipelineCache()
+{
+    for (auto &[key, entry] : m_impl->pipelines)
+        m_impl->DestroyPipeline(entry);
+}
+
+rhi::Device &FullscreenPipelineCache::GetDevice() const noexcept
+{
+    return *m_impl->device;
+}
+
+struct FullscreenRenderer::Impl
+{
+    std::shared_ptr<FullscreenRendererHost> host;
+    std::shared_ptr<FullscreenPipelineCache> pipelines;
+    rhi::Device *device = nullptr;
+    rhi::SamplerHandle linearSampler;
+    rhi::SamplerHandle nearestSampler;
+    std::vector<std::vector<rhi::BindGroupHandle>> frameBindGroups;
+
+    [[nodiscard]] uint32_t CurrentFrame() const noexcept
+    {
+        if (!host || frameBindGroups.empty())
+            return 0;
+        return host->GetCurrentFrame() % static_cast<uint32_t>(frameBindGroups.size());
+    }
+
+    void ReleaseBindGroups(uint32_t frame)
+    {
+        if (!device || frame >= frameBindGroups.size())
+            return;
+        for (const auto handle : frameBindGroups[frame])
+            device->Release(handle);
+        frameBindGroups[frame].clear();
+    }
+};
+
 FullscreenRenderer::FullscreenRenderer() = default;
 FullscreenRenderer::~FullscreenRenderer()
 {
     Destroy();
 }
 
-void FullscreenRenderer::Initialize(std::shared_ptr<FullscreenRendererHost> host)
+void FullscreenRenderer::Initialize(std::shared_ptr<FullscreenRendererHost> host,
+                                    std::shared_ptr<FullscreenPipelineCache> pipelines)
 {
     Destroy();
     if (!host)
@@ -182,6 +215,9 @@ void FullscreenRenderer::Initialize(std::shared_ptr<FullscreenRendererHost> host
     m_impl = std::make_unique<Impl>();
     m_impl->host = std::move(host);
     m_impl->device = &m_impl->host->GetRhiDevice();
+    if (pipelines && &pipelines->GetDevice() != m_impl->device)
+        throw std::invalid_argument("Fullscreen pipeline cache belongs to another device");
+    m_impl->pipelines = pipelines ? std::move(pipelines) : std::make_shared<FullscreenPipelineCache>(m_impl->host);
 
     rhi::SamplerDesc linear;
     linear.addressU = rhi::AddressMode::ClampToEdge;
@@ -209,8 +245,6 @@ void FullscreenRenderer::Destroy()
         return;
     for (uint32_t frame = 0; frame < m_impl->frameBindGroups.size(); ++frame)
         m_impl->ReleaseBindGroups(frame);
-    for (auto &[key, entry] : m_impl->pipelines)
-        m_impl->DestroyPipeline(entry);
     if (m_impl->device) {
         m_impl->device->Release(m_impl->linearSampler);
         m_impl->device->Release(m_impl->nearestSampler);
@@ -223,21 +257,41 @@ const FullscreenPipelineEntry &FullscreenRenderer::EnsurePipeline(const Fullscre
     static const FullscreenPipelineEntry invalid;
     if (!m_impl)
         return invalid;
+    return m_impl->pipelines->EnsurePipeline(key);
+}
+
+const FullscreenPipelineEntry &FullscreenPipelineCache::EnsurePipeline(const FullscreenPipelineKey &key)
+{
     const auto found = m_impl->pipelines.find(key);
-    if (found != m_impl->pipelines.end())
+    if (found != m_impl->pipelines.end()) {
+        found->second.lastUse = ++m_impl->useSequence;
         return found->second.rhi;
+    }
+    if (m_impl->pipelines.size() == m_impl->capacity) {
+        const auto oldest = std::min_element(m_impl->pipelines.begin(), m_impl->pipelines.end(),
+            [](const auto &left, const auto &right) { return left.second.lastUse < right.second.lastUse; });
+        m_impl->DestroyPipeline(oldest->second);
+        m_impl->pipelines.erase(oldest);
+    }
     auto [it, inserted] = m_impl->pipelines.emplace(key, m_impl->CreatePipeline(key));
+    it->second.lastUse = ++m_impl->useSequence;
     return it->second.rhi;
 }
 
 void FullscreenRenderer::InvalidateShader(const std::string &shaderName)
 {
-    if (!m_impl || shaderName.empty())
+    if (m_impl)
+        m_impl->pipelines->InvalidateShader(shaderName);
+}
+
+void FullscreenPipelineCache::InvalidateShader(const std::string &shaderName)
+{
+    if (shaderName.empty())
         return;
 
     size_t retired = 0;
     for (auto entry = m_impl->pipelines.begin(); entry != m_impl->pipelines.end();) {
-        if (entry->first.shaderName != shaderName) {
+        if (entry->first.shaderName != shaderName && shaderName != "Fullscreen Triangle") {
             ++entry;
             continue;
         }

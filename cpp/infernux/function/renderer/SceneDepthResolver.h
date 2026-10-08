@@ -5,11 +5,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string_view>
 #include <vector>
 
 namespace infernux
 {
+
+struct SceneDepthResolveProgram;
 
 /// RHI compute implementation of the scene-depth sampling contract. It
 /// converts a multisampled depth attachment into a single-sample R32F texture
@@ -24,6 +27,9 @@ class SceneDepthResolver
     SceneDepthResolver &operator=(const SceneDepthResolver &) = delete;
 
     [[nodiscard]] bool Initialize(rhi::Device &device, const uint32_t *spirv, size_t wordCount);
+    [[nodiscard]] static std::shared_ptr<const SceneDepthResolveProgram>
+    CreateProgram(rhi::Device &device, const uint32_t *spirv, size_t wordCount);
+    [[nodiscard]] bool Initialize(std::shared_ptr<const SceneDepthResolveProgram> program);
     void Destroy() noexcept;
 
     [[nodiscard]] bool IsValid() const noexcept;
@@ -49,9 +55,7 @@ class SceneDepthResolver
                                                         rhi::TextureViewHandle resolvedDepth);
 
     rhi::Device *m_device = nullptr;
-    rhi::SamplerHandle m_nearestSampler;
-    rhi::BindingLayoutHandle m_layout;
-    rhi::ComputePipelineHandle m_pipeline;
+    std::shared_ptr<const SceneDepthResolveProgram> m_program;
     std::vector<BindingEntry> m_bindings;
 };
 

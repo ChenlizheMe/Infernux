@@ -8,6 +8,9 @@
 
 #include "InxVkCoreModular.h"
 #include "InxError.h"
+#include "FullscreenRenderer.h"
+#include "SceneDepthResolver.h"
+#include "lighting/ForwardPlusLightGrid.h"
 #include "ProfileConfig.h"
 #include "SceneRenderTarget.h"
 #include "gui/GPUMaterialPreview.h"
@@ -37,6 +40,17 @@ namespace infernux
 
 namespace
 {
+
+std::vector<uint32_t> CompileBuiltinComputeProgram(std::string_view source, const char *name)
+{
+    InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
+    const auto bytes = compiler.CompileComputeGlsl(std::string(source), name);
+    if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0)
+        throw std::runtime_error(std::string("Failed to compile built-in compute program: ") + name);
+    std::vector<uint32_t> spirv(bytes.size() / sizeof(uint32_t));
+    std::memcpy(spirv.data(), bytes.data(), bytes.size());
+    return spirv;
+}
 
 void DestroyLingeringMaterialPassPipelines(VkDevice device)
 {
@@ -94,6 +108,32 @@ InxVkCoreModular::InxVkCoreModular(int maxFrameInFlight) : m_maxFramesInFlight(s
     m_deletionQueue.BindSerialSource([this] { return m_backend.Queues().GetLastReservedCompletionEpoch(); });
 }
 
+std::shared_ptr<const SceneDepthResolveProgram> InxVkCoreModular::GetSceneDepthResolveProgram()
+{
+    if (!m_sceneDepthProgram) {
+        const auto spirv = CompileBuiltinComputeProgram(SceneDepthResolver::ShaderSource(),
+                                                        "Infernux/SceneDepthResolve.comp");
+        m_sceneDepthProgram = SceneDepthResolver::CreateProgram(GetDeviceContext().GetRhiDevice(),
+                                                                spirv.data(), spirv.size());
+        if (!m_sceneDepthProgram)
+            throw std::runtime_error("Failed to create the built-in scene-depth program");
+    }
+    return m_sceneDepthProgram;
+}
+
+std::shared_ptr<const lighting::ForwardPlusGridPipeline> InxVkCoreModular::GetForwardPlusGridProgram()
+{
+    if (!m_forwardPlusProgram) {
+        const auto spirv = CompileBuiltinComputeProgram(lighting::ForwardPlusLightGrid::ShaderSource(),
+                                                        "Infernux/ForwardPlusLightGrid.comp");
+        m_forwardPlusProgram = lighting::ForwardPlusLightGrid::CreateProgram(GetDeviceContext().GetRhiDevice(),
+                                                                            {spirv.data(), spirv.size()});
+        if (!m_forwardPlusProgram)
+            throw std::runtime_error("Failed to create the built-in Forward+ program");
+    }
+    return m_forwardPlusProgram;
+}
+
 InxVkCoreModular::~InxVkCoreModular()
 {
     // Renderer construction precedes SDL/Vulkan startup.  If window creation
@@ -122,6 +162,12 @@ InxVkCoreModular::~InxVkCoreModular()
     // program cache; otherwise their Vulkan layouts/modules can outlive the
     // device and be destroyed by member teardown with an invalid VkDevice.
     ReleaseMaterialPassResolutionCache();
+
+    // Immutable view programs outlive scenes, but never their Vulkan device
+    // or the canonical per-view/global descriptor layouts owned by this core.
+    m_fullscreenPipelines.reset();
+    m_sceneDepthProgram.reset();
+    m_forwardPlusProgram.reset();
 
     // Flush all deferred deletions before tearing down subsystems
     m_deletionQueue.FlushAll();
@@ -732,6 +778,8 @@ void InxVkCoreModular::InvalidateShaderCache(const std::string &shaderId, const 
 {
     if (shaderId.empty())
         throw std::invalid_argument("Shader cache invalidation requires a non-empty shader identifier");
+    if (m_fullscreenPipelines)
+        m_fullscreenPipelines->InvalidateShader(shaderId);
     // A source edit can change its declared domain without changing stage IDs.
     // Reconsider rejected geometry selections after the authoring publication.
     m_rejectedGeometryMaterialPrograms.clear();

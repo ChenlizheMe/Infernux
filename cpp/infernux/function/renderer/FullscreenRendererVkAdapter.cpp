@@ -135,7 +135,15 @@ void FullscreenRenderer::Initialize(InxVkCoreModular *vkCore)
         Destroy();
         return;
     }
-    Initialize(std::make_shared<VulkanFullscreenRendererHost>(*vkCore));
+    Initialize(std::make_shared<VulkanFullscreenRendererHost>(*vkCore), vkCore->GetFullscreenPipelineCache());
+}
+
+std::shared_ptr<FullscreenPipelineCache> InxVkCoreModular::GetFullscreenPipelineCache()
+{
+    if (!m_fullscreenPipelines)
+        m_fullscreenPipelines =
+            std::make_shared<FullscreenPipelineCache>(std::make_shared<VulkanFullscreenRendererHost>(*this));
+    return m_fullscreenPipelines;
 }
 
 } // namespace infernux

@@ -331,11 +331,13 @@ def test_fullscreen_effect_shader_reload_retires_cached_pipeline_revision() -> N
     )
     renderer = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
     invalidate = _function_body(fullscreen, "void FullscreenRenderer::InvalidateShader")
+    cache_invalidate = _function_body(fullscreen, "void FullscreenPipelineCache::InvalidateShader")
     renderer_invalidate = _function_body(
         renderer, "void InxRenderer::InvalidateShaderCache"
     )
 
-    assert "m_impl->DestroyPipeline" in invalidate
+    assert "m_impl->pipelines->InvalidateShader(shaderName)" in invalidate
+    assert "m_impl->DestroyPipeline" in cache_invalidate
     assert "device->Release(entry.rhi.pipeline)" in fullscreen
     assert "vkDeviceWaitIdle" not in invalidate
     assert "vkDeviceWaitIdle" not in fullscreen
@@ -942,14 +944,9 @@ def test_collision_free_particle_graphs_skip_scene_collider_extraction() -> None
 
 
 def test_msaa_public_contract_is_exactly_1_2_4_8() -> None:
+    from infernux.renderstack.default_forward_pipeline import MSAASamples
+
     policy = (RENDERER / "MsaaPolicy.h").read_text(encoding="utf-8")
-    pipeline = (
-        ROOT
-        / "python"
-        / "infernux"
-        / "renderstack"
-        / "default_forward_pipeline.py"
-    ).read_text(encoding="utf-8")
     binding = (
         ROOT / "cpp" / "bindings" / "python" / "BindingInfernux.cpp"
     ).read_text(encoding="utf-8")
@@ -958,17 +955,7 @@ def test_msaa_public_contract_is_exactly_1_2_4_8() -> None:
     accepted = {int(value) for value in re.findall(r"samples\s*==\s*(\d+)", validation)}
     assert accepted == {1, 2, 4, 8}
 
-    enum_body = re.search(
-        r"class\s+MSAASamples\s*\(IntEnum\)\s*:\s*(.*?)(?=\n\nclass\s)",
-        pipeline,
-        re.DOTALL,
-    )
-    assert enum_body, "Unable to locate the public MSAASamples enum."
-    enum_values = {
-        int(value)
-        for value in re.findall(r"^\s*[A-Z][A-Z0-9_]*\s*=\s*(\d+)\s*$", enum_body.group(1), re.MULTILINE)
-    }
-    assert enum_values == accepted
+    assert {int(value) for value in MSAASamples} == accepted
 
     renderer_state = _function_body(binding, '"msaa_state"')
     assert "for (const int samples : {1, 2, 4, 8})" in renderer_state

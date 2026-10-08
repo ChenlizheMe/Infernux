@@ -1376,6 +1376,34 @@ int main()
     }
 
     {
+        FakeDevice sharedDevice;
+        std::array<uint32_t, 5> shader = {0x07230203u, 0u, 0u, 0u, 0u};
+        auto program = SceneDepthResolver::CreateProgram(sharedDevice, shader.data(), shader.size());
+        assert(program);
+        DepthResolveTrace trace;
+        const rhi::ComputeCommandEncoder::DispatchTable dispatch = {
+            &DepthResolveTrace::BindPipeline, &DepthResolveTrace::BindGroup, &DepthResolveTrace::PushConstants,
+            &DepthResolveTrace::Dispatch, &DepthResolveTrace::DispatchIndirect};
+        const rhi::ComputeCommandEncoder encoder(&trace, &dispatch);
+        SceneDepthResolver retained;
+        assert(retained.Initialize(program));
+        for (uint32_t cycle = 0; cycle < 60; ++cycle) {
+            SceneDepthResolver view;
+            assert(view.Initialize(program));
+            assert(view.Record(encoder, {101 + cycle, 1}, {201 + cycle, 1}, 64, 64, 4));
+            assert(sharedDevice.pipelineCreates == 1 && sharedDevice.layoutCreates == 1);
+        }
+        assert(sharedDevice.groupCreates == 60 && sharedDevice.groupReleases == 60);
+        assert(sharedDevice.pipelineReleases == 0 && sharedDevice.samplerReleases == 0);
+        program.reset();
+        assert(retained.Record(encoder, {301, 1}, {302, 1}, 128, 128, 4));
+        retained.Destroy();
+        assert(!retained.IsValid());
+        assert(sharedDevice.pipelineReleases == 1 && sharedDevice.layoutReleases == 1 &&
+               sharedDevice.samplerReleases == 1 && sharedDevice.groupReleases == 61);
+    }
+
+    {
         FakeDevice migrationDevice;
         std::array<std::array<uint32_t, 5>, 2> migrationWords{};
         for (auto &shader : migrationWords)

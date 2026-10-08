@@ -252,6 +252,7 @@ class FullscreenTestHost final : public FullscreenRendererHost
     rhi::ShaderModuleHandle AcquireShaderModule(const std::string &, rhi::ShaderStage stage, uint32_t,
                                                 uint32_t) override
     {
+        ++shaderAcquisitions;
         std::ifstream file(stage == rhi::ShaderStage::Vertex ? vertex : fragment, std::ios::binary | std::ios::ate);
         assert(file);
         const size_t bytes = static_cast<size_t>(file.tellg());
@@ -270,7 +271,44 @@ class FullscreenTestHost final : public FullscreenRendererHost
     rhi::Device &device;
     const char *vertex;
     const char *fragment;
+    uint32_t shaderAcquisitions = 0;
 };
+
+static void CheckSharedFullscreenPipelines(vk::VkDeviceContext &context, const char *vertex, const char *fragment)
+{
+    auto host = std::make_shared<FullscreenTestHost>(context.GetRhiDevice(), vertex, fragment);
+    auto cache = std::make_shared<FullscreenPipelineCache>(host, 2);
+    FullscreenPipelineKey first;
+    first.shaderName = "shared-first";
+    first.useDynamicRendering = true;
+    rhi::GraphicsPipelineHandle initial;
+    for (int scene = 0; scene < 60; ++scene) {
+        FullscreenRenderer renderer;
+        renderer.Initialize(host, cache);
+        const auto pipeline = renderer.EnsurePipeline(first).pipeline;
+        assert(pipeline.IsValid());
+        if (scene == 0)
+            initial = pipeline;
+        assert(pipeline == initial);
+    }
+    assert(host->shaderAcquisitions == 2);
+    auto second = first, third = first;
+    second.shaderName = "shared-second";
+    third.shaderName = "shared-third";
+    assert(cache->EnsurePipeline(second).pipeline.IsValid());
+    assert(cache->EnsurePipeline(first).pipeline == initial); // First is newest.
+    assert(cache->EnsurePipeline(third).pipeline.IsValid()); // Retires second.
+    assert(cache->EnsurePipeline(first).pipeline == initial);
+    assert(host->shaderAcquisitions == 6);
+    assert(cache->EnsurePipeline(second).pipeline.IsValid());
+    assert(host->shaderAcquisitions == 8);
+    cache->InvalidateShader(first.shaderName);
+    assert(cache->EnsurePipeline(first).pipeline != initial);
+    assert(host->shaderAcquisitions == 10);
+    cache->InvalidateShader("Fullscreen Triangle");
+    assert(cache->EnsurePipeline(first).pipeline.IsValid());
+    assert(host->shaderAcquisitions == 12);
+}
 
 static void CheckFullscreenRasterState(vk::VkDeviceContext &context, VkCommandBuffer command, VkFence fence,
                                        const char *vertex, const char *fragment, rhi::SubmissionSerial &epoch)
@@ -908,6 +946,7 @@ static int RunTests(int argc, char **argv)
     assert(vkCreateFence(context.GetDevice(), &fenceInfo, nullptr, &fence) == VK_SUCCESS);
 
     CheckDepthSamplingDeclaration(context);
+    CheckSharedFullscreenPipelines(context, argv[2], argv[3]);
     CheckFullscreenRasterState(context, command, fence, argv[2], argv[3], epoch);
     CheckFullscreenSamples(context, command, fence, argv[2], argv[4], argv[5], epoch);
     CheckFullscreenStorageRead(context, command, fence, argv[2], argv[6], epoch);

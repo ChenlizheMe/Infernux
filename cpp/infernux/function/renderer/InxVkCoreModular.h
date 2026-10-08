@@ -76,6 +76,13 @@ struct SDL_Window;
 namespace infernux
 {
 
+class FullscreenPipelineCache;
+struct SceneDepthResolveProgram;
+namespace lighting
+{
+struct ForwardPlusGridPipeline;
+}
+
 struct FrameSubmissionTelemetry
 {
     uint64_t generation = 0;
@@ -124,6 +131,9 @@ class InxVkCoreModular
      */
     explicit InxVkCoreModular(int maxFrameInFlight = 2);
     ~InxVkCoreModular();
+    [[nodiscard]] std::shared_ptr<FullscreenPipelineCache> GetFullscreenPipelineCache();
+    [[nodiscard]] std::shared_ptr<const SceneDepthResolveProgram> GetSceneDepthResolveProgram();
+    [[nodiscard]] std::shared_ptr<const lighting::ForwardPlusGridPipeline> GetForwardPlusGridProgram();
 
     // Non-copyable, non-movable (like original InxVkCore)
     InxVkCoreModular(const InxVkCoreModular &) = delete;
@@ -1335,6 +1345,9 @@ class InxVkCoreModular
 
     // Shader cache (modules, SPIR-V code, render-state annotations, program cache)
     VkShaderCache m_shaderCache;
+    std::shared_ptr<FullscreenPipelineCache> m_fullscreenPipelines;
+    std::shared_ptr<const SceneDepthResolveProgram> m_sceneDepthProgram;
+    std::shared_ptr<const lighting::ForwardPlusGridPipeline> m_forwardPlusProgram;
     std::unordered_set<ShaderProgramKey, ShaderProgramKeyHash> m_pendingUIProgramRelease;
     std::unordered_map<ShaderProgramKey, size_t, ShaderProgramKeyHash> m_uiProgramOwners;
     std::function<void(const std::shared_ptr<InxMaterial> &, std::optional<ShaderProgramDomain>)>

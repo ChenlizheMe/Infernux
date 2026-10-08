@@ -51,6 +51,8 @@ struct FakeDevice final : infernux::rhi::Device
     uint32_t next = 1;
     uint32_t releasedBuffers = 0;
     uint32_t releasedGroups = 0;
+    uint32_t releasedPipelines = 0;
+    uint32_t releasedLayouts = 0;
     uint32_t bufferWrites = 0;
 
     infernux::rhi::BufferHandle CreateBuffer(const infernux::rhi::BufferDesc &desc) override
@@ -116,8 +118,9 @@ struct FakeDevice final : infernux::rhi::Device
     void Release(infernux::rhi::ShaderModuleHandle) noexcept override
     {
     }
-    void Release(infernux::rhi::BindingLayoutHandle) noexcept override
+    void Release(infernux::rhi::BindingLayoutHandle handle) noexcept override
     {
+        releasedLayouts += handle.IsValid();
     }
     void Release(infernux::rhi::BindGroupHandle handle) noexcept override
     {
@@ -126,8 +129,9 @@ struct FakeDevice final : infernux::rhi::Device
     void Release(infernux::rhi::GraphicsPipelineHandle) noexcept override
     {
     }
-    void Release(infernux::rhi::ComputePipelineHandle) noexcept override
+    void Release(infernux::rhi::ComputePipelineHandle handle) noexcept override
     {
+        releasedPipelines += handle.IsValid();
     }
 };
 
@@ -445,5 +449,32 @@ int main()
     grid.Shutdown();
 
     assert(device.releasedBuffers == 4 && device.releasedGroups == 4);
+    {
+        using infernux::lighting::ForwardPlusLightGrid;
+        FakeDevice sharedDevice;
+        auto program = ForwardPlusLightGrid::CreateProgram(sharedDevice, {shaderWords.data(), shaderWords.size()});
+        assert(program);
+        ForwardPlusLightGrid first;
+        assert(first.Initialize(program, 2));
+        assert(first.PrepareFrame(0, 64, 64, 4, CanonicalLightAffectsGeometry, canonicalBuffer));
+        const auto firstGroup = first.Frame(0).bindGroup;
+        for (int cycle = 0; cycle < 60; ++cycle) {
+            ForwardPlusLightGrid next;
+            assert(next.Initialize(program, 2));
+            assert(next.PrepareFrame(0, 128, 64, 4, CanonicalLightAffectsParticles, canonicalBuffer));
+            assert(next.ConsumerLayout() == first.ConsumerLayout());
+            assert(next.Frame(0).headers != first.Frame(0).headers && next.Frame(0).bindGroup != firstGroup);
+            assert(sharedDevice.pipelines.size() == 1 && sharedDevice.layouts.size() == 2);
+        }
+        assert(sharedDevice.releasedPipelines == 0 && sharedDevice.releasedLayouts == 0);
+        program.reset();
+        first.Record(0, encoder, constants);
+        assert(first.IsValid() && sharedDevice.releasedPipelines == 0);
+        first.Shutdown();
+        assert(!first.IsValid() && !first.ConsumerLayout().IsValid());
+        assert(sharedDevice.releasedPipelines == 1 && sharedDevice.releasedLayouts == 2);
+        assert(sharedDevice.releasedBuffers == sharedDevice.buffers.size());
+        assert(sharedDevice.releasedGroups == sharedDevice.groups.size());
+    }
     return 0;
 }

@@ -1068,49 +1068,27 @@ bool SceneRenderGraph::Initialize(InxVkCoreModular *vkCore, SceneRenderTarget *s
     const auto depthResolveSupport = vkCore->GetDeviceContext().GetCapabilities().CheckFormat(
         rhi::PixelFormat::R32SFloat, rhi::FormatFeature::Sampled | rhi::FormatFeature::Storage);
     if (depthResolveSupport.IsSupported()) {
-        InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
-        const auto bytes = compiler.CompileComputeGlsl(std::string(SceneDepthResolver::ShaderSource()),
-                                                       "Infernux/SceneDepthResolve.comp");
-        if (bytes.size() >= 5 * sizeof(uint32_t) && bytes.size() % sizeof(uint32_t) == 0) {
-            std::vector<uint32_t> spirv(bytes.size() / sizeof(uint32_t));
-            std::memcpy(spirv.data(), bytes.data(), bytes.size());
-            if (!m_sceneDepthResolver.Initialize(vkCore->GetDeviceContext().GetRhiDevice(), spirv.data(),
-                                                 spirv.size())) {
-                INXLOG_ERROR("SceneRenderGraph: failed to initialize the RHI scene-depth resolver");
-            }
-        } else {
-            INXLOG_ERROR("SceneRenderGraph: failed to compile the RHI scene-depth resolve shader");
-        }
+        if (!m_sceneDepthResolver.Initialize(vkCore->GetSceneDepthResolveProgram()))
+            return false;
     } else {
         INXLOG_WARN("SceneRenderGraph: R32SFloat sampled-storage textures are unavailable; MSAA soft particles are "
                     "disabled on this adapter");
     }
 
-    {
-        InxShaderLoader compiler(false, true, false, true, false, true, false, false, false, false);
-        const auto bytes = compiler.CompileComputeGlsl(std::string(lighting::ForwardPlusLightGrid::ShaderSource()),
-                                                       "Infernux/ForwardPlusLightGrid.comp");
-        if (bytes.size() < 5 * sizeof(uint32_t) || bytes.size() % sizeof(uint32_t) != 0) {
-            INXLOG_ERROR("SceneRenderGraph: failed to compile the Forward+ tiled-light shader");
-        } else {
-            std::vector<uint32_t> spirv(bytes.size() / sizeof(uint32_t));
-            std::memcpy(spirv.data(), bytes.data(), bytes.size());
-            if (!m_forwardPlusGeometryGrid.Initialize(rhiDevice, kMaxFramesInFlight, {spirv.data(), spirv.size()})) {
-                INXLOG_ERROR("SceneRenderGraph: failed to initialize the RHI Forward+ tiled-light builder");
-            } else if (!m_perViewLayout.IsValid() || !m_forwardPlusParticleGrid.Initialize(
-                                                         rhiDevice, kMaxFramesInFlight, {spirv.data(), spirv.size()})) {
-                INXLOG_ERROR("SceneRenderGraph: failed to initialize the particle Forward+ tiled-light builder");
-            } else {
-                for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
-                    const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
-                    if (lights.buffer.IsValid()) {
-                        (void)m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
-                                                                     CanonicalLightAffectsGeometry, lights.buffer);
-                        (void)m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
-                                                                     CanonicalLightAffectsParticles, lights.buffer);
-                    }
-                }
-            }
+    // These two fixed built-in programs belong to the device, not a camera.
+    // Recreating a Scene/Game view must not compile the same shaders again.
+    const auto lightGridProgram = vkCore->GetForwardPlusGridProgram();
+    if (!m_forwardPlusGeometryGrid.Initialize(lightGridProgram, kMaxFramesInFlight) ||
+        !m_forwardPlusParticleGrid.Initialize(lightGridProgram, kMaxFramesInFlight))
+        return false;
+    for (uint32_t frameIndex = 0; frameIndex < kMaxFramesInFlight; ++frameIndex) {
+        const auto &lights = m_cameraCanonicalLights.Frame(frameIndex);
+        if (lights.buffer.IsValid()) {
+            if (!m_forwardPlusGeometryGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
+                                                        CanonicalLightAffectsGeometry, lights.buffer) ||
+                !m_forwardPlusParticleGrid.PrepareFrame(frameIndex, m_width, m_height, lights.localCount,
+                                                        CanonicalLightAffectsParticles, lights.buffer))
+                return false;
         }
     }
 

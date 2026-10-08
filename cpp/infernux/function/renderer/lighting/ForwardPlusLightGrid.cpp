@@ -3,9 +3,26 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace infernux::lighting
 {
+
+// Geometry and particle views share code and layout, never mutable buffers.
+struct ForwardPlusGridPipeline
+{
+    explicit ForwardPlusGridPipeline(rhi::Device &owner) : device(owner) {}
+    ~ForwardPlusGridPipeline()
+    {
+        device.Release(pipeline);
+        device.Release(layout);
+        device.Release(consumerLayout);
+    }
+    rhi::Device &device;
+    rhi::BindingLayoutHandle layout;
+    rhi::BindingLayoutHandle consumerLayout;
+    rhi::ComputePipelineHandle pipeline;
+};
 
 namespace
 {
@@ -82,43 +99,64 @@ ForwardPlusLightGrid::~ForwardPlusLightGrid()
     Shutdown();
 }
 
-bool ForwardPlusLightGrid::Initialize(rhi::Device &device, uint32_t framesInFlight,
-                                      const ForwardPlusGridProgram &program)
+std::shared_ptr<const ForwardPlusGridPipeline>
+ForwardPlusLightGrid::CreateProgram(rhi::Device &device, const ForwardPlusGridProgram &program)
 {
-    Shutdown();
-    if (framesInFlight == 0 || !program.IsValid())
-        return false;
+    if (!program.IsValid())
+        return {};
 
-    m_device = &device;
+    auto compiled = std::make_shared<ForwardPlusGridPipeline>(device);
     rhi::BindingLayoutDesc layoutDesc;
     for (uint32_t binding = 0; binding < 3; ++binding)
         layoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Compute, 1};
     layoutDesc.entryCount = 3;
-    m_layout = device.CreateBindingLayout(layoutDesc);
+    compiled->layout = device.CreateBindingLayout(layoutDesc);
     rhi::BindingLayoutDesc consumerLayoutDesc;
     for (uint32_t binding = 0; binding < 3; ++binding) {
         consumerLayoutDesc.entries[binding] = {binding, rhi::BindingType::StorageBuffer, rhi::ShaderStage::Fragment, 1};
     }
     consumerLayoutDesc.entryCount = 3;
-    m_consumerLayout = device.CreateBindingLayout(consumerLayoutDesc);
+    compiled->consumerLayout = device.CreateBindingLayout(consumerLayoutDesc);
 
     const auto shader = device.CreateShaderModule(rhi::ShaderModuleDesc::FromSpirV(program.words, program.wordCount));
-    if (m_layout.IsValid() && m_consumerLayout.IsValid() && shader.IsValid()) {
+    if (compiled->layout.IsValid() && compiled->consumerLayout.IsValid() && shader.IsValid()) {
         rhi::ComputePipelineDesc pipelineDesc;
         pipelineDesc.computeShader = shader;
-        pipelineDesc.bindingLayouts[0] = m_layout;
+        pipelineDesc.bindingLayouts[0] = compiled->layout;
         pipelineDesc.bindingLayoutCount = 1;
         pipelineDesc.pushConstantBytes = sizeof(ForwardPlusGridConstants);
-        m_pipeline = device.CreateComputePipeline(pipelineDesc);
+        compiled->pipeline = device.CreateComputePipeline(pipelineDesc);
     }
     device.Release(shader);
-    if (!m_layout.IsValid() || !m_pipeline.IsValid()) {
+    if (!compiled->layout.IsValid() || !compiled->consumerLayout.IsValid() || !compiled->pipeline.IsValid())
+        return {};
+    return compiled;
+}
+
+bool ForwardPlusLightGrid::Initialize(rhi::Device &device, uint32_t framesInFlight,
+                                      const ForwardPlusGridProgram &program)
+{
+    if (framesInFlight == 0) {
         Shutdown();
         return false;
     }
+    return Initialize(CreateProgram(device, program), framesInFlight);
+}
 
+bool ForwardPlusLightGrid::Initialize(std::shared_ptr<const ForwardPlusGridPipeline> program, uint32_t framesInFlight)
+{
+    Shutdown();
+    if (!program || framesInFlight == 0)
+        return false;
+    m_program = std::move(program);
+    m_device = &m_program->device;
     m_frames.resize(framesInFlight);
     return true;
+}
+
+rhi::BindingLayoutHandle ForwardPlusLightGrid::ConsumerLayout() const noexcept
+{
+    return m_program ? m_program->consumerLayout : rhi::BindingLayoutHandle{};
 }
 
 void ForwardPlusLightGrid::Shutdown() noexcept
@@ -136,15 +174,10 @@ void ForwardPlusLightGrid::Shutdown() noexcept
             m_device->Release(frame.lightMasks);
             m_device->Release(frame.headers);
         }
-        m_device->Release(m_pipeline);
-        m_device->Release(m_layout);
-        m_device->Release(m_consumerLayout);
     }
     m_frames.clear();
     m_retired.clear();
-    m_pipeline = {};
-    m_layout = {};
-    m_consumerLayout = {};
+    m_program.reset();
     m_device = nullptr;
 }
 
@@ -214,15 +247,15 @@ void ForwardPlusLightGrid::Record(uint32_t frameIndex, const rhi::ComputeCommand
     resolved.domainAndMaskWords[0] = frame.config.domainMask;
     resolved.domainAndMaskWords[1] = frame.config.maskWordStride;
 
-    encoder.BindPipeline(m_pipeline);
-    encoder.BindGroup(m_pipeline, 0, frame.bindGroup);
-    encoder.PushConstants(m_pipeline, sizeof(resolved), &resolved);
+    encoder.BindPipeline(m_program->pipeline);
+    encoder.BindGroup(m_program->pipeline, 0, frame.bindGroup);
+    encoder.PushConstants(m_program->pipeline, sizeof(resolved), &resolved);
     encoder.Dispatch(frame.config.tileCountX, frame.config.tileCountY, 1);
 }
 
 bool ForwardPlusLightGrid::IsValid() const noexcept
 {
-    return m_device && m_layout.IsValid() && m_consumerLayout.IsValid() && m_pipeline.IsValid() && !m_frames.empty();
+    return m_device && m_program && !m_frames.empty();
 }
 
 uint32_t ForwardPlusLightGrid::FrameCount() const noexcept
@@ -251,7 +284,7 @@ bool ForwardPlusLightGrid::RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::Bu
     frame.bindGroup = {};
     frame.consumerBindGroup = {};
     rhi::BindGroupDesc groupDesc;
-    groupDesc.layout = m_layout;
+    groupDesc.layout = m_program->layout;
     const rhi::BufferHandle buffers[] = {canonicalLights, frame.headers, frame.lightMasks};
     for (uint32_t binding = 0; binding < 3; ++binding)
         groupDesc.buffers[binding] = {binding, rhi::BindingType::StorageBuffer, buffers[binding], 0, 0};
@@ -260,7 +293,7 @@ bool ForwardPlusLightGrid::RebuildBindGroup(ForwardPlusGridFrame &frame, rhi::Bu
     if (!frame.bindGroup.IsValid())
         return false;
 
-    groupDesc.layout = m_consumerLayout;
+    groupDesc.layout = m_program->consumerLayout;
     frame.consumerBindGroup = m_device->CreateBindGroup(groupDesc);
     if (!frame.consumerBindGroup.IsValid()) {
         m_device->Release(frame.bindGroup);
