@@ -50,7 +50,7 @@ function Remove-GeneratedPath([string]$Repository, [string]$RelativePath) {
         $Size = if ($Item.PSIsContainer) {
             ($Children | Where-Object { -not $_.PSIsContainer } | Measure-Object Length -Sum).Sum
         } else { $Item.Length }
-        Remove-Item -LiteralPath $Target -Recurse
+        Remove-Item -LiteralPath $Target -Recurse -Force
         $script:RemovedCount += 1
         $script:RemovedBytes += $Size
     }
