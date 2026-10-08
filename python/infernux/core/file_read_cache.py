@@ -32,10 +32,12 @@ def read_model_frame():
         yield
         return
     _presentation.frame = {}
+    _presentation.stamps = {}
     try:
         yield
     finally:
         _presentation.frame = None
+        _presentation.stamps = None
 
 
 def file_stamp(path: str):
@@ -90,9 +92,20 @@ class FileObservations:
                 if suffixes is None or os.path.splitext(name)[1].casefold() in suffixes:
                     self.watch(os.path.join(directory, name))
 
-    def unchanged(self) -> bool:
-        return all(stamp_reusable(stamp) and probe() == stamp
-                   for probe, stamp in self._files.values())
+    def unchanged(self, *, shared_frame: bool = False) -> bool:
+        stamps = getattr(_presentation, "stamps", None) if shared_frame else None
+        for path, (probe, stamp) in self._files.items():
+            if not stamp_reusable(stamp):
+                return False
+            if stamps is not None:
+                if path not in stamps:
+                    stamps[path] = probe()
+                observed = stamps[path]
+            else:
+                observed = probe()
+            if observed != stamp:
+                return False
+        return True
 
 
 class FileReadCache:
@@ -124,7 +137,7 @@ class FileReadCache:
             entry = self._entries.get(key)
             if entry is not None:
                 observations, value = entry
-                if observations.unchanged():
+                if observations.unchanged(shared_frame=frame is not None):
                     self._entries.move_to_end(key)
                     if frame is not None:
                         frame[frame_key] = self._generation, value
@@ -144,3 +157,6 @@ class FileReadCache:
         with self._lock:
             self._entries.clear()
             self._generation += 1
+            stamps = getattr(_presentation, "stamps", None)
+            if stamps is not None:
+                stamps.clear()

@@ -13,6 +13,56 @@ from infernux.plugins import InxPackage, PluginManager
 from infernux.plugins.registry import PluginRegistry
 
 
+def test_shared_file_dependencies_are_observed_once_per_panel_submission(tmp_path, monkeypatch):
+    from infernux.core import file_read_cache as readers
+
+    path = tmp_path / 'shared.txt'
+    path.write_text('first', encoding='utf-8')
+    probes = []
+    original = readers._file_probe
+
+    def instrumented(name):
+        probe = original(name)
+        def observe():
+            probes.append(name)
+            return probe()
+        return observe
+
+    monkeypatch.setattr(readers, '_file_probe', instrumented)
+    caches = [FileReadCache(), FileReadCache()]
+    def prepare(observed):
+        observed.watch(path)
+        return path.read_text(encoding='utf-8')
+
+    for cache in caches:
+        assert cache.get('value', prepare) == 'first'
+    probes.clear()
+    with read_model_frame():
+        assert [cache.get('value', prepare) for cache in caches] == ['first', 'first']
+    assert len(probes) == 1
+    path.write_text('next revision', encoding='utf-8')
+    with read_model_frame():
+        assert [cache.get('value', prepare) for cache in caches] == ['next revision', 'next revision']
+
+
+def test_explicit_current_reads_and_publication_bypass_shared_file_observations(tmp_path):
+    path = tmp_path / 'shared.txt'
+    path.write_text('first', encoding='utf-8')
+    first, second = FileReadCache(), FileReadCache()
+    def prepare(observed):
+        observed.watch(path)
+        return path.read_text(encoding='utf-8')
+
+    assert first.get('value', prepare) == second.get('value', prepare) == 'first'
+    with read_model_frame():
+        assert first.get('value', prepare) == 'first'
+        path.write_text('updated', encoding='utf-8')
+        assert second.get('value', prepare, current=True) == 'updated'
+        first.clear()
+        assert first.get('value', prepare) == 'updated'
+        assert second.get('value', prepare) == 'updated'
+
+
 def test_same_size_atomic_replacement_with_preserved_mtime_invalidates(tmp_path):
     path = tmp_path / "value.txt"
     path.write_text("first", encoding="utf-8")
