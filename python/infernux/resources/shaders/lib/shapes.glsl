@@ -120,9 +120,9 @@ float lineSDF(vec2 uv, vec2 a, vec2 b, float thickness) {
 // Cross / plus shape
 float crossSDF(vec2 uv, vec2 center, vec2 size, float thickness) {
     vec2 d = abs(uv - center);
-    float h = 1.0 - smoothstep(thickness - fwidth(d.x), thickness + fwidth(d.x), d.x)
+    float h = (1.0 - smoothstep(thickness - fwidth(d.x), thickness + fwidth(d.x), d.x))
             * (1.0 - step(size.y, d.y));
-    float v = 1.0 - smoothstep(thickness - fwidth(d.y), thickness + fwidth(d.y), d.y)
+    float v = (1.0 - smoothstep(thickness - fwidth(d.y), thickness + fwidth(d.y), d.y))
             * (1.0 - step(size.x, d.x));
     return max(h, v);
 }
