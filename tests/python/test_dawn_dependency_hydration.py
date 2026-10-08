@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import stat
 import subprocess
+import sys
 import tarfile
 from dataclasses import replace
 from pathlib import Path
@@ -354,3 +356,81 @@ def test_repository_verification_runs_strict_object_check(tmp_path: Path):
 
     with pytest.raises(hydrate.HydrationError, match="Git command failed"):
         hydrate.verify_repository(repository, dependency)
+
+
+@pytest.mark.parametrize("mode", ["ordinary_dirty", "assume_unchanged", "skip_worktree", "redirected_worktree", "unchanged_stat"])
+def test_verification_checks_consumed_checkout_and_hydration_rebuilds_bad_cache(tmp_path: Path, mode: str):
+    source = tmp_path / "source"
+    commit, tree = _repository(source, "input")
+    entry = _dependency("third_party/input", "github", str(source.resolve()), commit, tree)
+    lock_path = _write_lock(tmp_path / "lock.json", [entry])
+    lock = hydrate.load_lock(lock_path)
+    dawn = tmp_path / "dawn"
+    target = dawn / entry["path"]
+    target.parent.mkdir(parents=True)
+    subprocess.run(["git", "clone", "--quiet", str(source), str(target)], check=True)
+    _git(target, "config", "core.autocrlf", "false")
+    payload = target / "payload.txt"
+    initial_stat = payload.stat()
+    if mode == "assume_unchanged":
+        _git(target, "update-index", "--assume-unchanged", "payload.txt")
+    elif mode == "skip_worktree":
+        _git(target, "update-index", "--skip-worktree", "payload.txt")
+    elif mode == "redirected_worktree":
+        alternate = tmp_path / "alternate-worktree"
+        alternate.mkdir()
+        (alternate / "payload.txt").write_bytes(payload.read_bytes())
+        _git(target, "config", "core.worktree", str(alternate.resolve()))
+    elif mode == "unchanged_stat":
+        _git(target, "config", "core.trustctime", "false")
+        _git(target, "config", "core.checkstat", "minimal")
+        _git(target, "update-index", "--refresh")
+    payload.write_text("other\n", encoding="utf-8")
+    if mode == "unchanged_stat":
+        os.utime(payload, ns=(initial_stat.st_atime_ns, initial_stat.st_mtime_ns))
+    if mode in {"assume_unchanged", "skip_worktree", "redirected_worktree"}:
+        assert not _git(target, "status", "--porcelain")
+
+    index_before = (target / ".git/index").read_bytes()
+    audit = tmp_path / "audit.json"
+    result = subprocess.run(
+        [sys.executable, str(Path(hydrate.__file__).resolve()), "--dawn-root", str(dawn),
+         "--lock", str(lock_path), "--verify-only", "--audit-manifest", str(audit)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0, result.stdout
+    assert not audit.exists()
+    assert (target / ".git/index").read_bytes() == index_before
+    assert payload.read_text(encoding="utf-8") == "other\n"
+
+    hydrate.hydrate(dawn, lock, None, audit)
+    assert payload.read_text(encoding="utf-8") == "input\n"
+    item = json.loads(audit.read_text(encoding="utf-8"))["dependencies"][0]
+    assert item["hydration"] == "github"
+    quarantine = Path(item["quarantined_path"])
+    assert (quarantine / "payload.txt").read_text(encoding="utf-8") == "other\n"
+    assert (quarantine / ".git/index").read_bytes() == index_before
+    hydrate.verify_all(dawn, lock)
+
+
+@pytest.mark.parametrize("flag", [None, "--assume-unchanged", "--skip-worktree"])
+def test_clean_checkout_reuses_offline_without_rewriting_index(tmp_path: Path, monkeypatch, flag: str | None):
+    dawn = tmp_path / "dawn"
+    repository = dawn / "third_party/input"
+    origin = "https://github.com/example/fixture.git"
+    commit, tree = _repository(repository, "clean", origin)
+    lock = hydrate.load_lock(_write_lock(tmp_path / "lock.json", [
+        _dependency("third_party/input", "github", origin, commit, tree)
+    ]))
+    if flag:
+        _git(repository, "update-index", flag, "payload.txt")
+    index_before = (repository / ".git/index").read_bytes()
+    payload_before = (repository / "payload.txt").stat().st_mtime_ns
+    def forbid_fetch(*args):
+        pytest.fail("A clean fixed checkout must be reusable offline")
+    monkeypatch.setattr(hydrate, "_fetch_github", forbid_fetch)
+    audit = tmp_path / "audit.json"
+    hydrate.hydrate(dawn, lock, None, audit)
+    assert json.loads(audit.read_text(encoding="utf-8"))["dependencies"][0]["hydration"] == "cached"
+    assert (repository / ".git/index").read_bytes() == index_before
+    assert (repository / "payload.txt").stat().st_mtime_ns == payload_before

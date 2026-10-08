@@ -178,7 +178,9 @@ def load_lock(path: Path) -> DependencyLock:
     )
 
 
-def _git(path: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _git(
+    path: Path, *arguments: str, check: bool = True, index_file: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     for key in tuple(environment):
         if key.startswith("GIT_CONFIG_") or key in {
@@ -201,7 +203,14 @@ def _git(path: Path, *arguments: str, check: bool = True) -> subprocess.Complete
             "LC_ALL": "C.UTF-8",
         }
     )
-    command = ["git", "-C", str(path), *arguments]
+    command = ["git", "-C", str(path)]
+    if index_file is not None:
+        environment["GIT_INDEX_FILE"] = str(index_file)
+        # The verification index must read the checkout, independent of its
+        # cached stat data, sparse flags or filesystem-monitor state.
+        command.extend(("-c", "core.fsmonitor=false", "-c", "core.ignorestat=false",
+                        "-c", "core.sparseCheckout=false", "-c", "core.splitIndex=false"))
+    command.extend(arguments)
     try:
         return subprocess.run(
             command,
@@ -229,6 +238,9 @@ def verify_repository(path: Path, dependency: Dependency) -> None:
         or not git_directory.is_dir()
     ):
         raise HydrationError(f"Dependency is not a Git worktree: {dependency.path}")
+    worktree = Path(_git(path, "rev-parse", "--show-toplevel").stdout.rstrip("\n"))
+    if worktree.resolve() != path.resolve():
+        raise HydrationError(f"Dependency worktree is redirected: {dependency.path}: {worktree}")
     remotes = _git(path, "remote").stdout.splitlines()
     if remotes != ["origin"]:
         raise HydrationError(
@@ -257,11 +269,24 @@ def verify_repository(path: Path, dependency: Dependency) -> None:
         raise HydrationError(
             f"Tree mismatch for {dependency.path}: expected {dependency.tree}, got {tree}"
         )
-    status = _git(path, "status", "--porcelain=v1", "--untracked-files=all").stdout
-    if status:
-        raise HydrationError(
-            f"Dependency worktree is dirty: {dependency.path}: {status.strip()}"
-        )
+    # A fresh index has neither assume-unchanged/skip-worktree flags nor stat
+    # entries that could hide changed bytes. Refresh against the pinned tree,
+    # using Git's normal checkout normalization without rewriting the cache's
+    # index or files. No second content-hash format is needed.
+    with tempfile.TemporaryDirectory(prefix="infernux-dawn-verify-") as temporary:
+        index = Path(temporary) / "index"
+        _git(path, "read-tree", "--no-sparse-checkout", dependency.tree, index_file=index)
+        refresh = _git(path, "update-index", "--really-refresh", check=False, index_file=index)
+        if refresh.returncode:
+            detail = (refresh.stderr or refresh.stdout).strip()
+            raise HydrationError(
+                f"Dependency worktree differs from the pinned tree: {dependency.path}: {detail}"
+            )
+        status = _git(path, "status", "--porcelain=v1", "--untracked-files=all", index_file=index).stdout
+        if status:
+            raise HydrationError(
+                f"Dependency worktree is dirty: {dependency.path}: {status.strip()}"
+            )
     _git(path, "fsck", "--strict")
 
 
