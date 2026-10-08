@@ -190,8 +190,20 @@ vec2 rejection(vec2 a, vec2 b) {
 // Rotate About Axis — rotate a vector around an arbitrary axis  (Unity: Rotate About Axis)
 vec3 rotateAboutAxis(vec3 v, vec3 axis, float angle) {
     axis = normalize(axis);
-    float s = sin(angle);
-    float c = cos(angle);
+    // Reduce to [-pi/2, pi/2] and evaluate float32 sine/cosine directly.
+    // Split 2*pi keeps cancellation accurate; vendor trig approximations
+    // otherwise introduce direction and length errors into the rotation.
+    float turns = floor(angle * 0.15915494309189535 + 0.5);
+    precise float reduced = (angle - turns * 6.28125) - turns * 0.001935307179586477;
+    float cosineSign = abs(reduced) > 1.5707963267948966 ? -1.0 : 1.0;
+    float x = sign(reduced) * min(abs(reduced), 3.141592653589793 - abs(reduced));
+    float x2 = x * x;
+    float s = x * (1.0 + x2 * (-0.16666666666666667 + x2 * (0.008333333333333333
+        + x2 * (-0.0001984126984126984 + x2 * (0.0000027557319223985893
+        + x2 * (-0.00000002505210838544172 + x2 * 0.00000000016059043836821615))))));
+    float c = cosineSign * (1.0 + x2 * (-0.5 + x2 * (0.041666666666666664
+        + x2 * (-0.001388888888888889 + x2 * (0.0000248015873015873
+        + x2 * (-0.0000002755731922398589 + x2 * 0.00000000208767569878681))))));
     float oc = 1.0 - c;
     // GLSL matrix constructor arguments are columns.
     mat3 m = mat3(

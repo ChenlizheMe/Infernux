@@ -126,8 +126,18 @@ vec3 scalePosition(vec3 position, vec3 scaleXYZ) {
 // Rotate position around arbitrary axis (Rodrigues' rotation formula)
 vec3 rotateAroundAxis(vec3 position, vec3 axis, float angle) {
     vec3 k = normalize(axis);
-    float c = cos(angle);
-    float s = sin(angle);
+    // Use the same range-reduced float32 arithmetic as rotateAboutAxis.
+    float turns = floor(angle * 0.15915494309189535 + 0.5);
+    precise float reduced = (angle - turns * 6.28125) - turns * 0.001935307179586477;
+    float cosineSign = abs(reduced) > 1.5707963267948966 ? -1.0 : 1.0;
+    float x = sign(reduced) * min(abs(reduced), 3.141592653589793 - abs(reduced));
+    float x2 = x * x;
+    float s = x * (1.0 + x2 * (-0.16666666666666667 + x2 * (0.008333333333333333
+        + x2 * (-0.0001984126984126984 + x2 * (0.0000027557319223985893
+        + x2 * (-0.00000002505210838544172 + x2 * 0.00000000016059043836821615))))));
+    float c = cosineSign * (1.0 + x2 * (-0.5 + x2 * (0.041666666666666664
+        + x2 * (-0.001388888888888889 + x2 * (0.0000248015873015873
+        + x2 * (-0.0000002755731922398589 + x2 * 0.00000000208767569878681))))));
     return position * c + cross(k, position) * s + k * dot(k, position) * (1.0 - c);
 }
 
