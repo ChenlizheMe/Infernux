@@ -10,6 +10,7 @@
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
 #include <platform/filesystem/AtomicFile.h>
+#include <platform/filesystem/AssetDocument.h>
 #include <platform/filesystem/DocumentStore.h>
 #include <platform/filesystem/InxPack.h>
 #include <platform/filesystem/InxPath.h>
@@ -181,6 +182,16 @@ inxpack::WriteOptions InxPackWriteOptionsFromPython(py::handle compressionLevel,
 
 void RegisterResourceBindings(py::module_ &m)
 {
+    m.def("_encode_asset_document", [](py::handle value) {
+        return py::bytes(EncodeAssetDocument(PythonToJson(value)));
+    });
+    m.def("_decode_asset_document", [](const py::bytes &value) {
+        const std::string bytes = value;
+        return JsonToPython(DecodeAssetDocument(bytes));
+    });
+    m.def("_read_asset_document", [](const std::string &path) {
+        return JsonToPython(ReadAssetDocument(path));
+    });
     m.def(
         "_inxpack_write",
         [](py::handle sources, const std::string &destination, py::handle compressionLevel,
