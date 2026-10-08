@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
-from hub_utils import get_hub_shared_data_dir
+from hub_utils import get_hub_shared_data_dir, replace_path
 
 
 BLENDER_VERSION = "5.2.2"
@@ -242,12 +242,12 @@ class BlenderSupportManager:
             )
             validate_blender_support(payload)
             if self.root.exists():
-                os.replace(self.root, backup)
+                replace_path(self.root, backup)
             try:
-                os.replace(payload, self.root)
+                replace_path(payload, self.root)
             except BaseException:
                 if backup.exists() and not self.root.exists():
-                    os.replace(backup, self.root)
+                    replace_path(backup, self.root)
                 raise
         except Exception:
             logging.getLogger(__name__).exception("Blender installation failed: archive=%s destination=%s", source, self.root)

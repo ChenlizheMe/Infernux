@@ -3,7 +3,26 @@
 import os
 import shutil
 import sys
+import time
 from enum import Enum
+
+
+def replace_path(source: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+    """Publish atomically, with the engine's bounded Windows sharing policy.
+
+    Indexers/readers may briefly deny FILE_SHARE_DELETE. Only those Windows
+    errors wait, at most 254 ms; ordinary success performs one rename. Never
+    replace this with copy/delete, which would expose a partial installation.
+    """
+    for attempt in range(8):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as error:
+            if (sys.platform != "win32" or getattr(error, "winerror", None) not in (5, 32, 33)
+                    or attempt == 7):
+                raise
+            time.sleep(0.002 * (2 ** attempt))
 
 
 def remove_directory_tree(path: str | os.PathLike[str]) -> None:

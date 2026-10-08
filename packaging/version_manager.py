@@ -35,7 +35,7 @@ from packaging.utils import InvalidWheelFilename, parse_wheel_filename
 from packaging.version import InvalidVersion, Version
 
 from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME, PythonRuntimeId
-from hub_utils import get_hub_shared_data_dir
+from hub_utils import get_hub_shared_data_dir, replace_path
 from wheel_identity import has_matching_wheel_identity, validate_wheel_identity
 
 
@@ -377,7 +377,7 @@ class VersionManager:
                 # by another source for this exact same wheel filename.
                 for expected in wheels:
                     _verify_download(Path(tmp_path), expected)
-                os.replace(tmp_path, str(dest))
+                replace_path(tmp_path, str(dest))
                 transport_error = None
                 break
             finally:
@@ -459,7 +459,7 @@ class VersionManager:
             for expected in self._cached_wheel_assets(version):
                 if expected.filename == filename:
                     _verify_download(temporary, expected)
-            os.replace(temporary, dest)
+            replace_path(temporary, dest)
         finally:
             try:
                 temporary.unlink(missing_ok=True)
@@ -556,7 +556,7 @@ class VersionManager:
         temporary = self._cache_file.with_name(f"{self._cache_file.name}.tmp-{uuid.uuid4().hex}")
         try:
             temporary.write_text(json.dumps(cache_data, ensure_ascii=False), encoding="utf-8")
-            os.replace(temporary, self._cache_file)
+            replace_path(temporary, self._cache_file)
         except OSError:
             logging.getLogger(__name__).warning("Could not save engine catalog cache: %s", self._cache_file, exc_info=True)
         finally:
