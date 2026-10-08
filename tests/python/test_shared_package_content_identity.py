@@ -1,6 +1,8 @@
 """Real native archives preserve authored identity across sidecar migrations."""
 import json
 from pathlib import Path
+import shutil
+import subprocess
 
 import pytest
 
@@ -65,3 +67,40 @@ def test_shared_version_identity_uses_source_guids_and_authored_settings(tmp_pat
             cache.store(str(new), reference="vendor/identity", version="1.0.0")
     assert baseline.read_bytes() == old.read_bytes()
     assert not list(baseline.parent.glob("*.tmp.*"))
+
+
+def test_official_mcp_exports_same_identity_from_windows_and_linux_checkouts(tmp_path):
+    git = shutil.which('git')
+    assert git, 'Git is required to verify cross-device plugin identity'
+    source = tmp_path / 'source'
+    source.mkdir()
+    attributes = Path(__file__).resolve().parents[2] / 'external/plugins/infernux_mcp/.gitattributes'
+    shutil.copyfile(attributes, source / '.gitattributes')
+    package = source / 'package'
+    package.mkdir()
+    (package / PACKAGE_MANIFEST).write_text(json.dumps(dict(
+        reference='vendor/line-endings', name='Line endings', version='1.0.0', engine='')), encoding='utf-8')
+    authored = {'entry.py': b'VALUE = "stable"\n', 'page.md': b'# Usage\nSame package.\n',
+                'requirements.txt': b'fastmcp\n', 'binary.png': b'\x89PNG\r\n\x1a\n\x00\r\n'}
+    for name, payload in authored.items():
+        (package / name).write_bytes(payload)
+    def run(*args, cwd=source):
+        subprocess.run([git, *args], cwd=cwd, check=True, capture_output=True)
+    run('init', '-q')
+    run('-c', 'core.autocrlf=false', 'add', '.')
+    run('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Fixture')
+    cache = SharedPackageCache(tmp_path / 'cache')
+    baseline = None
+    for conversion in ('true', 'false'):
+        checkout = tmp_path / ('checkout-' + conversion)
+        run('clone', '-q', '--no-checkout', str(source), str(checkout))
+        run('-c', 'core.autocrlf=' + conversion, 'checkout', '-q', 'HEAD', cwd=checkout)
+        for name, payload in authored.items():
+            assert (checkout / 'package' / name).read_bytes() == payload
+        archive = tmp_path / (conversion + '.inxpkg')
+        InxPackage.export_source(str(checkout / 'package'), str(archive))
+        stored = cache.store(str(archive), reference='vendor/line-endings', version='1.0.0')
+        if baseline is None:
+            baseline = stored
+        else:
+            assert stored == baseline

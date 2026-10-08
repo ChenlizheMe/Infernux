@@ -4,7 +4,7 @@
     {
       "reference": "infernux/mcp",
       "name": "Infernux MCP",
-      "version": "0.1.13",
+      "version": "0.1.16",
       "intro": "Let an MCP-compatible AI agent drive the Infernux Editor.",
       "intros": {
         "zh-CN": "让兼容 MCP 的 AI Agent 直接操作 Infernux 编辑器。"
@@ -15,7 +15,7 @@
       "repository": "https://github.com/ChenlizheMe/infernux_mcp",
       "source": {
         "type": "url",
-        "location": "https://downloads.infernux-engine.com/plugins/infernux.mcp/0.1.13/infernux.mcp.inxpkg"
+        "location": "https://downloads.infernux-engine.com/plugins/infernux.mcp/0.1.16/infernux.mcp.inxpkg"
       },
       "category": "editor_tools",
       "targets": [],
