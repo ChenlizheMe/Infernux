@@ -235,3 +235,12 @@ def test_concurrent_jobs_have_unique_reserved_indices_and_complete_records(gatew
     steps = [step for step in saved["steps"] if step["operation"] == name]
     assert len(steps) == 32 and all(step["ok"] and "status" not in step for step in steps)
     assert len([step for step in trace.read_session_log(str(project))["entries"] if step.get("operation") == name]) == 32
+
+
+def test_control_operation_identity_uses_the_registry_case_insensitive_contract(gateway):
+    tools, project = gateway
+    start(tools)
+    result = tools["operation_command_execute"]("INFERNUX.MCP.ATTEMPT.STOP", {})
+    assert result["ok"], result
+    saved = json.loads((project / result["data"]["result"]["trace_path"]).read_text(encoding="utf-8"))
+    assert all(step["ok"] for step in saved["steps"])
