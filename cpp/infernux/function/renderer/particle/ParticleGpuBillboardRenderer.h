@@ -56,6 +56,11 @@ class ParticleGpuBillboardRenderer : public ParticleGpuOutputRenderer
 
     [[nodiscard]] bool Create(rhi::Device &device, const GpuBillboardRendererDesc &desc);
     void Destroy() noexcept;
+    void ReleaseViewBinding(rhi::BufferHandle renderIndices) noexcept override;
+    [[nodiscard]] size_t ViewBindingCount() const noexcept override
+    {
+        return m_viewGroups.size();
+    }
 
     [[nodiscard]] bool IsValid() const noexcept override;
     [[nodiscard]] int32_t RenderQueue() const noexcept override;

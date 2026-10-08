@@ -60,6 +60,7 @@ namespace particle
 class ParticleGpuDrawRegistry;
 class ParticleGpuCuller;
 class ParticleGpuSorter;
+class ParticleGpuOutputRenderer;
 } // namespace particle
 
 // Forward-declare from Camera.h
@@ -870,6 +871,13 @@ class SceneRenderGraph
     uint64_t m_particleDrawRegistryRevision = 0;
     std::unordered_map<uint64_t, std::shared_ptr<particle::ParticleGpuCuller>> m_particleCullers;
     std::unordered_map<uint64_t, std::shared_ptr<particle::ParticleGpuSorter>> m_particleSorters;
+    struct ParticleViewBinding
+    {
+        std::shared_ptr<particle::ParticleGpuOutputRenderer> renderer;
+        rhi::BufferHandle indices;
+    };
+    std::unordered_map<uint64_t, ParticleViewBinding> m_particleViewBindings;
+    void ReleaseParticleViewBindings() noexcept;
     std::shared_ptr<ParticleViewDiagnosticState> m_particleViewDiagnosticState;
     std::vector<PendingParticleViewDiagnostic> m_pendingParticleViewDiagnostics;
     uint64_t m_nextParticleViewDiagnosticRequestId = 1;

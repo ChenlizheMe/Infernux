@@ -837,8 +837,186 @@ static void VerifyParticlePassBindings()
 
 } // namespace
 
+// CPU command-recording checks; real GPU camera lifecycle is exercised by pytest.
+static std::shared_ptr<ShaderProgramArtifact> ViewBindingTestArtifact(bool bindless)
+{
+    auto result = std::make_shared<ShaderProgramArtifact>();
+    result->key = {{"Tests/ParticleSprite", "Tests/ParticleSurface"}, 1};
+    result->domain = ShaderProgramDomain::ParticleSprite;
+    result->compatibilitySignature = 1;
+    result->usesBindlessTextureABI = bindless;
+    result->properties = {{"texSampler", "Texture2D", "", "white", ShaderProgramStageMask::Fragment,
+                            false, std::nullopt, std::nullopt, 0, 0, 0}};
+    for (const auto target : {ShaderCompileTarget::Forward, ShaderCompileTarget::Motion}) {
+        ShaderProgramArtifact::PassVariant variant;
+        variant.target = target;
+        variant.compatibilitySignature = 1;
+        variant.vertexSpirv.resize(5 * sizeof(uint32_t));
+        variant.fragmentSpirv.resize(5 * sizeof(uint32_t));
+        const uint32_t magic = 0x07230203u;
+        std::memcpy(variant.vertexSpirv.data(), &magic, sizeof(magic));
+        std::memcpy(variant.fragmentSpirv.data(), &magic, sizeof(magic));
+        result->variants.push_back(std::move(variant));
+    }
+    assert(result->IsValid());
+    return result;
+}
+
+static void TestViewBindingRetirement(const std::string &kind)
+{
+    constexpr bool bindless = false;
+    constexpr auto target = ShaderCompileTarget::Forward;
+    FakeDevice device;
+    device.bindlessEnabled = bindless;
+    TestTextureSlots textureSlots;
+    std::array<uint32_t, 5> words{0x07230203u, 0u, 0u, 0u, 0u};
+    const particle::ShaderBytecode shader{words.data(), words.size()};
+    const auto instances = device.CreateBuffer({64 * sizeof(particle::GpuParticleRenderInstance), rhi::BufferUsageFlags::Storage});
+    const auto indices = device.CreateBuffer({64 * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
+    const auto indirect = device.CreateBuffer({16, rhi::BufferUsageFlags::Storage | rhi::BufferUsageFlags::Indirect});
+    const auto control = device.CreateBuffer({16, rhi::BufferUsageFlags::Storage});
+    const auto textureView = device.CreateTextureView({});
+    const auto sampler = device.CreateSampler({});
+    auto resolver = [&](const std::string &guid, const std::string &name, particle::GpuParticleTextureRequest request) {
+        assert(name == "texSampler" && request == particle::GpuParticleTextureRequest::Poll);
+        return AcquireTestTexture(device, textureSlots, guid, 1, textureView, sampler);
+    };
+    auto material = std::make_shared<InxMaterial>("AuditMotionBinding");
+    material->SetTextureGuid("texSampler", "white");
+    const auto artifact = ViewBindingTestArtifact(bindless);
+    GraphicsTrace trace;
+    const rhi::GraphicsCommandEncoder::Dispatch dispatch = {
+        &GraphicsTrace::BindPipeline, &GraphicsTrace::BindGroup, &GraphicsTrace::PushConstants,
+        &GraphicsTrace::Draw, &GraphicsTrace::DrawIndirect};
+    const rhi::GraphicsCommandEncoder encoder(&trace, &dispatch);
+    MaterialPassPipelineDescriptor pass;
+    pass.target = target;
+    pass.colorFormats = {target == ShaderCompileTarget::Motion ? rhi::PixelFormat::RG16SFloat : rhi::PixelFormat::RGBA8UNorm};
+    pass.depthFormat = rhi::PixelFormat::D32SFloat;
+    pass.samples = rhi::SampleCount::One;
+    const particle::GpuParticlePerViewBindings perView{{91000, 1}, {91001, 1}}; // borrowed caller-owned handles
+    particle::GpuParticleViewConstants view;
+    auto recordViews = [&](auto &renderer, rhi::BufferHandle arguments) {
+        assert(renderer.RecordDraw(encoder, pass, arguments, view, {}, {}, true, perView));
+        const auto baseline = device.groupCreates - device.groupReleases;
+        const auto retained = device.CreateBuffer({256, rhi::BufferUsageFlags::Storage});
+        assert(renderer.RecordDraw(encoder, pass, arguments, view, retained, {}, true, perView));
+        assert(renderer.ViewBindingCount() == 1);
+        for (unsigned cycle = 0; cycle < 32; ++cycle) {
+            const auto transient = device.CreateBuffer({256, rhi::BufferUsageFlags::Storage});
+            for (unsigned repeat = 0; repeat < 3; ++repeat) {
+                assert(renderer.RecordDraw(encoder, pass, arguments, view, transient, {}, true, perView));
+                assert(renderer.ViewBindingCount() == 2);
+                assert(device.groupCreates - device.groupReleases == baseline + 2);
+            }
+            renderer.ReleaseViewBinding(transient);
+            assert(renderer.ViewBindingCount() == 1);
+            assert(device.groupCreates - device.groupReleases == baseline + 1);
+            const auto creates = device.groupCreates;
+            assert(renderer.RecordDraw(encoder, pass, arguments, view, retained, {}, true, perView));
+            assert(device.groupCreates == creates); // Retiring one camera preserves another.
+            renderer.ReleaseViewBinding(transient); // Idempotent; never releases another view.
+            renderer.ReleaseViewBinding(renderer.RenderIndexBuffer()); // Emitter binding is not view-owned.
+            assert(device.groupCreates - device.groupReleases == baseline + 1);
+            device.Release(transient);
+        }
+        renderer.ReleaseViewBinding(retained);
+        device.Release(retained);
+        assert(renderer.ViewBindingCount() == 0);
+        assert(device.groupCreates - device.groupReleases == baseline);
+        assert(renderer.RecordDraw(encoder, pass, arguments, view, {}, {}, true, perView));
+        assert(device.groupCreates - device.groupReleases == baseline);
+        return true;
+    };
+    bool recorded = false;
+    if (kind == "billboard") {
+        particle::GpuBillboardRendererDesc desc;
+        desc.vertexShader = desc.pickingFragmentShader = desc.motionVertexShader = desc.motionFragmentShader = shader;
+        desc.instances = instances;
+        desc.renderIndices = indices;
+        desc.shaderProgram = artifact;
+        desc.material = material;
+        desc.textureResolver = resolver;
+        particle::ParticleGpuBillboardRenderer renderer;
+        assert(renderer.Create(device, desc));
+        recorded = recordViews(renderer, indirect);
+        renderer.Destroy();
+    } else if (kind == "ribbon") {
+        auto topology = std::make_shared<particle::ParticleGpuRibbonTopology>();
+        particle::GpuParticleRibbonDesc topologyDesc;
+        topologyDesc.capacity = 64;
+        topologyDesc.instances = instances;
+        topologyDesc.sourceIndices = indices;
+        topologyDesc.sourceIndirectArguments = indirect;
+        topologyDesc.simulationControl = control;
+        topologyDesc.program = {shader, shader, shader, shader, shader};
+        assert(topology->Create(device, topologyDesc));
+        particle::GpuRibbonRendererDesc desc;
+        desc.program = {shader, shader, shader, shader};
+        desc.topology = topology;
+        desc.shaderProgram = artifact;
+        desc.material = material;
+        desc.textureResolver = resolver;
+        particle::ParticleGpuRibbonRenderer renderer;
+        assert(renderer.Create(device, desc));
+        recorded = recordViews(renderer, topology->DrawIndirectBuffer());
+        renderer.Destroy();
+        topology->Destroy();
+    } else {
+        assert(kind == "mesh");
+        auto mesh = std::make_shared<InxMesh>("AuditTriangle");
+        std::vector<Vertex> vertices(3);
+        vertices[0].pos = {-0.5f, -0.5f, 0.0f};
+        vertices[1].pos = {0.5f, -0.5f, 0.0f};
+        vertices[2].pos = {0.0f, 0.5f, 0.0f};
+        for (auto &vertex : vertices) {
+            vertex.normal = {0.0f, 0.0f, 1.0f};
+            vertex.tangent = {1.0f, 0.0f, 0.0f, 1.0f};
+        }
+        SubMesh subMesh;
+        subMesh.indexCount = subMesh.vertexCount = 3;
+        mesh->SetData(std::move(vertices), {0, 1, 2}, {subMesh});
+        particle::GpuMeshRendererDesc desc;
+        desc.vertexShader = desc.shadowFragmentShader = desc.pickingFragmentShader = desc.motionVertexShader = desc.motionFragmentShader = shader;
+        desc.instances = instances;
+        desc.renderIndices = indices;
+        desc.mesh = mesh;
+        desc.meshVertices = device.CreateBuffer({3 * 5 * sizeof(glm::vec4), rhi::BufferUsageFlags::Storage});
+        desc.meshIndices = device.CreateBuffer({3 * sizeof(uint32_t), rhi::BufferUsageFlags::Storage});
+        desc.indexCount = 3;
+        desc.meshBufferKeepAlive = std::make_shared<int>(1);
+        desc.shaderProgram = artifact;
+        desc.material = material;
+        desc.textureResolver = resolver;
+        particle::ParticleGpuMeshRenderer renderer;
+        assert(renderer.Create(device, desc));
+        recorded = recordViews(renderer, indirect);
+        renderer.Destroy();
+        device.Release(desc.meshVertices);
+        device.Release(desc.meshIndices);
+    }
+    assert(recorded && device.graphicsPipelineDescs.size() == 1);
+    const uint32_t layoutCount = device.graphicsPipelineDescs.front().bindingLayoutCount;
+    const bool inRange = std::all_of(trace.groupSets.begin(), trace.groupSets.end(),
+                                     [layoutCount](uint32_t set) { return set < layoutCount; });
+    textureSlots.clear();
+    device.Release(control);
+    device.Release(indirect);
+    device.Release(indices);
+    device.Release(instances);
+    const bool cleanup = device.buffers.size() == device.bufferReleases &&
+        device.textures.size() + device.textureViews.size() == device.textureReleases &&
+        device.samplers.size() == device.samplerReleases && device.shaderCreates == device.shaderReleases &&
+        device.layoutCreates == device.layoutReleases && device.groupCreates == device.groupReleases &&
+        device.graphicsPipelineCreates == device.graphicsPipelineReleases && device.pipelineCreates == device.pipelineReleases;
+    assert(cleanup);
+    assert(inRange);
+}
+
 int main()
 {
+    for (const std::string kind : {"billboard", "ribbon", "mesh"})
+        TestViewBindingRetirement(kind);
     VerifyParticlePassBindings();
     {
         FakeDevice device;

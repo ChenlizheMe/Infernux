@@ -1,6 +1,7 @@
 // Real Vulkan allocations; retirement serials are controlled contract inputs.
 #include <function/renderer/vk/VkDescriptorManager.h>
 #include <function/renderer/vk/VkDeviceContext.h>
+#include <function/renderer/vk/VulkanRhiDevice.h>
 #include <SDL3/SDL.h>
 
 #include <cassert>
@@ -105,6 +106,38 @@ int main(int argc, char **argv)
                 assert(victim->Collect(5) == 1);
             }
         }
+    }
+    if (scenario == "deferred") {
+        // Particle view retirement drops the RHI handle immediately. Verify the
+        // real Vulkan lease survives until its last recorded use, even when the
+        // current retirement source points to an earlier submission.
+        auto &device = firstDevice.GetRhiDevice();
+        device.UseSubmissionSerials([] { return rhi::SubmissionSerial{5}; });
+        const auto baseline = device.GetDescriptorStats();
+        const auto buffer = device.CreateBuffer({256, rhi::BufferUsageFlags::Storage});
+        rhi::BindingLayoutDesc layoutDesc;
+        layoutDesc.entries[layoutDesc.entryCount++] = {0, rhi::BindingType::StorageBuffer,
+                                                        rhi::ShaderStage::Vertex, 1};
+        const auto layout = device.CreateBindingLayout(layoutDesc);
+        assert(buffer.IsValid() && layout.IsValid());
+        for (unsigned cycle = 0; cycle < 32; ++cycle) {
+            rhi::BindGroupDesc desc;
+            desc.layout = layout;
+            desc.buffers[desc.bufferCount++] = {0, rhi::BindingType::StorageBuffer, buffer, 0, 256};
+            const auto group = device.CreateBindGroup(desc);
+            assert(group.IsValid());
+            device.GetDescriptorManager().MarkUsed(device.Resolve(group), 9);
+            device.Release(group);
+            assert(device.Resolve(group) == VK_NULL_HANDLE);
+            assert(device.CollectDescriptorRetirements(5) == 0);
+            assert(device.GetDescriptorStats().retiredSets == baseline.retiredSets + 1);
+            assert(device.CollectDescriptorRetirements(9) == 1);
+            assert(device.GetDescriptorStats().retiredSets == baseline.retiredSets);
+            assert(device.GetDescriptorStats().liveSets == baseline.liveSets);
+        }
+        device.Release(layout);
+        device.Release(buffer);
+        device.CollectResourceRetirements(9);
     }
     if (separateDevice)
         vkDestroyDescriptorSetLayout(secondDevice.GetDevice(), secondLayout, nullptr);

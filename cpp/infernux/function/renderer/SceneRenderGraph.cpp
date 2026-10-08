@@ -1260,8 +1260,16 @@ uint64_t SceneRenderGraph::CurrentParticleDrawRegistryRevision() const noexcept
     return m_particleDrawRegistry ? m_particleDrawRegistry->Revision() : 0;
 }
 
+void SceneRenderGraph::ReleaseParticleViewBindings() noexcept
+{
+    for (auto &[id, binding] : m_particleViewBindings)
+        binding.renderer->ReleaseViewBinding(binding.indices);
+    m_particleViewBindings.clear();
+}
+
 void SceneRenderGraph::InvalidateParticleViews()
 {
+    ReleaseParticleViewBindings();
     const auto retireCuller = [this](std::shared_ptr<particle::ParticleGpuCuller> culler) {
         if (!culler)
             return;
@@ -1319,6 +1327,7 @@ void SceneRenderGraph::RetireImportedTextureAssets()
 
 void SceneRenderGraph::Destroy()
 {
+    ReleaseParticleViewBindings();
     if (m_particleViewDiagnosticState) {
         std::scoped_lock lock(m_particleViewDiagnosticState->mutex);
         for (const auto &request : m_pendingParticleViewDiagnostics) {
@@ -1472,6 +1481,7 @@ void SceneRenderGraph::RecordParticleViewDiagnostics(VkCommandBuffer commandBuff
             capture.diagnostic.emitterIndex = entry.emitterIndex;
             capture.diagnostic.outputStableId = entry.outputStableId;
             capture.diagnostic.capacity = entry.capacity;
+            capture.diagnostic.residentViewBindingCount = static_cast<uint32_t>(entry.renderer->ViewBindingCount());
             capture.diagnostic.cullMode = entry.cullMode;
             capture.diagnostic.sortMode = entry.semantics.sortMode;
             const auto sorter = m_particleSorters.find(entry.id);
@@ -3654,6 +3664,32 @@ void SceneRenderGraph::BuildRenderGraph()
         }
         retireSorter(std::move(it->second));
         it = m_particleSorters.erase(it);
+    }
+
+    // Reconcile ownership only when the graph topology changes. An output can
+    // replace its renderer while retaining its culler, or replace cull/sort
+    // buffers while retaining its renderer; both invalidate the old binding.
+    for (const auto &entry : particleEntries) {
+        const auto culler = m_particleCullers.find(entry.id);
+        if (culler == m_particleCullers.end())
+            continue;
+        const auto sorter = m_particleSorters.find(entry.id);
+        const auto indices = sorter == m_particleSorters.end() ? culler->second->VisibleIndexBuffer()
+                                                               : sorter->second->SortedIndices();
+        auto [binding, inserted] = m_particleViewBindings.try_emplace(
+            entry.id, ParticleViewBinding{entry.renderer, indices});
+        if (!inserted && (binding->second.renderer != entry.renderer || binding->second.indices != indices)) {
+            binding->second.renderer->ReleaseViewBinding(binding->second.indices);
+            binding->second = {entry.renderer, indices};
+        }
+    }
+    for (auto binding = m_particleViewBindings.begin(); binding != m_particleViewBindings.end();) {
+        if (activeCullers.find(binding->first) != activeCullers.end()) {
+            ++binding;
+        } else {
+            binding->second.renderer->ReleaseViewBinding(binding->second.indices);
+            binding = m_particleViewBindings.erase(binding);
+        }
     }
 
     if (!m_hasPythonGraph) {

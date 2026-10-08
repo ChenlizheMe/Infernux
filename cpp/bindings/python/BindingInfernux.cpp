@@ -3425,6 +3425,7 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                     item["draw_instance_count"] = output.drawInstanceCount;
                     item["sort_mode"] = ParticleSortModeName(output.sortMode);
                     item["sort_group_count_x"] = output.sortGroupCountX;
+                    item["resident_view_binding_count"] = output.residentViewBindingCount;
                     item["sorter_allocated"] = output.sorterAllocated;
                     item["bounds_valid"] = output.boundsValid;
                     item["coarse_rejected"] = output.coarseRejected;
