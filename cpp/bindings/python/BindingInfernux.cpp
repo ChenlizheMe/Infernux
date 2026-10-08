@@ -3159,12 +3159,13 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
                     for (const char *field : {"emitter_id", "preroll_steps", "spawn_count", "spawn_base_id", "spawn_generation",
                                               "system_seed", "simulation_step", "simulation_time_ticks", "delta_time", "transforms",
                                               "simulate", "render", "offscreen_policy", "force_simulation",
-                                              "bounds_mode", "manual_bounds_lower", "manual_bounds_upper"}) {
+                                              "bounds_mode", "manual_bounds_lower", "manual_bounds_upper", "owner_layer_mask"}) {
                         if (!item.contains(field))
                             throw std::invalid_argument(std::string("GPU particle frame item is missing ") + field);
                     }
                     particle::GpuParticleBatchFrameItem decoded;
                     decoded.emitterId = py::cast<uint64_t>(item["emitter_id"]);
+                    decoded.ownerLayerMask = py::cast<uint32_t>(item["owner_layer_mask"]);
                     decoded.request.frameIndex = frameIndex;
                     decoded.request.spawnCount = py::cast<uint32_t>(item["spawn_count"]);
                     decoded.request.spawnBaseId = py::cast<uint32_t>(item["spawn_base_id"]);

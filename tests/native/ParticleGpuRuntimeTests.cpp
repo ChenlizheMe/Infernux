@@ -2260,6 +2260,11 @@ int main()
            cullTrace.constants[1].capacity == 1000 && cullTrace.constants[1].frustumPlanes == frustumPlanes &&
            cullTrace.constants[2].capacity == 1000 &&
            cullTrace.constants[0].mode == particle::GpuParticleCullMode::Instances);
+    assert(cullTrace.constants[0].viewEnabled == 1u);
+    sceneCuller.RecordReset(cullEncoder, frustumPlanes, false);
+    assert(cullTrace.constants.back().viewEnabled == 0u);
+    sceneCuller.RecordReset(cullEncoder, frustumPlanes, true);
+    assert(cullTrace.constants.back().viewEnabled == 1u);
     sceneCuller.Destroy();
     gameCuller.Destroy();
     assert(!sceneCuller.IsValid() && !gameCuller.IsValid() && cullDevice.bufferReleases == 6 &&

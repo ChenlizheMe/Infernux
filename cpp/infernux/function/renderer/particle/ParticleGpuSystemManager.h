@@ -187,6 +187,7 @@ struct GpuParticleBatchFrameItem
     std::vector<GpuParticleFrameRequest> prerollRequests;
     GpuParticleFrameRequest request;
     GpuParticleTransforms transforms;
+    uint32_t ownerLayerMask = 1u;
 };
 
 /// One authoritative publication transaction for a live ParticleGraph.

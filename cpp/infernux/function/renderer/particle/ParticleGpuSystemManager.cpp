@@ -2390,7 +2390,8 @@ bool ParticleGpuSystemManager::BeginFrame(uint64_t id, const GpuParticleFrameReq
     const auto emitter = m_impl->emitters.find(id);
     if (emitter == m_impl->emitters.end())
         return false;
-    return BeginFrameBatch(emitter->second->graphInstanceId, {{id, {}, request, transforms}});
+    return BeginFrameBatch(emitter->second->graphInstanceId,
+                            {{id, {}, request, transforms, emitter->second->sourceProgram.ownerLayerMask}});
 }
 
 bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
@@ -2519,6 +2520,7 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
         }
     }
     spawnDomain->second->MarkFramePending();
+    bool ownerLayersChanged = false;
     for (const auto &entry : prepared) {
         entry.emitter->queuedFrameRequests.assign(entry.sequence.begin() + 1, entry.sequence.end());
         entry.emitter->hasFrameRequest = true;
@@ -2528,7 +2530,16 @@ bool ParticleGpuSystemManager::BeginFrameBatch(uint64_t graphInstanceId,
         entry.emitter->lastRender = entry.item->request.render;
         entry.emitter->lastOffscreenPolicy = entry.item->request.offscreenPolicy;
         entry.emitter->lastBoundsMode = entry.item->request.boundsMode;
+        auto &ownerLayerMask = entry.emitter->sourceProgram.ownerLayerMask;
+        if (ownerLayerMask != entry.item->ownerLayerMask) {
+            ownerLayerMask = entry.item->ownerLayerMask;
+            ownerLayersChanged = true;
+        }
     }
+    // Layer edits publish only draw metadata. The resident simulation, state
+    // buffers, scheduler and emitter identities remain unchanged.
+    if (ownerLayersChanged && !m_impl->drawRegistry->Replace(m_impl->BuildDrawEntries(m_impl->emitters)))
+        throw std::logic_error("Resident particle layer update produced invalid draw entries");
     if (resetCollisionDiagnostics) {
         for (auto &request : m_impl->pendingDiagnostics) {
             if (request.graphInstanceId == graphInstanceId && request.resetPending)

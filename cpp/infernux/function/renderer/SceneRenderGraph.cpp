@@ -3871,8 +3871,13 @@ void SceneRenderGraph::BuildRenderGraph()
                     builder.ReadWrite(resources.simulationControl, rhi::PipelineStage::ComputeShader);
                 resources.indirectArguments = builder.WriteStorageBuffer(resources.indirectArguments);
                 resources.sortDispatchArguments = builder.WriteStorageBuffer(resources.sortDispatchArguments);
-                return [this, culler](vk::RenderContext &ctx) {
-                    culler->RecordReset(ctx.GetComputeCommandEncoder(), m_particleFrustumPlanes);
+                return [this, culler, ownerLayerMask = entry.ownerLayerMask](vk::RenderContext &ctx) {
+                    const uint32_t cameraMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+                    // Keep each view's indirect output and visibility feedback
+                    // consistent. A masked view must not keep offscreen
+                    // simulation awake for other cameras.
+                    culler->RecordReset(ctx.GetComputeCommandEncoder(), m_particleFrustumPlanes,
+                                        (ownerLayerMask & cameraMask) != 0);
                     ctx.RecordComputeDispatch(1, 1, 1, culler->Capacity(), false);
                 };
             });
@@ -5491,6 +5496,9 @@ void SceneRenderGraph::BuildRenderGraph()
                             particlePerView.group = viewFrame.particleGroup;
                         }
                         for (const auto &packet : particlePackets) {
+                            const uint32_t cameraMask = m_cachedCamera ? m_cachedCamera->GetCullingMask() : 0xffffffffu;
+                            if ((packet.ownerLayerMask & cameraMask) == 0)
+                                continue;
                             auto packetView = view;
                             std::memcpy(&packetView.lightingControl[3], &packet.ownerLayerMask,
                                         sizeof(packet.ownerLayerMask));

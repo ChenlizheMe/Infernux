@@ -141,9 +141,7 @@ void inx_billboard_basis(ParticleInstance instance, out vec3 right_axis, out vec
 }
 
 void main() {
-    uint particle_index = view.lighting_control.y > 0.5
-        ? render_indices[gl_InstanceIndex]
-        : gl_InstanceIndex;
+    uint particle_index = render_indices[gl_InstanceIndex];
     ParticleInstance instance = instances[particle_index];
     vec2 corner = corners[gl_VertexIndex % 6];
     float cosine = cos(instance.rotation_custom.x);

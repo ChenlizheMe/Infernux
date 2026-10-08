@@ -70,7 +70,7 @@ layout(push_constant) uniform CullConstants {
     uint capacity;
     uint vertex_count;
     uint mode;
-    uint reserved2;
+    uint view_enabled;
 } pc;
 )glsl";
 
@@ -134,12 +134,13 @@ void main() {
                 bounds_fully_inside = false;
         }
     }
-    if (bounds_valid == 0u || bounds_visible) stats_flags |= 2u;
+    bool visible_in_view = pc.view_enabled != 0u && (bounds_valid == 0u || bounds_visible);
+    if (visible_in_view) stats_flags |= 2u;
     // Reset publishes immutable culling flags separately from the counter.
     // All workgroups consume the same flag while atomically appending indices.
     if (bounds_fully_inside) stats_flags |= 8u;
-    if (bounds_valid == 0u || bounds_visible) atomicOr(any_view_visible, 1u);
-    sort_group_count_x = bounds_visible ? (source_count + 255u) / 256u : 0u;
+    if (visible_in_view) atomicOr(any_view_visible, 1u);
+    sort_group_count_x = visible_in_view ? (source_count + 255u) / 256u : 0u;
     sort_group_count_y = 1u;
     sort_group_count_z = 1u;
 }
@@ -402,13 +403,14 @@ bool ParticleGpuCuller::IsValid() const noexcept
 }
 
 void ParticleGpuCuller::RecordReset(const rhi::ComputeCommandEncoder &encoder,
-                                    const std::array<float, PlaneCount * 4> &frustumPlanes) const
+                                    const std::array<float, PlaneCount * 4> &frustumPlanes, bool viewEnabled) const
 {
     GpuParticleCullConstants constants;
     constants.frustumPlanes = frustumPlanes;
     constants.capacity = m_capacity;
     constants.vertexCount = m_vertexCount;
     constants.mode = m_mode;
+    constants.viewEnabled = viewEnabled ? 1u : 0u;
     Record(encoder, m_resetPipeline, constants, 1);
 }
 

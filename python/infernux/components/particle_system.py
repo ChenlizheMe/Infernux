@@ -2228,6 +2228,7 @@ class ParticleSystem(InxComponent):
                 {
                     "emitter_id": emitter_id,
                     "preroll_steps": preroll_steps,
+                    "owner_layer_mask": 1 << int(self.game_object.layer),
                     "spawn_count": schedule.spawn_count,
                     "spawn_base_id": schedule.spawn_base_id,
                     "spawn_generation": schedule.spawn_generation,

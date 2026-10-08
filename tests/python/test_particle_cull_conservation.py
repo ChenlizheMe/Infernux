@@ -40,6 +40,7 @@ def _ordered_float(value):
     return ~bits & 0xFFFFFFFF if bits & 0x80000000 else bits ^ 0x80000000
 
 
+@pytest.mark.parametrize("view_enabled", [True, False])
 @pytest.mark.parametrize("count, case", [
     (0, "inside"), (1, "unbounded"), (255, "unbounded"), (256, "unbounded"),
     (257, "unbounded"), (4096, "inside"), (1048576, "unbounded"),
@@ -47,7 +48,7 @@ def _ordered_float(value):
     (1, "ribbon"), (257, "ribbon"), (4096, "ribbon_breaks"),
     (1048576, "ribbon"), (4096, "invalid_indices"), (257, "tangent"),
 ])
-def test_cull_preserves_every_visible_source_index(cull_kernels, count, case):
+def test_cull_preserves_every_visible_source_index(cull_kernels, count, case, view_enabled):
     host, kernels = cull_kernels
     capacity = max(count, 1)
     ribbon = case.startswith("ribbon")
@@ -85,13 +86,15 @@ def test_cull_preserves_every_visible_source_index(cull_kernels, count, case):
         elif case == "outside":
             expected = expected[:0]
     expected = np.sort(expected)
+    if not view_enabled:
+        expected = expected[:0]
     arrays = [visibility.reshape(-1),
               np.array([6 * source_count if ribbon else 6, count, 7, 9], np.uint32),
               np.full(capacity, 0xFFFFFFFF, np.uint32), np.full(4, 0xBAD, np.uint32),
               np.full(5, 0xBAD, np.uint32), bounds, np.array([0, 1, 0, 0], np.uint32),
               indices, metadata.reshape(-1)]
     planes = [1, 0, 0, 1, -1, 0, 0, 1, 0, 1, 0, 1, 0, -1, 0, 1, 0, 0, 1, 1, 0, 0, -1, 1]
-    constants = struct.pack("<24f4I", *planes, capacity, 6, int(ribbon), 0)
+    constants = struct.pack("<24f4I", *planes, capacity, 6, int(ribbon), int(view_enabled))
     buffers = []
     dispatches = None
     buffer = kernel = None
@@ -100,18 +103,26 @@ def test_cull_preserves_every_visible_source_index(cull_kernels, count, case):
             buffer = host.create_buffer(array.size, str(array.dtype))
             buffer.set_bytes(array.tobytes())
             buffers.append(buffer)
-        groups = 0 if case == "outside" else (source_count + 255) // 256
+        groups = 0 if case == "outside" or not view_enabled else (source_count + 255) // 256
         stages = [("Reset", 1), *([("Cull", groups)] if groups else []), ("Finalize", 1)]
         accesses = ["read", "read", "read_write", "read_write", "read_write",
                     "read", "read_write", "read", "read"]
         dispatches = [(kernels[name], buffers, accesses, constants, groups, 1, 1)
                       for name, groups in stages]
         for iteration in range(4):
+            # Another view may already have made the shared simulation visible.
+            # A masked view must neither wake it nor erase another view's vote.
+            prior_visible = iteration & 1
+            buffers[6].set_bytes(np.array([prior_visible, 1, 0, 0], np.uint32).tobytes())
             host.dispatch_batch(dispatches)
             arguments = np.frombuffer(buffers[3].get_bytes(16), np.uint32)
             dispatch = np.frombuffer(buffers[4].get_bytes(20), np.uint32)
             assert arguments.tolist() == [6, len(expected), 7, 9], (iteration, case, arguments)
             assert dispatch[:4].tolist() == [(len(expected) + 255) // 256, 1, 1, source_count]
+            coarse_visible = view_enabled and case != "outside"
+            assert bool(dispatch[4] & 2) == coarse_visible
+            control = np.frombuffer(buffers[6].get_bytes(16), np.uint32)
+            assert control.tolist() == [int(prior_visible or coarse_visible), 1, 0, 0]
             actual = np.frombuffer(buffers[2].get_bytes(capacity * 4), np.uint32)[:len(expected)]
             np.testing.assert_array_equal(np.sort(actual), expected)
     finally:
