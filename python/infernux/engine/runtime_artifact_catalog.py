@@ -487,10 +487,10 @@ def logical_type_for_path(path: str) -> str:
     if suffix == ".inxeffect":
         return "render_effect_artifact"
     if suffix in {".json", ".yaml", ".yml"}:
-        if lower.startswith("assets/"):
+        if lower.startswith(("assets/", "packages/")):
             return "project_runtime_document"
         return "runtime_metadata"
-    if lower.startswith("assets/"):
+    if lower.startswith(("assets/", "packages/")):
         return "project_runtime_blob"
     return "runtime_binary"
 
