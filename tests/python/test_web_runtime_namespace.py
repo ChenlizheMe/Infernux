@@ -11,6 +11,11 @@ import pytest
     ('compute', 'lazy'), ('compute', 'direct'),
     ('jit', 'lazy'), ('jit', 'direct'),
     ('buffer', 'lazy'), ('Buffer', 'lazy'), ('unknown', 'lazy'),
+    ('input', 'lazy'), ('input', 'direct'),
+    ('ui', 'lazy'), ('ui', 'direct'),
+    ('physics', 'lazy'), ('physics', 'direct'),
+    ('resources', 'lazy'), ('resources', 'direct'),
+    ('warmup', 'lazy'), ('JIT_AVAILABLE', 'lazy'),
 ])
 def test_web_cold_public_namespace(name, mode):
     result = subprocess.run(

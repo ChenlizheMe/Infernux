@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { verifyWebKeyboard } = require("./web_keyboard_contract.cjs");
 
 // Validate engine selection before loading optional browser dependencies.  A
 // malformed CI invocation must report its actionable configuration error even
@@ -691,6 +692,10 @@ async function main() {
     const nativeWReleased = await page.evaluate(() => Module.ccall(
       "InfernuxWebGetKeyState", "number", ["number"], [26],
     ) === 0);
+    const keyboardMapping = await verifyWebKeyboard(page);
+    if (!keyboardMapping.passed) {
+      throw new Error(`Web keyboard mapping failed: ${JSON.stringify(keyboardMapping)}`);
+    }
     let gameplayMovement = null;
     if (trackedObject) {
       const readPosition = async () => page.evaluate((name) => [0, 1, 2].map((axis) =>
@@ -1250,6 +1255,7 @@ async function main() {
     result.frameAfterInput = frameAfterInput;
     result.contextMenuPrevented = contextMenuPrevented;
     result.initialKeyboardFocus = initialKeyboardFocus;
+    result.keyboardMapping = keyboardMapping;
     result.nativeWPressed = nativeWPressed;
     result.nativeWReleased = nativeWReleased;
     result.pythonWPressed = pythonWPressed;

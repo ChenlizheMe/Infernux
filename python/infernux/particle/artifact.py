@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from concurrent.futures import Future as _Future, ThreadPoolExecutor as _ThreadPoolExecutor
+from concurrent.futures import Future as _Future
 import hashlib
 import json
 import os
@@ -159,8 +159,8 @@ class ParticleArtifactRegistry:
     # Serialize durable publications without holding the runtime-reader lock
     # while waiting for disk. Request acceptance uses this same commit gate.
     _publication_lock = threading.RLock()
-    # Workers are created on first submission, not at import or per frame.
-    _save_executor = _ThreadPoolExecutor(max_workers=1, thread_name_prefix="particle-save")
+    # Cooked runtime readers never import the editor's thread-pool backend.
+    _save_executor = None
 
     @classmethod
     def clear(cls) -> None:
@@ -596,9 +596,14 @@ class ParticleArtifactRegistry:
         """Commit a compiled editor snapshot in the background with the same save gate."""
         if not isinstance(prepared, PreparedParticleGraphArtifact):
             raise TypeError("prepared particle graph artifact has an invalid type")
-        future = cls._save_executor.submit(
-            cls._commit_prepared_graph, prepared, expected_file_state=expected_file_state,
-        )
+        with cls._lock:
+            if cls._save_executor is None:
+                from concurrent.futures import ThreadPoolExecutor
+
+                cls._save_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="particle-save")
+            future = cls._save_executor.submit(
+                cls._commit_prepared_graph, prepared, expected_file_state=expected_file_state,
+            )
         return ParticleGraphWriteTicket(future, prepared)
 
     @classmethod

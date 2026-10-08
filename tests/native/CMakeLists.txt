@@ -474,6 +474,23 @@ if(INFERNUX_BUILD_TESTS)
     endif()
     add_test(NAME infernux.input_manager COMMAND infernux_input_manager_tests)
 
+    add_executable(infernux_web_keyboard_tests
+        tests/native/WebKeyboardTests.cpp
+        cpp/infernux/platform/input/InputManager.cpp
+        cpp/infernux/core/log/InxLog.cpp
+    )
+    target_include_directories(infernux_web_keyboard_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external/plugins/infernux_web/native
+    )
+    target_link_libraries(infernux_web_keyboard_tests PRIVATE SDL3::SDL3)
+    if(MSVC)
+        target_compile_options(infernux_web_keyboard_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_web_keyboard_tests PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME infernux.web_keyboard COMMAND infernux_web_keyboard_tests)
+
     add_executable(infernux_window_sizing_policy_tests
         tests/native/WindowSizingPolicyTests.cpp
     )

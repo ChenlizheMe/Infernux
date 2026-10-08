@@ -60,7 +60,6 @@ from infernux.renderstack.geometry_buffers import (
     geometry_buffer,
 )
 from infernux.renderstack.render_pass import RenderPass
-from infernux.renderstack.render_pipeline import RenderPipeline, RenderPipelineAsset
 from infernux.renderstack.pipeline_dsl import (
     Path,
     PipelineBuilder,
@@ -84,16 +83,39 @@ from infernux.renderstack.temporal_aa_effect import TemporalAAEffect
 from infernux.renderstack.white_balance_effect import WhiteBalanceEffect
 from infernux.renderstack.sharpen_effect import SharpenEffect
 from infernux.renderstack.render_stack import RenderStack
-from infernux.renderstack.render_stack_pipeline import RenderStackPipeline
-from infernux.renderstack.default_forward_pipeline import DefaultForwardPipeline
-from infernux.renderstack.default_forward_plus_pipeline import DefaultForwardPlusPipeline
-from infernux.renderstack.default_deferred_pipeline import DefaultDeferredPipeline
 from infernux.renderstack.discovery import (
     discover_passes,
     discover_pipelines,
     discovery_import_failures,
     discovery_name_conflicts,
 )
+
+# Effect declarations and component script loading are shared by all Players.
+# Desktop pipeline callbacks are only imported when that API is requested;
+# pipeline discovery imports its built-ins explicitly at its own boundary.
+_PIPELINE_EXPORTS = {
+    "RenderPipeline": "render_pipeline",
+    "RenderPipelineAsset": "render_pipeline",
+    "RenderStackPipeline": "render_stack_pipeline",
+    "DefaultForwardPipeline": "default_forward_pipeline",
+    "DefaultForwardPlusPipeline": "default_forward_plus_pipeline",
+    "DefaultDeferredPipeline": "default_deferred_pipeline",
+}
+
+
+def __getattr__(name):
+    module_name = _PIPELINE_EXPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib import import_module
+
+    value = getattr(import_module(f"{__name__}.{module_name}"), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
 
 __all__ = [
     # Core

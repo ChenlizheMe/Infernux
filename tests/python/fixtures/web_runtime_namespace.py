@@ -33,17 +33,26 @@ bootstrap._install_platform_runtime_api(native)
 package = sys.modules['infernux']
 assert not any(name in vars(package) for name in ('compute', 'jit', 'buffer', 'Buffer'))
 name, mode = sys.argv[1:3]
-if name in ('compute', 'jit'):
+if name in ('compute', 'jit', 'input', 'ui', 'physics', 'resources'):
     value = (importlib.import_module('infernux.' + name) if mode == 'direct'
              else getattr(package, name))
     assert value is getattr(package, name) is importlib.import_module('infernux.' + name)
     assert value.__name__ == 'infernux.' + name
     if name == 'jit':
         assert value.JIT_AVAILABLE is False
+    if name == 'input':
+        assert value.InputActionMap.standard_gameplay() is not None
+        assert name in package.__all__
+    if name == 'ui':
+        assert value.UICanvas is not None
+        assert name in package.__all__
 elif name in ('buffer', 'Buffer'):
     value = getattr(package, name)
     compute = importlib.import_module('infernux.compute')
     assert value is getattr(compute, name) is getattr(package, name)
+elif name in ('warmup', 'JIT_AVAILABLE'):
+    value = getattr(package, name)
+    assert value is getattr(importlib.import_module('infernux.jit'), name)
 else:
     try:
         getattr(package, 'not_an_api')

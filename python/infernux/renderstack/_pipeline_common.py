@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from infernux.lib import EngineConfig
-
 if TYPE_CHECKING:
+    from infernux.lib import EngineConfig
     from infernux.rendergraph.graph import RenderGraph
 
 
@@ -51,6 +50,8 @@ DEFERRED_LIGHTING_SHADER = "Deferred Lighting"
 
 
 def _config() -> EngineConfig:
+    from infernux.lib import EngineConfig
+
     return EngineConfig.get()
 
 
