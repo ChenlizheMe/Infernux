@@ -2135,6 +2135,13 @@ if(INFERNUX_BUILD_TESTS)
         RUN_SERIAL TRUE
     )
 
+    # These unchanged multi-frame lifetime workloads also run on software
+    # Vulkan in correctness CI. Their assertions are frame-based; give CPU
+    # rasterizers time to complete the work and shut down normally.
+    set_tests_properties(infernux.mesh_publication_gpu infernux.mesh_publication_gpu_continuous
+        infernux.runtime_mesh_retirement_gpu infernux.runtime_mesh_retirement_multi_camera_gpu
+        PROPERTIES TIMEOUT 90)
+
     add_test(
         NAME infernux.scene_residency_soak
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tests/acceptance/scene_residency_soak_test.py

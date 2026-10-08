@@ -216,6 +216,12 @@ jobs:
           New-Item -ItemType Directory -Path out\test-results -Force | Out-Null
           ctest --preset windows-msvc-release -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure --output-junit out\test-results\ctest-windows.xml
 
+      - name: Run required Windows software GPU correctness gate
+        shell: pwsh
+        run: |
+          conda activate infernux
+          python tests/acceptance/software_vulkan_gate.py --preset windows-msvc-release --output out/test-results/gpu-windows
+
       - name: Install complete Windows test wheel
         shell: pwsh
         run: |
@@ -286,6 +292,7 @@ jobs:
           path: |
             out/test-results/*.xml
             out/test-results/physics-profile-windows.log
+            out/test-results/gpu-windows/
           if-no-files-found: warn
 
   linux-desktop:
@@ -341,6 +348,11 @@ jobs:
           mkdir -p out/test-results
           ctest --preset linux-clang-release -LE "performance|requires_vulkan_device" --parallel 8 --timeout 120 --output-on-failure --output-junit out/test-results/ctest-linux.xml
 
+      - name: Run required Linux software GPU correctness gate
+        run: |
+          conda activate infernux
+          xvfb-run --auto-servernum python tests/acceptance/software_vulkan_gate.py --preset linux-clang-release --output out/test-results/gpu-linux
+
       - name: Install complete Linux test wheel
         run: |
           conda activate infernux
@@ -384,6 +396,7 @@ jobs:
           path: |
             out/test-results/*.xml
             out/test-results/physics-profile-linux.log
+            out/test-results/gpu-linux/
           if-no-files-found: warn
 
   release-player-acceptance:
