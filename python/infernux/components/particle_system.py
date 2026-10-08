@@ -11,8 +11,9 @@ import os
 import struct
 import threading
 import time
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Callable, Optional
 
 try:
     import numpy as np
@@ -170,6 +171,17 @@ def _decode_gpu_state_value(raw: bytes, offset: int, value_type: ValueType):
     )
 
 
+@dataclass
+class _GpuParticlePublication:
+    native: object
+    component: ParticleSystem
+    request: dict
+    apply: Callable[[], None]
+    metadata: object = None
+    authoring_state: tuple = ()
+    prepare: Callable[[], _GpuParticlePublication] | None = None
+
+
 @disallow_multiple
 @add_component_menu("VFX/Particle System")
 class ParticleSystem(InxComponent):
@@ -177,45 +189,96 @@ class ParticleSystem(InxComponent):
     _PREROLL_STEP_SECONDS = 1.0 / 60.0
     _MAX_PREROLL_STEPS = 4096
     _native_publication_batch_depth = 0
-    _native_publication_batch = []
+    _native_publication_batch: dict[int, _GpuParticlePublication] = {}
+    _native_publication_batch_error: Exception | None = None
 
     @classmethod
     def _begin_native_publication_batch(cls) -> None:
         if cls._native_publication_batch_depth == 0:
-            cls._native_publication_batch = []
+            cls._native_publication_batch = {}
+            cls._native_publication_batch_error = None
         cls._native_publication_batch_depth += 1
 
     @classmethod
     def _end_native_publication_batch(cls, *, commit: bool) -> None:
         if cls._native_publication_batch_depth <= 0:
             return
+        if not commit and cls._native_publication_batch_error is None:
+            cls._native_publication_batch_error = RuntimeError("particle scene publication was cancelled")
         cls._native_publication_batch_depth -= 1
         if cls._native_publication_batch_depth:
             return
-        pending = cls._native_publication_batch
-        cls._native_publication_batch = []
-        if not commit or not pending:
+        pending = tuple(cls._native_publication_batch.values())
+        failure = cls._native_publication_batch_error
+        cls._native_publication_batch = {}
+        cls._native_publication_batch_error = None
+        if not commit:
             return
+        try:
+            if failure is not None:
+                raise RuntimeError("particle scene publication preparation failed") from failure
+            if not pending:
+                return
+            # Lifecycle callbacks can author fields after an initial candidate
+            # was prepared. Rebuild that candidate once from the final fields,
+            # before submitting any graph in the batch.
+            prepared = []
+            for item in pending:
+                if item.prepare is not None and item.authoring_state != item.component._publication_authoring_state():
+                    updated = item.prepare()
+                    live_ids = {program["id"] for program in updated.request["programs"]}
+                    updated.request["remove_ids"] = sorted(
+                        (set(item.request["remove_ids"]) | set(updated.request["remove_ids"])) - live_ids
+                    )
+                    item = updated
+                prepared.append(item)
+            pending = tuple(prepared)
+            native = pending[0].native
+            if any(item.native is not native for item in pending):
+                raise RuntimeError("particle scene publication crossed native engine instances")
+            error = native._replace_gpu_particle_graphs([item.request for item in pending])
+            if error:
+                raise RuntimeError(error)
+        except Exception as exc:
+            for item in pending:
+                item.component._report_compile_failure(exc)
+            raise
+        for item in pending:
+            item.apply()
 
-        native = pending[0][0]
-        if any(item[0] is not native for item in pending):
-            raise RuntimeError("particle scene publication crossed native engine instances")
-        if not hasattr(native, "_replace_gpu_particle_graphs"):
-            raise RuntimeError("native GPU particle graph batching is unavailable")
-        error = native._replace_gpu_particle_graphs(
-            [
-                {
-                    "graph_instance_id": graph_instance_id,
-                    "programs": programs,
-                    "remove_ids": removed,
-                }
-                for _native, _component, graph_instance_id, programs, removed in pending
-            ]
-        )
+    def _submit_gpu_publication(self, publication: _GpuParticlePublication) -> None:
+        request = publication.request
+        native = publication.native
+        programs, removed = request['programs'], request['remove_ids']
+        if type(self)._native_publication_batch_depth:
+            pending = type(self)._native_publication_batch
+            previous = pending.get(self._batch_id)
+            if previous is not None:
+                live_ids = {program["id"] for program in programs}
+                request["remove_ids"] = sorted((set(previous.request["remove_ids"]) | set(removed)) - live_ids)
+            pending[self._batch_id] = publication
+            return
+        error = native._replace_gpu_particle_graph(self._batch_id, programs, removed)
         if error:
             raise RuntimeError(error)
-        for _native, component, _graph_instance_id, _programs, _removed in pending:
-            component._publish_native_playback_states()
+        publication.apply()
+
+    def _publication_authoring_state(self) -> tuple:
+        return (
+            get_raw_field_value(self, '_parameter_overrides_json'),
+            get_raw_field_value(self, '_emitter_overrides_json'),
+            self._playing, getattr(self, '_explicit_playback', False), self._instance_random_seed(),
+            self._authored_should_autoplay(), bool(get_raw_field_value(self, 'prewarm')),
+        )
+
+    def _authoring_metadata(self):
+        metadata = getattr(self, '_particle_metadata', None)
+        if metadata is not None:
+            return metadata
+        # Initial scene lifecycle callbacks may inspect the prepared schema to
+        # author instance fields. Runtime controllers remain unpublished.
+        pending = type(self)._native_publication_batch.get(getattr(self, '_batch_id', 0))
+        return pending.metadata if pending is not None else None
 
     # Scene icon: particle burst billboard at the system origin, so an emitter
     # stays selectable even when it is not currently emitting anything.
@@ -572,9 +635,9 @@ class ParticleSystem(InxComponent):
     def exposed_parameter_schema(self) -> list[dict]:
         """Return the current instance-editable ParticleGraph parameter schema."""
         self._sync_serialized_instance_overrides()
-        if getattr(self, "_particle_metadata", None) is None:
+        if self._authoring_metadata() is None:
             self._load_saved_artifact()
-        metadata = getattr(self, "_particle_metadata", None)
+        metadata = self._authoring_metadata()
         result = []
         for parameter in getattr(metadata, "parameters", ()):
             if not parameter.exposed:
@@ -599,9 +662,9 @@ class ParticleSystem(InxComponent):
     def emitter_instance_schema(self) -> list[dict]:
         """Return per-component playback controls for every graph emitter."""
         self._sync_serialized_instance_overrides()
-        if getattr(self, "_particle_metadata", None) is None:
+        if self._authoring_metadata() is None:
             self._load_saved_artifact()
-        metadata = getattr(self, "_particle_metadata", None)
+        metadata = self._authoring_metadata()
         result = []
         for index, emitter in enumerate(getattr(metadata, "emitters", ())):
             options = self._emitter_instance_options(emitter.stable_id)
@@ -1638,8 +1701,9 @@ class ParticleSystem(InxComponent):
         ):
             loaded = self._load_particle_graph_artifact(graph_ref)
             if loaded:
-                self._compile_retry_at = 0.0
-                self._last_compile_error = ""
+                if not type(self)._native_publication_batch_depth:
+                    self._compile_retry_at = 0.0
+                    self._last_compile_error = ""
             elif self._compile_retry_at <= now:
                 self._compile_retry_at = now + 1.0
             return loaded
@@ -1685,10 +1749,6 @@ class ParticleSystem(InxComponent):
             metadata, kernel, decoded_emitters = (
                 ParticleArtifactRegistry.decode_runtime_artifact(artifact)
             )
-            revision = artifact.revision
-            source_key = artifact.source_key
-            self._reconcile_parameter_overrides(metadata.parameters)
-            self._reconcile_emitter_overrides(metadata.emitters)
             previous_metadata = getattr(self, "_particle_metadata", None)
             previous_kernel = getattr(self, "_particle_kernel", None)
             reload_compatibility = [None] * len(metadata.emitters)
@@ -1721,28 +1781,22 @@ class ParticleSystem(InxComponent):
                 decoded_emitters,
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            if type(self)._native_publication_batch_depth:
+                type(self)._native_publication_batch_error = exc
             self._report_compile_failure(exc)
             return False
-
-        self._particle_kernel = kernel
-        self._particle_gpu_layouts = (
-            tuple(artifact.gpu_glsl["emitters"])
-            if artifact is not None
-            else ()
-        )
-        self._particle_metadata = metadata
-        self._emitter_reload_compatibility = tuple(reload_compatibility)
-        self._artifact_revision = revision
-        self._artifact_registry_revision = int(
-            getattr(ParticleArtifactRegistry, "_revision", 0)
-        )
-        self._artifact_source_key = source_key
-        self._emitter_to_world_cache = None
         return True
 
     def _publish_gpu_particle_graph(
         self, artifact, metadata, kernel, reload_compatibility, decoded_emitters
     ) -> None:
+        self._submit_gpu_publication(self._prepare_gpu_particle_graph(
+            artifact, metadata, kernel, reload_compatibility, decoded_emitters,
+        ))
+
+    def _prepare_gpu_particle_graph(
+        self, artifact, metadata, kernel, reload_compatibility, decoded_emitters
+    ) -> _GpuParticlePublication:
         if artifact is None:
             raise RuntimeError("GPU ParticleGraph execution requires an AOT artifact")
         native = self._native_engine()
@@ -1766,6 +1820,12 @@ class ParticleSystem(InxComponent):
         if len(decoded_emitters) != len(metadata.emitters):
             raise RuntimeError("ParticleGraph decoded GPU programs are incomplete")
 
+        parameter_overrides = self._reconciled_parameter_overrides(metadata.parameters)
+        emitter_overrides = self._reconciled_emitter_overrides(metadata.emitters)
+        parameter_json = json.dumps(parameter_overrides, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        emitter_json = json.dumps(emitter_overrides, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        output_materials = {}
+        registry_revision = int(ParticleArtifactRegistry._revision)
         programs = []
         controllers = []
         preserve_states = []
@@ -1917,13 +1977,14 @@ class ParticleSystem(InxComponent):
                     "parameter_words": list(
                         pack_gpu_particle_parameters(
                             kernel.parameters,
-                            self._parameter_overrides,
+                            parameter_overrides,
                         )
                     ),
                     "preserve_state": preserve_state,
                     "migration": migration,
                     "data_interface_layout": self._gpu_data_interface_layout(
-                        kernel.emitters[index], glsl_emitter, metadata.parameters
+                        kernel.emitters[index], glsl_emitter, metadata.parameters,
+                        parameter_overrides=parameter_overrides,
                     ),
                     "stages": decoded["stages"],
                     "billboard": decoded["billboard"],
@@ -1937,8 +1998,12 @@ class ParticleSystem(InxComponent):
                                 output,
                                 metadata.parameters,
                                 emitter.stable_id,
+                                parameter_overrides=parameter_overrides,
                             ),
-                            "material": self._gpu_material_binding(output, emitter.stable_id, metadata.parameters),
+                            "material": self._gpu_material_binding(
+                                output, emitter.stable_id, metadata.parameters,
+                                parameter_overrides=parameter_overrides, materials=output_materials,
+                            ),
                             "receive_scene_lighting": output.receive_scene_lighting,
                             "receive_shadows": output.receive_shadows,
                             "cast_shadows": output.cast_shadows,
@@ -1973,6 +2038,7 @@ class ParticleSystem(InxComponent):
                             index,
                             honor_play_on_start=True,
                             metadata=metadata,
+                            emitter_overrides=emitter_overrides,
                         )
                     ),
                 )
@@ -1995,39 +2061,50 @@ class ParticleSystem(InxComponent):
         runtime_event_types = self._build_runtime_event_schema(
             artifact.hir, kernel
         )
-        publication_deferred = type(self)._native_publication_batch_depth > 0
-        if publication_deferred:
-            type(self)._native_publication_batch.append(
-                (native, self, self._batch_id, programs, removed)
-            )
-        else:
-            error = native._replace_gpu_particle_graph(
-                self._batch_id,
-                programs,
-                removed,
-            )
-            if error:
-                raise RuntimeError(error)
-        self._gpu_controllers = controllers
-        self._gpu_emitter_ids = emitter_ids
-        self._gpu_emitter_indices = emitter_indices
-        self._particle_event_types = runtime_event_types
-        if not publication_deferred:
+        def apply():
+            # Only the accepted native publication may replace live Python and
+            # serialized instance state. Preparation never mutates that state.
+            self._parameter_overrides = parameter_overrides
+            self._emitter_overrides = emitter_overrides
+            self._parameter_overrides_json = parameter_json
+            self._emitter_overrides_json = emitter_json
+            self._serialized_parameter_overrides_cache = parameter_json
+            self._serialized_emitter_overrides_cache = emitter_json
+            self._instance_overrides_dirty = False
+            self._output_materials = output_materials
+            self._gpu_controllers = controllers
+            self._gpu_emitter_ids = emitter_ids
+            self._gpu_emitter_indices = emitter_indices
+            self._particle_event_types = runtime_event_types
+            self._particle_kernel = kernel
+            self._particle_gpu_layouts = tuple(glsl_emitters)
+            self._particle_metadata = metadata
+            self._emitter_reload_compatibility = tuple(reload_compatibility)
+            self._artifact_revision = artifact.revision
+            self._artifact_registry_revision = registry_revision
+            self._artifact_source_key = artifact.source_key
+            self._emitter_to_world_cache = None
+            self._compile_retry_at = 0.0
+            self._last_compile_error = ""
             self._publish_native_playback_states()
-        live_stable_ids = {str(emitter.stable_id) for emitter in metadata.emitters}
-        self._prewarm_pending_emitters.intersection_update(live_stable_ids)
-        self._pending_seek_seconds = {
-            stable_id: seconds
-            for stable_id, seconds in self._pending_seek_seconds.items()
-            if stable_id in live_stable_ids
-        }
-        for index, (emitter, controller, preserved) in enumerate(
-            zip(metadata.emitters, controllers, preserve_states)
-        ):
-            if not preserved:
-                self._set_emitter_prewarm_pending(
-                    index, controller.is_playing, metadata=metadata
-                )
+            live_stable_ids = {str(emitter.stable_id) for emitter in metadata.emitters}
+            self._prewarm_pending_emitters.intersection_update(live_stable_ids)
+            self._pending_seek_seconds = {
+                stable_id: seconds
+                for stable_id, seconds in self._pending_seek_seconds.items()
+                if stable_id in live_stable_ids
+            }
+            for index, (emitter, controller, preserved) in enumerate(zip(metadata.emitters, controllers, preserve_states)):
+                if not preserved:
+                    self._set_emitter_prewarm_pending(index, controller.is_playing, metadata=metadata)
+
+        return _GpuParticlePublication(
+            native, self, dict(graph_instance_id=self._batch_id, programs=programs, remove_ids=removed), apply,
+            metadata, self._publication_authoring_state(),
+            lambda: self._prepare_gpu_particle_graph(
+                artifact, metadata, kernel, list(reload_compatibility), decoded_emitters,
+            ),
+        )
 
     def _publish_native_playback_states(self) -> None:
         for emitter_index, controller in zip(
@@ -2424,7 +2501,7 @@ class ParticleSystem(InxComponent):
 
     def _resolve_emitter_index(self, emitter: int | str) -> int | None:
         """Resolve an emitter index, authored name, or stable ID without raising."""
-        metadata = getattr(self, "_particle_metadata", None)
+        metadata = self._authoring_metadata()
         emitters = getattr(metadata, "emitters", ())
         if type(emitter) is int:
             return emitter if 0 <= emitter < len(emitters) else None
@@ -2589,7 +2666,7 @@ class ParticleSystem(InxComponent):
         )
 
     def _emitter_stable_id(self, emitter_index: int) -> str:
-        metadata = getattr(self, "_particle_metadata", None)
+        metadata = self._authoring_metadata()
         return str(metadata.emitters[emitter_index].stable_id)
 
     def _instance_random_seed(self) -> int:
@@ -2668,13 +2745,14 @@ class ParticleSystem(InxComponent):
         *,
         honor_play_on_start: bool,
         metadata=None,
+        emitter_overrides=None,
     ) -> bool:
         metadata = metadata or getattr(self, "_particle_metadata", None)
         emitters = getattr(metadata, "emitters", ())
         if not 0 <= emitter_index < len(emitters):
             return False
         emitter = emitters[emitter_index]
-        options = self._emitter_instance_options(emitter.stable_id)
+        options = self._emitter_instance_options(emitter.stable_id, overrides=emitter_overrides)
         playing = bool(self._playing)
         if not getattr(self, "_explicit_playback", False):
             playing = playing and self._authored_should_autoplay()
@@ -2820,7 +2898,11 @@ class ParticleSystem(InxComponent):
 
         return str(reference.guid or "").strip()
 
-    def _gpu_material_binding(self, output, emitter_id: str = "", parameters=()) -> dict[str, object]:
+    def _gpu_material_binding(
+        self, output, emitter_id: str = "", parameters=(), *, parameter_overrides=None, materials=None
+    ) -> dict[str, object]:
+        overrides = self._parameter_overrides if parameter_overrides is None else parameter_overrides
+        cache = self._output_materials if materials is None else materials
         is_mesh = output.output_type == "mesh"
         state: dict[str, object] = {
             "render_queue": 2000 if is_mesh else 3000,
@@ -2833,7 +2915,12 @@ class ParticleSystem(InxComponent):
             from infernux.core.material import Material
 
             cache_key = (str(emitter_id), str(output.output_id))
-            material = self._output_materials.get(cache_key)
+            material = cache.get(cache_key)
+            if material is None and materials is not None:
+                previous = self._output_materials.get(cache_key)
+                if previous is not None and previous.vert_shader_name == "Particle Sprite" and previous.frag_shader_name == output.shader:
+                    material = previous.clone()
+                    cache[cache_key] = material
             if (
                 material is None
                 or material.vert_shader_name != "Particle Sprite"
@@ -2845,7 +2932,7 @@ class ParticleSystem(InxComponent):
                 )
                 material.vert_shader_name = "Particle Sprite"
                 material.frag_shader_name = str(output.shader)
-                self._output_materials[cache_key] = material
+                cache[cache_key] = material
             parameters_by_id = {parameter.stable_id: parameter for parameter in parameters}
             for binding in output.shader_properties:
                 # A connected graph parameter owns the value even before the
@@ -2853,7 +2940,7 @@ class ParticleSystem(InxComponent):
                 # to unconnected shader inputs.
                 if binding.parameter_id:
                     parameter = parameters_by_id[binding.parameter_id]
-                    value = self._parameter_overrides.get(binding.parameter_id, parameter.default)
+                    value = overrides.get(binding.parameter_id, parameter.default)
                     if parameter.value_type.value_type is not binding.value_type.value_type:
                         value = PORTABLE_TYPE_SYSTEM.resize_numeric_value(value, parameter.value_type, binding.value_type)
                 else:
@@ -2913,9 +3000,12 @@ class ParticleSystem(InxComponent):
         output,
         parameters=(),
         emitter_id: str = "",
+        *,
+        parameter_overrides=None,
     ) -> object:
         if output.output_type != "mesh":
             return None
+        overrides = self._parameter_overrides if parameter_overrides is None else parameter_overrides
         reference = output.mesh
         if output.mesh_parameter:
             parameter = next(
@@ -2933,7 +3023,7 @@ class ParticleSystem(InxComponent):
                 raise RuntimeError(
                     f"ParticleGraph Mesh Output parameter {output.mesh_parameter!r} is missing"
                 )
-            value = self._parameter_overrides.get(
+            value = overrides.get(
                 output.mesh_parameter,
                 parameter.default,
             )
@@ -2969,8 +3059,9 @@ class ParticleSystem(InxComponent):
         )
 
     def _gpu_data_interface_layout(
-        self, emitter, glsl_emitter, parameters
+        self, emitter, glsl_emitter, parameters, *, parameter_overrides=None
     ) -> dict[str, object]:
+        overrides = self._parameter_overrides if parameter_overrides is None else parameter_overrides
         layout = glsl_emitter.get("data_interface_layout")
         if type(layout) is not dict:
             raise RuntimeError("ParticleGraph GPU data interface layout is missing")
@@ -3061,7 +3152,7 @@ class ParticleSystem(InxComponent):
                 )
             default = AssetReference.from_dict(parameter.default)
             reference = AssetReference.from_dict(
-                self._parameter_overrides.get(stable_id, default.to_dict())
+                overrides.get(stable_id, default.to_dict())
             )
             native = (
                 registry.load_texture_by_guid(reference.guid)
@@ -3120,7 +3211,7 @@ class ParticleSystem(InxComponent):
                             f"{interface.mesh_parameter!r} is missing"
                         )
                     authored = AssetReference.from_dict(parameter.default)
-                    override = self._parameter_overrides.get(
+                    override = overrides.get(
                         interface.mesh_parameter, authored.to_dict()
                     )
                     skinned_source = _resolve_skinned_mesh_source(
@@ -3218,16 +3309,13 @@ class ParticleSystem(InxComponent):
         native = self._native_engine()
         emitter_ids = list(getattr(self, "_gpu_emitter_ids", ()))
         if (
-            emitter_ids
+            (emitter_ids or getattr(self, '_batch_id', 0) in type(self)._native_publication_batch)
             and native is not None
             and hasattr(native, "_replace_gpu_particle_graph")
         ):
-            if type(self)._native_publication_batch_depth > 0:
-                type(self)._native_publication_batch.append(
-                    (native, self, self._batch_id, [], emitter_ids)
-                )
-            else:
-                native._replace_gpu_particle_graph(self._batch_id, [], emitter_ids)
+            self._submit_gpu_publication(_GpuParticlePublication(
+                native, self, dict(graph_instance_id=self._batch_id, programs=[], remove_ids=emitter_ids), lambda: None,
+            ))
         self._gpu_emitter_ids = []
         self._gpu_emitter_indices = []
         self._gpu_controllers = []
@@ -3376,8 +3464,9 @@ class ParticleSystem(InxComponent):
                 self._apply_emitter_instance_options(emitter_index)
         self._instance_overrides_dirty = False
 
-    def _emitter_instance_options(self, stable_id: str) -> dict[str, bool]:
-        options = getattr(self, "_emitter_overrides", {}).get(str(stable_id), {})
+    def _emitter_instance_options(self, stable_id: str, *, overrides=None) -> dict[str, bool]:
+        values = getattr(self, "_emitter_overrides", {}) if overrides is None else overrides
+        options = values.get(str(stable_id), {})
         return {
             "enabled": bool(options.get("enabled", True)),
             "play_on_start": bool(options.get("play_on_start", True)),
@@ -3388,20 +3477,22 @@ class ParticleSystem(InxComponent):
         # is built. No second user-facing Active state exists.
         return
 
-    def _reconcile_parameter_overrides(self, parameters) -> None:
-        self._ensure_runtime_state(playing=bool(getattr(self, "_playing", False)))
-        parameters = tuple(parameters or ())
-        if not parameters:
-            # Instantiated copies can load before the graph schema is available.
-            # An empty list is "unknown", not "this graph has no parameters".
-            return
+    def _reconciled_parameter_overrides(self, parameters) -> dict:
+        # This is called only for a decoded artifact. An empty schema is known
+        # to have no parameters; it is distinct from not having loaded a graph.
         by_id = {
             parameter.stable_id: parameter
             for parameter in parameters
             if parameter.exposed
         }
         reconciled = {}
-        for stable_id, value in self._parameter_overrides.items():
+        # Resource setters prepare a new binding before serializing their
+        # proposed value. A directly restored document instead invalidates the
+        # decoded cache; read that document without changing published state.
+        overrides = self._parameter_overrides
+        if str(get_raw_field_value(self, "_parameter_overrides_json") or "{}") != self._serialized_parameter_overrides_cache:
+            overrides = self._decode_parameter_overrides()
+        for stable_id, value in overrides.items():
             parameter = by_id.get(stable_id)
             if parameter is None:
                 continue
@@ -3411,33 +3502,28 @@ class ParticleSystem(InxComponent):
                 )
             except (TypeError, ValueError):
                 continue
-        if reconciled != self._parameter_overrides:
-            self._parameter_overrides = reconciled
-            self._store_parameter_overrides()
+        return reconciled
 
-    def _reconcile_emitter_overrides(self, emitters) -> None:
-        self._ensure_runtime_state(playing=bool(getattr(self, "_playing", False)))
-        emitters = tuple(emitters or ())
-        if not emitters:
-            return
+    def _reconciled_emitter_overrides(self, emitters) -> dict:
         valid_ids = {str(emitter.stable_id) for emitter in emitters}
+        overrides = self._emitter_overrides
+        if str(get_raw_field_value(self, "_emitter_overrides_json") or "{}") != self._serialized_emitter_overrides_cache:
+            overrides = self._decode_emitter_overrides()
         reconciled = {
             stable_id: options
-            for stable_id, options in self._emitter_overrides.items()
+            for stable_id, options in overrides.items()
             if stable_id in valid_ids
         }
-        if reconciled != self._emitter_overrides:
-            self._emitter_overrides = reconciled
-            self._store_emitter_overrides()
+        return reconciled
 
     def _find_exposed_parameter(self, name: str, *, compile_if_needed: bool):
         if type(name) is not str or not name:
             return None
-        metadata = getattr(self, "_particle_metadata", None)
+        metadata = self._authoring_metadata()
         if metadata is None and compile_if_needed:
             self._ensure_runtime_state()
             self._load_saved_artifact(force=True)
-            metadata = getattr(self, "_particle_metadata", None)
+            metadata = self._authoring_metadata()
         parameters = getattr(metadata, "parameters", ())
         for parameter in parameters:
             if parameter.exposed and parameter.stable_id == name:

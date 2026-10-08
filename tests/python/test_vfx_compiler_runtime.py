@@ -15,6 +15,7 @@ from infernux.components.particle_system import (
     ParticleBoundsMode,
     ParticleOffscreenPolicy,
     ParticleSystem,
+    _GpuParticlePublication,
     _normalize_mesh_source_value,
 )
 from infernux.components.ref_wrappers import ComponentRef
@@ -692,15 +693,23 @@ def test_particle_scene_publication_batches_graph_rebuilds_once():
         def _publish_native_playback_states(self):
             self.playback_publications += 1
 
+        _submit_gpu_publication = ParticleSystem._submit_gpu_publication
+        _native_publication_batch = ParticleSystem._native_publication_batch
+        _native_publication_batch_depth = 1
+
     first = _PublicationProbe()
     second = _PublicationProbe()
     ParticleSystem._begin_native_publication_batch()
-    ParticleSystem._native_publication_batch.extend(
-        [
-            (native, first, 11, [{"id": 101}], []),
-            (native, second, 12, [{"id": 102}], [99]),
-        ]
-    )
+    _PublicationProbe._native_publication_batch = ParticleSystem._native_publication_batch
+    first._batch_id, second._batch_id = 11, 12
+    first._submit_gpu_publication(_GpuParticlePublication(
+        native, first, dict(graph_instance_id=11, programs=[{"id": 101}], remove_ids=[]),
+        first._publish_native_playback_states,
+    ))
+    second._submit_gpu_publication(_GpuParticlePublication(
+        native, second, dict(graph_instance_id=12, programs=[{"id": 102}], remove_ids=[99]),
+        second._publish_native_playback_states,
+    ))
     ParticleSystem._end_native_publication_batch(commit=True)
 
     assert native.program_batches == [
@@ -978,7 +987,7 @@ def test_particle_system_serialize_flushes_live_instance_overrides(
     }
 
 
-def test_particle_system_keeps_instance_overrides_when_runtime_schema_is_empty(
+def test_particle_system_keeps_instance_overrides_before_loading_runtime_schema(
     scene, monkeypatch, tmp_path
 ):
     source = _instantiate_particle_graph(tmp_path, "EmptySchema")
@@ -995,8 +1004,7 @@ def test_particle_system_keeps_instance_overrides_when_runtime_schema_is_empty(
     component._store_parameter_overrides()
     component._store_emitter_overrides()
 
-    component._reconcile_parameter_overrides(())
-    component._reconcile_emitter_overrides(())
+    component._ensure_runtime_state()
 
     assert component._parameter_overrides == {"impact-scale": 0.2}
     assert component._emitter_overrides == {
