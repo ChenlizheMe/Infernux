@@ -227,8 +227,12 @@ ComputeReadback::ComputeReadback(ComputeHost &host, std::shared_ptr<ComputeBuffe
                                     Access::TransferRead);
             context.Transfer().CopyBuffer(m_storage->source->GetBuffer(), m_storage->staging->GetBuffer(),
                                           {offset, 0, byteSize});
-            context.PipelineBarrier(PipelineStage::Transfer, Access::TransferWrite, PipelineStage::Host,
-                                    Access::HostRead);
+            // The source remains writable after this asynchronous snapshot.
+            // A host-only dependency exposes staging bytes to the CPU but
+            // does not order a subsequent upload after the source copy read.
+            context.PipelineBarrier(PipelineStage::Transfer, Access::TransferWrite,
+                                    PipelineStage::Host | PipelineStage::Transfer,
+                                    Access::HostRead | Access::TransferWrite);
             return true;
         },
         m_storage);
