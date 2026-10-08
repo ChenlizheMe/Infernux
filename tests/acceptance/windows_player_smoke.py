@@ -20,7 +20,7 @@ _REPOSITORY_ROOT = _SCRIPT_ROOT.parents[1]
 _PYTHON_ROOT = _REPOSITORY_ROOT / "python"
 if str(_SCRIPT_ROOT) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_ROOT))
-if str(_PYTHON_ROOT) not in sys.path:
+if "--installed" not in sys.argv and str(_PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(_PYTHON_ROOT))
 
 from infernux.engine.platform_player_bootstrap import (  # noqa: E402
@@ -28,6 +28,7 @@ from infernux.engine.platform_player_bootstrap import (  # noqa: E402
 )
 
 from linux_player_smoke import (  # noqa: E402
+    _installed_origins,
     _assert_component_probes,
     ControlClient,
     _axis_delta,
@@ -117,6 +118,7 @@ def _terminate(process: subprocess.Popen[str] | None) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--installed", action="store_true", help="Require the installed candidate wheel")
     parser.add_argument("player", help="Path to a built Windows Player executable")
     parser.add_argument("--report", help="Write atomic JSON acceptance evidence")
     parser.add_argument("--artifact-root", help="Directory for logs and control files")
@@ -434,12 +436,15 @@ def main() -> int:
     else:
         artifact_root = Path(tempfile.mkdtemp(prefix="infernux-windows-player-smoke-"))
     try:
+        origins = _installed_origins() if args.installed else None
         result = _run(args, artifact_root)
         payload = {
             "schema": "infernux.windows_player_smoke",
             "status": "passed",
             **asdict(result),
         }
+        if origins is not None:
+            payload['installed_origins'] = origins
         if report is not None:
             _write_json_atomic(report, payload)
         print(json.dumps(payload, ensure_ascii=False, indent=2))

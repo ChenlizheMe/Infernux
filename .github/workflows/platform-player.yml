@@ -149,16 +149,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset windows-msvc-player
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset windows-msvc-install-wheel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build Windows Player fixture
         shell: pwsh
         run: |
           conda activate infernux
           $env:VULKAN_SDK = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          New-Item -ItemType Directory -Path out\ci-projects\windows,out\test-results -Force | Out-Null
-          Copy-Item tests\fixtures\multiplatform_player\* out\ci-projects\windows -Recurse -Force
+          Remove-Item Env:PYTHONPATH, Env:INFERNUX_NATIVE_MODULE_DIR -ErrorAction SilentlyContinue
+          python tests\acceptance\prepare_installed_player.py tests\fixtures\multiplatform_player `
+            out\ci-projects\windows external\plugins\infernux_windows\package
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests\acceptance\build_player.py `
             out\ci-projects\windows windows-x64 out\acceptance\windows `
+            --installed `
             --report out\test-results\windows-player-build.json
 
       - name: Validate Windows Player input, physics, and LineRenderer
@@ -169,6 +174,7 @@ jobs:
           $packageProbe = '{"object_name":"Platform Fixture Package Resource","component_type":"UIText","fields":["text"],"assertions":[{"field":"text","operator":"equal","value":"Package resource reached UIText on every Player target."}]}'
           python tests\acceptance\windows_player_smoke.py `
             out\acceptance\windows\InfernuxPlatformFixture.exe `
+            --installed `
             --report out\test-results\windows-player-smoke.json `
             --artifact-root out\test-results\windows-player-artifacts `
             --object "Render Probe" `
@@ -177,6 +183,17 @@ jobs:
             --minimum-final-y 0.0 `
             --component-probe $probe `
             --component-probe $packageProbe
+
+      - name: Build and validate installed Windows Release Player
+        shell: pwsh
+        run: |
+          conda activate infernux
+          Remove-Item Env:PYTHONPATH, Env:INFERNUX_NATIVE_MODULE_DIR -ErrorAction SilentlyContinue
+          python tests\acceptance\build_player.py out\ci-projects\windows windows-x64 out\acceptance\windows-release `
+            --installed --configuration release --report out\test-results\windows-release-build.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests\acceptance\release_player_smoke.py out\acceptance\windows-release\InfernuxPlatformFixture.exe `
+            --artifacts out\test-results\windows-release-artifacts
 
       - name: Upload Windows Player evidence
         if: always()
@@ -230,14 +247,17 @@ jobs:
           cmake --preset linux-clang-release
           cmake --build --preset linux-clang-release
           cmake --build --preset linux-clang-player
+          cmake --build --preset linux-clang-install-wheel
 
       - name: Build Linux Player fixture
         run: |
           conda activate infernux
-          mkdir -p out/ci-projects/linux out/test-results
-          cp -a tests/fixtures/multiplatform_player/. out/ci-projects/linux/
+          unset PYTHONPATH INFERNUX_NATIVE_MODULE_DIR
+          python tests/acceptance/prepare_installed_player.py tests/fixtures/multiplatform_player \
+            out/ci-projects/linux external/plugins/infernux_linux/package
           python tests/acceptance/build_player.py \
             out/ci-projects/linux linux-x64 "out/acceptance/桌面/linux" \
+            --installed \
             --report out/test-results/linux-player-build.json
 
       - name: Validate Linux Player input, physics, and LineRenderer
@@ -245,6 +265,7 @@ jobs:
           conda activate infernux
           python tests/acceptance/linux_player_smoke.py \
             "out/acceptance/桌面/linux/InfernuxPlatformFixture" \
+            --installed \
             --report out/test-results/linux-player-smoke.json \
             --artifact-root out/test-results/linux-player-artifacts \
             --xvfb always \
@@ -257,6 +278,17 @@ jobs:
             --minimum-final-y 0.0 \
             --component-probe '{"object_name":"Platform Fixture Trail","component_type":"LineRenderer","fields":["position_count"],"assertions":[{"field":"position_count","operator":"greater_or_equal","value":3}]}' \
             --component-probe '{"object_name":"Platform Fixture Package Resource","component_type":"UIText","fields":["text"],"assertions":[{"field":"text","operator":"equal","value":"Package resource reached UIText on every Player target."}]}'
+
+      - name: Build and validate installed Linux Release Player
+        run: |
+          conda activate infernux
+          unset PYTHONPATH INFERNUX_NATIVE_MODULE_DIR
+          python tests/acceptance/build_player.py out/ci-projects/linux linux-x64 "out/acceptance/桌面/linux-release" \
+            --installed --configuration release --report out/test-results/linux-release-build.json
+          VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation \
+            VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT \
+            xvfb-run --auto-servernum python tests/acceptance/release_player_smoke.py \
+            "out/acceptance/桌面/linux-release/InfernuxPlatformFixture" --artifacts out/test-results/linux-release-artifacts
 
       - name: Upload Linux Player evidence
         if: always()

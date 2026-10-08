@@ -23,8 +23,8 @@ pytestmark = pytest.mark.skipif(
         for failing in range(3)
     ]
     + [
-        ("platform-player.yml", "windows-player", "Build Windows Player runtime", 3, failing)
-        for failing in range(4)
+        ("platform-player.yml", "windows-player", "Build Windows Player runtime", 4, failing)
+        for failing in range(5)
     ],
 )
 def test_native_build_failure_stops_workflow(

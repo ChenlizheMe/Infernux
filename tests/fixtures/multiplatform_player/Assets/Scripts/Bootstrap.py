@@ -1,6 +1,7 @@
 """Compiled-script sentinel for the multiplatform Player fixture."""
 
 from pathlib import Path
+import json
 import os
 
 import infernux as inx
@@ -46,6 +47,9 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         self._last_screen_view = None
         self._back_reported = False
         self._render_settings_stack = None
+        self._release_acceptance = os.environ.get("_INFERNUX_FIXTURE_RELEASE_ACCEPTANCE") == "1"
+        self._release_steps = 0
+        self._release_capture = None
 
     def start(self):
         inx.jit.warmup(cpu_jit_probe, 7)
@@ -79,6 +83,7 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         ground = inx.GameObject.find("Shadow Receiver")
         if self._probe is None or ground is None:
             raise RuntimeError("Multiplatform fixture scene objects are incomplete")
+        self._release_initial_position = tuple(self._probe.transform.position)
         ground.transform.local_scale = inx.Vector3(8.0, 0.4, 64.0)
         self._probe.add_component("BoxCollider")
         self._body = self._probe.add_component("Rigidbody")
@@ -143,6 +148,7 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         package_status = package_status_owner.add_component(inx.ui.UIText)
         package_status.set_rect(256.0, 168.0, 768.0, 48.0, 1280.0, 720.0)
         package_status.text = package_message
+        self._package_status = package_status
         package_status.font_size = 20.0
         package_status.color = [0.25, 1.0, 0.68, 1.0]
         inx.Debug.log(
@@ -157,6 +163,11 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         if self._body is None:
             raise RuntimeError("Multiplatform fixture Rigidbody is unavailable")
         horizontal, vertical = self._actions["Move"].read_value()
+        if self._release_acceptance:
+            self._release_steps += 1
+            # The Release fixture drives normal gameplay, without a debug
+            # command channel or simulation-clock overrides in the Player.
+            horizontal, vertical = 0.0, float(self._release_steps <= 45)
         if horizontal != 0.0 or vertical != 0.0:
             self._body.add_force(
                 inx.Vector3(
@@ -175,6 +186,51 @@ class PlatformFixtureBootstrap(inx.InxComponent):
         self._validate_touch_input()
         self._validate_text_input()
         self._record_trail_position()
+        if self._release_acceptance:
+            self._validate_release_execution()
+
+    def _validate_release_execution(self):
+        if self._release_steps < 90:
+            return
+        root = Path(inx.Application.persistent_data_path())
+        try:
+            position = tuple(self._probe.transform.position)
+            if position[2] - self._release_initial_position[2] < 0.5:
+                raise RuntimeError("Release Rigidbody did not move under gameplay force")
+            if position[1] < 0.0:
+                raise RuntimeError("Release Rigidbody fell through the ground")
+            if self._trail.position_count < 3:
+                raise RuntimeError("Release LineRenderer did not record gameplay movement")
+            if self._package_status.text != self.PACKAGE_MESSAGE:
+                raise RuntimeError("Release package resource did not reach Screen UI")
+            renderer = inx.Application.renderer_state()
+            if not renderer["submission_ready"]:
+                raise RuntimeError("Release renderer did not submit its game graph")
+            if self._release_capture is None:
+                self._release_capture = inx.Application.request_render_target_capture(
+                    "game", str(root / "release-acceptance.png"))
+                return
+            capture = inx.Application.query_render_target_capture(self._release_capture)
+            if capture["status"] in ("failed", "cancelled"):
+                raise RuntimeError(f"Release capture failed: {capture}")
+            if capture["status"] != "completed":
+                return
+            evidence = dict(
+                status="passed", fixed_steps=self._release_steps,
+                initial_position=self._release_initial_position, final_position=position,
+                trail_points=self._trail.position_count, package_text=self._package_status.text,
+                cpu_jit_result=cpu_jit_probe(7), managed_guid=self.MANAGED_MESSAGE_GUID,
+                renderer=renderer, capture=capture,
+            )
+            (root / "release-acceptance.json").write_text(
+                json.dumps(evidence, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._release_acceptance = False
+            inx.Application.quit(0)
+        except Exception as error:
+            (root / "release-acceptance.json").write_text(
+                json.dumps(dict(status="failed", error=str(error))), encoding="utf-8")
+            self._release_acceptance = False
+            inx.Application.quit(1)
 
     def _validate_camera_clear(self):
         camera = inx.SceneManager.get_active_scene().main_camera

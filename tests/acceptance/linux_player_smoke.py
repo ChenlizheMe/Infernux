@@ -29,12 +29,22 @@ _PLAYER_LAUNCH_ENVIRONMENT = os.environ.copy()
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 _PYTHON_ROOT = _REPOSITORY_ROOT / "python"
-if str(_PYTHON_ROOT) not in sys.path:
+if "--installed" not in sys.argv and str(_PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(_PYTHON_ROOT))
 
 from infernux.engine.platform_player_bootstrap import (  # noqa: E402
     read_player_build_manifest,
 )
+
+
+def _installed_origins() -> dict[str, str]:
+    import infernux
+    from infernux.lib import _Infernux
+
+    origins = dict(python=str(Path(infernux.__file__).resolve()), native=str(Path(_Infernux.__file__).resolve()))
+    if any(Path(path).is_relative_to(_REPOSITORY_ROOT) for path in origins.values()):
+        raise RuntimeError('Installed-only Player acceptance imported the source checkout')
+    return origins
 
 
 _FATAL_PATTERNS = (
@@ -432,6 +442,7 @@ def _selected_video_driver(text: str) -> str:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--installed", action="store_true", help="Require the installed candidate wheel")
     parser.add_argument("player", help="Path to a built Linux Player executable")
     parser.add_argument("--report", help="Write atomic JSON acceptance evidence")
     parser.add_argument("--artifact-root", help="Directory for logs and control files")
@@ -743,6 +754,8 @@ def main() -> int:
         "artifact_root": str(artifact_root),
     }
     try:
+        if args.installed:
+            payload['installed_origins'] = _installed_origins()
         result = _run(args, artifact_root)
         payload.update({"status": "passed", "result": asdict(result)})
     except Exception as exc:
