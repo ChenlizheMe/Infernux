@@ -417,6 +417,8 @@ class VulkanRhiDevice final : public rhi::Device
     [[nodiscard]] const GraphicsPipelinePayload *ResolvePipeline(rhi::ComputePipelineHandle handle) const noexcept;
     void RetireNativeResource(std::function<void()> deleter) noexcept;
     void DestroyOwnedResources() noexcept;
+    [[nodiscard]] bool SupportsPipelineLayout(uint32_t bindingLayoutCount, uint32_t pushConstantBytes,
+                                              const char *pipelineKind) const;
 
     static void BindPipeline(void *context, rhi::GraphicsPipelineHandle pipeline);
     static void BindGroup(void *context, rhi::GraphicsPipelineHandle pipeline, uint32_t setIndex,

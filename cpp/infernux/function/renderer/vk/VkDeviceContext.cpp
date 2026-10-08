@@ -925,6 +925,7 @@ void VkDeviceContext::BuildCapabilities()
     capabilities.limits.maxTextureArrayLayers = limits.maxImageArrayLayers;
     capabilities.limits.maxColorAttachments = limits.maxColorAttachments;
     capabilities.limits.maxPushConstantBytes = limits.maxPushConstantsSize;
+    capabilities.limits.maxBindingLayouts = limits.maxBoundDescriptorSets;
     capabilities.limits.maxSampledTexturesPerStage = limits.maxPerStageDescriptorSampledImages;
     VkPhysicalDeviceVulkan12Properties vulkan12Properties{};
     vulkan12Properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES;

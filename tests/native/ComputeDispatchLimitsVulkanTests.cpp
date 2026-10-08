@@ -1,9 +1,9 @@
+#include <SDL3/SDL.h>
 #include <function/renderer/rhi/RhiComputeKernel.h>
 #include <function/renderer/vk/VkDeviceContext.h>
 #include <function/renderer/vk/VulkanComputeQueue.h>
 #include <function/renderer/vk/VulkanQueueManager.h>
 #include <function/renderer/vk/VulkanRhiDevice.h>
-#include <SDL3/SDL.h>
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -27,17 +27,35 @@ class PreparationQueue final : public ComputeQueue
   public:
     DeviceId device;
     uint64_t submissions = 0;
-    explicit PreparationQueue(DeviceId id) : device(id) {}
+    explicit PreparationQueue(DeviceId id) : device(id)
+    {
+    }
     SubmissionTicket Submit(const Recorder &, std::shared_ptr<void> = {}) override
     {
         return {device, QueueRole::Compute, ++submissions};
     }
-    void Wait(SubmissionTicket) override {}
-    bool IsComplete(SubmissionTicket) override { return true; }
-    void Collect() override {}
-    bool SetProfilingEnabled(bool) override { return false; }
-    GpuTimestampFrame GetProfile() const override { return {}; }
-    uint64_t GetPendingSubmissionCount() const noexcept override { return 0; }
+    void Wait(SubmissionTicket) override
+    {
+    }
+    bool IsComplete(SubmissionTicket) override
+    {
+        return true;
+    }
+    void Collect() override
+    {
+    }
+    bool SetProfilingEnabled(bool) override
+    {
+        return false;
+    }
+    GpuTimestampFrame GetProfile() const override
+    {
+        return {};
+    }
+    uint64_t GetPendingSubmissionCount() const noexcept override
+    {
+        return 0;
+    }
 };
 
 static void Dispatch(ComputeHost &host, const std::shared_ptr<ComputeKernel> &kernel,
@@ -77,6 +95,50 @@ int main(int argc, char **argv)
     assert(context.Initialize(window, config));
     auto &device = context.GetRhiDevice();
     const auto &limits = device.GetCapabilities().limits;
+    assert(limits.maxPushConstantBytes > 0 && limits.maxBindingLayouts > 0);
+    {
+        const auto shader = device.CreateShaderModule(ShaderModuleDesc::FromSpirV(spirv.data(), spirv.size()));
+        assert(shader.IsValid());
+        BindingLayoutDesc layoutDesc;
+        layoutDesc.entries[0] = {0, BindingType::StorageBuffer, ShaderStage::Compute, 1};
+        layoutDesc.entryCount = 1;
+        const auto layout = device.CreateBindingLayout(layoutDesc);
+        assert(layout.IsValid());
+        ComputePipelineDesc compute;
+        compute.computeShader = shader;
+        compute.bindingLayouts.fill(layout);
+        compute.bindingLayoutCount = 1;
+        const auto baseline = device.CreateComputePipeline(compute);
+        assert(baseline.IsValid());
+        device.Release(baseline);
+        compute.pushConstantBytes = limits.maxPushConstantBytes + 4;
+        assert(!device.CreateComputePipeline(compute).IsValid());
+        compute.pushConstantBytes = 0;
+        compute.bindingLayoutCount = limits.maxBindingLayouts + 1;
+        assert(!device.CreateComputePipeline(compute).IsValid());
+
+        // Capability rejection must happen before shader-stage or native
+        // layout creation. These shared handles never reach a graphics API.
+        GraphicsPipelineDesc graphics;
+        graphics.vertexShader = graphics.fragmentShader = shader;
+        graphics.useDynamicRendering = true;
+        graphics.renderingSignature.colorFormatCount = graphics.colorTargetCount = 1;
+        graphics.renderingSignature.colorFormats[0] = graphics.colorTargets[0].format = PixelFormat::RGBA8UNorm;
+        graphics.depth.testEnabled = graphics.depth.writeEnabled = false;
+        graphics.bindingLayouts.fill(layout);
+        graphics.bindingLayoutCount = 1;
+        graphics.pushConstantStages = ShaderStage::Vertex;
+        graphics.pushConstantBytes = limits.maxPushConstantBytes + 4;
+        assert(graphics.HasValidRenderingContract());
+        assert(!device.CreateGraphicsPipeline(graphics).IsValid());
+        graphics.pushConstantBytes = 0;
+        graphics.bindingLayoutCount = limits.maxBindingLayouts + 1;
+        assert(!device.CreateGraphicsPipeline(graphics).IsValid());
+        device.Release(layout);
+        device.Release(shader);
+        std::cout << "Pipeline layout limits rejected before Vulkan: sets=" << limits.maxBindingLayouts
+                  << " push-bytes=" << limits.maxPushConstantBytes << '\n';
+    }
     const std::array<uint32_t, 3> maxima{limits.maxComputeWorkgroupCount[0], limits.maxComputeWorkgroupCount[1],
                                          limits.maxComputeWorkgroupCount[2]};
     std::cout << "Actual workgroup-count limits: " << maxima[0] << ',' << maxima[1] << ',' << maxima[2] << '\n';

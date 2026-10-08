@@ -1447,10 +1447,25 @@ rhi::ComputePipelineHandle VulkanRhiDevice::RegisterComputePipeline(VkPipeline p
                                                       GraphicsPipelinePayload{pipeline, layout});
 }
 
+bool VulkanRhiDevice::SupportsPipelineLayout(uint32_t bindingLayoutCount, uint32_t pushConstantBytes,
+                                             const char *pipelineKind) const
+{
+    const auto &limits = m_capabilities.limits;
+    if (bindingLayoutCount > limits.maxBindingLayouts || pushConstantBytes > limits.maxPushConstantBytes) {
+        INXLOG_ERROR(pipelineKind, " pipeline layout requires ", bindingLayoutCount, " descriptor sets and ",
+                     pushConstantBytes, " push-constant bytes; device supports ", limits.maxBindingLayouts,
+                     " descriptor sets and ", limits.maxPushConstantBytes, " push-constant bytes");
+        return false;
+    }
+    return true;
+}
+
 rhi::ComputePipelineHandle VulkanRhiDevice::CreateComputePipeline(const rhi::ComputePipelineDesc &desc)
 {
     if (m_device == VK_NULL_HANDLE || !desc.computeShader.IsValid() ||
         desc.bindingLayoutCount > desc.bindingLayouts.size() || (desc.pushConstantBytes % 4u) != 0u)
+        return {};
+    if (!SupportsPipelineLayout(desc.bindingLayoutCount, desc.pushConstantBytes, "Compute"))
         return {};
 
     const VkShaderModule shader = Resolve(desc.computeShader);
@@ -1509,6 +1524,8 @@ rhi::GraphicsPipelineHandle VulkanRhiDevice::CreateGraphicsPipeline(const rhi::G
         !desc.HasValidRenderingContract() || desc.bindingLayoutCount > desc.bindingLayouts.size() ||
         desc.colorTargetCount > desc.colorTargets.size() || (desc.pushConstantBytes % 4u) != 0u ||
         (desc.pushConstantBytes > 0 && desc.pushConstantStages == rhi::ShaderStage::None))
+        return {};
+    if (!SupportsPipelineLayout(desc.bindingLayoutCount, desc.pushConstantBytes, "Graphics"))
         return {};
 
     std::array<VkFormat, rhi::GraphicsRenderingSignature::MaxColorTargets> dynamicColorFormats{};
