@@ -1440,7 +1440,8 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "descriptor.sampleCount = m_sceneSampleCount" in post_process_renderer
     assert "m_sceneColorMultisampled" in post_process_renderer
     assert '"msaa_samples": 4' in bootstrap
-    assert 'sample_names = {"X1": 1, "X4": 4}' in bootstrap
+    assert "from infernux.renderstack.forward_parameters import DefaultForwardParameters" in bootstrap
+    assert "VALUE_CODECS.decode(default_parameters[\"msaa_samples\"], msaa_field" in bootstrap
     assert "return infernux_web_render_settings()" not in bootstrap
     assert "g_postProcessRenderer.PrepareBloom(encoder)" in main
     assert "g_postProcessRenderer.Configure(postProcessSettings)" in main
