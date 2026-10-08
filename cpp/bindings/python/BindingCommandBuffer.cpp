@@ -168,7 +168,8 @@ void RegisterCommandBufferBindings(py::module_ &m)
              "Mark a temporary render target for release (returned to pool at frame end)")
         .def(
             "set_render_target", [](CommandBuffer &self, RenderTargetHandle color) { self.SetRenderTarget(color); },
-            py::arg("color"), "Unsupported: raises RuntimeError. Declare RenderGraph pass attachments with write_color.")
+            py::arg("color"),
+            "Unsupported: raises RuntimeError. Declare RenderGraph pass attachments with write_color.")
         .def(
             "set_render_target_with_depth",
             [](CommandBuffer &self, RenderTargetHandle color, RenderTargetHandle depth) {

@@ -69,8 +69,8 @@ bool VkSwapchainManager::Create(const VkDeviceContext &context, uint32_t width, 
 {
     // Resolve the process loader only after the device has initialized (Volk
     // does not publish its device functions during this owner's construction).
-    const Dispatch dispatch{vkCreateSwapchainKHR, vkGetSwapchainImagesKHR, vkCreateImageView, vkCreateSemaphore,
-                            vkAcquireNextImageKHR, vkDestroySwapchainKHR, vkDestroyImageView, vkDestroySemaphore};
+    const Dispatch dispatch{vkCreateSwapchainKHR,  vkGetSwapchainImagesKHR, vkCreateImageView,  vkCreateSemaphore,
+                            vkAcquireNextImageKHR, vkDestroySwapchainKHR,   vkDestroyImageView, vkDestroySemaphore};
     return Create(context, width, height, dispatch);
 }
 
@@ -304,7 +304,7 @@ SwapchainResult VkSwapchainManager::AcquireNextImage(uint32_t frameSlot, uint32_
     // window is occluded or the compositor is busy (e.g. Alt+Tab).
     constexpr uint64_t kAcquireTimeoutNs = 500'000'000; // 500 ms
     VkResult result = m_dispatch.acquireNextImage(m_device, m_generation.swapchain, kAcquireTimeoutNs,
-                                            m_imageAvailableSemaphores[frameSlot], VK_NULL_HANDLE, &imageIndex);
+                                                  m_imageAvailableSemaphores[frameSlot], VK_NULL_HANDLE, &imageIndex);
 
     if (result == VK_ERROR_SURFACE_LOST_KHR) {
         return SwapchainResult::SurfaceLost;
