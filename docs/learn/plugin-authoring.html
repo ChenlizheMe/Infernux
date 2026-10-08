@@ -357,6 +357,12 @@ original archive as the baseline for checking local edits during updates.</p>
 <strong>Update Source</strong>. It updates the already installed reference and retains its
 GUIDs and selection. <strong>Install Source</strong> does not replace an existing package;
 an update also rejects conflicting local edits instead of overwriting them.</p>
+<p>The <a href="https://github.com/ChenlizheMe/infernux_tutorial_hello_plugin">Hello Plugin repository</a>
+contains this tutorial's installable example with its own unique reference,
+<code>chenlizheme/tutorial_hello_plugin</code>. Paste its repository URL under <strong>Add plugin</strong>;
+use <strong>Versions</strong> to select the published 0.1.10 and 0.1.11 releases.
+Keep the template's <code>.gitattributes</code> so Windows checkouts and release CI use the
+same text bytes. This avoids turning a line-ending conversion into a package change.</p>
 <p>For larger examples, browse the <a href="https://github.com/ChenlizheMe/infernux_mcp">MCP</a>,
 <a href="https://github.com/ChenlizheMe/infernux_windows">Windows</a>,
 <a href="https://github.com/ChenlizheMe/infernux_linux">Linux</a>,
@@ -654,6 +660,12 @@ CMake/Gradle 配置和 <code>dist/</code> 都不会混进去。</p>
 <p>更新本地 <code>.inxpkg</code> 时，在<strong>添加插件</strong>中输入新包的路径，再选择<strong>更新来源</strong>。它更新已安装的
 reference，保留 GUID 和原来的内容选择。<strong>安装来源</strong>不会替换已有包；更新遇到本地修改冲突
 也会直接拒绝，不会覆盖修改。</p>
+<p><a href="https://github.com/ChenlizheMe/infernux_tutorial_hello_plugin">Hello Plugin 仓库</a>
+提供了本教程可安装的示例，使用自己的唯一 reference：
+<code>chenlizheme/tutorial_hello_plugin</code>。在<strong>添加插件</strong>中粘贴仓库地址，再在<strong>版本</strong>页
+选择已经发布的 0.1.10 和 0.1.11。
+保留模板的 <code>.gitattributes</code>，让 Windows 检出和发布 CI 使用相同的文本字节，
+避免换行转换被当作包内容变更。</p>
 <p>更完整的示例可以参考 <a href="https://github.com/ChenlizheMe/infernux_mcp">MCP</a>、
 <a href="https://github.com/ChenlizheMe/infernux_windows">Windows</a>、
 <a href="https://github.com/ChenlizheMe/infernux_linux">Linux</a>、
