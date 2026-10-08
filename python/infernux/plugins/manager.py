@@ -24,7 +24,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import Version
 
-from infernux.core.file_read_cache import FileReadCache, file_stamp
+from infernux.core.file_read_cache import FileReadCache, file_stamp, stamp_reusable
 from infernux.debug import Debug
 from infernux.engine.path_utils import (
     is_path_within,
@@ -400,7 +400,8 @@ class PluginManager:
         if stamp is None:
             raise FileNotFoundError(archive)
         key = (archive, stamp)
-        if key in self._cached_page_roots:
+        reusable = stamp_reusable(stamp)
+        if reusable and key in self._cached_page_roots:
             return self._cached_page_roots[key]
 
         # Preview documents only: never install or execute a downloaded plugin.
@@ -427,7 +428,8 @@ class PluginManager:
                     logical = Path(image).relative_to(root).as_posix()
                     if logical in files and not os.path.isfile(image):
                         materialize(logical)
-        self._cached_page_roots[key] = root
+        if reusable:
+            self._cached_page_roots[key] = root
         return root
 
     def content_pages(

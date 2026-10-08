@@ -1,7 +1,7 @@
 """Bounded, observed read models for editor data services.
 
 This is not a write baseline or an asset identity cache. Readers observe file
-metadata on every query (once per panel submission); parsing and directory
+state on every query (once per panel submission); parsing and directory
 discovery only repeat when an input changes. Write commands must still acquire
 their own current document.
 """
@@ -51,8 +51,12 @@ def _file_probe(path: str):
     return lambda: file_stamp(path)
 
 
+def stamp_reusable(stamp) -> bool:
+    return True
+
+
 if os.name == "nt":
-    from ._windows_file_observation import FileProbe as _file_probe, file_stamp
+    from ._windows_file_observation import FileProbe as _file_probe, file_stamp, stamp_reusable
 
 
 class FileObservations:
@@ -87,7 +91,8 @@ class FileObservations:
                     self.watch(os.path.join(directory, name))
 
     def unchanged(self) -> bool:
-        return all(probe() == stamp for probe, stamp in self._files.values())
+        return all(stamp_reusable(stamp) and probe() == stamp
+                   for probe, stamp in self._files.values())
 
 
 class FileReadCache:
