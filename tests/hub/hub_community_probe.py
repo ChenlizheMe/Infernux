@@ -30,8 +30,6 @@ def main():
     action, response = sys.argv[1:]
     if os.name == 'nt':
         ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002)
-    qInstallMessageHandler(lambda kind, context, message:
-        print(message, file=sys.stderr, flush=True) if kind == QtMsgType.QtFatalMsg else None)
     app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
     errors = []
@@ -112,4 +110,12 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    previous_handler = qInstallMessageHandler(
+        lambda kind, context, message:
+        print(message, file=sys.stderr, flush=True) if kind == QtMsgType.QtFatalMsg else None)
+    try:
+        main()
+    finally:
+        # Qt plugin unloading can log during process teardown. Retire the
+        # probe's Python callback while the interpreter is still alive.
+        qInstallMessageHandler(previous_handler)
