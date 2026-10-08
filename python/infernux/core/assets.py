@@ -1331,6 +1331,9 @@ class AssetManager:
             cls.invalidate(guid)
 
         if ext in MATERIAL_EXTENSIONS:
+            native = cls._native_engine()
+            if native is not None:
+                native.release_material_preview_task(f"mat|{resolved_path(path)}")
             if guid:
                 cls._remove_material_pipeline(guid)
             else:

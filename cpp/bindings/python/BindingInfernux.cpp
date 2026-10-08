@@ -2318,9 +2318,14 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
              py::call_guard<py::gil_scoped_release>(), "Invalidate one material preview task/cache entry")
         .def("invalidate_texture_preview_task", &Infernux::InvalidateTexturePreviewTask, py::arg("resource_key"),
              py::call_guard<py::gil_scoped_release>(), "Invalidate one texture preview task/cache entry")
+        .def("release_texture_preview_task", &Infernux::ReleaseTexturePreviewTask, py::arg("resource_key"),
+             py::call_guard<py::gil_scoped_release>(), "Retire texture preview data and pending publications")
         .def("release_preview_authoring", &Infernux::ReleasePreviewAuthoring, py::arg("resource_key"),
              py::call_guard<py::gil_scoped_release>(),
              "Release Inspector ownership while keeping the shared preview visible")
+        .def("release_material_preview_task", &Infernux::ReleaseMaterialPreviewTask, py::arg("resource_key"),
+             py::call_guard<py::gil_scoped_release>(),
+             "Retire material preview data and pending publications")
         .def("query_or_schedule_texture_preview", &Infernux::QueryOrScheduleTexturePreview, py::arg("resource_key"),
              py::arg("texture_file_path"), py::arg("content_stamp_hint"), py::arg("nearest") = false,
              py::arg("srgb") = false, py::arg("max_size") = 2048, py::arg("texture_format") = "auto",

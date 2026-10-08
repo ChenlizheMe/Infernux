@@ -1572,7 +1572,7 @@ uint64_t Infernux::QueryOrScheduleMaterialPreview(const std::string &resourceKey
         state.readyGeneration = 0;
 
     // ── Schedule render if not already in flight ────────────────
-    if (!state.inFlight && state.readyGeneration < state.generation) {
+    if (!state.inFlight && state.readyGeneration < state.generation && state.failedGeneration != state.generation) {
         state.inFlight = true;
         m_previewRequestQueue.push(MaterialPreviewRequest{key, matFilePath, state.generation, renderJson});
         m_hasPreviewPumpWork.store(true, std::memory_order_release);
@@ -1709,34 +1709,66 @@ int Infernux::PumpMaterialPreviewUploads(int uploadBudget, bool ignoreCooldown)
             return consumed;
         request = std::move(m_previewRequestQueue.front());
         m_previewRequestQueue.pop();
+        if (!m_previewRequestQueue.empty())
+            m_hasPreviewPumpWork.store(true, std::memory_order_release);
+        const auto state = m_materialPreviewStates.find(request.resourceKey);
+        if (state == m_materialPreviewStates.end())
+            return consumed;
+        if (request.generation != state->second.generation) {
+            // A newer query owns the source. Coalesce into that revision;
+            // released keys have no source and cannot resurrect old work.
+            if (state->second.latestMatFilePath.empty() && state->second.latestMaterialJson.empty())
+                return consumed;
+            request.matFilePath = state->second.latestMatFilePath;
+            request.materialJson = state->second.latestMaterialJson;
+            request.generation = state->second.generation;
+            request.transientGpuFailures = 0;
+        }
+        if (state->second.failedGeneration == request.generation)
+            return consumed;
     }
 
     std::shared_ptr<InxMaterial> material;
-    if (!request.materialJson.empty()) {
-        material = MaterialPreviewer::BuildPreviewMaterialFromJson(request.materialJson, assetDatabase);
-    } else {
-        std::string embeddedModel;
-        int embeddedSlot = -1;
-        if (ParseModelEmbeddedMaterialSlot(request.matFilePath, embeddedModel, embeddedSlot))
-            material =
-                MaterialPreviewer::BuildEmbeddedPreviewMaterial(embeddedModel, static_cast<uint32_t>(embeddedSlot));
-        else
-            material = MaterialPreviewer::BuildPreviewMaterialFromFile(request.matFilePath, assetDatabase);
-    }
+    bool meshPreviewApplicable = false;
+    bool texturePending = false;
+    std::shared_ptr<vk::ImageReadbackTicket> ticket;
+    try {
+        if (!request.materialJson.empty()) {
+            material = MaterialPreviewer::BuildPreviewMaterialFromJson(request.materialJson, assetDatabase);
+        } else {
+            std::string embeddedModel;
+            int embeddedSlot = -1;
+            if (ParseModelEmbeddedMaterialSlot(request.matFilePath, embeddedModel, embeddedSlot))
+                material =
+                    MaterialPreviewer::BuildEmbeddedPreviewMaterial(embeddedModel, static_cast<uint32_t>(embeddedSlot));
+            else
+                material = MaterialPreviewer::BuildPreviewMaterialFromFile(request.matFilePath, assetDatabase);
+        }
 
-    if (!material) {
+        if (!material) {
+            std::lock_guard<std::mutex> lock(m_previewResultMutex);
+            auto it = m_materialPreviewStates.find(request.resourceKey);
+            if (it != m_materialPreviewStates.end() && it->second.generation == request.generation) {
+                it->second.inFlight = false;
+                it->second.failedGeneration = request.generation;
+            }
+            return consumed;
+        }
+
+        meshPreviewApplicable = m_renderer->CanPreviewMaterialOnMesh(material);
+        ticket = meshPreviewApplicable
+                          ? m_renderer->BeginMaterialPreviewGPU(material, kMaterialPreviewSize, &texturePending)
+                          : nullptr;
+    } catch (const std::exception &error) {
+        INXLOG_ERROR("Material preview rejected for '", request.resourceKey, "': ", error.what());
         std::lock_guard<std::mutex> lock(m_previewResultMutex);
-        auto it = m_materialPreviewStates.find(request.resourceKey);
-        if (it != m_materialPreviewStates.end())
-            it->second.inFlight = false;
+        const auto state = m_materialPreviewStates.find(request.resourceKey);
+        if (state != m_materialPreviewStates.end() && state->second.generation == request.generation) {
+            state->second.inFlight = false;
+            state->second.failedGeneration = request.generation;
+        }
         return consumed;
     }
-
-    const bool meshPreviewApplicable = m_renderer->CanPreviewMaterialOnMesh(material);
-    bool texturePending = false;
-    auto ticket = meshPreviewApplicable
-                      ? m_renderer->BeginMaterialPreviewGPU(material, kMaterialPreviewSize, &texturePending)
-                      : nullptr;
     if (texturePending) {
         std::lock_guard<std::mutex> lock(m_previewResultMutex);
         auto it = m_materialPreviewStates.find(request.resourceKey);
@@ -2034,7 +2066,7 @@ void Infernux::PumpPreviewTasks()
                     continue;
 
                 if (it->second.generation != completed.generation) {
-                    it->second.inFlight = false;
+                    // This completion owns no state in the newer slot.
                     continue;
                 }
                 if (it->second.textureName.empty())
@@ -2535,6 +2567,51 @@ void Infernux::InvalidateTexturePreviewTask(const std::string &resourceKey)
     it->second.inFlight = false;
 }
 
+void Infernux::ReleaseTexturePreviewTask(const std::string &resourceKey)
+{
+    std::lock_guard<std::mutex> lock(m_previewResultMutex);
+    const auto found = m_texturePreviewStates.find(CanonicalizePreviewKey(resourceKey));
+    if (found == m_texturePreviewStates.end())
+        return;
+    auto &state = found->second;
+    if (state.generation == std::numeric_limits<uint64_t>::max())
+        throw std::overflow_error("Texture preview generation overflow");
+    const uint64_t retiredGeneration = state.generation + 1;
+    if (m_renderer && !state.textureName.empty())
+        m_renderer->RemoveImGuiTexture(state.textureName);
+    // Keep the epoch when a streaming slot is reused. Both an old worker
+    // result and an already submitted GPU upload must remain retired.
+    state = TexturePreviewState{};
+    state.generation = retiredGeneration;
+}
+
+void Infernux::ReleaseMaterialPreviewTask(const std::string &resourceKey)
+{
+    std::lock_guard<std::mutex> lock(m_previewResultMutex);
+    const std::string key = CanonicalizePreviewKey(resourceKey);
+    const auto found = m_materialPreviewStates.find(key);
+    if (found == m_materialPreviewStates.end())
+        return;
+    auto &state = found->second;
+    if (state.generation == std::numeric_limits<uint64_t>::max())
+        throw std::overflow_error("Material preview generation overflow");
+    const uint64_t retiredGeneration = state.generation + 1;
+    if (m_renderer && !state.textureName.empty())
+        m_renderer->RemoveImGuiTexture(state.textureName);
+    state = MaterialPreviewState{};
+    state.generation = retiredGeneration;
+    // Deletion is infrequent. Remove its queued work here, so reusing the
+    // same path cannot coalesce a retired request into a second new render.
+    std::queue<MaterialPreviewRequest> retained;
+    while (!m_previewRequestQueue.empty()) {
+        auto request = std::move(m_previewRequestQueue.front());
+        m_previewRequestQueue.pop();
+        if (request.resourceKey != key)
+            retained.push(std::move(request));
+    }
+    m_previewRequestQueue.swap(retained);
+}
+
 void Infernux::ReleasePreviewAuthoring(const std::string &resourceKey)
 {
     if (resourceKey.empty())
@@ -2732,12 +2809,13 @@ bool Infernux::ScheduleTexturePreviewFromMemory(const std::string &resourceKey, 
     if (resourceKey.empty() || imageData.empty())
         return false;
 
+    const std::string key = CanonicalizePreviewKey(resourceKey);
     uint64_t gen = 0;
     {
         std::lock_guard<std::mutex> lock(m_previewResultMutex);
-        auto &state = m_texturePreviewStates[resourceKey];
+        auto &state = m_texturePreviewStates[key];
         if (state.textureName.empty())
-            state.textureName = BuildTexturePreviewTextureName(resourceKey);
+            state.textureName = BuildTexturePreviewTextureName(key);
 
         // Use caller's stamp as content-change hint.
         if (stamp != 0 && stamp != state.lastContentStamp) {
@@ -2760,7 +2838,7 @@ bool Infernux::ScheduleTexturePreviewFromMemory(const std::string &resourceKey, 
     }
 
     auto dataCopy = std::make_shared<std::vector<unsigned char>>(std::move(imageData));
-    const std::string keyCopy = resourceKey;
+    const std::string keyCopy = key;
     const uint64_t genCopy = gen;
     const bool nearestCopy = nearest;
 

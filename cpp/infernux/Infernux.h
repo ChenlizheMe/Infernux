@@ -339,6 +339,12 @@ class Infernux
     /// @brief Invalidate one texture preview task/cache entry.
     void InvalidateTexturePreviewTask(const std::string &resourceKey);
 
+    /// @brief Retire decoded/uploaded texture data and pending publications.
+    /// Retains only a generation tombstone so late jobs cannot revive the key.
+    void ReleaseTexturePreviewTask(const std::string &resourceKey);
+    /// Retire queued/rendering material work and its published thumbnail.
+    void ReleaseMaterialPreviewTask(const std::string &resourceKey);
+
     /// @brief Combined query + schedule for texture preview.
     ///
     /// Returns (textureId, width, height).  Internally manages a monotonic
@@ -512,6 +518,7 @@ class Infernux
     {
         uint64_t generation = 0;      ///< Monotonic counter, bumped on detected content change
         uint64_t readyGeneration = 0; ///< Generation of last completed render
+        uint64_t failedGeneration = 0; ///< Rejected source is retried only after a change
         uint64_t lastJsonHash = 0;    ///< std::hash of last JSON string seen
         uint64_t lastFileMtime = 0;   ///< Last file mtime seen from ProjectPanel
         uint64_t pendingUploadVersion = 0;

@@ -19,6 +19,7 @@ import math
 import os
 import struct
 import time as _time
+import uuid
 from typing import Dict, List, Optional
 from infernux.engine.path_utils import resolved_path
 from infernux.engine.texture_task_bridge import texture_stamp, query_or_schedule_texture
@@ -48,6 +49,10 @@ class SplashPlayer:
         self._vfps: float = 30.0
         self._vdata_offset: int = 0
         self._vlast_frame: int = -1
+        stream = uuid.uuid4().hex
+        self._vkeys = (f"splash_video|{stream}|0", f"splash_video|{stream}|1")
+        self._vpending_key = ""
+        self._vdisplay_key = ""
 
     # ------------------------------------------------------------------
     # Public interface
@@ -82,10 +87,15 @@ class SplashPlayer:
 
         # Video: advance frame
         if item["type"] == "video" and self._vindex:
+            # Publish completed work before choosing the next frame. Cancelling
+            # every older request starves playback when decode/upload takes
+            # longer than one video frame; skip intermediate frames instead.
+            self._poll_video_texture(native_engine)
             target = min(int(elapsed * self._vfps), len(self._vindex) - 1)
-            if target != self._vlast_frame:
+            if target != self._vlast_frame and not self._vpending_key:
                 self._vlast_frame = target
                 self._upload_video_frame(native_engine, target)
+            self._poll_video_texture(native_engine)
 
         if item["type"] != "video" and not self._tex_id:
             self._poll_image_texture(native_engine)
@@ -265,21 +275,39 @@ class SplashPlayer:
         self._vfile.seek(self._vdata_offset + offset)
         jpeg = self._vfile.read(size)
 
-        self._tex_resource_key = f"splash_video|{frame_idx}"
-        stamp = frame_idx + 1  # simple per-frame stamp
-        native_engine.schedule_texture_preview_from_memory(
-            self._tex_resource_key, jpeg, stamp, False,
-        )
+        if len(jpeg) != size:
+            raise RuntimeError("Player video splash frame is truncated")
+        # Keep the displayed frame alive while decoding its replacement. At
+        # most two slots exist, regardless of video length or playback FPS.
+        if self._vpending_key:
+            raise RuntimeError("Player video splash already has a pending frame")
+        key = self._vkeys[1] if self._vdisplay_key == self._vkeys[0] else self._vkeys[0]
+        if not native_engine.schedule_texture_preview_from_memory(key, jpeg, frame_idx + 1, False):
+            raise RuntimeError("Player video splash frame could not be scheduled")
+        self._vpending_key = key
+        self._tex_resource_key = key
+
+    def _poll_video_texture(self, native_engine):
+        if not self._vpending_key:
+            return
         native_engine.pump_preview_tasks()
-        tex_id = int(native_engine.get_texture_preview_texture_id(self._tex_resource_key))
+        tex_id = int(native_engine.get_texture_preview_texture_id(self._vpending_key))
         if tex_id != 0:
+            if self._vdisplay_key:
+                native_engine.release_texture_preview_task(self._vdisplay_key)
             self._tex_id = tex_id
+            self._vdisplay_key = self._vpending_key
+            self._vpending_key = ""
 
     def _unload_item(self, native_engine):
-        if self._tex_id:
-            if self._tex_resource_key:
-                native_engine.invalidate_texture_preview_task(self._tex_resource_key)
-            self._tex_id = 0
+        if self._vfile is not None:
+            for key in self._vkeys:
+                native_engine.release_texture_preview_task(key)
+        elif self._tex_resource_key:
+            native_engine.invalidate_texture_preview_task(self._tex_resource_key)
+        self._tex_id = 0
+        self._vpending_key = ""
+        self._vdisplay_key = ""
         self._tex_resource_key = ""
         self._image_path = ""
         self._image_stamp = 0
