@@ -51,7 +51,7 @@ wait_for_android_input_service() {
 }
 
 if [[ "$mode" == "build" || "$mode" == "all" ]]; then
-    rm -rf -- out/ci-projects/android out/acceptance/android
+    rm -rf -- out/ci-projects/android out/acceptance/android out/acceptance/android-release
     mkdir -p out/ci-projects/android out/test-results
     cp -a tests/fixtures/multiplatform_player/. out/ci-projects/android/
 
@@ -72,6 +72,26 @@ if [[ "$mode" == "build" || "$mode" == "all" ]]; then
         --console=plain \
         -PinfernuxTargetPackage="$target_package" \
         :app:assembleDebug
+
+    # Sign the actual Release flavor with this job's existing test identity.
+    # Matching the instrumentation certificate does not make the app debuggable.
+    (
+        export INFERNUX_ANDROID_KEYSTORE="$ANDROID_USER_HOME/debug.keystore"
+        export INFERNUX_ANDROID_KEY_ALIAS=androiddebugkey
+        export INFERNUX_ANDROID_KEYSTORE_PASSWORD=android
+        export INFERNUX_ANDROID_KEY_PASSWORD=android
+        "$python_executable" tests/acceptance/build_player.py \
+            out/ci-projects/android android-x64-emulator out/acceptance/android-release \
+            --configuration release \
+            --report out/test-results/android-release-build.json \
+            --option 'android_artifact="apk"' \
+            --option "android_python_prefix=\"$INFERNUX_ANDROID_RUNTIME\"" \
+            --option "build_cache_root=\"$INFERNUX_ANDROID_BUILD_CACHE\""
+    )
+    "$python_executable" tests/acceptance/verify_release_player_package.py \
+        out/acceptance/android-release/InfernuxPlatformFixture-android-x86_64-release.apk \
+        --target android \
+        --report out/test-results/android-release-package.json
 fi
 
 if [[ "$mode" == "smoke" || "$mode" == "all" ]]; then
@@ -112,4 +132,22 @@ if [[ "$mode" == "smoke" || "$mode" == "all" ]]; then
         --wait-milliseconds 20000 \
         --report out/test-results/android-multitouch-smoke.json \
         --logcat-report out/test-results/android-multitouch-smoke.logcat.txt
+
+    "$python_executable" tests/acceptance/android_player_smoke.py \
+        out/acceptance/android-release/InfernuxPlatformFixture-android-x86_64-release.apk \
+        --serial emulator-5554 \
+        --package "$target_package" \
+        --no-back \
+        --startup-timeout 240 \
+        --expect-landscape \
+        --resume-cycles 2 \
+        --report out/test-results/android-release-smoke.json
+
+    "$python_executable" tests/acceptance/android_multitouch_smoke.py \
+        tests/android/input_instrumentation/app/build/outputs/apk/debug/app-debug.apk \
+        --serial emulator-5554 \
+        --target-package "$target_package" \
+        --wait-milliseconds 20000 \
+        --report out/test-results/android-release-multitouch-smoke.json \
+        --logcat-report out/test-results/android-release-multitouch-smoke.logcat.txt
 fi

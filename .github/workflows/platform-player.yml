@@ -426,11 +426,37 @@ jobs:
             --build-report out/test-results/web-player-build.json \
             --report out/test-results/web-jit-cook.json
 
+      - name: Build and inspect sealed Web Release fixture
+        run: |
+          conda activate infernux
+          python tests/acceptance/build_player.py \
+            out/ci-projects/web web-wasm32 out/acceptance/web-release \
+            --configuration release \
+            --report out/test-results/web-release-build.json \
+            --plugin-editor-root "$INFERNUX_WEB_WORK_PLUGIN_ROOT/package/editor" \
+            --option "build_cache_root=\"$INFERNUX_WEB_BUILD_CACHE\""
+          python tests/acceptance/verify_web_jit_fixture.py \
+            out/acceptance/web-release \
+            --build-report out/test-results/web-release-build.json \
+            --report out/test-results/web-release-jit-cook.json
+          packages=(out/acceptance/web-release/infernux-player.*.inxpkg)
+          [[ ${#packages[@]} -eq 1 ]]
+          python tests/acceptance/verify_release_player_package.py "${packages[0]}" \
+            --target web --report out/test-results/web-release-package.json
+
       - name: Upload Web Player for visual acceptance
         uses: actions/upload-artifact@v4
         with:
           name: web-player-build-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/acceptance/web
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload Web Release Player for visual acceptance
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-release-player-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/acceptance/web-release
           if-no-files-found: error
           retention-days: 1
 
@@ -449,6 +475,14 @@ jobs:
     needs: web-player
     runs-on: windows-2022
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - configuration: development
+            artifact: web-player-build
+          - configuration: release
+            artifact: web-release-player-build
     steps:
       - uses: actions/checkout@v4
 
@@ -463,7 +497,7 @@ jobs:
       - name: Download Linux-built Web Player
         uses: actions/download-artifact@v4
         with:
-          name: web-player-build-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ matrix.artifact }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/acceptance/web
 
       - name: Install browser acceptance runtime
@@ -522,7 +556,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: web-browser-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          name: web-browser-${{ matrix.configuration }}-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: out/test-results/web-browser-*
           if-no-files-found: warn
 

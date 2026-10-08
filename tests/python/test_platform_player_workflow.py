@@ -119,8 +119,8 @@ def test_android_driver_shares_tool_state_between_player_and_instrumentation(
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     invocations = [line.split("|") for line in invocation_log.read_text().splitlines()]
-    assert [Path(row[0]).name for row in invocations] == ["python", "gradle"]
-    assert [row[1:] for row in invocations] == [[expected_cache, expected_state]] * 2
+    assert [Path(row[0]).name for row in invocations] == ["python", "gradle", "python", "python"]
+    assert [row[1:] for row in invocations] == [[expected_cache, expected_state]] * 4
 
 
 def test_android_ci_caches_the_managed_gradle_location():
