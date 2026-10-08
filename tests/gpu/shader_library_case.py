@@ -164,7 +164,14 @@ class ShaderLibraryCase:
             interior = (np.abs(d[...,0]-thickness) > margin) & (np.abs(d[...,1]-thickness) > margin)
             interior &= (np.abs(d[...,0]-extent[0]) > margin) & (np.abs(d[...,1]-extent[1]) > margin)
             assert interior.sum() > pixels.shape[0]*pixels.shape[1]*.5
-            np.testing.assert_allclose(mask[interior], expected[interior].astype(float), atol=.001)
+            # Readback is display-encoded RGBA16F. Undoing sRGB amplifies one
+            # half-float step below white into ~0.00111 in linear space.
+            # Check binary interior coverage in the sampled attachment space
+            # with exactly that representable step, rather than a CPU/GPU
+            # gamma roundtrip tolerance. Geometry and edge checks stay below.
+            half_step = 1. - float(np.nextafter(np.float16(1.), np.float16(0.)))
+            np.testing.assert_allclose(pixels[...,0][interior], expected[interior].astype(float),
+                                       atol=half_step, rtol=0.)
             edge = (mask > .001) & (mask < .999)
             assert edge.sum() > 10, 'Antialiasing removed from strip edges'
             result = dict(phase=self.phase, checked=int(interior.sum()), inside=int(expected[interior].sum()), antialiased=int(edge.sum()))
