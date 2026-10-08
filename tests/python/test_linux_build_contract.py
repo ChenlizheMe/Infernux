@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+import shlex
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -157,7 +158,18 @@ def test_linux_ci_reuses_the_repository_dependency_installer() -> None:
     assert "sudo apt-get install" not in linux_job
     assert "QT_QPA_PLATFORM: offscreen" in linux_job
     assert "VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json" in linux_job
-    assert "xvfb-run --auto-servernum python -m pytest tests/python" in linux_job
+    python_step = linux_job.split("name: Run Python and platform contract tests", 1)[1].split(
+        "\n      - name:", 1
+    )[0]
+    command, = [line.strip() for line in python_step.splitlines() if line.strip().startswith("xvfb-run ")]
+    arguments = shlex.split(command)
+    assert arguments[:5] == ["xvfb-run", "--auto-servernum", "python", "-m", "pytest"]
+    assert arguments[arguments.index("-o") + 1] == "pythonpath="
+    assert {"tests/python", "tests/contracts"}.issubset(arguments)
+    assert "unset PYTHONPATH INFERNUX_NATIVE_MODULE_DIR" in python_step
+    assert linux_job.index("cmake --build --preset linux-clang-install-wheel") < linux_job.index(
+        "name: Run Python and platform contract tests"
+    )
     assert (
         "xvfb-run --auto-servernum env QT_QPA_PLATFORM=xcb QT_DEBUG_PLUGINS=1 PYTHONPATH=packaging "
         "python -m pytest tests/hub"
