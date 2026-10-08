@@ -8,6 +8,7 @@ from pathlib import Path
 
 from infernux import Engine
 from infernux.lib import CollisionDetectionMode, RuntimeMode, SceneManager, Vector3
+from infernux.physics import Physics
 
 
 BODY_COUNT = 64
@@ -24,6 +25,10 @@ def main() -> None:
         engine.init_headless(str(project))
         try:
             manager = SceneManager.instance()
+            manager.set_fixed_time_step(FIXED_DELTA)
+            # This gate measures captured contact dispatch. Normal games opt
+            # into that stream only when a solver or callback consumes it.
+            Physics.set_contact_event_stream_enabled(True)
             scene = manager.get_active_scene()
 
             floor = scene.create_game_object("ProfileFloor")
@@ -101,7 +106,7 @@ def main() -> None:
                 rigidbody.use_gravity = False
                 rigidbody.drag = 0.0
                 rigidbody.max_linear_velocity = 1000.0
-                rigidbody.collision_detection_mode = CollisionDetectionMode.Continuous
+                rigidbody.collision_detection_mode = CollisionDetectionMode.ContinuousDynamic
                 collider = obj.add_component("SphereCollider")
                 collider.radius = 0.25
                 rigidbody.velocity = Vector3(velocity, 0.0, 0.0)
@@ -110,9 +115,9 @@ def main() -> None:
             engine.tick(FIXED_DELTA)
             ccd_profile = manager.get_last_frame_profile()
             if ccd_profile["dynamic_ccd_splits"] < 1:
-                raise AssertionError("dynamic Continuous pair did not trigger a TOI split")
+                raise AssertionError("ContinuousDynamic pair did not trigger a TOI split")
             if ccd_pair[0][0].transform.position.x >= 0.0 or ccd_pair[1][0].transform.position.x <= 0.0:
-                raise AssertionError("dynamic Continuous pair crossed through each other")
+                raise AssertionError("ContinuousDynamic pair crossed through each other")
 
             print(json.dumps({
                 "bodies": BODY_COUNT,
@@ -125,6 +130,7 @@ def main() -> None:
                 "dynamic_ccd_splits": int(ccd_profile["dynamic_ccd_splits"]),
             }, sort_keys=True))
         finally:
+            Physics.set_contact_event_stream_enabled(False)
             engine.exit()
 
 

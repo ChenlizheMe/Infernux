@@ -234,6 +234,14 @@ jobs:
           $env:PYTHONPATH = 'packaging'
           python -m pytest tests\hub -q --junitxml out\test-results\pytest-hub-windows.xml
 
+      - name: Run Windows headless physics profile gate
+        shell: pwsh
+        run: |
+          conda activate infernux
+          Remove-Item Env:PYTHONPATH, Env:INFERNUX_NATIVE_MODULE_DIR -ErrorAction SilentlyContinue
+          python tests/acceptance/physics_profile_gate.py | Tee-Object -FilePath out/test-results/physics-profile-windows.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Build Windows editor wheel
         shell: pwsh
         run: |
@@ -334,6 +342,13 @@ jobs:
           conda activate infernux
           unset PYTHONPATH INFERNUX_NATIVE_MODULE_DIR
           xvfb-run --auto-servernum python -m pytest -o pythonpath= tests/python tests/contracts -q --junitxml out/test-results/pytest-linux.xml
+
+      - name: Run Linux headless physics profile gate
+        run: |
+          conda activate infernux
+          unset PYTHONPATH INFERNUX_NATIVE_MODULE_DIR
+          set -o pipefail
+          python tests/acceptance/physics_profile_gate.py | tee out/test-results/physics-profile-linux.log
 
       - name: Build Linux editor wheel and Hub distribution
         run: |
