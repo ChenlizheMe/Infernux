@@ -326,6 +326,7 @@ class PlayerSceneService:
             asset_database=self._asset_database,
             native_engine=self._native_engine,
             clear_registries=True,
+            allow_missing_scripts=False,
             before_commit=getattr(
                 scene_manager, "prepare_active_scene_replacement", None
             ),
@@ -344,6 +345,7 @@ class PlayerSceneService:
                 asset_database=self._asset_database,
                 native_engine=self._native_engine,
                 clear_registries=False,
+                allow_missing_scripts=False,
             ),
             scene,
         )

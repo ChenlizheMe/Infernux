@@ -65,6 +65,7 @@ class SceneDocumentTransaction:
         clear_registries: bool = True,
         borrow_document: bool = False,
         prefer_loaded_types: bool = False,
+        allow_missing_scripts: bool = True,
         before_commit: Optional[Callable[[], None]] = None,
         after_publish: Optional[Callable[[], None]] = None,
     ) -> None:
@@ -89,6 +90,7 @@ class SceneDocumentTransaction:
         self._native_engine = native_engine
         self._clear_registries = bool(clear_registries)
         self._prefer_loaded_types = bool(prefer_loaded_types)
+        self._allow_missing_scripts = bool(allow_missing_scripts)
         self._before_commit = before_commit
         self._after_publish = after_publish
         self._owner_thread_id = threading.get_ident()
@@ -447,6 +449,7 @@ class SceneDocumentTransaction:
                     self._document,
                     asset_database=self._asset_database,
                     prefer_loaded_types=self._prefer_loaded_types,
+                    allow_missing_scripts=self._allow_missing_scripts,
                 )
                 self._phase_timings_ms["python_preflight"] = (
                     time.perf_counter() - phase_started

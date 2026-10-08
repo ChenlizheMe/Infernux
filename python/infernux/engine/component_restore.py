@@ -270,6 +270,7 @@ def _prepare_python_component_records(
     *,
     prefer_loaded_types: bool = False,
     reference_scene=None,
+    allow_missing_scripts: bool = True,
 ) -> PreparedPythonComponentGraph:
     pending_types: set[tuple[int, str]] = set()
     available_constraint_types: set[tuple[int, str]] = {
@@ -351,10 +352,13 @@ def _prepare_python_component_records(
                 construct_error = str(exc)
                 instance = None
             if instance is None:
-                from infernux.components.missing_script import create_missing_script_component
-
                 location = script_path or script_guid or "<unresolved>"
                 detail = construct_error or f"cannot resolve Python component from {location}"
+                error = f"Missing script '{type_name}' at {document_path}: {detail}"
+                if not allow_missing_scripts:
+                    raise PythonComponentRestoreError(error)
+                from infernux.components.missing_script import create_missing_script_component
+
                 instance = create_missing_script_component(
                     type_name=type_name,
                     script_guid=script_guid,
@@ -362,7 +366,7 @@ def _prepare_python_component_records(
                     module_name=module_name,
                     qualified_name=qualified_name,
                     fields=fields,
-                    error=f"Missing script '{type_name}': {detail}",
+                    error=error,
                 )
                 from infernux.debug import Debug
                 if construct_error:
@@ -371,6 +375,12 @@ def _prepare_python_component_records(
                     Debug.log_internal(instance._broken_error)
             instance_type = type(instance)
             is_broken = bool(getattr(instance, "_is_broken", False))
+            if is_broken and not allow_missing_scripts:
+                error = instance._broken_error
+                instance._call_on_destroy()
+                raise PythonComponentRestoreError(
+                    f"Missing script '{type_name}' at {document_path}: {error}"
+                )
             # Script file renames change the import module path. Class renames
             # change __qualname__/__name__ while the AssetDatabase script GUID
             # stays stable. Accept the live class when it came from that GUID;
@@ -466,8 +476,9 @@ def preflight_scene_python_components(
     *,
     prefer_loaded_types: bool = False,
     reference_scene=None,
+    allow_missing_scripts: bool = True,
 ) -> PreparedPythonComponentGraph:
-    """Resolve and decode the complete Python graph before native scene commit."""
+    """Resolve the graph before commit; repair placeholders are authoring-only."""
     records = getattr(document, "_python_component_records", None)
     if callable(records):
         object_ids, native_types, raw_descriptors = records()
@@ -480,6 +491,7 @@ def preflight_scene_python_components(
         asset_database,
         prefer_loaded_types=prefer_loaded_types,
         reference_scene=reference_scene,
+        allow_missing_scripts=allow_missing_scripts,
     )
 
 
