@@ -418,11 +418,14 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
     };
 
     std::vector<Light *> shadowLights;
+    // Match CollectLights: resident and persistent scenes share one render
+    // world. The active scene is an authoring context, not a shadow filter.
+    // Preview scenes are excluded when Light registers with SceneManager.
     for (Light *light : SceneManager::Instance().GetActiveLights()) {
         if (!light || !light->IsEnabled() || light->GetShadows() == LightShadows::None)
             continue;
         GameObject *object = light->GetGameObject();
-        if (!object || object->GetScene() != scene || !object->IsActiveInHierarchy() || !object->GetTransform())
+        if (!object || !object->IsActiveInHierarchy() || !object->GetTransform())
             continue;
         shadowLights.push_back(light);
     }

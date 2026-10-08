@@ -7,6 +7,8 @@
 #include <function/scene/Camera.h>
 #include <function/scene/GameObject.h>
 #include <function/scene/LineRenderer.h>
+#include <function/scene/Light.h>
+#include <function/scene/LightingData.h>
 #include <function/scene/MeshRenderer.h>
 #include <function/scene/PrimitiveMeshes.h>
 #include <function/scene/Scene.h>
@@ -121,6 +123,112 @@ static void TestAnimatedBoundsInvalidateBothCameraCaches(AssetRegistry &registry
     check(false);
     manager.UnloadAllScenes();
     registry.DestroyRuntimeMesh(guid);
+}
+
+static void TestResidentLightShadows(SceneManager &manager)
+{
+    for (auto type : {LightType::Directional, LightType::Spot, LightType::Point, LightType::Area}) {
+        Scene *sceneA = manager.CreateScene("ShadowWorldA");
+        Scene *sceneB = manager.CreateScene("ShadowWorldB");
+        Scene *preview = manager.CreatePreviewScene("ShadowPreview");
+        auto *cameraObject = sceneA->CreateGameObject("Camera");
+        cameraObject->GetTransform()->SetPosition({0, 0, -5});
+        auto *camera = cameraObject->AddComponent<Camera>();
+        camera->SetClipPlanes(0.1f, 100.0f);
+        camera->SetAspectRatio(1.0f);
+        auto makeLight = [type](Scene *scene, uint32_t mask) {
+            auto *object = scene->CreateGameObject("Light");
+            object->GetTransform()->SetPosition({0, 3, -2});
+            auto *light = object->AddComponent<Light>();
+            light->SetLightType(type);
+            light->SetShadows(LightShadows::Hard);
+            light->SetCullingMask(mask);
+            return light;
+        };
+        Light *lightA = makeLight(sceneA, 1u);
+        Light *lightB = makeLight(sceneB, 2u);
+        makeLight(preview, 4u);
+        const uint64_t idA = lightA->GetGameObject()->GetID();
+        const uint64_t idB = lightB->GetGameObject()->GetID();
+        const uint32_t viewCount = type == LightType::Directional ? 4u : type == LightType::Spot ? 1u : 6u;
+        SceneLightCollector collector;
+        auto check = [&](bool presentA, bool presentB, bool shadowB = true) {
+            auto *active = manager.GetActiveScene();
+            collector.CollectLights(active, {0, 0, -5});
+            collector.ComputeShadowVP(active, {0, 0, -5}, 4096, camera, {1, 20});
+            collector.BuildShaderLightingUBO();
+            const auto &snapshot = collector.GetCanonicalLightSnapshot();
+            const auto &lights = type == LightType::Directional ? snapshot.directionalLights : snapshot.localLights;
+            assert(lights.size() == size_t(presentA) + size_t(presentB));
+            const auto &frame = collector.GetShadowFrame();
+            assert(frame.assignments.size() == size_t(presentA) + size_t(presentB && shadowB));
+            assert(frame.views.size() == frame.assignments.size() * viewCount);
+            for (const auto &light : lights) {
+                const uint64_t id = uint64_t(light.identityAndShadow.x) | (uint64_t(light.identityAndShadow.y) << 32u);
+                assert((presentA && id == idA) || (presentB && id == idB));
+                const auto *assignment = frame.Find(id);
+                const bool casts = id == idA || shadowB;
+                assert((assignment != nullptr) == casts);
+                assert(light.identityAndShadow.w == (casts ? viewCount : 0u));
+                if (!assignment)
+                    continue;
+                assert(assignment->viewCount == viewCount);
+                assert(light.identityAndShadow.z == assignment->firstView);
+                for (uint32_t index = 0; index < viewCount; ++index) {
+                    const auto &view = frame.views[assignment->firstView + index];
+                    assert(view.lightId == id && view.subView == index);
+                    assert(view.cullingMask == (id == idA ? 1u : 2u));
+                    assert(view.atlas.IsValid());
+                    for (int column = 0; column < 4; ++column)
+                        for (int row = 0; row < 4; ++row)
+                            assert(std::isfinite(view.viewProjection[column][row]));
+                }
+            }
+            return frame;
+        };
+        manager.SetActiveScene(sceneA);
+        const auto first = check(true, true);
+        manager.SetActiveScene(sceneB);
+        const auto switched = check(true, true);
+        for (size_t index = 0; index < first.views.size(); ++index) {
+            const auto &left = first.views[index];
+            const auto &right = switched.views[index];
+            assert(left.lightId == right.lightId && left.viewProjection == right.viewProjection);
+            assert(left.atlas.x == right.atlas.x && left.atlas.y == right.atlas.y && left.atlas.size == right.atlas.size);
+        }
+        manager.SetActiveScene(sceneA);
+        lightB->SetEnabled(false);
+        check(true, false);
+        lightB->SetEnabled(true);
+        lightB->GetGameObject()->SetActive(false);
+        check(true, false);
+        lightB->GetGameObject()->SetActive(true);
+        lightA->SetEnabled(false);
+        check(false, true);
+        lightA->SetEnabled(true);
+        lightB->SetShadows(LightShadows::None);
+        check(true, true, false);
+        lightB->SetShadows(LightShadows::Hard);
+        manager.ClosePreviewScene(preview);
+        check(true, true);
+
+        // A persistent light stays in the same render world after its source
+        // scene is unloaded; Stop must retire it from both lighting and shadows.
+        manager.Play();
+        manager.DontDestroyOnLoad(lightB->GetGameObject());
+        manager.PrepareActiveSceneReplacement();
+        assert(lightB->GetGameObject()->GetScene() == manager.GetRuntimePersistentScene());
+        manager.UnloadScene(sceneB);
+        check(true, true);
+        lightB->SetEnabled(false);
+        check(true, false);
+        lightB->SetEnabled(true);
+        check(true, true);
+        manager.Stop();
+        check(true, false);
+        manager.UnloadAllScenes();
+        assert(manager.GetActiveLights().empty());
+    }
 }
 
 int main()
@@ -588,6 +696,7 @@ int main()
     registry.DestroyRuntimeMesh(twoSlotMeshGuid);
     registry.DestroyRuntimeMesh(importedGuid);
     TestAnimatedBoundsInvalidateBothCameraCaches(registry, manager);
+    TestResidentLightShadows(manager);
     registry.Shutdown();
     return 0;
 }
