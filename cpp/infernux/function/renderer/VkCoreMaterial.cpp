@@ -652,9 +652,19 @@ void InxVkCoreModular::PrepareMaterialRenderState(const std::shared_ptr<InxMater
 {
     if (!material)
         return;
-    const std::string &fragment = material->GetFragShaderName();
-    if (!m_shaderCache.GetRenderMeta(fragment) && m_shaderProgramArtifactResolver)
-        m_shaderProgramArtifactResolver(material, std::nullopt);
+    const ShaderStagePair stages{material->GetVertShaderName(), material->GetFragShaderName()};
+    const std::string rejectionKey = material->GetMaterialKey() + "|" + stages.ToString() + "|Mesh";
+    if (m_rejectedGeometryMaterialPrograms.count(rejectionKey))
+        return;
+    try {
+        // Queue classification is part of geometry publication. A rejected
+        // shader must not change blending, depth or routing on the retained
+        // valid pipeline before ResolveMeshMaterial reports the bad selection.
+        (void)ResolveShaderProgramArtifact(material, stages, ShaderProgramDomain::Mesh);
+    } catch (const ShaderProgramDomainMismatch &) {
+        return;
+    }
+    const std::string &fragment = stages.fragmentShaderId;
     if (const auto *meta = m_shaderCache.GetRenderMeta(fragment)) {
         material->ApplyShaderRenderMeta(meta->cullMode, meta->depthWrite, meta->depthTest, meta->blend, meta->queue,
                                         meta->passTag, meta->stencil, meta->alphaClip);
