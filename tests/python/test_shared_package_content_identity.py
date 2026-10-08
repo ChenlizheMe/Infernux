@@ -69,12 +69,13 @@ def test_shared_version_identity_uses_source_guids_and_authored_settings(tmp_pat
     assert not list(baseline.parent.glob("*.tmp.*"))
 
 
-def test_official_mcp_exports_same_identity_from_windows_and_linux_checkouts(tmp_path):
+@pytest.mark.parametrize('plugin', ('mcp', 'windows', 'linux', 'android', 'web'))
+def test_official_plugin_exports_same_identity_from_windows_and_linux_checkouts(tmp_path, plugin):
     git = shutil.which('git')
     assert git, 'Git is required to verify cross-device plugin identity'
     source = tmp_path / 'source'
     source.mkdir()
-    attributes = Path(__file__).resolve().parents[2] / 'external/plugins/infernux_mcp/.gitattributes'
+    attributes = Path(__file__).resolve().parents[2] / f'external/plugins/infernux_{plugin}/.gitattributes'
     shutil.copyfile(attributes, source / '.gitattributes')
     package = source / 'package'
     package.mkdir()
