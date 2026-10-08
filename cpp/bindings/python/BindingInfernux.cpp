@@ -2326,6 +2326,9 @@ void infernux::RegisterInfernuxBindings(py::module_ &m)
         .def("release_material_preview_task", &Infernux::ReleaseMaterialPreviewTask, py::arg("resource_key"),
              py::call_guard<py::gil_scoped_release>(),
              "Retire material preview data and pending publications")
+        .def("release_asset_preview_tasks", &Infernux::ReleaseAssetPreviewTasks, py::arg("asset_path"),
+             py::call_guard<py::gil_scoped_release>(),
+             "Retire previews for a deleted source path and its embedded products")
         .def("query_or_schedule_texture_preview", &Infernux::QueryOrScheduleTexturePreview, py::arg("resource_key"),
              py::arg("texture_file_path"), py::arg("content_stamp_hint"), py::arg("nearest") = false,
              py::arg("srgb") = false, py::arg("max_size") = 2048, py::arg("texture_format") = "auto",

@@ -2217,7 +2217,13 @@ void Infernux::PumpPreviewTasks()
                 m_hasPreviewPumpWork.store(true, std::memory_order_release);
             } else {
                 for (const auto &[key, state] : m_meshPreviewStates) {
-                    if (state.loadTicket && state.loadTicket->IsComplete()) {
+                    if (!state.loadTicket)
+                        continue;
+                    // Asset loaders complete outside the preview worker queue.
+                    // Keep this owner-thread consumer scheduled until it can
+                    // publish the result; another UI query is not required.
+                    m_hasPreviewPumpWork.store(true, std::memory_order_release);
+                    if (state.loadTicket->IsComplete()) {
                         completedLoad = state.loadTicket;
                         completedLoadKey = key;
                         completedLoadGuid = state.loadGuid;
@@ -2610,6 +2616,59 @@ void Infernux::ReleaseMaterialPreviewTask(const std::string &resourceKey)
             retained.push(std::move(request));
     }
     m_previewRequestQueue.swap(retained);
+}
+
+void Infernux::ReleaseAssetPreviewTasks(const std::string &assetPath)
+{
+    if (assetPath.empty())
+        return;
+    const std::string path = CanonicalizePreviewKey("asset|" + assetPath).substr(6);
+    const auto belongsToSource = [&path](const std::string &key) {
+        const size_t separator = key.find('|');
+        if (separator == std::string::npos)
+            return false;
+        const size_t start = separator + 1;
+        if (key.compare(start, path.size(), path) != 0)
+            return false;
+        const size_t end = start + path.size();
+        return end == key.size() || key.compare(end, 2, "::") == 0;
+    };
+    std::vector<std::string> materials;
+    std::vector<std::string> textures;
+    {
+        std::lock_guard<std::mutex> lock(m_previewResultMutex);
+        for (const auto &[key, state] : m_materialPreviewStates) {
+            if (belongsToSource(key))
+                materials.push_back(key);
+        }
+        for (const auto &[key, state] : m_texturePreviewStates) {
+            if (belongsToSource(key))
+                textures.push_back(key);
+        }
+        for (auto &[key, state] : m_meshPreviewStates) {
+            if (!belongsToSource(key))
+                continue;
+            if (state.generation == std::numeric_limits<uint64_t>::max())
+                throw std::overflow_error("Mesh preview generation overflow");
+            const uint64_t retiredGeneration = state.generation + 1;
+            if (m_renderer && !state.textureName.empty())
+                m_renderer->RemoveImGuiTexture(state.textureName);
+            state = MeshPreviewState{};
+            state.generation = retiredGeneration;
+        }
+        std::queue<MeshPreviewRequest> retained;
+        while (!m_meshPreviewRequestQueue.empty()) {
+            auto request = std::move(m_meshPreviewRequestQueue.front());
+            m_meshPreviewRequestQueue.pop();
+            if (!belongsToSource(request.resourceKey))
+                retained.push(std::move(request));
+        }
+        m_meshPreviewRequestQueue.swap(retained);
+    }
+    for (const auto &key : materials)
+        ReleaseMaterialPreviewTask(key);
+    for (const auto &key : textures)
+        ReleaseTexturePreviewTask(key);
 }
 
 void Infernux::ReleasePreviewAuthoring(const std::string &resourceKey)
@@ -4778,6 +4837,9 @@ void Infernux::ReloadMesh(const std::string &meshPath)
 
     if (registry.IsLoaded(guid))
         registry.ReloadAsset(guid);
+    else
+        // Reimport also retires workers whose payload was never resident.
+        registry.InvalidateAsset(guid);
 
     SceneManager::Instance().MarkMeshRenderersDirtyForAsset(guid, meshPath);
 

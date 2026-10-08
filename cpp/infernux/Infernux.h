@@ -344,6 +344,8 @@ class Infernux
     void ReleaseTexturePreviewTask(const std::string &resourceKey);
     /// Retire queued/rendering material work and its published thumbnail.
     void ReleaseMaterialPreviewTask(const std::string &resourceKey);
+    /// Retire all previews (including embedded model products) for a deleted source path.
+    void ReleaseAssetPreviewTasks(const std::string &assetPath);
 
     /// @brief Combined query + schedule for texture preview.
     ///
