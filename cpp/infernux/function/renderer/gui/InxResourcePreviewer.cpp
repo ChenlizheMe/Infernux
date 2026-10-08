@@ -246,7 +246,14 @@ bool ImagePreviewer::Load(const std::string &filePath)
         return true; // Already loaded
     }
 
+    // Unload resets settings; preserve the manager's requested display budget.
+    const auto mode = m_displayMode;
+    const int maxSize = m_maxSize;
+    const bool srgb = m_srgb;
     Unload();
+    m_displayMode = mode;
+    m_maxSize = maxSize;
+    m_srgb = srgb;
 
     // Get file size
     try {
