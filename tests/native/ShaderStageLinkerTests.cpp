@@ -1053,7 +1053,9 @@ void surface(out SurfaceData s) {
     assert(bindlessCutoutShadow->generatedFragmentSource.find("set = 3, binding = 0") != std::string::npos);
     assert(bindlessCutoutShadow->generatedFragmentSource.find("set = 2, binding = 15") != std::string::npos);
     assert(bindlessCutoutShadow->generatedFragmentSource.find("surface(s);") != std::string::npos);
-    assert(bindlessCutoutShadow->generatedFragmentSource.find("if (material._AlphaClipThreshold <= 0.0) return;") !=
+    // Authored surface discard still runs when the optional uniform alpha test
+    // is disabled. An early return here would restore the Shadow/Depth mismatch.
+    assert(bindlessCutoutShadow->generatedFragmentSource.find("if (material._AlphaClipThreshold <= 0.0) return;") ==
            std::string::npos);
     infernux::ShaderReflection bindlessShadowReflection;
     assert(bindlessShadowReflection.Reflect(bindlessCutoutShadow->fragmentSpirv, VK_SHADER_STAGE_FRAGMENT_BIT));
