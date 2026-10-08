@@ -129,16 +129,39 @@ vec3 hueShiftDegrees(vec3 color, float degrees) {
     return hsvToRGB(hsv);
 }
 
-// White Balance (temperature + tint)  (Unity: White Balance)
+// CAT02 adaptation of linear sRGB. CIE xy white points are converted from XYZ,
+// not through the RGB-to-LMS matrix used for the input color.
+vec3 _whiteBalanceWhiteLMS(vec2 xy) {
+    vec3 xyz = vec3(xy.x, xy.y, 1.0 - xy.x - xy.y) / xy.y;
+    const mat3 xyzToLMS = mat3(
+         0.7328, -0.7036, 0.0030,
+         0.4296,  1.6975, 0.0136,
+        -0.1624,  0.0061, 0.9834
+    );
+    return xyzToLMS * xyz;
+}
+
+// Temperature/tint use the post-process range [-100, 100]. Zero is D65.
 vec3 whiteBalance(vec3 color, float temperature, float tint) {
-    // Attempt a simple approximation via color offset
-    float t = temperature / 100.0;
-    float ti = tint / 100.0;
-    // Warm shifts red up / blue down; tint shifts green
-    color.r += t;
-    color.b -= t;
-    color.g += ti;
-    return max(color, vec3(0.0));
+    const vec2 d65 = vec2(0.31271, 0.32902);
+    float t = temperature / 65.0;
+    float x = d65.x - t * (t < 0.0 ? 0.1 : 0.05);
+    // D-illuminant locus, anchored at the same reference point as the numerator.
+    float y = d65.y + (x - d65.x) * (2.87 - 3.0 * (x + d65.x)) + tint / 65.0 * 0.05;
+    vec3 balance = _whiteBalanceWhiteLMS(d65) / _whiteBalanceWhiteLMS(vec2(x, y));
+    // CAT02 * linear-sRGB-to-XYZ, with its matching inverse. Retain enough
+    // precision for HDR and the ends of the authored temperature/tint range.
+    const mat3 linearToLMS = mat3(
+        0.3904725024, 0.0709258615, 0.0231426779,
+        0.5499043704, 0.9631073867, 0.1280122110,
+        0.0089015942, 0.0013580925, 0.9360519444
+    );
+    const mat3 lmsToLinear = mat3(
+         2.8583110961, -0.2104347759, -0.0418895045,
+        -1.6287079604,  1.1584149339, -0.1181543331,
+        -0.0248186967,  0.0003204633,  1.0688865654
+    );
+    return max(lmsToLinear * (balance * (linearToLMS * color)), vec3(0.0));
 }
 
 // Channel Mixer  (Unity: Channel Mixer)

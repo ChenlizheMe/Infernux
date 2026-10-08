@@ -2,7 +2,7 @@
 WhiteBalanceEffect — Color temperature and tint adjustment.
 
 Aligned with Unity URP White Balance. Operates in HDR space
-(before_post_process) using Bradford chromatic adaptation.
+(before_post_process) using CAT02 chromatic adaptation.
 
 Parameters:
     temperature — warm/cool shift (-100 to 100, 0 = neutral)
