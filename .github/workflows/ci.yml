@@ -154,7 +154,7 @@ jobs:
         shell: pwsh
         run: |
           conda activate infernux
-          python -m pip install --disable-pip-version-check -r requirements.txt PyYAML
+          python -m pip install --disable-pip-version-check -r requirements.txt PyYAML requests
 
       - name: Build pinned Windows software Vulkan driver
         if: steps.cache-windows-swiftshader.outputs.cache-hit != 'true'
@@ -299,7 +299,7 @@ jobs:
         run: |
           conda activate infernux
           conda install --yes --channel conda-forge "libpython-static=3.13.15"
-          python -m pip install --disable-pip-version-check -r requirements.txt PyYAML
+          python -m pip install --disable-pip-version-check -r requirements.txt PyYAML requests
 
       - name: Run Hub tests
         run: |

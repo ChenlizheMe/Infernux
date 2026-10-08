@@ -12,6 +12,11 @@ def _load_project_model(monkeypatch):
     repo_root = Path(__file__).resolve().parents[2]
     monkeypatch.syspath_prepend(str(repo_root / "packaging"))
     monkeypatch.syspath_prepend(str(repo_root / "packaging" / "model"))
+    # Frozen-wheel cases below use Windows wheel fixtures. Keep their target
+    # explicit without changing the runner's sys.platform or runtime paths.
+    version_manager = importlib.import_module("version_manager")
+    monkeypatch.setattr(version_manager, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(version_manager, "supported_wheel_platforms", lambda: frozenset({"win_amd64"}))
     return importlib.import_module("project_model")
 
 

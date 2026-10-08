@@ -14,6 +14,7 @@ import sys
 import urllib.error
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,13 @@ sys.path.insert(0, os.path.join(
 
 import version_manager as vm_mod
 from version_manager import DownloadCancelled, VersionManager, _merge_release_catalogs
+
+
+@pytest.fixture(autouse=True)
+def windows_wheel_catalog(monkeypatch):
+    """These fixed Windows wheel fixtures target a Windows Hub on every runner."""
+    monkeypatch.setattr(vm_mod, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(vm_mod, "supported_wheel_platforms", lambda: frozenset({"win_amd64"}))
 
 
 def test_catalog_network_failures_are_not_an_empty_version_list(tmp_path, monkeypatch):
@@ -487,12 +495,17 @@ def test_cached_engine_wheels_are_resolved_by_exact_python_abi(
         manager.python_version_for_engine("0.4.0")
 
 
-def test_release_assets_are_filtered_by_host_platform(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform, tag", [
+    ("win32", "win_amd64"),
+    ("linux", "manylinux_2_28_x86_64"),
+])
+def test_release_assets_are_filtered_by_host_platform(tmp_path, monkeypatch, platform, tag):
+    monkeypatch.setattr(vm_mod, "sys", SimpleNamespace(platform=platform))
     monkeypatch.setattr(vm_mod, "_VERSIONS_DIR", tmp_path / "versions")
     monkeypatch.setattr(
         vm_mod,
         "supported_wheel_platforms",
-        lambda: frozenset({"win_amd64"}),
+        lambda: frozenset({tag}),
     )
     manager = VersionManager(_RuntimeInventory("3.13"))
     release = {
@@ -514,10 +527,9 @@ def test_release_assets_are_filtered_by_host_platform(tmp_path, monkeypatch):
 
     [engine] = manager.list_versions()
 
-    assert [wheel.filename for wheel in engine.wheel_options] == [
-        "infernux-0.4.0-cp313-cp313-win_amd64.whl"
-    ]
-    assert engine.wheel_url == "https://example.invalid/infernux-0.4.0-cp313-cp313-win_amd64.whl"
+    expected = f"infernux-0.4.0-cp313-cp313-{tag}.whl"
+    assert [wheel.filename for wheel in engine.wheel_options] == [expected]
+    assert engine.wheel_url == "https://example.invalid/" + expected
     assert engine.python_version == "3.13"
 
 
