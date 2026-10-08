@@ -9,6 +9,7 @@
 #include <function/resources/InxMaterial/MaterialDocumentValidation.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/scene/ComponentRecord.h>
+#include <function/scene/SceneEnvironment.h>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -91,10 +92,10 @@ class ResourcePreflight
         CollectSerializedAssetRefs(document, "Scene");
         if (const auto environment = document.find("environment");
             environment != document.end() && environment->is_object()) {
-            const auto skybox = environment->find("skybox_material_guid");
+            const auto skybox = environment->find(SceneEnvironmentSettings::SkyboxMaterialGuidKey);
             if (skybox != environment->end() && skybox->is_string() && !skybox->get_ref<const std::string &>().empty())
                 RequireAsset(skybox->get<std::string>(), ResourceType::Material,
-                             "Scene.environment.skybox_material_guid");
+                             std::string("Scene.environment.") + SceneEnvironmentSettings::SkyboxMaterialGuidKey);
         }
         ExpandAssetDependencies();
     }
