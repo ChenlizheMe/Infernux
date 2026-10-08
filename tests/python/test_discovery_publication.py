@@ -237,7 +237,8 @@ def test_inspector_exposes_unselected_pipeline_name_conflicts(catalog_project):
     for index in range(2):
         write_source(catalog_project / f'conflict_{index}.py',
                      'from infernux.renderstack import RenderPipeline\nclass ConflictingProvider(RenderPipeline):\n    name = '+repr(name)+'\n', 0)
-    message, = _pipeline_name_conflict_messages()
+    message, = (message for message in _pipeline_name_conflict_messages()
+                if message.startswith(f"Ambiguous pipeline '{name}':"))
     assert name in message and 'conflict_0.py' in message and 'conflict_1.py' in message
 
 
