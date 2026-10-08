@@ -745,6 +745,7 @@ MaterialDescriptorSet *MaterialDescriptorManager::GetOrCreateDescriptorSet(const
         }
     }
 
+    matDescSet->materialUBOVersion = material.GetVersion();
     matDescSet->isValid = true;
 
     MaterialDescriptorSet *result = matDescSet.get();
@@ -1073,10 +1074,38 @@ bool MaterialDescriptorManager::UpdateDescriptorBindings(MaterialDescriptorSet &
 
 bool MaterialDescriptorManager::PublishDescriptorReplacement(
     MaterialDescriptorSet &descriptorSet,
-    const std::unordered_map<uint32_t, MaterialDescriptorSet::TextureBinding> &textureBindings)
+    const std::unordered_map<uint32_t, MaterialDescriptorSet::TextureBinding> &textureBindings,
+    const InxMaterial *material)
 {
     if (!m_descriptorManager || descriptorSet.layout == VK_NULL_HANDLE)
         return false;
+    if (!m_deletionQueue || !m_deletionQueue->HasSerialSource()) {
+        INXLOG_ERROR("Cannot publish material descriptor replacement without a GPU retirement serial source");
+        return false;
+    }
+
+    // Numeric data belongs to the same immutable publication as the set that
+    // references it. Waiting for the current frame slot cannot protect buffers
+    // shared by other in-flight frames or earlier draws in this command buffer.
+    std::unique_ptr<MaterialUBO> replacementMaterialUBO;
+    std::unique_ptr<MaterialUBO> replacementVertexMaterialUBO;
+    const auto prepare = [&](const std::unique_ptr<MaterialUBO> &current,
+                             std::unique_ptr<MaterialUBO> &replacement) {
+        if (!material || !current)
+            return true;
+        replacement = std::make_unique<MaterialUBO>();
+        if (!replacement->Create(m_vmaAllocator, m_device, current->GetLayout()))
+            return false;
+        replacement->Update(*material);
+        return true;
+    };
+    if (!prepare(descriptorSet.materialUBO, replacementMaterialUBO) ||
+        !prepare(descriptorSet.vertexMaterialUBO, replacementVertexMaterialUBO))
+        return false;
+
+    // Callers may pass descriptorSet.textureBindings itself. Own the candidate
+    // before moving the old publication into retirement.
+    auto candidateTextureBindings = textureBindings;
 
     const auto arena =
         m_updateAfterBindEnabled ? vk::DescriptorArena::UpdateAfterBind : vk::DescriptorArena::Persistent;
@@ -1119,6 +1148,11 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
                 bufferInfo.buffer = replacementTextureIndexUBO->GetBuffer();
                 bufferInfo.offset = 0;
                 bufferInfo.range = replacementTextureIndexUBO->GetSize();
+            } else if (replacementMaterialUBO && binding.binding == replacementMaterialUBO->GetLayout().binding) {
+                bufferInfo = {replacementMaterialUBO->GetBuffer(), 0, replacementMaterialUBO->GetSize()};
+            } else if (replacementVertexMaterialUBO &&
+                       binding.binding == replacementVertexMaterialUBO->GetLayout().binding) {
+                bufferInfo = {replacementVertexMaterialUBO->GetBuffer(), 0, replacementVertexMaterialUBO->GetSize()};
             } else {
                 const auto buffer = descriptorSet.bufferBindings.find(binding.binding);
                 if (buffer == descriptorSet.bufferBindings.end()) {
@@ -1194,25 +1228,19 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
     if (!writes.empty())
         vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
-    if (!m_deletionQueue && (!descriptorSet.textureBindings.empty() || descriptorSet.textureIndexUBO != nullptr)) {
-        INXLOG_ERROR("Cannot publish material descriptor replacement without a GPU retirement queue");
-        m_descriptorManager->Retire(replacement);
-        return false;
-    }
-
     const vk::DescriptorLease retiredLease = descriptorSet.descriptorLease;
     const VkDescriptorSet retiredSet = descriptorSet.descriptorSet;
     auto retiredTextureBindings = std::move(descriptorSet.textureBindings);
     auto retiredTextureIndexUBO = std::move(descriptorSet.textureIndexUBO);
     descriptorSet.descriptorLease = replacement;
     descriptorSet.descriptorSet = replacement.set;
-    descriptorSet.textureBindings = textureBindings;
+    descriptorSet.textureBindings = std::move(candidateTextureBindings);
     descriptorSet.textureIndexUBO = std::move(replacementTextureIndexUBO);
     descriptorSet.bindlessTextureIndices.clear();
     if (descriptorSet.usesBindlessTextureABI) {
-        descriptorSet.bindlessTextureIndices.reserve(textureBindings.size());
+        descriptorSet.bindlessTextureIndices.reserve(descriptorSet.textureBindings.size());
         std::array<uint32_t, ShaderProgram::MaterialTextureIndexCapacity> indices{};
-        for (const auto &[binding, textureBinding] : textureBindings) {
+        for (const auto &[binding, textureBinding] : descriptorSet.textureBindings) {
             if (binding >= indices.size())
                 continue;
             const uint32_t shaderIndex = textureBinding.resourceIndex.IsValid() ? textureBinding.resourceIndex.index
@@ -1232,6 +1260,18 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
     m_liveDescriptorHandles.erase(reinterpret_cast<uint64_t>(retiredSet));
     m_liveDescriptorHandles.emplace(reinterpret_cast<uint64_t>(replacement.set), &descriptorSet);
     m_descriptorManager->Retire(retiredLease);
+    const auto publishBuffer = [&](std::unique_ptr<MaterialUBO> &current, std::unique_ptr<MaterialUBO> &next) {
+        if (!next)
+            return;
+        auto retired = std::shared_ptr<MaterialUBO>(std::move(current));
+        current = std::move(next);
+        descriptorSet.bufferBindings[current->GetLayout().binding] = {current->GetBuffer(), 0, current->GetSize()};
+        m_deletionQueue->Retire([ubo = std::move(retired)]() mutable { ubo.reset(); });
+    };
+    publishBuffer(descriptorSet.materialUBO, replacementMaterialUBO);
+    publishBuffer(descriptorSet.vertexMaterialUBO, replacementVertexMaterialUBO);
+    if (material)
+        descriptorSet.materialUBOVersion = material->GetVersion();
     if (m_deletionQueue && !retiredTextureBindings.empty()) {
         m_deletionQueue->Retire([bindings = std::move(retiredTextureBindings)]() mutable { bindings.clear(); });
     }
@@ -1242,17 +1282,19 @@ bool MaterialDescriptorManager::PublishDescriptorReplacement(
     return true;
 }
 
-void MaterialDescriptorManager::UpdateMaterialUBO(const std::string &materialName, const InxMaterial &material)
+bool MaterialDescriptorManager::UpdateMaterialUBO(const std::string &materialName, const InxMaterial &material)
 {
     auto it = m_descriptorSets.find(materialName);
-    if (it != m_descriptorSets.end()) {
-        if (it->second->materialUBO) {
-            it->second->materialUBO->Update(material);
-        }
-        if (it->second->vertexMaterialUBO) {
-            it->second->vertexMaterialUBO->Update(material);
-        }
+    if (it == m_descriptorSets.end())
+        return false;
+    auto &descriptor = *it->second;
+    if (descriptor.materialUBOVersion == material.GetVersion())
+        return true;
+    if (!descriptor.materialUBO && !descriptor.vertexMaterialUBO) {
+        descriptor.materialUBOVersion = material.GetVersion();
+        return true;
     }
+    return PublishDescriptorReplacement(descriptor, descriptor.textureBindings, &material);
 }
 
 void MaterialDescriptorManager::ResolveTextureProperties(const std::string &materialName, const InxMaterial &material,

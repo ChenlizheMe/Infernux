@@ -138,6 +138,7 @@ struct MaterialDescriptorSet
     std::unique_ptr<MaterialUBO> materialUBO;
     std::unique_ptr<MaterialUBO> vertexMaterialUBO; // Vertex-stage material UBO (binding 14)
     std::unique_ptr<MaterialUBO> textureIndexUBO;   // Bindless ABI (binding 15)
+    uint64_t materialUBOVersion = 0;
     std::vector<MergedDescriptorBinding> bindings;
     std::unordered_map<uint32_t, VkDescriptorBufferInfo> bufferBindings;
     std::unordered_map<uint32_t, std::shared_ptr<rhi::ComputeBuffer>> storageBufferBindings;
@@ -284,7 +285,7 @@ class MaterialDescriptorManager
     /**
      * @brief Update descriptor set with new material values
      */
-    void UpdateMaterialUBO(const std::string &materialName, const InxMaterial &material);
+    [[nodiscard]] bool UpdateMaterialUBO(const std::string &materialName, const InxMaterial &material);
 
     /**
      * @brief Re-resolve Texture2D properties for an existing descriptor set
@@ -312,7 +313,8 @@ class MaterialDescriptorManager
     /// lease after its last possible submission. Active sets are immutable.
     [[nodiscard]] bool PublishDescriptorReplacement(
         MaterialDescriptorSet &descriptorSet,
-        const std::unordered_map<uint32_t, MaterialDescriptorSet::TextureBinding> &textureBindings);
+        const std::unordered_map<uint32_t, MaterialDescriptorSet::TextureBinding> &textureBindings,
+        const InxMaterial *material = nullptr);
 
   public:
     /// Bind submission-serial retirement for descriptor-owned buffers.

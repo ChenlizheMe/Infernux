@@ -177,7 +177,7 @@ class MaterialPipelineManager
     /**
      * @brief Update material UBO with current property values
      */
-    void UpdateMaterialProperties(const std::string &materialName, const InxMaterial &material);
+    bool UpdateMaterialProperties(const std::string &materialName, const InxMaterial &material);
 
     [[nodiscard]] bool HasPendingTextureProperties(const std::string &materialName) const
     {

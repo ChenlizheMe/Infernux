@@ -3,7 +3,7 @@
  * @brief InxVkCoreModular — Material system, lighting, and buffer accessors
  *
  * Split from InxVkCoreModular.cpp for maintainability.
- * Contains: UpdateMaterialUBO, EnsureMaterialUBO, CreateBuffer,
+ * Contains: UpdateMaterialUBO, CreateBuffer,
  *           InitializeMaterialSystem, RefreshMaterialPipeline,
  *           SetAmbientColor, UpdateLightingUBO,
  *           GetObjectBuffer, GetUniformBuffer, GetShaderModule.
@@ -24,7 +24,6 @@
 #include "vk/VkPipelineHelpers.h"
 #include "vk/VkRenderUtils.h"
 
-#include <core/types/ColorSpace.h>
 #include <function/renderer/shader/ShaderProgram.h>
 #include <function/renderer/shader/ShaderReflection.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
@@ -399,47 +398,6 @@ InxVkCoreModular::ResolveTextureForEditorPreview(const std::string &textureGuid)
 // Material UBO Management
 // ============================================================================
 
-namespace
-{
-
-/// Copy a typed material property into the UBO at a reflection-determined offset.
-template <typename T>
-void CopyPropertyToUBO(const MaterialProperty &prop, uint8_t *uboData, uint32_t offset, size_t uboSize)
-{
-    if (offset + sizeof(T) <= uboSize) {
-        T value = std::get<T>(prop.value);
-        // Authored Color properties are sRGB; shading runs in linear space.
-        if constexpr (std::is_same_v<T, glm::vec4>) {
-            if (prop.type == MaterialPropertyType::Color)
-                value = inx::color::SrgbToLinear(value);
-        }
-        std::memcpy(uboData + offset, &value, sizeof(T));
-    }
-}
-
-/// Pack all properties of a given type sequentially with manual alignment (fallback path).
-/// @param stride — bytes to advance after each copy (usually sizeof(T), except vec3 which uses 16).
-template <typename T>
-void PackPropertiesByType(const std::unordered_map<std::string, MaterialProperty> &properties,
-                          MaterialPropertyType type, uint8_t *uboData, size_t &offset, size_t uboSize, size_t alignment,
-                          size_t stride = 0)
-{
-    if (stride == 0)
-        stride = sizeof(T);
-    for (const auto &[name, prop] : properties) {
-        if (prop.type != type)
-            continue;
-        offset = (offset + (alignment - 1)) & ~(alignment - 1);
-        if (offset + sizeof(T) <= uboSize) {
-            T value = std::get<T>(prop.value);
-            std::memcpy(uboData + offset, &value, sizeof(T));
-            offset += stride;
-        }
-    }
-}
-
-} // anonymous namespace
-
 void InxVkCoreModular::UpdateMaterialUBO(InxMaterial &material)
 {
     const bool hasPendingTextures = m_materialPipelineManagerInitialized &&
@@ -453,131 +411,18 @@ void InxVkCoreModular::UpdateMaterialUBO(InxMaterial &material)
         if (renderData && renderData->isValid && renderData->shaderProgram &&
             renderData->descriptorSet != VK_NULL_HANDLE &&
             m_materialPipelineManager.IsDescriptorSetLive(renderData->descriptorSet)) {
-            m_materialPipelineManager.UpdateMaterialProperties(material.GetMaterialKey(), material);
-            if (!m_materialPipelineManager.HasPendingTextureProperties(material.GetMaterialKey())) {
+            const bool published =
+                m_materialPipelineManager.UpdateMaterialProperties(material.GetMaterialKey(), material);
+            if (published && !m_materialPipelineManager.HasPendingTextureProperties(material.GetMaterialKey())) {
                 material.ClearPropertiesDirty();
             }
             return;
         }
     }
 
-    const ShaderProgram *shaderProgram = material.GetPassShaderProgram(ShaderCompileTarget::Forward);
-    const MaterialUBOLayout *uboLayout = shaderProgram ? shaderProgram->GetMaterialUBOLayout() : nullptr;
-
-    if (!uboLayout || uboLayout->size == 0) {
-        INXLOG_WARN("VkCoreMaterial: material '", material.GetName(),
-                    "' has no UBO reflection layout — skipping UBO update");
-        material.ClearPropertiesDirty();
-        return;
-    }
-    size_t uboSize = uboLayout->size;
-
-    const auto &properties = material.GetAllProperties();
-
-    std::vector<uint8_t> uboData(uboSize, 0);
-
-    if (uboLayout && !uboLayout->members.empty()) {
-        for (const auto &[name, prop] : properties) {
-            uint32_t memberOffset = 0;
-            uint32_t memberSize = 0;
-
-            if (!uboLayout->GetMemberInfo(name, memberOffset, memberSize)) {
-                continue;
-            }
-
-            switch (prop.type) {
-            case MaterialPropertyType::Float4:
-            case MaterialPropertyType::Color:
-                CopyPropertyToUBO<glm::vec4>(prop, uboData.data(), memberOffset, uboSize);
-                break;
-            case MaterialPropertyType::Float3:
-                CopyPropertyToUBO<glm::vec3>(prop, uboData.data(), memberOffset, uboSize);
-                break;
-            case MaterialPropertyType::Float2:
-                CopyPropertyToUBO<glm::vec2>(prop, uboData.data(), memberOffset, uboSize);
-                break;
-            case MaterialPropertyType::Float:
-                CopyPropertyToUBO<float>(prop, uboData.data(), memberOffset, uboSize);
-                break;
-            case MaterialPropertyType::Int:
-                CopyPropertyToUBO<int>(prop, uboData.data(), memberOffset, uboSize);
-                break;
-            case MaterialPropertyType::Mat4:
-                CopyPropertyToUBO<glm::mat4>(prop, uboData.data(), memberOffset, uboSize);
-                break;
-            case MaterialPropertyType::FloatArray: {
-                const auto &values = std::get<std::vector<float>>(prop.value);
-                if (memberOffset + values.size() * 16u <= uboSize) {
-                    for (size_t index = 0; index < values.size(); ++index)
-                        std::memcpy(uboData.data() + memberOffset + index * 16u, &values[index], sizeof(float));
-                }
-                break;
-            }
-            case MaterialPropertyType::Float4Array: {
-                const auto &values = std::get<std::vector<glm::vec4>>(prop.value);
-                if (memberOffset + values.size() * sizeof(glm::vec4) <= uboSize && !values.empty())
-                    std::memcpy(uboData.data() + memberOffset, values.data(), values.size() * sizeof(glm::vec4));
-                break;
-            }
-            default:
-                break;
-            }
-        }
-    } else {
-        size_t offset = 0;
-        PackPropertiesByType<glm::vec4>(properties, MaterialPropertyType::Float4, uboData.data(), offset, uboSize, 16);
-        PackPropertiesByType<glm::vec3>(properties, MaterialPropertyType::Float3, uboData.data(), offset, uboSize, 16,
-                                        16);
-        PackPropertiesByType<glm::vec2>(properties, MaterialPropertyType::Float2, uboData.data(), offset, uboSize, 8);
-        PackPropertiesByType<float>(properties, MaterialPropertyType::Float, uboData.data(), offset, uboSize, 4);
-        PackPropertiesByType<int>(properties, MaterialPropertyType::Int, uboData.data(), offset, uboSize, 4);
-    }
-
-    if (material.HasUBO()) {
-        void *matMappedData = material.GetUBOMappedData();
-        if (matMappedData) {
-            std::memcpy(matMappedData, uboData.data(), uboSize);
-        }
-    } else if (m_materialUboMapped) {
-        std::memcpy(m_materialUboMapped, uboData.data(), uboSize);
-    }
-
-    material.ClearPropertiesDirty();
-}
-
-void InxVkCoreModular::EnsureMaterialUBO(std::shared_ptr<InxMaterial> material)
-{
-    if (!material) {
-        return;
-    }
-
-    if (material->HasUBO()) {
-        return;
-    }
-
-    VkBuffer uboBuffer = VK_NULL_HANDLE;
-    VmaAllocation uboAllocation = VK_NULL_HANDLE;
-    void *uboMappedData = nullptr;
-
-    // Require reflection layout for UBO creation
-    const ShaderProgram *shaderProgram = material->GetPassShaderProgram(ShaderCompileTarget::Forward);
-    const MaterialUBOLayout *uboLayout = shaderProgram ? shaderProgram->GetMaterialUBOLayout() : nullptr;
-    if (!uboLayout || uboLayout->size == 0) {
-        INXLOG_WARN("VkCoreMaterial: material '", material->GetName(),
-                    "' has no UBO reflection layout — skipping UBO creation");
-        return;
-    }
-    size_t uboSize = uboLayout->size;
-    CreateBuffer(uboSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uboBuffer, uboAllocation);
-
-    VmaAllocator allocator = m_backend.Device().GetVmaAllocator();
-    vmaMapMemory(allocator, uboAllocation, &uboMappedData);
-    if (uboMappedData) {
-        std::memset(uboMappedData, 0, uboSize);
-    }
-
-    material->SetUBOBuffer(allocator, uboBuffer, uboAllocation, uboMappedData);
+    // Material GPU data is owned exclusively by the descriptor manager. A
+    // material that has not acquired valid render data must keep its dirty
+    // state until its first complete publication; no shared scratch-UBO writes.
 }
 
 // ============================================================================

@@ -858,9 +858,10 @@ VkPipeline MaterialPipelineManager::CreatePipelineWithProgram(const ShaderProgra
     return pipeline;
 }
 
-void MaterialPipelineManager::UpdateMaterialProperties(const std::string &materialName, const InxMaterial &material)
+bool MaterialPipelineManager::UpdateMaterialProperties(const std::string &materialName, const InxMaterial &material)
 {
-    m_descriptorManager.UpdateMaterialUBO(materialName, material);
+    if (!m_descriptorManager.UpdateMaterialUBO(materialName, material))
+        return false;
 
     // Re-resolve Texture2D properties in case set_texture was called
     auto it = m_renderDataMap.find(materialName);
@@ -868,6 +869,7 @@ void MaterialPipelineManager::UpdateMaterialProperties(const std::string &materi
         m_descriptorManager.ResolveTextureProperties(materialName, material, *it->second->shaderProgram);
         RefreshPublishedDescriptorHandle(materialName);
     }
+    return true;
 }
 
 void MaterialPipelineManager::BindMaterialTexture(const std::string &materialName, uint32_t binding,

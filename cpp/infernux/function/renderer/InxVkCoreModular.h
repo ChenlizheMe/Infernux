@@ -431,11 +431,9 @@ class InxVkCoreModular
         return completed;
     }
 
-    /// @brief Update material UBO with current material properties (stub)
+    /// Publish current material properties with submission-safe GPU ownership.
     void UpdateMaterialUBO(InxMaterial &material);
 
-    /// @brief Ensure a material has its own UBO buffer allocated (stub)
-    void EnsureMaterialUBO(std::shared_ptr<InxMaterial> material);
     void SetRenderTextureAssetLoader(std::function<std::shared_ptr<rhi::RenderTexture>(const std::string &)> loader)
     {
         m_renderTextureAssetLoader = std::move(loader);
