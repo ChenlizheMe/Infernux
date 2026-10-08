@@ -1737,6 +1737,21 @@ def test_web_shader_stage_deduplicates_shared_particle_kernel(monkeypatch, tmp_p
     )
     player_assets = tmp_path / "player-assets"
     (player_assets / "Balance_Data").mkdir(parents=True)
+    # Shader staging consumes the actual Player catalog even when this
+    # fixture has no UI materials. Keep its package boundary valid.
+    from infernux.engine.player_package_native import write_pack
+    runtime_catalog = tmp_path / "RuntimeAssetCatalog.json"
+    asset_records = tmp_path / "RuntimeAssetRecords.json"
+    asset_records.write_text(json.dumps({"entries": []}), encoding="utf-8")
+    record_path = "Library/RuntimeAssetRecords.json"
+    runtime_catalog.write_text(json.dumps({"artifacts": [{
+        "runtime_artifact_id": "records", "runtime_path": record_path,
+        "package": "Balance_Data/Content.inxpkg", "dependencies": [],
+    }]}), encoding="utf-8")
+    write_pack(((record_path, asset_records),),
+               player_assets / "Balance_Data" / "Content.inxpkg")
+    write_pack((("RuntimeAssetCatalog.json", runtime_catalog),),
+               player_assets / "Balance_Data" / "AssetCatalog.inxcat")
     particle_dir = (
         Path(request.project_root) / "Library" / "Artifacts" / "Particle"
     )
