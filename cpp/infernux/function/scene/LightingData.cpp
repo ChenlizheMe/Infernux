@@ -397,8 +397,8 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
     if (camera && !shadowLights.empty() && shadowLights.front()->GetLightType() == LightType::Directional) {
         const auto inverseProjection = glm::inverse(glm::dmat4(camera->GetProjectionMatrix()));
         const glm::dmat4 cameraToWorld(camera->GetCameraToWorldMatrix());
-        const std::array<glm::dvec2, 4> ndcCorners = {
-            glm::dvec2(-1, -1), glm::dvec2(1, -1), glm::dvec2(1, 1), glm::dvec2(-1, 1)};
+        const std::array<glm::dvec2, 4> ndcCorners = {glm::dvec2(-1, -1), glm::dvec2(1, -1), glm::dvec2(1, 1),
+                                                      glm::dvec2(-1, 1)};
         double nearDepth = std::numeric_limits<double>::infinity();
         double farDepth = 0.0;
         bool unboundedFar = false;
@@ -428,7 +428,7 @@ void SceneLightCollector::ComputeShadowVP(Scene *scene, const glm::vec3 &cameraP
         }
         shadowCamera.nearClip = std::max(static_cast<float>(nearDepth), 0.001f);
         shadowCamera.farClip = unboundedFar ? std::numeric_limits<float>::infinity()
-                                           : std::max(static_cast<float>(farDepth), shadowCamera.nearClip + 0.01f);
+                                            : std::max(static_cast<float>(farDepth), shadowCamera.nearClip + 0.01f);
     }
     const auto frustumSliceAt = [&](float viewDepth) {
         std::array<glm::vec3, 4> corners{};
