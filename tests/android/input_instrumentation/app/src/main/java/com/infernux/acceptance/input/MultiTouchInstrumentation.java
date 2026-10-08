@@ -15,7 +15,10 @@ import android.util.Log;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.Surface;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
@@ -61,6 +64,7 @@ public final class MultiTouchInstrumentation extends Instrumentation {
         boolean imePassed = false;
         boolean orientationPassed = false;
         boolean backPassed = false;
+        int completedResumeCycles = 0;
         String stage = "setup";
         try {
             setInTouchMode(true);
@@ -101,6 +105,16 @@ public final class MultiTouchInstrumentation extends Instrumentation {
                     ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
                     Surface.ROTATION_90,
                     10000L);
+
+            stage = "surface-resume";
+            final int resumeCycles = Integer.parseInt(arguments.getString("resumeCycles", "0"));
+            if (resumeCycles < 0 || resumeCycles > 10) {
+                throw new IllegalArgumentException("resumeCycles must be between 0 and 10");
+            }
+            for (int cycle = 0; cycle < resumeCycles; ++cycle) {
+                resumeSurface(automation, component, targetActivity, waitMilliseconds);
+                completedResumeCycles++;
+            }
 
             final WindowManager windowManager = getTargetContext().getSystemService(WindowManager.class);
             if (windowManager == null) {
@@ -183,6 +197,8 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             result.putString("INFERNUX_IME_INJECTION", "passed");
             result.putString("INFERNUX_ORIENTATION_INJECTION", "passed");
             result.putString("INFERNUX_BACK_INJECTION", "passed");
+            result.putString("INFERNUX_SURFACE_RESUME", "passed");
+            result.putInt("resumeCycles", completedResumeCycles);
             result.putString("committedText", EXPECTED_TEXT);
             result.putInt("imeInset", visibleIme.inset);
             result.putInt("landscapeRotation", landscape.rotation);
@@ -208,6 +224,8 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             result.putString(
                     "INFERNUX_ORIENTATION_INJECTION", orientationPassed ? "passed" : "failed");
             result.putString("INFERNUX_BACK_INJECTION", backPassed ? "passed" : "failed");
+            result.putString("INFERNUX_SURFACE_RESUME", "failed");
+            result.putInt("resumeCycles", completedResumeCycles);
             result.putString("stage", stage);
             result.putString("error", error.toString());
             finish(Activity.RESULT_CANCELED, result);
@@ -218,6 +236,93 @@ public final class MultiTouchInstrumentation extends Instrumentation {
                         ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE));
             }
         }
+    }
+
+    private static SurfaceView findSurface(View view) {
+        if (view instanceof SurfaceView) {
+            return (SurfaceView) view;
+        }
+        if (view instanceof ViewGroup) {
+            final ViewGroup group = (ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); ++index) {
+                final SurfaceView found = findSurface(group.getChildAt(index));
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static final class SurfaceObserver implements SurfaceHolder.Callback {
+        volatile int created;
+        volatile int destroyed;
+
+        @Override
+        public void surfaceCreated(SurfaceHolder holder) {
+            created++;
+        }
+
+        @Override
+        public void surfaceDestroyed(SurfaceHolder holder) {
+            destroyed++;
+        }
+
+        @Override
+        public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {}
+    }
+
+    private void resumeSurface(
+            UiAutomation automation, ComponentName component, Activity activity,
+            long timeoutMilliseconds) throws Exception {
+        final SurfaceView[] surface = new SurfaceView[1];
+        final SurfaceObserver observer = new SurfaceObserver();
+        runOnMainSync(() -> {
+            surface[0] = findSurface(activity.getWindow().getDecorView());
+            if (surface[0] == null || !surface[0].getHolder().getSurface().isValid()) {
+                throw new IllegalStateException("Player has no live SurfaceView before Home");
+            }
+            surface[0].getHolder().addCallback(observer);
+        });
+        try {
+            shell(automation, "input keyevent KEYCODE_HOME");
+            waitForSurfaceEvent(observer, false, timeoutMilliseconds);
+            // Joining the UI thread also proves the native suspension wait in
+            // InfernuxSurface.surfaceDestroyed has returned, regardless of the
+            // callback ordering. Release deliberately suppresses SDL info logs.
+            runOnMainSync(() -> {
+                if (activity.hasWindowFocus() || surface[0].getHolder().getSurface().isValid()) {
+                    throw new IllegalStateException("Home did not retire the Player surface");
+                }
+            });
+            launchFromShell(automation, component);
+            waitForSurfaceEvent(observer, true, timeoutMilliseconds);
+            if (waitForTargetActivity(timeoutMilliseconds) != activity) {
+                throw new IllegalStateException("Resume replaced the Player Activity");
+            }
+            rotateTo(activity, ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE,
+                    Surface.ROTATION_90, timeoutMilliseconds);
+            runOnMainSync(() -> {
+                if (!surface[0].getHolder().getSurface().isValid()) {
+                    throw new IllegalStateException("Resume did not restore a valid Player surface");
+                }
+            });
+        } finally {
+            runOnMainSync(() -> surface[0].getHolder().removeCallback(observer));
+        }
+    }
+
+    private static void waitForSurfaceEvent(
+            SurfaceObserver observer, boolean creation, long timeoutMilliseconds) {
+        final long deadline = SystemClock.uptimeMillis() + timeoutMilliseconds;
+        while (SystemClock.uptimeMillis() < deadline) {
+            if ((creation ? observer.created : observer.destroyed) > 0) {
+                return;
+            }
+            SystemClock.sleep(50L);
+        }
+        throw new IllegalStateException("Player surface did not "
+                + (creation ? "resume" : "retire") + " within " + timeoutMilliseconds + "ms");
     }
 
     private static void launchFromShell(UiAutomation automation, ComponentName component)

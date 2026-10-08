@@ -47,10 +47,13 @@ def main(multiple_cameras=False):
                         baseline = engine.gpu_residency_snapshot
                         baseline_count = baseline["runtime_mesh_entry_count"]
                         baseline_bytes = baseline["runtime_mesh_bytes"]
+                        print(f"mesh retirement: baseline captured at frame {frames}", flush=True)
                     if 10 < frames <= 202:
                         positions[:, 1] = frames * 0.001
                         for renderer in renderers:
                             renderer.set_inline_mesh_data(positions, normals, uvs, indices, "changing triangle")
+                        if frames == 202:
+                            print("mesh retirement: all 192 mesh generations published", flush=True)
                     if frames in (220, 240):
                         if multiple_cameras:
                             frame = engine.renderer_frame_snapshot
@@ -63,6 +66,7 @@ def main(multiple_cameras=False):
                         assert snapshot["runtime_mesh_entry_count"] == expected_entries, snapshot
                         assert snapshot["runtime_mesh_bytes"] > baseline_bytes
                         scene.destroy_game_object(objects[0 if frames == 220 else 1])
+                        print(f"mesh retirement: object retired at frame {frames}", flush=True)
                     if frames == 260:
                         snapshot = engine.gpu_residency_snapshot
                         assert snapshot["runtime_mesh_entry_count"] == baseline_count, snapshot

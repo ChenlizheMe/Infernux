@@ -2000,6 +2000,10 @@ if(INFERNUX_BUILD_TESTS)
             )
         endforeach()
     endforeach()
+    # Deferred Bloom validates two slot orders and four MSAA transitions. CPU
+    # Vulkan on hosted runners needs time to finish every pixel assertion.
+    set_tests_properties(infernux.bloom_chain_deferred_layer_gpu infernux.bloom_chain_deferred_route_gpu
+        PROPERTIES TIMEOUT 120)
     set_tests_properties(infernux.mixed_deferred_coverage_gpu PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
         LABELS "requires_vulkan_device"
@@ -2141,6 +2145,10 @@ if(INFERNUX_BUILD_TESTS)
     set_tests_properties(infernux.mesh_publication_gpu infernux.mesh_publication_gpu_continuous
         infernux.runtime_mesh_retirement_gpu infernux.runtime_mesh_retirement_multi_camera_gpu
         PROPERTIES TIMEOUT 90)
+
+    # Two game cameras plus the editor view render all 260 lifetime-test
+    # frames; a CPU rasterizer can exceed the single-camera 90-second budget.
+    set_tests_properties(infernux.runtime_mesh_retirement_multi_camera_gpu PROPERTIES TIMEOUT 180)
 
     add_test(
         NAME infernux.scene_residency_soak

@@ -91,6 +91,7 @@ class MultiTouchResult:
     screen_states: tuple[dict[str, object], ...]
     required_logs: tuple[str, ...]
     fatal_count: int
+    resume_cycles: int
     elapsed_seconds: float
 
 
@@ -204,6 +205,17 @@ def validate_instrumentation_output(
     )
 
 
+def validate_resume_output(output: str, expected_cycles: int) -> int:
+    if not 0 <= expected_cycles <= 10:
+        raise ValueError("--resume-cycles must be between 0 and 10")
+    if "INSTRUMENTATION_RESULT: INFERNUX_SURFACE_RESUME=passed" not in output:
+        raise RuntimeError("Android surface resume instrumentation failed:\n" + output)
+    values = re.findall(r"^INSTRUMENTATION_RESULT: resumeCycles=(\d+)\s*$", output, re.M)
+    if len(values) != 1 or int(values[0]) != expected_cycles:
+        raise RuntimeError("Android instrumentation did not complete the required resume cycles")
+    return int(values[0])
+
+
 def _write_report(destination: Path | None, payload: dict[str, object]) -> None:
     if destination is None:
         return
@@ -260,8 +272,14 @@ def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
             "-e",
             "waitMilliseconds",
             str(arguments.wait_milliseconds),
+            "-e",
+            "resumeCycles",
+            str(arguments.resume_cycles),
             arguments.runner,
-            timeout=arguments.wait_milliseconds / 1000.0 + 90.0,
+            timeout=(
+                (1 + 3 * arguments.resume_cycles)
+                * arguments.wait_milliseconds / 1000.0 + 90.0
+            ),
         )
         # Instrumentation failures are often failures of the target Activity,
         # not of the Java probe. Capture the target process evidence before
@@ -280,6 +298,7 @@ def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
             landscape_safe_insets,
             reverse_landscape_safe_insets,
         ) = validate_instrumentation_output(output)
+        resume_cycles = validate_resume_output(output, arguments.resume_cycles)
         screen_states = screen_state_samples(log)
         if not screen_states:
             raise RuntimeError("Android Player did not publish Python Screen state")
@@ -338,6 +357,7 @@ def run_smoke(arguments: argparse.Namespace) -> MultiTouchResult:
             screen_states=screen_states,
             required_logs=required_logs,
             fatal_count=0,
+            resume_cycles=resume_cycles,
             elapsed_seconds=time.perf_counter() - started,
         )
     finally:
@@ -370,6 +390,7 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--wait-milliseconds", type=int, default=7000)
+    parser.add_argument("--resume-cycles", type=int, choices=range(11), default=0)
     parser.add_argument("--require-log", action="append", default=[])
     return parser
 

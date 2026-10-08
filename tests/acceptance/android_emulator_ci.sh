@@ -140,14 +140,17 @@ if [[ "$mode" == "smoke" || "$mode" == "all" ]]; then
         --no-back \
         --startup-timeout 240 \
         --expect-landscape \
-        --resume-cycles 2 \
+        --resume-cycles 0 \
         --report out/test-results/android-release-smoke.json
 
+    # Observe real Surface destruction/recreation and exercise input afterwards.
+    # Release suppresses the SDL diagnostic markers used by the Development probe.
     "$python_executable" tests/acceptance/android_multitouch_smoke.py \
         tests/android/input_instrumentation/app/build/outputs/apk/debug/app-debug.apk \
         --serial emulator-5554 \
         --target-package "$target_package" \
         --wait-milliseconds 20000 \
+        --resume-cycles 2 \
         --report out/test-results/android-release-multitouch-smoke.json \
         --logcat-report out/test-results/android-release-multitouch-smoke.logcat.txt
 fi

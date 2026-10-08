@@ -72,6 +72,46 @@ I/python.stdout: INFERNUX_PLATFORM_FIXTURE_SCREEN_STATE revision=9 size=3200x144
     assert samples[1]["safe_insets"] == (0, 161, 161, 60)
 
 
+@pytest.mark.parametrize("cycles", [0, 1, 2, 10])
+def test_resume_requires_exact_completed_cycle_count(cycles):
+    output = (
+        "INSTRUMENTATION_RESULT: INFERNUX_SURFACE_RESUME=passed\n"
+        f"INSTRUMENTATION_RESULT: resumeCycles={cycles}\n"
+    )
+    assert _module().validate_resume_output(output, cycles) == cycles
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "INSTRUMENTATION_RESULT: resumeCycles=2\n",
+        "INSTRUMENTATION_RESULT: INFERNUX_SURFACE_RESUME=failed\n"
+        "INSTRUMENTATION_RESULT: resumeCycles=2\n",
+        "INSTRUMENTATION_RESULT: INFERNUX_SURFACE_RESUME=passed\n",
+        "INSTRUMENTATION_RESULT: INFERNUX_SURFACE_RESUME=passed\n"
+        "INSTRUMENTATION_RESULT: resumeCycles=0\n",
+        "INSTRUMENTATION_RESULT: INFERNUX_SURFACE_RESUME=passed\n"
+        "INSTRUMENTATION_RESULT: resumeCycles=1\n",
+        "INSTRUMENTATION_RESULT: INFERNUX_SURFACE_RESUME=passed\n"
+        "INSTRUMENTATION_RESULT: resumeCycles=3\n",
+        "INSTRUMENTATION_RESULT: INFERNUX_SURFACE_RESUME=passed\n"
+        "INSTRUMENTATION_RESULT: resumeCycles=2\n"
+        "INSTRUMENTATION_RESULT: resumeCycles=2\n",
+    ],
+)
+def test_resume_rejects_missing_failed_or_incomplete_evidence(output):
+    with pytest.raises(RuntimeError):
+        _module().validate_resume_output(output, 2)
+
+
+@pytest.mark.parametrize("cycles", ["-1", "11"])
+def test_resume_parser_rejects_invalid_counts(cycles):
+    with pytest.raises(SystemExit):
+        _module()._parser().parse_args(
+            ["input.apk", "--target-package", "test.player", "--resume-cycles", cycles]
+        )
+
+
 def test_screen_state_samples_reject_inconsistent_safe_rect():
     module = _module()
     log = """
