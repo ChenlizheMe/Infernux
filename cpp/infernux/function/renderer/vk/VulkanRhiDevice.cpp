@@ -714,8 +714,7 @@ VulkanRhiDevice::VulkanRhiDevice() : m_deviceId(rhi::AllocateDeviceId())
 
 VulkanRhiDevice::VulkanRhiDevice(VkDevice device, VmaAllocator allocator, const rhi::DeviceCaps &capabilities,
                                  uint32_t graphicsQueueFamily, uint32_t computeQueueFamily,
-                                 uint32_t transferQueueFamily,
-                                 const rhi::DeviceCapabilityState &capabilityState)
+                                 uint32_t transferQueueFamily, const rhi::DeviceCapabilityState &capabilityState)
     : m_deviceId(rhi::AllocateDeviceId()), m_device(device), m_allocator(allocator), m_capabilities(capabilities),
       m_graphicsQueueFamily(graphicsQueueFamily), m_computeQueueFamily(computeQueueFamily),
       m_transferQueueFamily(transferQueueFamily), m_capabilityState(capabilityState),
