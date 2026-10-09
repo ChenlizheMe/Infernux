@@ -20,6 +20,7 @@ from infernux.engine.user_data import DATA_ROOT_ENV, get_infernux_data_root
 from infernux.engine.player_package_native import read_entry
 
 from .package import PACKAGE_EXTENSION, PACKAGE_MANIFEST, InxPackage, portable_meta_bytes
+from .source_content import same_source_content
 
 
 _STAGING_NAME = re.compile(r"^[a-z0-9-]+-(\d+)-[a-z0-9_]+$")
@@ -50,7 +51,7 @@ def _same_authored_package_contents(first: str, second: str) -> bool:
         if path in sidecars:
             left_bytes = portable_meta_bytes(left_bytes, sidecars[path])
             right_bytes = portable_meta_bytes(right_bytes, sidecars[path])
-        if left_bytes != right_bytes:
+        if not same_source_content(path, left_bytes, right_bytes):
             return False
     return True
 

@@ -63,6 +63,7 @@ from .package import (
 from .preload import PreloadManager
 from .project_index import _asset_database, project_guid_paths
 from .registry import PluginRegistry
+from .source_content import same_source_content
 
 
 _URL_PACKAGE_CHUNK_BYTES = 1024 * 1024
@@ -2158,7 +2159,9 @@ class PluginManager:
 
         def check_edit(path: str, baseline: bytes | None, incoming: bytes | None) -> None:
             actual = Path(path).read_bytes() if os.path.isfile(path) else None
-            if actual != incoming and (baseline is None or actual != baseline):
+            if not same_source_content(path, actual, incoming) and (
+                baseline is None or not same_source_content(path, actual, baseline)
+            ):
                 conflicts.append(portable_path(relative_path(path, self.project_root)))
 
         def baseline_payload(guid: str) -> bytes | None:
@@ -2196,14 +2199,18 @@ class PluginManager:
             guid = item.guid.casefold()
             old = old_files.get(guid)
             if old is None:
-                if not item.owned and Path(item.destination).read_bytes() != item.payload:
+                if not item.owned and not same_source_content(
+                    item.destination, Path(item.destination).read_bytes(), item.payload,
+                ):
                     raise PackageConflictError(f"Shared asset has different content: {item.destination}")
                 replacements.append(item)
                 continue
             shared = self.registry.users_for_guid(guid, excluding=reference)
             owned = bool(old.get("owned", True))
             if shared or not owned:
-                if not os.path.isfile(item.destination) or Path(item.destination).read_bytes() != item.payload:
+                if not os.path.isfile(item.destination) or not same_source_content(
+                    item.destination, Path(item.destination).read_bytes(), item.payload,
+                ):
                     raise PackageConflictError(f"Cannot replace a shared asset: {item.destination}")
                 # Retain ownership without writing through another package's asset.
                 replacements.append(replace(item, owned=owned,
