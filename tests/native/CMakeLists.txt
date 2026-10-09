@@ -1660,6 +1660,11 @@ if(INFERNUX_BUILD_TESTS)
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_SOURCE_DIR}/tests/gpu/material_first_shadow_gpu_test.py
     )
+    add_test(
+        NAME infernux.default_material_first_shadow_gpu
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_SOURCE_DIR}/tests/gpu/default_material_first_shadow_gpu_test.py
+    )
     foreach(_variant_instances 1 2)
         set(_variant_test "infernux.material_geometry_variants_${_variant_instances}_gpu")
         add_test(NAME ${_variant_test}
@@ -2011,7 +2016,7 @@ if(INFERNUX_BUILD_TESTS)
         RUN_SERIAL TRUE
         FAIL_REGULAR_EXPRESSION "Vulkan Validation Error:;SYNC-HAZARD"
     )
-    set_tests_properties(infernux.material_first_shadow_gpu PROPERTIES
+    set_tests_properties(infernux.material_first_shadow_gpu infernux.default_material_first_shadow_gpu PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"
         LABELS "requires_vulkan_device"
         TIMEOUT 30

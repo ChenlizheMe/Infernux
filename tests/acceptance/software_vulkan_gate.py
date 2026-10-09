@@ -32,6 +32,7 @@ REQUIRED_TESTS = tuple('infernux.' + name for name in (
     'gpu_upload',
     'mesh_index_format_gpu',
     'material_first_shadow_gpu',
+    'default_material_first_shadow_gpu',
     'material_raster_state_gpu',
     'surface_gbuffer_scalars_gpu',
     'deformed_pbr_lighting_gpu',

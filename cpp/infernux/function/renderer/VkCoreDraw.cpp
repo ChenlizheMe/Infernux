@@ -1889,16 +1889,19 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
         ResolvedShadowMaterial lastResolvedShadowResources{};
         for (size_t drawCallIndex = 0; drawCallIndex < activeShadowDrawCalls.size(); ++drawCallIndex) {
             const DrawCall &dc = activeShadowDrawCalls[drawCallIndex];
+            // Empty renderer slots use DefaultLit in both color and shadow
+            // draws, including the first primitive in a fresh project.
+            const auto &material = dc.material ? dc.material : m_cachedDefaultLit;
             const DrawListMetadata *metadata =
                 hasShadowListMetadata ? &m_shadowListMetadata[drawCallIndex]
                                       : (usesMainDrawListMetadata ? &m_drawListMetadata[drawCallIndex] : nullptr);
             const uint64_t requiredIndexEnd = static_cast<uint64_t>(dc.indexStart) + dc.indexCount;
-            if (metadata && (metadata->objectId != dc.objectId || metadata->material != dc.material.get() ||
+            if (metadata && (metadata->objectId != dc.objectId || metadata->material != material.get() ||
                              requiredIndexEnd > metadata->indexCapacity))
                 metadata = nullptr;
-            if (!dc.castsShadows || !dc.material)
+            if (!dc.castsShadows || !material)
                 continue;
-            const int renderQueue = metadata ? metadata->renderQueue : dc.material->GetRenderQueue();
+            const int renderQueue = metadata ? metadata->renderQueue : material->GetRenderQueue();
             if (renderQueue < queueMin || renderQueue > queueMax)
                 continue;
             const DrawListMetadata *bufferLease =
@@ -1907,7 +1910,7 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 const auto bufferIt = m_perObjectBuffers.find(dc.objectId);
                 if (bufferIt != m_perObjectBuffers.end() && bufferIt->second.HasVertexBuffer() &&
                     bufferIt->second.indexBuffer && requiredIndexEnd <= bufferIt->second.indexCount) {
-                    fallbackBufferLeases.push_back({dc.objectId, dc.material.get(), renderQueue,
+                    fallbackBufferLeases.push_back({dc.objectId, material.get(), renderQueue,
                                                     bufferIt->second.vertexBuffer, bufferIt->second.indexBuffer,
                                                     bufferIt->second.indexCount, bufferIt->second.residentVertexBuffer,
                                                     bufferIt->second.residentVertexHandle,
@@ -1919,20 +1922,20 @@ void InxVkCoreModular::DrawShadowCasters(VkCommandBuffer cmdBuf, uint32_t width,
                 continue;
 
             ResolvedShadowMaterial resources{};
-            if (dc.material.get() == lastResolvedShadowMaterial) {
+            if (material.get() == lastResolvedShadowMaterial) {
                 resources = lastResolvedShadowResources;
             } else {
-                auto resolved = m_resolvedShadowMaterialsScratch.find(dc.material.get());
+                auto resolved = m_resolvedShadowMaterialsScratch.find(material.get());
                 if (resolved == m_resolvedShadowMaterialsScratch.end()) {
                     const VkDescriptorSet descriptorSet = EnsureMaterialShadowPipeline(
-                        dc.material, dc.material->GetVertShaderName(), dc.material->GetFragShaderName(), depthFormat);
-                    resources.pipeline = dc.material->GetPassPipeline(ShaderCompileTarget::Shadow);
+                        material, material->GetVertShaderName(), material->GetFragShaderName(), depthFormat);
+                    resources.pipeline = material->GetPassPipeline(ShaderCompileTarget::Shadow);
                     resources.descriptorSet = descriptorSet;
-                    resolved = m_resolvedShadowMaterialsScratch.emplace(dc.material.get(), resources).first;
+                    resolved = m_resolvedShadowMaterialsScratch.emplace(material.get(), resources).first;
                 } else {
                     resources = resolved->second;
                 }
-                lastResolvedShadowMaterial = dc.material.get();
+                lastResolvedShadowMaterial = material.get();
                 lastResolvedShadowResources = resources;
             }
             const VkPipeline pip = resources.pipeline;
