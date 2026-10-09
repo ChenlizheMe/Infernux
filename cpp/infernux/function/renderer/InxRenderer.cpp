@@ -1349,6 +1349,10 @@ void InxRenderer::DrawFrame()
     if (m_vkCore) {
         m_vkCore->WaitForCurrentFrame();
         m_vkCore->CollectRetiredGpuResources();
+        if (m_transientResourcePool) {
+            const auto completedEpoch = m_vkCore->GetBackendContext().Queues().GetCompletedCompletionEpoch();
+            m_transientResourcePool->Collect(completedEpoch);
+        }
         // SDL pixel-size changes are authoritative even when acquire/present
         // keep succeeding. Commit the new attachments before GUI layout and
         // render-graph construction, rather than relying on driver errors.
@@ -1515,6 +1519,8 @@ void InxRenderer::DrawFrame()
     // before any stale render graph executes this frame.
     if (CheckAndApplyMsaaRequest(true, sceneViewActive,
                                  m_gameCameraEnabled || HasPendingCapture(CaptureSource::Game))) {
+        if (m_transientResourcePool)
+            m_transientResourcePool->AbandonReleased();
         sceneManager.EndFrame();
         runDeferredTasks();
         return;
@@ -1622,6 +1628,8 @@ void InxRenderer::DrawFrame()
     if (HasPendingCapture(CaptureSource::Editor))
         m_vkCore->RequestPresentationReadback();
     m_vkCore->DrawFrame(m_cameraPos, m_cameraLookAt, m_cameraUp);
+    if (m_transientResourcePool)
+        m_transientResourcePool->RetireReleased(m_vkCore->GetLastSubmittedCompletionEpoch());
     sceneManager.CommitSkinPoseHistories();
     if (m_vkCore->ConsumeFirstVisiblePresentation())
         m_view->RevealAfterFirstPresentation();

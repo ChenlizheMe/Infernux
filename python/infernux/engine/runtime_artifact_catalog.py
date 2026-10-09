@@ -121,12 +121,27 @@ def unix_ns_to_filetime_ticks(unix_ns: int) -> int:
 
 
 def _source_content_hash(path: str) -> str:
-    """Return the native AssetIndex FNV-1a source fingerprint."""
-    from infernux.lib import _Infernux as native
+    """Return the AssetIndex-compatible FNV-1a source fingerprint.
+
+    This is deliberately implemented here instead of importing the native
+    engine.  Player package audits and artifact validation also run in the
+    portable Hub environment, where no Vulkan/native module is installed.
+    The native importer uses the same streaming FNV-1a-64 contract.
+    """
+    hash_value = 14695981039346656037
     try:
-        return native._asset_source_content_hash(str(path))
-    except (OSError, RuntimeError) as exc:
+        before = os.stat(path)
+        with open(path, "rb") as stream:
+            while chunk := stream.read(65536):
+                for value in chunk:
+                    hash_value ^= value
+                    hash_value = (hash_value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+        after = os.stat(path)
+    except OSError as exc:
         raise RuntimeArtifactError(f"Asset source cannot be fingerprinted: {path}") from exc
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise RuntimeArtifactError(f"Asset source changed during fingerprinting: {path}")
+    return f"{hash_value:016x}"
 
 
 def _metadata_value(entry: dict[str, Any], key: str, default: Any = None) -> Any:
@@ -228,10 +243,9 @@ def source_fingerprint(project_root: str | os.PathLike[str], entry: dict[str, An
     source = source_path_for_entry(project_root, entry)
     if _metadata_value(entry, "import_owner_guid"):
         source = source.partition("::subtex:")[0].partition("::subanim:")[0]
-    from infernux.lib import _Infernux as native
     try:
-        size, modified = native._asset_source_stat(str(source))
-    except (OSError, RuntimeError) as exc:
+        stat = os.stat(source)
+    except OSError as exc:
         raise RuntimeArtifactError(f"Asset source is missing: {source}") from exc
     expected = entry["source"]
     expected_size = int(expected["size"])
@@ -244,8 +258,8 @@ def source_fingerprint(project_root: str | os.PathLike[str], entry: dict[str, An
     # A cross-machine timestamp mismatch still uses a bounded native hash,
     # with the GIL released; never iterate asset bytes in Python.
     current = {
-        "size": int(size),
-        "modified_ns": int(modified),
+        "size": int(stat.st_size),
+        "modified_ns": unix_ns_to_filetime_ticks(int(stat.st_mtime_ns)),
     }
     if current["size"] != expected_size:
         raise RuntimeArtifactError(

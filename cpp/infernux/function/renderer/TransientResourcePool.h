@@ -7,15 +7,19 @@
  * Manages the lifecycle of transient GPU images:
  * - Acquire(): allocate or reuse a render target matching (w, h, format, samples)
  * - Release(): mark a render target as reclaimable
- * - EndFrame(): move released targets back to the free pool
- *
- * Hash-based pooling avoids recreating VkImage/VkImageView every frame when
- * the same (dimensions, format) are requested across frames.
+ * - RetireReleased(): associate released targets with the exact GPU
+ *   completion epoch that contains their last use
+
+ * * - Collect(): move only completed targets back to the free pool
+ * Hash-based pooling avoids recreating
+ * VkImage/VkImageView every frame when the same (dimensions, format) are requested across frames.
  *
  * NOTE: Uses VMA (Vulkan Memory Allocator) for memory management.
  */
 
 #pragma once
+
+#include "rhi/RhiSubmission.h"
 
 #include <cstdint>
 #include <unordered_map>
@@ -66,8 +70,19 @@ class TransientResourcePool
     /// @brief Mark a render target slot for recycling at end of frame.
     void Release(uint32_t slotId);
 
-    /// @brief Reclaim released slots back into the free pool. Call once at frame end.
-    void EndFrame();
+    /// @brief Associate all releases from the current recording phase with an
+    /// exact GPU completion epoch. The slots remain unavailable until Collect.
+    /// An invalid epoch is rejected; frame-age guesses are deliberately not
+    /// supported because they can recycle an image still referenced by GPU work.
+    void RetireReleased(rhi::SubmissionSerial completionEpoch);
+
+    /// @brief Reclaim only slots whose GPU completion epoch has completed.
+    void Collect(rhi::SubmissionSerial completedEpoch);
+
+    /// @brief Return releases from a recording phase that was never submitted.
+    /// The caller must use this only after proving that no command buffer from
+    /// the phase reached a queue.
+    void AbandonReleased();
 
     // ====================================================================
     // Accessors
@@ -111,7 +126,7 @@ class TransientResourcePool
         VkFormat format = VK_FORMAT_UNDEFINED;
         VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
         bool inUse = false;
-        bool pendingRelease = false; // released this frame, recycled at EndFrame()
+        bool pendingRelease = false; // released, awaiting RetireReleased()
     };
 
     /// @brief Hash key for matching compatible render targets.
@@ -140,11 +155,19 @@ class TransientResourcePool
         }
     };
 
+    struct RetiringEntry
+    {
+        uint32_t slotId = UINT32_MAX;
+        rhi::SubmissionSerial completionEpoch = rhi::InvalidSubmissionSerial;
+    };
+
     /// @brief Create a new VkImage + VkImageView for a render target.
     uint32_t CreateEntry(int width, int height, VkFormat format, VkSampleCountFlagBits samples);
 
     /// @brief Destroy a single pool entry's Vulkan resources.
     void DestroyEntry(RTEntry &entry);
+
+    void RecycleEntry(uint32_t slotId);
 
     // ----- State -----
     vk::VkDeviceContext *m_deviceContext = nullptr;
@@ -154,6 +177,7 @@ class TransientResourcePool
 
     // Free-list indexed by (w, h, fmt, samples): maps to vector of available slot IDs
     std::unordered_map<RTKey, std::vector<uint32_t>, RTKeyHash> m_freeList;
+    std::vector<RetiringEntry> m_retiring;
     uint64_t m_residentBytes = 0;
 };
 

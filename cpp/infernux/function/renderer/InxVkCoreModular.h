@@ -431,6 +431,14 @@ class InxVkCoreModular
         return m_maxFramesInFlight == 0 ? 0 : m_currentFrame % m_maxFramesInFlight;
     }
 
+    /// Exact device-wide completion epoch assigned to the most recently
+    /// submitted frame. Resource pools use this value after DrawFrame()
+    /// instead of guessing from a frame count.
+    [[nodiscard]] rhi::SubmissionSerial GetLastSubmittedCompletionEpoch() const noexcept
+    {
+        return m_lastSubmittedCompletionEpoch;
+    }
+
     /// Arm the next successful hidden-window presentation as the complete
     /// startup frame. The native Windows Player is revealed only after this
     /// boundary, so the compositor never exposes an unpainted client area.
@@ -1242,6 +1250,7 @@ class InxVkCoreModular
     vk::DeviceConfig m_deviceConfig;
     uint32_t m_maxFramesInFlight;
     uint32_t m_currentFrame = 0;
+    rhi::SubmissionSerial m_lastSubmittedCompletionEpoch = rhi::InvalidSubmissionSerial;
     bool m_framebufferResized = false;
     bool m_firstVisiblePresentationPending = false;
     bool m_firstVisiblePresentationCompleted = false;

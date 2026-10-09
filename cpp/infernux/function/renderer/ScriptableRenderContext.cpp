@@ -260,8 +260,6 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
         m_vkCore->SetShadowDrawCalls(m_graph->HasCachedShadowDrawCalls() ? &m_graph->GetCachedShadowDrawCalls()
                                                                          : nullptr);
         m_vkCore->ReuseObjectBufferBindingsThisFrame();
-        if (m_transientPool)
-            m_transientPool->EndFrame();
         m_submitted = true;
 #if INFERNUX_FRAME_PROFILE
         g_srcProfileSnapshot.cachedSubmissionReuses += 1.0;
@@ -565,11 +563,6 @@ void ScriptableRenderContext::SubmitCulling(CullingResults &culling)
     // NOTE: CleanupUnusedBuffers is called by InxRenderer::DrawFrame() after
     // all pipeline renders, using the union of all graphs' draw calls.
     // This prevents one graph's cleanup from removing buffers another graph needs.
-
-    // Release transient resources
-    if (m_transientPool) {
-        m_transientPool->EndFrame();
-    }
 
     m_submitted = true;
 #if INFERNUX_FRAME_PROFILE

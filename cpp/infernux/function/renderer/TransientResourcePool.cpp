@@ -50,6 +50,7 @@ void TransientResourcePool::Shutdown()
 
     m_entries.clear();
     m_freeList.clear();
+    m_retiring.clear();
     m_residentBytes = 0;
     m_deviceContext = nullptr;
     m_resourceManager = nullptr;
@@ -92,22 +93,55 @@ void TransientResourcePool::Release(uint32_t slotId)
         return;
     }
 
-    // Don't immediately return to pool; wait until EndFrame()
-    // (the GPU may still be reading this RT in the current frame)
+    // Do not return to the free list here. The command buffer recorded for
+    // this frame may still reference the image; RetireReleased() associates it
+    // with the exact completion epoch after submission.
     entry.pendingRelease = true;
 }
 
-void TransientResourcePool::EndFrame()
+void TransientResourcePool::RetireReleased(rhi::SubmissionSerial completionEpoch)
 {
+    if (completionEpoch == rhi::InvalidSubmissionSerial)
+        throw std::invalid_argument("TransientResourcePool requires a valid GPU completion epoch");
+
     for (uint32_t i = 0; i < static_cast<uint32_t>(m_entries.size()); ++i) {
         auto &entry = m_entries[i];
         if (entry.pendingRelease) {
             entry.inUse = false;
             entry.pendingRelease = false;
-
-            RTKey key{entry.width, entry.height, entry.format, entry.samples};
-            m_freeList[key].push_back(i);
+            m_retiring.push_back({i, completionEpoch});
         }
+    }
+}
+
+void TransientResourcePool::Collect(rhi::SubmissionSerial completedEpoch)
+{
+    if (completedEpoch == rhi::InvalidSubmissionSerial && !m_retiring.empty())
+        throw std::invalid_argument("TransientResourcePool requires a valid completed GPU epoch");
+
+    size_t writeIndex = 0;
+    for (size_t index = 0; index < m_retiring.size(); ++index) {
+        const RetiringEntry retiring = m_retiring[index];
+        if (retiring.completionEpoch <= completedEpoch) {
+            RecycleEntry(retiring.slotId);
+        } else {
+            if (writeIndex != index)
+                m_retiring[writeIndex] = retiring;
+            ++writeIndex;
+        }
+    }
+    m_retiring.resize(writeIndex);
+}
+
+void TransientResourcePool::AbandonReleased()
+{
+    for (uint32_t i = 0; i < static_cast<uint32_t>(m_entries.size()); ++i) {
+        auto &entry = m_entries[i];
+        if (!entry.pendingRelease)
+            continue;
+        entry.inUse = false;
+        entry.pendingRelease = false;
+        RecycleEntry(i);
     }
 }
 
@@ -154,6 +188,16 @@ size_t TransientResourcePool::GetActiveEntryCount() const noexcept
             ++count;
     }
     return count;
+}
+
+void TransientResourcePool::RecycleEntry(uint32_t slotId)
+{
+    if (slotId >= m_entries.size())
+        throw std::logic_error("TransientResourcePool retirement references an invalid slot");
+
+    const auto &entry = m_entries[slotId];
+    RTKey key{entry.width, entry.height, entry.format, entry.samples};
+    m_freeList[key].push_back(slotId);
 }
 
 // ============================================================================

@@ -493,6 +493,10 @@ try {
             std::string("Frame GPU submission failed: ") + vk::VkResultToString(submitResult) +
             (executeResult.submittedAny ? " (work was already submitted)" : " (no work was submitted)"));
     } else {
+        // The frame slot epoch was reserved immediately before recording and
+        // is completed only by the terminal frame fence. Publish it now so
+        // transient resource pools can retire exactly against this submission.
+        m_lastSubmittedCompletionEpoch = externalSync.completionEpoch;
         (void)m_backend.Queues().AssociateFrameSlot(frameSlot, executeResult.completionTicket);
         if (asyncCompute)
             m_frameAsyncComputePrimed = true;
