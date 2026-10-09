@@ -292,7 +292,7 @@ class EngineSplashScreen(QWidget):
         popen_kwargs: dict = {"cwd": runtime.working_directory if runtime else project_path, "env": env}
         executable = runtime.executable if runtime else python_executable_path(python_exe)
         if runtime is not None:
-            script = runtime.bootstrap(script)
+            script = runtime.bootstrap(script, project_path)
 
         if detached:
             # Engine has its own Console panel — never inherit stdout/stderr

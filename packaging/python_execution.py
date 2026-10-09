@@ -40,7 +40,7 @@ class EditorPythonRuntime:
         return {"PYTHONHOME": self.home, "PYTHONPATH": "",
                 "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1"}
 
-    def bootstrap(self, script: str) -> str:
+    def bootstrap(self, script: str, project_path: str) -> str:
         # CPython has already resolved its private home before this code runs.
         # Tooling and subprocesses use the project interpreter; external tools
         # must not inherit PYTHONHOME from this one process's startup contract.
@@ -49,6 +49,9 @@ class EditorPythonRuntime:
             f"sys.executable = {self.project_executable!r}\n"
             "sys._base_executable = sys.executable\n"
             "os.environ.pop('PYTHONHOME', None)\n"
+            # Process creation uses the stable host directory, but authored
+            # relative file access must retain the project's working directory.
+            f"os.chdir({os.path.abspath(project_path)!r})\n"
         ) + script
 
 
