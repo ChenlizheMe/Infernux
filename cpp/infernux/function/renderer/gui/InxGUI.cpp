@@ -463,12 +463,18 @@ void InxGUI::PumpTextureUploads()
 
 void InxGUI::BuildFrame()
 {
+    // SDL exposes a zero-sized ImGui display while minimized. Even forced
+    // automation frames must preserve the last drawable docking layout.
+    if ((SDL_GetWindowFlags(m_window_ptr) & SDL_WINDOW_MINIMIZED) != 0)
+        return;
     (void)m_editorFrameScheduler.Consume(EditorGuiFrameScheduler::Clock::now(), true);
     BuildFrameInternal();
 }
 
 bool InxGUI::BuildFrameIfDue(bool force)
 {
+    if ((SDL_GetWindowFlags(m_window_ptr) & SDL_WINDOW_MINIMIZED) != 0)
+        return false;
     const auto now = EditorGuiFrameScheduler::Clock::now();
     if (m_playerMode) {
         (void)m_editorFrameScheduler.ConsumeUnthrottled(now, true);
