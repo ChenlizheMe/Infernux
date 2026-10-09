@@ -137,7 +137,7 @@ void HingeJoint::RebuildConstraint()
     const glm::vec3 worldAnchor = transform->TransformPoint(m_anchor);
     const glm::vec3 worldAxis = transform->TransformDirection(m_axis);
     m_constraintId =
-        world.CreateHingeConstraint(*this, bodyId, connectedBodyId, worldAnchor, worldAxis, m_useLimits,
+        world.CreateHingeConstraint(*this, bodyId, connectedBodyId, worldAnchor, worldAxis, m_anchor, m_useLimits,
                                     glm::radians(m_minimumAngle), glm::radians(m_maximumAngle), m_enableCollision);
     m_boundBodyId = bodyId;
     m_boundConnectedBodyId = connectedBodyId;

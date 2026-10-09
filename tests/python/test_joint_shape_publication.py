@@ -9,14 +9,16 @@ def _step(count):
         SceneManager.instance().step(1 / 60)
 
 
-def _mechanism(scene, kind):
+def _mechanism(scene, kind, initial_scale=(1, 1, 1), support_scale=(1, 1, 1), support_position=(0, 2, 0)):
     support = scene.create_game_object('Shape edit support')
-    support.transform.position = Vector3(0, 2, 0)
+    support.transform.position = Vector3(*support_position)
+    support.transform.local_scale = Vector3(*support_scale)
     support_body = support.add_component('Rigidbody')
     support_body.is_kinematic = True
     support_body.use_gravity = False
     support.add_component('BoxCollider')
     owner = scene.create_game_object('Shape edit mechanism')
+    owner.transform.local_scale = Vector3(*initial_scale)
     body = owner.add_component('Rigidbody')
     body.use_gravity = False
     body.drag = body.angular_drag = 0
@@ -121,3 +123,28 @@ def test_scale_preserves_joint_reference_frame_and_limits(scene, kind):
     assert abs(getattr(joint, field)) <= (20.5 if kind == 'HingeJoint' else .505)
     error = owner.transform.transform_point(joint.anchor) - support.transform.position
     assert (error.y, error.z) == pytest.approx((0, 0), abs=.005)
+
+
+@pytest.mark.parametrize('kind', ['HingeJoint', 'SliderJoint'])
+@pytest.mark.parametrize('initial_y', [0, -1])
+def test_joint_retains_authored_anchor_when_growing_from_collapsed_or_mirrored_scale(scene, kind, initial_y):
+    owner, body, joint, support = _mechanism(scene, kind, (1, initial_y, 1))
+    before = owner.transform.transform_point(joint.anchor)
+    owner.transform.local_scale = Vector3(1, 1, 1)
+    Physics.sync_transforms()
+    _step(300)
+    after = owner.transform.transform_point(joint.anchor)
+    assert (after.y, after.z) == pytest.approx((before.y, before.z), abs=.005)
+
+
+@pytest.mark.parametrize('kind', ['HingeJoint', 'SliderJoint'])
+def test_collapsed_connected_body_retains_its_physical_anchor(scene, kind):
+    owner, body, joint, support = _mechanism(scene, kind, support_scale=(1, 0, 1), support_position=(0, 1, 0))
+    before = owner.transform.transform_point(joint.anchor)
+    # The connected anchor is inferred from the actual bound physics point.
+    # A collapsed axis has no inverse; expanding it must retain that offset.
+    support.transform.local_scale = Vector3(1, 1, 1)
+    Physics.sync_transforms()
+    _step(300)
+    after = owner.transform.transform_point(joint.anchor)
+    assert (after.y, after.z) == pytest.approx((before.y, before.z), abs=.005)

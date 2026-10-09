@@ -2129,8 +2129,9 @@ PhysicsBodyMotionState PhysicsWorld::GetBodyMotionState(uint32_t bodyId) const
 }
 
 uint64_t PhysicsWorld::CreateHingeConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                             const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis, bool useLimits,
-                                             float minimumAngle, float maximumAngle, bool enableCollision)
+                                             const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis,
+                                             const glm::vec3 &localAnchor, bool useLimits, float minimumAngle,
+                                             float maximumAngle, bool enableCollision)
 {
     if (!m_initialized || !m_physicsSystem)
         throw std::logic_error("hinge creation requires an initialized physics world");
@@ -2178,7 +2179,7 @@ uint64_t PhysicsWorld::CreateHingeConstraint(PhysicsConstraintOwner &owner, uint
     const uint64_t constraintId = m_nextConstraintId++;
     const bool ignoresCollision = bodyIdB != 0xFFFFFFFF && !enableCollision;
     ConstraintRecord record{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Hinge};
-    CaptureConstraintAnchors(record);
+    CaptureConstraintAnchors(record, localAnchor);
     m_constraints.emplace(constraintId, record);
     if (ignoresCollision)
         SetConstraintPairSuppressed(bodyIdA, bodyIdB, true);
@@ -2186,8 +2187,9 @@ uint64_t PhysicsWorld::CreateHingeConstraint(PhysicsConstraintOwner &owner, uint
 }
 
 uint64_t PhysicsWorld::CreateSliderConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                              const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis, bool useLimits,
-                                              float minimumDistance, float maximumDistance, bool enableCollision)
+                                              const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis,
+                                              const glm::vec3 &localAnchor, bool useLimits, float minimumDistance,
+                                              float maximumDistance, bool enableCollision)
 {
     if (!m_initialized || !m_physicsSystem)
         throw std::logic_error("slider creation requires an initialized physics world");
@@ -2231,16 +2233,17 @@ uint64_t PhysicsWorld::CreateSliderConstraint(PhysicsConstraintOwner &owner, uin
     const uint64_t constraintId = m_nextConstraintId++;
     const bool ignoresCollision = bodyIdB != 0xFFFFFFFF && !enableCollision;
     ConstraintRecord record{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Slider};
-    CaptureConstraintAnchors(record);
+    CaptureConstraintAnchors(record, localAnchor);
     m_constraints.emplace(constraintId, record);
     if (ignoresCollision)
         SetConstraintPairSuppressed(bodyIdA, bodyIdB, true);
     return constraintId;
 }
 
-void PhysicsWorld::CaptureConstraintAnchors(ConstraintRecord &record)
+void PhysicsWorld::CaptureConstraintAnchors(ConstraintRecord &record, const glm::vec3 &localAnchor)
 {
-    const auto capture = [&](uint32_t bodyId, JPH::Vec3Arg point, glm::vec3 &anchor, glm::vec3 &scale) {
+    const auto capture = [&](uint32_t bodyId, JPH::Vec3Arg point, glm::vec3 &anchor, glm::vec3 &scale,
+                             glm::vec3 &collapsedOffset) {
         if (bodyId == 0xFFFFFFFF)
             return;
         const auto *transform = m_bodyToCollider.at(bodyId)->GetGameObject()->GetTransform();
@@ -2249,13 +2252,19 @@ void PhysicsWorld::CaptureConstraintAnchors(ConstraintRecord &record)
             point + m_physicsSystem->GetBodyInterface().GetShape(JPH::BodyID(bodyId))->GetCenterOfMass();
         // Capture the actual bound physics frame: a kinematic body's visual
         // Transform may already contain its next target pose. A collapsed
-        // scale axis has no inverse; its attachment coordinate is the origin.
-        for (int axis = 0; axis < 3; ++axis)
-            anchor[axis] = scale[axis] == 0.0f ? 0.0f : offset[axis] / scale[axis];
+        // scale axis has no inverse: retain the owner's authored coordinate
+        // and the actual bound offset that cannot be represented by scaling.
+        const glm::vec3 collapsed = bodyId == record.bodyIdA ? localAnchor : glm::vec3(0.0f);
+        for (int axis = 0; axis < 3; ++axis) {
+            anchor[axis] = scale[axis] == 0.0f ? collapsed[axis] : offset[axis] / scale[axis];
+            collapsedOffset[axis] = scale[axis] == 0.0f ? offset[axis] : 0.0f;
+        }
     };
     const auto *joint = static_cast<JPH::TwoBodyConstraint *>(record.constraint);
-    capture(record.bodyIdA, joint->GetConstraintToBody2Matrix().GetTranslation(), record.anchorA, record.scaleA);
-    capture(record.bodyIdB, joint->GetConstraintToBody1Matrix().GetTranslation(), record.anchorB, record.scaleB);
+    capture(record.bodyIdA, joint->GetConstraintToBody2Matrix().GetTranslation(), record.anchorA, record.scaleA,
+            record.collapsedOffsetA);
+    capture(record.bodyIdB, joint->GetConstraintToBody1Matrix().GetTranslation(), record.anchorB, record.scaleB,
+            record.collapsedOffsetB);
 }
 
 void PhysicsWorld::UpdateConstraintScale(ConstraintRecord &record, uint32_t bodyId, const glm::vec3 &scale)
@@ -2269,7 +2278,7 @@ void PhysicsWorld::UpdateConstraintScale(ConstraintRecord &record, uint32_t body
     // Recreating from a single current world point would move the other end
     // and reset the hinge's zero angle / slider's zero displacement.
     const glm::vec3 anchor = ownerChanged ? record.anchorA : record.anchorB;
-    const glm::vec3 offset = anchor * scale;
+    const glm::vec3 offset = anchor * scale + (ownerChanged ? record.collapsedOffsetA : record.collapsedOffsetB);
     auto settings = record.constraint->GetConstraintSettings();
     JPH::BodyID ids[2] = {JPH::BodyID(record.bodyIdA), JPH::BodyID(record.bodyIdB)};
     JPH::Constraint *replacement = nullptr;

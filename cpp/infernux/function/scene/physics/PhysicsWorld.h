@@ -305,13 +305,15 @@ class PhysicsWorld
     /// Create a world-space hinge between body A and body B, or body A and
     /// the fixed world when body B is invalid. Limits are radians.
     uint64_t CreateHingeConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                   const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis, bool useLimits,
-                                   float minimumAngle, float maximumAngle, bool enableCollision);
+                                   const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis,
+                                   const glm::vec3 &localAnchor, bool useLimits, float minimumAngle, float maximumAngle,
+                                   bool enableCollision);
     /// Create a prismatic constraint that permits only translation along one
     /// world-space axis. Limits are metres relative to the creation pose.
     uint64_t CreateSliderConstraint(PhysicsConstraintOwner &owner, uint32_t bodyIdA, uint32_t bodyIdB,
-                                    const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis, bool useLimits,
-                                    float minimumDistance, float maximumDistance, bool enableCollision);
+                                    const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis,
+                                    const glm::vec3 &localAnchor, bool useLimits, float minimumDistance,
+                                    float maximumDistance, bool enableCollision);
     void DestroyConstraint(uint64_t constraintId);
     void UpdateHingeConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
                                        bool enableCollision);
@@ -626,10 +628,12 @@ class PhysicsWorld
         ConstraintKind kind = ConstraintKind::Hinge;
         glm::vec3 anchorA{0.0f};
         glm::vec3 anchorB{0.0f};
+        glm::vec3 collapsedOffsetA{0.0f};
+        glm::vec3 collapsedOffsetB{0.0f};
         glm::vec3 scaleA{1.0f};
         glm::vec3 scaleB{1.0f};
     };
-    void CaptureConstraintAnchors(ConstraintRecord &record);
+    void CaptureConstraintAnchors(ConstraintRecord &record, const glm::vec3 &localAnchor);
     void UpdateConstraintScale(ConstraintRecord &record, uint32_t bodyId, const glm::vec3 &scale);
     void ActivateConstraintBodies(const ConstraintRecord &record);
     void UpdateConstraintCollision(ConstraintRecord &record, bool enableCollision);

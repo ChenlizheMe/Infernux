@@ -129,8 +129,8 @@ void SliderJoint::RebuildConstraint()
     auto *transform = gameObject->GetTransform();
     const glm::vec3 worldAnchor = transform->TransformPoint(m_anchor);
     const glm::vec3 worldAxis = transform->TransformDirection(m_axis);
-    m_constraintId = world.CreateSliderConstraint(*this, bodyId, connectedBodyId, worldAnchor, worldAxis, m_useLimits,
-                                                  m_minimumDistance, m_maximumDistance, m_enableCollision);
+    m_constraintId = world.CreateSliderConstraint(*this, bodyId, connectedBodyId, worldAnchor, worldAxis, m_anchor,
+                                                  m_useLimits, m_minimumDistance, m_maximumDistance, m_enableCollision);
     m_boundBodyId = bodyId;
     m_boundConnectedBodyId = connectedBodyId;
 }
