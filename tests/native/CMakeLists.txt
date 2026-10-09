@@ -2144,11 +2144,13 @@ if(INFERNUX_BUILD_TESTS)
     # rasterizers time to complete the work and shut down normally.
     set_tests_properties(infernux.mesh_publication_gpu infernux.mesh_publication_gpu_continuous
         infernux.runtime_mesh_retirement_gpu infernux.runtime_mesh_retirement_multi_camera_gpu
+        infernux.runtime_mesh_resource_gpu
         PROPERTIES TIMEOUT 90)
 
     # Two game cameras plus the editor view render all 260 lifetime-test
-    # frames; a CPU rasterizer can exceed the single-camera 90-second budget.
-    set_tests_properties(infernux.runtime_mesh_retirement_multi_camera_gpu PROPERTIES TIMEOUT 180)
+    # frames. The hosted Windows CPU rasterizer reached frame 240 within 180
+    # seconds; preserve the full workload and allow its final retirement checks.
+    set_tests_properties(infernux.runtime_mesh_retirement_multi_camera_gpu PROPERTIES TIMEOUT 240)
 
     add_test(
         NAME infernux.scene_residency_soak
