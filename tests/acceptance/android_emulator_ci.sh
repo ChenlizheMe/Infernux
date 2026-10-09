@@ -133,13 +133,14 @@ if [[ "$mode" == "smoke" || "$mode" == "all" ]]; then
         --report out/test-results/android-multitouch-smoke.json \
         --logcat-report out/test-results/android-multitouch-smoke.logcat.txt
 
+    # Release has no SDL INFO surface-size log. Its actual landscape Surface,
+    # recreation and input are required by the instrumentation below.
     "$python_executable" tests/acceptance/android_player_smoke.py \
         out/acceptance/android-release/InfernuxPlatformFixture-android-x86_64-release.apk \
         --serial emulator-5554 \
         --package "$target_package" \
         --no-back \
         --startup-timeout 240 \
-        --expect-landscape \
         --resume-cycles 0 \
         --report out/test-results/android-release-smoke.json
 

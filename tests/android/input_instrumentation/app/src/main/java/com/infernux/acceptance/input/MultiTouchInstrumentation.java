@@ -400,7 +400,8 @@ public final class MultiTouchInstrumentation extends Instrumentation {
             if (snapshot.rotation == expectedRotation
                     && snapshot.width > snapshot.height
                     && snapshot.windowFocused
-                    && snapshot.attachedToWindow) {
+                    && snapshot.attachedToWindow
+                    && hasLandscapeSurface(activity)) {
                 if (readySince == 0L) {
                     readySince = SystemClock.uptimeMillis();
                 } else if (SystemClock.uptimeMillis() - readySince
@@ -415,6 +416,18 @@ public final class MultiTouchInstrumentation extends Instrumentation {
         throw new IllegalStateException(
                 "Android orientation did not become rotation " + expectedRotation
                         + "; last=" + snapshot);
+    }
+
+    private boolean hasLandscapeSurface(Activity activity) {
+        final boolean[] ready = new boolean[1];
+        runOnMainSync(() -> {
+            final SurfaceView view = findSurface(activity.getWindow().getDecorView());
+            if (view != null && view.getHolder().getSurface().isValid()) {
+                final Rect frame = view.getHolder().getSurfaceFrame();
+                ready[0] = frame.height() > 0 && frame.width() > frame.height();
+            }
+        });
+        return ready[0];
     }
 
     private RotationSnapshot readRotationSnapshot(Activity activity) {
