@@ -38,7 +38,7 @@ class TargetReporter(inx.InxComponent):
         tooltip="Target must have a MeshRenderer.",
     )
 
-    body: inx.Rigidbody = inx.component_field(
+    body: inx.Rigidbody = inx.serialized_field(
         component_type="Rigidbody",
         tooltip="Rigidbody used by this reporter.",
     )
@@ -54,7 +54,7 @@ class TargetReporter(inx.InxComponent):
         )
 ```
 
-The imports and declarations above are public APIs. `serialized_field()` makes the Inspector contract explicit: its keyword metadata controls presentation and validation, while `component_field()` creates a typed component-reference slot.
+The imports and declarations above are public APIs. `serialized_field()` makes the Inspector contract explicit: its keyword metadata controls presentation and validation. `component_type="Rigidbody"` declares a typed component-reference slot using the same field API.
 
 ## Author the scene {#author-the-scene}
 
@@ -162,7 +162,7 @@ class TargetReporter(inx.InxComponent):
         tooltip="Target must have a MeshRenderer.",
     )
 
-    body: inx.Rigidbody = inx.component_field(
+    body: inx.Rigidbody = inx.serialized_field(
         component_type="Rigidbody",
         tooltip="Rigidbody used by this reporter.",
     )
@@ -178,7 +178,7 @@ class TargetReporter(inx.InxComponent):
         )
 ```
 
-这里的导入和声明都来自公开 API。`serialized_field()` 用关键字明确表达 Inspector 的展示与校验契约，`component_field()` 创建带类型筛选的组件引用槽。
+这里的导入和声明都来自公开 API。`serialized_field()` 用关键字明确表达 Inspector 的展示与校验契约；`component_type="Rigidbody"` 通过同一套字段 API 创建带类型筛选的组件引用槽。
 
 ## 编辑场景 {#author-the-scene_1}
 

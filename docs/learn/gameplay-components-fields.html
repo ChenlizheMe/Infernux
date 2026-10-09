@@ -64,7 +64,7 @@
         <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Target must have a MeshRenderer."</span><span class="p">,</span>
     <span class="p">)</span>
 
-    <span class="n">body</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">Rigidbody</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">component_field</span><span class="p">(</span>
+    <span class="n">body</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">Rigidbody</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span>
         <span class="n">component_type</span><span class="o">=</span><span class="s2">"Rigidbody"</span><span class="p">,</span>
         <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Rigidbody used by this reporter."</span><span class="p">,</span>
     <span class="p">)</span>
@@ -80,7 +80,7 @@
         <span class="p">)</span>
 </code></pre></div>
 
-<p>The imports and declarations above are public APIs. <code>serialized_field()</code> makes the Inspector contract explicit: its keyword metadata controls presentation and validation, while <code>component_field()</code> creates a typed component-reference slot.</p>
+<p>The imports and declarations above are public APIs. <code>serialized_field()</code> makes the Inspector contract explicit: its keyword metadata controls presentation and validation. <code>component_type="Rigidbody"</code> declares a typed component-reference slot using the same field API.</p>
 <h2 id="author-the-scene">Author the scene</h2>
 <ol>
 <li>Create a <strong>Cube</strong> in Hierarchy and name it <code>Target</code>. Keep its <code>MeshRenderer</code>.</li>
@@ -162,7 +162,7 @@
         <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Target must have a MeshRenderer."</span><span class="p">,</span>
     <span class="p">)</span>
 
-    <span class="n">body</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">Rigidbody</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">component_field</span><span class="p">(</span>
+    <span class="n">body</span><span class="p">:</span> <span class="n">inx</span><span class="o">.</span><span class="n">Rigidbody</span> <span class="o">=</span> <span class="n">inx</span><span class="o">.</span><span class="n">serialized_field</span><span class="p">(</span>
         <span class="n">component_type</span><span class="o">=</span><span class="s2">"Rigidbody"</span><span class="p">,</span>
         <span class="n">tooltip</span><span class="o">=</span><span class="s2">"Rigidbody used by this reporter."</span><span class="p">,</span>
     <span class="p">)</span>
@@ -178,7 +178,7 @@
         <span class="p">)</span>
 </code></pre></div>
 
-<p>这里的导入和声明都来自公开 API。<code>serialized_field()</code> 用关键字明确表达 Inspector 的展示与校验契约，<code>component_field()</code> 创建带类型筛选的组件引用槽。</p>
+<p>这里的导入和声明都来自公开 API。<code>serialized_field()</code> 用关键字明确表达 Inspector 的展示与校验契约；<code>component_type="Rigidbody"</code> 通过同一套字段 API 创建带类型筛选的组件引用槽。</p>
 <h2 id="author-the-scene_1">编辑场景</h2>
 <ol>
 <li>在 Hierarchy 中创建 <strong>Cube</strong>，命名为 <code>Target</code>，保留它的 <code>MeshRenderer</code>。</li>
