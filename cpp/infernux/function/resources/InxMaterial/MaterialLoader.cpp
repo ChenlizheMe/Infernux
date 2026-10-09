@@ -5,8 +5,8 @@
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 
-#include <platform/filesystem/InxPath.h>
 #include <platform/filesystem/AssetDocument.h>
+#include <platform/filesystem/InxPath.h>
 
 #include <filesystem>
 #include <fstream>

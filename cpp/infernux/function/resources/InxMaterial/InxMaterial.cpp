@@ -1,5 +1,4 @@
 #include "InxMaterial.h"
-#include <platform/filesystem/AssetDocument.h>
 #include "MaterialDocumentValidation.h"
 #include <algorithm>
 #include <atomic>
@@ -13,6 +12,7 @@
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
 #include <function/resources/AssetDependencyGraph.h>
+#include <platform/filesystem/AssetDocument.h>
 #if !defined(INFERNUX_DISABLE_VULKAN_MATERIAL_RUNTIME)
 #include <function/renderer/shader/ShaderProgram.h>
 #endif

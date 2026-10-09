@@ -321,10 +321,10 @@ class InxLog
 #define INXLOG_WARN_INTERNAL(...) INXLOG_FILE_ONLY(LOG_WARN, __VA_ARGS__)
 #endif
 #define INXLOG_ERROR(...) INXLOG_INTERNAL(LOG_ERROR, __VA_ARGS__)
-#define INXLOG_DIAGNOSTIC(...)                                                                                          \
+#define INXLOG_DIAGNOSTIC(...)                                                                                         \
     do {                                                                                                               \
-        if (LOG_INFO >= InxLog::GetInstance().GetLogLevel())                                                            \
-            InxLog::GetInstance().LogDiagnostic(__FILE__, __LINE__, __VA_ARGS__);                                       \
+        if (LOG_INFO >= InxLog::GetInstance().GetLogLevel())                                                           \
+            InxLog::GetInstance().LogDiagnostic(__FILE__, __LINE__, __VA_ARGS__);                                      \
     } while (false)
 #define INXLOG_ERROR_INTERNAL(...) INXLOG_FILE_ONLY(LOG_ERROR, __VA_ARGS__)
 #define INXLOG_FATAL(...)                                                                                              \

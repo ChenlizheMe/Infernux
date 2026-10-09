@@ -1,7 +1,7 @@
 #include "InxGUI.h"
 #include "../ProfileConfig.h"
-#include "EditorWindowPresentation.h"
 #include "EditorWindowBounds.h"
+#include "EditorWindowPresentation.h"
 #include "GuiPresentationGeometry.h"
 #include "ImGuiVulkanExtensions.h"
 #include "InxGUIContext.h"
@@ -634,8 +634,7 @@ void InxGUI::BuildFrameInternal()
         // need to build the default Unity-style layout.
         ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
         bool needsDefaultLayout = (ImGui::DockBuilderGetNode(dockspaceId) == nullptr);
-        RescaleDockspaceForViewport(dockspaceId,
-                                   ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - kStatusBarHeight));
+        RescaleDockspaceForViewport(dockspaceId, ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - kStatusBarHeight));
 
         // The dedicated, non-resizable toolbar must fit the same font and
         // authored padding used by ToolbarPanel. Update before DockSpace so
@@ -1053,8 +1052,8 @@ uint64_t InxGUI::SubmitDocumentTextureForImGui(const std::string &name, const Te
     return SubmitCpuTextureForImGui(name, pixels, VK_FILTER_LINEAR, false, true);
 }
 
-uint64_t InxGUI::SubmitCpuTextureForImGui(const std::string &name, const TextureCpuData &pixels,
-                                         VkFilter filter, bool pinned, bool displayEncoding)
+uint64_t InxGUI::SubmitCpuTextureForImGui(const std::string &name, const TextureCpuData &pixels, VkFilter filter,
+                                          bool pinned, bool displayEncoding)
 {
     if (name.empty())
         throw std::invalid_argument("ImGui texture name cannot be empty");
@@ -1082,7 +1081,8 @@ uint64_t InxGUI::SubmitCpuTextureForImGui(const std::string &name, const Texture
         throw std::overflow_error("pending ImGui texture byte counter overflow");
 
     m_textureUploadGenerations[name] = generation;
-    m_pendingTextureUploads.push_back(PendingTextureUpload{name, generation, pinned, std::move(ticket), displayEncoding});
+    m_pendingTextureUploads.push_back(
+        PendingTextureUpload{name, generation, pinned, std::move(ticket), displayEncoding});
     m_pendingTextureUploadBytes += pendingBytes;
     ++m_submittedTextureUploadCount;
     if (m_pendingTextureUploads.back().ticket->IsAsync())

@@ -3,8 +3,8 @@
 #include "PhysicMaterial.h"
 #include <core/log/InxLog.h>
 #include <fstream>
-#include <platform/filesystem/InxPath.h>
 #include <platform/filesystem/AssetDocument.h>
+#include <platform/filesystem/InxPath.h>
 
 namespace infernux
 {

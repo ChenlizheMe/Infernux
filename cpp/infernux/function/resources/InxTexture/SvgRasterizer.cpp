@@ -71,8 +71,8 @@ InxTextureData RasterizeSvg(const unsigned char *data, size_t size, int maxSize,
         throw std::runtime_error("failed to decode SVG: width, height or viewBox must define a positive viewport");
 
     const int edge = maxSize == 0 ? MaximumSvgDimension : (std::min)(maxSize, MaximumSvgDimension);
-    const double scale = preserveViewport ? (std::min)(1.0, edge / (std::max)(width, height))
-                                          : edge / (std::max)(width, height);
+    const double scale =
+        preserveViewport ? (std::min)(1.0, edge / (std::max)(width, height)) : edge / (std::max)(width, height);
     InxTextureData result;
     result.width = std::clamp(static_cast<int>(std::lround(width * scale)), 1, edge);
     result.height = std::clamp(static_cast<int>(std::lround(height * scale)), 1, edge);

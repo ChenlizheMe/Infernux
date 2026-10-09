@@ -65,8 +65,8 @@ inline bool HasCurrentPluginPageTextureMetadata(const InxResourceMeta &metadata,
            metadata.HasKey("texture_format") && metadata.GetDataAs<std::string>("texture_format") == "auto" &&
            metadata.HasKey("max_size") && metadata.GetDataAs<int>("max_size") == 0 &&
            metadata.HasKey("generate_mipmaps") && !metadata.GetDataAs<bool>("generate_mipmaps") &&
-           metadata.HasKey("srgb") && metadata.GetDataAs<bool>("srgb") &&
-           metadata.HasKey("wrap_mode") && metadata.GetDataAs<std::string>("wrap_mode") == "clamp";
+           metadata.HasKey("srgb") && metadata.GetDataAs<bool>("srgb") && metadata.HasKey("wrap_mode") &&
+           metadata.GetDataAs<std::string>("wrap_mode") == "clamp";
 }
 
 } // namespace infernux

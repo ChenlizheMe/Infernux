@@ -376,9 +376,9 @@ ImportArtifact TextureImporter::Import(const ImportRequest &request) const
     }
     if (!artifact.metadata.HasKey("content_hash"))
         throw std::logic_error("TextureImporter metadata has no source content hash");
-    const auto cpuData = TextureDecoder::Decode(
-        request.sourcePath, artifact.metadata,
-        IsPluginPageTexture(artifact.metadata, request.sourcePath, request.projectRoot));
+    const auto cpuData =
+        TextureDecoder::Decode(request.sourcePath, artifact.metadata,
+                               IsPluginPageTexture(artifact.metadata, request.sourcePath, request.projectRoot));
     if (!cpuData || !cpuData->IsValid())
         throw std::runtime_error("TextureImporter failed to build the runtime texture artifact");
     if (extension == ".svg") {

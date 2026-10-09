@@ -64,8 +64,8 @@ std::string DescribeWindowsDpiPolicy(SDL_Window *window)
     const auto hwnd = static_cast<HWND>(
         SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
     using GetDpiForWindowFn = UINT(WINAPI *)(HWND);
-    const auto getDpi = reinterpret_cast<GetDpiForWindowFn>(
-        GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+    const auto getDpi =
+        reinterpret_cast<GetDpiForWindowFn>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
     RECT client{};
     if (!hwnd || !getDpi || !GetClientRect(hwnd, &client))
         return "native_dpi=unavailable";

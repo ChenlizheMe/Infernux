@@ -7,16 +7,16 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <limits>
-#include <mutex>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -659,9 +659,10 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
                 std::vector<char> inBuffer(ZSTD_CStreamInSize()), outBuffer(ZSTD_CStreamOutSize());
                 std::unique_ptr<ZSTD_CCtx, decltype(&ZSTD_freeCCtx)> context(
                     compressedAudio ? nullptr : ZSTD_createCCtx(), &ZSTD_freeCCtx);
-                if (!compressedAudio && (!context ||
-                    ZSTD_isError(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_compressionLevel, compressionLevel)) ||
-                    ZSTD_isError(ZSTD_CCtx_setPledgedSrcSize(context.get(), sourceBytes))))
+                if (!compressedAudio &&
+                    (!context ||
+                     ZSTD_isError(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_compressionLevel, compressionLevel)) ||
+                     ZSTD_isError(ZSTD_CCtx_setPledgedSrcSize(context.get(), sourceBytes))))
                     throw std::runtime_error("InxPack cannot initialize compression");
                 auto &entry = manifest.entries[index];
                 entry.offset = cursor;
@@ -681,7 +682,7 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
                         do {
                             ZSTD_outBuffer out{outBuffer.data(), outBuffer.size(), 0};
                             pending = ZSTD_compressStream2(context.get(), &out, &in,
-                                                         remaining ? ZSTD_e_continue : ZSTD_e_end);
+                                                           remaining ? ZSTD_e_continue : ZSTD_e_end);
                             if (ZSTD_isError(pending))
                                 throw std::runtime_error("InxPack streaming compression failed");
                             WriteExact(output, outBuffer.data(), out.pos);

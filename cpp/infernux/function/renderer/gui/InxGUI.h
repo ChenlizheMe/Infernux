@@ -180,8 +180,8 @@ class InxGUI
     }
 
   private:
-    uint64_t SubmitCpuTextureForImGui(const std::string &name, const TextureCpuData &pixels,
-                                      VkFilter filter, bool pinned, bool displayEncoding);
+    uint64_t SubmitCpuTextureForImGui(const std::string &name, const TextureCpuData &pixels, VkFilter filter,
+                                      bool pinned, bool displayEncoding);
     void RefreshDisplayScale();
     void ReloadGUIFont();
 

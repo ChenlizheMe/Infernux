@@ -7,10 +7,10 @@
  */
 
 #include "Infernux.h"
-#include <function/resources/AssetImporter/PluginPageTextureMetadata.h>
-#include <function/resources/InxTexture/TextureDecoder.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
+#include <function/resources/AssetImporter/PluginPageTextureMetadata.h>
 #include <function/resources/InxMesh/ModelMeshReference.h>
+#include <function/resources/InxTexture/TextureDecoder.h>
 // Explicit includes for types now only forward-declared in InxRenderer.h
 #include <algorithm>
 #include <array>
@@ -2194,8 +2194,8 @@ void Infernux::PumpPreviewTasks()
                 stateSnapshot = it->second;
             }
 
-            if (!completed.success || (completed.pixels.empty() && !completed.sourcePixels) ||
-                completed.width <= 0 || completed.height <= 0) {
+            if (!completed.success || (completed.pixels.empty() && !completed.sourcePixels) || completed.width <= 0 ||
+                completed.height <= 0) {
                 std::lock_guard<std::mutex> lock(m_previewResultMutex);
                 auto it = m_texturePreviewStates.find(completed.resourceKey);
                 if (it != m_texturePreviewStates.end()) {
@@ -2210,11 +2210,13 @@ void Infernux::PumpPreviewTasks()
 
             uint64_t uploadVersion = 0;
             try {
-                uploadVersion = completed.sourcePixels
-                    ? m_renderer->SubmitDocumentTextureForImGui(stateSnapshot.textureName, *completed.sourcePixels)
-                    : m_renderer->SubmitTextureForImGui(
-                    stateSnapshot.textureName, completed.pixels.data(), completed.pixels.size(), completed.width,
-                    completed.height, completed.nearest ? rhi::FilterMode::Nearest : rhi::FilterMode::Linear);
+                uploadVersion =
+                    completed.sourcePixels
+                        ? m_renderer->SubmitDocumentTextureForImGui(stateSnapshot.textureName, *completed.sourcePixels)
+                        : m_renderer->SubmitTextureForImGui(stateSnapshot.textureName, completed.pixels.data(),
+                                                            completed.pixels.size(), completed.width, completed.height,
+                                                            completed.nearest ? rhi::FilterMode::Nearest
+                                                                              : rhi::FilterMode::Linear);
             } catch (const std::exception &error) {
                 INXLOG_ERROR("Failed to submit image preview texture: ", error.what());
                 std::lock_guard<std::mutex> lock(m_previewResultMutex);
@@ -2857,9 +2859,10 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
         // Uninstalled packages and images referenced outside plugin_pages use
         // the lossless CPU decoder below, not an arbitrary BC game texture.
         const bool documentPreview = key.compare(0, 9, "document|") == 0;
-        if (!guid.empty() && (!documentPreview ||
-            (metadata && IsPluginPageTexture(*metadata, textureFilePath, database->GetProjectRoot()) &&
-             HasCurrentPluginPageTextureMetadata(*metadata, textureFilePath, database->GetProjectRoot())))) {
+        if (!guid.empty() &&
+            (!documentPreview ||
+             (metadata && IsPluginPageTexture(*metadata, textureFilePath, database->GetProjectRoot()) &&
+              HasCurrentPluginPageTextureMetadata(*metadata, textureFilePath, database->GetProjectRoot())))) {
             int importedWidth = 0;
             int importedHeight = 0;
             if (const auto meta = database->GetMetaByGuid(guid)) {
@@ -2995,7 +2998,8 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
                         int outH = 0;
                         const bool spriteEditPreview = req.resourceKey.compare(0, 11, "spriteedit|") == 0;
                         const int maxDim = spriteEditPreview ? std::max(texData.width, texData.height) : decodeSize;
-                        DownsampleNearestRgba(texData.pixels, texData.width, texData.height, maxDim, sampled, outW, outH);
+                        DownsampleNearestRgba(texData.pixels, texData.width, texData.height, maxDim, sampled, outW,
+                                              outH);
                         if (!sampled.empty() && outW > 0 && outH > 0) {
                             if (req.textureType == "normal_map")
                                 ApplyNormalMapPreviewInPlace(sampled, outW, outH);
@@ -3010,7 +3014,7 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
                     }
                 }
                 const auto summary = completed.sourcePixels ? SummarizePreviewPixels(*completed.sourcePixels)
-                                                             : SummarizePreviewPixels(completed.pixels);
+                                                            : SummarizePreviewPixels(completed.pixels);
                 completed.pixelHash = summary.hash;
                 completed.nonTransparentPixelCount = summary.nonTransparentPixelCount;
                 completed.minRgb = summary.minRgb;

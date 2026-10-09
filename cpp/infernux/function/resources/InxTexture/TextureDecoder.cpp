@@ -167,8 +167,7 @@ void AppendLevel(TextureCpuData &texture, uint32_t width, uint32_t height, const
 } // namespace
 
 std::shared_ptr<const TextureCpuData> TextureDecoder::Decode(const std::string &sourcePath,
-                                                             const InxResourceMeta &metadata,
-                                                             bool preserveSvgViewport)
+                                                             const InxResourceMeta &metadata, bool preserveSvgViewport)
 {
     const auto source = ReadSourceBytes(sourcePath);
     return DecodeMemory(source, metadata, sourcePath, preserveSvgViewport);
@@ -234,11 +233,13 @@ std::shared_ptr<const TextureCpuData> TextureDecoder::DecodeMemory(const std::ve
         std::unique_ptr<float, decltype(&stbi_image_free)> decodedHdr(nullptr, &stbi_image_free);
         if (preserve16BitUi) {
             std::unique_ptr<stbi_us, decltype(&stbi_image_free)> pixels(
-                stbi_load_16_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth,
-                                        &sourceHeight, &sourceChannels, STBI_rgb_alpha), &stbi_image_free);
+                stbi_load_16_from_memory(source.data(), static_cast<int>(source.size()), &sourceWidth, &sourceHeight,
+                                         &sourceChannels, STBI_rgb_alpha),
+                &stbi_image_free);
             if (!pixels)
                 throw std::runtime_error("failed to decode 16-bit UI texture: " + sourcePath);
-            precisePixels.resize(static_cast<size_t>(LevelByteSize(sourceWidth, sourceHeight, texture->format) / sizeof(float)));
+            precisePixels.resize(
+                static_cast<size_t>(LevelByteSize(sourceWidth, sourceHeight, texture->format) / sizeof(float)));
             // Vulkan has no RGBA16 sRGB format. Preserve all source precision
             // in linear floats instead of truncating to 8-bit or treating sRGB
             // values as linear (which would brighten documentation images).

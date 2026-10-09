@@ -16,9 +16,8 @@ class InxResourceMeta;
 class TextureDecoder final
 {
   public:
-    [[nodiscard]] static std::shared_ptr<const TextureCpuData> Decode(const std::string &sourcePath,
-                                                                      const InxResourceMeta &metadata,
-                                                                      bool preserveSvgViewport = false);
+    [[nodiscard]] static std::shared_ptr<const TextureCpuData>
+    Decode(const std::string &sourcePath, const InxResourceMeta &metadata, bool preserveSvgViewport = false);
     [[nodiscard]] static std::shared_ptr<const TextureCpuData> DecodeMemory(const std::vector<unsigned char> &source,
                                                                             const InxResourceMeta &metadata,
                                                                             const std::string &sourceName,
