@@ -161,88 +161,97 @@ void RegisterVec4fBindings(py::module_ &m)
                          throw std::out_of_range("index out of range");
                      v[i] = vec4_util::RequireFiniteFloat(value);
                  })
-            .def("__add__", [](const Vec &a, const Vec &b) { return Vec(a + b); }, py::is_operator())
-            .def("__add__",
-                 [](const Vec &v, float f) {
-                     return Vec(v.x + f, v.y + f, v.z + f, v.w + f);
-                 }, py::is_operator())
-            .def("__radd__",
-                 [](const Vec &v, float f) {
-                     return Vec(f + v.x, f + v.y, f + v.z, f + v.w);
-                 }, py::is_operator())
-            .def("__sub__", [](const Vec &a, const Vec &b) { return Vec(a - b); }, py::is_operator())
-            .def("__sub__",
-                 [](const Vec &v, float f) {
-                     return Vec(v.x - f, v.y - f, v.z - f, v.w - f);
-                 }, py::is_operator())
-            .def("__rsub__",
-                 [](const Vec &v, float f) {
-                     return Vec(f - v.x, f - v.y, f - v.z, f - v.w);
-                 }, py::is_operator())
-            .def("__mul__", [](const Vec &a, const Vec &b) { return Vec(a * b); }, py::is_operator())
-            .def("__mul__",
-                 [](const Vec &v, float f) {
-                     return Vec(v * f);
-                 }, py::is_operator())
-            .def("__rmul__",
-                 [](const Vec &v, float f) {
-                     return Vec(v * f);
-                 }, py::is_operator())
-            .def("__truediv__", [](const Vec &a, const Vec &b) { return Vec(a / b); }, py::is_operator())
-            .def("__truediv__",
-                 [](const Vec &v, float f) {
-                     return Vec(v / f);
-                 }, py::is_operator())
-            .def("__rtruediv__",
-                 [](const Vec &v, float f) {
-                     return Vec(f / v.x, f / v.y, f / v.z, f / v.w);
-                 }, py::is_operator())
-            .def("__iadd__",
-                 [](Vec &v, const Vec &o) {
-                     v += o;
-                     return v;
-                 }, py::is_operator())
-            .def("__iadd__",
-                 [](Vec &v, float f) {
-                     v.x += f;
-                     v.y += f;
-                     v.z += f;
-                     v.w += f;
-                     return v;
-                 }, py::is_operator())
-            .def("__isub__",
-                 [](Vec &v, const Vec &o) {
-                     v -= o;
-                     return v;
-                 }, py::is_operator())
-            .def("__isub__",
-                 [](Vec &v, float f) {
-                     v.x -= f;
-                     v.y -= f;
-                     v.z -= f;
-                     v.w -= f;
-                     return v;
-                 }, py::is_operator())
-            .def("__imul__",
-                 [](Vec &v, float f) {
-                     v *= f;
-                     return v;
-                 }, py::is_operator())
-            .def("__itruediv__",
-                 [](Vec &v, float f) {
-                     v /= f;
-                     return v;
-                 }, py::is_operator())
-            .def("__eq__",
-                 [](const Vec &a, const Vec &b) {
-                     return std::fabs(a.x - b.x) <= 1e-6f && std::fabs(a.y - b.y) <= 1e-6f &&
-                            std::fabs(a.z - b.z) <= 1e-6f && std::fabs(a.w - b.w) <= 1e-6f;
-                 }, py::is_operator())
-            .def("__ne__",
-                 [](const Vec &a, const Vec &b) {
-                     return std::fabs(a.x - b.x) > 1e-6f || std::fabs(a.y - b.y) > 1e-6f ||
-                            std::fabs(a.z - b.z) > 1e-6f || std::fabs(a.w - b.w) > 1e-6f;
-                 }, py::is_operator())
+            .def(
+                "__add__", [](const Vec &a, const Vec &b) { return Vec(a + b); }, py::is_operator())
+            .def(
+                "__add__", [](const Vec &v, float f) { return Vec(v.x + f, v.y + f, v.z + f, v.w + f); },
+                py::is_operator())
+            .def(
+                "__radd__", [](const Vec &v, float f) { return Vec(f + v.x, f + v.y, f + v.z, f + v.w); },
+                py::is_operator())
+            .def(
+                "__sub__", [](const Vec &a, const Vec &b) { return Vec(a - b); }, py::is_operator())
+            .def(
+                "__sub__", [](const Vec &v, float f) { return Vec(v.x - f, v.y - f, v.z - f, v.w - f); },
+                py::is_operator())
+            .def(
+                "__rsub__", [](const Vec &v, float f) { return Vec(f - v.x, f - v.y, f - v.z, f - v.w); },
+                py::is_operator())
+            .def(
+                "__mul__", [](const Vec &a, const Vec &b) { return Vec(a * b); }, py::is_operator())
+            .def(
+                "__mul__", [](const Vec &v, float f) { return Vec(v * f); }, py::is_operator())
+            .def(
+                "__rmul__", [](const Vec &v, float f) { return Vec(v * f); }, py::is_operator())
+            .def(
+                "__truediv__", [](const Vec &a, const Vec &b) { return Vec(a / b); }, py::is_operator())
+            .def(
+                "__truediv__", [](const Vec &v, float f) { return Vec(v / f); }, py::is_operator())
+            .def(
+                "__rtruediv__", [](const Vec &v, float f) { return Vec(f / v.x, f / v.y, f / v.z, f / v.w); },
+                py::is_operator())
+            .def(
+                "__iadd__",
+                [](Vec &v, const Vec &o) {
+                    v += o;
+                    return v;
+                },
+                py::is_operator())
+            .def(
+                "__iadd__",
+                [](Vec &v, float f) {
+                    v.x += f;
+                    v.y += f;
+                    v.z += f;
+                    v.w += f;
+                    return v;
+                },
+                py::is_operator())
+            .def(
+                "__isub__",
+                [](Vec &v, const Vec &o) {
+                    v -= o;
+                    return v;
+                },
+                py::is_operator())
+            .def(
+                "__isub__",
+                [](Vec &v, float f) {
+                    v.x -= f;
+                    v.y -= f;
+                    v.z -= f;
+                    v.w -= f;
+                    return v;
+                },
+                py::is_operator())
+            .def(
+                "__imul__",
+                [](Vec &v, float f) {
+                    v *= f;
+                    return v;
+                },
+                py::is_operator())
+            .def(
+                "__itruediv__",
+                [](Vec &v, float f) {
+                    v /= f;
+                    return v;
+                },
+                py::is_operator())
+            .def(
+                "__eq__",
+                [](const Vec &a, const Vec &b) {
+                    return std::fabs(a.x - b.x) <= 1e-6f && std::fabs(a.y - b.y) <= 1e-6f &&
+                           std::fabs(a.z - b.z) <= 1e-6f && std::fabs(a.w - b.w) <= 1e-6f;
+                },
+                py::is_operator())
+            .def(
+                "__ne__",
+                [](const Vec &a, const Vec &b) {
+                    return std::fabs(a.x - b.x) > 1e-6f || std::fabs(a.y - b.y) > 1e-6f ||
+                           std::fabs(a.z - b.z) > 1e-6f || std::fabs(a.w - b.w) > 1e-6f;
+                },
+                py::is_operator())
             .def_property(
                 "x", [](const Vec &v) { return v.x; },
                 [](Vec &v, float val) { v.x = vec4_util::RequireFiniteFloat(val); })

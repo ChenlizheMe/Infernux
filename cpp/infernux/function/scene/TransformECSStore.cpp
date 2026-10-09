@@ -779,8 +779,7 @@ const glm::mat4 &TransformECSStore::ComposeFrameCacheWorldMatrix(Handle h, const
     }
     const glm::quat rotation = owner ? owner->GetWorldRotation() : m_localRotations[h.index];
     m_cachedWorldMatrices[h.index] = glm::translate(glm::mat4(1.0f), position) *
-                                     glm::mat4_cast(glm::normalize(rotation)) *
-                                     glm::scale(glm::mat4(1.0f), scale);
+                                     glm::mat4_cast(glm::normalize(rotation)) * glm::scale(glm::mat4(1.0f), scale);
     return m_cachedWorldMatrices[h.index];
 }
 

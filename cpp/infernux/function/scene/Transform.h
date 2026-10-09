@@ -117,7 +117,8 @@ class Transform : public Component
     {
         auto &store = TransformECSStore::Instance();
         if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldRotationOverride(m_ecsHandle))
-            return ToPublicEulerAngles(ExtractEulerAnglesNear(GetLocalRotation(), store.GetLocalEulerAngles(m_ecsHandle)));
+            return ToPublicEulerAngles(
+                ExtractEulerAnglesNear(GetLocalRotation(), store.GetLocalEulerAngles(m_ecsHandle)));
         return ToPublicEulerAngles(store.GetLocalEulerAngles(m_ecsHandle));
     }
 
