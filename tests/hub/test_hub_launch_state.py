@@ -252,7 +252,7 @@ def test_retry_launch_waits_for_old_process_exit_before_reserving_again(monkeypa
     splash = EngineSplashScreen("", "Test")
     process = SimpleNamespace(poll=lambda: None, terminate=lambda: None)
     splash._process = process
-    splash._launch_args = (sys.executable, "pass", "project", True, None)
+    splash._launch_args = (sys.executable, "pass", "project", True, None, None)
     pending, launches = [], []
     monkeypatch.setattr(splash_screen.QTimer, "singleShot", lambda delay, callback: pending.append(callback))
     monkeypatch.setattr(splash, "launch", lambda *args, **kwargs: launches.append(args))
@@ -305,6 +305,7 @@ def test_frozen_launch_preparation_does_not_cold_start_python_twice(
 
     calls = []
     model = SimpleNamespace(
+        runtime_manager=SimpleNamespace(get_runtime_path=lambda _version: sys.executable),
         _install_infernux_in_runtime=lambda project, version, **kw: calls.append((project, version, kw["validate_current"])),
         _create_vscode_workspace=lambda project: calls.append(("workspace", project)),
     )
@@ -320,6 +321,9 @@ def test_frozen_launch_preparation_does_not_cold_start_python_twice(
 
     assert errors == []
     assert finished == [str(runtime_python)]
+    if sys.platform == "win32":
+        assert Path(worker.editor_runtime.executable).samefile(sys.executable)
+        assert Path(worker.editor_runtime.project_executable).samefile(runtime_python)
     assert calls == [(str(tmp_path), "0.3.7", False), ("workspace", str(tmp_path))]
 
 
@@ -331,6 +335,11 @@ def test_frozen_launch_preparation_rebuilds_missing_project_runtime(
     calls = []
 
     class RuntimeManager:
+        @staticmethod
+        def get_runtime_path(version):
+            assert version == "3.13"
+            return sys.executable
+
         @staticmethod
         def has_runtime(version):
             return version == "3.13"

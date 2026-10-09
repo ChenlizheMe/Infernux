@@ -1,4 +1,5 @@
 import os
+import sys
 import uuid
 from PySide6.QtWidgets import (
     QApplication, QMessageBox, QDialog, QVBoxLayout, QLabel, QProgressBar, QFileDialog
@@ -113,6 +114,7 @@ class LaunchPreparationWorker(QObject):
         self.project_path = project_path
         self.launch_context = launch_context or HubLaunchContext.current()
         self.lock_token = uuid.uuid4().hex
+        self.editor_runtime = None
 
     def run(self):
         reserved = False
@@ -198,12 +200,15 @@ class LaunchPreparationWorker(QObject):
                     validate_current=False,
                 )
                 self.model._create_vscode_workspace(project_path)
+                if sys.platform == "win32":
+                    from python_execution import editor_python_runtime
+                    self.editor_runtime = editor_python_runtime(
+                        python_exe, self.model.runtime_manager.get_runtime_path(python_version)
+                    )
                 # Starting the editor is the authoritative native import check.
                 # A separate smoke-test process here used to double cold-start
                 # Python before the splash screen could even become responsive.
             else:
-                import sys
-
                 current_version = source_engine_version()
                 if pinned_version != current_version:
                     raise RuntimeError(
@@ -321,6 +326,7 @@ class ControlPaneViewModel(QObject):
                     project_path,
                     detached=self.launch_context.uses_installed_versions,
                     lock_token=worker.lock_token,
+                    runtime=worker.editor_runtime,
                 )
 
             if worker is not None:

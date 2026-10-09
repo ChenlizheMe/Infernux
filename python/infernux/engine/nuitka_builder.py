@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from infernux.debug import Debug
+from infernux.engine.path_utils import process_executable_path
 from infernux.engine.build_cancellation import BuildCancelled
 from infernux.engine.filesystem import remove_directory_tree
 from infernux.engine.i18n import t
@@ -838,7 +839,7 @@ def _run_python(python_exe: str, args: List[str], *, timeout: int = 60) -> subpr
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = 0x08000000
-    return subprocess.run([python_exe, *args], **kwargs)
+    return subprocess.run([python_exe, *args], executable=process_executable_path(python_exe), **kwargs)
 
 
 def _python_version(python_exe: str) -> str:
@@ -946,6 +947,7 @@ def _ensure_python_packages(python_exe: str, *module_names: str) -> None:
     _pip_t0 = _time.perf_counter()
     subprocess.check_call(
         [python_exe, "-m", "pip", "install", *missing_packages, "--quiet"],
+        executable=process_executable_path(python_exe),
     )
     Debug.log_internal(
         f"  pip install completed in {_time.perf_counter() - _pip_t0:.2f}s"
@@ -992,6 +994,7 @@ def _install_requirements_files(
                 requirement_file,
                 "--quiet",
             ],
+            executable=process_executable_path(python_exe),
         )
         state[state_key] = requirement_hash
         changed = True
@@ -2443,6 +2446,7 @@ print(json.dumps({{
         )
         proc = subprocess.Popen(
             process_cmd,
+            executable=process_executable_path(process_cmd[0]),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,

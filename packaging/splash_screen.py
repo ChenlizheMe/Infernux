@@ -17,7 +17,7 @@ from PySide6.QtGui import QPixmap, QFont, QPainter, QColor, QPen, QBrush, QDeskt
 from hub_utils import get_project_lock_path, merge_child_env_utf8, remove_project_lock, write_project_lock
 from i18n import tr
 from style import StyleManager
-from python_execution import python_executable_path
+from python_execution import EditorPythonRuntime, python_executable_path
 
 
 _WIN_CRASH_CODES = {
@@ -262,9 +262,9 @@ class EngineSplashScreen(QWidget):
 
     def launch(self, python_exe: str, script: str, project_path: str,
                *, detached: bool = True, extra_env: dict[str, str] | None = None,
-               lock_token: str | None = None):
+               lock_token: str | None = None, runtime: EditorPythonRuntime | None = None):
         """Start the engine without blocking the UI and monitor readiness."""
-        self._launch_args = (python_exe, script, project_path, detached, extra_env)
+        self._launch_args = (python_exe, script, project_path, detached, extra_env, runtime)
         self._terminal_handled = False
         self._closing = False
         self._poll_timer.stop()
@@ -283,11 +283,16 @@ class EngineSplashScreen(QWidget):
         env["_INFERNUX_READY_FILE"] = self._ready_file
         if extra_env:
             env.update(extra_env)
+        if runtime is not None:
+            env.update(runtime.environment)
         env["_INFERNUX_PROJECT_LOCK_PATH"] = get_project_lock_path(project_path)
         env["_INFERNUX_PROJECT_LOCK_TOKEN"] = self._lock_token
         env = merge_child_env_utf8(env)
 
-        popen_kwargs: dict = {"cwd": project_path, "env": env}
+        popen_kwargs: dict = {"cwd": runtime.working_directory if runtime else project_path, "env": env}
+        executable = runtime.executable if runtime else python_executable_path(python_exe)
+        if runtime is not None:
+            script = runtime.bootstrap(script)
 
         if detached:
             # Engine has its own Console panel — never inherit stdout/stderr
@@ -322,8 +327,8 @@ class EngineSplashScreen(QWidget):
             self._owns_launch_reservation = True
             with _suppress_windows_error_dialogs():
                 self._process = subprocess.Popen(
-                    [python_exe, "-u", "-c", script, project_path],
-                    executable=python_executable_path(python_exe),
+                    [executable, "-u", "-c", script, project_path],
+                    executable=executable,
                     **popen_kwargs,
                 )
         except (OSError, RuntimeError, ValueError) as exc:
@@ -510,8 +515,8 @@ class EngineSplashScreen(QWidget):
                 return
             if self._owns_launch_reservation:
                 remove_project_lock(self._project_path, self._lock_token)
-            python_exe, script, project_path, detached, extra_env = args
-            self.launch(python_exe, script, project_path, detached=detached, extra_env=extra_env)
+            python_exe, script, project_path, detached, extra_env, runtime = args
+            self.launch(python_exe, script, project_path, detached=detached, extra_env=extra_env, runtime=runtime)
 
         launch_after_exit()
 

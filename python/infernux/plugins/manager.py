@@ -27,6 +27,7 @@ from packaging.version import Version
 from infernux.core.file_read_cache import FileReadCache
 from infernux.debug import Debug
 from infernux.engine.path_utils import (
+    process_executable_path,
     is_path_within,
     path_key,
     portable_path,
@@ -2668,6 +2669,7 @@ class PluginManager:
                 env.update(TMPDIR=workspace, TEMP=workspace, TMP=workspace)
             result = subprocess.run(
                 command,
+                executable=process_executable_path(command[0]),
                 cwd=cwd,
                 env=env,
                 text=True,
@@ -2697,6 +2699,7 @@ class PluginManager:
             return self._run_process(command, cwd=cwd)
         process = subprocess.Popen(
             command,
+            executable=process_executable_path(command[0]),
             cwd=cwd,
             text=True,
             encoding="utf-8",

@@ -3601,7 +3601,7 @@ def test_requirements_install_is_skipped_when_content_is_unchanged(tmp_path, mon
     requirements = tmp_path / "requirements.txt"
     requirements.write_text("requests==2.32.0\n", encoding="utf-8")
     calls: list[list[str]] = []
-    monkeypatch.setattr(nuitka_builder_module.subprocess, "check_call", lambda command: calls.append(command))
+    monkeypatch.setattr(nuitka_builder_module.subprocess, "check_call", lambda command, **kwargs: calls.append(command))
 
     nuitka_builder_module._install_requirements_files(
         sys.executable,

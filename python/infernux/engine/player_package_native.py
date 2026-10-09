@@ -20,7 +20,7 @@ import time
 from collections.abc import Iterable
 from typing import Any, Callable
 
-from .path_utils import lexical_path
+from .path_utils import lexical_path, process_executable_path
 
 
 _test_backend: Any | None = None
@@ -142,6 +142,7 @@ def write_pack_isolated(
                     request_path,
                     response_path,
                 ],
+                executable=process_executable_path(sys.executable),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=stderr,

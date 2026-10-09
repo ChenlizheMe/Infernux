@@ -23,6 +23,7 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 from infernux.version import ENGINE_VERSION
+from .path_utils import process_executable_path
 
 _log = logging.getLogger("infernux.project_requirements")
 
@@ -50,7 +51,7 @@ def _run_python(args: list[str], *, timeout: int) -> subprocess.CompletedProcess
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-    return subprocess.run([sys.executable, *args], **kwargs)
+    return subprocess.run([sys.executable, *args], executable=process_executable_path(sys.executable), **kwargs)
 
 
 def _has_module(module_name: str) -> bool:

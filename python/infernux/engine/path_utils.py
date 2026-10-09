@@ -20,6 +20,22 @@ VERSION_CONTROL_DIRECTORIES = frozenset({".git", ".hg", ".svn"})
 _VERSION_CONTROL_FILES = frozenset({".gitignore", ".gitattributes", ".gitmodules", ".gitkeep"})
 
 
+def process_executable_path(path: PathLike) -> str | None:
+    """Explicit Win32 application path; keep PATH command lookup unchanged.
+
+    A quoted first command-line argument still has a MAX_PATH limit when
+    CreateProcess receives no application name. This value belongs only in
+    subprocess's ``executable`` argument, never in a serialized asset.
+    """
+    value = os.fspath(path)
+    if os.name != "nt" or not os.path.isabs(value):
+        return None
+    value = os.path.abspath(value)
+    if value.startswith("\\\\?\\"):
+        return value
+    return "\\\\?\\UNC\\" + value[2:] if value.startswith("\\\\") else "\\\\?\\" + value
+
+
 def managed_asset_glob_match(value: str, pattern: str) -> bool:
     """Match case-insensitive managed paths; ``**/`` spans zero or more levels."""
     parts = value.casefold().split("/")
