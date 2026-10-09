@@ -3,6 +3,12 @@
 # ------------------------------------------------------------------------------
 if(INFERNUX_BUILD_TESTS)
     enable_testing()
+    if(Python3_EXECUTABLE)
+        add_test(NAME infernux.rhi_boundary
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/cmake/check_rhi_boundary.py")
+        set_tests_properties(infernux.rhi_boundary PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    endif()
     find_package(Threads REQUIRED)
     get_property(_infernux_targets_before_tests DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 

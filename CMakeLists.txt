@@ -19,6 +19,12 @@ include("${CMAKE_SOURCE_DIR}/cmake/InfernuxSources.cmake")
 add_subdirectory(external)
 
 include("${CMAKE_SOURCE_DIR}/cmake/InfernuxNativeTargets.cmake")
+if(INFERNUX_BUILD_TESTS AND Python3_EXECUTABLE)
+    add_custom_target(infernux_rhi_boundary_check
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/cmake/check_rhi_boundary.py"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        VERBATIM)
+endif()
 include("${CMAKE_SOURCE_DIR}/cmake/InfernuxGpuJit.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/InfernuxPlayerHost.cmake")
 add_subdirectory(external/plugins)
