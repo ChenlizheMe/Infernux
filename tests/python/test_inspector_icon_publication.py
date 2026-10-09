@@ -1,6 +1,8 @@
 """Native Inspector headers keep live textures separate from immutable metadata."""
 from collections import Counter
+import ctypes
 from pathlib import Path
+import sys
 import time
 
 import pytest
@@ -8,7 +10,7 @@ import pytest
 from infernux.lib import (
     InspectorComponentInfo, InspectorObjectInfo, InspectorPanel,
     InspectorRevisionSnapshot, InspectorTransformData, RenderPipelineCallback,
-    get_gui_semantic_snapshot, set_gui_semantic_capture_enabled,
+    get_gui_semantic_snapshot, lib_dir, set_gui_semantic_capture_enabled,
 )
 
 
@@ -30,6 +32,28 @@ def test_component_icons_stay_live_across_cached_metadata_packets(engine, scene,
     icon_reads = Counter()
     snapshots = []
     first_ready = {}
+
+    # The session fixture starts at64x64. Xvfb has no window manager, so a
+    # maximize request does not provide the space needed by native dock tabs.
+    # Set the real SDL window size, then restore it for the remaining suite.
+    library_name = ('SDL3.dll' if sys.platform == 'win32' else
+                    'libSDL3.0.dylib' if sys.platform == 'darwin' else 'libSDL3.so.0')
+    sdl = ctypes.CDLL(str(Path(lib_dir) / library_name))
+    sdl.SDL_GetWindows.argtypes = [ctypes.POINTER(ctypes.c_int)]
+    sdl.SDL_GetWindows.restype = ctypes.POINTER(ctypes.c_void_p)
+    sdl.SDL_free.argtypes = [ctypes.c_void_p]
+    sdl.SDL_free.restype = None
+    sdl.SDL_GetWindowSize.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int)]
+    sdl.SDL_GetWindowSize.restype = ctypes.c_bool
+    sdl.SDL_SetWindowSize.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    sdl.SDL_SetWindowSize.restype = ctypes.c_bool
+    count = ctypes.c_int()
+    windows = sdl.SDL_GetWindows(ctypes.byref(count))
+    assert windows and count.value == 1, 'The session fixture must own one SDL window'
+    window = windows[0]
+    sdl.SDL_free(windows)
+    width, height = ctypes.c_int(), ctypes.c_int()
+    assert sdl.SDL_GetWindowSize(window, ctypes.byref(width), ctypes.byref(height))
 
     def object_info(object_id):
         obj = by_id[object_id]
@@ -91,7 +115,9 @@ def test_component_icons_stay_live_across_cached_metadata_packets(engine, scene,
             previous_frame = frame
             targets = [item for item in snapshot.get('targets', [])
                        if item.get('kind') in {'component_icon', 'component_enabled', 'component_label'}]
-            snapshots.append(targets)
+            camera_rows = {item['kind'] for item in targets if item['label'] == 'Camera'}
+            if camera_rows == {'component_icon', 'component_enabled', 'component_label'}:
+                snapshots.append(targets)
             if len(snapshots) >= 4 and len(first_ready) == 2:
                 revision.schema = 2
         if len(snapshots) >= 12 or time.monotonic() >= deadline:
@@ -99,10 +125,10 @@ def test_component_icons_stay_live_across_cached_metadata_packets(engine, scene,
 
     engine.set_render_pipeline(GuiOnly())
     engine.register_gui_renderable('test.inspector.live_icons', panel)
-    engine.set_maximized(True)
-    engine.show()
-    set_gui_semantic_capture_enabled(True)
     try:
+        assert sdl.SDL_SetWindowSize(window, 960, 640)
+        engine.show()
+        set_gui_semantic_capture_enabled(True)
         engine.set_pre_scene_update_callback(observe)
         engine.run()
     finally:
@@ -110,10 +136,10 @@ def test_component_icons_stay_live_across_cached_metadata_packets(engine, scene,
         set_gui_semantic_capture_enabled(False)
         engine.unregister_gui_renderable('test.inspector.live_icons')
         engine.set_render_pipeline(None)
-        engine.set_maximized(False)
         engine.hide()
         for name in ('Camera', 'Transform'):
             engine.release_texture_preview_task('test.inspector.live_icon.' + name)
+        assert sdl.SDL_SetWindowSize(window, width.value, height.value)
 
     assert len(snapshots) >= 12, 'Twelve real native GUI frames did not complete'
     assert metadata_reads == {obj.id: revision.schema for obj in objects}
