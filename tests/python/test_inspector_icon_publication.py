@@ -13,7 +13,7 @@ from infernux.lib import (
 
 
 @pytest.mark.parametrize('multi', [False, True])
-def test_component_icons_publish_without_rebuilding_metadata(engine, scene, multi):
+def test_component_icons_stay_live_across_cached_metadata_packets(engine, scene, multi):
     objects = [scene.create_game_object('Icon publication A')]
     if multi:
         objects.append(scene.create_game_object('Icon publication B'))
@@ -48,9 +48,10 @@ def test_component_icons_publish_without_rebuilding_metadata(engine, scene, mult
         info.component_id = camera.component_id
         info.enabled = camera.enabled
         info.is_native = True
-        # Deliberately retain the immutable packet published before upload.
-        # Changing this packet is not the route to publishing a new texture.
-        info.icon_id = 0
+        # The first packet is published before upload; a later schema packet
+        # captures a valid handle. Neither cached packet owns texture lifetime.
+        info.icon_id = (engine.get_texture_preview_texture_id('test.inspector.live_icon.Camera')
+                        if revision.schema == 2 else 0)
         return [info]
 
     def current_icon(type_name, _is_script):
@@ -80,7 +81,7 @@ def test_component_icons_publish_without_rebuilding_metadata(engine, scene, mult
             pass
 
     deadline = time.monotonic() + 15
-    previous_frame = 0
+    previous_frame = int(get_gui_semantic_snapshot().get('frame', 0) or 0)
 
     def observe(_delta):
         nonlocal previous_frame
@@ -91,6 +92,8 @@ def test_component_icons_publish_without_rebuilding_metadata(engine, scene, mult
             targets = [item for item in snapshot.get('targets', [])
                        if item.get('kind') in {'component_icon', 'component_enabled', 'component_label'}]
             snapshots.append(targets)
+            if len(snapshots) >= 4 and len(first_ready) == 2:
+                revision.schema = 2
         if len(snapshots) >= 12 or time.monotonic() >= deadline:
             engine.exit()
 
@@ -113,7 +116,7 @@ def test_component_icons_publish_without_rebuilding_metadata(engine, scene, mult
             engine.release_texture_preview_task('test.inspector.live_icon.' + name)
 
     assert len(snapshots) >= 12, 'Twelve real native GUI frames did not complete'
-    assert metadata_reads == {obj.id: 1 for obj in objects}
+    assert metadata_reads == {obj.id: revision.schema for obj in objects}
     for name in ('Camera', 'Transform'):
         assert icon_reads[name] >= 12, (name, icon_reads)
         assert name in first_ready, (name, first_ready)
