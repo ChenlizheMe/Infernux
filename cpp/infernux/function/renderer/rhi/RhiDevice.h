@@ -27,6 +27,37 @@ inline constexpr uint32_t kRhiApiVersion = (kRhiApiVersionMajor << 16u) | kRhiAp
     return (version >> 16u) == kRhiApiVersionMajor && (version & 0xffffu) <= kRhiApiVersionMinor;
 }
 
+enum class DeviceContractDiagnosticCode : uint8_t
+{
+    None = 0,
+    IncompatibleApiVersion,
+    MissingBackendId,
+};
+
+struct DeviceContractCheck final
+{
+    DeviceContractDiagnosticCode code = DeviceContractDiagnosticCode::None;
+    uint32_t apiVersion = kRhiApiVersion;
+
+    [[nodiscard]] constexpr bool IsValid() const noexcept
+    {
+        return code == DeviceContractDiagnosticCode::None;
+    }
+
+    [[nodiscard]] constexpr std::string_view Message() const noexcept
+    {
+        switch (code) {
+        case DeviceContractDiagnosticCode::None:
+            return {};
+        case DeviceContractDiagnosticCode::IncompatibleApiVersion:
+            return "RHI device API version is incompatible with this engine";
+        case DeviceContractDiagnosticCode::MissingBackendId:
+            return "RHI device did not publish a backend identity";
+        }
+        return "unknown RHI device contract diagnostic";
+    }
+};
+
 class TextureGpuView;
 
 struct BindlessTextureTableBinding final
@@ -366,5 +397,18 @@ class Device
     virtual void Release(GraphicsPipelineHandle handle) noexcept = 0;
     virtual void Release(ComputePipelineHandle handle) noexcept = 0;
 };
+
+/// Validate the seam before renderer-specific resources are created. The
+/// backend identity is opaque so plugins can add implementations without
+/// changing this header; the ABI version remains the compatibility gate.
+[[nodiscard]] inline DeviceContractCheck CheckDeviceContract(uint32_t apiVersion,
+                                                             const DeviceCaps &capabilities) noexcept
+{
+    if (!IsRhiApiVersionCompatible(apiVersion))
+        return {DeviceContractDiagnosticCode::IncompatibleApiVersion, apiVersion};
+    if (capabilities.BackendName().empty())
+        return {DeviceContractDiagnosticCode::MissingBackendId, apiVersion};
+    return {};
+}
 
 } // namespace infernux::rhi

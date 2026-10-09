@@ -16,6 +16,11 @@ int main()
     capabilities.backend = BackendType::Vulkan;
     capabilities.SetBackendId(kVulkanBackendId);
     assert(capabilities.BackendName() == kVulkanBackendId);
+    assert(CheckDeviceContract(kRhiApiVersion, capabilities).IsValid());
+    assert(CheckDeviceContract((kRhiApiVersionMajor + 1u) << 16u, capabilities).code ==
+           DeviceContractDiagnosticCode::IncompatibleApiVersion);
+    DeviceCaps missingBackend;
+    assert(CheckDeviceContract(kRhiApiVersion, missingBackend).code == DeviceContractDiagnosticCode::MissingBackendId);
     capabilities.adapterType = AdapterType::Discrete;
     capabilities.SetAdapterName("Test Adapter");
     assert(capabilities.AdapterName() == "Test Adapter");

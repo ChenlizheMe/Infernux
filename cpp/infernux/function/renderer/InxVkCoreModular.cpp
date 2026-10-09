@@ -338,6 +338,12 @@ bool InxVkCoreModular::PrepareSurface()
         INXLOG_ERROR("Failed to initialize Vulkan device");
         return false;
     }
+    auto &rhiDevice = m_backend.Device().GetRhiDevice();
+    const auto deviceContract = rhi::CheckDeviceContract(rhiDevice.GetApiVersion(), rhiDevice.GetCapabilities());
+    if (!deviceContract.IsValid()) {
+        INXLOG_ERROR("RHI device contract rejected: ", deviceContract.Message(), " api=", deviceContract.apiVersion);
+        return false;
+    }
     if (!m_backend.Queues().Initialize(m_backend.Device(), m_maxFramesInFlight)) {
         INXLOG_ERROR("Failed to initialize Vulkan queue manager");
         return false;
@@ -361,7 +367,6 @@ bool InxVkCoreModular::PrepareSurface()
     // This makes the first shader compilation bounded when table creation or
     // descriptor allocation fails, even on an otherwise capable device.
     m_textureCache.CreateDefaultWhiteTexture("white", m_resourceManager);
-    auto &rhiDevice = m_backend.Device().GetRhiDevice();
     if (auto fallbackSlot = m_textureCache.Find("white")) {
         const auto fallback = fallbackSlot->Acquire();
         if (fallback &&
