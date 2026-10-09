@@ -24,9 +24,7 @@ after its actual artifacts have been published.
    before the public registry is updated.
 4. Run **Publish Infernux Release** to build, test, and publish. Enable
    `sign_windows_release` only after the release certificate is issued and the
-   configuration below is complete. For an already successful desktop build,
-   **Publish Desktop Release Artifacts** accepts its run ID and verifies its
-   signing state; it never retroactively signs or rebuilds those artifacts.
+   configuration below is complete.
    Unsigned releases are explicitly disclosed. A prewritten draft requires
    `replace_existing_release=true`.
 5. The publisher uploads wheels to PyPI, Hub assets to GitHub/R2, publishes the

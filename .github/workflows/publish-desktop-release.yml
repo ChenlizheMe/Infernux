@@ -9,7 +9,7 @@ on:
         type: boolean
         default: false
       run_id:
-        description: Successful Desktop Release And Tests run ID
+        description: Current gated Desktop Release And Tests run ID
         required: true
         type: string
       release_tag:
@@ -29,27 +29,6 @@ on:
         required: true
       SIGNPATH_API_TOKEN:
         required: false
-  workflow_dispatch:
-    inputs:
-      sign_windows_release:
-        description: Require artifacts already signed with the release certificate during their build
-        required: true
-        type: boolean
-        default: false
-      run_id:
-        description: Successful Desktop Release And Tests run ID
-        required: true
-        type: string
-      release_tag:
-        description: Release tag; empty derives the project version and wheel build
-        required: false
-        default: ''
-        type: string
-      replace_existing_release:
-        description: Allow recovery publication to an existing unpublished draft
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   actions: read
@@ -79,12 +58,13 @@ jobs:
         shell: pwsh
         run: |
           if ($env:RUN_ID -notmatch '^\d+$') { throw 'Invalid source run ID.' }
+          if ($env:RUN_ID -ne $env:GITHUB_RUN_ID) { throw 'Publication must use the current gated workflow run.' }
           $source = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:RUN_ID" | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($source.head_repository.full_name -ne $env:GITHUB_REPOSITORY -or $source.head_branch -notin @('master', 'main')) { throw 'Release source must be the official repository release branch.' }
           if ($source.path -notin @('.github/workflows/ci.yml', '.github/workflows/release.yml') -or $source.event -notin @('push', 'workflow_dispatch')) { throw 'Release source must be a trusted desktop build workflow, not a PR or signing test.' }
-          if ($env:RUN_ID -ne $env:GITHUB_RUN_ID -and $source.conclusion -ne 'success') { throw 'The source build has not completed successfully.' }
           if ($source.head_sha -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source SHA.' }
+          if ($source.head_sha -ne $env:GITHUB_SHA) { throw 'Source build revision differs from the gated caller.' }
           "sha=$($source.head_sha)" >> $env:GITHUB_OUTPUT
           "branch=$($source.head_branch)" >> $env:GITHUB_OUTPUT
           "attempt=$($source.run_attempt)" >> $env:GITHUB_OUTPUT

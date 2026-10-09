@@ -121,7 +121,8 @@ def test_test_signatures_cannot_enter_release_publication():
     assert publish['jobs']['publish']['needs'] == 'verify'
     validation = str(publish['jobs']['verify'])
     assert 'SIGNPATH_RELEASE_CERTIFICATE_THUMBPRINT' in validation
-    assert "source.conclusion -ne 'success'" in publish['jobs']['verify']['steps'][0]['run']
+    assert "$env:RUN_ID -ne $env:GITHUB_RUN_ID" in publish['jobs']['verify']['steps'][0]['run']
+    assert "$source.head_sha -ne $env:GITHUB_SHA" in publish['jobs']['verify']['steps'][0]['run']
     assert 'test-windows-signing.yml' not in validation
     assert 'github-action-submit-signing-request' not in str(publish)
     assert "*-desktop-distribution-${{ inputs.run_id }}-${{ needs.verify.outputs.attempt }}" in str(publish)
