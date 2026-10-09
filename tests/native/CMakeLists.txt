@@ -180,6 +180,7 @@ if(INFERNUX_BUILD_TESTS)
     )
     target_include_directories(infernux_audio_clip_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
+        ${CMAKE_SOURCE_DIR}/external
     )
     target_link_libraries(infernux_audio_clip_tests PRIVATE infernux_runtime_test_support)
     if(MSVC)
@@ -270,7 +271,7 @@ if(INFERNUX_BUILD_TESTS)
     )
     target_include_directories(infernux_editor_theme_registry_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
-        ${CMAKE_SOURCE_DIR}/external/imgui
+        ${CMAKE_SOURCE_DIR}/external/imgui_for_infernux
     )
     target_link_libraries(infernux_editor_theme_registry_tests PRIVATE imgui)
     if(MSVC)
@@ -284,7 +285,7 @@ if(INFERNUX_BUILD_TESTS)
     )
     target_include_directories(infernux_text_layout_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
-        ${CMAKE_SOURCE_DIR}/external/imgui
+        ${CMAKE_SOURCE_DIR}/external/imgui_for_infernux
     )
     target_link_libraries(infernux_text_layout_tests PRIVATE imgui)
     if(MSVC)
@@ -309,7 +310,7 @@ if(INFERNUX_BUILD_TESTS)
 
     add_executable(infernux_selectable_row_tests tests/native/SelectableRowTests.cpp)
     target_include_directories(infernux_selectable_row_tests PRIVATE
-        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external/imgui)
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external/imgui_for_infernux)
     target_link_libraries(infernux_selectable_row_tests PRIVATE infernux_runtime_test_support)
     if(MSVC)
         target_compile_options(infernux_selectable_row_tests PRIVATE /utf-8 /UNDEBUG)
@@ -321,7 +322,7 @@ if(INFERNUX_BUILD_TESTS)
     add_executable(infernux_editor_window_bounds_tests tests/native/EditorWindowBoundsTests.cpp)
     target_include_directories(infernux_editor_window_bounds_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
-        ${CMAKE_SOURCE_DIR}/external/imgui
+        ${CMAKE_SOURCE_DIR}/external/imgui_for_infernux
     )
     target_link_libraries(infernux_editor_window_bounds_tests PRIVATE imgui)
     if(MSVC)
@@ -523,7 +524,7 @@ if(INFERNUX_BUILD_TESTS)
     add_executable(infernux_editor_display_scale_tests tests/native/EditorDisplayScaleTests.cpp)
     target_include_directories(infernux_editor_display_scale_tests PRIVATE
         ${CMAKE_SOURCE_DIR}/cpp/infernux
-        ${CMAKE_SOURCE_DIR}/external/imgui
+        ${CMAKE_SOURCE_DIR}/external/imgui_for_infernux
     )
     target_link_libraries(infernux_editor_display_scale_tests PRIVATE imgui)
     if(MSVC)
@@ -876,10 +877,12 @@ if(INFERNUX_BUILD_TESTS)
         ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
     target_link_libraries(infernux_vulkan_startup_lifecycle_tests PRIVATE infernux_runtime_test_support)
     if(MSVC)
-        target_compile_options(infernux_vulkan_startup_lifecycle_tests PRIVATE /utf-8)
+        target_compile_options(infernux_vulkan_startup_lifecycle_tests PRIVATE /utf-8 /UNDEBUG)
+    else()
+        target_compile_options(infernux_vulkan_startup_lifecycle_tests PRIVATE -UNDEBUG)
     endif()
     foreach(_stage IN ITEMS default rejected_init instance_failure instance_only missing_surface
-            surface_only surface_suspend device_ready destroy_twice)
+            surface_only surface_suspend device_ready destroy_twice presentation_resize)
         add_test(NAME infernux.vulkan_startup.${_stage}
             COMMAND infernux_vulkan_startup_lifecycle_tests ${_stage})
         set_tests_properties(infernux.vulkan_startup.${_stage} PROPERTIES
@@ -1500,6 +1503,17 @@ if(INFERNUX_BUILD_TESTS)
         target_compile_options(infernux_texture_decoder_tests PRIVATE /utf-8)
     endif()
     add_test(NAME infernux.texture_decoder COMMAND infernux_texture_decoder_tests)
+
+    add_executable(infernux_svg_rasterizer_tests
+        tests/native/SvgRasterizerTests.cpp
+        cpp/infernux/function/resources/InxTexture/SvgRasterizer.cpp)
+    target_include_directories(infernux_svg_rasterizer_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/cpp/infernux ${CMAKE_SOURCE_DIR}/external)
+    target_link_libraries(infernux_svg_rasterizer_tests PRIVATE lunasvg::lunasvg Threads::Threads)
+    if(MSVC)
+        target_compile_options(infernux_svg_rasterizer_tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME infernux.svg_rasterizer COMMAND infernux_svg_rasterizer_tests)
 
     add_executable(infernux_vector_field_source_tests
         tests/native/VectorFieldSourceTests.cpp

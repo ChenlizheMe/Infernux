@@ -8,7 +8,6 @@ import json
 import os
 import re
 import runpy
-import shutil
 import stat
 import subprocess
 import sys
@@ -18,6 +17,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from tests.tool_discovery import find_executable
 
 
 PACKAGING_DIR = (Path(__file__).resolve().parents[2] / "packaging")
@@ -64,7 +65,7 @@ def isolated_hub_cache(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("tag", ["", "v0.4.0"])
 def test_kit_workflow_resolves_verification_ref_or_explicit_release(tmp_path, tag):
-    pwsh = shutil.which("pwsh")
+    pwsh = find_executable("pwsh")
     if pwsh is None:
         pytest.skip("PowerShell is required to execute the release resolver")
     workflow = (PACKAGING_DIR.parent / ".github/workflows/platform-plugin-release.yml").read_text(

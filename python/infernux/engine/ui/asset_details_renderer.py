@@ -964,7 +964,7 @@ def _ensure_categories():
                       ("asset.quality_high", TextureCompressionQuality.HIGH)]),
             FieldDef("max_size", "asset.max_size", WidgetType.COMBO,
                      [(str(s), s) for s in
-                      (32, 64, 128, 256, 512, 1024, 2048, 4096, 8192)]),
+                      (32, 64, 128, 256, 512, 1024, 2048, 4096, 8192)] + [("asset.size_unlimited", 0)]),
         ],
         custom_header_fn=_render_texture_preview,
         custom_body_fn=_render_sprite_body,
@@ -2524,7 +2524,7 @@ def render_asset_inspector(ctx: InxGUIContext, panel,
 
     # ── Footer ─────────────────────────────────────────────────────────
     if (cat_def.access_mode == AssetAccessMode.READ_ONLY_RESOURCE
-            and cat_def.editable_fields):
+            and cat_def.editable_fields and not _is_plugin_page_texture(_state)):
         from infernux.engine.interaction import DocumentRegistry
 
         registry = DocumentRegistry.instance()
@@ -2734,10 +2734,25 @@ def _render_audio_header(ctx: InxGUIContext, panel, state: _State) -> None:
     ctx.separator()
 
 
+def _is_plugin_page_texture(state: _State) -> bool:
+    from infernux.engine.project_context import get_project_root, is_plugin_page_path
+    from infernux.engine.path_utils import is_path_within
+
+    if state.category != "texture" or os.path.splitext(state.file_path)[1].casefold() in {".inxvfield", ".inxsdf"}:
+        return False
+    root = get_project_root()
+    return bool(root and is_path_within(state.file_path, root, allow_root=False)
+                and is_plugin_page_path(relative_path(state.file_path, root)))
+
+
 def _render_import_fields(ctx: InxGUIContext, cat_def: AssetCategoryDef,
                           state: _State, *, fields=None):
     """Auto-render editable import-settings fields from descriptors."""
     from .inspector_utils import render_compact_section_header, render_inspector_checkbox
+
+    if _is_plugin_page_texture(state):
+        ctx.text_wrapped(t("asset.plugin_page_texture_policy"))
+        return
 
     if render_compact_section_header(ctx, t("asset.import_settings"), level="secondary"):
         fields = cat_def.editable_fields if fields is None else fields

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Optional
+from pathlib import Path
 
 from infernux.lib import (
     DocumentWriteCancelled,
@@ -57,6 +58,8 @@ def write_document_text(
     chain_id: str = "",
 ) -> int:
     """Write one UTF-8 document and return its path generation."""
+    if Path(path).suffix.casefold() == ".inxdoc":
+        raise ValueError("Cooked asset documents are read-only; save an authoring copy instead")
     options = DocumentWriteOptions()
     options.create_backup = create_backup
     options.expected_file_state = expected_file_state
@@ -79,6 +82,8 @@ def submit_document_text(
     them atomically on its IO workers.  Callers that need durability before
     shutdown should use :meth:`DocumentStore.flush`.
     """
+    if Path(path).suffix.casefold() == ".inxdoc":
+        raise ValueError("Cooked asset documents are read-only; save an authoring copy instead")
     options = DocumentWriteOptions()
     options.create_backup = create_backup
     options.expected_file_state = expected_file_state

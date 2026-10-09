@@ -11,7 +11,7 @@ from infernux.ui.enums import TextResizeMode
 from model_test_support import remove_model_test_folder
 
 
-FONTS = Path(__file__).resolve().parents[2] / "external/imgui/misc/fonts"
+FONTS = Path(__file__).resolve().parents[2] / "external/imgui_for_infernux/misc/fonts"
 SAMPLE = "WWWWWWiiiiii"
 
 

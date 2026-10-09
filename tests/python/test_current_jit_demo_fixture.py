@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 import numpy as np
+import infernux
 
 from infernux import _jit_kernels
 from infernux.engine.script_candidate_policy import analyze_script_candidate
@@ -80,6 +81,7 @@ def test_web_build_cooks_the_same_demo_as_ordinary_python(tmp_path):
     )
     command = (
         "import importlib.util, json, pathlib, sys; "
+        "sys.path.insert(0,sys.argv[2]); "
         "path=pathlib.Path(sys.argv[1]); "
         "spec=importlib.util.spec_from_file_location('web_jit_demo', path); "
         "module=importlib.util.module_from_spec(spec); "
@@ -90,16 +92,14 @@ def test_web_build_cooks_the_same_demo_as_ordinary_python(tmp_path):
         **os.environ,
         "INFERNUX_WEB_RUNTIME": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPATH": os.pathsep.join(
-            filter(None, (str(_ROOT / "python"), os.environ.get("PYTHONPATH")))
-        ),
     }
     completed = subprocess.run(
-        [sys.executable, "-c", command, str(cooked_script)],
+        [sys.executable, "-c", command, str(cooked_script), str(Path(infernux.__file__).resolve().parent.parent)],
         check=True,
         capture_output=True,
         text=True,
         env=environment,
+        timeout=60,
     )
 
     assert '"mode": "ordinary-python"' in completed.stdout

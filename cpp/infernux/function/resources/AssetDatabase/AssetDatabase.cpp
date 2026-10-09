@@ -5,6 +5,7 @@
 
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetImporter/ConcreteImporters.h>
+#include <function/resources/AssetImporter/PluginPageTextureMetadata.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMesh/MeshArtifact.h>
 #include <function/resources/InxMesh/MeshImportSettings.h>
@@ -38,6 +39,24 @@ namespace
 {
 constexpr size_t kOwnerMergeEntryBudget = 256;
 constexpr auto kOwnerMergeTimeBudget = std::chrono::milliseconds(2);
+
+void ApplyDocumentationTextureMovePolicy(AssetDatabase &database, AssetMutationResult &result)
+{
+    if (result.resourceType != ResourceType::Texture)
+        return;
+    const auto metadata = database.GetMetaByGuid(result.guid);
+    if (!metadata || HasCurrentPluginPageTextureMetadata(*metadata, result.path, database.GetProjectRoot()))
+        return;
+    // Relocation keeps the GUID, but entering a documentation directory
+    // changes the import policy even when the source bytes are unchanged.
+    const auto imported = database.ReimportAsset(result.path);
+    if (!imported.succeeded) {
+        result.succeeded = false;
+        result.errorCode = AssetMutationErrorCode::RuntimeApplyFailed;
+        result.error = imported.error;
+    }
+    result.queryGeneration = database.GetQueryGeneration();
+}
 
 bool IsCanonicalAssetGuid(std::string_view value)
 {
@@ -1054,7 +1073,8 @@ bool AssetDatabase::RestoreCachedCatalog()
                 return false;
             }
         }
-        if (!HasCurrentBuiltinSceneIconMetadata(entry.metadata, path, entry.readOnly))
+        if (!HasCurrentBuiltinSceneIconMetadata(entry.metadata, path, entry.readOnly) ||
+            !HasCurrentPluginPageTextureMetadata(entry.metadata, path, m_projectRoot))
             return false;
 
         restored.guidToPath.emplace(entry.guid, path);
@@ -1706,7 +1726,8 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
             pathMapping->second != indexed->guid || fileState == m_fileStates.end() ||
             fileState->second.source != file.source || fileState->second.meta != file.meta ||
             fileState->second.readOnly != file.readOnly ||
-            !HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly)) {
+            !HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly) ||
+            !HasCurrentPluginPageTextureMetadata(indexed->metadata, file.path, m_projectRoot)) {
             unchanged = false;
             break;
         }
@@ -1766,7 +1787,8 @@ bool AssetDatabase::CommitScanArtifact(AssetScanArtifact artifact, uint64_t expe
             indexed->readOnly == file.readOnly && indexed->importSucceeded &&
             HasReusableRuntimeArtifact(*indexed, type, ToFsPath(m_projectRoot)) &&
             (file.readOnly || file.meta.size > 0) &&
-            HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly)) {
+            HasCurrentBuiltinSceneIconMetadata(indexed->metadata, file.path, file.readOnly) &&
+            HasCurrentPluginPageTextureMetadata(indexed->metadata, file.path, m_projectRoot)) {
             m_metas[indexed->guid] = std::make_shared<InxResourceMeta>(indexed->metadata);
             updateScannedMapping(indexed->guid, file);
             restoredDependencies.emplace(indexed->guid, indexed->dependencies);
@@ -2925,6 +2947,7 @@ AssetMutationResult AssetDatabase::MoveAsset(const std::string &oldPath, const s
     result.guid = std::move(guid);
     result.resourceType = type;
     result.queryGeneration = GetQueryGeneration();
+    ApplyDocumentationTextureMovePolicy(*this, result);
     return result;
 }
 
@@ -3047,6 +3070,7 @@ AssetDatabase::MoveAssetsBatch(const std::vector<std::pair<std::string, std::str
         result.previousPath = move.oldPath;
         result.resourceType = move.resourceType;
         result.queryGeneration = GetQueryGeneration();
+        ApplyDocumentationTextureMovePolicy(*this, result);
         results.push_back(std::move(result));
     }
     return results;

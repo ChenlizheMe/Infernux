@@ -85,7 +85,7 @@ InxPackage 插件可以包含组件、工具、资源和平台导出器。玩法
 
 安装 [InfernuxHub](https://infernux-engine.com/download.html)，选择引擎版本并创建项目。Hub 管理 Python 环境，使用编辑器无需先配置原生编译器。接下来可以阅读[学习指南](https://infernux-engine.com/learn.html)与 [API 文档](https://infernux-engine.com/wiki/site/en/api/index.html)。
 
-插件作者入口：[创作指南](https://infernux-engine.com/wiki/site/en/plugin-package-content.html) · [插件模板](https://github.com/ChenlizheMe/infernux_plugin_template)。
+插件作者入口：[创作指南](https://infernux-engine.com/wiki/site/en/plugin-package-content.html) · [插件模板](https://github.com/InfernuxEngine/infernux_plugin_template)。
 
 ### 从源码构建引擎
 

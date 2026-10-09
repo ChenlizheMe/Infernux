@@ -24,15 +24,30 @@ def test_deferred_owner_tasks_survive_skipped_presentation_frames() -> None:
     for condition in (
         "if (m_view->NeedsSurfaceRecreation() && !m_view->IsApplicationInBackground())",
         "if (m_view->IsMinimized())",
+        "if (!m_vkCore->RefreshPresentationSize())",
         "if (CheckAndApplyMsaaRequest(false,",
         "if (CheckAndApplyMsaaRequest(true,",
     ):
         branch = _function_body(draw, condition)
         assert branch.index("runDeferredTasks();") < branch.index("return;")
-        if "CheckAndApplyMsaaRequest" in condition:
+        if "CheckAndApplyMsaaRequest" in condition or "RefreshPresentationSize" in condition:
             assert branch.index("sceneManager.EndFrame();") < branch.index("runDeferredTasks();")
-    # Four skipped-draw paths plus the ordinary, completed submission path.
-    assert draw.count("runDeferredTasks();") == 5
+    # Five skipped-draw paths plus the ordinary, completed submission path.
+    assert draw.count("runDeferredTasks();") == 6
+
+
+def test_window_resize_rebuilds_presentation_before_gui_and_acquire() -> None:
+    renderer = (RENDERER / "InxRenderer.cpp").read_text(encoding="utf-8")
+    draw = _function_body(renderer, "void InxRenderer::DrawFrame()")
+    # Ignore the minimized semantic-only GUI build, which never acquires a
+    # swapchain image. The normal GUI frame must see the refreshed attachment.
+    regular_gui = draw.index("auto _guiBuildStart")
+    assert draw.index("m_vkCore->SetWindowSize(") < draw.index("m_vkCore->RefreshPresentationSize()")
+    assert draw.index("m_vkCore->RefreshPresentationSize()") < regular_gui < draw.index("m_vkCore->DrawFrame(")
+    core = (RENDERER / "InxVkCoreModular.cpp").read_text(encoding="utf-8")
+    recreate = _function_body(core, "void InxVkCoreModular::RecreateSwapchain()")
+    assert recreate.index("m_framebufferResized = true") < recreate.index("QuerySwapchainSupport()")
+    assert recreate.index("m_framebufferResized = false") > recreate.index("CreateDepthResources()")
 
 
 def _function_body(source: str, signature: str) -> str:
@@ -558,7 +573,7 @@ def test_floating_editor_windows_move_only_from_their_title_bar() -> None:
 def test_imgui_preview_textures_publish_only_after_async_upload_completion() -> None:
     gui = (RENDERER / "gui" / "InxGUI.cpp").read_text(encoding="utf-8")
     pump = _function_body(gui, "void InxGUI::PumpTextureUploads")
-    submit = _function_body(gui, "uint64_t InxGUI::SubmitTextureForImGui")
+    submit = _function_body(gui, "uint64_t InxGUI::SubmitCpuTextureForImGui")
 
     completion_guard = "pending.ticket->IsAsync() && !pending.ticket->IsComplete()"
     assert completion_guard in pump
@@ -570,9 +585,13 @@ def test_imgui_preview_textures_publish_only_after_async_upload_completion() -> 
 def test_imgui_preview_uploads_use_one_validated_mip_for_all_editor_sizes() -> None:
     gui = (RENDERER / "gui" / "InxGUI.cpp").read_text(encoding="utf-8")
     submit = _function_body(gui, "uint64_t InxGUI::SubmitTextureForImGui")
+    upload = _function_body(gui, "uint64_t InxGUI::SubmitCpuTextureForImGui")
+    document = _function_body(gui, "uint64_t InxGUI::SubmitDocumentTextureForImGui")
 
     assert "static_cast<uint32_t>(height), false" in submit
-    assert "sampler.maxLod = 0.0f" in submit
+    assert "SubmitCpuTextureForImGui" in submit
+    assert "SubmitCpuTextureForImGui" in document
+    assert "sampler.maxLod = 0.0f" in upload
 
 
 def test_resident_texture_previews_keep_their_display_encoding_semantic() -> None:
@@ -595,7 +614,7 @@ def test_imgui_display_shader_is_compiled_from_the_current_source() -> None:
     shader = (
         RENDERER / "gui" / "backend" / "infernux_imgui_frag.frag"
     ).read_text(encoding="utf-8")
-    backend = (ROOT / "external" / "imgui" / "backends" / "imgui_impl_vulkan.cpp").read_text(
+    backend = (ROOT / "external" / "imgui_for_infernux" / "backends" / "imgui_impl_vulkan.cpp").read_text(
         encoding="utf-8"
     )
 

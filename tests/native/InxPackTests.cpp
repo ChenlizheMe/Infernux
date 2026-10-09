@@ -1,6 +1,7 @@
 #include <platform/filesystem/InxPack.h>
 #include <platform/filesystem/InxPath.h>
 
+#include <algorithm>
 #include <chrono>
 #include <exception>
 #include <filesystem>
@@ -220,6 +221,31 @@ int main()
         Require(concurrentBytes.size() == 4 && concurrentBytes[1] == 0x42 && concurrentBytes[3] == 0xfe,
                 "concurrent writes produced unexpected package contents");
         RequireNoTemporaryFiles(packagePath.parent_path());
+
+        phase = "streaming entries";
+        std::vector<uint8_t> large(5 * 1024 * 1024 + 19);
+        uint32_t random = 1234567;
+        for (auto &value : large) {
+            random ^= random << 13; random ^= random >> 17; random ^= random << 5;
+            value = static_cast<uint8_t>(random);
+        }
+        const auto largeSource = root / "large.bin";
+        const auto audioSource = root / "compressed.MP3";
+        const auto largePack = root / "stream.inxpkg";
+        WriteSource(largeSource, large);
+        WriteSource(audioSource, large);
+        auto largeManifest = Write(largePack, {{"Library/large.bin", largeSource}, {"Library/audio.mp3", audioSource}});
+        Require(largeManifest.entries[0].codec == Codec::Store, "encoded audio must not be compressed twice");
+        Require(largeManifest.entries[1].codec == Codec::Zstandard, "large source must use streamed compression");
+        Require(ReadEntry(largePack, "Library/large.bin") == large, "large random payload changed");
+        Extract(largePack, root / "stream-extracted");
+        Require(ReadFile(root / "stream-extracted/Library/large.bin") == large, "streamed Zstd extraction changed bytes");
+        Require(ReadFile(root / "stream-extracted/Library/audio.mp3") == large, "streamed Store extraction changed bytes");
+        std::fill(large.begin(), large.end(), 0);
+        WriteSource(largeSource, large);
+        Write(largePack, {{"Library/large.bin", largeSource}});
+        Extract(largePack, root / "stream-zeros");
+        Require(ReadFile(root / "stream-zeros/Library/large.bin") == large, "high-ratio output was not fully drained");
 
         phase = "cleanup";
         std::cerr << "[InxPackTests] " << phase << '\n' << std::flush;

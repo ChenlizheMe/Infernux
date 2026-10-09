@@ -1349,6 +1349,15 @@ void InxRenderer::DrawFrame()
     if (m_vkCore) {
         m_vkCore->WaitForCurrentFrame();
         m_vkCore->CollectRetiredGpuResources();
+        // SDL pixel-size changes are authoritative even when acquire/present
+        // keep succeeding. Commit the new attachments before GUI layout and
+        // render-graph construction, rather than relying on driver errors.
+        if (!m_vkCore->RefreshPresentationSize()) {
+            sceneManager.EndFrame();
+            runDeferredTasks();
+            SDL_Delay(16);
+            return;
+        }
     }
 #if INFERNUX_FRAME_PROFILE
     _fp.stamp(); // [3] after WaitForCurrentFrame (GPU fence)
@@ -2945,6 +2954,13 @@ uint64_t InxRenderer::QueryImportedTextureForImGui(const std::string &name, cons
         return 0;
     auto texture = m_vkCore->ResolveTextureForEditorPreview(textureGuid);
     return texture ? m_gui->PublishTextureViewForImGui(name, std::move(texture)) : 0;
+}
+
+uint64_t InxRenderer::SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels)
+{
+    if (!m_gui)
+        throw std::logic_error("Document texture submission requires an initialized GUI");
+    return m_gui->SubmitDocumentTextureForImGui(name, pixels);
 }
 
 uint64_t InxRenderer::GetRenderTextureUITextureId(const std::shared_ptr<rhi::RenderTexture> &texture)

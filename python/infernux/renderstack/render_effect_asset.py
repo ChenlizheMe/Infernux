@@ -155,6 +155,19 @@ class RenderEffectGroupAsset:
 RenderEffectDocument = Union[RenderEffectAsset, RenderEffectGroupAsset]
 
 
+def read_render_effect_document(path: str) -> RenderEffectDocument:
+    """Read authoring JSON or a cooked effect without invoking the importer."""
+    from infernux.core.asset_document import read_asset_document
+
+    document = read_asset_document(path)
+    if os.path.splitext(path)[1].casefold() == ".inxeffect":
+        if (not isinstance(document, dict) or document.get("$schema") != "infernux.render_effect_artifact"
+                or "source" not in document):
+            raise ValueError("Invalid cooked render effect")
+        document = document["source"]
+    return parse_render_effect_document(document)
+
+
 def parse_render_effect_document(value: str | bytes | Mapping[str, Any]) -> RenderEffectDocument:
     """Parse and strictly validate an effect or effect-group source document."""
     if isinstance(value, bytes):

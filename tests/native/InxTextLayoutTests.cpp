@@ -181,7 +181,7 @@ int main()
 
     const std::filesystem::path repositoryRoot =
         std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
-    const std::string latinFont = infernux::FromFsPath(repositoryRoot / "external/imgui/misc/fonts/Roboto-Medium.ttf");
+    const std::string latinFont = infernux::FromFsPath(repositoryRoot / "external/imgui_for_infernux/misc/fonts/Roboto-Medium.ttf");
     const std::string cjkFont = infernux::FromFsPath(repositoryRoot / "python/infernux/resources/fonts/PingFangSC-Regular.ttf");
     assert(std::filesystem::exists(latinFont));
     assert(std::filesystem::exists(cjkFont));
@@ -369,7 +369,7 @@ int main()
                                 std::chrono::steady_clock::now().time_since_epoch().count()));
         std::filesystem::create_directories(folder);
         const auto path = folder / "Shared.ttf";
-        const auto cousin = repositoryRoot / "external/imgui/misc/fonts/Cousine-Regular.ttf";
+        const auto cousin = repositoryRoot / "external/imgui_for_infernux/misc/fonts/Cousine-Regular.ttf";
         assert(ResolveFont(infernux::FromFsPath(path)) == nullptr);
         std::filesystem::copy_file(latinFont, path);
         assert(InvalidateFontPath(infernux::FromFsPath(path)));

@@ -15,7 +15,7 @@ from pathlib import PurePosixPath
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..core.asset_types import AUDIO_EXTENSIONS, MESH_EXTENSIONS
+from ..core.asset_types import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, MESH_EXTENSIONS
 
 from .path_utils import relative_path, resolved_path
 
@@ -28,6 +28,7 @@ _DOCUMENT_TYPES = {
     ".scene": "scene",
     ".prefab": "prefab",
     ".mat": "material",
+    ".physicmaterial": "physic_material",
     ".effect": "render_effect",
     ".effectgroup": "render_effect_group",
     ".timeline": "timeline",
@@ -50,8 +51,14 @@ RUNTIME_AUTHORING_DOCUMENT_SUFFIXES = frozenset(_DOCUMENT_TYPES) | frozenset(
 RUNTIME_JSON_DOCUMENT_SUFFIXES = frozenset(_DOCUMENT_TYPES) | frozenset(
     {".graph", ".particlegraph", ".rendertexture", ".json"}
 )
+# Only formats with native/Python runtime readers for cooked documents belong
+# here. Unknown formats, even JSON payloads, remain opaque bytes.
+RUNTIME_BINARY_DOCUMENT_SUFFIXES = frozenset({
+    ".mat", ".physicmaterial", ".animclip", ".animclip2d", ".animclip3d",
+    ".animfsm", ".animtimeline", ".timelinefsm", ".effect", ".effectgroup",
+})
 _AUDIO_TYPES = {extension: "audio" for extension in AUDIO_EXTENSIONS}
-_DIRECT_TEXTURE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr", ".exr"}
+_DIRECT_TEXTURE_SUFFIXES = IMAGE_EXTENSIONS
 # Keep runtime classification on the same source-of-truth list used by the
 # AssetDatabase and Project panel.  A source model must not become an opaque
 # blob merely because a newly supported interchange format was added there.
@@ -115,16 +122,10 @@ def unix_ns_to_filetime_ticks(unix_ns: int) -> int:
 
 def _source_content_hash(path: str) -> str:
     """Return the native AssetIndex FNV-1a source fingerprint."""
-
+    from infernux.lib import _Infernux as native
     try:
-        with Path(path).open("rb") as stream:
-            value = 14695981039346656037
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                for byte in chunk:
-                    value ^= byte
-                    value = (value * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-            return f"{value:016x}"
-    except OSError as exc:
+        return native._asset_source_content_hash(str(path))
+    except (OSError, RuntimeError) as exc:
         raise RuntimeArtifactError(f"Asset source cannot be fingerprinted: {path}") from exc
 
 
@@ -227,9 +228,10 @@ def source_fingerprint(project_root: str | os.PathLike[str], entry: dict[str, An
     source = source_path_for_entry(project_root, entry)
     if _metadata_value(entry, "import_owner_guid"):
         source = source.partition("::subtex:")[0].partition("::subanim:")[0]
+    from infernux.lib import _Infernux as native
     try:
-        stat = os.stat(source)
-    except OSError as exc:
+        size, modified = native._asset_source_stat(str(source))
+    except (OSError, RuntimeError) as exc:
         raise RuntimeArtifactError(f"Asset source is missing: {source}") from exc
     expected = entry["source"]
     expected_size = int(expected["size"])
@@ -238,15 +240,12 @@ def source_fingerprint(project_root: str | os.PathLike[str], entry: dict[str, An
     if not content_hash:
         raise RuntimeArtifactError(f"AssetIndex content_hash is missing for {source}")
 
-    # std::filesystem::file_time_type has no cross-platform epoch or tick
-    # contract. Windows indexes currently resemble FILETIME while Linux
-    # indexes use the implementation's native clock, and copying a project
-    # between filesystems can also change mtime without changing its bytes.
-    # Size + mtime remain the fast path; an mtime mismatch is resolved by the
-    # native content hash instead of rejecting an otherwise identical source.
+    # Ask the native filesystem for the same clock/ticks used by AssetIndex.
+    # A cross-machine timestamp mismatch still uses a bounded native hash,
+    # with the GIL released; never iterate asset bytes in Python.
     current = {
-        "size": int(stat.st_size),
-        "modified_ns": unix_ns_to_filetime_ticks(stat.st_mtime_ns),
+        "size": int(size),
+        "modified_ns": int(modified),
     }
     if current["size"] != expected_size:
         raise RuntimeArtifactError(
@@ -445,6 +444,8 @@ def logical_type_for_path(path: str) -> str:
     normalized = normalize_runtime_path(path)
     lower = normalized.casefold()
     suffix = PurePosixPath(normalized).suffix.casefold()
+    if suffix == ".inxdoc":
+        return "document_artifact"
     if lower.startswith("infernux/resources/shaders/"):
         return "builtin_shader"
     if lower.startswith("infernux/resources/"):
@@ -507,6 +508,7 @@ def payload_kind_for(logical_type: str) -> str:
         "scene",
         "prefab",
         "material",
+        "physic_material",
         "render_effect",
         "render_effect_group",
         "timeline",
@@ -612,7 +614,11 @@ def _dependencies(
     if not payload:
         return [], []
     try:
-        value = json.loads(payload.decode("utf-8"))
+        if payload.startswith(b"INXDOCUMENT"):
+            from infernux.lib import _Infernux as native
+            value = native._decode_asset_document(payload)
+        else:
+            value = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return [], []
     ids: set[str] = set()
@@ -772,8 +778,9 @@ def build_catalog(
             path_index.setdefault(source_key[7:], primary_id)
 
     for record in prepared:
+        payload = record.pop("_payload")
         dependencies, unresolved = _dependencies(
-            record.pop("_payload"),
+            None if record["logical_type"] == "project_runtime_blob_artifact" else payload,
             guid_index,
         )
         binding = record.get("source_asset")

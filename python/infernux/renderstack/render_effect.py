@@ -86,11 +86,12 @@ class RenderEffect:
 
     @classmethod
     def load(cls, file_path: str) -> Optional["RenderEffect"]:
-        """Load one effect source. Effect-group documents are not instances."""
+        """Load one authored or cooked effect. Groups are not single instances."""
         try:
-            with open(file_path, "r", encoding="utf-8") as stream:
-                source = parse_render_effect_document(stream.read())
-        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            from infernux.renderstack.render_effect_asset import read_render_effect_document
+
+            source = read_render_effect_document(file_path)
+        except (OSError, RuntimeError, KeyError, TypeError, ValueError):
             return None
         if not isinstance(source, RenderEffectAsset):
             return None
@@ -312,6 +313,12 @@ class RenderEffect:
             return False
 
     def flush(self) -> None:
+        from infernux.application import Application
+
+        if Application.is_player() or self._suppress_auto_save:
+            self._save_pending = False
+            self._pending_saves.discard(self)
+            return
         if not self._save_pending or not self._file_path:
             return
         from infernux.core.assets import AssetManager
@@ -328,7 +335,9 @@ class RenderEffect:
         self._schedule_save()
 
     def _schedule_save(self) -> None:
-        if self._suppress_auto_save or not self._file_path:
+        from infernux.application import Application
+
+        if Application.is_player() or self._suppress_auto_save or not self._file_path:
             return
         self._save_pending = True
         self._pending_saves.add(self)

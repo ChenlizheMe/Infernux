@@ -248,14 +248,14 @@ class AnimationClip:
         if not os.path.isfile(path):
             return None
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            from infernux.core.asset_document import read_asset_document
+            data = read_asset_document(path)
             clip = cls.from_dict(data)
             clip.file_path = path
             # Name always derives from filename
             clip.name = os.path.splitext(os.path.basename(path))[0]
             return clip
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        except (OSError, RuntimeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
 
     # ── Helpers ───────────────────────────────────────────────────────

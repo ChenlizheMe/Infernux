@@ -145,7 +145,7 @@ def _stdout_log_path() -> Path | None:
 
 def _acceptance_logs(project: str, process_log: str) -> list[Path]:
     paths = [Path(project) / "Logs" / "engine.log"]
-    explicit = str(process_log or os.environ.get("INFERNUX_EDITOR_SMOKE_LOG", "")).strip()
+    explicit = str(process_log).strip()
     process_path = Path(resolved_path(explicit)) if explicit else _stdout_log_path()
     if process_path is not None and process_path not in paths:
         paths.append(process_path)

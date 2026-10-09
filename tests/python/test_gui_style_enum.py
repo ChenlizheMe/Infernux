@@ -6,7 +6,7 @@ from infernux.engine.ui.theme import ImGuiStyleVar
 
 
 def test_every_style_variable_matches_vendored_imgui():
-    header = Path(__file__).resolve().parents[2] / "external/imgui/imgui.h"
+    header = Path(__file__).resolve().parents[2] / "external/imgui_for_infernux/imgui.h"
     source = header.read_text(encoding="utf-8")
     body = source.split("enum ImGuiStyleVar_\n{", 1)[1].split("ImGuiStyleVar_COUNT", 1)[0]
     names = re.findall(r"^\s+ImGuiStyleVar_(\w+),", body, re.MULTILINE)

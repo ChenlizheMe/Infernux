@@ -6,6 +6,7 @@
 #include <function/resources/InxMaterial/InxMaterial.h>
 
 #include <platform/filesystem/InxPath.h>
+#include <platform/filesystem/AssetDocument.h>
 
 #include <filesystem>
 #include <fstream>
@@ -58,13 +59,8 @@ ShaderAssetReference EnrichShaderReference(ShaderAssetReference reference, Asset
 
 bool MaterialLoader::PrepareDocument(InxMaterial &staged, const std::string &filePath, AssetDatabase *adb)
 {
-    std::ifstream file(ToFsPath(filePath));
-    if (!file.is_open()) {
-        INXLOG_WARN("MaterialLoader: cannot open '", filePath, "'");
-        return false;
-    }
     try {
-        if (!staged.ApplyDocument(nlohmann::json::parse(file)))
+        if (!staged.ApplyDocument(ReadAssetDocument(filePath)))
             return false;
         // Resolve on the unpublished candidate. Public shader setters would
         // notify routing and reset authorship before the complete edit is valid.
@@ -78,7 +74,7 @@ bool MaterialLoader::PrepareDocument(InxMaterial &staged, const std::string &fil
 }
 
 // =============================================================================
-// Load — create a brand-new InxMaterial from a .mat file
+// Load — create a brand-new InxMaterial from an authored or cooked document
 // =============================================================================
 
 RuntimeAssetPayload MaterialLoader::Load(const std::string &filePath, const std::string &guid, AssetDatabase *adb)
@@ -149,16 +145,9 @@ std::set<std::string> MaterialLoader::ScanDependencies(const std::string &filePa
 {
     std::set<std::string> deps;
 
-    std::ifstream file = OpenInputFile(filePath);
-    if (!file.is_open())
-        return deps;
-
-    std::string jsonStr((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    file.close();
-
     // Temporary material just for parsing — lightweight, no GPU resources
     InxMaterial tmp;
-    if (!tmp.Deserialize(jsonStr))
+    if (!PrepareDocument(tmp, filePath, nullptr))
         return deps;
 
     // Texture GUIDs

@@ -369,15 +369,18 @@ class AssetManager:
         from infernux.application import Application
 
         if Application.is_player():
-            from infernux.engine.project_context import resolve_runtime_asset_guid
+            from infernux.engine.project_context import resolve_runtime_asset_guid, runtime_asset_extension
 
             path = resolve_runtime_asset_guid(guid)
+            # Cooked documents share an extension. The catalog retains the
+            # authored asset type; never guess it from the cooked filename.
+            ext = runtime_asset_extension(guid)
         else:
             path = cls._get_path_from_guid(guid)
+            ext = os.path.splitext(path or "")[1].lower()
         if not path:
             return None
 
-        ext = os.path.splitext(path)[1].lower()
         resolved_type = asset_type or cls._type_from_extension(ext)
 
         asset = cls._load_by_type(path, resolved_type)
@@ -2256,20 +2259,28 @@ class AssetManager:
                 from infernux.renderstack.render_effect_asset import (
                     RenderEffectAsset,
                     RenderEffectGroupAsset,
+                    read_render_effect_document,
                 )
                 from infernux.renderstack.render_effect_compiler import (
                     RenderEffectArtifactRegistry,
                 )
 
                 guid = cls._get_guid_from_path(path) or ""
-                artifact, document = RenderEffectArtifactRegistry.compile_and_publish(
-                    path,
-                    guid=guid,
-                )
-                cls._publish_compile_diagnostic(path)
+                from infernux.application import Application
+
+                artifact = None
+                if Application.is_player() or path.lower().endswith((".inxdoc", ".inxeffect")):
+                    document = read_render_effect_document(path)
+                else:
+                    artifact, document = RenderEffectArtifactRegistry.compile_and_publish(
+                        path,
+                        guid=guid,
+                    )
+                    cls._publish_compile_diagnostic(path)
                 if isinstance(document, RenderEffectAsset):
                     effect = RenderEffect(document, file_path=path, guid=guid)
-                    effect._artifact_revision = artifact.revision
+                    if artifact is not None:
+                        effect._artifact_revision = artifact.revision
                     return effect
                 if isinstance(document, RenderEffectGroupAsset):
                     return EditableRenderEffectGroup(

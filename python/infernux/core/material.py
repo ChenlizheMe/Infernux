@@ -431,8 +431,8 @@ class Material(ResourceProxy):
     def _auto_save(self):
         """Auto-save material to its .mat file after property changes.
 
-        Mirrors Unity: every material property change persists to disk,
-        both in edit mode and at runtime.  Saves are throttled so that
+        Only authoring changes persist; Player and Play changes stay in memory.
+        Saves are throttled so that
         rapid-fire changes (e.g. every-frame set_texture) don't hammer
         the file system — pending writes are flushed via flush().
         """
@@ -453,7 +453,7 @@ class Material(ResourceProxy):
 
     def _flush_save(self):
         """Execute the actual disk write."""
-        if self._cannot_persist():
+        if Material._suppress_auto_save or self._cannot_persist():
             self._save_pending = False
             Material._pending_saves.pop(id(self), None)
             return
@@ -482,6 +482,10 @@ class Material(ResourceProxy):
 
     def _cannot_persist(self) -> bool:
         """Return whether this wrapper no longer owns a writable material."""
+        from infernux.application import Application
+
+        if Application.is_player():
+            return True
         if self._disposed or self._native is None:
             return True
         try:
@@ -670,8 +674,7 @@ class Material(ResourceProxy):
     def save(self, file_path: str) -> bool:
         """Save material to a .mat file."""
         try:
-            self._native.save_to(file_path)
-            return True
+            return bool(self._native.save_to(file_path))
         except (OSError, RuntimeError, ValueError):
             return False
 

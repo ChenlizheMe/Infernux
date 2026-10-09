@@ -7,6 +7,8 @@
  */
 
 #include "Infernux.h"
+#include <function/resources/AssetImporter/PluginPageTextureMetadata.h>
+#include <function/resources/InxTexture/TextureDecoder.h>
 #include <function/renderer/rhi/RhiComputeHost.h>
 #include <function/resources/InxMesh/ModelMeshReference.h>
 // Explicit includes for types now only forward-declared in InxRenderer.h
@@ -1577,6 +1579,40 @@ static PreviewPixelSummary SummarizePreviewPixels(const std::vector<unsigned cha
     return summary;
 }
 
+static PreviewPixelSummary SummarizePreviewPixels(const TextureCpuData &texture)
+{
+    // Documentation decodes use uncompressed RGBA8 or linear RGBA32F. Compute
+    // diagnostics on the decode worker; never scan full-size images on the UI thread.
+    if (texture.format != TextureFormat::Rgba32Float)
+        return SummarizePreviewPixels(texture.bytes);
+    PreviewPixelSummary summary;
+    for (const auto value : texture.bytes) {
+        summary.hash ^= value;
+        summary.hash *= UINT64_C(1099511628211);
+    }
+    float low = 1.0f, high = 0.0f;
+    for (size_t offset = 0; offset + sizeof(float) * 4 <= texture.bytes.size(); offset += sizeof(float) * 4) {
+        std::array<float, 4> rgba;
+        std::memcpy(rgba.data(), texture.bytes.data() + offset, sizeof(rgba));
+        if (rgba[3] > 0.0f)
+            ++summary.nonTransparentPixelCount;
+        for (int channel = 0; channel < 3; ++channel) {
+            if (std::isfinite(rgba[channel])) {
+                low = (std::min)(low, rgba[channel]);
+                high = (std::max)(high, rgba[channel]);
+            }
+        }
+    }
+    auto displayByte = [](float value) {
+        value = std::clamp(value, 0.0f, 1.0f);
+        const float srgb = value <= 0.0031308f ? 12.92f * value : 1.055f * std::pow(value, 1.0f / 2.4f) - 0.055f;
+        return static_cast<uint8_t>(std::lround(srgb * 255.0f));
+    };
+    summary.minRgb = displayByte(low);
+    summary.maxRgb = displayByte(high);
+    return summary;
+}
+
 uint64_t Infernux::QueryOrScheduleMaterialPreview(const std::string &resourceKey, const std::string &matFilePath,
                                                   const std::string &materialJson, uint64_t fileMtimeHint,
                                                   bool authoring)
@@ -2158,29 +2194,35 @@ void Infernux::PumpPreviewTasks()
                 stateSnapshot = it->second;
             }
 
-            if (!completed.success || completed.pixels.empty() || completed.width <= 0 || completed.height <= 0) {
+            if (!completed.success || (completed.pixels.empty() && !completed.sourcePixels) ||
+                completed.width <= 0 || completed.height <= 0) {
                 std::lock_guard<std::mutex> lock(m_previewResultMutex);
                 auto it = m_texturePreviewStates.find(completed.resourceKey);
-                if (it != m_texturePreviewStates.end())
+                if (it != m_texturePreviewStates.end()) {
                     it->second.inFlight = false;
+                    it->second.failedGeneration = completed.generation;
+                }
                 continue;
             }
 
             if (stateSnapshot.textureName.empty())
                 continue;
 
-            const PreviewPixelSummary pixelSummary = SummarizePreviewPixels(completed.pixels);
             uint64_t uploadVersion = 0;
             try {
-                uploadVersion = m_renderer->SubmitTextureForImGui(
+                uploadVersion = completed.sourcePixels
+                    ? m_renderer->SubmitDocumentTextureForImGui(stateSnapshot.textureName, *completed.sourcePixels)
+                    : m_renderer->SubmitTextureForImGui(
                     stateSnapshot.textureName, completed.pixels.data(), completed.pixels.size(), completed.width,
                     completed.height, completed.nearest ? rhi::FilterMode::Nearest : rhi::FilterMode::Linear);
             } catch (const std::exception &error) {
                 INXLOG_ERROR("Failed to submit image preview texture: ", error.what());
                 std::lock_guard<std::mutex> lock(m_previewResultMutex);
                 auto it = m_texturePreviewStates.find(completed.resourceKey);
-                if (it != m_texturePreviewStates.end())
+                if (it != m_texturePreviewStates.end()) {
                     it->second.inFlight = false;
+                    it->second.failedGeneration = completed.generation;
+                }
                 continue;
             }
 
@@ -2195,10 +2237,10 @@ void Infernux::PumpPreviewTasks()
                 it->second.pendingWidth = completed.width;
                 it->second.pendingHeight = completed.height;
                 it->second.pixelGeneration = completed.generation;
-                it->second.pixelHash = pixelSummary.hash;
-                it->second.nonTransparentPixelCount = pixelSummary.nonTransparentPixelCount;
-                it->second.minRgb = pixelSummary.minRgb;
-                it->second.maxRgb = pixelSummary.maxRgb;
+                it->second.pixelHash = completed.pixelHash;
+                it->second.nonTransparentPixelCount = completed.nonTransparentPixelCount;
+                it->second.minRgb = completed.minRgb;
+                it->second.maxRgb = completed.maxRgb;
                 m_hasPendingPreviewUploads.store(true, std::memory_order_release);
                 m_hasPreviewPumpWork.store(true, std::memory_order_release);
             }
@@ -2810,7 +2852,14 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
     // compression, channel conversion and sampler settings.
     if (auto *database = GetAssetDatabase(); useImportedTexture && database && m_renderer) {
         const std::string guid = database->GetGuidFromPath(textureFilePath);
-        if (!guid.empty()) {
+        const auto metadata = guid.empty() ? nullptr : database->GetMetaByGuid(guid);
+        // Only documentation-policy imports are faithful source illustrations.
+        // Uninstalled packages and images referenced outside plugin_pages use
+        // the lossless CPU decoder below, not an arbitrary BC game texture.
+        const bool documentPreview = key.compare(0, 9, "document|") == 0;
+        if (!guid.empty() && (!documentPreview ||
+            (metadata && IsPluginPageTexture(*metadata, textureFilePath, database->GetProjectRoot()) &&
+             HasCurrentPluginPageTextureMetadata(*metadata, textureFilePath, database->GetProjectRoot())))) {
             int importedWidth = 0;
             int importedHeight = 0;
             if (const auto meta = database->GetMetaByGuid(guid)) {
@@ -2876,7 +2925,7 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
             state.generation++;
         }
 
-        const int sanitizedMaxSize = std::clamp(maxSize, 1, 65'536);
+        const int sanitizedMaxSize = maxSize == 0 ? 65'536 : std::clamp(maxSize, 1, 65'536);
         // Also bump generation if a caller omitted these settings from its content stamp.
         if (state.generation != 0 &&
             (nearest != state.nearest || srgb != state.srgb || sanitizedMaxSize != state.maxSize ||
@@ -2888,6 +2937,8 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
         state.maxSize = sanitizedMaxSize;
         state.textureFormat = textureFormat;
         state.textureType = textureType;
+        if (state.generation == 0)
+            state.generation = 1;
 
         texId = state.textureId;
         w = state.readyWidth;
@@ -2895,6 +2946,8 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
 
         // Already up-to-date?
         if (state.readyGeneration == state.generation && state.textureId != 0)
+            return {texId, w, h};
+        if (state.failedGeneration == state.generation)
             return {texId, w, h};
         if (state.readyGeneration == state.generation && state.pendingUploadVersion == 0)
             state.readyGeneration = 0;
@@ -2918,35 +2971,50 @@ Infernux::QueryOrScheduleTexturePreview(const std::string &resourceKey, const st
             completed.generation = req.generation;
             completed.nearest = req.nearest;
             try {
-                auto texData = InxTextureLoader::LoadFromFile(req.textureFilePath);
-                if (texData.IsValid()) {
-                    std::vector<unsigned char> sampled;
-                    int outW = 0;
-                    int outH = 0;
-                    const bool spriteEditPreview =
-                        !req.resourceKey.empty() && req.resourceKey.compare(0, 11, "spriteedit|") == 0;
-                    // The caller supplies the display budget. Documentation pages
-                    // must not be reduced to a 200px Project-panel thumbnail.
-                    const int configuredMaxDim = req.maxSize;
-                    const int maxDim =
-                        spriteEditPreview
-                            ? std::max(texData.width, texData.height)
-                            : ((!req.resourceKey.empty() && req.resourceKey.compare(0, 9, "compicon|") == 0)
-                                   ? (std::min)(kComponentIconPreviewMaxDim, configuredMaxDim)
-                                   : configuredMaxDim);
-                    DownsampleNearestRgba(texData.pixels, texData.width, texData.height, maxDim, sampled, outW, outH);
-                    if (!sampled.empty() && outW > 0 && outH > 0) {
-                        if (req.textureType == "normal_map")
-                            ApplyNormalMapPreviewInPlace(sampled, outW, outH);
-                        else if (!req.srgb)
-                            ApplyLinearToSrgbPreviewInPlace(sampled);
-                        ApplyTextureFormatPreviewInPlace(sampled, req.textureFormat);
-                        completed.width = outW;
-                        completed.height = outH;
-                        completed.success = true;
-                        completed.pixels = std::move(sampled);
+                if (req.resourceKey.compare(0, 9, "document|") == 0) {
+                    InxResourceMeta settings;
+                    settings.AddMetadata("texture_type", std::string("ui"));
+                    settings.AddMetadata("texture_compression", std::string("none"));
+                    settings.AddMetadata("texture_format", std::string("auto"));
+                    settings.AddMetadata("max_size", 0);
+                    settings.AddMetadata("srgb", true);
+                    settings.AddMetadata("generate_mipmaps", false);
+                    completed.sourcePixels = TextureDecoder::Decode(req.textureFilePath, settings, true);
+                    const auto &mip = completed.sourcePixels->mipLevels.front();
+                    completed.width = static_cast<int>(mip.width);
+                    completed.height = static_cast<int>(mip.height);
+                    completed.success = true;
+                } else {
+                    const int decodeSize = req.resourceKey.compare(0, 9, "compicon|") == 0
+                                               ? (std::min)(kComponentIconPreviewMaxDim, req.maxSize)
+                                               : req.maxSize;
+                    auto texData = InxTextureLoader::LoadFromFile(req.textureFilePath, "", decodeSize);
+                    if (texData.IsValid()) {
+                        std::vector<unsigned char> sampled;
+                        int outW = 0;
+                        int outH = 0;
+                        const bool spriteEditPreview = req.resourceKey.compare(0, 11, "spriteedit|") == 0;
+                        const int maxDim = spriteEditPreview ? std::max(texData.width, texData.height) : decodeSize;
+                        DownsampleNearestRgba(texData.pixels, texData.width, texData.height, maxDim, sampled, outW, outH);
+                        if (!sampled.empty() && outW > 0 && outH > 0) {
+                            if (req.textureType == "normal_map")
+                                ApplyNormalMapPreviewInPlace(sampled, outW, outH);
+                            else if (!req.srgb)
+                                ApplyLinearToSrgbPreviewInPlace(sampled);
+                            ApplyTextureFormatPreviewInPlace(sampled, req.textureFormat);
+                            completed.width = outW;
+                            completed.height = outH;
+                            completed.success = true;
+                            completed.pixels = std::move(sampled);
+                        }
                     }
                 }
+                const auto summary = completed.sourcePixels ? SummarizePreviewPixels(*completed.sourcePixels)
+                                                             : SummarizePreviewPixels(completed.pixels);
+                completed.pixelHash = summary.hash;
+                completed.nonTransparentPixelCount = summary.nonTransparentPixelCount;
+                completed.minRgb = summary.minRgb;
+                completed.maxRgb = summary.maxRgb;
             } catch (const std::exception &error) {
                 INXLOG_WARN("Texture preview decode failed for ", req.textureFilePath, ": ", error.what());
             }
@@ -2980,10 +3048,14 @@ bool Infernux::ScheduleTexturePreviewFromMemory(const std::string &resourceKey, 
             state.lastContentStamp = stamp;
             state.generation++;
         }
+        if (state.generation == 0)
+            state.generation = 1;
 
         state.textureId = LiveImGuiTextureId(m_renderer.get(), state.textureName);
         if (state.readyGeneration == state.generation && state.textureId != 0)
             return true;
+        if (state.failedGeneration == state.generation)
+            return false;
         if (state.readyGeneration == state.generation && state.pendingUploadVersion == 0)
             state.readyGeneration = 0;
 
@@ -3013,6 +3085,11 @@ bool Infernux::ScheduleTexturePreviewFromMemory(const std::string &resourceKey, 
                 completed.height = texData.height;
                 completed.success = true;
                 completed.pixels = std::move(texData.pixels);
+                const auto summary = SummarizePreviewPixels(completed.pixels);
+                completed.pixelHash = summary.hash;
+                completed.nonTransparentPixelCount = summary.nonTransparentPixelCount;
+                completed.minRgb = summary.minRgb;
+                completed.maxRgb = summary.maxRgb;
             }
         } catch (const std::exception &error) {
             INXLOG_WARN("In-memory texture preview decode failed: ", error.what());
@@ -3329,6 +3406,23 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
         m_startupPhaseTimingsMs[name] = std::chrono::duration<double, std::milli>(StartupClock::now() - begin).count();
     };
 
+    // Open the project log before creating the native window/swapchain so
+    // startup geometry and initialization failures are not lost on Hub launch.
+    // Debug / RelWithDebInfo: truncate on startup and write through.
+    // Release: retain only the last 100 lines and dump them on exit.
+#if INFERNUX_FILE_LOGGING
+    {
+        auto logsDir = ToFsPath(JoinPath({projectPath, "Logs"}));
+        std::filesystem::create_directories(logsDir);
+        auto logFile = logsDir / "engine.log";
+#if INFERNUX_DEFERRED_FILE_LOGGING
+        INXLOG_SET_DEFERRED_FILE(FromFsPath(logFile), 100);
+#else
+        INXLOG_SET_FILE(FromFsPath(logFile));
+#endif
+    }
+#endif
+
     auto phaseBegin = StartupClock::now();
     m_renderer->Init(width, height, m_metadata);
     startupPhase("renderer_init", phaseBegin);
@@ -3344,20 +3438,6 @@ void Infernux::InitRenderer(int width, int height, const std::string &projectPat
                 renderer->SetPlayModeRendering(playing);
         });
     }
-    // Debug / RelWithDebInfo: truncate on startup and write through.
-    // Release: retain only the last 100 lines and dump them on exit.
-#if INFERNUX_FILE_LOGGING
-    {
-        auto logsDir = ToFsPath(JoinPath({projectPath, "Logs"}));
-        std::filesystem::create_directories(logsDir);
-        auto logFile = logsDir / "engine.log";
-#if INFERNUX_DEFERRED_FILE_LOGGING
-        INXLOG_SET_DEFERRED_FILE(FromFsPath(logFile), 100);
-#else
-        INXLOG_SET_FILE(FromFsPath(logFile));
-#endif
-    }
-#endif
 
     INXLOG_DEBUG("Load shaders.");
     std::string defaultShaderPath = JoinPath({builtinResourcePath, "shaders"});

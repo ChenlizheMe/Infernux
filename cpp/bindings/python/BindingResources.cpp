@@ -1,6 +1,8 @@
 #include "JsonPyBridge.h"
 #include "MatrixPyBridge.h"
 #include "ResourceMetaPyView.h"
+#include <array>
+#include <fstream>
 #include <function/renderer/rhi/RhiComputeBuffer.h>
 #include <function/renderer/rhi/RhiRenderTexture.h>
 #include <function/resources/AssetDatabase/AssetDatabase.h>
@@ -9,11 +11,13 @@
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxResource/InxResourceMeta.h>
 #include <function/resources/PhysicMaterial/PhysicMaterial.h>
+#include <iomanip>
 #include <platform/filesystem/AssetDocument.h>
 #include <platform/filesystem/AtomicFile.h>
 #include <platform/filesystem/DocumentStore.h>
 #include <platform/filesystem/InxPack.h>
 #include <platform/filesystem/InxPath.h>
+#include <sstream>
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -182,6 +186,43 @@ inxpack::WriteOptions InxPackWriteOptionsFromPython(py::handle compressionLevel,
 
 void RegisterResourceBindings(py::module_ &m)
 {
+    m.def(
+        "_asset_source_stat",
+        [](const std::string &path) {
+            const auto file = ToFsPath(path);
+            if (!std::filesystem::is_regular_file(file))
+                throw std::runtime_error("Asset source is not a file: " + path);
+            return std::make_pair(
+                std::filesystem::file_size(file),
+                static_cast<int64_t>(std::filesystem::last_write_time(file).time_since_epoch().count()));
+        },
+        py::call_guard<py::gil_scoped_release>());
+    m.def(
+        "_asset_source_content_hash",
+        [](const std::string &path) {
+            const auto file = ToFsPath(path);
+            const auto size = std::filesystem::file_size(file);
+            const auto modified = std::filesystem::last_write_time(file);
+            std::ifstream input(file, std::ios::binary);
+            if (!input)
+                throw std::runtime_error("Cannot open asset source: " + path);
+            std::array<char, 65536> buffer;
+            uint64_t hash = 14695981039346656037ULL;
+            while (input) {
+                input.read(buffer.data(), buffer.size());
+                for (std::streamsize i = 0; i < input.gcount(); ++i) {
+                    hash ^= static_cast<unsigned char>(buffer[i]);
+                    hash *= 1099511628211ULL;
+                }
+            }
+            if (input.bad() || size != std::filesystem::file_size(file) ||
+                modified != std::filesystem::last_write_time(file))
+                throw std::runtime_error("Asset source changed or could not be read: " + path);
+            std::ostringstream result;
+            result << std::hex << std::setfill('0') << std::setw(16) << hash;
+            return result.str();
+        },
+        py::call_guard<py::gil_scoped_release>());
     m.def("_encode_asset_document",
           [](py::handle value) { return py::bytes(EncodeAssetDocument(PythonToJson(value))); });
     m.def("_decode_asset_document", [](const py::bytes &value) {
@@ -210,20 +251,36 @@ void RegisterResourceBindings(py::module_ &m)
         py::arg("profile") = "development", "Write the single native InxPack format using Store/Zstandard codecs.");
     m.def(
         "_inxpack_read_manifest",
-        [](const std::string &path) { return InxPackManifestToPython(inxpack::ReadManifest(ToFsPath(path))); },
+        [](const std::string &path) {
+            inxpack::Manifest manifest;
+            {
+                py::gil_scoped_release release;
+                manifest = inxpack::ReadManifest(ToFsPath(path));
+            }
+            return InxPackManifestToPython(manifest);
+        },
         py::arg("path"), "Read and fully validate a native InxPack manifest.");
     m.def(
         "_inxpack_extract",
         [](const std::string &path, const std::string &destination, py::handle allowedRoots) {
-            return InxPackManifestToPython(
-                inxpack::Extract(ToFsPath(path), ToFsPath(destination), InxPackAllowedRootsFromPython(allowedRoots)));
+            const auto roots = InxPackAllowedRootsFromPython(allowedRoots);
+            inxpack::Manifest manifest;
+            {
+                py::gil_scoped_release release;
+                manifest = inxpack::Extract(ToFsPath(path), ToFsPath(destination), roots);
+            }
+            return InxPackManifestToPython(manifest);
         },
         py::arg("path"), py::arg("destination"), py::arg("allowed_roots") = py::none(),
         "Validate and extract a native InxPack with an optional allowed root filter.");
     m.def(
         "_inxpack_read_entry",
         [](const std::string &path, const std::string &entryPath) {
-            const auto bytes = inxpack::ReadEntry(ToFsPath(path), entryPath);
+            std::vector<uint8_t> bytes;
+            {
+                py::gil_scoped_release release;
+                bytes = inxpack::ReadEntry(ToFsPath(path), entryPath);
+            }
             return py::bytes(reinterpret_cast<const char *>(bytes.data()), bytes.size());
         },
         py::arg("path"), py::arg("entry_path"), "Read one validated native InxPack entry.");
@@ -375,15 +432,16 @@ void RegisterResourceBindings(py::module_ &m)
     // InxTextureLoader - static methods for loading textures
     py::class_<InxTextureLoader>(m, "TextureLoader")
         .def_static("load_from_file", &InxTextureLoader::LoadFromFile, py::arg("file_path"), py::arg("name") = "",
-                    "Load texture from file")
+                    py::arg("svg_max_size") = 0,
+                    "Load texture from file; SVG uses the requested longest edge (0: 8192)")
         .def_static(
             "load_from_memory",
-            [](py::bytes data, const std::string &name) {
+            [](py::bytes data, const std::string &name, int svgMaxSize) {
                 std::string str = data;
                 return InxTextureLoader::LoadFromMemory(reinterpret_cast<const unsigned char *>(str.data()), str.size(),
-                                                        name);
+                                                        name, svgMaxSize);
             },
-            py::arg("data"), py::arg("name") = "", "Load texture from memory buffer")
+            py::arg("data"), py::arg("name") = "", py::arg("svg_max_size") = 0, "Load texture from memory buffer")
         .def_static("create_solid_color", &InxTextureLoader::CreateSolidColor, py::arg("width"), py::arg("height"),
                     py::arg("r"), py::arg("g"), py::arg("b"), py::arg("a"), py::arg("name") = "solid_color",
                     "Create a solid color texture")

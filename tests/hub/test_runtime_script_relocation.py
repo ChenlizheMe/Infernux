@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.tool_discovery import find_executable
+
 import embed_runtime_manager as module
 import private_python_runtime as runtime
 from runtime_script_relocation import RELOCATE_RUNTIME_SCRIPTS
@@ -28,7 +30,7 @@ def command(args):
 def test_posix_launcher_preserves_literal_interpreter_and_arguments(tmp_path, directory):
     shell = shutil.which("sh")
     if shell is None and sys.platform == "win32":
-        git = shutil.which("git")
+        git = find_executable("git")
         if git:
             candidate = Path(git).parents[1] / "usr/bin/sh.exe"
             if candidate.is_file():

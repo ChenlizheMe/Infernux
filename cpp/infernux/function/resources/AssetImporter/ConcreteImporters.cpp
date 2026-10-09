@@ -1,4 +1,5 @@
 #include "ConcreteImporters.h"
+#include "PluginPageTextureMetadata.h"
 #include <function/resources/InxMesh/InxMesh.h>
 
 #include <core/log/InxLog.h>
@@ -345,6 +346,7 @@ ImportArtifact TextureImporter::Import(const ImportRequest &request) const
 {
     ImportArtifact artifact(request.metadata);
     EnsureDefaultSettings(artifact.metadata);
+    ApplyPluginPageTextureMetadata(artifact.metadata, request.sourcePath, request.projectRoot);
     std::string extension = FromFsPath(ToFsPath(request.sourcePath).extension());
     std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
     if (extension == ".inxvfield") {
@@ -374,9 +376,17 @@ ImportArtifact TextureImporter::Import(const ImportRequest &request) const
     }
     if (!artifact.metadata.HasKey("content_hash"))
         throw std::logic_error("TextureImporter metadata has no source content hash");
-    const auto cpuData = TextureDecoder::Decode(request.sourcePath, artifact.metadata);
+    const auto cpuData = TextureDecoder::Decode(
+        request.sourcePath, artifact.metadata,
+        IsPluginPageTexture(artifact.metadata, request.sourcePath, request.projectRoot));
     if (!cpuData || !cpuData->IsValid())
         throw std::runtime_error("TextureImporter failed to build the runtime texture artifact");
+    if (extension == ".svg") {
+        // Publish the raster dimensions without a second decode for metadata.
+        artifact.metadata.AddMetadata("width", static_cast<int>(cpuData->mipLevels.front().width));
+        artifact.metadata.AddMetadata("height", static_cast<int>(cpuData->mipLevels.front().height));
+        artifact.metadata.AddMetadata("channels", 4);
+    }
     artifact.metadata.AddMetadata("artifact_width", static_cast<int>(cpuData->mipLevels.front().width));
     artifact.metadata.AddMetadata("artifact_height", static_cast<int>(cpuData->mipLevels.front().height));
     artifact.metadata.AddMetadata("artifact_depth", static_cast<int>(cpuData->mipLevels.front().depth));

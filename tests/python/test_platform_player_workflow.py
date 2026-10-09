@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 
 import pytest
+
+from tests.tool_discovery import find_executable
 import yaml
 
 
@@ -33,7 +34,7 @@ def test_android_ci_uses_pinned_gradle_without_unrelated_example_wrappers():
 
 
 def test_ci_software_driver_is_included_in_the_staged_wheel(tmp_path):
-    cmake = shutil.which("cmake")
+    cmake = find_executable("cmake")
     if cmake is None:
         pytest.skip("CMake is required to exercise its install hook")
     scratch_root = ROOT / "out" / "pytest-cmake"
@@ -114,7 +115,7 @@ def test_android_driver_shares_tool_state_between_player_and_instrumentation(
         expected_cache = environment["GRADLE_USER_HOME"] = str(tmp_path / "author cache")
         expected_state = environment["ANDROID_USER_HOME"] = str(tmp_path / "author state")
     completed = subprocess.run(
-        [shutil.which("bash"), str(driver), str(tools / "python"), "build"],
+        [find_executable("bash"), str(driver), str(tools / "python"), "build"],
         cwd=tmp_path, env=environment, capture_output=True, text=True, check=False,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr

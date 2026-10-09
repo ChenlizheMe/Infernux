@@ -108,7 +108,7 @@ def test_stages_only_repository_owned_packages_without_hashes(tmp_path, monkeypa
             source,
             "mcp",
             "infernux/mcp",
-            "https://github.com/ChenlizheMe/infernux_mcp",
+            "https://github.com/InfernuxEngine/infernux_mcp",
         ),
     ]
     catalog = source / "plugins.json"
@@ -282,7 +282,7 @@ def test_platform_releases_are_owned_by_independent_repositories():
     platforms = [item for item in catalog["plugins"] if item["category"] == "platform_build"]
     assert len(platforms) == 4
     for item in platforms:
-        assert item["repository"] == f"https://github.com/ChenlizheMe/{item['path']}"
+        assert item["repository"] == f"https://github.com/InfernuxEngine/{item['path']}"
         assert "revision" not in item and "subdirectory" not in item
         release = (sources / item["path"] / ".github/workflows/release.yml").read_text(
             encoding="utf-8"

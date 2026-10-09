@@ -146,7 +146,7 @@ def _write_native_payload(root: Path, *, abi: str) -> Path:
     sdl_java = (
         ROOT
         / "external"
-        / "SDL"
+        / "sdl_for_infernux"
         / "android-project"
         / "app"
         / "src"

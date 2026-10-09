@@ -35,37 +35,37 @@ const ALLOWED_KEYS = new Set([
   "hub/0.4.0/build-2/InfernuxHubInstaller-0.4.0-windows-x64.exe"
 ]);
 const RELEASE_SOURCES = new Map([
-  ["plugins/infernux.mcp/0.1.13/infernux.mcp.inxpkg", "https://github.com/ChenlizheMe/infernux_mcp/releases/download/v0.1.13/infernux.mcp.inxpkg"],
-  ["plugins/infernux.mcp/0.1.12/infernux.mcp.inxpkg", "https://github.com/ChenlizheMe/infernux_mcp/releases/download/v0.1.12/infernux.mcp.inxpkg"],
-  ["plugins/infernux.mcp/0.1.5/infernux.mcp.inxpkg", "https://github.com/ChenlizheMe/infernux_mcp/releases/download/v0.1.5/infernux.mcp.inxpkg"],
-  ["plugins/infernux.platform-windows/0.2.2/infernux.platform-windows.inxpkg", "https://github.com/ChenlizheMe/infernux_windows/releases/download/v0.2.2/infernux.platform-windows.inxpkg"],
-  ["plugins/infernux.platform-linux/0.2.2/infernux.platform-linux.inxpkg", "https://github.com/ChenlizheMe/infernux_linux/releases/download/v0.2.2/infernux.platform-linux.inxpkg"],
-  ["plugins/infernux.platform-android/0.2.4/infernux.platform-android.inxpkg", "https://github.com/ChenlizheMe/infernux_android/releases/download/v0.2.4/infernux.platform-android.inxpkg"],
-  ["plugins/infernux.platform-web/0.2.2/infernux.platform-web.inxpkg", "https://github.com/ChenlizheMe/infernux_web/releases/download/v0.2.2/infernux.platform-web.inxpkg"],
-  ["plugins/infernux.mcp/0.1.2/infernux.mcp.inxpkg", "https://github.com/ChenlizheMe/infernux_mcp/releases/download/v0.1.2/infernux.mcp.inxpkg"],
-  ["plugins/infernux.platform-windows/0.2.1/infernux.platform-windows.inxpkg", "https://github.com/ChenlizheMe/infernux_windows/releases/download/v0.2.1/infernux.platform-windows.inxpkg"],
-  ["plugins/infernux.platform-linux/0.2.1/infernux.platform-linux.inxpkg", "https://github.com/ChenlizheMe/infernux_linux/releases/download/v0.2.1/infernux.platform-linux.inxpkg"],
-  ["plugins/infernux.platform-android/0.2.3/infernux.platform-android.inxpkg", "https://github.com/ChenlizheMe/infernux_android/releases/download/v0.2.3/infernux.platform-android.inxpkg"],
-  ["plugins/infernux.platform-web/0.2.1/infernux.platform-web.inxpkg", "https://github.com/ChenlizheMe/infernux_web/releases/download/v0.2.1/infernux.platform-web.inxpkg"],
+  ["plugins/infernux.mcp/0.1.13/infernux.mcp.inxpkg", "https://github.com/InfernuxEngine/infernux_mcp/releases/download/v0.1.13/infernux.mcp.inxpkg"],
+  ["plugins/infernux.mcp/0.1.12/infernux.mcp.inxpkg", "https://github.com/InfernuxEngine/infernux_mcp/releases/download/v0.1.12/infernux.mcp.inxpkg"],
+  ["plugins/infernux.mcp/0.1.5/infernux.mcp.inxpkg", "https://github.com/InfernuxEngine/infernux_mcp/releases/download/v0.1.5/infernux.mcp.inxpkg"],
+  ["plugins/infernux.platform-windows/0.2.2/infernux.platform-windows.inxpkg", "https://github.com/InfernuxEngine/infernux_windows/releases/download/v0.2.2/infernux.platform-windows.inxpkg"],
+  ["plugins/infernux.platform-linux/0.2.2/infernux.platform-linux.inxpkg", "https://github.com/InfernuxEngine/infernux_linux/releases/download/v0.2.2/infernux.platform-linux.inxpkg"],
+  ["plugins/infernux.platform-android/0.2.4/infernux.platform-android.inxpkg", "https://github.com/InfernuxEngine/infernux_android/releases/download/v0.2.4/infernux.platform-android.inxpkg"],
+  ["plugins/infernux.platform-web/0.2.2/infernux.platform-web.inxpkg", "https://github.com/InfernuxEngine/infernux_web/releases/download/v0.2.2/infernux.platform-web.inxpkg"],
+  ["plugins/infernux.mcp/0.1.2/infernux.mcp.inxpkg", "https://github.com/InfernuxEngine/infernux_mcp/releases/download/v0.1.2/infernux.mcp.inxpkg"],
+  ["plugins/infernux.platform-windows/0.2.1/infernux.platform-windows.inxpkg", "https://github.com/InfernuxEngine/infernux_windows/releases/download/v0.2.1/infernux.platform-windows.inxpkg"],
+  ["plugins/infernux.platform-linux/0.2.1/infernux.platform-linux.inxpkg", "https://github.com/InfernuxEngine/infernux_linux/releases/download/v0.2.1/infernux.platform-linux.inxpkg"],
+  ["plugins/infernux.platform-android/0.2.3/infernux.platform-android.inxpkg", "https://github.com/InfernuxEngine/infernux_android/releases/download/v0.2.3/infernux.platform-android.inxpkg"],
+  ["plugins/infernux.platform-web/0.2.1/infernux.platform-web.inxpkg", "https://github.com/InfernuxEngine/infernux_web/releases/download/v0.2.1/infernux.platform-web.inxpkg"],
   [
     "plugins/infernux.mcp/0.1.1/infernux.mcp.inxpkg",
-    "https://github.com/ChenlizheMe/infernux_mcp/releases/download/v0.1.1/infernux.mcp.inxpkg"
+    "https://github.com/InfernuxEngine/infernux_mcp/releases/download/v0.1.1/infernux.mcp.inxpkg"
   ],
   [
     "plugins/infernux.platform-windows/0.2.0/infernux.platform-windows.inxpkg",
-    "https://github.com/ChenlizheMe/infernux_windows/releases/download/v0.2.0/infernux.platform-windows.inxpkg"
+    "https://github.com/InfernuxEngine/infernux_windows/releases/download/v0.2.0/infernux.platform-windows.inxpkg"
   ],
   [
     "plugins/infernux.platform-linux/0.2.0/infernux.platform-linux.inxpkg",
-    "https://github.com/ChenlizheMe/infernux_linux/releases/download/v0.2.0/infernux.platform-linux.inxpkg"
+    "https://github.com/InfernuxEngine/infernux_linux/releases/download/v0.2.0/infernux.platform-linux.inxpkg"
   ],
   [
     "plugins/infernux.platform-web/0.2.0/infernux.platform-web.inxpkg",
-    "https://github.com/ChenlizheMe/infernux_web/releases/download/v0.2.0/infernux.platform-web.inxpkg"
+    "https://github.com/InfernuxEngine/infernux_web/releases/download/v0.2.0/infernux.platform-web.inxpkg"
   ],
   [
     "plugins/infernux.platform-android/0.2.2/infernux.platform-android.inxpkg",
-    "https://github.com/ChenlizheMe/infernux_android/releases/download/v0.2.2/infernux.platform-android.inxpkg"
+    "https://github.com/InfernuxEngine/infernux_android/releases/download/v0.2.2/infernux.platform-android.inxpkg"
   ],
   [
     "android-support/0.1.0/infernux-android-support-0.1.0-windows-x64.inxkit",

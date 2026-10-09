@@ -18,7 +18,7 @@ def catalog(tmp_path, monkeypatch):
         "packages": [{
             "reference": "infernux/platform-web", "version": "0.2.0",
             "engine": ">=0.4,<0.5", "artifact": "infernux.platform-web.inxpkg",
-            "source": {"type": "github", "location": "https://github.com/ChenlizheMe/infernux_web"},
+            "source": {"type": "github", "location": "https://github.com/InfernuxEngine/infernux_web"},
         }],
     }
 
@@ -38,7 +38,7 @@ def pinned(project):
     registry = PluginRegistry(str(project))
     source = {
         "type": "github",
-        "location": "https://github.com/ChenlizheMe/infernux_web",
+        "location": "https://github.com/InfernuxEngine/infernux_web",
         "official": True,
     }
     registry.record_install(
@@ -119,11 +119,11 @@ def test_bundled_official_package_can_discover_its_publisher(tmp_path, catalog):
     document = registry.load()
     document["installed"][0]["source"] = {
         "type": "local", "location": "Library/Resources/platform.inxpkg", "official": True,
-        "repository": "https://github.com/ChenlizheMe/infernux_web",
+        "repository": "https://github.com/InfernuxEngine/infernux_web",
     }
     registry.save(document)
     manager = PluginManager(str(tmp_path / "project"), runtime=True)
-    assert manager.release_repository("infernux/platform-web") == "https://github.com/ChenlizheMe/infernux_web"
+    assert manager.release_repository("infernux/platform-web") == "https://github.com/InfernuxEngine/infernux_web"
 
 
 def test_existing_install_is_not_upgraded_by_dependency_resolution(tmp_path, monkeypatch, catalog):

@@ -7,47 +7,47 @@
 [submodule "external/glm"]
 	path = external/glm
 	url = https://github.com/g-truc/glm.git
-[submodule "external/imgui"]
-	path = external/imgui
-	url = https://github.com/ChenlizheMe/imgui.git
-	branch = infernux-vulkan
-[submodule "external/SDL"]
-	path = external/SDL
-	url = https://github.com/ChenlizheMe/SDL.git
-	branch = infernux-platform
+[submodule "external/imgui_for_infernux"]
+	path = external/imgui_for_infernux
+	url = https://github.com/InfernuxEngine/imgui_for_infernux.git
+	branch = infernux-support
+[submodule "external/sdl_for_infernux"]
+	path = external/sdl_for_infernux
+	url = https://github.com/InfernuxEngine/sdl_for_infernux.git
+	branch = infernux-support
 [submodule "external/stb"]
 	path = external/stb
 	url = https://github.com/nothings/stb.git
-[submodule "external/JoltPhysics"]
-	path = external/JoltPhysics
-	url = https://github.com/ChenlizheMe/JoltPhysics.git
-	branch = infernux-batch-body-pose
+[submodule "external/joltphysics_for_infernux"]
+	path = external/joltphysics_for_infernux
+	url = https://github.com/InfernuxEngine/joltphysics_for_infernux.git
+	branch = infernux-support
 [submodule "external/VulkanMemoryAllocator"]
 	path = external/VulkanMemoryAllocator
 	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
 [submodule "external/plugins/infernux_mcp"]
 	path = external/plugins/infernux_mcp
-	url = https://github.com/ChenlizheMe/infernux_mcp.git
+	url = https://github.com/InfernuxEngine/infernux_mcp.git
 [submodule "external/plugins/infernux_windows"]
 	path = external/plugins/infernux_windows
-	url = https://github.com/ChenlizheMe/infernux_windows.git
+	url = https://github.com/InfernuxEngine/infernux_windows.git
 [submodule "external/plugins/infernux_linux"]
 	path = external/plugins/infernux_linux
-	url = https://github.com/ChenlizheMe/infernux_linux.git
+	url = https://github.com/InfernuxEngine/infernux_linux.git
 [submodule "external/plugins/infernux_android"]
 	path = external/plugins/infernux_android
-	url = https://github.com/ChenlizheMe/infernux_android.git
+	url = https://github.com/InfernuxEngine/infernux_android.git
 [submodule "external/plugins/infernux_web"]
 	path = external/plugins/infernux_web
-	url = https://github.com/ChenlizheMe/infernux_web.git
+	url = https://github.com/InfernuxEngine/infernux_web.git
 [submodule "external/taichi_for_infernux"]
 	path = external/taichi_for_infernux
-	url = https://github.com/ChenlizheMe/taichi_for_infernux.git
-	branch = master
+	url = https://github.com/InfernuxEngine/taichi_for_infernux.git
+	branch = infernux-support
 [submodule "external/llvmlite_for_infernux"]
 	path = external/llvmlite_for_infernux
-	url = https://github.com/ChenlizheMe/llvmlite_for_infernux.git
-	branch = infernux-0.49
+	url = https://github.com/InfernuxEngine/llvmlite_for_infernux.git
+	branch = infernux-support
 [submodule "external/MikkTSpace"]
 	path = external/MikkTSpace
 	url = https://github.com/mmikk/MikkTSpace.git

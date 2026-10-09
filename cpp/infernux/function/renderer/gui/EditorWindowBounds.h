@@ -7,6 +7,36 @@
 namespace infernux
 {
 
+inline void RescaleDockspaceForViewport(ImGuiID dockspaceId, const ImVec2 &size)
+{
+    ImGuiDockNode *root = ImGui::DockBuilderGetNode(dockspaceId);
+    if (!root || !root->IsDockSpace() || root->Size.x <= 0 || root->Size.y <= 0 || size.x <= 0 || size.y <= 0)
+        return;
+    if (std::abs(root->Size.x - size.x) < 0.5f && std::abs(root->Size.y - size.y) < 0.5f)
+        return;
+
+    // ImGui gives the central node whatever remains after absolute sidebar
+    // SizeRef values. A layout saved on a large monitor can therefore reduce
+    // Scene to a few pixels on a smaller window. Preserve the user's split
+    // proportions and topology; never reset their layout or CentralNode flags.
+    const ImVec2 scale(size.x / root->Size.x, size.y / root->Size.y);
+    const auto rescale = [&](auto &&self, ImGuiDockNode *node) -> void {
+        if (!node)
+            return;
+        node->SizeRef.x *= scale.x;
+        node->SizeRef.y *= scale.y;
+        node->Size.x *= scale.x;
+        node->Size.y *= scale.y;
+        self(self, node->ChildNodes[0]);
+        self(self, node->ChildNodes[1]);
+    };
+    rescale(rescale, root->ChildNodes[0]);
+    rescale(rescale, root->ChildNodes[1]);
+    // Leave root->Size unchanged: DockSpace must still observe the host resize
+    // and propagate the new bounds. Fixed-height toolbar sizing runs after us.
+    ImGui::MarkIniSettingsDirty();
+}
+
 inline void ConstrainNextFloatingWindowToMainViewport(const char *name, int flags)
 {
     ImGuiViewport *viewport = ImGui::GetMainViewport();

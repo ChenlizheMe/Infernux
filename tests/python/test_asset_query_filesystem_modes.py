@@ -337,7 +337,7 @@ def test_player_load_resolves_path_to_guid_without_asset_database(
 ):
     import infernux.engine.project_context as project_context
 
-    cooked = tmp_path / "Library" / "Artifacts" / "Document" / "material.mat"
+    cooked = tmp_path / "Library" / "Artifacts" / "Document" / "material.inxdoc"
     cooked.parent.mkdir(parents=True)
     cooked.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(Application, "is_editor", staticmethod(lambda: False))
@@ -352,6 +352,11 @@ def test_player_load_resolves_path_to_guid_without_asset_database(
         project_context,
         "_runtime_asset_resolver",
         lambda guid: str(cooked) if guid == "material-guid" else None,
+    )
+    monkeypatch.setattr(
+        project_context,
+        "_runtime_asset_extension_resolver",
+        lambda guid: ".mat" if guid == "material-guid" else "",
     )
     class ForbiddenPlayerDatabase:
         def __getattribute__(self, name):

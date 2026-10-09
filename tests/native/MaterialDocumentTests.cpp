@@ -1,8 +1,16 @@
 #include <core/types/ShaderProgramArtifact.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
+#include <function/resources/InxMaterial/MaterialLoader.h>
+#include <function/resources/PhysicMaterial/PhysicMaterial.h>
+#include <function/resources/PhysicMaterial/PhysicMaterialLoader.h>
+#include <platform/filesystem/AssetDocument.h>
+#include <platform/filesystem/InxPath.h>
 
 #include <array>
 #include <cassert>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -24,6 +32,59 @@ using infernux::ShaderProgramArtifact;
 using infernux::ShaderProgramPropertyBinding;
 using infernux::ShaderProgramStageMask;
 
+void VerifyCookedDocumentsLoadAndRemainImmutable()
+{
+    const auto root =
+        std::filesystem::temp_directory_path() /
+        ("infernux-cooked-material-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    const auto write = [&](const char *name, const nlohmann::json &document) {
+        const auto path = root / name;
+        const auto bytes = infernux::EncodeAssetDocument(document);
+        std::ofstream file(path, std::ios::binary);
+        file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        assert(file.good());
+        return infernux::FromFsPath(path);
+    };
+    InxMaterial authored("Authored", "Unlit");
+    authored.SetFloat("roughness", 0.375f);
+    const std::string textureGuid(32, 'a');
+    authored.SetTextureGuid("texSampler", "white");
+    auto document = authored.SerializeDocument();
+    document["properties"]["texSampler"]["guid"] = textureGuid;
+    const auto path = write("Surface.inxdoc", document);
+    infernux::MaterialLoader loader;
+    const auto loaded = loader.Load(path, "material-guid", nullptr).Get<InxMaterial>();
+    assert(loaded && loaded->GetGuid() == "material-guid");
+    assert(std::get<float>(loaded->GetProperty("roughness")->value) == 0.375f);
+    assert(loader.ScanDependencies(path, nullptr).count(textureGuid) == 1);
+    loaded->SetFloat("roughness", 0.75f);
+    assert(!loaded->SaveToFile());
+    assert(!loaded->SaveToFile(path));
+    assert(infernux::ReadAssetDocument(path) == document);
+    assert(loader.Reload(loaded, path, "material-guid", nullptr));
+    assert(std::get<float>(loaded->GetProperty("roughness")->value) == 0.375f);
+
+    infernux::PhysicMaterial physics;
+    physics.SetFriction(0.25f);
+    const auto physicsDocument = physics.SerializeDocument();
+    const auto physicsPath = write("Physics.inxdoc", physicsDocument);
+    infernux::PhysicMaterialLoader physicsLoader;
+    const auto loadedPhysics = physicsLoader.Load(physicsPath, "physics-guid", nullptr).Get<infernux::PhysicMaterial>();
+    assert(loadedPhysics && loadedPhysics->GetFriction() == 0.25f);
+    loadedPhysics->SetFriction(0.5f);
+    bool rejected = false;
+    try {
+        loadedPhysics->SaveToFile();
+    } catch (const std::logic_error &) {
+        rejected = true;
+    }
+    assert(rejected && infernux::ReadAssetDocument(physicsPath) == physicsDocument);
+    std::filesystem::remove(infernux::ToFsPath(path));
+    std::filesystem::remove(infernux::ToFsPath(physicsPath));
+    std::filesystem::remove(root);
+}
+
 void VerifyEveryAuthoredDepthAndStencilComparison()
 {
     const std::array<std::pair<const char *, MaterialCompareOp>, 8> comparisons{{
@@ -43,8 +104,7 @@ void VerifyEveryAuthoredDepthAndStencilComparison()
         assert(depth.GetRenderState().depthCompareOp == expected);
 
         InxMaterial stencil("Stencil Comparison", "Unlit");
-        stencil.ApplyShaderRenderMeta("", "", "", "", 2000, "",
-                                     std::string(name) + ",1,replace,keep,keep");
+        stencil.ApplyShaderRenderMeta("", "", "", "", 2000, "", std::string(name) + ",1,replace,keep,keep");
         const auto &state = stencil.GetRenderState();
         assert(state.stencilTestEnable);
         assert(state.stencilFront.compareOp == expected);
@@ -585,6 +645,7 @@ void VerifyDocumentRepublishesTextureReadiness()
 
 int main()
 {
+    VerifyCookedDocumentsLoadAndRemainImmutable();
     VerifyLineWidthParticipatesInPipelineState();
     VerifyDocumentRepublishesTextureReadiness();
     VerifyEveryAuthoredDepthAndStencilComparison();

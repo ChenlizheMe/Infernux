@@ -1,4 +1,5 @@
 #include "InxTextureLoader.hpp"
+#include <function/resources/InxTexture/SvgRasterizer.h>
 
 #include <algorithm>
 #include <cctype>
@@ -175,7 +176,7 @@ bool InxTextureLoader::IsPnmSource(const unsigned char *data, size_t dataSize)
            (data[1] == '2' || data[1] == '3' || data[1] == '5' || data[1] == '6');
 }
 
-InxTextureData InxTextureLoader::LoadFromFile(const std::string &filePath, const std::string &name)
+InxTextureData InxTextureLoader::LoadFromFile(const std::string &filePath, const std::string &name, int svgMaxSize)
 {
     InxTextureData result;
     result.sourcePath = filePath;
@@ -187,18 +188,31 @@ InxTextureData InxTextureLoader::LoadFromFile(const std::string &filePath, const
         INXLOG_ERROR("Failed to read texture file: ", filePath);
         return result;
     }
-    result = LoadFromMemory(fileBytes.data(), fileBytes.size(), result.name);
+    result = LoadFromMemory(fileBytes.data(), fileBytes.size(), result.name, svgMaxSize);
     result.sourcePath = filePath;
     return result;
 }
 
-InxTextureData InxTextureLoader::LoadFromMemory(const unsigned char *data, size_t dataSize, const std::string &name)
+InxTextureData InxTextureLoader::LoadFromMemory(const unsigned char *data, size_t dataSize, const std::string &name,
+                                                int svgMaxSize)
 {
     InxTextureData result;
     result.name = name;
 
     if (!data || dataSize == 0 || dataSize > static_cast<size_t>((std::numeric_limits<int>::max)())) {
         INXLOG_ERROR("Texture source is empty or exceeds decoder limits: ", name);
+        return result;
+    }
+    if (IsSvgSource(data, dataSize)) {
+        if (SvgUsesFilters(data, dataSize))
+            INXLOG_WARN("SVG filters are not supported and will be omitted: ", name,
+                        ". Export filter effects as an embedded raster image for faithful rendering.");
+        try {
+            result = RasterizeSvg(data, dataSize, svgMaxSize);
+            result.name = name;
+        } catch (const std::exception &error) {
+            INXLOG_ERROR("SVG texture decode failed: ", name, ": ", error.what());
+        }
         return result;
     }
     if (IsPnmSource(data, dataSize)) {

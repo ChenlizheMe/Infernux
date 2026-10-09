@@ -721,6 +721,11 @@ def normalize_player_rules(value: object = None) -> dict[str, object]:
 def player_file_exported(metadata: Mapping[str, object], relative_path: str) -> bool:
     """Standard Unity-like Player policy used until dependency stripping lands."""
 
+    # Documentation remains part of the installable plugin, never the game.
+    # This also covers nested folders and records previously labelled Runtime.
+    if "plugin_pages" in relative_path.replace("\\", "/").casefold().split("/")[:-1]:
+        return False
+
     # Installed records persist the validated role that owned the file at
     # installation time.  That record is the migration authority for projects
     # created before the lowercase package layout; reinterpreting an old

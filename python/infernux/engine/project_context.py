@@ -238,14 +238,22 @@ def get_project_script_roots(project_root: Optional[str] = None) -> tuple[str, .
     )
 
 
-def is_editor_asset_path(project_relative_path: str) -> bool:
-    """Assets/Editor (including nested Editor folders) is editor-only content.
+def is_plugin_page_path(project_relative_path: str) -> bool:
+    """Documentation directories anywhere beneath Packages never ship in a Player."""
+    parts = portable_path(project_relative_path).casefold().split("/")
+    return len(parts) > 2 and parts[0] == "packages" and "plugin_pages" in parts[1:-1]
 
-    Package roles are manifest-owned and deliberately use a different rule.
+
+def is_editor_asset_path(project_relative_path: str) -> bool:
+    """Assets/Editor and Packages/**/plugin_pages are editor-only content.
+
+    Other package roles are manifest-owned and deliberately use a different rule.
     Callers supply a normalized project-relative path, not a filesystem guess.
     """
     parts = portable_path(project_relative_path).casefold().split("/")
-    return len(parts) > 2 and parts[0] == "assets" and "editor" in parts[1:-1]
+    return (
+        len(parts) > 2 and parts[0] == "assets" and "editor" in parts[1:-1]
+    ) or is_plugin_page_path(project_relative_path)
 
 
 def package_script_role(path: str, project_root: Optional[str] = None) -> str:

@@ -1,4 +1,5 @@
 #include "InxMaterial.h"
+#include <platform/filesystem/AssetDocument.h>
 #include "MaterialDocumentValidation.h"
 #include <algorithm>
 #include <atomic>
@@ -1331,6 +1332,8 @@ std::string InxMaterial::Serialize() const
 
 bool InxMaterial::SaveToFile() const
 {
+    if (IsCookedAssetDocument(m_filePath))
+        return false;
     if (m_isDeleted) {
         INXLOG_WARN("InxMaterial::SaveToFile: material '", m_name, "' is deleted, refusing to write");
         return false;
@@ -1352,6 +1355,8 @@ bool InxMaterial::SaveToFile() const
 
 bool InxMaterial::SaveToFile(const std::string &path)
 {
+    if (IsCookedAssetDocument(path))
+        return false;
     if (m_isDeleted) {
         INXLOG_WARN("InxMaterial::SaveToFile: material '", m_name, "' is deleted, refusing to write");
         return false;

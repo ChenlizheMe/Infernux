@@ -64,7 +64,7 @@ def test_uninstall_requires_marker_and_propagates_deletion_errors(tmp_path, monk
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows native uninstall helper")
 @pytest.mark.parametrize("wait_for_parent", [False, True])
-def test_windows_uninstaller_preserves_shared_and_directory_links(tmp_path, wait_for_parent):
+def test_windows_uninstaller_preserves_shared_and_directory_links(tmp_path, wait_for_parent, directory_junction):
     root = tmp_path / "Hub"
     write_install_marker(str(root))
     (root / "Hub.exe").write_bytes(b"program")
@@ -78,12 +78,7 @@ def test_windows_uninstaller_preserves_shared_and_directory_links(tmp_path, wait
     # Directory junctions need no symlink privilege and must not be traversed.
     for link in (root / "link", root / "lib/nested-link"):
         link.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run([
-            powershell, "-NoProfile", "-Command",
-            "New-Item -ItemType Junction -Path $env:INX_TEST_LINK -Target $env:INX_TEST_TARGET | Out-Null",
-        ], check=True, capture_output=True, env={
-            **os.environ, "INX_TEST_LINK": str(link), "INX_TEST_TARGET": str(outside),
-        })
+        directory_junction(link, outside)
     helper = root / "InfernuxHubData/uninstaller/hub_uninstall.ps1"
     helper.parent.mkdir()
     shutil.copyfile((Path(__file__).resolve().parents[2] / "packaging") / "hub_uninstall.ps1", helper)

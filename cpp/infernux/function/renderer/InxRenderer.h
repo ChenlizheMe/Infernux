@@ -26,6 +26,7 @@
 
 namespace infernux
 {
+struct TextureCpuData;
 enum class ShaderProgramDomain : uint8_t;
 // ============================================================================
 // Forward declarations for private subsystem types.
@@ -401,6 +402,7 @@ class InxRenderer
     uint64_t SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount, int width,
                                    int height, rhi::FilterMode filter = rhi::FilterMode::Linear, bool pinned = false);
     uint64_t QueryImportedTextureForImGui(const std::string &name, const std::string &textureGuid);
+    uint64_t SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels);
     void SupersedePendingImGuiTextureUploads(const std::string &name);
     void RemoveImGuiTexture(const std::string &name);
     bool HasImGuiTexture(const std::string &name) const;

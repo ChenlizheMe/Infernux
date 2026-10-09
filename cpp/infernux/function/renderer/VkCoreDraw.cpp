@@ -531,7 +531,6 @@ try {
     } else if (result == vk::SwapchainResult::NeedRecreate || m_framebufferResized) {
         SDL_Log("INFERNUX_SWAPCHAIN_RECREATE stage=present result=%d framebuffer_resized=%d", static_cast<int>(result),
                 m_framebufferResized ? 1 : 0);
-        m_framebufferResized = false;
         RecreateSwapchain();
     } else if (result == vk::SwapchainResult::Error) {
         throw std::runtime_error("Failed to present the submitted frame");

@@ -1,13 +1,11 @@
 """Unchanged source used to test disk-cache reuse across process launches."""
 
-import os
-
 from infernux import jit
 import jit_cache_dependency as settings
 from jit_cache_dependency import multiply
 
 
-FACTOR = int(os.environ["INFERNUX_TEST_JIT_FACTOR"])
+FACTOR = settings.FACTOR
 
 
 def leaf(value):
@@ -18,22 +16,22 @@ def helper(value):
     return leaf(value)
 
 
-@jit.compile(cache=True, auto_parallel=os.environ["INFERNUX_TEST_JIT_AUTO"] == "1")
+@jit.compile(cache=True, auto_parallel=settings.AUTO_PARALLEL)
 def direct(value):
     return value * FACTOR
 
 
-@jit.compile(cache=True, auto_parallel=os.environ["INFERNUX_TEST_JIT_AUTO"] == "1")
+@jit.compile(cache=True, auto_parallel=settings.AUTO_PARALLEL)
 def indirect(value):
     return helper(value)
 
 
-@jit.compile(cache=True, auto_parallel=os.environ["INFERNUX_TEST_JIT_AUTO"] == "1")
+@jit.compile(cache=True, auto_parallel=settings.AUTO_PARALLEL)
 def module_constant(value):
     return value * settings.OFFSET
 
 
-@jit.compile(cache=True, auto_parallel=os.environ["INFERNUX_TEST_JIT_AUTO"] == "1")
+@jit.compile(cache=True, auto_parallel=settings.AUTO_PARALLEL)
 def foreign_helper(value):
     return multiply(value)
 

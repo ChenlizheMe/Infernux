@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
-import subprocess
 import tempfile
 import zipfile
 
@@ -92,7 +91,7 @@ def test_real_zip_stage_rejects_drive_member_without_writing_outside(
         assert (installed / "old.txt").read_bytes() == b"old app"
 
 
-def test_stage_rejects_resolved_destination_outside_root(tmp_path, monkeypatch):
+def test_stage_rejects_resolved_destination_outside_root(tmp_path, monkeypatch, directory_junction):
     installed, outside = tmp_path / "app", tmp_path / "outside"
     installed.mkdir()
     outside.mkdir()
@@ -107,12 +106,7 @@ def test_stage_rejects_resolved_destination_outside_root(tmp_path, monkeypatch):
         # Only the test's own temporary stage is linked, before extraction.
         link = destination.parent / "stage/nested"
         if os.name == "nt":
-            subprocess.run([
-                "powershell", "-NoProfile", "-NonInteractive", "-Command",
-                "New-Item -ItemType Junction -Path $env:INFERNUX_TEST_LINK "
-                "-Target $env:INFERNUX_TEST_TARGET -ErrorAction Stop | Out-Null",
-            ], env=dict(os.environ, INFERNUX_TEST_LINK=str(link), INFERNUX_TEST_TARGET=str(outside)),
-                capture_output=True, text=True, check=True, timeout=15, creationflags=0x08000000)
+            directory_junction(link, outside)
         else:
             link.symlink_to(outside, target_is_directory=True)
         with zipfile.ZipFile(destination, "w") as archive:

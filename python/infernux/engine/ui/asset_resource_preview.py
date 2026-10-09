@@ -89,7 +89,7 @@ def _try_get_cpp_texture_preview(native: Any, norm_path: str,
         mode_name = getattr(filter_mode, "name", "")
         nearest = str(mode_name).upper() == "POINT"
         srgb = bool(getattr(texture_settings, "srgb", False))
-        max_size = max(1, int(getattr(texture_settings, "max_size", 2048)))
+        max_size = int(getattr(texture_settings, "max_size", 2048))
         format_value = getattr(texture_settings, "format", None)
         to_string = getattr(format_value, "to_string", None)
         texture_format = str(to_string() if callable(to_string) else "auto")
@@ -274,8 +274,8 @@ def render_document_image(ctx: Any, panel: Any, file_path: str, width: float, he
     norm_path = resolved_path(file_path)
     texture_id, source_w, source_h = native.query_or_schedule_texture_preview(
         f"document|{norm_path}", norm_path, _cached_mtime_ns(norm_path),
-        nearest=False, srgb=True, max_size=65536, texture_format="rgba8",
-        texture_type="ui", authoring=False, pump=True, use_imported_texture=False,
+        nearest=False, srgb=True, max_size=65536, texture_format="auto",
+        texture_type="ui", authoring=False, pump=True, use_imported_texture=True,
     )
     if not texture_id:
         return False

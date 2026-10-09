@@ -191,12 +191,18 @@ class InxVkCoreModular
      */
     void PreparePipeline();
 
-    /// @brief Set window size for swapchain extent fallback
+    /// @brief Publish the SDL pixel extent and schedule presentation resize.
     void SetWindowSize(uint32_t width, uint32_t height)
     {
+        if (m_windowWidth != width || m_windowHeight != height)
+            m_framebufferResized = true;
         m_windowWidth = width;
         m_windowHeight = height;
     }
+
+    /// Apply a pending resize before building GUI/render graphs or acquiring an
+    /// image. Returns false while the surface is not ready (e.g. minimized).
+    [[nodiscard]] bool RefreshPresentationSize();
 
     /// @brief Change the swapchain present mode and recreate the swapchain.
     /// 0 = IMMEDIATE, 1 = MAILBOX, 2 = FIFO, 3 = FIFO_RELAXED

@@ -58,7 +58,7 @@ def test_imported_clip_guid_picker_fsm_and_cook(model, tmp_path, monkeypatch):
     builder._copy_cooked_assets(str(data))
     assert not (data / "Assets").exists()
     builder._stage_library_runtime_documents(str(data))
-    runtime = f"Library/Artifacts/Document/{guid}.animclip3d"
+    runtime = f"Library/Artifacts/Document/{guid}.inxdoc"
     cooked = AnimationClip3D.load(str(data / runtime))
     assert cooked.take_name == record["id"] and cooked.source_model_guid == model_guid
     assert not hasattr(cooked, "source_model_path")

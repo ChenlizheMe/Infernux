@@ -1,6 +1,8 @@
 #include "InxGUI.h"
 #include "../ProfileConfig.h"
 #include "EditorWindowPresentation.h"
+#include "EditorWindowBounds.h"
+#include "GuiPresentationGeometry.h"
 #include "ImGuiVulkanExtensions.h"
 #include "InxGUIContext.h"
 #include "InxGUISemantics.h"
@@ -337,7 +339,7 @@ void InxGUI::RefreshDisplayScale()
     style.ScaleAllSizes(nextScale);
     ReloadGUIFont();
     m_editorFrameScheduler.Request();
-    INXLOG_INFO("Display scale changed from ", previousScale, " to ", nextScale);
+    INXLOG_DIAGNOSTIC("Display scale changed from ", previousScale, " to ", nextScale);
 }
 
 void InxGUI::ReleaseTextureResource(ImGuiTextureResource &resource)
@@ -455,6 +457,8 @@ void InxGUI::PumpTextureUploads()
         resource.lastUsedFrame = m_guiFrameCounter;
         resource.uploadGeneration = pending.generation;
         resource.pinned = pending.pinned;
+        resource.requiresDisplayEncoding = pending.requiresDisplayEncoding;
+        ImGui_ImplVulkan_SetTextureLinearColor(descriptor, resource.requiresDisplayEncoding);
         m_textures_umap.emplace(pending.name, std::move(resource));
         m_textureNamesByDescriptor[descriptor] = pending.name;
     }
@@ -469,6 +473,16 @@ void InxGUI::BuildFrame()
 
 bool InxGUI::BuildFrameIfDue(bool force)
 {
+    // Geometry invalidation is level-triggered, unlike the scheduler's input
+    // force edge. Consecutive resize/DPI events must not reuse an old layout
+    // simply because the editor's 60 Hz UI budget has not elapsed yet.
+    int width = 0, height = 0, pixelWidth = 0, pixelHeight = 0;
+    if (SDL_GetWindowSize(m_window_ptr, &width, &height) &&
+        SDL_GetWindowSizeInPixels(m_window_ptr, &pixelWidth, &pixelHeight) &&
+        (!GuiDrawDataMatchesWindow(ImGui::GetDrawData(), width, height, pixelWidth, pixelHeight) ||
+         std::abs(RequireDisplayScale(m_window_ptr) - m_dpiScale) >= 0.01f))
+        m_editorFrameScheduler.Request();
+
     const auto now = EditorGuiFrameScheduler::Clock::now();
     if (m_playerMode) {
         (void)m_editorFrameScheduler.ConsumeUnthrottled(now, true);
@@ -620,6 +634,8 @@ void InxGUI::BuildFrameInternal()
         // need to build the default Unity-style layout.
         ImGuiID dockspaceId = ImGui::GetID("MainDockSpace");
         bool needsDefaultLayout = (ImGui::DockBuilderGetNode(dockspaceId) == nullptr);
+        RescaleDockspaceForViewport(dockspaceId,
+                                   ImVec2(viewport->WorkSize.x, viewport->WorkSize.y - kStatusBarHeight));
 
         // The dedicated, non-resizable toolbar must fit the same font and
         // authored padding used by ToolbarPanel. Update before DockSpace so
@@ -922,8 +938,25 @@ void InxGUI::PrepareRuntimeFontTextures()
 void InxGUI::RecordCommand(VkCommandBuffer cmdBuf)
 {
     ImDrawData *drawData = ImGui::GetDrawData();
-    if (m_hasDrawData && drawData != nullptr && drawData->Valid)
+    if (!m_hasDrawData || drawData == nullptr || !drawData->Valid)
+        return;
+
+    const VkExtent2D extent = m_vkCore_ptr->GetSwapchainExtent();
+    if (extent.width == 0 || extent.height == 0 || drawData->DisplaySize.x <= 0 || drawData->DisplaySize.y <= 0)
+        return;
+    const bool matches = GuiDrawDataMatchesFramebuffer(*drawData, extent.width, extent.height);
+    if (!matches) {
+        if (!m_presentationGeometryMismatch)
+            INXLOG_DIAGNOSTIC("GUI presentation resized after layout: display=", drawData->DisplaySize.x, "x",
+                              drawData->DisplaySize.y, " framebufferScale=", drawData->FramebufferScale.x, ",",
+                              drawData->FramebufferScale.y, " swapchain=", extent.width, "x", extent.height);
+        m_editorFrameScheduler.Request();
+        ScopedGuiPresentationScale presentationScale(*drawData, extent.width, extent.height);
         ImGui_ImplVulkan_RenderDrawData(drawData, cmdBuf);
+    } else {
+        ImGui_ImplVulkan_RenderDrawData(drawData, cmdBuf);
+    }
+    m_presentationGeometryMismatch = !matches;
 }
 
 void InxGUI::Shutdown()
@@ -1008,10 +1041,23 @@ void InxGUI::Unregister(const std::string &name)
 uint64_t InxGUI::SubmitTextureForImGui(const std::string &name, const unsigned char *pixels, size_t byteCount,
                                        int width, int height, VkFilter filter, bool pinned)
 {
-    if (name.empty())
-        throw std::invalid_argument("ImGui texture name cannot be empty");
     if (width <= 0 || height <= 0)
         throw std::invalid_argument("ImGui texture dimensions must be positive");
+    const auto cpuData = TextureDecoder::CreateRgba8(pixels, byteCount, static_cast<uint32_t>(width),
+                                                     static_cast<uint32_t>(height), false);
+    return SubmitCpuTextureForImGui(name, *cpuData, filter, pinned, false);
+}
+
+uint64_t InxGUI::SubmitDocumentTextureForImGui(const std::string &name, const TextureCpuData &pixels)
+{
+    return SubmitCpuTextureForImGui(name, pixels, VK_FILTER_LINEAR, false, true);
+}
+
+uint64_t InxGUI::SubmitCpuTextureForImGui(const std::string &name, const TextureCpuData &pixels,
+                                         VkFilter filter, bool pinned, bool displayEncoding)
+{
+    if (name.empty())
+        throw std::invalid_argument("ImGui texture name cannot be empty");
     if (filter != VK_FILTER_LINEAR && filter != VK_FILTER_NEAREST)
         throw std::invalid_argument("ImGui texture filter must be linear or nearest");
     const auto generationIt = m_textureUploadGenerations.find(name);
@@ -1024,21 +1070,19 @@ uint64_t InxGUI::SubmitTextureForImGui(const std::string &name, const unsigned c
     // Keeping them single-mip makes the Inspector and the smaller Project-grid
     // thumbnail sample the exact same validated pixels. Runtime textures keep
     // their authored mip policy on the separate asset-texture upload path.
-    const auto cpuData = TextureDecoder::CreateRgba8(pixels, byteCount, static_cast<uint32_t>(width),
-                                                     static_cast<uint32_t>(height), false);
     rhi::SamplerDesc sampler;
     sampler.minFilter = sampler.magFilter = sampler.mipFilter =
         filter == VK_FILTER_NEAREST ? rhi::FilterMode::Nearest : rhi::FilterMode::Linear;
     sampler.addressU = sampler.addressV = sampler.addressW = rhi::AddressMode::ClampToEdge;
     sampler.maxLod = 0.0f;
-    TextureUploadBatch upload(*cpuData, sampler);
+    TextureUploadBatch upload(pixels, sampler);
     auto ticket = m_vkCore_ptr->GetResourceManager().BeginTextureUpload(upload.GetRequest());
     const uint64_t pendingBytes = ticket->GetResidentBytes();
     if (pendingBytes > std::numeric_limits<uint64_t>::max() - m_pendingTextureUploadBytes)
         throw std::overflow_error("pending ImGui texture byte counter overflow");
 
     m_textureUploadGenerations[name] = generation;
-    m_pendingTextureUploads.push_back(PendingTextureUpload{name, generation, pinned, std::move(ticket)});
+    m_pendingTextureUploads.push_back(PendingTextureUpload{name, generation, pinned, std::move(ticket), displayEncoding});
     m_pendingTextureUploadBytes += pendingBytes;
     ++m_submittedTextureUploadCount;
     if (m_pendingTextureUploads.back().ticket->IsAsync())

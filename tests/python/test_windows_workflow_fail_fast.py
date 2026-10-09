@@ -1,15 +1,16 @@
 """A failed native build must stop the real Windows workflow run block."""
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 
 import pytest
+
+from tests.tool_discovery import find_executable
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-POWERSHELL = shutil.which("pwsh")
+POWERSHELL = find_executable("pwsh")
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32" or POWERSHELL is None,
     reason="Windows workflow control flow requires PowerShell 7 on Windows",

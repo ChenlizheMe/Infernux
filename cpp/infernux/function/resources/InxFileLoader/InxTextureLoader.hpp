@@ -31,8 +31,7 @@ struct InxTextureData
     }
 };
 
-/// @brief Utility class for image/texture loading via stb_image.
-/// Supports: PNG, JPG, BMP, TGA, GIF, PSD, HDR, PIC
+/// @brief Pixel-loading utilities for raster images and static SVG.
 ///
 /// Meta creation and loading is now handled by TextureLoader (IAssetLoader).
 /// This class only provides static pixel-loading utilities.
@@ -46,14 +45,16 @@ class InxTextureLoader
     /// @param filePath Path to the texture file
     /// @param name Texture identifier name
     /// @return InxTextureData containing the loaded image
-    static InxTextureData LoadFromFile(const std::string &filePath, const std::string &name = "");
+    /// svgMaxSize is the SVG longest edge; 0 means 8192. Raster images are unchanged.
+    static InxTextureData LoadFromFile(const std::string &filePath, const std::string &name = "", int svgMaxSize = 0);
 
     /// @brief Load texture from memory buffer
     /// @param data Pointer to image file data in memory
     /// @param dataSize Size of data in bytes
     /// @param name Texture identifier name
     /// @return InxTextureData containing the loaded image
-    static InxTextureData LoadFromMemory(const unsigned char *data, size_t dataSize, const std::string &name = "");
+    static InxTextureData LoadFromMemory(const unsigned char *data, size_t dataSize, const std::string &name = "",
+                                         int svgMaxSize = 0);
 
     /// @brief Create a solid color texture (for default/fallback textures)
     /// @param width Texture width

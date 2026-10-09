@@ -209,32 +209,24 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
     # module from sys.modules.  Run that destructive interpreter-state check
     # in a child process so pytest modules imported during collection cannot
     # retain stale references to the deliberately unloaded module objects.
-    if os.environ.get("INFERNUX_MCP_NATIVE_TEST_CHILD") != "1":
-        environment = os.environ.copy()
-        environment["INFERNUX_MCP_NATIVE_TEST_CHILD"] = "1"
-        child_basetemp = tmp_path / "child-basetemp"
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                f"{Path(__file__).resolve()}::{test_official_mcp_default_install_uninstall_reinstalls_on_restart.__name__}",
-                "-q",
-                "--basetemp",
-                str(child_basetemp),
-            ],
-            cwd=repository,
-            env=environment,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            timeout=120,
-            check=False,
-        )
-        assert result.returncode == 0, result.stdout + "\n" + result.stderr
-        return
+    import infernux
+    bootstrap = (
+        "import sys,runpy; sys.path.insert(0,sys.argv.pop(1)); "
+        "sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name='__main__')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", bootstrap,
+         str(Path(infernux.__file__).resolve().parent.parent),
+         str(Path(__file__).resolve()), str(tmp_path)],
+        cwd=repository, text=True, encoding="utf-8", errors="replace",
+        capture_output=True, timeout=120,
+    )
+    assert result.returncode == 0, result.stdout + "\n" + result.stderr
 
+
+def _check_official_mcp_lifecycle(tmp_path, monkeypatch):
+    resources = Path(__file__).resolve().parents[2] / "python/infernux/resources"
+    artifact = resources / "infernux.mcp.inxpkg"
     preview = InxPackage.inspect(str(artifact))
     assert preview.metadata["reference"] == "infernux/mcp"
     requirements = next(
@@ -475,3 +467,11 @@ def test_official_mcp_default_install_uninstall_reinstalls_on_restart(
     with socket.socket() as probe:
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         probe.bind(("127.0.0.1", port))
+
+
+
+if __name__ == "__main__":
+    with pytest.MonkeyPatch.context() as isolated:
+        root = Path(sys.argv[1])
+        isolated.setenv("INFERNUX_PACKAGE_CACHE_ROOT", str(root / "hub-package-cache"))
+        _check_official_mcp_lifecycle(root, isolated)

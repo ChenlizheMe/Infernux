@@ -869,6 +869,31 @@ def test_source_fingerprint_rejects_changed_content_despite_equal_size(tmp_path)
         source_fingerprint(project, entry)
 
 
+def test_native_source_clock_skips_hash_on_unchanged_file(tmp_path, monkeypatch):
+    from infernux.lib import _Infernux as native
+    from infernux.engine import runtime_artifact_catalog as catalog
+
+    source = tmp_path / "Assets/clock.bin"
+    source.parent.mkdir()
+    source.write_bytes(b"unchanged")
+    entry = _asset_index_entry(tmp_path, source, "clock", "", "Binary", content_hash=_fnv1a64(b"unchanged"))
+    size, modified = native._asset_source_stat(str(source))
+    entry["source"] = {"size": size, "modified_ns": modified}
+    monkeypatch.setattr(catalog, "_source_content_hash", lambda path: pytest.fail("unchanged native clock rehashed"))
+    assert catalog.source_fingerprint(tmp_path, entry)["content_hash"] == entry["content_hash"]
+
+
+def test_native_source_hash_matches_index_for_chunked_unicode_file(tmp_path):
+    from infernux.engine.runtime_artifact_catalog import _source_content_hash
+
+    source = tmp_path / "资源.bin"
+    payload = bytes(range(256)) * 1027
+    source.write_bytes(payload)
+    assert _source_content_hash(str(source)) == _fnv1a64(payload)
+    source.write_bytes(payload + b"changed")
+    assert _source_content_hash(str(source)) == _fnv1a64(payload + b"changed")
+
+
 def test_source_fingerprint_rejects_size_change_without_hashing(tmp_path):
     project = tmp_path / "Project"
     source = project / "Assets" / "resized.bin"
@@ -1241,6 +1266,82 @@ def test_player_plugin_component_joins_runtime_type_and_guid_catalogs(tmp_path):
     assert record["semantic"]["fields"][0]["attributes"]["default"] == 4.0
     assert staged.with_suffix(".pyc").is_file()
     assert not staged.exists()
+
+
+@pytest.mark.parametrize("installed", [False, True])
+def test_player_excludes_recursive_plugin_pages_sources_and_cached_artifacts(tmp_path, installed):
+    project = _make_project(tmp_path)
+    root = project / "Packages/vendor/docs"
+    root.mkdir(parents=True)
+    control = root / "inx_package.json"
+    control.write_text('{"reference": "vendor/docs", "name": "Docs"}', encoding="utf-8")
+    sources = [
+        ("runtime/keep.txt", "keep-guid", "Text"),
+        ("runtime/plugin_pages_backup/keep.txt", "similar-guid", "Text"),
+        ("plugin_pages/intro.md", "page-root-guid", "Text"),
+        ("runtime/tools/plugin_pages/images/screenshot.png", "page-image-guid", "Texture"),
+        ("runtime/plugin_pages/deep/example.py", "page-script-guid", "Script"),
+        ("runtime/nested/PLUGIN_PAGES/animation.gif", "page-gif-guid", "Binary"),
+    ]
+    entries = []
+    records = []
+    for logical, guid, kind in sources:
+        path = root / logical
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(guid.encode())
+        Path(str(path) + ".meta").write_text(json.dumps({
+            "metadata": {"guid": {"type": "string", "value": guid}},
+        }), encoding="utf-8")
+        artifact = ""
+        if kind == "Texture":
+            artifact = f"Library/Artifacts/Texture/{guid}.inxtex"
+            cached = project / artifact
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            cached.write_bytes(b"must-not-be-inspected-or-packaged")
+        entries.append(_asset_index_entry(project, path, guid, artifact, kind))
+        records.append({"logical_path": logical, "path_hint": path.relative_to(project).as_posix(),
+                        "guid": guid, "role": "runtime", "owned": True})
+    if installed:
+        PluginRegistry(str(project)).record_install(
+            {"reference": "vendor/docs", "name": "Docs", "version": "1.0"}, files=records,
+            control={"logical_path": "inx_package.json", "path_hint": control.relative_to(project).as_posix(),
+                     "guid": "control-guid", "role": "control", "owned": True},
+            package_path="", source={"type": "local", "location": str(root)},
+        )
+    scene = project / "Assets/Main.scene"
+    entries.append(_asset_index_entry(project, scene, "scene-guid", "", "Scene"))
+    _write_asset_index(project, entries)
+    output = tmp_path / "build"
+    builder = GameBuilder(str(project), str(output), game_name="DocsGame")
+    builder._copy_game_data(str(output))
+    builder._write_runtime_asset_records(str(output))
+    assert builder._staged_player_plugin_guids == {"keep-guid", "similar-guid"}
+    assert set(builder._cooked_asset_entries) == {"keep-guid", "similar-guid", "scene-guid"}
+    (output / "Data").rename(output / "DocsGame_Data")
+    builder._pack_content_archive(str(output))
+    archive = output / "DocsGame_Data/Content.inxpkg"
+    names = [entry["path"] for entry in read_manifest(archive)["files"]]
+    assert not any("plugin_pages/" in name.lower() or "page-" in name for name in names)
+    assert not any(name.endswith(".inxtex") for name in names)
+    runtime_records = json.loads(read_entry(archive, "Library/RuntimeAssetRecords.json"))
+    assert {entry["guid"] for entry in runtime_records["entries"]} == {"keep-guid", "similar-guid", "scene-guid"}
+    assert all((root / logical).is_file() for logical, _, _ in sources)
+
+
+def test_player_rejects_runtime_guid_dependency_on_plugin_documentation(tmp_path):
+    builder = _make_builder(tmp_path, tmp_path / "output")
+    project = Path(builder.project_path)
+    scene = project / "Assets/Main.scene"
+    image = project / "Packages/demo/runtime/nested/plugin_pages/screenshot.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"documentation")
+    entries = [
+        _asset_index_entry(project, scene, "scene-guid", "", "Scene"),
+        _asset_index_entry(project, image, "image-guid", "", "Texture"),
+    ]
+    entries[0]["dependencies"] = ["image-guid"]
+    with pytest.raises(RuntimeError, match="dependency references editor-only content"):
+        builder._collect_library_asset_entries(entries)
 
 
 @pytest.mark.parametrize("original_role,current_role", [
@@ -5172,7 +5273,12 @@ def _write_scene_material_audio_reachability_fixture(
         ),
         encoding="utf-8",
     )
-    audio.write_bytes(b"reachable audio")
+    import wave
+    with wave.open(str(audio), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(22050)
+        stream.writeframes(b"\x00\x00" * 32)
     entries = [
         _asset_index_entry(project, scene, "scene-guid", "", "Scene"),
         _asset_index_entry(project, material, "material-guid", "", "Material"),
@@ -6271,8 +6377,8 @@ def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path, monkey
     assert (staged / "Assets" / "Materials" / "Bird.mat").is_file()
     assert (staged / "Assets" / "Audio" / "Wing.wav").is_file()
     assert (staged / "Library" / "Artifacts" / "Document" / "scene-guid.scene").is_file()
-    assert (staged / "Library" / "Artifacts" / "Document" / "material-guid.mat").is_file()
-    assert (staged / "Library" / "Artifacts" / "Audio" / "audio-guid.wav").is_file()
+    assert (staged / "Library" / "Artifacts" / "Document" / "material-guid.inxdoc").is_file()
+    assert (staged / "Library" / "Artifacts" / "Audio" / "audio-guid.wav").read_bytes() == (staged / "Assets/Audio/Wing.wav").read_bytes()
     assert (staged / "Assets" / "Unused.mat").exists()
     assert not (staged / "Assets" / "Unused.mat.meta").exists()
     assert not (staged / "Assets" / "Dynamic" / "Runtime.bin").exists()
@@ -6304,7 +6410,7 @@ def test_copy_stage_uses_all_indexed_assets_before_content_pack(tmp_path, monkey
     }
     assert {
         "Library/Artifacts/Document/scene-guid.scene",
-        "Library/Artifacts/Document/material-guid.mat",
+        "Library/Artifacts/Document/material-guid.inxdoc",
         "Library/Artifacts/Audio/audio-guid.wav",
     } <= content_names
     assert "Assets/Main.scene" not in content_names
@@ -6387,16 +6493,19 @@ def test_current_mesh_artifact_requires_its_format_marker(tmp_path, suffix, magi
         artifact_source_hash(artifact)
 
 
-def test_render_texture_missing_artifact_cannot_ship_source_as_blob(tmp_path):
+@pytest.mark.parametrize("suffix,resource_type", [
+    (".rendertexture", "RenderTexture"), (".jpg", "Texture"), (".png", "Texture"), (".svg", "Texture"),
+])
+def test_texture_missing_artifact_cannot_ship_source_as_blob(tmp_path, suffix, resource_type):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
     project = Path(builder.project_path)
-    source = project / "Assets" / "Camera.rendertexture"
+    source = project / "Assets" / ("Camera" + suffix)
     source.write_text("{}", encoding="utf-8")
     _write_asset_index(project, [
         _asset_index_entry(project, project / "Assets" / "Main.scene", "scene-guid", "", "Scene"),
-        _asset_index_entry(project, source, "e" * 32, "", "RenderTexture"),
+        _asset_index_entry(project, source, "e" * 32, "", resource_type),
     ])
-    with pytest.raises(RuntimeError, match="no compiled artifact path"):
+    with pytest.raises(RuntimeError, match="raw texture source without a compiled artifact"):
         builder._copy_game_data(str(tmp_path / "dist"))
 
 
@@ -6534,7 +6643,7 @@ def test_cooked_document_catalog_ignores_path_only_asset_reference():
     assert scene["unresolved_dependencies"] == []
 
 
-def test_player_document_rewrite_normalizes_asset_hints_and_particle_duplicates(
+def test_player_document_rewrite_does_not_interpret_opaque_json_even_with_schema(
     tmp_path,
 ):
     builder = _make_builder(tmp_path, tmp_path / "build_output")
@@ -6560,16 +6669,9 @@ def test_player_document_rewrite_normalizes_asset_hints_and_particle_duplicates(
         encoding="utf-8",
     )
 
+    original = document_path.read_bytes()
     builder._rewrite_player_document_paths(str(document_path), ".json")
-
-    rewritten = json.loads(document_path.read_text(encoding="utf-8"))
-    assert rewritten["entries"] == [
-        {
-            "guid": "1" * 32,
-            "stable_id": "2" * 32,
-            "path_hint": "Assets/VFX/Wind.particlegraph",
-        }
-    ]
+    assert document_path.read_bytes() == original
 
 
 def test_runtime_catalog_does_not_treat_type_or_stable_ids_as_assets():

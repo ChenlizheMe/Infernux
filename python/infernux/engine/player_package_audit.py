@@ -180,6 +180,7 @@ PLAYER_RUNTIME_PROJECT_SETTINGS = frozenset(
 TEXT_SUFFIXES = AUTHOR_SOURCE_SUFFIXES | RUNTIME_DOCUMENT_SUFFIXES | frozenset(
     {".json", ".yaml", ".yml", ".txt"}
 )
+DOCUMENT_PAYLOAD_SUFFIXES = TEXT_SUFFIXES | {".inxdoc"}
 NATIVE_SUFFIXES = frozenset({".exe", ".dll", ".pyd", ".so", ".dylib"})
 NATIVE_ARCHIVE_SUFFIXES = frozenset({".inxrt", ".inxpkg", ".inxmod", ".inxcat"})
 ABSOLUTE_PATH_RE = re.compile(
@@ -452,7 +453,7 @@ def _archive_entry_records(
         _portable(str(item.get("path", "")))
         for item in records
         if isinstance(item, dict)
-        and Path(str(item.get("path", ""))).suffix.casefold() in TEXT_SUFFIXES
+        and Path(str(item.get("path", ""))).suffix.casefold() in DOCUMENT_PAYLOAD_SUFFIXES
     ]
     if text_entry_names:
         try:
@@ -504,7 +505,7 @@ def _archive_entry_records(
         entry_suffix = Path(entry_name).suffix.casefold()
 
         payload = None
-        if entry_suffix in TEXT_SUFFIXES:
+        if entry_suffix in DOCUMENT_PAYLOAD_SUFFIXES:
             payload = text_payloads.get(entry_name)
             if payload is None:
                 forbidden.append(
@@ -537,9 +538,20 @@ def _archive_entry_records(
             and entry_name not in PLAYER_RUNTIME_PROJECT_SETTINGS
         ):
             unknown_author_documents.append(entry_relative)
-        if entry_suffix in TEXT_SUFFIXES and payload is not None:
+        # Custom file contents have no engine-defined reference semantics. The
+        # container's integrity, safe paths and executable/source checks above
+        # still apply, but even JSON-looking blobs must remain opaque.
+        opaque_blob = (
+            entry_name.startswith("Library/Artifacts/Blob/")
+            and entry_suffix not in AUTHOR_SOURCE_SUFFIXES
+        )
+        if entry_suffix in DOCUMENT_PAYLOAD_SUFFIXES and payload is not None and not opaque_blob:
             try:
-                text = payload.decode("utf-8", errors="replace")
+                if entry_suffix == ".inxdoc":
+                    from infernux.lib import _Infernux as native
+                    text = json.dumps(native._decode_asset_document(payload), ensure_ascii=False)
+                else:
+                    text = payload.decode("utf-8", errors="replace")
             except Exception as exc:
                 forbidden.append(f"{entry_relative}: native entry decode failed ({exc})")
             else:
@@ -1393,6 +1405,8 @@ def audit_player_package(
 
     source_replacement_gaps: list[str] = []
     compiled_asset_types = {
+        "document_artifact",
+        "physic_material_artifact",
         "animation_clip_2d_artifact",
         "animation_clip_3d_artifact",
         "animation_clip_artifact",

@@ -760,6 +760,11 @@ bool VkDeviceContext::PickPhysicalDevice(const DeviceConfig &config)
     // Cache device properties
     m_deviceProperties = best->probe.properties;
     m_deviceFeatures = best->probe.coreFeatures;
+    INXLOG_DIAGNOSTIC("INFERNUX_VULKAN_ADAPTER name=", m_deviceProperties.deviceName,
+                      " vendor=", m_deviceProperties.vendorID, " device=", m_deviceProperties.deviceID,
+                      " driver=", m_deviceProperties.driverVersion, " score=", best->score,
+                      " graphics_family=", m_queueIndices.graphicsFamily.value_or(UINT32_MAX),
+                      " present_family=", m_queueIndices.presentFamily.value_or(UINT32_MAX));
 
     return true;
 }

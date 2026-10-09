@@ -60,8 +60,8 @@ if(WIN32 AND NOT "@CMAKE_CONFIGURATION_TYPES@" STREQUAL "")
         "${BUILD_DIR}/external/assimp/bin/${_CFG}"
         "${BUILD_DIR}/external/glslang/glslang/${_CFG}"
         "${BUILD_DIR}/external/glslang/SPIRV/${_CFG}"
-        "${BUILD_DIR}/external/SDL/${_CFG}"
-        "${BUILD_DIR}/external/JoltPhysics/${_CFG}"
+        "${BUILD_DIR}/external/sdl_for_infernux/${_CFG}"
+        "${BUILD_DIR}/external/joltphysics_for_infernux/${_CFG}"
         "${BUILD_DIR}/${_CFG}"
     )
 else()
@@ -70,8 +70,8 @@ else()
         "${BUILD_DIR}/external/assimp/bin"
         "${BUILD_DIR}/external/glslang/glslang"
         "${BUILD_DIR}/external/glslang/SPIRV"
-        "${BUILD_DIR}/external/SDL"
-        "${BUILD_DIR}/external/JoltPhysics"
+        "${BUILD_DIR}/external/sdl_for_infernux"
+        "${BUILD_DIR}/external/joltphysics_for_infernux"
         "${BUILD_DIR}"
     )
 endif()

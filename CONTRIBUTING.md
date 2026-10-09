@@ -49,6 +49,21 @@ conda activate infernux
 python packaging/launcher.py
 ```
 
+## Maintained dependency forks
+
+Official plugins and engine-maintained dependency forks live in
+[Infernux Libraries](https://github.com/InfernuxEngine). Dependency forks use
+the `<library>_for_infernux` naming convention and maintain a single Infernux
+mainline, `infernux-support`, which is also their default branch. Upstream
+branches and tags are retained only as reference snapshots. Official plugins
+remain on their own `main` branches; they are not dependency forks.
+
+The engine pins dependency commits through Git submodules. The branch in
+`.gitmodules` specifies the maintenance line for intentional dependency
+updates; a normal `git submodule update --init --recursive` still checks out
+the pinned commits. Review fork changes before advancing those pins, and keep
+upstream authorship, licenses, and attribution intact.
+
 ## Workspace output layout
 
 Generated files have one canonical home:

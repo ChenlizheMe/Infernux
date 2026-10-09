@@ -85,7 +85,7 @@ The engine already provides Python authoring, native rendering and simulation, b
 
 Install [InfernuxHub](https://infernux-engine.com/download.html), choose an engine version and create a project. Hub manages the Python environment; you can start from the editor without setting up a native compiler. Continue with the [learning guides](https://infernux-engine.com/learn.html) and [API reference](https://infernux-engine.com/wiki/site/en/api/index.html).
 
-For plugin authors: [authoring guide](https://infernux-engine.com/wiki/site/en/plugin-package-content.html) · [plugin template](https://github.com/ChenlizheMe/infernux_plugin_template).
+For plugin authors: [authoring guide](https://infernux-engine.com/wiki/site/en/plugin-package-content.html) · [plugin template](https://github.com/InfernuxEngine/infernux_plugin_template).
 
 ### Build the engine from source
 

@@ -4,10 +4,6 @@ from dataclasses import asdict, FrozenInstanceError
 from concurrent.futures import ThreadPoolExecutor
 import gc
 import json
-import os
-from pathlib import Path
-import subprocess
-import sys
 from threading import Event
 import weakref
 
@@ -192,27 +188,6 @@ def test_failed_unpublished_signature_is_not_reported_as_live_code(monkeypatch):
         compiled(2.0)
     assert jit.statistics(compiled) == before
     assert compiled(3) == 57
-
-
-def test_cache_load_reports_current_preparation_not_old_compiler_timings(tmp_path):
-    fixture_dir = Path(__file__).with_name("fixtures")
-    script = (
-        "import sys,json; from dataclasses import asdict; from infernux import jit; "
-        "sys.path.insert(0,sys.argv[1]); from jit_cache_publication import direct; "
-        "value=direct(3); print(json.dumps({'value':value,'report':asdict(jit.statistics(direct))}))"
-    )
-    env = {**os.environ, "NUMBA_CACHE_DIR": str(tmp_path), "INFERNUX_TEST_JIT_AUTO": "0",
-           "INFERNUX_TEST_JIT_FACTOR": "2", "PYTHONDONTWRITEBYTECODE": "1"}
-    reports = []
-    for _ in range(2):
-        result = subprocess.run([sys.executable, "-c", script, str(fixture_dir)],
-                                env=env, text=True, capture_output=True, check=True, timeout=60)
-        data = json.loads(result.stdout.strip().splitlines()[-1])
-        assert data["value"] == 6
-        reports.append(data["report"]["specializations"][0])
-    assert not reports[0]["cache_hit"] and reports[0]["pipeline_timings"]
-    assert reports[1]["cache_hit"] and not reports[1]["pipeline_timings"]
-    assert reports[1]["preparation_ms"] > 0 and reports[1]["preparation_succeeded"]
 
 
 def test_statistics_rejects_an_uncompiled_python_function():

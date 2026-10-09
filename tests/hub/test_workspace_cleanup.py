@@ -2,14 +2,15 @@
 
 from pathlib import Path
 import os
-import shutil
 import subprocess
 
 import pytest
 
+from tests.tool_discovery import find_executable
+
 
 ROOT = Path(__file__).resolve().parents[2]
-POWERSHELL = shutil.which("pwsh")
+POWERSHELL = find_executable("pwsh")
 pytestmark = pytest.mark.skipif(POWERSHELL is None, reason="PowerShell is required")
 
 

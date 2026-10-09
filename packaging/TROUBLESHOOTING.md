@@ -61,13 +61,14 @@ be diagnosed from the engine version alone: engine wheels come from PyPI/GitHub,
 while the Hub installer/update archive can come from the Cloudflare mirror.
 
 Download/runtime compatibility is not the same as the project-template contract.
-The current development Hub reads `infernux/templates/project/` from its selected
-engine wheel and launches the lowercase `infernux` package. Historical public
-`0.4.1-v3` wheels still contain `Infernux` and do not include those templates.
-Their platform/ABI selection and native import can be verified, but they cannot
-serve as a new-project acceptance fixture for the current development Hub.
-Release a matching current engine wheel alongside this Hub; do not advertise a
-download-only smoke test as complete project creation/launch acceptance.
+The Hub locates each template by its unique filename inside the selected wheel,
+without assuming its directory. Missing required or ambiguous templates are
+errors. The engine package's exact spelling comes from the installed wheel's
+metadata in the child process, so both `infernux` and historical `Infernux` entry
+points work without importing an engine into Hub. Wheels without authored scene
+templates let their own Editor create the initial scene; Hub never injects newer
+component serialization into an older engine. Test project creation and actual
+launch for each supported wheel, not just download/platform selection.
 
 ## CMake versions
 

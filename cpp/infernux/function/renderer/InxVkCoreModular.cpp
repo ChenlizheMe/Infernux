@@ -461,8 +461,13 @@ bool InxVkCoreModular::PrepareSurface()
     m_presentationView.device = m_backend.Device().GetDeviceId();
     m_presentationView.kind = rhi::RenderViewKind::Presentation;
     m_presentationView.output = rhi::RenderOutputKind::PresentationImage;
-    m_presentationView.width = width;
-    m_presentationView.height = height;
+    // Create queries the surface again. Startup maximize/DPI changes can make
+    // the earlier capabilities stale; publish the generation actually created.
+    const VkExtent2D createdExtent = m_backend.Presentation().GetExtent();
+    INXLOG_DIAGNOSTIC("INFERNUX_PRESENTATION_GEOMETRY requested=", width, "x", height,
+                      " swapchain=", createdExtent.width, "x", createdExtent.height);
+    m_presentationView.width = createdExtent.width;
+    m_presentationView.height = createdExtent.height;
     m_presentationView.colorFormat = rhi::FromVkFormat(m_backend.Presentation().GetImageFormat());
     m_presentationView.samples = rhi::SampleCount::One;
     ++m_presentationView.revision;
@@ -474,6 +479,7 @@ bool InxVkCoreModular::PrepareSurface()
     // Create uniform buffers
     CreateUniformBuffers();
 
+    m_framebufferResized = false;
     return true;
 }
 
@@ -513,6 +519,7 @@ bool InxVkCoreModular::RecreatePresentationSurface(const std::function<bool(VkIn
     ++m_presentationView.revision;
     m_renderGraph.SetRenderView(m_presentationView);
     CreateDepthResources();
+    m_framebufferResized = false;
     INXLOG_INFO("Platform presentation surface recreated: ", extent.width, "x", extent.height);
     return true;
 }
@@ -946,15 +953,31 @@ void InxVkCoreModular::SetGuiRenderCallback(std::function<void(vk::RenderContext
 // Internal Methods
 // ============================================================================
 
+bool InxVkCoreModular::RefreshPresentationSize()
+{
+    if (m_windowWidth == 0 || m_windowHeight == 0)
+        return false;
+    if (m_framebufferResized) {
+        // OUT_OF_DATE is not guaranteed on resize: some presentation paths
+        // keep accepting/scaling the old images (SUCCESS or SUBOPTIMAL).
+        // Recreate before acquire, so no signalled acquire semaphore is left
+        // unconsumed and no GUI frame is built against stale attachments.
+        RecreateSwapchain();
+    }
+    return !m_framebufferResized;
+}
+
 void InxVkCoreModular::RecreateSwapchain()
 {
+    // Keep the request pending on a zero extent or a pre-retirement failure.
+    // Only a successfully published generation may acknowledge the resize.
+    m_framebufferResized = true;
     // Get new extent from surface capabilities
     auto swapchainSupport = m_backend.Device().QuerySwapchainSupport();
     uint32_t width = swapchainSupport.capabilities.currentExtent.width;
     uint32_t height = swapchainSupport.capabilities.currentExtent.height;
 
-    if (width == std::numeric_limits<uint32_t>::max() || height == std::numeric_limits<uint32_t>::max() || width == 0 ||
-        height == 0) {
+    if (width == std::numeric_limits<uint32_t>::max() || height == std::numeric_limits<uint32_t>::max()) {
         width = (m_windowWidth > 0) ? m_windowWidth : swapchainSupport.capabilities.minImageExtent.width;
         height = (m_windowHeight > 0) ? m_windowHeight : swapchainSupport.capabilities.minImageExtent.height;
 
@@ -998,6 +1021,9 @@ void InxVkCoreModular::RecreateSwapchain()
 
     // Recreate depth resources
     CreateDepthResources();
+    m_framebufferResized = false;
+    INXLOG_DIAGNOSTIC("INFERNUX_PRESENTATION_RESIZED window=", m_windowWidth, "x", m_windowHeight,
+                      " swapchain=", extent.width, "x", extent.height);
 }
 
 void InxVkCoreModular::ReleaseMaterialPassResolutionCache() noexcept

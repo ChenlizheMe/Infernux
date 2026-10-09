@@ -6,6 +6,63 @@
 #include <iostream>
 #include <vector>
 
+static void TestDockspaceViewportResize()
+{
+    ImGui::CreateContext();
+    auto &io = ImGui::GetIO();
+    io.IniFilename = nullptr;
+    io.DeltaTime = 1.0f / 60.0f;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    unsigned char *pixels;
+    int width, height;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    ImGuiID left = 0, center = 0, right = 0;
+    for (const ImVec2 size : {ImVec2(2560, 1440), ImVec2(1024, 701), ImVec2(2560, 1440), ImVec2(1280, 800)}) {
+        io.DisplaySize = size;
+        for (int frame = 0; frame < 3; ++frame) {
+            ImGui::NewFrame();
+            ImGui::SetNextWindowPos(ImVec2(0, 0));
+            ImGui::SetNextWindowSize(size);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+            ImGui::Begin("Resize workspace", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                                         ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoMove);
+            const auto id = ImGui::GetID("main");
+            if (left == 0) {
+                ImGui::DockBuilderAddNode(id, ImGuiDockNodeFlags_DockSpace);
+                ImGui::DockBuilderSetNodeSize(id, size);
+                ImGuiID main;
+                ImGui::DockBuilderSplitNode(id, ImGuiDir_Right, 0.25f, &right, &main);
+                ImGui::DockBuilderSplitNode(main, ImGuiDir_Left, 0.2f, &left, &center);
+                ImGui::DockBuilderDockWindow("Hierarchy", left);
+                ImGui::DockBuilderDockWindow("Scene", center);
+                ImGui::DockBuilderDockWindow("Inspector", right);
+                ImGui::DockBuilderFinish(id);
+            }
+            infernux::RescaleDockspaceForViewport(id, size);
+            ImGui::DockSpace(id, size);
+            ImGui::End();
+            ImGui::PopStyleVar();
+            for (const char *name : {"Hierarchy", "Scene", "Inspector"}) {
+                ImGui::Begin(name);
+                ImGui::TextUnformatted(name);
+                ImGui::End();
+            }
+            ImGui::Render();
+            if (frame == 2) {
+                assert(ImGui::FindWindowByName("Scene")->DockId == center);
+                assert(ImGui::FindWindowByName("Hierarchy")->DockId == left);
+                assert(ImGui::FindWindowByName("Inspector")->DockId == right);
+                const auto *scene = ImGui::DockBuilderGetNode(center);
+                const auto *inspector = ImGui::DockBuilderGetNode(right);
+                assert(scene->Size.x > size.x * 0.5f);
+                assert(std::abs(inspector->Size.x / size.x - 0.25f) < 0.02f);
+                assert(inspector->Pos.x + inspector->Size.x <= size.x + 1);
+            }
+        }
+    }
+    ImGui::DestroyContext();
+}
+
 static void TestWindowPresentation()
 {
     ImGui::CreateContext();
@@ -225,4 +282,5 @@ int main()
     assert(renderPlugin().x == 500);
     ImGui::DestroyContext();
     TestWindowPresentation();
+    TestDockspaceViewportResize();
 }

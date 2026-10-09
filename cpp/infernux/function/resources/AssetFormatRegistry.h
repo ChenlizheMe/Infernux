@@ -13,9 +13,9 @@
 namespace infernux::asset_formats
 {
 
-inline constexpr std::array<std::string_view, 15> kTextureExtensions = {
+inline constexpr std::array<std::string_view, 16> kTextureExtensions = {
     ".png", ".jpg", ".jpeg", ".jpe", ".bmp", ".tga",       ".gif",    ".psd",
-    ".hdr", ".pic", ".pnm",  ".pgm", ".ppm", ".inxvfield", ".inxsdf",
+    ".hdr", ".pic", ".pnm",  ".pgm", ".ppm", ".inxvfield", ".inxsdf", ".svg",
 };
 
 // Native .inxmesh sources use MeshArtifact; the other formats use Assimp.

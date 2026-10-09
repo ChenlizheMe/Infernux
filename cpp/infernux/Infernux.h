@@ -495,6 +495,11 @@ class Infernux
         bool nearest = false;
         bool success = false;
         std::vector<unsigned char> pixels;
+        std::shared_ptr<const TextureCpuData> sourcePixels;
+        uint64_t pixelHash = 0;
+        uint32_t nonTransparentPixelCount = 0;
+        uint8_t minRgb = 0;
+        uint8_t maxRgb = 0;
     };
 
     struct MaterialPreviewRequest
@@ -560,6 +565,7 @@ class Infernux
     {
         uint64_t generation = 0;       ///< Monotonic counter, bumped on detected content change
         uint64_t readyGeneration = 0;  ///< Generation of last completed render
+        uint64_t failedGeneration = 0; ///< Retry decode only when the source/settings change
         uint64_t lastContentStamp = 0; ///< Last content stamp seen from caller
         uint64_t pendingUploadVersion = 0;
         uint64_t pendingPreviewGeneration = 0;

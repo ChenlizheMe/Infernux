@@ -2,19 +2,20 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
 
 import pytest
 
+from tests.tool_discovery import find_executable
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize("preset", ["windows-msvc-release", "linux-clang-release"])
 def test_release_output_paths_follow_version_and_preserve_other_outputs(preset):
-    cmake = shutil.which("cmake")
+    cmake = find_executable("cmake")
     if cmake is None:
         pytest.skip("CMake executable is required")
     # Some Windows CMake distributions terminate before configure when their
@@ -62,7 +63,7 @@ def test_product_targets_do_not_clean_source_python_caches():
 
 
 def test_runtime_pack_cmake_does_not_write_bytecode_into_its_source(tmp_path):
-    cmake = shutil.which("cmake")
+    cmake = find_executable("cmake")
     if cmake is None:
         pytest.skip("CMake executable is required for build-entry ownership test")
     source = tmp_path / "source"

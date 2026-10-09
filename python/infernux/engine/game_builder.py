@@ -67,6 +67,8 @@ from infernux.engine.path_utils import (
 from infernux.engine.build_settings import load_build_settings_for_build
 from infernux.engine.filesystem import remove_directory_tree, replace_path
 from infernux.engine.runtime_artifact_catalog import (
+    RUNTIME_AUTHORING_DOCUMENT_SUFFIXES,
+    RUNTIME_BINARY_DOCUMENT_SUFFIXES,
     RUNTIME_JSON_DOCUMENT_SUFFIXES,
     RuntimeArtifactError,
     build_catalog,
@@ -296,7 +298,7 @@ class GameBuilder(BuildSplashMixin, BuildDependencyMixin):
             "ProjectSettings/GameView.ini",
         }
     )
-    _PLAYER_PORTABLE_DOCUMENT_SUFFIXES = RUNTIME_JSON_DOCUMENT_SUFFIXES
+    _PLAYER_PORTABLE_DOCUMENT_SUFFIXES = RUNTIME_AUTHORING_DOCUMENT_SUFFIXES
     _NUMPY_RUNTIME_EXCLUDED_DIRECTORIES = frozenset(
         {
             "__pycache__",
@@ -1600,7 +1602,7 @@ os._exit(_exit_code)
             InxPackage, PACKAGE_MANIFEST, package_control_guid, player_file_exported,
         )
         from infernux.plugins.registry import PluginRegistry
-        from infernux.engine.project_context import package_script_reference
+        from infernux.engine.project_context import is_editor_asset_path, package_script_reference
 
         registry = PluginRegistry(self.project_path)
         document = registry.load()
@@ -1619,6 +1621,8 @@ os._exit(_exit_code)
         for guid, entry in indexed.items():
             source = self._library_source_entry_path(entry)
             if not is_path_within(source, packages_root, allow_root=False):
+                continue
+            if is_editor_asset_path(relative_path(source, self.project_path)):
                 continue
             reference = package_script_reference(source, self.project_path)
             if not reference:
@@ -1728,6 +1732,8 @@ os._exit(_exit_code)
                         f"Player plugin GUID resolved outside Assets/Packages: {guid}: {source}"
                     )
                 current_relative = portable_path(relative_path(source, self.project_path))
+                if is_editor_asset_path(current_relative):
+                    continue
                 file_record = dict(raw_file)
                 file_record["path_hint"] = current_relative
                 runtime_files.append(file_record)
@@ -2015,13 +2021,12 @@ os._exit(_exit_code)
                 # Owned model clips have no source file of their own. Their
                 # importer document is staged by _stage_library_runtime_documents.
                 continue
-            if logical_asset_type(entry) == "mesh":
-                # A Player consumes the imported Infernux mesh/model artifact,
-                # never the DCC/interchange source.  Failing here is deliberate:
-                # silently copying FBX/Blend/GLTF would expose authoring content
-                # and make an incomplete AssetIndex look like a valid build.
+            if logical_asset_type(entry) in {"texture", "mesh", "rendertexture"}:
+                # Known source types require their imported runtime artifact.
+                # Do not silently publish a raw image/model when import failed.
+                source_kind = "model" if logical_asset_type(entry) == "mesh" else "texture"
                 raise RuntimeError(
-                    "Player asset cook refused raw model source without a compiled artifact: "
+                    f"Player asset cook refused raw {source_kind} source without a compiled artifact: "
                     f"guid={guid}, source={source}"
                 )
             if is_path_within(source, assets_root, allow_root=False):
@@ -2219,7 +2224,7 @@ os._exit(_exit_code)
         assets_root = resolved_path(os.path.join(self.project_path, "Assets"))
         editor_guids = {
             str(entry["guid"]) for entry in entries
-            if is_path_within(self._library_source_entry_path(entry), assets_root, allow_root=False)
+            if is_path_within(self._library_source_entry_path(entry), self.project_path, allow_root=False)
             and is_editor_asset_path(relative_path(
                 self._library_source_entry_path(entry), self.project_path))
         }
@@ -2421,9 +2426,8 @@ os._exit(_exit_code)
     def _stage_library_runtime_documents(self, data_dir: str) -> None:
         """Cook remaining runtime-ready project payloads into Library.
 
-        Serialized resources still use their established loader formats, but
-        the Player consumes a deterministic GUID-addressed build artifact
-        instead of the authoring Assets path. This is intentionally separate
+        Known documents use their cooked codecs; audio and unknown files stay
+        byte-for-byte unchanged. Every product is GUID-addressed. This is separate
         from importer-produced texture, mesh and particle artifacts.
         """
 
@@ -2495,6 +2499,8 @@ os._exit(_exit_code)
             # Player uses the exact same dynamic linker as the Editor and can
             # form shader combinations that did not exist at build time.
             artifact_suffix = ".inxasset" if logical_type == "data_asset" else suffix
+            if suffix in RUNTIME_BINARY_DOCUMENT_SUFFIXES:
+                artifact_suffix = ".inxdoc"
             runtime_path = (
                 f"Library/Artifacts/{artifact_directory}/{guid}{artifact_suffix}"
             )
@@ -2506,6 +2512,10 @@ os._exit(_exit_code)
                 if suffix not in RUNTIME_JSON_DOCUMENT_SUFFIXES:
                     raise RuntimeError(f"Unsupported imported document format: {suffix}")
                 _write_json_atomic(destination, json.loads(imported_document))
+            elif logical_type == "audio":
+                # Preserve the original codec and bytes. RuntimeAssetRecords
+                # carries load_type/force_mono; the decoder applies them on load.
+                shutil.copy2(staged_source, destination)
             elif logical_type == "data_asset":
                 from infernux.core.data_asset import encode_data_asset_artifact
 
@@ -2549,7 +2559,19 @@ os._exit(_exit_code)
                 self._rewrite_player_document_paths(destination, suffix)
             else:
                 shutil.copy2(staged_source, destination)
-                self._rewrite_player_document_paths(destination, suffix)
+                # Unknown payloads (including user JSON) belong to their own
+                # loaders. Never rewrite strings or interpret their layout.
+                if suffix in RUNTIME_AUTHORING_DOCUMENT_SUFFIXES:
+                    self._rewrite_player_document_paths(destination, suffix)
+
+            if suffix in RUNTIME_BINARY_DOCUMENT_SUFFIXES:
+                from infernux.core.asset_document import encode_asset_document
+
+                with open(destination, "r", encoding="utf-8") as document_stream:
+                    document = json.load(document_stream)
+                if suffix == ".mat" and isinstance(document, dict):
+                    document.pop("_shader_property_order", None)
+                Path(destination).write_bytes(encode_asset_document(document))
 
             source_state = entry.get("source", {})
             source_fingerprint = {
@@ -3428,7 +3450,7 @@ os._exit(_exit_code)
             # Owned resources already have individual cooked identities and
             # payloads. The editor's source tables contain nested author paths
             # and must not duplicate that authoring metadata in the Player.
-            for authoring_table in ("model_textures", "model_animations", "model_animation_identities"):
+            for authoring_table in ("model_textures", "model_animations", "model_animation_identities", "import_document"):
                 metadata_entries.pop(authoring_table, None)
             file_path = metadata_entries.get("file_path")
             if isinstance(file_path, dict):
@@ -4623,31 +4645,6 @@ os._exit(_exit_code)
             return value
 
         rewritten = rewrite(document)
-        if (
-            isinstance(rewritten, dict)
-            and rewritten.get("$schema") == "infernux.particle_runtime_index"
-            and isinstance(rewritten.get("entries"), list)
-        ):
-            deduplicated: dict[tuple[str, str], dict] = {}
-            passthrough: list[object] = []
-            for item in rewritten["entries"]:
-                if not isinstance(item, dict):
-                    passthrough.append(item)
-                    continue
-                # This schema defines its entries as particle references;
-                # ordinary user dictionaries with path_hint are not references.
-                rewrite_reference_hint(item)
-                identity = (str(item.get("guid", "")), str(item.get("stable_id", "")))
-                existing = deduplicated.get(identity)
-                if existing is None or (
-                    not str(existing.get("path_hint", ""))
-                    and str(item.get("path_hint", ""))
-                ):
-                    deduplicated[identity] = item
-            compact_entries = list(deduplicated.values()) + passthrough
-            if compact_entries != rewritten["entries"]:
-                rewritten["entries"] = compact_entries
-                changed = True
         _yield_editor_thread()
         if not changed:
             return
@@ -4917,9 +4914,11 @@ os._exit(_exit_code)
 
     @staticmethod
     def _runtime_catalog_payload_required(entry_path: str) -> bool:
-        """Return whether dependency discovery needs this entry's JSON bytes."""
+        """Return whether dependency discovery needs this entry's document bytes."""
 
         normalized = str(entry_path).replace("\\", "/")
+        if normalized.casefold().endswith(".inxdoc"):
+            return True
         if normalized.casefold() == "projectsettings/inxplugins.json":
             # The runtime registry contains package ownership GUIDs, including
             # its deliberately unshipped control manifest.  They are lifecycle

@@ -285,7 +285,7 @@ class AnimationClip3D:
             from infernux.core.document_store import write_document_text
             write_document_text(target, json.dumps(self.to_dict(), indent=2, ensure_ascii=False) + "\n")
             return True
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, ValueError):
             return False
 
     @classmethod
@@ -298,8 +298,8 @@ class AnimationClip3D:
         if not os.path.isfile(path):
             return None
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            from infernux.core.asset_document import read_asset_document
+            data = read_asset_document(path)
             if not isinstance(data, dict):
                 return None
             clip = cls.from_dict(data)
@@ -307,7 +307,7 @@ class AnimationClip3D:
             # Name always derives from filename (matches 2D clip behaviour).
             clip.name = os.path.splitext(os.path.basename(path))[0]
             return clip
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        except (OSError, RuntimeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
 
     @classmethod

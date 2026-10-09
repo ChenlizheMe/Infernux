@@ -1,4 +1,6 @@
 #include <platform/window/EditorDisplayScale.h>
+#include <function/renderer/gui/GuiPresentationGeometry.h>
+#include <function/renderer/gui/EditorGuiFrameScheduler.h>
 
 #include <algorithm>
 #include <cmath>
@@ -11,6 +13,48 @@ void Check(bool condition)
 {
     if (!condition)
         throw std::runtime_error("editor draw geometry and pointer hit testing disagree");
+}
+
+void CheckPresentationResize()
+{
+    ImDrawData draw;
+    draw.Valid = true;
+    draw.DisplaySize = ImVec2(2560, 1440);
+    draw.FramebufferScale = ImVec2(1, 1);
+    Check(infernux::GuiDrawDataMatchesWindow(&draw, 2560, 1440, 2560, 1440));
+    Check(!infernux::GuiDrawDataMatchesWindow(&draw, 1600, 900, 1600, 900));
+    Check(!infernux::GuiDrawDataMatchesWindow(&draw, 2560, 1440, 3840, 2160));
+    Check(!infernux::GuiDrawDataMatchesWindow(nullptr, 2560, 1440, 2560, 1440));
+    {
+        infernux::ScopedGuiPresentationScale mapping(draw, 1600, 900);
+        Check(infernux::GuiDrawDataMatchesFramebuffer(draw, 1600, 900));
+        Check(draw.DisplaySize.x == 2560); // Never corrupt layout or input space.
+    }
+    Check(draw.FramebufferScale.x == 1 && draw.FramebufferScale.y == 1);
+    draw.DisplaySize = ImVec2(1537, 863);
+    draw.FramebufferScale = ImVec2(1.25f, 1.25f);
+    {
+        infernux::ScopedGuiPresentationScale mapping(draw, 1921, 1079);
+        Check(infernux::GuiDrawDataMatchesFramebuffer(draw, 1921, 1079));
+    }
+    Check(draw.FramebufferScale.x == 1.25f && draw.FramebufferScale.y == 1.25f);
+    draw.DisplaySize = ImVec2(0, 0);
+    {
+        infernux::ScopedGuiPresentationScale minimized(draw, 0, 0);
+        Check(std::isfinite(draw.FramebufferScale.x));
+    }
+
+    infernux::EditorGuiFrameScheduler scheduler;
+    const auto now = infernux::EditorGuiFrameScheduler::Clock::now();
+    Check(scheduler.Consume(now, true));
+    // A held force flag is deliberately throttled. Geometry changes must
+    // explicitly invalidate on EVERY resize, even within the same 60 Hz slot.
+    Check(!scheduler.Consume(now, true));
+    for (int frame = 0; frame < 4; ++frame) {
+        scheduler.Request();
+        Check(scheduler.Consume(now, true));
+    }
+    Check(!scheduler.Consume(now, true));
 }
 
 void CheckFrame(float displayScale, float pixelDensity)
@@ -148,6 +192,7 @@ void CheckFrame(float displayScale, float pixelDensity)
 
 int main()
 {
+    CheckPresentationResize();
     ImGui::CreateContext();
     ImGui::GetIO().IniFilename = nullptr;
     ImGui::GetIO().DeltaTime = 1.0f / 60.0f;

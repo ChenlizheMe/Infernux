@@ -6,7 +6,6 @@ import io
 import json
 import os
 from pathlib import Path
-import shutil
 import struct
 import subprocess
 import urllib.error
@@ -14,6 +13,8 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 import pytest
+
+from tests.tool_discovery import find_executable
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -141,11 +142,12 @@ def test_test_certificate_trust_is_noninteractive_and_disposable_only():
 
 @pytest.mark.parametrize('test_certificate', [False, True])
 def test_signature_verifier_keeps_the_certificate_separate_from_its_switch(tmp_path, test_certificate):
-    shell = shutil.which('pwsh')
+    shell = find_executable("pwsh")
     if shell is None:
         pytest.skip('PowerShell 7 is required to execute the signature verifier')
     probe = tmp_path / 'signature-probe.ps1'
     probe.write_text(r'''
+param([string]$SignatureScript, [string]$UseTestCertificate)
 $ErrorActionPreference = 'Stop'
 $rsa = [System.Security.Cryptography.RSA]::Create(2048)
 $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
@@ -170,22 +172,21 @@ try {
             TimeStamperCertificate = $certificate
         }
     }
-    $useTestCertificate = $env:INFERNUX_TEST_CERTIFICATE -eq 'true'
-    & $env:INFERNUX_SIGNATURE_SCRIPT -Path 'probe.exe' -Thumbprint $certificate.Thumbprint `
-        -ProductVersion '0.4.1.3' -TestCertificate:$useTestCertificate
+    & $SignatureScript -Path 'probe.exe' -Thumbprint $certificate.Thumbprint `
+        -ProductVersion '0.4.1.3' -TestCertificate:($UseTestCertificate -eq 'true')
 } finally {
     $certificate.Dispose()
     $rsa.Dispose()
 }
 ''', encoding='utf-8')
     result = subprocess.run(
-        [shell, '-NoProfile', '-NonInteractive', '-File', str(probe)],
+        [shell, '-NoProfile', '-NonInteractive', '-File', str(probe),
+         '-SignatureScript', str(ROOT / 'scripts/release/verify_windows_signature.ps1'),
+         '-UseTestCertificate', str(test_certificate).lower()],
         env={
             **os.environ,
             'GITHUB_ACTIONS': 'false',
             'RUNNER_ENVIRONMENT': 'self-hosted',
-            'INFERNUX_SIGNATURE_SCRIPT': str(ROOT / 'scripts/release/verify_windows_signature.ps1'),
-            'INFERNUX_TEST_CERTIFICATE': str(test_certificate).lower(),
         },
         capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
     )

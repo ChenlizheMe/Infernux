@@ -21,6 +21,7 @@ from infernux.renderstack.render_effect_asset import (
     RenderEffectAsset,
     RenderEffectGroupAsset,
     parse_render_effect_document,
+    read_render_effect_document,
 )
 from infernux.renderstack.route_policy import RoutePolicy
 
@@ -1037,7 +1038,7 @@ def expand_render_effect_reference(
 
     document = _LIVE_EFFECT_GROUP_DOCUMENTS.get(cycle_key)
     if document is None:
-        document = parse_render_effect_document(Path(path).read_text(encoding="utf-8"))
+        document = read_render_effect_document(path)
     if isinstance(document, RenderEffectAsset):
         cached = reference.resolve()
         if isinstance(cached, RenderEffect):

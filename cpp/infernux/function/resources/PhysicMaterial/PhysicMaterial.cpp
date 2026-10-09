@@ -1,4 +1,5 @@
 #include "PhysicMaterial.h"
+#include <platform/filesystem/AssetDocument.h>
 
 #include <cmath>
 #include <platform/filesystem/DocumentStore.h>
@@ -91,6 +92,8 @@ void PhysicMaterial::CopyValuesFrom(const PhysicMaterial &other)
 
 void PhysicMaterial::SaveToFile() const
 {
+    if (IsCookedAssetDocument(m_filePath))
+        throw std::logic_error("Cooked physics material is read-only");
     if (m_filePath.empty())
         throw std::logic_error("PhysicMaterial has no file path");
     DocumentStore::Instance().WriteAndWait(m_filePath, SerializeDocument().dump(2));

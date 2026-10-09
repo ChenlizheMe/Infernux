@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import os
 import threading
+import time
 
 import pytest
 
@@ -65,3 +67,39 @@ def test_inxpack_rejects_invalid_explicit_compression_level(tmp_path, compressio
             str(tmp_path / "invalid.inxrt"),
             compression_level=compression_level,
         )
+
+
+def test_inxpack_reads_and_extraction_allow_other_python_threads(tmp_path):
+    native = _native_inxpack()
+    source = tmp_path / "large.bin"
+    block = os.urandom(4 * 1024 * 1024)
+    with source.open("wb") as stream:
+        for _ in range(16):
+            stream.write(block)
+    pack = str(tmp_path / "large.inxpkg")
+    native._inxpack_write([("large.bin", str(source))], pack, compression_level=1)
+    ticks: list[float] = []
+    started, stopped = threading.Event(), threading.Event()
+
+    def heartbeat():
+        started.set()
+        while not stopped.wait(.001):
+            ticks.append(time.monotonic())
+
+    worker = threading.Thread(target=heartbeat)
+    worker.start()
+    started.wait()
+    try:
+        # Reading this one-entry manifest is sub-millisecond; it cannot be used
+        # as a scheduler timing test. Exercise the actual large payload IO.
+        for name, operation in (
+            ("read", lambda: native._inxpack_read_entry(pack, "large.bin")),
+            ("extract", lambda: native._inxpack_extract(pack, str(tmp_path / "extracted"))),
+        ):
+            before = time.monotonic()
+            operation()
+            after = time.monotonic()
+            assert any(before < tick < after for tick in ticks), f"{name} held the GIL for {after - before:.3f}s"
+    finally:
+        stopped.set()
+        worker.join()

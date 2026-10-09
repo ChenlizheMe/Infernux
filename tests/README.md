@@ -8,6 +8,29 @@ Prefer a focused reproduction over another production fallback or a coverage tar
 Run commands from the repository root with `conda activate infernux` (Python
 3.13). Follow [CONTRIBUTING.md](../CONTRIBUTING.md) for development setup.
 
+## Local tool discovery and test isolation
+
+Tests discover tools instead of requiring private test environment variables.
+Blender integration uses the Editor preference/Hub tool/.blend association, PATH,
+and standard installation directories. It checks the exporter's required Blender
+5.2 series once per session. A real missing or incompatible installation reports
+its reason as a skip; having Blender installed is sufficient to run these tests.
+CMake, PowerShell and Git checks also search the active Python/conda environment
+and standard installation directories. Discovery never downloads software.
+
+Pytest reports skipped tests by default (`-ra`). Skips mean a prerequisite or
+platform was unavailable, not that the corresponding feature passed validation.
+OS and product environment contracts (Vulkan driver selection, CI signing policy,
+Player mode, etc.) are still tested explicitly; do not remove their coverage.
+
+Share immutable, expensive fixture generation, but copy assets before modifying
+them. Blender's rename/reparent identities and live scene roundtrip are verified
+in one real reimport sequence. JIT cache publication and cache-load statistics
+share the same cold/changed/cached subprocesses, with configuration passed as
+arguments. Child processes must use the same imported package as the parent, not
+depend on an externally configured PYTHONPATH. Keep independent failure cases
+separate so a merged test does not hide unrelated coverage.
+
 ## Workflow owners
 
 All paths below are pytest modules. Run one with `python -m pytest PATH -q -ra`.
@@ -121,7 +144,7 @@ reason. A passing mocked download test is not evidence of network availability.
 ## CPU JIT dependency fork
 
 `external/llvmlite_for_infernux` pins our changes on the upstream 0.49 release
-line, compatible with Numba 0.67. Its `infernux-0.49` branch adds pass-manager
+line, compatible with Numba 0.67. Its `infernux-support` branch adds pass-manager
 ownership fixes and per-execution-engine mapped-memory counters. It remains a
 CPU dependency, not a GPU backend or an installable engine plugin.
 

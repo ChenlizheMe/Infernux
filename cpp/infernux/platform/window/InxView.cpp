@@ -1115,6 +1115,7 @@ void InxView::SDLInit()
         INXLOG_ERROR("Could not create a window: ", error);
         throw std::runtime_error("SDL window creation failed: " + error);
     }
+    VerifyRequiredWindowsDpiPolicy(m_window);
     INXLOG_DEBUG("Window created successfully.");
 
     // X11 must commit the initial map before maximizing a hidden editor or
@@ -1135,6 +1136,12 @@ void InxView::SDLInit()
     }
     SDL_GetWindowSize(m_window, &m_windowWidth, &m_windowHeight);
     SDL_GetWindowSizeInPixels(m_window, &m_framebufferWidth, &m_framebufferHeight);
+    // Keep this one startup record in release logs too, without adding noise
+    // to the user's Console or enabling verbose per-frame native logging.
+    INXLOG_DIAGNOSTIC("INFERNUX_WINDOW_GEOMETRY driver=", SDL_GetCurrentVideoDriver(), " sdl=", SDL_GetVersion(),
+                      " window=", m_windowWidth, "x", m_windowHeight, " pixels=", m_framebufferWidth, "x",
+                      m_framebufferHeight, " displayScale=", SDL_GetWindowDisplayScale(m_window),
+                      " pixelDensity=", SDL_GetWindowPixelDensity(m_window), " ", DescribeWindowsDpiPolicy(m_window));
 }
 
 void InxView::CreateSurface(VkInstance *vkInstance, VkSurfaceKHR *vkSurface)

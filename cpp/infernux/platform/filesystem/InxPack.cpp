@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cstddef>
 #include <cstring>
 #include <exception>
@@ -15,6 +16,7 @@
 #include <fstream>
 #include <limits>
 #include <mutex>
+#include <memory>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -643,6 +645,58 @@ Manifest Write(const std::filesystem::path &destination, std::vector<SourceFile>
 
         uint64_t cursor = 0;
         for (size_t index = 0; index < sources.size(); ++index) {
+            const auto sourceBytes = std::filesystem::file_size(sources[index].source);
+            auto extension = FromFsPath(sources[index].source.extension());
+            std::transform(extension.begin(), extension.end(), extension.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            const bool compressedAudio = extension == ".mp3" || extension == ".ogg" || extension == ".flac";
+            if (sourceBytes > 1024 * 1024 || compressedAudio) {
+                // Large entries never require a raw + compressed whole-file pair.
+                // Encoded audio keeps its original codec; don't compress it again.
+                std::ifstream input(sources[index].source, std::ios::binary);
+                if (!input)
+                    throw std::runtime_error("InxPack cannot read source");
+                std::vector<char> inBuffer(ZSTD_CStreamInSize()), outBuffer(ZSTD_CStreamOutSize());
+                std::unique_ptr<ZSTD_CCtx, decltype(&ZSTD_freeCCtx)> context(
+                    compressedAudio ? nullptr : ZSTD_createCCtx(), &ZSTD_freeCCtx);
+                if (!compressedAudio && (!context ||
+                    ZSTD_isError(ZSTD_CCtx_setParameter(context.get(), ZSTD_c_compressionLevel, compressionLevel)) ||
+                    ZSTD_isError(ZSTD_CCtx_setPledgedSrcSize(context.get(), sourceBytes))))
+                    throw std::runtime_error("InxPack cannot initialize compression");
+                auto &entry = manifest.entries[index];
+                entry.offset = cursor;
+                entry.rawBytes = sourceBytes;
+                entry.codec = compressedAudio ? Codec::Store : Codec::Zstandard;
+                uint64_t remaining = sourceBytes;
+                do {
+                    const auto count = static_cast<size_t>(std::min<uint64_t>(remaining, inBuffer.size()));
+                    ReadExact(input, inBuffer.data(), count);
+                    remaining -= count;
+                    if (compressedAudio) {
+                        WriteExact(output, inBuffer.data(), count);
+                        entry.storedBytes += count;
+                    } else {
+                        ZSTD_inBuffer in{inBuffer.data(), count, 0};
+                        size_t pending;
+                        do {
+                            ZSTD_outBuffer out{outBuffer.data(), outBuffer.size(), 0};
+                            pending = ZSTD_compressStream2(context.get(), &out, &in,
+                                                         remaining ? ZSTD_e_continue : ZSTD_e_end);
+                            if (ZSTD_isError(pending))
+                                throw std::runtime_error("InxPack streaming compression failed");
+                            WriteExact(output, outBuffer.data(), out.pos);
+                            entry.storedBytes += out.pos;
+                        } while (in.pos < in.size || (!remaining && pending));
+                    }
+                } while (remaining);
+                if (input.peek() != EOF)
+                    throw std::runtime_error("InxPack source changed while packaging");
+                manifest.rawBytes += entry.rawBytes;
+                manifest.storedBytes += entry.storedBytes;
+                cursor = AlignUp(cursor + entry.storedBytes, kAlignment);
+                WriteZeros(output, cursor - entry.offset - entry.storedBytes);
+                continue;
+            }
             const auto raw = ReadBytes(sources[index].source);
             std::vector<uint8_t> compressed(ZSTD_compressBound(raw.size()));
             const size_t compressedBytes =
@@ -777,12 +831,13 @@ std::vector<uint8_t> ReadEntry(const std::filesystem::path &path, const std::str
     std::vector<uint8_t> stored(static_cast<size_t>(found->storedBytes));
     if (!stored.empty())
         ReadExact(input, stored.data(), stored.size());
-    std::vector<uint8_t> raw(static_cast<size_t>(found->rawBytes));
     if (found->codec == Codec::Store) {
-        if (stored.size() != raw.size())
+        if (stored.size() != found->rawBytes)
             throw std::runtime_error("InxPack stored block size mismatch: " + found->path);
-        raw = std::move(stored);
-    } else if (found->codec == Codec::Zstandard) {
+        return stored;
+    }
+    std::vector<uint8_t> raw(static_cast<size_t>(found->rawBytes));
+    if (found->codec == Codec::Zstandard) {
         const size_t decoded = ZSTD_decompress(raw.data(), raw.size(), stored.data(), stored.size());
         if (ZSTD_isError(decoded) || decoded != raw.size())
             throw std::runtime_error("InxPack zstd decompression failed: " + found->path);
@@ -835,25 +890,47 @@ Manifest Extract(const std::filesystem::path &path, const std::filesystem::path 
         input.seekg(static_cast<std::streamoff>(absoluteOffset));
         if (!input)
             throw std::runtime_error("InxPack entry offset is outside the package: " + entry.path);
-        std::vector<uint8_t> stored(static_cast<size_t>(entry.storedBytes));
-        if (!stored.empty())
-            ReadExact(input, stored.data(), stored.size());
-        std::vector<uint8_t> raw(static_cast<size_t>(entry.rawBytes));
-        if (entry.codec == Codec::Store) {
-            if (stored.size() != raw.size())
-                throw std::runtime_error("InxPack stored block size mismatch: " + entry.path);
-            raw = std::move(stored);
-        } else if (entry.codec == Codec::Zstandard) {
-            const size_t decoded = ZSTD_decompress(raw.data(), raw.size(), stored.data(), stored.size());
-            if (ZSTD_isError(decoded) || decoded != raw.size())
-                throw std::runtime_error("InxPack zstd decompression failed: " + entry.path);
-        } else {
+        if (entry.codec != Codec::Store && entry.codec != Codec::Zstandard)
             throw std::runtime_error("InxPack entry uses an unsupported codec: " + entry.path);
-        }
         std::ofstream destinationFile(outputs[index], std::ios::binary | std::ios::trunc);
-        if (!destinationFile || (!raw.empty() && !destinationFile.write(reinterpret_cast<const char *>(raw.data()),
-                                                                        static_cast<std::streamsize>(raw.size()))))
+        if (!destinationFile)
             throw std::runtime_error("InxPack cannot extract entry: " + entry.path);
+        std::vector<char> stored(ZSTD_DStreamInSize()), raw(ZSTD_DStreamOutSize());
+        std::unique_ptr<ZSTD_DCtx, decltype(&ZSTD_freeDCtx)> decoder(
+            entry.codec == Codec::Zstandard ? ZSTD_createDCtx() : nullptr, &ZSTD_freeDCtx);
+        if (entry.codec == Codec::Zstandard && !decoder)
+            throw std::runtime_error("InxPack cannot initialize decompression");
+        uint64_t remaining = entry.storedBytes, written = 0;
+        size_t pending = entry.codec == Codec::Zstandard ? 1 : 0;
+        while (remaining) {
+            const auto count = static_cast<size_t>(std::min<uint64_t>(remaining, stored.size()));
+            ReadExact(input, stored.data(), count);
+            remaining -= count;
+            if (entry.codec == Codec::Store) {
+                if (count > entry.rawBytes - written)
+                    throw std::runtime_error("InxPack stored size mismatch: " + entry.path);
+                WriteExact(destinationFile, stored.data(), count);
+                written += count;
+            } else {
+                ZSTD_inBuffer in{stored.data(), count, 0};
+                do {
+                    ZSTD_outBuffer out{raw.data(), raw.size(), 0};
+                    pending = ZSTD_decompressStream(decoder.get(), &out, &in);
+                    if (ZSTD_isError(pending) || out.pos > entry.rawBytes - written)
+                        throw std::runtime_error("InxPack zstd decompression failed: " + entry.path);
+                    WriteExact(destinationFile, raw.data(), out.pos);
+                    written += out.pos;
+                    // Drain a full output buffer even when all input was consumed.
+                    if (in.pos == in.size && out.pos < out.size)
+                        break;
+                } while (in.pos < in.size || pending);
+            }
+        }
+        if (pending != 0 || written != entry.rawBytes)
+            throw std::runtime_error("InxPack truncated or mismatched entry: " + entry.path);
+        destinationFile.flush();
+        if (!destinationFile)
+            throw std::runtime_error("InxPack cannot flush entry: " + entry.path);
     };
 
     // Archive entries are independently compressed. Browser builds

@@ -71,17 +71,18 @@ void TextureLoader::CreateMeta(const char *content, size_t contentSize, const st
     std::string extension = FromFsPath(path.extension());
     std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
     const bool isTextVolume = extension == ".inxvfield" || extension == ".inxsdf";
+    const bool isSvg = extension == ".svg";
 
     // Get image dimensions without fully loading the pixel data
     int width = 0, height = 0, channels = 0;
     const auto *fileBytes = reinterpret_cast<const unsigned char *>(content);
-    if (!isTextVolume && fileBytes && contentSize > 0 &&
+    if (!isTextVolume && !isSvg && fileBytes && contentSize > 0 &&
         contentSize <= static_cast<size_t>(std::numeric_limits<int>::max()) &&
         stbi_info_from_memory(fileBytes, static_cast<int>(contentSize), &width, &height, &channels)) {
         metaData.AddMetadata("width", width);
         metaData.AddMetadata("height", height);
         metaData.AddMetadata("channels", channels);
-    } else if (!isTextVolume && fileBytes && contentSize > 0) {
+    } else if (!isTextVolume && !isSvg && fileBytes && contentSize > 0) {
         InxTextureData pnmInfo = InxTextureLoader::LoadFromMemory(fileBytes, contentSize, filePath);
         if (pnmInfo.IsValid()) {
             metaData.AddMetadata("width", pnmInfo.width);
@@ -95,6 +96,7 @@ void TextureLoader::CreateMeta(const char *content, size_t contentSize, const st
 
     static const std::unordered_map<std::string, std::string> formatMap = {
         {".png", "PNG"},
+        {".svg", "SVG"},
         {".jpg", "JPEG"},
         {".jpeg", "JPEG"},
         {".bmp", "BMP"},
@@ -111,7 +113,7 @@ void TextureLoader::CreateMeta(const char *content, size_t contentSize, const st
     };
     auto fmtIt = formatMap.find(extension);
     metaData.AddMetadata("source_container", fmtIt != formatMap.end() ? fmtIt->second : std::string("Unknown"));
-    metaData.AddMetadata("is_binary", !isTextVolume);
+    metaData.AddMetadata("is_binary", !isTextVolume && !isSvg);
 
     metaData.AddMetadata("file_size", contentSize);
 }

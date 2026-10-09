@@ -10,7 +10,8 @@ import pytest
 
 @pytest.mark.parametrize("hint", [r"rooms\A", r"C:\save\slot", r"D:\Project\Assets\Map.json"])
 @pytest.mark.parametrize("shape", ["ordinary", "mixed-reference"])
-def test_cook_only_rewrites_typed_reference_hints(tmp_path, hint, shape):
+@pytest.mark.parametrize("suffix", [".mat", ".json"])
+def test_cook_only_rewrites_known_document_reference_hints(tmp_path, hint, shape, suffix):
     from infernux.engine.game_builder import GameBuilder
 
     document = {"path_hint": hint, "nested": [{"Path_Hint": hint}],
@@ -21,13 +22,14 @@ def test_cook_only_rewrites_typed_reference_hints(tmp_path, hint, shape):
         document["reference"] = {"$type": "asset_ref", "guid": "1" * 32,
                                  "path_hint": r"D:\Project\Assets\Map.json",
                                  "label": {"path_hint": hint}}
-        expected["reference"] = {**document["reference"], "path_hint": "Assets/Map.json"}
-    path = tmp_path / "UserConfig.json"
+        expected["reference"] = {**document["reference"], "path_hint": (
+            "Assets/Map.json" if suffix == ".mat" else document["reference"]["path_hint"])}
+    path = tmp_path / ("UserConfig" + suffix)
     original = json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8")
     path.write_bytes(original)
-    GameBuilder.__new__(GameBuilder)._rewrite_player_document_paths(str(path), ".json")
+    GameBuilder.__new__(GameBuilder)._rewrite_player_document_paths(str(path), suffix)
     assert json.loads(path.read_text(encoding="utf-8")) == expected
-    if shape == "ordinary":
+    if shape == "ordinary" or suffix == ".json":
         assert path.read_bytes() == original
 
 
@@ -50,7 +52,10 @@ def test_native_cook_pack_move_preserves_asset_contract(tmp_path, contract):
     (".txt", "Read /home/captain/access.log", False),
     (".json", {"metadata": {"file_path": "C:/fictional/game/terminal"}}, False),
     (".json", {"ref": {"$type": "asset_ref", "guid": "1" * 32,
-                        "path_hint": "C:/Author/Assets/Main.scene"}}, True),
+                        "path_hint": "C:/Author/Assets/Main.scene"}}, False),
+    (".inxdoc", {"ref": {"$type": "asset_ref", "guid": "1" * 32,
+                          "path_hint": "C:/Author/Assets/Main.scene"}}, True),
+    (".inxdoc", {"ref": {"$type": "asset_ref", "guid": "1" * 32}}, False),
     (".scene", {"objects": [{"data": {"message": "Read /home/captain/access.log"}}]}, False),
     (".scene", {"objects": [{"data": {"ref": {"$type": "asset_ref", "guid": "1" * 32,
                                               "path_hint": "/opt/author/Assets/Main.scene"}}}]}, True),
@@ -61,9 +66,12 @@ def test_content_archive_audits_references_not_user_text(tmp_path, suffix, docum
     from infernux.engine.player_package_native import write_pack, read_entry, using_test_backend
 
     original = (document if isinstance(document, str) else json.dumps(document)).encode("utf-8")
+    if suffix == ".inxdoc":
+        from infernux.core.asset_document import encode_asset_document
+        original = encode_asset_document(document)
     source = tmp_path / f"content{suffix}"
     source.write_bytes(original)
-    directory = "Document" if suffix == ".scene" else "Blob"
+    directory = "Document" if suffix in {".scene", ".inxdoc"} else "Blob"
     runtime_path = f"Library/Artifacts/{directory}/{'1' * 32}{suffix}"
     archive = tmp_path / "Content.inxpkg"
     assert not using_test_backend()

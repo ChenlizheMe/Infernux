@@ -221,7 +221,7 @@ class TextureImportSettings:
     filter_mode: FilterMode = FilterMode.BILINEAR
     generate_mipmaps: bool = True
     srgb: bool = True
-    max_size: int = 2048
+    max_size: int = 2048  # 0: unlimited raster source size; SVG renders at 8192.
     aniso_level: int = -1
     format: TextureFormat = TextureFormat.AUTO
     compression: TextureCompression = TextureCompression.AUTO
@@ -294,8 +294,8 @@ class TextureImportSettings:
             raise TypeError("texture import setting enum fields must be strings")
         if type(d["generate_mipmaps"]) is not bool or type(d["srgb"]) is not bool:
             raise TypeError("texture import setting flags must be bools")
-        if type(d["max_size"]) is not int or d["max_size"] <= 0:
-            raise ValueError("texture max_size must be a positive integer")
+        if type(d["max_size"]) is not int or not 0 <= d["max_size"] <= 65536:
+            raise ValueError("texture max_size must be an integer in [0, 65536] (0 means unlimited)")
         if type(d["aniso_level"]) is not int or not (
             d["aniso_level"] in (-1, 0, 1) or 2 <= d["aniso_level"] <= 16
         ):
@@ -970,10 +970,10 @@ def write_mesh_import_settings(asset_path: str, settings: MeshImportSettings) ->
 # Extension → asset type mapping (shared across AssetManager & Inspector)
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Image extensions supported by InxTextureLoader / stb_image
+# Image extensions supported by the native texture pipeline (stb_image / LunaSVG).
 IMAGE_EXTENSIONS = frozenset({
     ".png", ".jpg", ".jpeg", ".jpe", ".bmp", ".tga", ".gif", ".psd", ".hdr", ".pic", ".pnm", ".pgm", ".ppm",
-    ".inxvfield", ".inxsdf",
+    ".inxvfield", ".inxsdf", ".svg",
 })
 
 # Shader extensions supported by ShaderImporter

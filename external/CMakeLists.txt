@@ -121,6 +121,8 @@ set(JPH_USE_CPU_COMPUTE ON CACHE BOOL "" FORCE)               # CPU physics only
 # External Libraries
 # ------------------------------------------------------------------------------
 
+add_subdirectory(svg)
+
 # ------------------------------------------------------------------------------
 # InxPack codec — the only codec available to exported Player containers.
 # ------------------------------------------------------------------------------
@@ -332,10 +334,10 @@ add_library(dr_libs INTERFACE)
 target_include_directories(dr_libs INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/dr_libs)
 
 # SDL3
-add_subdirectory(SDL)
+add_subdirectory(sdl_for_infernux)
 
 # Jolt Physics (CMakeLists.txt is in Build/ subdirectory)
-add_subdirectory(JoltPhysics/Build JoltPhysics)
+add_subdirectory(joltphysics_for_infernux/Build joltphysics_for_infernux)
 
 # Vulkan
 find_package(Vulkan REQUIRED)
@@ -354,7 +356,7 @@ set_property(TARGET VulkanMemoryAllocator PROPERTY
 # ------------------------------------------------------------------------------
 # ImGui
 # ------------------------------------------------------------------------------
-set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/imgui)
+set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/imgui_for_infernux)
 
 set(IMGUI_CORE_SRCS
     ${IMGUI_DIR}/imgui.cpp

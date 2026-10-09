@@ -3,11 +3,14 @@
 #include <function/resources/AssetDatabase/AssetIndex.h>
 #include <function/resources/AssetDependencyGraph.h>
 #include <function/resources/AssetImporter/ImporterRegistry.h>
+#include <function/resources/AssetImporter/ConcreteImporters.h>
+#include <function/resources/AssetImporter/PluginPageTextureMetadata.h>
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxFileLoader/InxDefaultLoader.hpp>
 #include <function/resources/InxFileLoader/InxPythonScriptLoader.hpp>
 #include <function/resources/InxMesh/MeshLoader.h>
 #include <function/resources/InxTexture/TextureLoader.h>
+#include <function/resources/InxTexture/TextureArtifact.h>
 #include <platform/filesystem/InxPath.h>
 
 #include <chrono>
@@ -495,6 +498,108 @@ void TestCopiedAuthoredSidecarStillRejectsDuplicateGuid(bool keepIndex)
                     assetDatabase->GetPathFromGuid(originalGuid) == sourcePath &&
                     assetDatabase->GetGuidFromPath(copyPath).empty(),
                 "rejected authored GUID collision changed the accepted catalog");
+        registry.Shutdown();
+        infernux::JobSystem::Shutdown();
+    } catch (...) {
+        if (infernux::AssetRegistry::Instance().IsInitialized())
+            infernux::AssetRegistry::Instance().Shutdown();
+        infernux::JobSystem::Shutdown();
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    std::filesystem::remove_all(root);
+}
+
+void TestPluginPageImagesAndCachedImportPolicy()
+{
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("infernux-plugin-page-textures-" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    const auto source = root / "Packages" / "vendor" / "example" / "runtime" / "nested" /
+                        "plugin_pages" / "images" / "screenshot.ppm";
+    std::string pixels;
+    for (int i = 0; i < 3001 * 2; ++i) {
+        pixels.push_back(static_cast<char>(i % 251));
+        pixels.push_back(static_cast<char>(i % 127));
+        pixels.push_back(static_cast<char>(i % 61));
+    }
+    WriteText(source, "P6\n3001 2\n255\n" + pixels);
+    infernux::JobSystem::Initialize(2);
+    try {
+        auto database = std::make_unique<infernux::AssetDatabase>();
+        database->Initialize(infernux::FromFsPath(root));
+        auto &registry = infernux::AssetRegistry::Instance();
+        registry.Initialize(std::move(database));
+        registry.RegisterLoader(infernux::ResourceType::Texture, std::make_unique<infernux::TextureLoader>());
+        registry.PopulateAssetDatabaseLoaders();
+        auto *db = registry.GetAssetDatabase();
+        db->AddScanRoot(infernux::FromFsPath(root / "Packages"));
+        db->Refresh();
+        const auto path = infernux::FromFsPath(source);
+        const auto rootPath = infernux::FromFsPath(root);
+        const auto guid = db->GetGuidFromPath(path);
+        Require(!guid.empty(), "plugin page texture was not imported");
+        const auto verify = [&]() {
+            const auto meta = db->GetMetaByGuid(guid);
+            Require(infernux::HasCurrentPluginPageTextureMetadata(*meta, path, rootPath),
+                    "plugin page texture did not enforce its lossless import policy");
+            const auto artifactPath = db->GetRuntimeArtifactPath(guid, infernux::ResourceType::Texture);
+            std::ifstream input(infernux::ToFsPath(artifactPath), std::ios::binary);
+            const std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+            const auto texture = infernux::TextureArtifact::Deserialize(bytes, meta->GetDataAs<std::string>("content_hash"));
+            Require(texture->format == infernux::TextureFormat::Rgba8Srgb && texture->mipLevels.size() == 1,
+                    "plugin page image was compressed or generated mipmaps");
+            Require(texture->mipLevels.front().width == 3001 && texture->mipLevels.front().height == 2,
+                    "plugin page image was resized");
+            for (size_t pixel = 0; pixel < pixels.size() / 3; ++pixel)
+                for (size_t channel = 0; channel < 4; ++channel)
+                    Require(texture->bytes[pixel * 4 + channel] ==
+                                (channel == 3 ? 255 : static_cast<uint8_t>(pixels[pixel * 3 + channel])),
+                            "plugin page image pixels changed");
+        };
+        verify();
+        const auto current = *db->GetMetaByGuid(guid);
+        for (const auto &relative : {"Assets/plugin_pages/image.png", "Packages/example/plugin_pages_backup/image.png",
+                                     "Packages/example/plugin_pages.png", "Other/Packages/example/plugin_pages/image.png"})
+            Require(!infernux::IsPluginPageTexture(current, infernux::FromFsPath(root / relative), rootPath),
+                    "plugin documentation import policy escaped its directory scope");
+
+        // Reconstruct an existing compressed cache with unchanged source and
+        // sidecar fingerprints. Neither startup nor refresh may reuse it.
+        for (int pass = 0; pass < 2; ++pass) {
+            infernux::ImportRequest legacy;
+            legacy.sourcePath = path;
+            legacy.metadata = current;
+            legacy.metadata.AddMetadata("max_size", 32);
+            legacy.metadata.AddMetadata("texture_compression", std::string("bc1"));
+            auto compressed = infernux::TextureImporter{}.Import(legacy);
+            WriteText(infernux::ToFsPath(db->GetRuntimeArtifactPath(guid, infernux::ResourceType::Texture)),
+                      compressed.runtimeCpuArtifacts.front().bytes);
+            db->FlushDerivedIndex();
+            for (const auto *name : {"AssetIndex.json", "AssetIndex.startup-cache.json"}) {
+                const auto indexPath = infernux::FromFsPath(root / "Library" / name);
+                infernux::AssetIndex index;
+                Require(index.Load(indexPath, infernux::FilesystemPathKey(rootPath)), "cannot read texture cache index");
+                auto entry = *index.Find(infernux::FilesystemPathKey(path));
+                entry.metadata = compressed.metadata;
+                index.Upsert(std::move(entry));
+                index.Save(indexPath);
+            }
+            if (pass == 1) {
+                registry.Shutdown();
+                auto restored = std::make_unique<infernux::AssetDatabase>();
+                restored->Initialize(rootPath);
+                Require(!restored->RestoreCachedCatalog(), "startup reused compressed plugin documentation images");
+                registry.Initialize(std::move(restored));
+                registry.RegisterLoader(infernux::ResourceType::Texture, std::make_unique<infernux::TextureLoader>());
+                registry.PopulateAssetDatabaseLoaders();
+                db = registry.GetAssetDatabase();
+                db->AddScanRoot(infernux::FromFsPath(root / "Packages"));
+            }
+            db->Refresh();
+            Require(db->GetGuidFromPath(path) == guid, "documentation cache rebuild changed the GUID");
+            verify();
+        }
         registry.Shutdown();
         infernux::JobSystem::Shutdown();
     } catch (...) {
@@ -1182,6 +1287,7 @@ int main()
         for (const bool keepIndex : {true, false})
             TestCopiedAuthoredSidecarStillRejectsDuplicateGuid(keepIndex);
         TestStartupCatalogSurvivesLiveIndexInvalidation();
+        TestPluginPageImagesAndCachedImportPolicy();
         TestRuntimeAssetCatalogInstallsStableIdentityWithoutSidecar();
         TestCompositeModelPublishesExternalTextureGuidDependencies();
         TestModelSettingsPublishOnlyAfterSuccessfulImport();

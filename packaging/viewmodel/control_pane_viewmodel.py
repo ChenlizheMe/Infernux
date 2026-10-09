@@ -275,12 +275,8 @@ class ControlPaneViewModel(QObject):
         project_name = record.name
         project_path = record.path
         
-        script = (
-            'import sys;'
-            'from infernux.engine import release_engine;'
-            'from infernux.lib import LogLevel;'
-            'release_engine(engine_log_level=LogLevel.Info, project_path=sys.argv[1])'
-        )
+        from engine_wheel import editor_launch_script
+        script = editor_launch_script(installed=self.launch_context.uses_installed_versions)
 
         from splash_screen import EngineSplashScreen
         from hub_resources import ICON_PATH

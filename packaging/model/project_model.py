@@ -23,6 +23,7 @@ from python_runtime import PythonRuntimeError, PythonRuntimeManager
 from python_execution import prepare_private_runtime_paths, python_executable_path
 from version_manager import wheel_platform_compatible, wheel_python_version, wheel_release
 from wheel_identity import validate_wheel_identity
+from engine_wheel import read_project_template, runtime_package_script
 
 # Suppress console windows for all child processes on Windows
 _NO_WINDOW: int = 0x08000000 if sys.platform == "win32" else 0
@@ -100,8 +101,16 @@ def _create_default_project_content(
         ("default_tonemapping.json", "Settings/ACES Tone Mapping.effect", tone_guid, "RenderEffect"),
         ("default_effect_group.json", "Settings/Default Post Processing.effectgroup", group_guid, "RenderEffect"),
     )
+    documents = {name: read_template(name) for name, *_ in templates}
+    if all(content is None for content in documents.values()):
+        # Older wheels let their own Editor bootstrap the initial scene. Do
+        # not inject this Hub's newer scene/component serialization into them.
+        return
+    missing = [name for name, content in documents.items() if content is None]
+    if missing:
+        raise RuntimeError(f"Incomplete engine scene templates: {', '.join(missing)}")
     for template_name, relative, guid, resource_type in templates:
-        text = read_template(template_name).decode("utf-8")
+        text = documents[template_name].decode("utf-8")
         for token, value in replacements.items():
             text = text.replace(token, value)
         document = json.loads(text)
@@ -169,12 +178,6 @@ def _summarize_output(output: str) -> str:
         return "No diagnostic output was produced."
     lines = text.splitlines()
     return "\n".join(lines[-20:])
-
-
-_NATIVE_IMPORT_SMOKE_TEST = (
-    "import infernux.lib\n"
-    "print('INFERNUX_NATIVE_IMPORT_OK')\n"
-)
 
 
 def _wheel_install_fingerprint(wheel_path: str) -> str:
@@ -381,7 +384,7 @@ class ProjectModel:
             _create_default_project_content(
                 staging_dir,
                 project_name,
-                read_template=lambda name: self._read_bundled_support_file(name, engine_version),
+                read_template=lambda name: self._read_bundled_support_file(name, engine_version, required=False),
             )
 
             self._copy_bundled_project_gitignore(
@@ -440,8 +443,9 @@ class ProjectModel:
         _run_hidden(
             [
                 project_python,
-                "-m",
-                "infernux.plugins.official",
+                "-c",
+                runtime_package_script(installed=is_frozen())
+                + "import runpy\nrunpy.run_module(_engine_package + '.plugins.official', run_name='__main__')\n",
                 "--project",
                 project_dir,
             ],
@@ -459,7 +463,7 @@ class ProjectModel:
         with open(dest_path, "wb") as stream:
             stream.write(content)
 
-    def _read_bundled_support_file(self, source_name: str, engine_version: str) -> bytes:
+    def _read_bundled_support_file(self, source_name: str, engine_version: str, *, required: bool = True) -> bytes | None:
         if not is_frozen():
             return _read_source_project_template(source_name)
         wheel = (
@@ -468,15 +472,7 @@ class ProjectModel:
         )
         if not wheel or not os.path.isfile(wheel):
             raise RuntimeError(f"Required Infernux project template is unavailable: {source_name}")
-        with zipfile.ZipFile(wheel) as archive:
-            archive_name = f"infernux/templates/project/{source_name}"
-            matches = [name for name in archive.namelist() if name == archive_name]
-            if len(matches) != 1:
-                raise RuntimeError(
-                    f"Infernux wheel must contain exactly one current project "
-                    f"template '{archive_name}', found {len(matches)}"
-                )
-            return archive.read(archive_name)
+        return read_project_template(wheel, source_name, required=required)
 
     def _copy_bundled_project_gitignore(self, dest_path: str, engine_version: str) -> None:
         self._copy_bundled_support_file(
@@ -664,7 +660,11 @@ class ProjectModel:
                 "The project runtime may not have been created correctly."
             )
 
-        _run_hidden([project_python, "-c", _NATIVE_IMPORT_SMOKE_TEST], timeout=120)
+        script = runtime_package_script(installed=is_frozen()) + (
+            "importlib.import_module(_engine_package + '.lib')\n"
+            "print('INFERNUX_NATIVE_IMPORT_OK')\n"
+        )
+        _run_hidden([project_python, "-c", script], timeout=120)
 
     @staticmethod
     def validate_project_runtime(project_dir: str) -> None:

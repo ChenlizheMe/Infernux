@@ -45,7 +45,7 @@ the official packer uses the standard library, without importing the engine.</p>
 </figure>
 
 <h2 id="layout">Choose a layout</h2>
-<p>Start from the <a href="https://github.com/ChenlizheMe/infernux_plugin_template">official plugin template</a>.
+<p>Start from the <a href="https://github.com/InfernuxEngine/infernux_plugin_template">official plugin template</a>.
 Keep its standalone <code>package.py</code> and release workflow. Replace the example
 payload with the following files; do not keep sample code you are not shipping.</p>
 <div class="highlight"><pre><span></span><code>hello-plugin/
@@ -357,17 +357,17 @@ original archive as the baseline for checking local edits during updates.</p>
 <strong>Update Source</strong>. It updates the already installed reference and retains its
 GUIDs and selection. <strong>Install Source</strong> does not replace an existing package;
 an update also rejects conflicting local edits instead of overwriting them.</p>
-<p>The <a href="https://github.com/ChenlizheMe/infernux_tutorial_hello_plugin">Hello Plugin repository</a>
+<p>The <a href="https://github.com/InfernuxEngine/infernux_tutorial_hello_plugin">Hello Plugin repository</a>
 contains this tutorial's installable example with its own unique reference,
 <code>chenlizheme/tutorial_hello_plugin</code>. Paste its repository URL under <strong>Add plugin</strong>;
 use <strong>Versions</strong> to select the published 0.1.10 and 0.1.11 releases.
 Keep the template's <code>.gitattributes</code> so Windows checkouts and release CI use the
 same text bytes. This avoids turning a line-ending conversion into a package change.</p>
-<p>For larger examples, browse the <a href="https://github.com/ChenlizheMe/infernux_mcp">MCP</a>,
-<a href="https://github.com/ChenlizheMe/infernux_windows">Windows</a>,
-<a href="https://github.com/ChenlizheMe/infernux_linux">Linux</a>,
-<a href="https://github.com/ChenlizheMe/infernux_android">Android</a> and
-<a href="https://github.com/ChenlizheMe/infernux_web">Web</a> repositories. Platform plugins
+<p>For larger examples, browse the <a href="https://github.com/InfernuxEngine/infernux_mcp">MCP</a>,
+<a href="https://github.com/InfernuxEngine/infernux_windows">Windows</a>,
+<a href="https://github.com/InfernuxEngine/infernux_linux">Linux</a>,
+<a href="https://github.com/InfernuxEngine/infernux_android">Android</a> and
+<a href="https://github.com/InfernuxEngine/infernux_web">Web</a> repositories. Platform plugins
 ship precompiled Players; installing one does not ask game authors to run CMake.
 Android additionally requires <strong>Android support</strong> installed through Hub.</p></div>
         <div data-page-language="zh" lang="zh-CN" class="learn-article-body" hidden><p><span class="mini-tag">插件 · 第 1 章</span></p>
@@ -382,7 +382,7 @@ Android additionally requires <strong>Android support</strong> installed through
 </figure>
 
 <h2 id="zh-layout">选择目录结构</h2>
-<p>从<a href="https://github.com/ChenlizheMe/infernux_plugin_template">官方插件模板</a>开始，保留独立的
+<p>从<a href="https://github.com/InfernuxEngine/infernux_plugin_template">官方插件模板</a>开始，保留独立的
 <code>package.py</code> 和发布工作流，把示例内容替换为下面这些文件，不要留下不准备分发的模板代码。</p>
 <div class="highlight"><pre><span></span><code>hello-plugin/
   README.md                         # 只用于 GitHub
@@ -660,17 +660,17 @@ CMake/Gradle 配置和 <code>dist/</code> 都不会混进去。</p>
 <p>更新本地 <code>.inxpkg</code> 时，在<strong>添加插件</strong>中输入新包的路径，再选择<strong>更新来源</strong>。它更新已安装的
 reference，保留 GUID 和原来的内容选择。<strong>安装来源</strong>不会替换已有包；更新遇到本地修改冲突
 也会直接拒绝，不会覆盖修改。</p>
-<p><a href="https://github.com/ChenlizheMe/infernux_tutorial_hello_plugin">Hello Plugin 仓库</a>
+<p><a href="https://github.com/InfernuxEngine/infernux_tutorial_hello_plugin">Hello Plugin 仓库</a>
 提供了本教程可安装的示例，使用自己的唯一 reference：
 <code>chenlizheme/tutorial_hello_plugin</code>。在<strong>添加插件</strong>中粘贴仓库地址，再在<strong>版本</strong>页
 选择已经发布的 0.1.10 和 0.1.11。
 保留模板的 <code>.gitattributes</code>，让 Windows 检出和发布 CI 使用相同的文本字节，
 避免换行转换被当作包内容变更。</p>
-<p>更完整的示例可以参考 <a href="https://github.com/ChenlizheMe/infernux_mcp">MCP</a>、
-<a href="https://github.com/ChenlizheMe/infernux_windows">Windows</a>、
-<a href="https://github.com/ChenlizheMe/infernux_linux">Linux</a>、
-<a href="https://github.com/ChenlizheMe/infernux_android">Android</a> 和
-<a href="https://github.com/ChenlizheMe/infernux_web">Web</a> 仓库。平台插件携带预编译 Player，
+<p>更完整的示例可以参考 <a href="https://github.com/InfernuxEngine/infernux_mcp">MCP</a>、
+<a href="https://github.com/InfernuxEngine/infernux_windows">Windows</a>、
+<a href="https://github.com/InfernuxEngine/infernux_linux">Linux</a>、
+<a href="https://github.com/InfernuxEngine/infernux_android">Android</a> 和
+<a href="https://github.com/InfernuxEngine/infernux_web">Web</a> 仓库。平台插件携带预编译 Player，
 普通游戏作者安装后不需要运行 CMake；Android 另外要求先在 Hub 安装<strong>安卓支持</strong>。</p></div>
 
         <nav class="learn-course-pager" aria-label="Previous and next chapters">

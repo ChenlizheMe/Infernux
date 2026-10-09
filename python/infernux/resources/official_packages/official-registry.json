@@ -12,7 +12,7 @@
       "artifact": "infernux.mcp.inxpkg",
       "engine": ">=0.4.1,<0.5",
       "dependencies": [],
-      "repository": "https://github.com/ChenlizheMe/infernux_mcp",
+      "repository": "https://github.com/InfernuxEngine/infernux_mcp",
       "source": {
         "type": "url",
         "location": "https://downloads.infernux-engine.com/plugins/infernux.mcp/0.1.17/infernux.mcp.inxpkg"
@@ -59,7 +59,7 @@
       "artifact": "infernux.platform-windows.inxpkg",
       "engine": "==0.4.1",
       "dependencies": [],
-      "repository": "https://github.com/ChenlizheMe/infernux_windows",
+      "repository": "https://github.com/InfernuxEngine/infernux_windows",
       "source": {
         "type": "url",
         "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-windows/0.2.3/infernux.platform-windows.inxpkg"
@@ -95,7 +95,7 @@
       "artifact": "infernux.platform-linux.inxpkg",
       "engine": "==0.4.1",
       "dependencies": [],
-      "repository": "https://github.com/ChenlizheMe/infernux_linux",
+      "repository": "https://github.com/InfernuxEngine/infernux_linux",
       "source": {
         "type": "url",
         "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-linux/0.2.3/infernux.platform-linux.inxpkg"
@@ -131,7 +131,7 @@
       "artifact": "infernux.platform-android.inxpkg",
       "engine": "==0.4.1",
       "dependencies": [],
-      "repository": "https://github.com/ChenlizheMe/infernux_android",
+      "repository": "https://github.com/InfernuxEngine/infernux_android",
       "source": {
         "type": "url",
         "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-android/0.2.6/infernux.platform-android.inxpkg"
@@ -168,7 +168,7 @@
       "artifact": "infernux.platform-web.inxpkg",
       "engine": "==0.4.1",
       "dependencies": [],
-      "repository": "https://github.com/ChenlizheMe/infernux_web",
+      "repository": "https://github.com/InfernuxEngine/infernux_web",
       "source": {
         "type": "url",
         "location": "https://downloads.infernux-engine.com/plugins/infernux.platform-web/0.2.12/infernux.platform-web.inxpkg"

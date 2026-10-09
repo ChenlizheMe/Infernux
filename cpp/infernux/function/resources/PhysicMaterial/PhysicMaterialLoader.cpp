@@ -4,6 +4,7 @@
 #include <core/log/InxLog.h>
 #include <fstream>
 #include <platform/filesystem/InxPath.h>
+#include <platform/filesystem/AssetDocument.h>
 
 namespace infernux
 {
@@ -12,12 +13,7 @@ namespace
 {
 nlohmann::json ReadDocument(const std::string &filePath)
 {
-    std::ifstream input(ToFsPath(filePath));
-    if (!input.is_open())
-        throw std::runtime_error("cannot open PhysicMaterial file: " + filePath);
-    nlohmann::json document;
-    input >> document;
-    return document;
+    return ReadAssetDocument(filePath);
 }
 } // namespace
 
