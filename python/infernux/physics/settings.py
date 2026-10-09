@@ -31,7 +31,7 @@ DEFAULT_PHYSICS_SETTINGS: Dict[str, object] = {
     "linear_cast_threshold": 0.5,
     "min_velocity_for_restitution": 2.0,
     "time_before_sleep": 0.5,
-    "point_velocity_sleep_threshold": 0.1,
+    "point_velocity_sleep_threshold": 0.005,
     "temp_allocator_mb": 256,
     "max_jobs": 4096,
     "max_barriers": 16,

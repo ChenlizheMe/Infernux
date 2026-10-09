@@ -80,6 +80,7 @@ class SliderJoint final : public Component, private PhysicsConstraintOwner
 
   private:
     void RebuildConstraint();
+    void UpdateConstraintSettings();
     void ReleaseConstraint();
     void OnPhysicsConstraintDestroyed() noexcept override;
     [[nodiscard]] uint32_t ResolveBodyId(const Rigidbody *body) const;

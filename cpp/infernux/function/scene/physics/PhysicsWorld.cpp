@@ -1483,13 +1483,13 @@ void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
     const JPH::Vec3 previousCenterOfMass = bodyInterface.GetShape(JPH::BodyID(id))->GetCenterOfMass();
     bodyInterface.SetShape(JPH::BodyID(id), newShape, false, JPH::EActivation::Activate);
     const JPH::Vec3 deltaCenterOfMass = newShape->GetCenterOfMass() - previousCenterOfMass;
-    if (deltaCenterOfMass != JPH::Vec3::sZero()) {
-        // Jolt stores attachment points relative to each body's center of
-        // mass. SetShape preserves the body ID but does not notify constraints;
-        // retain their authored anchors when compound geometry shifts the COM.
-        for (auto &[constraintId, record] : m_constraints) {
-            if (record.bodyIdA == id || record.bodyIdB == id)
+    for (auto &[constraintId, record] : m_constraints) {
+        if (record.bodyIdA == id || record.bodyIdB == id) {
+            // Jolt stores attachment points relative to the body's COM.
+            // SetShape preserves the ID but does not notify constraints.
+            if (deltaCenterOfMass != JPH::Vec3::sZero())
                 record.constraint->NotifyShapeChanged(JPH::BodyID(id), deltaCenterOfMass);
+            UpdateConstraintScale(record, id, collider->GetGameObject()->GetTransform()->GetWorldScale());
         }
     }
     auto *rigidbody = collider->GetCachedRigidbody();
@@ -2177,8 +2177,9 @@ uint64_t PhysicsWorld::CreateHingeConstraint(PhysicsConstraintOwner &owner, uint
     m_physicsSystem->AddConstraint(constraint);
     const uint64_t constraintId = m_nextConstraintId++;
     const bool ignoresCollision = bodyIdB != 0xFFFFFFFF && !enableCollision;
-    m_constraints.emplace(
-        constraintId, ConstraintRecord{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Hinge});
+    ConstraintRecord record{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Hinge};
+    CaptureConstraintAnchors(record);
+    m_constraints.emplace(constraintId, record);
     if (ignoresCollision)
         SetConstraintPairSuppressed(bodyIdA, bodyIdB, true);
     return constraintId;
@@ -2229,11 +2230,124 @@ uint64_t PhysicsWorld::CreateSliderConstraint(PhysicsConstraintOwner &owner, uin
     m_physicsSystem->AddConstraint(constraint);
     const uint64_t constraintId = m_nextConstraintId++;
     const bool ignoresCollision = bodyIdB != 0xFFFFFFFF && !enableCollision;
-    m_constraints.emplace(
-        constraintId, ConstraintRecord{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Slider});
+    ConstraintRecord record{owner, constraint, bodyIdA, bodyIdB, ignoresCollision, ConstraintKind::Slider};
+    CaptureConstraintAnchors(record);
+    m_constraints.emplace(constraintId, record);
     if (ignoresCollision)
         SetConstraintPairSuppressed(bodyIdA, bodyIdB, true);
     return constraintId;
+}
+
+void PhysicsWorld::CaptureConstraintAnchors(ConstraintRecord &record)
+{
+    const auto capture = [&](uint32_t bodyId, JPH::Vec3Arg point, glm::vec3 &anchor, glm::vec3 &scale) {
+        if (bodyId == 0xFFFFFFFF)
+            return;
+        const auto *transform = m_bodyToCollider.at(bodyId)->GetGameObject()->GetTransform();
+        scale = transform->GetWorldScale();
+        const auto offset =
+            point + m_physicsSystem->GetBodyInterface().GetShape(JPH::BodyID(bodyId))->GetCenterOfMass();
+        // Capture the actual bound physics frame: a kinematic body's visual
+        // Transform may already contain its next target pose. A collapsed
+        // scale axis has no inverse; its attachment coordinate is the origin.
+        for (int axis = 0; axis < 3; ++axis)
+            anchor[axis] = scale[axis] == 0.0f ? 0.0f : offset[axis] / scale[axis];
+    };
+    const auto *joint = static_cast<JPH::TwoBodyConstraint *>(record.constraint);
+    capture(record.bodyIdA, joint->GetConstraintToBody2Matrix().GetTranslation(), record.anchorA, record.scaleA);
+    capture(record.bodyIdB, joint->GetConstraintToBody1Matrix().GetTranslation(), record.anchorB, record.scaleB);
+}
+
+void PhysicsWorld::UpdateConstraintScale(ConstraintRecord &record, uint32_t bodyId, const glm::vec3 &scale)
+{
+    const bool ownerChanged = bodyId == record.bodyIdA;
+    auto &boundScale = ownerChanged ? record.scaleA : record.scaleB;
+    if (scale == boundScale)
+        return;
+
+    // Retain both local attachment points and the original joint frames.
+    // Recreating from a single current world point would move the other end
+    // and reset the hinge's zero angle / slider's zero displacement.
+    const glm::vec3 anchor = ownerChanged ? record.anchorA : record.anchorB;
+    const glm::vec3 offset = anchor * scale;
+    auto settings = record.constraint->GetConstraintSettings();
+    JPH::BodyID ids[2] = {JPH::BodyID(record.bodyIdA), JPH::BodyID(record.bodyIdB)};
+    JPH::Constraint *replacement = nullptr;
+    {
+        JPH::BodyLockMultiWrite lock(m_physicsSystem->GetBodyLockInterface(), ids, 2);
+        auto *bodyA = lock.GetBody(0);
+        auto *bodyB = record.bodyIdB == 0xFFFFFFFF ? &JPH::Body::sFixedToWorld : lock.GetBody(1);
+        if (!bodyA || !bodyB)
+            throw std::logic_error("constraint scale publication requires both bound bodies");
+        const auto *changedBody = ownerChanged ? bodyA : bodyB;
+        const JPH::RVec3 point(JPH::Vec3(offset.x, offset.y, offset.z) - changedBody->GetShape()->GetCenterOfMass());
+        if (record.kind == ConstraintKind::Hinge) {
+            auto *hinge = static_cast<JPH::HingeConstraintSettings *>(settings.GetPtr());
+            (ownerChanged ? hinge->mPoint2 : hinge->mPoint1) = point;
+            replacement = hinge->Create(*bodyB, *bodyA);
+        } else {
+            auto *slider = static_cast<JPH::SliderConstraintSettings *>(settings.GetPtr());
+            (ownerChanged ? slider->mPoint2 : slider->mPoint1) = point;
+            replacement = slider->Create(*bodyB, *bodyA);
+        }
+    }
+    m_physicsSystem->AddConstraint(replacement);
+    m_physicsSystem->RemoveConstraint(record.constraint);
+    record.constraint = replacement;
+    boundScale = scale;
+    ActivateConstraintBodies(record);
+}
+
+void PhysicsWorld::ActivateConstraintBodies(const ConstraintRecord &record)
+{
+    auto &bodies = m_physicsSystem->GetBodyInterface();
+    for (const auto id : {record.bodyIdA, record.bodyIdB}) {
+        if (id != 0xFFFFFFFF && bodies.IsAdded(JPH::BodyID(id)))
+            bodies.ActivateBody(JPH::BodyID(id));
+    }
+}
+
+void PhysicsWorld::UpdateConstraintCollision(ConstraintRecord &record, bool enableCollision)
+{
+    const bool ignores = record.bodyIdB != 0xFFFFFFFF && !enableCollision;
+    if (ignores != record.ignoresCollision) {
+        SetConstraintPairSuppressed(record.bodyIdA, record.bodyIdB, ignores);
+        record.ignoresCollision = ignores;
+    }
+}
+
+void PhysicsWorld::UpdateHingeConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
+                                                 bool enableCollision)
+{
+    auto &record = m_constraints.at(constraintId);
+    if (record.kind != ConstraintKind::Hinge)
+        throw std::logic_error("constraint is not a hinge");
+    auto *hinge = static_cast<JPH::HingeConstraint *>(record.constraint);
+    const float lower = useLimits ? minimum : -glm::pi<float>();
+    const float upper = useLimits ? maximum : glm::pi<float>();
+    if (hinge->GetLimitsMin() != lower || hinge->GetLimitsMax() != upper) {
+        hinge->SetLimits(lower, upper);
+        hinge->ResetWarmStart();
+        ActivateConstraintBodies(record);
+    }
+    UpdateConstraintCollision(record, enableCollision);
+}
+
+void PhysicsWorld::UpdateSliderConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
+                                                  bool enableCollision)
+{
+    auto &record = m_constraints.at(constraintId);
+    if (record.kind != ConstraintKind::Slider)
+        throw std::logic_error("constraint is not a slider");
+    auto *slider = static_cast<JPH::SliderConstraint *>(record.constraint);
+    const float lower = useLimits ? minimum : -FLT_MAX;
+    const float upper = useLimits ? maximum : FLT_MAX;
+    if (slider->GetLimitsMin() != lower || slider->GetLimitsMax() != upper) {
+        slider->SetLimits(lower, upper);
+        slider->ResetWarmStart();
+        ActivateConstraintBodies(record);
+    }
+    UpdateConstraintCollision(record, enableCollision);
 }
 
 void PhysicsWorld::DestroyConstraint(uint64_t constraintId)

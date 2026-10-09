@@ -109,9 +109,10 @@ struct EngineConfig
     float physicsTimeBeforeSleep = 0.5f;
 
     /// Maximum tracked point velocity for sleep eligibility (m/s).
-    // Unity exposes a mass-normalized energy threshold of 0.005. Jolt uses a
-    // point-velocity threshold, whose translational equivalent is sqrt(2E)=0.1 m/s.
-    float physicsPointVelocitySleepThreshold = 0.1f;
+    // Jolt bounds point movement over the sleep window, not kinetic energy.
+    // Keep that tolerance at millimetre scale so a pendulum's turning point
+    // cannot be mistaken for rest several visible degrees from equilibrium.
+    float physicsPointVelocitySleepThreshold = 0.005f;
 
     /// Default gravity vector.
     glm::vec3 physicsGravity{0.0f, -9.81f, 0.0f};

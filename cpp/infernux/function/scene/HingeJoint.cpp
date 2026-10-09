@@ -187,8 +187,7 @@ void HingeJoint::SetConnectedBody(Rigidbody *body)
 void HingeJoint::SetUseLimits(bool value)
 {
     m_useLimits = value;
-    ReleaseConstraint();
-    RebuildConstraint();
+    UpdateConstraintSettings();
 }
 
 void HingeJoint::SetMinimumAngle(float degrees)
@@ -196,8 +195,7 @@ void HingeJoint::SetMinimumAngle(float degrees)
     if (!std::isfinite(degrees) || degrees < -180.0f || degrees > 0.0f || degrees > m_maximumAngle)
         throw std::invalid_argument("hinge minimum angle must be within [-180, 0] and not exceed maximum");
     m_minimumAngle = degrees;
-    ReleaseConstraint();
-    RebuildConstraint();
+    UpdateConstraintSettings();
 }
 
 void HingeJoint::SetMaximumAngle(float degrees)
@@ -205,15 +203,23 @@ void HingeJoint::SetMaximumAngle(float degrees)
     if (!std::isfinite(degrees) || degrees < 0.0f || degrees > 180.0f || degrees < m_minimumAngle)
         throw std::invalid_argument("hinge maximum angle must be within [0, 180] and not precede minimum");
     m_maximumAngle = degrees;
-    ReleaseConstraint();
-    RebuildConstraint();
+    UpdateConstraintSettings();
 }
 
 void HingeJoint::SetEnableCollision(bool value)
 {
     m_enableCollision = value;
-    ReleaseConstraint();
-    RebuildConstraint();
+    UpdateConstraintSettings();
+}
+
+void HingeJoint::UpdateConstraintSettings()
+{
+    if (m_constraintId == 0) {
+        RebuildConstraint();
+        return;
+    }
+    PhysicsWorld::Instance().UpdateHingeConstraintSettings(m_constraintId, m_useLimits, glm::radians(m_minimumAngle),
+                                                           glm::radians(m_maximumAngle), m_enableCollision);
 }
 
 float HingeJoint::GetCurrentAngle() const

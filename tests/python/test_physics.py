@@ -241,7 +241,7 @@ class TestPhysicsSettings:
         assert DEFAULT_PHYSICS_SETTINGS["position_steps"] == 3
         assert DEFAULT_PHYSICS_SETTINGS["min_velocity_for_restitution"] == 2.0
         assert DEFAULT_PHYSICS_SETTINGS["time_before_sleep"] == 0.5
-        assert DEFAULT_PHYSICS_SETTINGS["point_velocity_sleep_threshold"] == 0.1
+        assert DEFAULT_PHYSICS_SETTINGS["point_velocity_sleep_threshold"] == 0.005
 
     def test_load_missing_project(self):
         result = load_physics_settings("")

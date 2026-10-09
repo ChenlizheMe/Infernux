@@ -313,6 +313,10 @@ class PhysicsWorld
                                     const glm::vec3 &worldAnchor, const glm::vec3 &worldAxis, bool useLimits,
                                     float minimumDistance, float maximumDistance, bool enableCollision);
     void DestroyConstraint(uint64_t constraintId);
+    void UpdateHingeConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
+                                       bool enableCollision);
+    void UpdateSliderConstraintSettings(uint64_t constraintId, bool useLimits, float minimum, float maximum,
+                                        bool enableCollision);
     [[nodiscard]] float GetHingeConstraintAngle(uint64_t constraintId) const;
     [[nodiscard]] float GetSliderConstraintPosition(uint64_t constraintId) const;
 
@@ -620,7 +624,15 @@ class PhysicsWorld
         uint32_t bodyIdB = 0xFFFFFFFF;
         bool ignoresCollision = false;
         ConstraintKind kind = ConstraintKind::Hinge;
+        glm::vec3 anchorA{0.0f};
+        glm::vec3 anchorB{0.0f};
+        glm::vec3 scaleA{1.0f};
+        glm::vec3 scaleB{1.0f};
     };
+    void CaptureConstraintAnchors(ConstraintRecord &record);
+    void UpdateConstraintScale(ConstraintRecord &record, uint32_t bodyId, const glm::vec3 &scale);
+    void ActivateConstraintBodies(const ConstraintRecord &record);
+    void UpdateConstraintCollision(ConstraintRecord &record, bool enableCollision);
     std::unordered_map<uint64_t, ConstraintRecord> m_constraints;
     uint64_t m_nextConstraintId = 1;
 
