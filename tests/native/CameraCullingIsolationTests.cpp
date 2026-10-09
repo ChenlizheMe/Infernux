@@ -6,9 +6,9 @@
 #include <function/resources/InxMesh/MeshLoader.h>
 #include <function/scene/Camera.h>
 #include <function/scene/GameObject.h>
-#include <function/scene/LineRenderer.h>
 #include <function/scene/Light.h>
 #include <function/scene/LightingData.h>
+#include <function/scene/LineRenderer.h>
 #include <function/scene/MeshRenderer.h>
 #include <function/scene/PrimitiveMeshes.h>
 #include <function/scene/Scene.h>
@@ -43,8 +43,7 @@ static void TestAnimatedBoundsInvalidateBothCameraCaches(AssetRegistry &registry
     bone.nodeIndex = 0;
     skin->skeleton.bones.push_back(bone);
     skin->skeleton.boneByName.emplace(bone.name, 0);
-    for (const auto position : {glm::vec3(99.5f, -0.5f, 0), glm::vec3(100.5f, -0.5f, 0),
-                                glm::vec3(100.0f, 0.5f, 0)}) {
+    for (const auto position : {glm::vec3(99.5f, -0.5f, 0), glm::vec3(100.5f, -0.5f, 0), glm::vec3(100.0f, 0.5f, 0)}) {
         skin->baseVertices.push_back(Vertex::Create(position, {0, 0, -1}, {0, 0}));
         SkinInfluence influence;
         influence.weight[0] = 1.0f;
@@ -194,7 +193,8 @@ static void TestResidentLightShadows(SceneManager &manager)
             const auto &left = first.views[index];
             const auto &right = switched.views[index];
             assert(left.lightId == right.lightId && left.viewProjection == right.viewProjection);
-            assert(left.atlas.x == right.atlas.x && left.atlas.y == right.atlas.y && left.atlas.size == right.atlas.size);
+            assert(left.atlas.x == right.atlas.x && left.atlas.y == right.atlas.y &&
+                   left.atlas.size == right.atlas.size);
         }
         manager.SetActiveScene(sceneA);
         lightB->SetEnabled(false);
@@ -335,6 +335,55 @@ static void TestEffectiveProjectionShadowCoverage(SceneManager &manager)
     manager.UnloadAllScenes();
 }
 
+static void TestRetiredCameraMaterials(SceneManager &manager)
+{
+    auto &bridge = SceneRenderBridge::Instance();
+    for (int retirement = 0; retirement != 3; ++retirement) {
+        auto *scene = manager.CreateScene("CameraMaterialLifetime");
+        auto *cameraObject = scene->CreateGameObject("TransientCamera");
+        cameraObject->GetTransform()->SetPosition({0, 0, -5});
+        auto *camera = cameraObject->AddComponent<Camera>();
+        camera->SetAspectRatio(1.0f);
+        auto *object = scene->CreateGameObject("TransientGeometry");
+        auto *renderer = object->AddComponent<MeshRenderer>();
+        renderer->SetSharedPrimitiveMesh(PrimitiveMeshes::GetCubeVertices(), PrimitiveMeshes::GetCubeIndices(), "Cube");
+        auto material = std::make_shared<InxMaterial>("TransientCameraMaterial");
+        std::weak_ptr<InxMaterial> retiredMaterial = material;
+        renderer->SetMaterial(0, material);
+        material.reset();
+        bridge.PrepareFrame(false);
+        auto result = bridge.CullAndBuildForCamera(camera, true);
+        assert(result.visibleDrawCallsRef && result.visibleDrawCallsRef->size() == 1);
+        // An explicitly retained immutable publication must remain usable.
+        auto consumer = result.worldOwner;
+        result = {};
+        if (retirement == 2) {
+            manager.UnloadAllScenes();
+        } else {
+            scene->DestroyGameObject(object);
+            if (retirement == 0)
+                scene->DestroyGameObject(cameraObject);
+            else
+                camera->SetEnabled(false);
+            scene->ProcessPendingDestroys();
+        }
+        for (int frame = 0; frame != 16; ++frame) {
+            bridge.PrepareFrame(false);
+            (void)bridge.BuildDrawCalls();
+        }
+        assert(!retiredMaterial.expired());
+        assert(consumer->DrawCalls().drawCalls.front().material == retiredMaterial.lock());
+        consumer.reset();
+        for (int frame = 0; frame != 16; ++frame) {
+            bridge.PrepareFrame(false);
+            (void)bridge.BuildDrawCalls();
+        }
+        // A destroyed or no-longer-rendered camera must not pin old geometry.
+        assert(retiredMaterial.expired());
+        manager.UnloadAllScenes();
+    }
+}
+
 int main()
 {
     auto &registry = AssetRegistry::Instance();
@@ -369,6 +418,8 @@ int main()
     SceneManager &manager = SceneManager::Instance();
     manager.Stop();
     manager.UnloadAllScenes();
+
+    TestRetiredCameraMaterials(manager);
 
     Scene *scene = manager.CreateScene("IndependentCameraCulling");
     auto createCube = [scene](const char *name, const glm::vec3 &position) {
