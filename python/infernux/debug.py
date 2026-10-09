@@ -17,6 +17,7 @@ Usage:
 
 import traceback
 import os
+import weakref
 from collections import deque
 from datetime import datetime
 from enum import Enum, auto
@@ -34,14 +35,37 @@ class LogType(Enum):
     EXCEPTION = auto()
 
 
+class _LogContext:
+    """Observe a live context without retaining its Scene and native resources."""
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return None
+        reference = instance.__dict__.get("_context_ref")
+        return reference() if reference is not None else None
+
+    def __set__(self, instance, value):
+        try:
+            reference = weakref.ref(value) if value is not None else None
+        except TypeError:
+            # Containers and other non-weakrefable values cannot provide a
+            # non-owning navigation target. The message remains available.
+            reference = None
+        instance.__dict__["_context_ref"] = reference
+
+
 @dataclass
 class LogEntry:
-    """Represents a single log entry."""
+    """A retained message with an optional weak, live-object context.
+
+    ``context`` becomes None after its owner is collected. Non-weakrefable
+    values do not become navigation targets and are never retained.
+    """
     message: str
     log_type: LogType
     timestamp: datetime
     stack_trace: str = ""
-    context: Any = None
+    context: Any = _LogContext()
     internal: bool = False
     source_file: str = ""
     source_line: int = 0

@@ -205,7 +205,10 @@ class TestDebugStaticMethods:
         assert console.get_entries() == []
 
     def test_log_with_context(self, console):
-        ctx = object()
+        class Context:
+            pass
+
+        ctx = Context()
         Debug.log("ctx_test", context=ctx)
         entries = console.get_entries()
         assert entries[-1].context is ctx
