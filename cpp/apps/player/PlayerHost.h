@@ -27,6 +27,7 @@ struct Layout
 };
 
 Layout ResolveLayout(const std::filesystem::path &hostExecutable);
+bool IsSupportedExecutableLocation(const std::filesystem::path &hostExecutable);
 std::vector<std::wstring> BuildPythonArguments(const std::filesystem::path &hostExecutable,
                                                const std::vector<std::wstring> &gameArguments);
 

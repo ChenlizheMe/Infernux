@@ -220,6 +220,18 @@ Layout ResolveLayout(const std::filesystem::path &hostExecutable)
     return layout;
 }
 
+bool IsSupportedExecutableLocation(const std::filesystem::path &hostExecutable)
+{
+#ifdef _WIN32
+    // Some Windows graphics drivers fail inside their loader when the process
+    // image reaches MAX_PATH, even with a long-path-aware application manifest.
+    // Bound the host location only; Runtime DLLs and game assets use LoaderPath.
+    return std::filesystem::absolute(hostExecutable).native().size() < MAX_PATH;
+#else
+    return true;
+#endif
+}
+
 std::vector<std::wstring> BuildPythonArguments(const std::filesystem::path &hostExecutable,
                                                const std::vector<std::wstring> &gameArguments)
 {
@@ -239,6 +251,11 @@ bool PlayerHost::Fail(const std::wstring &message)
 
 bool PlayerHost::PrepareRuntime(const Layout &layout)
 {
+    if (!IsSupportedExecutableLocation(layout.hostExecutable))
+        return Fail(L"The Player executable path is too long for supported Windows graphics startup.\n"
+                    L"Move the game folder, including its _Data folder, to a shorter location. "
+                    L"The full executable path must be shorter than 260 UTF-16 characters.\n" +
+                    layout.hostExecutable.wstring());
     if (!std::filesystem::is_directory(layout.runtimeRoot))
         return Fail(L"The Player Runtime directory is missing:\n" + layout.runtimeRoot.wstring());
     if (!HasPlayerModule(layout.runtimeRoot))
