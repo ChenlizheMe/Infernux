@@ -57,6 +57,7 @@ class EditableResourceDocumentController:
         self.exec_layer: Any = None
         self.state: Any = None
         self._saved_document = self.capture_document()
+        self._material_authoring = None
         self._pending_writes: dict[int, _PendingResourceWrite] = {}
         self._write_submission_sequence = 0
 
@@ -80,6 +81,8 @@ class EditableResourceDocumentController:
             # write in flight.  Keep the existing live resource; replacing it
             # here would regress the preview and discard the newer edit.
             resource = self.resource
+        if resource is not self.resource and (document is None or not document.is_dirty):
+            self._material_authoring = None
         self.file_path = str(file_path or "")
         self.resource = resource
         self.exec_layer = exec_layer
@@ -131,7 +134,14 @@ class EditableResourceDocumentController:
                 document_id=self.document_id,
             )
         if self.category == "material" and self.file_path:
-            snapshot = json.dumps(self.capture_document())
+            from .material_authoring import dump_material_document
+
+            current = self.capture_document()
+            snapshot = (
+                self._material_authoring.dump(current)
+                if self._material_authoring is not None
+                else dump_material_document(current)
+            )
             AssetManager.set_material_save_snapshot(
                 self.file_path,
                 snapshot,
@@ -275,6 +285,10 @@ class EditableResourceDocumentController:
         manager = UndoManager.instance()
         if manager is None or not manager.enabled or manager.is_executing:
             return PropertyTransactionStatus.REJECTED
+        if self.category == "material" and self._material_authoring is None:
+            from .material_authoring import MaterialAuthoringSnapshot
+
+            self._material_authoring = MaterialAuthoringSnapshot(self.file_path, previous_document)
         next_revision = registry.reserve_changed_revision(
             self.document_id,
             view_id=owner_view_id,
@@ -529,6 +543,7 @@ class EditableResourceDocumentController:
             raise ValueError("editable resource source must contain a JSON object")
         self.restore_document(document, None, persist=False)
         self._saved_document = copy.deepcopy(document)
+        self._material_authoring = None
         return True
 
     def resource_moved(

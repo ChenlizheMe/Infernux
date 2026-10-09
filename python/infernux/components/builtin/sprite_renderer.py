@@ -683,23 +683,6 @@ class SpriteRenderer(BuiltinComponent):
             return native
         return Material.from_native(native)
 
-    def _stable_default_material_name(self) -> str:
-        """Return a stable runtime material key for this SpriteRenderer."""
-        comp_id = int(getattr(self, "component_id", 0) or 0)
-        if comp_id <= 0:
-            raise RuntimeError("SpriteRenderer requires a stable component_id")
-        return f"SpriteUnlit_Default_{comp_id}"
-
-    def _stabilize_default_material_name(self, native_mat) -> None:
-        """Keep auto-created default sprite materials stable across scene reloads."""
-        desired_name = self._stable_default_material_name()
-        if not desired_name or native_mat is None:
-            return
-        frag = getattr(native_mat, "frag_shader_name", None)
-        path = getattr(native_mat, "file_path", "") or ""
-        if frag == "Sprite Unlit" and not path and getattr(native_mat, "name", "") != desired_name:
-            native_mat.name = desired_name
-
     def _ensure_material(self):
         """Create the default sprite_unlit material if none is assigned."""
         cpp = self._cpp_component
@@ -708,7 +691,6 @@ class SpriteRenderer(BuiltinComponent):
         existing = cpp.get_material(0)
         if existing is not None:
             self._sprite_material = existing
-            self._stabilize_default_material_name(existing)
             self._material_ready = True
             # Reload sprite data in case we're restoring from a scene
             self._load_sprite_data()
@@ -722,7 +704,9 @@ class SpriteRenderer(BuiltinComponent):
         mat.surface_type = "opaque"
         mat.alpha_clip_enabled = True
         mat.alpha_clip_threshold = 0.5
-        mat._native.name = self._stable_default_material_name()
+        # Material identity is native ownership, not its display name. A runtime
+        # component ID would change the embedded scene document on every reopen.
+        mat._native.name = "Sprite Unlit (Generated)"
         mat.set_color("baseColor", 1.0, 1.0, 1.0, 1.0)
         mat.set_vector4("uvRect", 0.0, 0.0, 1.0, 1.0)
         self._sprite_material = mat._native
