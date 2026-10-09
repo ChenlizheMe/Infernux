@@ -10,7 +10,7 @@ import pytest
 from infernux.lib import (
     InspectorComponentInfo, InspectorObjectInfo, InspectorPanel,
     InspectorRevisionSnapshot, InspectorTransformData, RenderPipelineCallback,
-    get_gui_semantic_snapshot, lib_dir, set_gui_semantic_capture_enabled,
+    get_gui_semantic_snapshot, native_dir, set_gui_semantic_capture_enabled,
 )
 
 
@@ -38,7 +38,11 @@ def test_component_icons_stay_live_across_cached_metadata_packets(engine, scene,
     # Set the real SDL window size, then restore it for the remaining suite.
     library_name = ('SDL3.dll' if sys.platform == 'win32' else
                     'libSDL3.0.dylib' if sys.platform == 'darwin' else 'libSDL3.so.0')
-    sdl = ctypes.CDLL(str(Path(lib_dir) / library_name))
+    # The test process may load the ABI module from an explicit build
+    # directory through INFERNUX_NATIVE_MODULE_DIR.  SDL must be loaded from
+    # that same native directory; the package resource directory is not a
+    # runtime binary staging location in a source checkout.
+    sdl = ctypes.CDLL(str(Path(native_dir) / library_name))
     sdl.SDL_GetWindows.argtypes = [ctypes.POINTER(ctypes.c_int)]
     sdl.SDL_GetWindows.restype = ctypes.POINTER(ctypes.c_void_p)
     sdl.SDL_free.argtypes = [ctypes.c_void_p]

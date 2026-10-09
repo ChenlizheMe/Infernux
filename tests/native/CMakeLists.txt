@@ -1627,7 +1627,11 @@ if(INFERNUX_BUILD_TESTS)
     )
     set_tests_properties(infernux.headless PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>;INFERNUX_PACKAGE_CACHE_ROOT=${CMAKE_BINARY_DIR}/test-package-cache"
-        TIMEOUT 60
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        # The smoke test intentionally exercises two fresh headless lifetimes.
+        # The first package/index publication is cold-cache work and can exceed
+        # one minute on Windows without indicating a runtime deadlock.
+        TIMEOUT 180
         RUN_SERIAL TRUE
     )
 
@@ -1657,8 +1661,11 @@ if(INFERNUX_BUILD_TESTS)
     )
     set_tests_properties(infernux.gpu_upload PROPERTIES
         ENVIRONMENT "PYTHONPATH=${CMAKE_SOURCE_DIR}/python;INFERNUX_NATIVE_MODULE_DIR=$<TARGET_FILE_DIR:_Infernux>"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         LABELS "requires_vulkan_device"
-        TIMEOUT 30
+        # Cold Vulkan startup also compiles/imports the probe assets before
+        # the first frame; allow that deterministic work to finish on CI GPUs.
+        TIMEOUT 120
         RUN_SERIAL TRUE
         SKIP_RETURN_CODE 77
     )
