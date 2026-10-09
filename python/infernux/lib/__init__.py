@@ -19,6 +19,14 @@ native_dir = lib_dir
 _dll_dir_handles = []
 
 
+def _native_loader_path(path: str) -> str:
+    """Use extended Win32 paths only at DLL/import boundaries."""
+    absolute = os.path.abspath(path)
+    if sys.platform != "win32" or absolute.startswith("\\\\?\\"):
+        return absolute
+    return "\\\\?\\UNC\\" + absolute[2:] if absolute.startswith("\\\\") else "\\\\?\\" + absolute
+
+
 def _register_native_search_dir(path: str) -> None:
     if not path or not os.path.isdir(path):
         return
@@ -28,7 +36,7 @@ def _register_native_search_dir(path: str) -> None:
         sys.path.insert(0, norm)
 
     if sys.platform == "win32":
-        handle = os.add_dll_directory(norm)
+        handle = os.add_dll_directory(_native_loader_path(norm))
         _dll_dir_handles.append(handle)
         path_entries = os.environ.get("PATH", "").split(";") if os.environ.get("PATH") else []
         if norm not in path_entries:
@@ -71,7 +79,7 @@ def _native_module_candidate(directory: str) -> str:
     for suffix in importlib.machinery.EXTENSION_SUFFIXES:
         candidate = os.path.join(directory, f"_Infernux{suffix}")
         if os.path.isfile(candidate):
-            return candidate
+            return _native_loader_path(candidate)
     suffixes = ", ".join(importlib.machinery.EXTENSION_SUFFIXES)
     raise ImportError(
         f"No ABI-compatible _Infernux extension found under {directory}; "
@@ -105,6 +113,8 @@ def _load_native_module_from_dir(directory: str):
 def _load_native_module(override_dir: str | None):
     if override_dir is not None:
         return _load_native_module_from_dir(override_dir)
+    if sys.platform == "win32":
+        __path__[:] = [_native_loader_path(path) for path in __path__]
     return importlib.import_module(f"{__name__}._Infernux")
 
 
@@ -182,7 +192,7 @@ def _collect_windows_native_load_hints():
             hints.append(f"Missing engine DLL: {dll_name}. Reinstall the Infernux wheel.")
         else:
             try:
-                ctypes.WinDLL(full)
+                ctypes.WinDLL(_native_loader_path(full))
             except OSError as e:
                 hint = (
                     f"Engine DLL present but failed to load: {dll_name} ({e}). "
@@ -278,7 +288,7 @@ def _preload_bundled_crt_dlls() -> None:
         full = os.path.join(native_dir, name)
         if os.path.isfile(full):
             try:
-                ctypes.WinDLL(full)
+                ctypes.WinDLL(_native_loader_path(full))
             except OSError:
                 # The native import below owns the final dependency diagnostic.
                 pass

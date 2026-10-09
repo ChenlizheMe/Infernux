@@ -36,6 +36,7 @@ from python_runtime_catalog import (
 )
 from runtime_requirements import runtime_modules, runtime_packages
 from runtime_script_relocation import RELOCATE_RUNTIME_SCRIPTS
+from python_execution import prepare_private_runtime_paths, python_executable_path
 
 
 _NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
@@ -76,6 +77,7 @@ def _run_command(args: list[str], *, timeout: int, raise_on_error: bool = False)
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = _NO_WINDOW
+        kwargs["executable"] = python_executable_path(args[0])
 
     try:
         return subprocess.run(args, timeout=timeout, check=raise_on_error, **kwargs)
@@ -415,6 +417,7 @@ class PythonRuntimeManager:
             _emit_status(on_status, "Copying Python runtime into the project...")
             with runtime_publication(dest_path, replace_existing=False) as candidate:
                 _copy_project_runtime_tree(source, str(candidate))
+                prepare_private_runtime_paths(candidate)
                 python = _find_python_in_root(str(candidate))
                 if not python or not _is_python_version(python, runtime_id):
                     raise PythonRuntimeError("The copied project Python could not be started.")
@@ -454,6 +457,7 @@ class PythonRuntimeManager:
 
     def _prepare_candidate(self, candidate: Path, runtime_id: PythonRuntimeId,
                            *, on_status=None) -> None:
+        prepare_private_runtime_paths(candidate)
         python = _find_python_in_root(str(candidate))
         if not python or not _is_python_version(python, runtime_id) or _is_embedded_root(str(candidate)):
             raise PythonRuntimeError(
@@ -464,7 +468,7 @@ class PythonRuntimeManager:
 
     @staticmethod
     def _relocate_runtime_scripts(python_exe: str, final_python: str) -> None:
-        _run_command([python_exe, "-I", "-c", RELOCATE_RUNTIME_SCRIPTS, final_python],
+        _run_command([python_exe, "-I", "-c", RELOCATE_RUNTIME_SCRIPTS, python_executable_path(final_python)],
                      timeout=120, raise_on_error=True)
 
     def _seed_runtime_from_bundle(

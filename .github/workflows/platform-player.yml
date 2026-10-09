@@ -184,15 +184,17 @@ jobs:
             --component-probe $probe `
             --component-probe $packageProbe
 
-      - name: Build and validate installed Windows Release Player
+      - name: Build and validate Windows Release Player in a long Unicode path
         shell: pwsh
         run: |
           conda activate infernux
           Remove-Item Env:PYTHONPATH, Env:INFERNUX_NATIVE_MODULE_DIR -ErrorAction SilentlyContinue
-          python tests\acceptance\build_player.py out\ci-projects\windows windows-x64 out\acceptance\windows-release `
+          $longRoot = Join-Path $env:RUNNER_TEMP 'Infernux Player 中文 & spaces'
+          while ($longRoot.Length -lt 210) { $longRoot = Join-Path $longRoot 'LongPathValidation' }
+          python tests\acceptance\build_player.py out\ci-projects\windows windows-x64 $longRoot `
             --installed --configuration release --report out\test-results\windows-release-build.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests\acceptance\release_player_smoke.py out\acceptance\windows-release\InfernuxPlatformFixture.exe `
+          python tests\acceptance\release_player_smoke.py (Join-Path $longRoot 'InfernuxPlatformFixture.exe') `
             --artifacts out\test-results\windows-release-artifacts
 
       - name: Upload Windows Player evidence

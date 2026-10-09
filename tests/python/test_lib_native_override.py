@@ -1,6 +1,8 @@
 import os
 import sys
 import types
+from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -50,7 +52,7 @@ def test_override_loads_exact_abi_module_under_package_name(tmp_path, monkeypatc
     monkeypatch.setattr(
         lib.importlib.util,
         "spec_from_file_location",
-        lambda name, path: spec if path == str(abi_module) else None,
+        lambda name, path: spec if os.path.samefile(path, abi_module) else None,
     )
     monkeypatch.setattr(
         lib.importlib.util,
@@ -112,3 +114,27 @@ def test_default_native_resolution_registers_package_library_directory(monkeypat
     lib._register_default_native_search_dir(None)
 
     assert registered == [lib.lib_dir]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Win32 native DLL loader contract")
+def test_real_native_override_loads_through_long_directory(tmp_path, directory_junction):
+    parent = tmp_path / "原生加载 & spaces"
+    while len(str(parent)) < 270:
+        parent /= "native-extension-path-validation"
+    parent.mkdir(parents=True)
+    link = parent / "native"
+    directory_junction(link, Path(lib.native_dir))
+    script = (
+        "import os, sys; sys.path.insert(0, sys.argv[1]); "
+        "os.environ['INFERNUX_NATIVE_MODULE_DIR'] = sys.argv[2]; "
+        "import infernux.lib as lib; "
+        "assert os.path.samefile(os.path.dirname(lib._Infernux.__file__), sys.argv[2]); "
+        "print('NATIVE_LONG_PATH_OK')"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-X", "utf8", "-c", script,
+         str(Path(lib.__file__).parents[2]), str(link)],
+        capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "NATIVE_LONG_PATH_OK"

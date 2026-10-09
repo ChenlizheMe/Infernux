@@ -17,6 +17,7 @@ from PySide6.QtGui import QPixmap, QFont, QPainter, QColor, QPen, QBrush, QDeskt
 from hub_utils import get_project_lock_path, merge_child_env_utf8, remove_project_lock, write_project_lock
 from i18n import tr
 from style import StyleManager
+from python_execution import python_executable_path
 
 
 _WIN_CRASH_CODES = {
@@ -322,6 +323,7 @@ class EngineSplashScreen(QWidget):
             with _suppress_windows_error_dialogs():
                 self._process = subprocess.Popen(
                     [python_exe, "-u", "-c", script, project_path],
+                    executable=python_executable_path(python_exe),
                     **popen_kwargs,
                 )
         except (OSError, RuntimeError, ValueError) as exc:

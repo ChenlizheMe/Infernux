@@ -20,6 +20,7 @@ from project_python_runtime import (
 )
 from python_runtime_catalog import PythonRuntimeId
 from python_runtime import PythonRuntimeError, PythonRuntimeManager
+from python_execution import prepare_private_runtime_paths, python_executable_path
 from version_manager import wheel_platform_compatible, wheel_python_version, wheel_release
 from wheel_identity import validate_wheel_identity
 
@@ -146,6 +147,7 @@ def _run_hidden(args: list[str], *, timeout: int) -> subprocess.CompletedProcess
     try:
         return subprocess.run(
             args,
+            executable=python_executable_path(args[0]),
             check=True,
             timeout=timeout,
             **_popen_kwargs(capture_output=True),
@@ -620,6 +622,8 @@ class ProjectModel:
 
         if on_status:
             on_status("Checking the project runtime...")
+        prepare_private_runtime_paths(os.path.dirname(project_python) if sys.platform == "win32"
+                                      else os.path.dirname(os.path.dirname(project_python)))
         site_packages = ProjectModel._get_site_packages(project_dir)
         distribution_present = _distribution_files_present(site_packages, "infernux")
         marker_path = _project_wheel_marker(project_dir)

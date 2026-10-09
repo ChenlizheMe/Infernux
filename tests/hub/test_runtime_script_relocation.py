@@ -91,18 +91,18 @@ def test_installed_and_project_launchers_use_their_own_python(tmp_path, monkeypa
     root = Path(manager.private_runtime_root())
     scripts = "Scripts" if sys.platform == "win32" else "bin"
     suffix = ".exe" if sys.platform == "win32" else ""
-    assert Path(json.loads(command([root / scripts / ("infernux-entry-probe" + suffix)]))) == installed
+    assert Path(json.loads(command([root / scripts / ("infernux-entry-probe" + suffix)]))).samefile(installed)
     assert str(root) in command([root / scripts / ("pip" + suffix), "--version"])
     project = tmp_path / "Project 中文 & $name/.runtime/python313"
     project_python = Path(manager.create_project_runtime(str(project)))
     # Make the Hub copy unavailable, so a stale launcher cannot accidentally pass.
     root.rename(root.with_name("retired"))
-    assert Path(json.loads(command([project / scripts / ("infernux-entry-probe" + suffix)]))) == project_python
+    assert Path(json.loads(command([project / scripts / ("infernux-entry-probe" + suffix)]))).samefile(project_python)
     for name in ["pip", "pip3", "pip3.13"]:
         assert str(project) in command([project / scripts / (name + suffix), "--version"])
     gui_result = tmp_path / "gui-result.json"
     command([project / scripts / ("infernux-gui-probe" + suffix), gui_result])
-    assert Path(json.loads(gui_result.read_text(encoding="utf-8"))) == (
+    assert Path(json.loads(gui_result.read_text(encoding="utf-8"))).samefile(
         project / "pythonw.exe" if sys.platform == "win32" else project_python)
     site = project / ("Lib/site-packages" if sys.platform == "win32" else "lib/python3.13/site-packages")
     with (site / "infernux_entry_probe-1.0.dist-info/RECORD").open(encoding="utf-8") as stream:
