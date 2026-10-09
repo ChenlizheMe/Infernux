@@ -31,7 +31,14 @@ def process_executable_path(path: PathLike) -> str | None:
     if os.name != "nt" or not os.path.isabs(value):
         return None
     value = os.path.abspath(value)
-    if value.startswith("\\\\?\\"):
+    if value.startswith("\\\\?\\UNC\\"):
+        value = "\\\\" + value[8:]
+    elif value.startswith("\\\\?\\"):
+        value = value[4:]
+    # Preserve the ordinary process image spelling where Windows accepts it.
+    # CPython derives sys.prefix from this path, and tools such as robocopy do
+    # not accept the extended prefix in directory arguments.
+    if len(value.encode("utf-16-le")) // 2 < 260:
         return value
     return "\\\\?\\UNC\\" + value[2:] if value.startswith("\\\\") else "\\\\?\\" + value
 

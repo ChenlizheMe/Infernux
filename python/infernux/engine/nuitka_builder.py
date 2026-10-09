@@ -71,6 +71,16 @@ _RUNTIME_MODULE_FORBIDDEN_SUFFIXES = _RUNTIME_PACK_FORBIDDEN_SUFFIXES | frozense
 )
 
 
+def _robocopy_path(path: str | os.PathLike[str]) -> str:
+    """Robocopy owns long-path expansion and rejects the Win32 device prefix."""
+    value = os.fspath(path)
+    if value.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + value[8:]
+    if value.startswith("\\\\?\\"):
+        return value[4:]
+    return value
+
+
 def _runtime_payload_matches(left: Path, right: Path) -> bool:
     """Return whether two published runtime directories contain one payload."""
 
@@ -3329,7 +3339,7 @@ print(json.dumps({{
             xd_dirs.extend(self._JIT_STRIP_DIRS.get(pkg, []))
             if sys.platform == "win32":
                 rc = subprocess.call(
-                    ["robocopy", src, str(dst), "/E",
+                    ["robocopy", _robocopy_path(src), _robocopy_path(dst), "/E",
                      "/MT:16", "/R:1", "/W:1", "/XJ",
                      "/COPY:DAT", "/DCOPY:DAT",
                      "/XD", *xd_dirs,
@@ -3373,7 +3383,7 @@ print(json.dumps({{
                     remove_directory_tree(libs_dst)
                 if sys.platform == "win32":
                     rc = subprocess.call(
-                        ["robocopy", libs_src, str(libs_dst), "/E",
+                        ["robocopy", _robocopy_path(libs_src), _robocopy_path(libs_dst), "/E",
                          "/MT:16", "/R:1", "/W:1", "/XJ",
                          "/COPY:DAT", "/DCOPY:DAT",
                          "/NFL", "/NDL", "/NJH", "/NJS", "/NP"],
