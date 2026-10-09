@@ -599,18 +599,33 @@ class InspectorSnapshotService:
                     )
             return True
 
+    def _clear_projections_locked(self) -> None:
+        self._targets.clear()
+        self._components.clear()
+        self._fields.clear()
+        self._domains.clear()
+        self._component_targets.clear()
+        self._unbound_components.clear()
+        self._unbound_fields.clear()
+
+    def invalidate_rebuilt_scene(self) -> int:
+        """Retire graph-owned keys while keeping revision/journal cursors monotonic."""
+        with self._lock:
+            self._clear_projections_locked()
+            revision = self._next()
+            # Native IDs may be reused by the replacement graph. Every cached
+            # projection must observe the new owners, including previews and
+            # bindings for a selection whose numeric ID stayed unchanged.
+            for layer in InspectorRevisionLayer:
+                self._global[layer] = revision
+            return revision
+
     def reset_for_tests(self) -> None:
         with self._lock:
             self._sequence = 1
             self._active_target = InspectorTarget.none()
             self._global = {layer: 1 for layer in InspectorRevisionLayer}
-            self._targets.clear()
-            self._components.clear()
-            self._fields.clear()
-            self._domains.clear()
-            self._component_targets.clear()
-            self._unbound_components.clear()
-            self._unbound_fields.clear()
+            self._clear_projections_locked()
             self._consumed_journal_revision = 0
 
 
@@ -709,8 +724,7 @@ def invalidate_rebuilt_scene() -> int:
     except ImportError:
         pass
     service = InspectorSnapshotService.instance()
-    service.invalidate_schema()
-    return service.invalidate_value()
+    return service.invalidate_rebuilt_scene()
 
 
 __all__ = [

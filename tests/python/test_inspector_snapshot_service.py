@@ -295,7 +295,7 @@ def test_immediate_transform_invalidation_targets_only_changed_objects() -> None
     assert service.snapshot(other).value_revision == other_before.value_revision
 
 
-def test_scene_rebuild_invalidates_schema_and_values() -> None:
+def test_scene_rebuild_invalidates_all_projections_of_replaced_native_owners() -> None:
     service = _service()
     target = InspectorTarget.scene_object(61)
     before = service.snapshot(target)
@@ -305,8 +305,8 @@ def test_scene_rebuild_invalidates_schema_and_values() -> None:
     after = service.snapshot(target)
     assert after.schema_revision > before.schema_revision
     assert after.value_revision > before.value_revision
-    assert after.target_revision == before.target_revision
-    assert after.preview_revision == before.preview_revision
+    assert after.target_revision > before.target_revision
+    assert after.preview_revision > before.preview_revision
 
 
 def test_scene_rebuild_drops_inspector_value_cache_and_structure() -> None:
@@ -322,6 +322,33 @@ def test_scene_rebuild_drops_inspector_value_cache_and_structure() -> None:
 
     assert components_ui._COMPONENT_VALUE_CACHE == {}
     assert get_component_structure_version() > before_structure
+
+
+def test_scene_rebuild_releases_retired_revision_keys_without_resetting_cursors() -> None:
+    service = _service()
+    journal = RuntimeChangeJournal()
+    cursor = journal.create_cursor("retired-components", start_at_current=False)
+    for generation in range(10):
+        component = _Component(100 + generation, 500 + generation)
+        service.component_snapshot(component)
+        journal.publish_component_field("Mover", component.component_id, "speed")
+        journal.publish_component_field("Uninspected", 900 + generation, "speed")
+        service.consume_changes(journal.consume(cursor))
+        before = service.component_snapshot(component)
+        consumed = service.consumed_journal_revision()
+
+        invalidate_rebuilt_scene()
+
+        assert service.consumed_journal_revision() == consumed
+        after = service.snapshot(before.target)
+        assert all(new > old for new, old in zip(after.token(), before.token()))
+        # Revision keys own no values, but retaining every retired runtime ID
+        # still leaks across repeated Play/Stop and native scene replacement.
+        assert not service._component_targets
+        assert not service._components
+        assert not service._fields
+        assert not service._unbound_components
+        assert not service._unbound_fields
 
 
 def test_builtin_batch_replay_feeds_live_cached_values() -> None:

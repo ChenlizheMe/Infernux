@@ -23,7 +23,9 @@ class SceneDocumentTransaction(_RuntimeSceneDocumentTransaction):
         if not self._clear_registries:
             return
         from infernux.gizmos.collector import notify_scene_changed
+        from infernux.engine.ui.inspector_snapshot import invalidate_rebuilt_scene
 
+        invalidate_rebuilt_scene()
         notify_scene_changed()
 
 

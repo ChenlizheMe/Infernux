@@ -1233,14 +1233,6 @@ class PlayModeManager(PlayModeSerializationMixin):
         change_journal.publish(RuntimeChangeDomain.COMPONENT_STRUCTURE, broad=True)
         change_journal.publish(RuntimeChangeDomain.TRANSFORM_LOCAL, broad=True)
         change_journal.publish(RuntimeChangeDomain.TRANSFORM_WORLD, broad=True)
-        try:
-            from infernux.engine.ui.inspector_snapshot import invalidate_rebuilt_scene
-
-            invalidate_rebuilt_scene()
-        except ImportError:
-            # Player/headless distributions intentionally omit editor UI.
-            pass
-
         if restore_scene_path:
             self._restore_scene_file_path()
 
