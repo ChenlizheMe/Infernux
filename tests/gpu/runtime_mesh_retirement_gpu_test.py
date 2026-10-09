@@ -6,6 +6,7 @@ import argparse
 import numpy as np
 from infernux import Engine
 from infernux.lib import PrimitiveType, SceneManager, Vector3
+from infernux.renderstack import DefaultForwardPipeline
 
 
 def main(multiple_cameras=False):
@@ -20,8 +21,14 @@ def main(multiple_cameras=False):
         failures = []
         try:
             frontend.init_renderer(64, 64, str(project))
+            engine.resize_scene_render_target(64, 64)
             engine.set_editor_fps_cap(240.0)
             engine.set_editor_idle_fps(0.0)
+            # Exercise the full forward graph without clearing a production-size
+            # 4096 shadow map for every view of this 64-pixel lifetime fixture.
+            pipeline = DefaultForwardPipeline()
+            pipeline.shadow_resolution = 256
+            frontend.set_render_pipeline(pipeline)
             scene = SceneManager.instance().get_active_scene()
             if multiple_cameras:
                 for index in range(2):
@@ -44,6 +51,9 @@ def main(multiple_cameras=False):
                 try:
                     frames += 1
                     if frames == 10:
+                        frame = engine.renderer_frame_snapshot
+                        assert (frame["scene_target_width"], frame["scene_target_height"]) == (64, 64), frame
+                        assert frame["scene_draw_call_count"] > 0, frame
                         baseline = engine.gpu_residency_snapshot
                         baseline_count = baseline["runtime_mesh_entry_count"]
                         baseline_bytes = baseline["runtime_mesh_bytes"]

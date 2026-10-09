@@ -7,6 +7,7 @@ import numpy as np
 
 from infernux import Engine, Mesh
 from infernux.lib import SceneManager
+from infernux.renderstack import DefaultForwardPipeline
 
 
 def main() -> None:
@@ -22,8 +23,14 @@ def main() -> None:
         failures = []
         try:
             frontend.init_renderer(64, 64, str(project))
+            engine.resize_scene_render_target(64, 64)
             engine.set_editor_fps_cap(240.0)
             engine.set_editor_idle_fps(0.0)
+            # Keep the forward passes and MSAA, with a shadow map sized for this
+            # 64-pixel resource-lifetime fixture instead of the production 4096.
+            pipeline = DefaultForwardPipeline()
+            pipeline.shadow_resolution = 256
+            frontend.set_render_pipeline(pipeline)
             expected_bytes_after_destroy = 0
             positions = np.array(
                 [[-1, 0, -1], [-1, 0, 1], [1, 0, -1]], dtype=np.float32
@@ -40,6 +47,9 @@ def main() -> None:
                 try:
                     frames += 1
                     if frames == 24:
+                        frame = engine.renderer_frame_snapshot
+                        assert (frame["scene_target_width"], frame["scene_target_height"]) == (64, 64), frame
+                        assert frame["scene_draw_call_count"] > 0, frame
                         record = next(r for r in engine.asset_runtime_records if r.guid == mesh.guid)
                         assert record.gpu_resident_bytes > 0, record.gpu_resident_bytes
                         expected_bytes_after_destroy = (
@@ -48,6 +58,7 @@ def main() -> None:
                         mesh.destroy()
                         assert all(owner.get_component("MeshRenderer").get_mesh_asset() is None for owner in objects)
                         destroyed = True
+                        print("runtime Mesh resource: shared mesh destroyed at frame 24", flush=True)
                     if frames == 72:
                         record = next((r for r in engine.asset_runtime_records if r.guid == mesh.guid), None)
                         assert destroyed
