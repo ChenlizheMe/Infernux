@@ -134,6 +134,12 @@ def _native_filesystem_modified_ns(stat_result: os.stat_result) -> int:
     return unix_ns_to_filetime_ticks(unix_ns)
 
 
+def _filetime_modified_ns(stat_result: os.stat_result) -> int:
+    """Return the portable FILETIME representation used by older catalogs."""
+
+    return unix_ns_to_filetime_ticks(int(stat_result.st_mtime_ns))
+
+
 def _source_content_hash(path: str) -> str:
     """Return the AssetIndex-compatible FNV-1a source fingerprint.
 
@@ -271,10 +277,16 @@ def source_fingerprint(project_root: str | os.PathLike[str], entry: dict[str, An
     # Ask the native filesystem for the same clock/ticks used by AssetIndex.
     # A cross-machine timestamp mismatch still uses a bounded native hash,
     # with the GIL released; never iterate asset bytes in Python.
-    current = {
-        "size": int(stat.st_size),
-        "modified_ns": _native_filesystem_modified_ns(stat),
-    }
+    native_modified = _native_filesystem_modified_ns(stat)
+    filetime_modified = _filetime_modified_ns(stat)
+    # Native AssetIndex uses the platform filesystem clock.  Existing
+    # portable catalogs and test fixtures use FILETIME, so preserve whichever
+    # representation the entry already carries while accepting both clocks.
+    if expected_modified in (native_modified, filetime_modified):
+        current_modified = expected_modified
+    else:
+        current_modified = filetime_modified
+    current = {"size": int(stat.st_size), "modified_ns": current_modified}
     if current["size"] != expected_size:
         raise RuntimeArtifactError(
             f"Asset source fingerprint is stale for {source}: "
