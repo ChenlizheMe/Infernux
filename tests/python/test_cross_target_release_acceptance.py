@@ -42,7 +42,7 @@ def test_rejects_mislabeled_release_artifact(tmp_path, target, mutation):
 
 def test_browser_acceptance_runs_both_published_flavors():
     root = Path(__file__).resolve().parents[2]
-    jobs = yaml.safe_load((root / '.github/workflows/platform-player.yml').read_text())['jobs']
+    jobs = yaml.safe_load((root / '.github/workflows/platform-player.yml').read_text(encoding='utf-8'))['jobs']
     entries = jobs['web-browser']['strategy']['matrix']['include']
     assert {row['configuration'] for row in entries} == {'development', 'release'}
     published = [step['with']['name'] for step in jobs['web-player']['steps']
