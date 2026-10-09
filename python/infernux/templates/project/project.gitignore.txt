@@ -10,6 +10,13 @@
 /.infernux/mcp_sessions/
 /.infernux/mcp_traces/
 
+# MCP writes these discovery endpoints for the running local editor/port.
+/mcp.json
+/.mcp.json
+/.cursor/mcp.json
+/.trae/mcp.json
+/.gemini/settings.json
+
 # Project-local Python runtimes
 /.runtime/
 /.venv/

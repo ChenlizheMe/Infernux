@@ -43,10 +43,16 @@ def test_git_clone_preserves_authored_assets_without_private_runtime(tmp_path, m
         ".infernux/mcp_sessions/session/review/frame.png",
         ".infernux/mcp_sessions/session/recordings/run.jsonl",
         ".infernux/mcp_traces/trace.json",
+        "mcp.json", ".mcp.json", ".cursor/mcp.json", ".trae/mcp.json", ".gemini/settings.json",
     ):
         path = source / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"private state")
+    rule = source / '.cursor/rules/team.mdc'
+    rule.parent.mkdir(parents=True)
+    rule.write_text('Shared authoring conventions\n', encoding='utf-8')
+    capabilities = source / 'ProjectSettings/mcp_capabilities.json'
+    capabilities.write_text('{"enabled": true}\n', encoding='utf-8')
 
     _git(source, "init", "-b", "main")
     _git(source, "add", ".")
@@ -61,6 +67,10 @@ def test_git_clone_preserves_authored_assets_without_private_runtime(tmp_path, m
     assert not (clone / "Packages" / ".cache").exists()
     assert not (clone / ".infernux" / "mcp_sessions").exists()
     assert not (clone / ".infernux" / "mcp_traces").exists()
+    for relative in ('mcp.json', '.mcp.json', '.cursor/mcp.json', '.trae/mcp.json', '.gemini/settings.json'):
+        assert not (clone / relative).exists()
+    assert (clone / '.cursor/rules/team.mdc').read_text() == 'Shared authoring conventions\n'
+    assert json.loads((clone / 'ProjectSettings/mcp_capabilities.json').read_text()) == {"enabled": True}
     assert (clone / "Packages" / "shared" / "Ships.txt").read_text() == "authored package\n"
     model._create_vscode_workspace(str(clone))
     settings = json.loads((clone / ".vscode" / "settings.json").read_text(encoding="utf-8"))
