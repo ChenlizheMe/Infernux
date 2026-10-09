@@ -174,7 +174,7 @@ class SceneRenderer
 
     void RebuildCoarseCullGroups(const RenderWorldFrame &world);
 
-    std::unordered_map<uint64_t, CameraCullCache> m_cameraCullCaches;
+    std::unordered_map<uint64_t, std::shared_ptr<CameraCullCache>> m_cameraCullCaches;
     std::vector<CoarseCullGroup> m_coarseCullGroups;
     uint64_t m_coarseCullWorldId = 0;
     uint64_t m_coarseCullStructuralRevision = 0;

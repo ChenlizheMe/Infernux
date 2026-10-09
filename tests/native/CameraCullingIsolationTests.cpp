@@ -356,6 +356,8 @@ static void TestRetiredCameraMaterials(SceneManager &manager)
         assert(result.visibleDrawCallsRef && result.visibleDrawCallsRef->size() == 1);
         // An explicitly retained immutable publication must remain usable.
         auto consumer = result.worldOwner;
+        const auto *borrowedVisible = result.visibleDrawCallsRef;
+        const auto *borrowedShadows = result.shadowDrawCallsRef;
         result = {};
         if (retirement == 2) {
             manager.UnloadAllScenes();
@@ -373,6 +375,8 @@ static void TestRetiredCameraMaterials(SceneManager &manager)
         }
         assert(!retiredMaterial.expired());
         assert(consumer->DrawCalls().drawCalls.front().material == retiredMaterial.lock());
+        assert(borrowedVisible->size() == 1 && borrowedVisible->front().material == retiredMaterial.lock());
+        assert(borrowedShadows->size() == 1 && borrowedShadows->front().material == retiredMaterial.lock());
         consumer.reset();
         for (int frame = 0; frame != 16; ++frame) {
             bridge.PrepareFrame(false);

@@ -58,7 +58,7 @@ void SceneRenderBridge::PrepareFrame(bool useActiveCameraCulling)
     // Retire stale lists at the frame boundary, before consumers borrow them.
     auto &caches = m_sceneRenderer.m_cameraCullCaches;
     for (auto it = caches.begin(); it != caches.end();) {
-        const auto &cache = it->second;
+        const auto &cache = *it->second;
         if (!world || cache.worldId != world->WorldId() || cache.structuralRevision != world->StructuralRevision() ||
             Component::FindByComponentId(it->first) == nullptr) {
             it = caches.erase(it);

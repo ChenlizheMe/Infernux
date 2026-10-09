@@ -139,7 +139,20 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         result.shadowDrawCallsRef = &cachedResult.drawCalls;
 
     const uint64_t cacheKey = camera.cameraId != 0 ? camera.cameraId : 1;
-    CameraCullCache &cameraCache = m_cameraCullCaches[cacheKey];
+    auto &cacheOwner = m_cameraCullCaches[cacheKey];
+    if (!cacheOwner)
+        cacheOwner = std::make_shared<CameraCullCache>();
+    CameraCullCache &cameraCache = *cacheOwner;
+    auto retainVisibleList = [&] {
+        // The visible list lives in the cull cache, not in RenderWorldFrame.
+        // A submitted render graph may still borrow it when its camera or
+        // renderer set retires. Retain both storages through the publication's
+        // existing owner, without copying DrawCalls or retaining dead caches
+        // in the renderer. The cache itself only owns the plain world frame.
+        using Owners = std::pair<std::shared_ptr<const RenderWorldFrame>, std::shared_ptr<CameraCullCache>>;
+        auto owners = std::make_shared<Owners>(result.worldOwner, cacheOwner);
+        result.worldOwner = std::shared_ptr<const RenderWorldFrame>(std::move(owners), result.worldOwner.get());
+    };
     const bool worldMatches = cameraCache.worldId == result.worldOwner->WorldId();
     const bool structuralMatches = cameraCache.structuralRevision == result.worldOwner->StructuralRevision();
     const bool transformMatches = cameraCache.transformRevision == result.worldOwner->TransformRevision();
@@ -191,6 +204,8 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         cameraCache.worldOwner = result.worldOwner;
         result.visibleDrawCallsRef =
             cameraCache.usesWorldDrawCalls ? &cachedResult.drawCalls : &cameraCache.visibleDrawCalls;
+        if (!cameraCache.usesWorldDrawCalls)
+            retainVisibleList();
         result.visibleListRevision = cameraCache.visibleListRevision;
         if (result.shadowDrawCallsRef) {
             result.shadowListRevision = cameraCache.visibleListRevision;
@@ -323,6 +338,7 @@ CameraDrawCallResult SceneRenderer::BuildDrawCallsForCamera(const RenderViewData
         m_nextCameraCullRevision = 1;
     cameraCache.worldOwner = result.worldOwner;
     result.visibleDrawCallsRef = &cameraCache.visibleDrawCalls;
+    retainVisibleList();
     result.visibleListRevision = cameraCache.visibleListRevision;
     if (result.shadowDrawCallsRef || !result.shadowDrawCalls.empty())
         result.shadowListRevision = cameraCache.visibleListRevision;
