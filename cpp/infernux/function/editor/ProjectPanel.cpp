@@ -284,6 +284,7 @@ const std::unordered_map<std::string, std::string> &ProjectPanel::GetIconMap()
             {".ttf", "font"},
             {".otf", "font"},
             {".txt", "text"},
+            {".json", "json"},
             {".md", "readme"},
             {".mat", "material"},
             {".physicmaterial", "physic_material"},
