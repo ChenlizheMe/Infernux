@@ -3300,11 +3300,13 @@ class TestSceneSerialization:
         finally:
             SceneFileManager._instance = previous_manager
 
+    @pytest.mark.parametrize("attached_views", [False, True])
     def test_scene_history_open_cycles_preserve_identity_through_open_service(
         self,
         scene,
         monkeypatch,
         tmp_path,
+        attached_views,
     ):
         """Repeated MCP-style scene opens must revive each archived identity.
 
@@ -3368,6 +3370,9 @@ class TestSceneSerialization:
                     title=path.stem,
                     dirty=False,
                 )
+                if attached_views:
+                    for view_id in ("scene_view", "game_view", "ui_editor"):
+                        registry.attach_view(manager.document_id, view_id)
                 locator = registry.locate(manager.document_id)
                 assert locator is not None
                 locators[path] = locator
@@ -3375,7 +3380,10 @@ class TestSceneSerialization:
             # Reopen every scene through the public adapter boundary.  The
             # last scene is already live, so this also checks the adapter's
             # idempotent live-document path alongside dormant revival.
-            for path in paths:
+            expected_snapshot_ids = set(manager._scene_restore_snapshots) | {
+                locator.stable_id for locator in locators.values()
+            }
+            for path in paths * 4:
                 result = service.open_resource(
                     DocumentKind.SCENE,
                     str(path),
@@ -3385,6 +3393,7 @@ class TestSceneSerialization:
                 assert result.document is not None
                 assert result.document.stable_id == locators[path].stable_id
                 assert manager.document_id == result.document.document_id
+                assert set(manager._scene_restore_snapshots) <= expected_snapshot_ids
         finally:
             SceneFileManager._instance = previous_manager
 
