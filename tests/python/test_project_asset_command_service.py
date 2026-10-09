@@ -166,14 +166,13 @@ def test_project_asset_service_selects_renamed_asset_or_folder(
 
     snapshot = selection.snapshot
     if is_directory:
-        # Directories are navigation/view state, not registered asset identity.
-        assert snapshot.targets == ()
-        assert snapshot.primary is None
+        # Directories remain selected by path without inventing resource GUIDs.
+        target = SelectionTarget.project_directory(destination)
     else:
         target = SelectionTarget.asset("registered-guid")
-        assert snapshot.targets == (target,)
-        assert snapshot.primary == target
-        assert snapshot.owner_id == "project"
+    assert snapshot.targets == (target,)
+    assert snapshot.primary == target
+    assert snapshot.owner_id == "project"
 
 
 @pytest.mark.parametrize("subresource", (False, True))

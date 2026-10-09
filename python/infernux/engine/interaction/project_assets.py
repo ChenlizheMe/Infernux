@@ -686,12 +686,14 @@ class ProjectAssetCommandService:
         from .descriptors import SelectionTarget
 
         database = self._asset_database
-        targets = tuple(
-            SelectionTarget.asset(guid)
-            for path in paths
-            if database is not None
-            if (guid := str(database.get_guid_from_path(path) or "").strip())
-        )
+        targets = []
+        for path in paths:
+            if os.path.isdir(path):
+                targets.append(SelectionTarget.project_directory(path))
+            elif database is not None:
+                guid = str(database.get_guid_from_path(path) or "").strip()
+                if guid:
+                    targets.append(SelectionTarget.asset(guid))
         if not targets:
             return
         self._selection.replace(

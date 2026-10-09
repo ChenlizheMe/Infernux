@@ -33,6 +33,10 @@ def _project_selection_target(path: str):
     from infernux.engine.interaction import SelectionTarget
 
     value = str(path or "")
+    import os
+
+    if os.path.isdir(value):
+        return SelectionTarget.project_directory(value)
     asset_path = value
     identifier = ""
     sub_kind = ""
@@ -53,6 +57,9 @@ def _project_selection_target(path: str):
 def _project_path_for_target(target) -> str:
     """Rebuild the Project row path from a typed selection target."""
     from infernux.engine.interaction import SelectionDomain
+
+    if target.domain is SelectionDomain.ASSET and target.sub_kind == "directory":
+        return target.target_id
 
     guid = (
         target.document_id
@@ -250,7 +257,7 @@ class BootstrapSelectionMixin:
         )
 
     def _on_asset_selection_source_changed(self, change) -> None:
-        """Invalidate stable subresource targets independently of Panel visibility."""
+        """Reconcile directory paths and subresources after committed mutations."""
         import os
 
         from infernux.engine.interaction import (
@@ -262,6 +269,36 @@ class BootstrapSelectionMixin:
         )
         selection = SelectionService.instance()
         snapshot = selection.snapshot
+        if snapshot.domain is SelectionDomain.ASSET and any(
+            target.sub_kind == "directory" for target in snapshot.targets
+        ):
+            from infernux.engine.interaction import SelectionSnapshot
+            from infernux.engine.path_utils import is_path_within
+
+            mutations = tuple(iter_asset_mutations(change))
+
+            def remap(target):
+                if target.sub_kind != "directory":
+                    return target
+                path = target.target_id
+                for mutation in mutations:
+                    if not is_path_within(path, mutation.source_path, allow_root=True):
+                        continue
+                    if mutation.kind is AssetMutationKind.DELETED:
+                        return None
+                    if mutation.kind is AssetMutationKind.MOVED:
+                        path = os.path.join(mutation.destination_path, os.path.relpath(path, mutation.source_path))
+                return SelectionTarget.project_directory(path)
+
+            mapped = {target: remap(target) for target in snapshot.targets}
+            projected = SelectionSnapshot.create(
+                (target for target in mapped.values() if target is not None),
+                owner_id=snapshot.owner_id,
+                primary=mapped.get(snapshot.primary),
+                anchor=mapped.get(snapshot.anchor),
+            )
+            selection.apply_snapshot(projected, reason="project_directory_mutation", record_history=False)
+            return
         if snapshot.domain is not SelectionDomain.ASSET_SUBRESOURCE:
             return
         for mutation in iter_asset_mutations(change):

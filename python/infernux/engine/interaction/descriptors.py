@@ -57,6 +57,15 @@ class SelectionTarget:
         return cls(SelectionDomain.ASSET, identity)
 
     @classmethod
+    def project_directory(cls, path: str) -> "SelectionTarget":
+        """Address a Project directory, which is not a GUID-backed resource."""
+        from infernux.engine.path_utils import path_key
+
+        if not path:
+            raise ValueError("project directory selection requires a path")
+        return cls(SelectionDomain.ASSET, path_key(path), sub_kind="directory")
+
+    @classmethod
     def asset_subresource(
         cls,
         asset_guid: str,

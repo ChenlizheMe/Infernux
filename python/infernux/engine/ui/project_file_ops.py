@@ -298,7 +298,7 @@ def move_paths_batch(
 
     mutations = AssetMutationService.instance()
     database = AssetManager._mutation_database(asset_database)
-    relocation_entries = tuple(
+    asset_relocation_entries = tuple(
         (
             old_file,
             new_file,
@@ -306,8 +306,13 @@ def move_paths_batch(
         )
         for old_file, new_file in move_pairs
     )
+    relocation_entries = asset_relocation_entries + tuple(
+        (old_root, new_root, "")
+        for old_root, new_root in roots
+        if os.path.isdir(old_root)
+    )
     plan = None
-    if mutations is not None and move_pairs:
+    if mutations is not None and relocation_entries:
         plan = mutations.prepare_relocation(
             relocation_entries,
             origin=origin,
@@ -340,8 +345,9 @@ def move_paths_batch(
 
         use_native_batch = (
             plan is not None
+            and bool(move_pairs)
             and hasattr(database, "move_assets_batch")
-            and all(mutation.guid for mutation in plan.mutations)
+            and all(guid for _source, _destination, guid in asset_relocation_entries)
         )
         if use_native_batch:
             results = AssetManager.move_assets_batch(move_pairs, database=database)
@@ -1286,6 +1292,13 @@ def delete_item(item_path: str, asset_database=None):
     for path, guid in deleted_children:
         if not AssetManager.delete_asset(path, database=database, guid_hint=guid):
             raise RuntimeError(f"AssetDatabase failed to delete '{path}'")
+
+    if is_dir:
+        from infernux.engine.interaction import AssetMutationKind, AssetMutationService
+
+        mutations = AssetMutationService.instance()
+        if mutations is not None:
+            mutations.publish_content_change(item_path, AssetMutationKind.DELETED)
 
     # Invalidate inspector cache so a recreated file won't reuse stale data
     from . import asset_details_renderer

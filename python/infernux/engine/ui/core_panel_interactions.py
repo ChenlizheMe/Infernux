@@ -101,6 +101,12 @@ def _project_asset_path_for_guid(guid: str) -> str:
         return ""
 
 
+def _project_path_for_selection(target: SelectionTarget) -> str:
+    if target.domain is SelectionDomain.ASSET and target.sub_kind == "directory":
+        return target.target_id
+    return _project_asset_path_for_guid(target.document_id or target.target_id)
+
+
 def hierarchy_panel_interaction(
     scene_commands: SceneObjectCommandService,
     *,
@@ -385,7 +391,7 @@ def project_panel_interaction(
         seen: set[str] = set()
         if context.selection.domain is SelectionDomain.ASSET:
             raw_paths = tuple(
-                _project_asset_path_for_guid(target.target_id)
+                _project_path_for_selection(target)
                 for target in context.selection.targets
             )
         else:
@@ -423,7 +429,7 @@ def project_panel_interaction(
             and context.selection.domain is SelectionDomain.ASSET
             and context.selection.primary is not None
         ):
-            value = _project_asset_path_for_guid(context.selection.primary.target_id)
+            value = _project_path_for_selection(context.selection.primary)
         return value
 
     def destination(context: CommandContext, panel: object) -> str:
@@ -511,7 +517,7 @@ def project_panel_interaction(
             and context.selection.primary is not None
         ):
             primary = context.selection.primary
-            value = _project_asset_path_for_guid(primary.document_id or primary.target_id)
+            value = _project_path_for_selection(primary)
         return lexical_path(value)
 
     def expansion_args(context: CommandContext):
@@ -635,6 +641,15 @@ def project_panel_interaction(
 
     def locate_asset(context: CommandContext) -> bool:
         path = navigation_path(context)
+        import os
+
+        if os.path.isdir(path):
+            return navigation.locate(
+                SelectionTarget.project_directory(path),
+                owner_id="project",
+                reason="project_locate_directory",
+                record_history=True,
+            )
         try:
             from infernux.core.assets import AssetManager
 
