@@ -31,11 +31,18 @@ int main()
         assert(world.Poll() == current);
         assert(world.GetChangedEntries().empty());
         worldRevision = current;
-        assert(screen.Poll() == screenRevision); // Local pose is still uncommitted.
+        // Local getters expose the same live pose before the frame commit.
+        const auto currentScreen = screen.Poll();
+        assert(currentScreen != screenRevision);
+        assert(screen.GetChangedEntries() == std::vector<uint32_t>{0});
+        assert(screen.Poll() == currentScreen);
+        assert(screen.GetChangedEntries().empty());
+        screenRevision = currentScreen;
     }
     (void)store.EndFrameCache();
     assert(world.Poll() == worldRevision);
-    assert(screen.Poll() != screenRevision);
+    assert(screen.Poll() == screenRevision);
+    assert(screen.GetChangedEntries().empty());
     object->GetTransform()->SetPosition(0.0f, 0.0f, 0.0f);
     object->SetLayer(31);
     auto hit = world.ProjectWorldRay({0.25f, -0.1f, 2.0f}, {0, 0, -1}, 0x80000000u)[0];

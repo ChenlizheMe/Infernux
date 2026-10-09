@@ -273,96 +273,84 @@ void RegisterVector3Bindings(py::module_ &m)
                      throw std::out_of_range("index out of range");
                  v[i] = vec3_util::RequireFiniteFloat(value);
              })
-        .def("__add__", [](const Vec &a, const Vec &b) { return Vec(a + b); })
+        .def("__add__", [](const Vec &a, const Vec &b) { return Vec(a + b); }, py::is_operator())
         .def("__add__",
-             [](const Vec &v, py::object s) {
-                 float f = py::isinstance<py::int_>(s) ? static_cast<float>(s.cast<int>()) : s.cast<float>();
+             [](const Vec &v, float f) {
                  return Vec(v.x + f, v.y + f, v.z + f);
-             })
+             }, py::is_operator())
         .def("__radd__",
-             [](const Vec &v, py::object s) {
-                 float f = py::isinstance<py::int_>(s) ? static_cast<float>(s.cast<int>()) : s.cast<float>();
+             [](const Vec &v, float f) {
                  return Vec(f + v.x, f + v.y, f + v.z);
-             })
-        .def("__sub__", [](const Vec &a, const Vec &b) { return Vec(a - b); })
+             }, py::is_operator())
+        .def("__sub__", [](const Vec &a, const Vec &b) { return Vec(a - b); }, py::is_operator())
         .def("__sub__",
-             [](const Vec &v, py::object s) {
-                 float f = py::isinstance<py::int_>(s) ? static_cast<float>(s.cast<int>()) : s.cast<float>();
+             [](const Vec &v, float f) {
                  return Vec(v.x - f, v.y - f, v.z - f);
-             })
+             }, py::is_operator())
         .def("__rsub__",
-             [](const Vec &v, py::object s) {
-                 float f = py::isinstance<py::int_>(s) ? static_cast<float>(s.cast<int>()) : s.cast<float>();
+             [](const Vec &v, float f) {
                  return Vec(f - v.x, f - v.y, f - v.z);
-             })
-        .def("__mul__", [](const Vec &a, const Vec &b) { return Vec(a * b); })
+             }, py::is_operator())
+        .def("__mul__", [](const Vec &a, const Vec &b) { return Vec(a * b); }, py::is_operator())
         .def("__mul__",
-             [](const Vec &v, py::object s) {
-                 float f = py::isinstance<py::int_>(s) ? static_cast<float>(s.cast<int>()) : s.cast<float>();
+             [](const Vec &v, float f) {
                  return Vec(v * f);
-             })
+             }, py::is_operator())
         .def("__rmul__",
-             [](const Vec &v, py::object s) {
-                 float f = py::isinstance<py::int_>(s) ? static_cast<float>(s.cast<int>()) : s.cast<float>();
+             [](const Vec &v, float f) {
                  return Vec(v * f);
-             })
-        .def("__truediv__", [](const Vec &a, const Vec &b) { return Vec(a / b); })
+             }, py::is_operator())
+        .def("__truediv__", [](const Vec &a, const Vec &b) { return Vec(a / b); }, py::is_operator())
         .def("__truediv__",
-             [](const Vec &v, py::object s) {
-                 float f = py::isinstance<py::int_>(s) ? static_cast<float>(s.cast<int>()) : s.cast<float>();
+             [](const Vec &v, float f) {
                  return Vec(v / f);
-             })
+             }, py::is_operator())
         .def("__rtruediv__",
-             [](const Vec &v, py::object s) {
-                 float f = py::isinstance<py::int_>(s) ? static_cast<float>(s.cast<int>()) : s.cast<float>();
+             [](const Vec &v, float f) {
                  return Vec(f / v.x, f / v.y, f / v.z);
-             })
+             }, py::is_operator())
         .def("__iadd__",
              [](Vec &v, const Vec &o) {
                  v += o;
                  return v;
-             })
+             }, py::is_operator())
         .def("__iadd__",
-             [](Vec &v, py::object s) {
-                 float f = py::isinstance<py::int_>(s) ? static_cast<float>(s.cast<int>()) : s.cast<float>();
+             [](Vec &v, float f) {
                  v.x += f;
                  v.y += f;
                  v.z += f;
                  return v;
-             })
+             }, py::is_operator())
         .def("__isub__",
              [](Vec &v, const Vec &o) {
                  v -= o;
                  return v;
-             })
+             }, py::is_operator())
         .def("__isub__",
-             [](Vec &v, py::object s) {
-                 float f = py::isinstance<py::int_>(s) ? static_cast<float>(s.cast<int>()) : s.cast<float>();
+             [](Vec &v, float f) {
                  v.x -= f;
                  v.y -= f;
                  v.z -= f;
                  return v;
-             })
+             }, py::is_operator())
         .def("__imul__",
-             [](Vec &v, py::object s) {
-                 float f = py::isinstance<py::int_>(s) ? static_cast<float>(s.cast<int>()) : s.cast<float>();
+             [](Vec &v, float f) {
                  v *= f;
                  return v;
-             })
+             }, py::is_operator())
         .def("__itruediv__",
-             [](Vec &v, py::object s) {
-                 float f = py::isinstance<py::int_>(s) ? static_cast<float>(s.cast<int>()) : s.cast<float>();
+             [](Vec &v, float f) {
                  v /= f;
                  return v;
-             })
+             }, py::is_operator())
         .def("__eq__",
              [](const Vec &a, const Vec &b) {
                  return std::fabs(a.x - b.x) <= 1e-6f && std::fabs(a.y - b.y) <= 1e-6f && std::fabs(a.z - b.z) <= 1e-6f;
-             })
+             }, py::is_operator())
         .def("__ne__",
              [](const Vec &a, const Vec &b) {
                  return std::fabs(a.x - b.x) > 1e-6f || std::fabs(a.y - b.y) > 1e-6f || std::fabs(a.z - b.z) > 1e-6f;
-             })
+             }, py::is_operator())
         .def_property(
             "x", [](const Vec &v) { return v.x; }, [](Vec &v, float val) { v.x = vec3_util::RequireFiniteFloat(val); })
         .def_property(

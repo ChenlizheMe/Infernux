@@ -72,6 +72,17 @@ static uint32_t GetPrimaryBodyId(GameObject *go)
     return (col && col->GetBodyId() != 0xFFFFFFFF) ? col->GetBodyId() : 0xFFFFFFFF;
 }
 
+static bool RotationChanged(const glm::quat &current, const glm::quat &previous)
+{
+    // q and -q represent the same orientation. Compare aligned components:
+    // 1 - abs(dot(q, previous)) loses small angles to float cancellation, and
+    // a 1e-4 dot tolerance silently discards rotations below about 1.6 degrees.
+    const glm::quat aligned = glm::dot(current, previous) < 0.0f ? -previous : previous;
+    const glm::quat delta = current - aligned;
+    constexpr float componentToleranceSquared = 1e-12f;
+    return glm::dot(delta, delta) > componentToleranceSquared;
+}
+
 static int MapCollisionDetectionModeToMotionQuality(int mode, bool isKinematic)
 {
     switch (mode) {
@@ -959,7 +970,6 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
     glm::quat currentRot = tf->GetWorldRotation();
 
     const float posEps = 1e-4f;
-    const float rotEps = 1e-4f;
 
     // First frame: initialise cache from current Transform.
     // Also check whether the script already moved the Transform away from
@@ -980,8 +990,7 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
 
         glm::vec3 bodyPos = pw.GetBodyPosition(bodyId);
         const glm::quat bodyRot = glm::normalize(pw.GetBodyRotation(bodyId));
-        bool firstFrameDiff =
-            glm::length(currentPos - bodyPos) > posEps || (1.0f - std::abs(glm::dot(currentRot, bodyRot))) > rotEps;
+        bool firstFrameDiff = glm::length(currentPos - bodyPos) > posEps || RotationChanged(currentRot, bodyRot);
         if (!firstFrameDiff)
             return;
 
@@ -998,14 +1007,10 @@ void Rigidbody::SyncExternalMovesToPhysics(float fixedDeltaTime)
     }
 
     bool posDiff = glm::length(currentPos - d.lastSyncedPosition) > posEps;
-    bool rotDiff = (1.0f - std::abs(glm::dot(currentRot, d.lastSyncedRotation))) > rotEps;
+    bool rotDiff = RotationChanged(currentRot, d.lastSyncedRotation);
 
     if (!posDiff && !rotDiff)
         return; // Transform unchanged since last physics write — nothing to do
-
-    // INXLOG_WARN("Rigidbody::SyncExternalMovesToPhysics TELEPORT — posDiff=", posDiff, " rotDiff=", rotDiff,
-    //             " posDelta=", glm::length(currentPos - d.lastSyncedPosition),
-    //             " rotDelta=", (1.0f - std::abs(glm::dot(currentRot, d.lastSyncedRotation))));
 
     auto &pw = PhysicsWorld::Instance();
     if (!pw.IsInitialized())

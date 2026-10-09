@@ -349,6 +349,19 @@ class TransformECSStore
         return IsValid(h) && h.index < m_fcDirty.size() && (m_fcDirty[h.index] & 0x03) != 0;
     }
 
+    [[nodiscard]] bool HasFrameCacheWorldPositionOverride(Handle h) const
+    {
+        return IsValid(h) && h.index < m_fcDirty.size() && (m_fcDirty[h.index] & 0x01) != 0;
+    }
+
+    [[nodiscard]] bool HasFrameCacheWorldRotationOverride(Handle h) const
+    {
+        return IsValid(h) && h.index < m_fcDirty.size() && (m_fcDirty[h.index] & 0x02) != 0;
+    }
+
+    /// A later local write supersedes only the corresponding cached world channel.
+    void RecordLocalPoseWrite(Handle h, bool position, bool rotation);
+
     const glm::mat4 &ComposeFrameCacheWorldMatrix(Handle h, const Transform *owner);
 
     // Cached world-space write — marks slot dirty, defers flush to EndFrameCache.

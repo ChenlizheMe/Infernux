@@ -66,4 +66,93 @@ inline void TestTransformHierarchyPublication(infernux::Scene &scene)
         } while (std::next_permutation(order.begin(), order.end()));
     }
     std::cout << "HIERARCHY_COMMIT permutations=" << cases << " intermediary=passed follower=passed\n";
+
+    // Physics publishes world channels before Update/Timeline writes local
+    // channels. The latest write wins per channel, both now and after commit.
+    auto *localOwner = scene.CreateGameObject("LocalAfterPhysics");
+    auto *localParent = scene.CreateGameObject("LocalAfterPhysicsParent");
+    localParent->GetTransform()->SetLocalTRS(glm::vec3(10, 4, -3), glm::vec3(0, 25, 0), glm::vec3(2));
+    auto *tf = localOwner->GetTransform();
+    const glm::vec3 solverPosition(7, 8, 9), localPosition(1, 2, 3), localEuler(0, 37, 0);
+    const glm::quat solverRotation = glm::angleAxis(glm::radians(22.0f), glm::vec3(0, 1, 0));
+    const glm::quat authoredRotation = glm::angleAxis(glm::radians(localEuler.y), glm::vec3(0, 1, 0));
+    const auto checkPose = [&](const glm::vec3 &position, const glm::quat &rotation) {
+        const glm::quat actual = tf->GetWorldRotation();
+        const glm::quat aligned = glm::dot(actual, rotation) < 0 ? -rotation : rotation;
+        const glm::quat delta = actual - aligned;
+        if (glm::length(tf->GetPosition() - position) > 2e-5f || glm::dot(delta, delta) > 1e-10f)
+            throw std::runtime_error("local authoring was overwritten by a cached physics pose");
+        const auto &matrix = tf->GetWorldMatrix();
+        if (glm::length(glm::vec3(matrix[3]) - position) > 2e-5f)
+            throw std::runtime_error("mixed local/world pose matrix has a stale position");
+        const glm::vec3 forward = glm::normalize(glm::vec3(matrix[2]));
+        if (glm::length(forward - rotation * glm::vec3(0, 0, 1)) > 2e-5f)
+            throw std::runtime_error("mixed local/world pose matrix has a stale rotation");
+    };
+    for (const bool nested : {false, true}) {
+        localOwner->SetParent(nested ? localParent : nullptr, false);
+        const auto *parent = tf->GetParent();
+        for (int method = 0; method != 13; ++method) {
+            tf->SetLocalTRS(glm::vec3(0), glm::vec3(0), glm::vec3(1));
+            store.BeginFrameCache();
+            store.SetCachedWorldPoseFromPhysics(tf->GetECSHandle().index, solverPosition, solverRotation, true);
+            const glm::vec3 expectedLocal = parent
+                ? glm::vec3(glm::inverse(parent->GetWorldMatrix()) * glm::vec4(solverPosition, 1)) : solverPosition;
+            const glm::quat expectedLocalRotation = parent
+                ? glm::inverse(parent->GetWorldRotation()) * solverRotation : solverRotation;
+            if (glm::length(tf->GetLocalPosition() - expectedLocal) > 2e-5f ||
+                glm::length(tf->GetLocalRotation() * glm::vec3(0, 0, 1) - expectedLocalRotation * glm::vec3(0, 0, 1)) > 2e-5f)
+                throw std::runtime_error("local reads did not observe the current physics pose");
+            Transform *batch[] = {tf};
+            float gathered[4]{};
+            store.GatherLocalPositions(batch, gathered, 1);
+            if (glm::length(glm::vec3(gathered[0], gathered[1], gathered[2]) - expectedLocal) > 2e-5f)
+                throw std::runtime_error("batch local position read did not observe physics");
+            store.GatherLocalRotations(batch, gathered, 1);
+            if (glm::length(glm::quat(gathered[3], gathered[0], gathered[1], gathered[2]) * glm::vec3(0, 0, 1)
+                            - expectedLocalRotation * glm::vec3(0, 0, 1)) > 2e-5f)
+                throw std::runtime_error("batch local rotation read did not observe physics");
+            glm::vec3 expectedPosition = solverPosition;
+            glm::quat expectedRotation = solverRotation;
+            if (method == 0 || method == 3) {
+                expectedPosition = parent ? parent->TransformPoint(localPosition) : localPosition;
+                if (method == 0)
+                    tf->SetLocalPosition(localPosition);
+            }
+            if (method >= 1 && method <= 3) {
+                expectedRotation = (parent ? parent->GetWorldRotation() : glm::quat(1, 0, 0, 0)) * authoredRotation;
+                if (method == 1) tf->SetLocalEulerAngles(localEuler);
+                if (method == 2) tf->SetLocalRotation(authoredRotation);
+                if (method == 3) tf->SetLocalTRS(localPosition, localEuler, glm::vec3(1));
+            }
+            if (method == 4 || method == 5) {
+                expectedRotation = solverRotation * authoredRotation;
+                if (method == 4) tf->Rotate(localEuler);
+                else tf->Rotate(glm::vec3(0, 1, 0), 37.0f);
+            }
+            if (method == 6 || method == 10) {
+                expectedPosition = parent ? parent->TransformPoint(localPosition) : localPosition;
+                if (method == 6) store.ScatterLocalPositions(batch, &localPosition.x, 1);
+                else store.SetCachedLocalPosition(tf->GetECSHandle().index, localPosition);
+            }
+            if (method == 7 || method == 8 || method == 11 || method == 12) {
+                const auto localRotation = authoredRotation;
+                expectedRotation = (parent ? parent->GetWorldRotation() : glm::quat(1, 0, 0, 0)) * localRotation;
+                const float values[] = {localRotation.x, localRotation.y, localRotation.z, localRotation.w};
+                if (method == 7) store.ScatterLocalRotations(batch, values, 1);
+                if (method == 8) store.ScatterLocalEulerAngles(batch, &localEuler.x, 1);
+                if (method == 11) store.SetCachedLocalRotation(tf->GetECSHandle().index, localRotation);
+                if (method == 12) store.SetCachedLocalEulerAngles(tf->GetECSHandle().index, localEuler);
+            }
+            if (method == 9) {
+                expectedPosition = glm::vec3(-3, 11, 7);
+                store.ScatterWorldPositions(batch, &expectedPosition.x, 1);
+            }
+            checkPose(expectedPosition, expectedRotation);
+            if (!store.EndFrameCache())
+                throw std::runtime_error("authored override lost physics publication provenance");
+            checkPose(expectedPosition, expectedRotation);
+        }
+    }
+    std::cout << "LOCAL_AFTER_PHYSICS root/nested setters=passed reads=passed\n";
 }

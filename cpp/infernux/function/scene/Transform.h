@@ -57,7 +57,13 @@ class Transform : public Component
     /// @brief Get position in local (parent) space
     [[nodiscard]] glm::vec3 GetLocalPosition() const
     {
-        return TransformECSStore::Instance().GetLocalPosition(m_ecsHandle);
+        auto &store = TransformECSStore::Instance();
+        if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldPositionOverride(m_ecsHandle)) {
+            const glm::vec3 world = store.GetCachedWorldPosition(m_ecsHandle.index);
+            const Transform *parent = GetParentTransformSafe();
+            return parent ? glm::vec3(glm::inverse(parent->GetWorldMatrix()) * glm::vec4(world, 1.0f)) : world;
+        }
+        return store.GetLocalPosition(m_ecsHandle);
     }
 
     /// @brief Set position in local (parent) space
@@ -65,6 +71,7 @@ class Transform : public Component
     {
         auto &store = TransformECSStore::Instance();
         store.SetLocalPosition(m_ecsHandle, position);
+        store.RecordLocalPoseWrite(m_ecsHandle, true, false);
         store.SetDirty(m_ecsHandle, true);
         InvalidateWorldMatrix(false);
     }
@@ -108,7 +115,10 @@ class Transform : public Component
     /// @brief Get rotation as Euler angles (degrees) in local space
     [[nodiscard]] glm::vec3 GetLocalEulerAngles() const
     {
-        return ToPublicEulerAngles(TransformECSStore::Instance().GetLocalEulerAngles(m_ecsHandle));
+        auto &store = TransformECSStore::Instance();
+        if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldRotationOverride(m_ecsHandle))
+            return ToPublicEulerAngles(ExtractEulerAnglesNear(GetLocalRotation(), store.GetLocalEulerAngles(m_ecsHandle)));
+        return ToPublicEulerAngles(store.GetLocalEulerAngles(m_ecsHandle));
     }
 
     /// @brief Set rotation from Euler angles (degrees) in local space
@@ -117,6 +127,7 @@ class Transform : public Component
         auto &store = TransformECSStore::Instance();
         store.SetLocalEulerAngles(m_ecsHandle, euler);
         store.SetLocalRotation(m_ecsHandle, EulerYXZToQuat(euler));
+        store.RecordLocalPoseWrite(m_ecsHandle, false, true);
         store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
         store.SetDirty(m_ecsHandle, true);
         InvalidateWorldMatrix(true);
@@ -129,7 +140,13 @@ class Transform : public Component
     /// @brief Get rotation as quaternion in local space
     [[nodiscard]] glm::quat GetLocalRotation() const
     {
-        return TransformECSStore::Instance().GetLocalRotation(m_ecsHandle);
+        auto &store = TransformECSStore::Instance();
+        if (store.IsFrameCacheActiveFor(m_ecsHandle) && store.HasFrameCacheWorldRotationOverride(m_ecsHandle)) {
+            const glm::quat world = store.GetCachedWorldRotation(m_ecsHandle.index);
+            const Transform *parent = GetParentTransformSafe();
+            return parent ? glm::inverse(parent->GetWorldRotation()) * world : world;
+        }
+        return store.GetLocalRotation(m_ecsHandle);
     }
 
     /// @brief Set rotation from quaternion in local space
@@ -137,6 +154,7 @@ class Transform : public Component
     {
         auto &store = TransformECSStore::Instance();
         store.SetLocalRotation(m_ecsHandle, rotation);
+        store.RecordLocalPoseWrite(m_ecsHandle, false, true);
         store.SetLocalEulerAngles(m_ecsHandle,
                                   ExtractEulerAnglesNear(rotation, store.GetLocalEulerAngles(m_ecsHandle)));
         store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
@@ -220,6 +238,7 @@ class Transform : public Component
         store.SetLocalEulerAngles(m_ecsHandle, euler);
         store.SetLocalRotation(m_ecsHandle, EulerYXZToQuat(euler));
         store.SetLocalScale(m_ecsHandle, scale);
+        store.RecordLocalPoseWrite(m_ecsHandle, true, true);
         store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
         store.SetDirty(m_ecsHandle, true);
         InvalidateWorldMatrix(true);
@@ -365,8 +384,9 @@ class Transform : public Component
     {
         auto &store = TransformECSStore::Instance();
         glm::quat deltaRotation = EulerYXZToQuat(euler);
-        glm::quat newRot = store.GetLocalRotation(m_ecsHandle) * deltaRotation;
+        glm::quat newRot = GetLocalRotation() * deltaRotation;
         store.SetLocalRotation(m_ecsHandle, newRot);
+        store.RecordLocalPoseWrite(m_ecsHandle, false, true);
         store.SetLocalEulerAngles(m_ecsHandle, ExtractEulerAnglesNear(newRot, store.GetLocalEulerAngles(m_ecsHandle)));
         store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
         store.SetDirty(m_ecsHandle, true);
@@ -378,8 +398,9 @@ class Transform : public Component
     {
         auto &store = TransformECSStore::Instance();
         glm::quat deltaRotation = glm::angleAxis(glm::radians(angle), glm::normalize(axis));
-        glm::quat newRot = store.GetLocalRotation(m_ecsHandle) * deltaRotation;
+        glm::quat newRot = GetLocalRotation() * deltaRotation;
         store.SetLocalRotation(m_ecsHandle, newRot);
+        store.RecordLocalPoseWrite(m_ecsHandle, false, true);
         store.SetLocalEulerAngles(m_ecsHandle, ExtractEulerAnglesNear(newRot, store.GetLocalEulerAngles(m_ecsHandle)));
         store.SetHasCachedWorldEulerAngles(m_ecsHandle, false);
         store.SetDirty(m_ecsHandle, true);
@@ -425,8 +446,8 @@ class Transform : public Component
     [[nodiscard]] glm::mat4 GetLocalMatrix() const
     {
         const auto &store = TransformECSStore::Instance();
-        glm::mat4 translation = glm::translate(glm::mat4(1.0f), store.GetLocalPosition(m_ecsHandle));
-        glm::mat4 rotation = glm::mat4_cast(store.GetLocalRotation(m_ecsHandle));
+        glm::mat4 translation = glm::translate(glm::mat4(1.0f), GetLocalPosition());
+        glm::mat4 rotation = glm::mat4_cast(GetLocalRotation());
         glm::mat4 scale = glm::scale(glm::mat4(1.0f), store.GetLocalScale(m_ecsHandle));
         return translation * rotation * scale;
     }
