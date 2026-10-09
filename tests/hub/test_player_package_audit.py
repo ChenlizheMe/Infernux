@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.machinery
 import json
+import os
 from pathlib import Path
 import sys
 import struct
@@ -55,6 +56,20 @@ from _infernux_package_audit_tests.engine.runtime_artifact_catalog import (
 
 _PLAYER_EXECUTABLE = "Balance.exe" if sys.platform == "win32" else "Balance"
 _EXTENSION_SUFFIX = importlib.machinery.EXTENSION_SUFFIXES[0]
+
+
+def _native_asset_index_available() -> bool:
+    """Portable Hub tests do not build the native editor extension first."""
+    candidates = []
+    native_dir = os.environ.get("INFERNUX_NATIVE_MODULE_DIR")
+    if native_dir:
+        candidates.append(Path(native_dir))
+    candidates.append(SOURCE_PACKAGE / "lib")
+    return any(
+        any(path.name.startswith("_Infernux") for path in directory.glob("_Infernux*"))
+        for directory in candidates
+        if directory.is_dir()
+    )
 
 
 def _bootstrap_native_fixture() -> (
@@ -361,6 +376,10 @@ def test_unix_ns_to_filetime_ticks_uses_windows_epoch_units():
     assert unix_ns_to_filetime_ticks(1_700_000_000_000_000_000) > 10**17
 
 
+@pytest.mark.skipif(
+    not _native_asset_index_available(),
+    reason="native AssetIndex fingerprint extension is not built in portable Hub lane",
+)
 def test_library_artifact_validation_rejects_stale_source(tmp_path: Path):
     source = tmp_path / "Assets" / "Smoke.png"
     source.parent.mkdir(parents=True)
