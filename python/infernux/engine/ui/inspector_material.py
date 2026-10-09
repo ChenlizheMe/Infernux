@@ -1588,9 +1588,14 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
     is_embedded_slot = "::submat:" in (
         (getattr(_native_mat, "file_path", "") or getattr(state, "file_path", "") or "")
     )
-    # Built-in materials use per-section disabled(); embedded uses one outer disabled()
-    # so every control (including pickers) looks non-interactive like a default slot material.
-    section_readonly = is_builtin
+    # Generated and imported materials can be inspected without acquiring an
+    # editable asset document. Embedded slots also have an outer disabled scope.
+    is_runtime_material = not (
+        getattr(_native_mat, "guid", "")
+        or getattr(_native_mat, "file_path", "")
+        or getattr(state, "file_path", "")
+    )
+    section_readonly = is_builtin or is_embedded_slot or is_runtime_material
 
     default_open_sections = bool(state.extra.get("default_open_sections", True))
 
@@ -1608,7 +1613,7 @@ def _render_material_body_impl(ctx: InxGUIContext, panel, state):
     sync_ch, sync_ds = _prepare_shader_annotations(
         mat_data,
         state,
-        read_only=is_builtin,
+        read_only=section_readonly,
     )
     changed |= sync_ch
     requires_deserialize |= sync_ds

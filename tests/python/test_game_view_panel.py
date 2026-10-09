@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from infernux.lib import SceneManager
 
 from infernux.engine.ui.game_view_panel import (
     GameViewPanel,
@@ -95,6 +96,7 @@ def test_game_input_departure_cancels_ui_and_mouse_capture(monkeypatch, transiti
     from infernux.acceptance import RuntimeAcceptance
 
     panel = GameViewPanel(engine=_RenderActivationEngine())
+    panel._synchronize_input_scene(SceneManager.instance().get_active_scene())
     resets = []
     panel._ui_event_processor = SimpleNamespace(reset=lambda: resets.append('ui'))
     panel._mouse_event_dispatcher = SimpleNamespace(reset=lambda: resets.append('mouse'))
@@ -113,6 +115,7 @@ def test_game_input_departure_cancels_ui_and_mouse_capture(monkeypatch, transiti
 
 def test_ui_exit_failure_still_releases_mouse_capture():
     panel = GameViewPanel(engine=_RenderActivationEngine())
+    panel._synchronize_input_scene(SceneManager.instance().get_active_scene())
     resets = []
     def fail():
         raise ValueError('author exit failed')

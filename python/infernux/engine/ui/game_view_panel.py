@@ -388,6 +388,9 @@ class GameViewPanel(EditorPanel):
         self._reset_pointer_input()
 
     def _reset_pointer_input(self):
+        # Stop/reload can retire the captured graph before this panel's next
+        # render. Discard that graph before cancellation calls authored hooks.
+        self._synchronize_input_scene(_SM.instance().get_active_scene())
         # Both consumers must release capture, even if an author's UI exit
         # callback raises. Preserve the error; never replay the interaction.
         try:

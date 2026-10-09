@@ -7,8 +7,6 @@ invalidation.
 
 from __future__ import annotations
 
-import os
-
 from .theme import Theme
 
 
@@ -217,7 +215,7 @@ def consume_inspector_profile_metrics() -> dict[str, float]:
 
 
 def ensure_material_file_path(material) -> str:
-    """Ensure *material* has a stable ``file_path`` for autosave and undo."""
+    """Resolve asset-backed materials without promoting runtime instances to files."""
     if getattr(material, 'file_path', ''):
         return material.file_path
     guid = getattr(material, 'guid', '') or ''
@@ -232,23 +230,9 @@ def ensure_material_file_path(material) -> str:
             raise LookupError(f"material GUID is not registered: {guid}")
         material.file_path = resolved
         return resolved
-    from infernux.engine.project_context import get_project_root
-    project_root = get_project_root()
-    if not project_root:
-        return ""
-    materials_dir = os.path.join(project_root, "materials")
-    os.makedirs(materials_dir, exist_ok=True)
-    mat_name = getattr(material, 'name', 'DefaultUnlit')
-    if mat_name == "DefaultLit":
-        mat_file = os.path.join(materials_dir, "default_lit.mat")
-    elif mat_name == "DefaultUnlit":
-        mat_file = os.path.join(materials_dir, "default_unlit.mat")
-    else:
-        import re as _re
-        file_name = _re.sub(r'([A-Z])', r'_\1', mat_name).lower().strip('_') + ".mat"
-        mat_file = os.path.join(materials_dir, file_name)
-    material.file_path = mat_file
-    return mat_file
+    # Runtime materials have no asset identity. Preview uses their native
+    # document directly; a preview must never create a path or project folder.
+    return ""
 
 
 __all__ = [

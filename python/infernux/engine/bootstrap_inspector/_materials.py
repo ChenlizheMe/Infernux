@@ -54,7 +54,9 @@ def _collect_material_renderers(items, native_map, obj):
             renderer = wclass._get_or_create_wrapper(renderer, obj)
         mat_count = getattr(renderer, 'material_count', 0) or 1
         material_guids = tuple(renderer.get_material_guids() or [])
-        slot_names = tuple(renderer.get_material_slot_names() or [])
+        # SpriteRenderer owns one generated quad; it has no imported mesh slot
+        # names. Its parallel wrapper deliberately does not expose that API.
+        slot_names = () if item.type_name == "SpriteRenderer" else tuple(renderer.get_material_slot_names() or [])
         mesh_identity = ()
         if item.type_name == "MeshRenderer":
             mesh = renderer.get_mesh_asset()
