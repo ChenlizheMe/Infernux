@@ -1480,7 +1480,18 @@ void PhysicsWorld::UpdateBodyShape(Collider *collider, const Collider *exclude)
     // Geometry changes must retain authored mass and allowed axes. Recompute
     // inertia from the new shape through the same path as body configuration,
     // without first replacing it with the shape's default density mass.
+    const JPH::Vec3 previousCenterOfMass = bodyInterface.GetShape(JPH::BodyID(id))->GetCenterOfMass();
     bodyInterface.SetShape(JPH::BodyID(id), newShape, false, JPH::EActivation::Activate);
+    const JPH::Vec3 deltaCenterOfMass = newShape->GetCenterOfMass() - previousCenterOfMass;
+    if (deltaCenterOfMass != JPH::Vec3::sZero()) {
+        // Jolt stores attachment points relative to each body's center of
+        // mass. SetShape preserves the body ID but does not notify constraints;
+        // retain their authored anchors when compound geometry shifts the COM.
+        for (auto &[constraintId, record] : m_constraints) {
+            if (record.bodyIdA == id || record.bodyIdB == id)
+                record.constraint->NotifyShapeChanged(JPH::BodyID(id), deltaCenterOfMass);
+        }
+    }
     auto *rigidbody = collider->GetCachedRigidbody();
     if (rigidbody && rigidbody->IsEnabled())
         SetBodyAllowedDOFs(id, 0x3F & ~(rigidbody->GetConstraints() >> 1), rigidbody->GetMass());
