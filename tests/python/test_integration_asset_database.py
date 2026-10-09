@@ -957,6 +957,7 @@ def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
     engine, tmp_path: Path
 ):
     from infernux.engine.interaction import (
+        AssetMutationKind,
         AssetMutationService,
         DocumentRegistry,
         SelectionService,
@@ -1005,7 +1006,21 @@ def test_project_directory_relocation_is_one_editor_and_catalog_transaction(
         assert selection.snapshot.primary == SelectionTarget.asset(imported_a.guid)
         assert len(published) == 1
         assert published[0].operation_id == "directory-transaction"
-        assert len(published[0].changes) == 2
+        # Directory selection needs its own path relocation in the same
+        # publication. Files retain their catalog GUIDs; folders have none.
+        assert len(published[0].changes) == 3
+        moved = {change.mutation.guid: change.mutation for change in published[0].changes}
+        assert set(moved) == {imported_a.guid, imported_b.guid, ""}
+        for guid, source, destination in (
+            (imported_a.guid, source_a, moved_a),
+            (imported_b.guid, source_b, moved_b),
+            ("", source_dir, destination_dir),
+        ):
+            mutation = moved[guid]
+            assert mutation.kind is AssetMutationKind.MOVED
+            assert same_path(mutation.source_path, str(source))
+            assert same_path(mutation.destination_path, str(destination))
+            assert mutation.operation_id == "directory-transaction"
         assert Path(f"{moved_a}.meta").is_file()
         assert Path(f"{moved_b}.meta").is_file()
         assert not list(destination_dir.rglob("*.meta.meta"))

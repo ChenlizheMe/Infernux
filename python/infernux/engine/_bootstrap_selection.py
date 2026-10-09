@@ -273,7 +273,7 @@ class BootstrapSelectionMixin:
             target.sub_kind == "directory" for target in snapshot.targets
         ):
             from infernux.engine.interaction import SelectionSnapshot
-            from infernux.engine.path_utils import is_path_within
+            from infernux.engine.path_utils import is_path_within, relative_path
 
             mutations = tuple(iter_asset_mutations(change))
 
@@ -287,7 +287,10 @@ class BootstrapSelectionMixin:
                     if mutation.kind is AssetMutationKind.DELETED:
                         return None
                     if mutation.kind is AssetMutationKind.MOVED:
-                        path = os.path.join(mutation.destination_path, os.path.relpath(path, mutation.source_path))
+                        path = os.path.join(
+                            mutation.destination_path,
+                            relative_path(path, mutation.source_path, resolve=False, allow_root=True),
+                        )
                 return SelectionTarget.project_directory(path)
 
             mapped = {target: remap(target) for target in snapshot.targets}
