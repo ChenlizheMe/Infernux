@@ -1,6 +1,8 @@
 """Exercise ordinary panel authoring through the real native GUI dispatcher."""
 from __future__ import annotations
 
+import time
+
 from infernux.engine.ui.editor_panel import EditorPanel
 from infernux.lib import ConsolePanel
 from infernux.plugins.registry import PluginRegistry
@@ -55,16 +57,19 @@ def test_registered_panel_updates_every_frame_with_automatic_read_reuse(engine, 
     panel = CounterPanel()
     empty = EmptyPanel()
     native = ConsolePanel()
-    frames = 0
+    revised_registry = False
+    deadline = time.monotonic() + 15.0
 
     def update(_delta):
-        nonlocal frames
-        frames += 1
-        if frames == 20:
+        nonlocal revised_registry
+        # GUI refreshes have their own cadence. A hidden window can execute
+        # many engine updates between two actual panel draws.
+        if len(observations) >= 20 and not revised_registry:
             revised = peer.load()
             revised["packages"] = [{"reference": "team/second"}]
             peer.save(revised)
-        if frames >= 75:
+            revised_registry = True
+        if len(observations) >= 75 or time.monotonic() >= deadline:
             engine.exit()
 
     engine.register_gui_renderable("test.live_counter", panel)
@@ -83,9 +88,9 @@ def test_registered_panel_updates_every_frame_with_automatic_read_reuse(engine, 
         engine.set_render_pipeline(None)
         pipeline.dispose()
     assert panel._content_render_error_signature is None
-    assert len(observations) >= 65
+    assert len(observations) >= 75, "The dispatcher did not complete 75 actual GUI frames"
     assert [count for count, _ in observations] == list(range(1, len(observations) + 1))
     assert observations[0][1] == "team/first"
     assert observations[-1][1] == "team/second"
     assert len(loads) == 2
-    assert profile["panel_times"]["test.live_counter"]["sample_count"] >= 65
+    assert profile["panel_times"]["test.live_counter"]["sample_count"] >= 75
