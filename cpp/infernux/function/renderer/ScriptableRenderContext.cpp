@@ -111,7 +111,10 @@ CullingResults &ScriptableRenderContext::Cull(Camera *camera)
     SceneRenderBridge &bridge = SceneRenderBridge::Instance();
     Camera *editorCam = bridge.GetEditorCamera();
 
-    const bool needsShadowDrawCalls = m_graph && m_graph->HasCameraShadows();
+    // Lighting is staged after RenderPipeline::Render, so the graph's shadow
+    // views here belong to the previous frame. Collect the scene-owned caster
+    // list independently; the current light views filter it during recording.
+    const bool needsShadowDrawCalls = m_graph != nullptr;
     CameraDrawCallResult ownedResult;
     CullingResults results;
 

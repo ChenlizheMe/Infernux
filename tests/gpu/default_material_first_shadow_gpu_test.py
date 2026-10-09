@@ -45,7 +45,8 @@ def main() -> None:
                 try:
                     callbacks += 1
                     frame = engine.renderer_frame_snapshot
-                    if frame["game_draw_call_count"] > 0:
+                    if frame["game_render_graph_current_executed"] and frame["game_draw_call_count"] > 0:
+                        assert frame["game_render_graph_execution_count"] == 1, frame
                         assert frame["game_shadow_draw_call_count"] > 0, frame
                         assert engine.gpu_residency_snapshot["shadow_material_descriptor_set_count"] > 0
                         diagnostics = console._get_visible_log_snapshot(1000)
