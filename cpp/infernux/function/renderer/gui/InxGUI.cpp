@@ -463,18 +463,12 @@ void InxGUI::PumpTextureUploads()
 
 void InxGUI::BuildFrame()
 {
-    // SDL exposes a zero-sized ImGui display while minimized. Even forced
-    // automation frames must preserve the last drawable docking layout.
-    if ((SDL_GetWindowFlags(m_window_ptr) & SDL_WINDOW_MINIMIZED) != 0)
-        return;
     (void)m_editorFrameScheduler.Consume(EditorGuiFrameScheduler::Clock::now(), true);
     BuildFrameInternal();
 }
 
 bool InxGUI::BuildFrameIfDue(bool force)
 {
-    if ((SDL_GetWindowFlags(m_window_ptr) & SDL_WINDOW_MINIMIZED) != 0)
-        return false;
     const auto now = EditorGuiFrameScheduler::Clock::now();
     if (m_playerMode) {
         (void)m_editorFrameScheduler.ConsumeUnthrottled(now, true);
@@ -554,6 +548,13 @@ void InxGUI::BuildFrameInternal()
     }
 
     ImGui_ImplSDL3_NewFrame();
+    // The SDL backend zeroes DisplaySize when minimized for presentation.
+    // Agent-only GUI frames still use the window's authoritative logical
+    // dimensions; zero-sized docking would destroy the saved split ratios.
+    int logicalWidth = 0, logicalHeight = 0;
+    if (!SDL_GetWindowSize(m_window_ptr, &logicalWidth, &logicalHeight) || logicalWidth <= 0 || logicalHeight <= 0)
+        throw std::runtime_error("GUI requires a valid logical SDL window size");
+    ImGui::GetIO().DisplaySize = ImVec2(static_cast<float>(logicalWidth), static_cast<float>(logicalHeight));
     ImGui_ImplVulkan_NewFrame();
 
     // ImGui's SDL backend may append a physical-cursor fallback position while

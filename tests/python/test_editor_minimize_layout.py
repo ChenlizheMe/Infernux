@@ -12,7 +12,7 @@ from infernux.lib import InxGUIRenderable, RenderPipelineCallback
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Exercises native Win32 minimize/restore")
-def test_minimize_suspends_gui_builds_and_preserves_docked_widths(engine):
+def test_minimize_keeps_agent_gui_usable_and_preserves_docked_widths(engine):
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.FindWindowW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR)
     user32.FindWindowW.restype = wintypes.HWND
@@ -74,9 +74,16 @@ def test_minimize_suspends_gui_builds_and_preserves_docked_widths(engine):
             time.sleep(.05)
             observed["initial_minimized_frames"] = probe.frames
             engine.queue_synthetic_mouse_motion_input(100, 100, 0, 0)
-            time.sleep(.15)
+            engine.queue_synthetic_mouse_button_input(0, True, 100, 100)
+            release = engine.queue_synthetic_mouse_button_input(0, False, 100, 100)
+            deadline = time.monotonic() + 5
+            while engine.last_processed_synthetic_input_sequence < release:
+                assert time.monotonic() < deadline, "Minimized GUI did not consume the complete input gesture"
+                time.sleep(.01)
+            time.sleep(.05)
             assert user32.IsIconic(window)
             observed["minimized_frames"] = probe.frames
+            observed["during"] = dict(probe.widths)
             user32.ShowWindowAsync(window, 9)
             restored.set()
             assert complete.wait(10), "Editor did not resume rendering"
@@ -104,6 +111,8 @@ def test_minimize_suspends_gui_builds_and_preserves_docked_widths(engine):
         engine.set_maximized(False)
         engine.hide()
     assert "error" not in observed, observed
-    assert observed["minimized_frames"] == observed["initial_minimized_frames"], observed
+    assert observed["minimized_frames"] > observed["initial_minimized_frames"], observed
+    assert set(observed["before"]) == set(observed["during"])
+    assert all(abs(width - observed["during"][panel]) <= 2 for panel, width in observed["before"].items()), observed
     assert set(observed["before"]) == set(observed["after"])
     assert all(abs(width - observed["after"][panel]) <= 2 for panel, width in observed["before"].items()), observed
