@@ -199,10 +199,10 @@
 </tr>
 </tbody>
 </table>
-<p><code>WaitForSeconds</code> accumulates the scaled game delta handed to the coroutine scheduler, the same delta that <code>update()</code> receives. <code>Time.time_scale</code> changes its speed, and zero pauses this wait. <code>WaitForSecondsRealtime</code> uses monotonic elapsed time, unaffected by the game time scale or system-clock corrections, though it can only resume when an update check occurs. Construct realtime waits immediately before yielding them because their target time is set in the constructor.</p>
+<p><code>WaitForSeconds</code> accumulates the scaled game delta handed to the coroutine scheduler, the same delta that <code>update()</code> receives. <code>Time.time_scale</code> changes its speed, and zero pauses this wait. <code>WaitForSecondsRealtime</code> uses monotonic elapsed time, unaffected by the game time scale or system-clock corrections, though it can only resume when an update check occurs. Its duration starts when the instruction is yielded, so constructing it earlier does not consume the wait.</p>
 <p><code>WaitForEndOfFrame</code> means the coroutine scheduler's late-update phase. It does not promise that rendering, presentation, or a screenshot has completed.</p>
 <p>Zero or negative values are accepted by the two seconds-based instructions and become ready at the next update check. Frame-based instructions reject values below 1. For clear intent, use <code>yield None</code> when you want one frame.</p>
-<p>Wait instructions carry mutable elapsed, target, or remaining state. Create a fresh <code>WaitForSeconds</code>, <code>WaitForSecondsRealtime</code>, <code>WaitForFrames</code>, or <code>WaitForEndOfFrame</code> for each wait instead of caching one instance across coroutines.</p>
+<p>Timed and frame-count instructions describe a wait; each coroutine owns its progress. You can cache or share a <code>WaitForSeconds</code>, <code>WaitForSecondsRealtime</code>, <code>WaitForFrames</code>, or <code>WaitForEndOfFrame</code> instance. Every <code>yield</code> starts a fresh, independent wait using the instruction's duration or frame count at that moment. Changing the instruction affects future yields and leaves active waits unchanged.</p>
 <h2 id="handles-cancellation">Handles, children, and cancellation</h2>
 <p>The component API has three operations:</p>
 <table>
@@ -271,7 +271,7 @@
 <li><strong>Expecting an exact timestamp</strong>: waits resume on scheduler checks, so a duration is a minimum and can overshoot by part of a frame.</li>
 <li><strong>Expecting <code>WaitForSeconds</code> to continue during a game-clock pause</strong>: <code>time_scale = 0</code> pauses this wait. Use <code>WaitForSecondsRealtime</code> when a sequence must continue independently of the game clock. Pausing the Editor itself suspends update checks for both waits.</li>
 <li><strong>Treating <code>WaitForEndOfFrame</code> as post-render capture</strong>: it maps to late update in the current scheduler.</li>
-<li><strong>Reusing one wait instance</strong>: elapsed and remaining fields belong to that object. Construct a new instruction at each <code>yield</code>.</li>
+<li><strong>Expecting construction to start a realtime wait</strong>: its clock starts at <code>yield</code>. Each reuse waits for the full duration again.</li>
 <li><strong>Yielding a generator directly</strong>: start it first and yield its <code>Coroutine</code> handle.</li>
 <li><strong>Cancelling the parent and leaving helpers active</strong>: retain helper handles or stop all component-owned coroutines.</li>
 <li><strong>Assuming component disable cancels work</strong>: add explicit <code>on_disable()</code> cleanup when that is the intended lifetime.</li>
@@ -446,10 +446,10 @@
 </tr>
 </tbody>
 </table>
-<p><code>WaitForSeconds</code> 累加协程调度器收到的缩放后游戏 delta，与 <code>update()</code> 收到的 delta 相同。<code>Time.time_scale</code> 会改变等待速度，设为零时暂停该等待。<code>WaitForSecondsRealtime</code> 使用单调时钟计算实际经过的时间，不受游戏时间缩放或系统校时影响，但仍需等到更新检查才能恢复。实时等待的目标时间在构造函数中确定，因此应在 <code>yield</code> 前即时创建。</p>
+<p><code>WaitForSeconds</code> 累加协程调度器收到的缩放后游戏 delta，与 <code>update()</code> 收到的 delta 相同。<code>Time.time_scale</code> 会改变等待速度，设为零时暂停该等待。<code>WaitForSecondsRealtime</code> 使用单调时钟计算实际经过的时间，不受游戏时间缩放或系统校时影响，但仍需等到更新检查才能恢复。等待从 <code>yield</code> 指令时开始，提前创建指令不会消耗等待时长。</p>
 <p><code>WaitForEndOfFrame</code> 对应当前协程调度器的 <code>late_update</code> 阶段，不承诺渲染、画面呈现或截图已经完成。</p>
 <p>两种秒数等待允许 0 和负数，并会在下一次更新检查时就绪。帧数等待会拒绝小于 1 的值。需要明确等待一帧时，使用 <code>yield None</code>。</p>
-<p>等待指令会保存累计时间、目标时间或剩余次数。每次等待都应创建新的 <code>WaitForSeconds</code>、<code>WaitForSecondsRealtime</code>、<code>WaitForFrames</code> 或 <code>WaitForEndOfFrame</code>，避免跨协程缓存同一实例。</p>
+<p>时间和帧数等待指令描述等待条件，进度由各自的协程保存。可以缓存或共享 <code>WaitForSeconds</code>、<code>WaitForSecondsRealtime</code>、<code>WaitForFrames</code> 或 <code>WaitForEndOfFrame</code> 实例。每次 <code>yield</code> 都按当时的时长或帧数开始一次独立、完整的等待。修改指令只影响之后的 <code>yield</code>，已经开始的等待保持不变。</p>
 <h2 id="zh-handles-cancellation">句柄、子流程与取消</h2>
 <p>组件提供三个协程操作：</p>
 <table>
@@ -518,7 +518,7 @@
 <li><strong>期待精确时间点</strong>：等待只能在调度检查时恢复，所以指定时长是下限，可能多出一小段帧时间。</li>
 <li><strong>期待 <code>WaitForSeconds</code> 在游戏时钟暂停时继续</strong>：<code>time_scale = 0</code> 会暂停该等待。需要独立于游戏时钟继续时，请用 <code>WaitForSecondsRealtime</code>。编辑器自身暂停时，两种等待的更新检查都会停止。</li>
 <li><strong>把 <code>WaitForEndOfFrame</code> 当成渲染后截图点</strong>：当前调度器把它映射到后期更新。</li>
-<li><strong>复用同一个等待实例</strong>：累计值和剩余次数保存在对象中。每个 <code>yield</code> 都应构造新指令。</li>
+<li><strong>以为构造指令就开始实时等待</strong>：计时从 <code>yield</code> 时开始，每次复用都会重新等待完整时长。</li>
 <li><strong>直接 <code>yield</code> 生成器</strong>：先启动生成器，再 <code>yield</code> 它的 <code>Coroutine</code> 句柄。</li>
 <li><strong>取消父流程后留下辅助流程</strong>：保存辅助句柄，或停止此组件的全部协程。</li>
 <li><strong>认为禁用组件会自动取消</strong>：需要这种生命周期时，在 <code>on_disable()</code> 中明确清理。</li>

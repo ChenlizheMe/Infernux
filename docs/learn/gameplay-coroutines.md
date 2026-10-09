@@ -133,13 +133,13 @@ Each yielded value selects the phase that will check the coroutine next.
 | a `Coroutine` handle | Resume after that handle is finished, including when it was stopped. | `update` |
 | any unsupported value | Raises `TypeError` at the next update check, stops the coroutine, and closes its generator. | `update` |
 
-`WaitForSeconds` accumulates the scaled game delta handed to the coroutine scheduler, the same delta that `update()` receives. `Time.time_scale` changes its speed, and zero pauses this wait. `WaitForSecondsRealtime` uses monotonic elapsed time, unaffected by the game time scale or system-clock corrections, though it can only resume when an update check occurs. Construct realtime waits immediately before yielding them because their target time is set in the constructor.
+`WaitForSeconds` accumulates the scaled game delta handed to the coroutine scheduler, the same delta that `update()` receives. `Time.time_scale` changes its speed, and zero pauses this wait. `WaitForSecondsRealtime` uses monotonic elapsed time, unaffected by the game time scale or system-clock corrections, though it can only resume when an update check occurs. Its duration starts when the instruction is yielded, so constructing it earlier does not consume the wait.
 
 `WaitForEndOfFrame` means the coroutine scheduler's late-update phase. It does not promise that rendering, presentation, or a screenshot has completed.
 
 Zero or negative values are accepted by the two seconds-based instructions and become ready at the next update check. Frame-based instructions reject values below 1. For clear intent, use `yield None` when you want one frame.
 
-Wait instructions carry mutable elapsed, target, or remaining state. Create a fresh `WaitForSeconds`, `WaitForSecondsRealtime`, `WaitForFrames`, or `WaitForEndOfFrame` for each wait instead of caching one instance across coroutines.
+Timed and frame-count instructions describe a wait; each coroutine owns its progress. You can cache or share a `WaitForSeconds`, `WaitForSecondsRealtime`, `WaitForFrames`, or `WaitForEndOfFrame` instance. Every `yield` starts a fresh, independent wait using the instruction's duration or frame count at that moment. Changing the instruction affects future yields and leaves active waits unchanged.
 
 ## Handles, children, and cancellation {#handles-cancellation}
 
@@ -205,7 +205,7 @@ To inspect a handle during development, log `self._sequence_handle.is_finished`.
 - **Expecting an exact timestamp**: waits resume on scheduler checks, so a duration is a minimum and can overshoot by part of a frame.
 - **Expecting `WaitForSeconds` to continue during a game-clock pause**: `time_scale = 0` pauses this wait. Use `WaitForSecondsRealtime` when a sequence must continue independently of the game clock. Pausing the Editor itself suspends update checks for both waits.
 - **Treating `WaitForEndOfFrame` as post-render capture**: it maps to late update in the current scheduler.
-- **Reusing one wait instance**: elapsed and remaining fields belong to that object. Construct a new instruction at each `yield`.
+- **Expecting construction to start a realtime wait**: its clock starts at `yield`. Each reuse waits for the full duration again.
 - **Yielding a generator directly**: start it first and yield its `Coroutine` handle.
 - **Cancelling the parent and leaving helpers active**: retain helper handles or stop all component-owned coroutines.
 - **Assuming component disable cancels work**: add explicit `on_disable()` cleanup when that is the intended lifetime.
@@ -350,13 +350,13 @@ class CoroutineTour(inx.InxComponent):
 | `Coroutine` 句柄 | 句柄结束后恢复，被停止的句柄也算结束。 | `update` |
 | 任意不支持的值 | 下一次更新检查时报 `TypeError`，停止协程并关闭它的生成器。 | `update` |
 
-`WaitForSeconds` 累加协程调度器收到的缩放后游戏 delta，与 `update()` 收到的 delta 相同。`Time.time_scale` 会改变等待速度，设为零时暂停该等待。`WaitForSecondsRealtime` 使用单调时钟计算实际经过的时间，不受游戏时间缩放或系统校时影响，但仍需等到更新检查才能恢复。实时等待的目标时间在构造函数中确定，因此应在 `yield` 前即时创建。
+`WaitForSeconds` 累加协程调度器收到的缩放后游戏 delta，与 `update()` 收到的 delta 相同。`Time.time_scale` 会改变等待速度，设为零时暂停该等待。`WaitForSecondsRealtime` 使用单调时钟计算实际经过的时间，不受游戏时间缩放或系统校时影响，但仍需等到更新检查才能恢复。等待从 `yield` 指令时开始，提前创建指令不会消耗等待时长。
 
 `WaitForEndOfFrame` 对应当前协程调度器的 `late_update` 阶段，不承诺渲染、画面呈现或截图已经完成。
 
 两种秒数等待允许 0 和负数，并会在下一次更新检查时就绪。帧数等待会拒绝小于 1 的值。需要明确等待一帧时，使用 `yield None`。
 
-等待指令会保存累计时间、目标时间或剩余次数。每次等待都应创建新的 `WaitForSeconds`、`WaitForSecondsRealtime`、`WaitForFrames` 或 `WaitForEndOfFrame`，避免跨协程缓存同一实例。
+时间和帧数等待指令描述等待条件，进度由各自的协程保存。可以缓存或共享 `WaitForSeconds`、`WaitForSecondsRealtime`、`WaitForFrames` 或 `WaitForEndOfFrame` 实例。每次 `yield` 都按当时的时长或帧数开始一次独立、完整的等待。修改指令只影响之后的 `yield`，已经开始的等待保持不变。
 
 ## 句柄、子流程与取消 {#zh-handles-cancellation}
 
@@ -422,7 +422,7 @@ def temporary_state(self):
 - **期待精确时间点**：等待只能在调度检查时恢复，所以指定时长是下限，可能多出一小段帧时间。
 - **期待 `WaitForSeconds` 在游戏时钟暂停时继续**：`time_scale = 0` 会暂停该等待。需要独立于游戏时钟继续时，请用 `WaitForSecondsRealtime`。编辑器自身暂停时，两种等待的更新检查都会停止。
 - **把 `WaitForEndOfFrame` 当成渲染后截图点**：当前调度器把它映射到后期更新。
-- **复用同一个等待实例**：累计值和剩余次数保存在对象中。每个 `yield` 都应构造新指令。
+- **以为构造指令就开始实时等待**：计时从 `yield` 时开始，每次复用都会重新等待完整时长。
 - **直接 `yield` 生成器**：先启动生成器，再 `yield` 它的 `Coroutine` 句柄。
 - **取消父流程后留下辅助流程**：保存辅助句柄，或停止此组件的全部协程。
 - **认为禁用组件会自动取消**：需要这种生命周期时，在 `on_disable()` 中明确清理。
