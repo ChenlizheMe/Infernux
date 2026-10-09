@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 
 from infernux.engine.runtime_change_journal import (
     RuntimeChangeDomain,
@@ -349,6 +350,23 @@ def test_scene_rebuild_releases_retired_revision_keys_without_resetting_cursors(
         assert not service._fields
         assert not service._unbound_components
         assert not service._unbound_fields
+
+
+@pytest.mark.parametrize("clear_registries", [False, True])
+def test_editor_scene_transaction_retires_inspector_keys_in_both_registry_modes(
+    scene, clear_registries,
+) -> None:
+    from infernux.engine.scene_document_transaction import SceneDocumentTransaction
+
+    service = _service()
+    component = _Component(321, 654)
+    before = service.component_snapshot(component)
+    transaction = SceneDocumentTransaction(
+        scene, document=scene.serialize_document(), clear_registries=clear_registries,
+    )
+    assert transaction.run_to_completion(raise_on_failure=True)
+    assert not service._component_targets
+    assert service.snapshot(before.target).schema_revision > before.schema_revision
 
 
 def test_builtin_batch_replay_feeds_live_cached_values() -> None:

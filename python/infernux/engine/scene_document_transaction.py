@@ -19,9 +19,18 @@ class SceneDocumentTransaction(_RuntimeSceneDocumentTransaction):
     """Complete an editor scene transaction and refresh editor Gizmos."""
 
     def _rebuild_python_registries(self) -> None:
+        # Rollback restores the retained native world and its Python owners.
         super()._rebuild_python_registries()
-        if not self._clear_registries:
-            return
+        self._invalidate_editor_projections()
+
+    def _reconcile_resident_python_registries(self) -> None:
+        # Successful publication takes this path instead of the rollback-only
+        # rebuild hook. A partial registry update still replaces native owners.
+        super()._reconcile_resident_python_registries()
+        self._invalidate_editor_projections()
+
+    @staticmethod
+    def _invalidate_editor_projections() -> None:
         from infernux.gizmos.collector import notify_scene_changed
         from infernux.engine.ui.inspector_snapshot import invalidate_rebuilt_scene
 
