@@ -295,27 +295,23 @@ class SpiritAnimator(InxComponent):
     # ── Internals ───────────────────────────────────────────────────
 
     def _subscribe_asset_events(self) -> None:
-        try:
-            from infernux.engine.interaction import AssetMutationService
+        from infernux.application import Application
 
-            previous = getattr(self, "_asset_mutation_service", None)
-            if previous is not None:
-                previous.remove_component_listener(self._on_asset_changed)
-            service = AssetMutationService.instance()
-            self._asset_mutation_service = service
-            if service is not None:
-                service.add_component_listener(self._on_asset_changed)
-        except (AttributeError, ImportError, RuntimeError, TypeError):
-            pass
+        self._unsubscribe_asset_events()
+        if Application.is_player():
+            return
+        from infernux.engine.interaction import AssetMutationService
+
+        service = AssetMutationService.instance()
+        self._asset_mutation_service = service
+        if service is not None:
+            service.add_component_listener(self._on_asset_changed)
 
     def _unsubscribe_asset_events(self) -> None:
-        try:
-            service = getattr(self, "_asset_mutation_service", None)
-            if service is not None:
-                service.remove_component_listener(self._on_asset_changed)
-            self._asset_mutation_service = None
-        except (AttributeError, ImportError, RuntimeError, TypeError):
-            pass
+        service = getattr(self, "_asset_mutation_service", None)
+        if service is not None:
+            service.remove_component_listener(self._on_asset_changed)
+        self._asset_mutation_service = None
 
     def _controller_reference(self) -> Optional[AnimStateMachineRef]:
         reference = type(self).controller.get_raw(self)

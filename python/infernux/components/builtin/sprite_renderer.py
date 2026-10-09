@@ -157,11 +157,13 @@ class SpriteRenderer(BuiltinComponent):
 
     def _subscribe_asset_events(self):
         """Subscribe to typed asset mutations so texture reimport refreshes this renderer."""
+        from infernux.application import Application
+
+        self._unsubscribe_asset_events()
+        if Application.is_player():
+            return
         from infernux.engine.interaction import AssetMutationService
 
-        previous = self.__dict__.get("_asset_mutation_service")
-        if previous is not None:
-            previous.remove_component_listener(self._on_asset_changed)
         service = AssetMutationService.instance()
         self._asset_mutation_service = service
         if service is not None:
