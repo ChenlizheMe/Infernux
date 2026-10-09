@@ -6,6 +6,10 @@
 /Logs/
 /Cache/
 
+# MCP captures, traces, and supervisor sessions belong to this machine.
+/.infernux/mcp_sessions/
+/.infernux/mcp_traces/
+
 # Project-local Python runtimes
 /.runtime/
 /.venv/

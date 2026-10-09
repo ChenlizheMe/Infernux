@@ -38,7 +38,12 @@ def test_git_clone_preserves_authored_assets_without_private_runtime(tmp_path, m
         "Assets/Settings/.gitkeep", "Packages/shared/.gitignore",
     ):
         (source / relative).write_text("# shared Git control file\n", encoding="utf-8")
-    for relative in ("Library/cache.bin", ".runtime/python313/python.exe", "Packages/.cache/download.inxpkg"):
+    for relative in (
+        "Library/cache.bin", ".runtime/python313/python.exe", "Packages/.cache/download.inxpkg",
+        ".infernux/mcp_sessions/session/review/frame.png",
+        ".infernux/mcp_sessions/session/recordings/run.jsonl",
+        ".infernux/mcp_traces/trace.json",
+    ):
         path = source / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"private state")
@@ -54,6 +59,8 @@ def test_git_clone_preserves_authored_assets_without_private_runtime(tmp_path, m
     assert not (clone / ".vscode").exists()
     assert not (clone / "pyrightconfig.json").exists()
     assert not (clone / "Packages" / ".cache").exists()
+    assert not (clone / ".infernux" / "mcp_sessions").exists()
+    assert not (clone / ".infernux" / "mcp_traces").exists()
     assert (clone / "Packages" / "shared" / "Ships.txt").read_text() == "authored package\n"
     model._create_vscode_workspace(str(clone))
     settings = json.loads((clone / ".vscode" / "settings.json").read_text(encoding="utf-8"))
