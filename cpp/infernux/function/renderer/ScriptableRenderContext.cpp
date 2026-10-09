@@ -5,8 +5,8 @@
 #include "GizmosDrawCallBuffer.h"
 #include "InxVkCoreModular.h"
 #include "SceneRenderGraph.h"
-#include "TransientResourcePool.h"
 #include "vk/RhiVulkanTypes.h"
+#include "vk/TransientResourcePool.h"
 #include <function/resources/AssetRegistry/AssetRegistry.h>
 #include <function/resources/InxMaterial/InxMaterial.h>
 #include <function/resources/InxMesh/InxMesh.h>

@@ -90,8 +90,8 @@ file(GLOB_RECURSE INFERNUX_VULKAN_BACKEND_SOURCES CONFIGURE_DEPENDS
 list(APPEND INFERNUX_VULKAN_BACKEND_SOURCES
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/CaptureService.cpp"
     "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/CaptureService.h"
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/TransientResourcePool.cpp"
-    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/TransientResourcePool.h"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/vk/TransientResourcePool.cpp"
+    "${CMAKE_SOURCE_DIR}/cpp/infernux/function/renderer/vk/TransientResourcePool.h"
 )
 
 list(REMOVE_ITEM INFERNUX_RUNTIME_SOURCES

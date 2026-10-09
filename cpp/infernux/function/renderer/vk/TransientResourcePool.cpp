@@ -4,8 +4,8 @@
  */
 
 #include "TransientResourcePool.h"
-#include "vk/VkDeviceContext.h"
-#include "vk/VkResourceManager.h"
+#include "VkDeviceContext.h"
+#include "VkResourceManager.h"
 #include <cassert>
 #include <core/log/InxLog.h>
 #include <stdexcept>

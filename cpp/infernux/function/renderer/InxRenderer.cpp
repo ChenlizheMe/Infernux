@@ -13,7 +13,6 @@
 #include "SceneRenderGraph.h"
 #include "SceneRenderTarget.h"
 #include "ScriptableRenderContext.h"
-#include "TransientResourcePool.h"
 #include "gui/InxGUI.h"
 #include "gui/InxGUIContext.h"
 #include "gui/InxGUISemantics.h"
@@ -33,6 +32,7 @@
 #include "rhi/RhiRenderTexture.h"
 #include "vk/RenderGraph.h"
 #include "vk/RhiVulkanTypes.h"
+#include "vk/TransientResourcePool.h"
 #include "vk/VkHandle.h"
 #include "vk/VmaContext.h"
 #include <SDL3/SDL.h>
