@@ -21,6 +21,10 @@ from infernux.coroutine import (
 from infernux.engine.runtime_dispatch import RuntimeRevisionEpoch
 
 
+def iter_wait(instruction):
+    yield instruction
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Yield instruction unit tests
 # ═══════════════════════════════════════════════════════════════════════════
@@ -31,13 +35,17 @@ class TestWaitForSeconds:
         assert w.duration == 2.5
 
     def test_tick_not_ready(self):
-        w = WaitForSeconds(1.0)
-        assert w._tick(0.5) is False
+        scheduler = CoroutineScheduler()
+        handle = scheduler.start(iter_wait(WaitForSeconds(1.0)))
+        scheduler.tick_update(0.5)
+        assert not handle.is_finished
 
     def test_tick_ready(self):
-        w = WaitForSeconds(1.0)
-        w._tick(0.5)
-        assert w._tick(0.6) is True
+        scheduler = CoroutineScheduler()
+        handle = scheduler.start(iter_wait(WaitForSeconds(1.0)))
+        scheduler.tick_update(0.5)
+        scheduler.tick_update(0.6)
+        assert handle.is_finished
 
     def test_repr(self):
         assert "1.0" in repr(WaitForSeconds(1.0))
@@ -48,19 +56,27 @@ class TestWaitForSecondsRealtime:
         clocks = {"system": 1000.0, "monotonic": 20.0}
         monkeypatch.setattr(stdlib_time, "time", lambda: clocks["system"])
         monkeypatch.setattr(stdlib_time, "monotonic", lambda: clocks["monotonic"])
-        wait = WaitForSecondsRealtime(0.25)
+        scheduler = CoroutineScheduler()
+        handle = scheduler.start(iter_wait(WaitForSecondsRealtime(0.25)))
         clocks.update(system=2000.0, monotonic=20.1)
-        assert not wait._is_ready()
+        scheduler.tick_update(100.0)
+        assert not handle.is_finished
         clocks.update(system=500.0, monotonic=20.3)
-        assert wait._is_ready()
+        scheduler.tick_update(0.0)
+        assert handle.is_finished
 
     def test_ready_after_duration(self):
-        w = WaitForSecondsRealtime(0.0)  # 0 seconds = immediate
-        assert w._is_ready() is True
+        scheduler = CoroutineScheduler()
+        handle = scheduler.start(iter_wait(WaitForSecondsRealtime(0.0)))
+        assert not handle.is_finished
+        scheduler.tick_update(0.0)
+        assert handle.is_finished
 
     def test_not_ready_before_duration(self):
-        w = WaitForSecondsRealtime(10.0)
-        assert w._is_ready() is False
+        scheduler = CoroutineScheduler()
+        handle = scheduler.start(iter_wait(WaitForSecondsRealtime(10.0)))
+        scheduler.tick_update(0.0)
+        assert not handle.is_finished
 
     def test_repr(self):
         assert "WaitForSecondsRealtime" in repr(WaitForSecondsRealtime(1))

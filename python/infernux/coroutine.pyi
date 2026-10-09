@@ -4,25 +4,25 @@ from typing import Any, Callable, Generator, Optional
 
 
 class WaitForSeconds:
-    """Suspend a coroutine for a given number of seconds."""
+    """Reusable scaled-time wait; each yield owns independent progress."""
 
     duration: float
     def __init__(self, seconds: float) -> None: ...
 
 class WaitForSecondsRealtime:
-    """Suspend a coroutine for a given number of real-time seconds."""
+    """Reusable real-time wait; each yield starts its own monotonic deadline."""
 
     duration: float
     def __init__(self, seconds: float) -> None: ...
 
 class WaitForEndOfFrame:
-    """Suspend until one or more frame-end phases have completed."""
+    """Reusable wait for one or more frame-end phases from each yield."""
 
     frames: int
     def __init__(self, frames: int = ...) -> None: ...
 
 class WaitForFrames:
-    """Suspend a coroutine for an exact number of update frames."""
+    """Reusable wait for an exact number of update frames from each yield."""
 
     frames: int
     def __init__(self, frames: int = ...) -> None: ...

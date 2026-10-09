@@ -30,6 +30,10 @@ Yield instructions
 ``yield WaitWhile(pred)``            Resume when ``pred()`` returns ``False``.
 ``yield another_coroutine``          Wait until *another_coroutine* finishes.
 ==========================  ====================================================
+
+Timed and frame-count instructions are reusable descriptions. Each ``yield``
+starts an independent wait on its coroutine, including when several coroutines
+share one instruction. Realtime waits start when yielded, not when constructed.
 """
 
 from __future__ import annotations
@@ -50,31 +54,21 @@ class WaitForSeconds:
     The component scheduler supplies the same scaled delta as ``update()``;
     ``Time.time_scale`` changes the wait speed, and zero pauses it.
     """
-    __slots__ = ("duration", "_elapsed")
+    __slots__ = ("duration",)
 
     def __init__(self, seconds: float):
         self.duration: float = float(seconds)
-        self._elapsed: float = 0.0
-
-    def _tick(self, scaled_dt: float) -> bool:
-        """Accumulate the scheduler's frame delta; return ``True`` when done."""
-        self._elapsed += scaled_dt
-        return self._elapsed >= self.duration
 
     def __repr__(self) -> str:
         return f"WaitForSeconds({self.duration})"
 
 
 class WaitForSecondsRealtime:
-    """Suspend for real elapsed seconds, independent of system-clock changes."""
-    __slots__ = ("duration", "_target_time")
+    """Wait for real seconds from each yield, independent of system-clock changes."""
+    __slots__ = ("duration",)
 
     def __init__(self, seconds: float):
         self.duration: float = float(seconds)
-        self._target_time: float = _time.monotonic() + self.duration
-
-    def _is_ready(self) -> bool:
-        return _time.monotonic() >= self._target_time
 
     def __repr__(self) -> str:
         return f"WaitForSecondsRealtime({self.duration})"
@@ -82,7 +76,7 @@ class WaitForSecondsRealtime:
 
 class WaitForEndOfFrame:
     """Suspend until one or more late-update scheduler passes have completed."""
-    __slots__ = ("frames", "_remaining")
+    __slots__ = ("frames",)
 
     def __init__(self, frames: int = 1):
         if isinstance(frames, bool) or not isinstance(frames, int):
@@ -90,11 +84,6 @@ class WaitForEndOfFrame:
         if frames < 1:
             raise ValueError("frames must be at least 1")
         self.frames = frames
-        self._remaining = frames
-
-    def _tick(self) -> bool:
-        self._remaining -= 1
-        return self._remaining <= 0
 
     def __repr__(self) -> str:
         return f"WaitForEndOfFrame({self.frames})"
@@ -102,7 +91,7 @@ class WaitForEndOfFrame:
 
 class WaitForFrames:
     """Suspend for an exact number of ``update`` frames."""
-    __slots__ = ("frames", "_remaining")
+    __slots__ = ("frames",)
 
     def __init__(self, frames: int = 1):
         if isinstance(frames, bool) or not isinstance(frames, int):
@@ -110,11 +99,6 @@ class WaitForFrames:
         if frames < 1:
             raise ValueError("frames must be at least 1")
         self.frames = frames
-        self._remaining = frames
-
-    def _tick(self) -> bool:
-        self._remaining -= 1
-        return self._remaining <= 0
 
     def __repr__(self) -> str:
         return f"WaitForFrames({self.frames})"
@@ -179,6 +163,7 @@ class Coroutine:
     __slots__ = (
         "_id", "_generator", "_owner_ref", "_current_yield", "_is_finished",
         "_phase", "_creation_epoch", "_creation_epoch_id", "_is_stale_epoch",
+        "_wait_progress", "_wait_limit",
     )
 
     def __init__(
@@ -193,6 +178,8 @@ class Coroutine:
         self._generator: Optional[Generator] = generator
         self._owner_ref: Any = owner          # component reference for error reporting
         self._current_yield: Any = None
+        self._wait_progress: float | int = 0
+        self._wait_limit: float | int = 0
         self._is_finished: bool = False
         self._phase: str = "update"           # which tick phase should process this
         self._creation_epoch: Any = (
@@ -409,13 +396,14 @@ class CoroutineScheduler:
                     # ``yield None`` / bare ``yield`` → wait one frame
                     should_advance = True
                 elif isinstance(current, WaitForSeconds):
-                    should_advance = current._tick(dt)
+                    progress = co._wait_progress + dt
+                    co._wait_progress = progress
+                    should_advance = progress >= co._wait_limit
                 elif isinstance(current, WaitForSecondsRealtime):
-                    should_advance = current._is_ready()
-                elif isinstance(current, WaitForEndOfFrame):
-                    should_advance = current._tick()
-                elif isinstance(current, WaitForFrames):
-                    should_advance = current._tick()
+                    should_advance = _time.monotonic() >= co._wait_limit
+                elif isinstance(current, WaitForEndOfFrame) or isinstance(current, WaitForFrames):
+                    co._wait_progress += 1
+                    should_advance = co._wait_progress >= co._wait_limit
                 elif isinstance(current, WaitForFixedUpdate):
                     # Already in the correct phase (fixed_update)
                     should_advance = True
@@ -482,6 +470,15 @@ class CoroutineScheduler:
             return
 
         co._current_yield = value
+        co._wait_progress = 0
+        if isinstance(value, WaitForSeconds):
+            co._wait_limit = value.duration
+        elif isinstance(value, WaitForSecondsRealtime):
+            co._wait_limit = _time.monotonic() + value.duration
+        elif isinstance(value, WaitForEndOfFrame) or isinstance(value, WaitForFrames):
+            co._wait_limit = value.frames
+        else:
+            co._wait_limit = 0
 
         # Determine which tick phase should next process this coroutine
         if isinstance(value, WaitForEndOfFrame):
