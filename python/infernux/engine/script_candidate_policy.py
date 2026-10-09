@@ -51,18 +51,6 @@ _BLOCKED_FILE_WRITE = "NX-R1-STATIC-FILE-WRITE"
 _BLOCKED_PROCESS = "NX-R1-STATIC-PROCESS"
 _BLOCKED_DYNAMIC_CODE = "NX-R1-STATIC-DYNAMIC-CODE"
 
-_PROCESS_MODULES = frozenset(
-    {
-        "subprocess",
-        "multiprocessing",
-        "threading",
-        "_thread",
-        "socket",
-        "atexit",
-        "asyncio",
-        "concurrent.futures",
-    }
-)
 _PROCESS_DIRECT_MEMBERS = frozenset(
     {
         ("subprocess", "run"),
@@ -74,13 +62,21 @@ _PROCESS_DIRECT_MEMBERS = frozenset(
         ("os", "popen"),
         ("multiprocessing", "Process"),
         ("multiprocessing", "Pool"),
+        ("multiprocessing", "Manager"),
+        ("multiprocessing", "Pipe"),
         ("threading", "Thread"),
         ("threading", "Timer"),
         ("_thread", "start_new_thread"),
         ("socket", "socket"),
+        ("socket", "socketpair"),
+        ("socket", "create_connection"),
+        ("socket", "create_server"),
         ("atexit", "register"),
+        ("atexit", "unregister"),
+        ("asyncio", "run"),
         ("asyncio", "create_task"),
         ("asyncio", "ensure_future"),
+        ("asyncio", "run_coroutine_threadsafe"),
         ("concurrent.futures", "ThreadPoolExecutor"),
         ("concurrent.futures", "ProcessPoolExecutor"),
     }
@@ -364,8 +360,7 @@ class _PolicyVisitor(ast.NodeVisitor):
                     "top-level filesystem mutation is not allowed for a reload candidate",
                 )
             elif (
-                module in _PROCESS_MODULES
-                or (module, path[-1]) in _PROCESS_DIRECT_MEMBERS
+                (module, path[-1]) in _PROCESS_DIRECT_MEMBERS
                 or (module == "os" and path[-1].startswith("spawn"))
             ):
                 self._blocked(

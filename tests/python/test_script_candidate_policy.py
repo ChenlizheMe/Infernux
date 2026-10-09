@@ -231,6 +231,36 @@ def test_ecosystem_declarations_need_no_class_or_call_allowlist(source):
 
 
 @pytest.mark.parametrize("source", [
+    "import asyncio\nVALUE = asyncio.iscoroutine(None)\n",
+    "from asyncio import iscoroutinefunction\nVALUE = iscoroutinefunction(lambda: None)\n",
+    "import asyncio\nQUEUE = asyncio.Queue()\n",
+    "import subprocess\nVALUE = subprocess.list2cmdline(['hello world'])\n",
+    "from subprocess import CompletedProcess\nRESULT = CompletedProcess([], 0)\n",
+    "import threading\nLOCK = threading.Lock()\n",
+    "from threading import RLock\nLOCK = RLock()\n",
+    "import threading\nEVENT = threading.Event()\n",
+    "import socket\nVALUE = socket.inet_aton('127.0.0.1')\n",
+    "from socket import ntohs\nVALUE = ntohs(80)\n",
+])
+def test_stdlib_declarations_are_not_rejected_by_module_name(source):
+    assert not _report(source).is_rejected
+
+
+@pytest.mark.parametrize("source", [
+    "import asyncio\nasyncio.run(main())\n",
+    "from asyncio import run_coroutine_threadsafe\nrun_coroutine_threadsafe(main(), loop)\n",
+    "import socket\nsocket.create_connection(('localhost', 80))\n",
+    "from socket import socketpair\nsocketpair()\n",
+    "import multiprocessing\nmultiprocessing.Manager()\n",
+    "import atexit\natexit.unregister(callback)\n",
+])
+def test_explicit_external_stdlib_operations_remain_rejected(source):
+    report = _report(source)
+    assert report.is_rejected
+    assert report.blocked[0].code == "NX-R1-STATIC-PROCESS"
+
+
+@pytest.mark.parametrize("source", [
     "import numpy as np\nnp.save('state.npy', np.zeros(1))\n",
     "import numpy as np\nnp.seterr(all='ignore')\n",
     "from numpy import save\nsave('state.npy', [1])\n",
