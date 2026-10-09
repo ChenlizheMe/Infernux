@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from pathlib import PurePosixPath
 from pathlib import Path
 from typing import Any, Iterable
@@ -23,6 +24,10 @@ from .path_utils import relative_path, resolved_path
 CATALOG_SCHEMA = "infernux.runtime_asset_catalog"
 # Windows FILETIME is measured in 100 ns ticks since 1601-01-01 UTC.
 WINDOWS_FILETIME_EPOCH_OFFSET_TICKS = 116444736000000000
+# libstdc++'s filesystem clock is anchored at 2174-01-01 on Linux.  The
+# native AssetIndex stores file_clock::duration::count(), so portable Python
+# must use the same epoch instead of comparing it with Unix or FILETIME ticks.
+LIBSTDCXX_FILE_CLOCK_EPOCH_OFFSET_NS = 6437664000 * 1_000_000_000
 
 _DOCUMENT_TYPES = {
     ".scene": "scene",
@@ -118,6 +123,15 @@ def unix_ns_to_filetime_ticks(unix_ns: int) -> int:
     """Convert Unix nanoseconds to Windows FILETIME 100 ns ticks."""
 
     return int(unix_ns) // 100 + WINDOWS_FILETIME_EPOCH_OFFSET_TICKS
+
+
+def _native_filesystem_modified_ns(stat_result: os.stat_result) -> int:
+    """Return the timestamp representation used by native AssetIndex."""
+
+    unix_ns = int(stat_result.st_mtime_ns)
+    if sys.platform.startswith("linux"):
+        return unix_ns - LIBSTDCXX_FILE_CLOCK_EPOCH_OFFSET_NS
+    return unix_ns_to_filetime_ticks(unix_ns)
 
 
 def _source_content_hash(path: str) -> str:
@@ -259,7 +273,7 @@ def source_fingerprint(project_root: str | os.PathLike[str], entry: dict[str, An
     # with the GIL released; never iterate asset bytes in Python.
     current = {
         "size": int(stat.st_size),
-        "modified_ns": unix_ns_to_filetime_ticks(int(stat.st_mtime_ns)),
+        "modified_ns": _native_filesystem_modified_ns(stat),
     }
     if current["size"] != expected_size:
         raise RuntimeArtifactError(
