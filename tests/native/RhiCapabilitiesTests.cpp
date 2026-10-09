@@ -1,3 +1,4 @@
+#include <function/renderer/rhi/RhiCommand.h>
 #include <function/renderer/rhi/RhiDevice.h>
 
 #ifdef NDEBUG
@@ -13,6 +14,8 @@ int main()
 {
     DeviceCaps capabilities;
     capabilities.backend = BackendType::Vulkan;
+    capabilities.SetBackendId(kVulkanBackendId);
+    assert(capabilities.BackendName() == kVulkanBackendId);
     capabilities.adapterType = AdapterType::Discrete;
     capabilities.SetAdapterName("Test Adapter");
     assert(capabilities.AdapterName() == "Test Adapter");
@@ -100,10 +103,12 @@ int main()
     computeState.shaderInt64.enabled = true;
     assert(CheckDeviceCapabilities(computeState, computeRequest).IsSupported());
 
-    // Every enabled shader contract must have a distinct cache key. Physical
+    // Every shader-affecting capability has a distinct cache key. Physical
     // support without logical-device enablement must not select another key.
+    // Host execution features do not change shader code and therefore must
+    // not invalidate the shader cache.
     std::set<uint64_t> shaderContracts;
-    for (uint32_t bits = 0; bits < 128; ++bits) {
+    for (uint32_t bits = 0; bits < 16; ++bits) {
         DeviceCapabilityState contract;
         const DeviceCapabilityStatus bindless{true, (bits & 1u) != 0};
         contract.bindless.descriptorIndexing = bindless;
@@ -112,17 +117,33 @@ int main()
         contract.bindless.descriptorBindingPartiallyBound = bindless;
         contract.bindless.descriptorBindingVariableDescriptorCount = bindless;
         contract.bindless.descriptorBindingSampledImageUpdateAfterBind = bindless;
-        contract.dynamicRendering = {true, (bits & 2u) != 0};
-        contract.synchronization2 = {true, (bits & 4u) != 0};
-        contract.submit2 = {true, (bits & 8u) != 0};
-        contract.shaderInt16 = {true, (bits & 16u) != 0};
-        contract.shaderInt64 = {true, (bits & 32u) != 0};
-        contract.shaderFloat64 = {true, (bits & 64u) != 0};
+        contract.shaderInt16 = {true, (bits & 2u) != 0};
+        contract.shaderInt64 = {true, (bits & 4u) != 0};
+        contract.shaderFloat64 = {true, (bits & 8u) != 0};
         const auto key = ComputeDeviceShaderContractKey(contract);
         if (bits == 0)
             assert(key == ComputeDeviceShaderContractKey({}));
         assert(shaderContracts.insert(key).second);
     }
+
+    DeviceCapabilityState hostOnlyA;
+    DeviceCapabilityState hostOnlyB;
+    hostOnlyA.dynamicRendering = {true, false};
+    hostOnlyB.dynamicRendering = {true, true};
+    hostOnlyA.synchronization2 = {true, false};
+    hostOnlyB.synchronization2 = {true, true};
+    hostOnlyA.submit2 = {true, false};
+    hostOnlyB.submit2 = {true, true};
+    assert(ComputeDeviceShaderContractKey(hostOnlyA) == ComputeDeviceShaderContractKey(hostOnlyB));
+    assert(ComputeDeviceShaderContractKey({}, "vulkan") != ComputeDeviceShaderContractKey({}, "webgpu"));
+    assert(ComputeDeviceShaderContractKey({}, "vulkan", 1) != ComputeDeviceShaderContractKey({}, "vulkan", 2));
+
+    GraphicsCommandEncoder::Dispatch graphicsDispatch;
+    assert(!graphicsDispatch.IsComplete());
+    ComputeCommandEncoder::DispatchTable computeDispatch;
+    assert(!computeDispatch.IsComplete());
+    TransferCommandEncoder::DispatchTable transferDispatch;
+    assert(!transferDispatch.IsComplete());
 
     return 0;
 }

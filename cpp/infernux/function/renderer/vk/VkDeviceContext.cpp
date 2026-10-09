@@ -914,6 +914,7 @@ void VkDeviceContext::BuildCapabilities()
 
     auto &capabilities = m_capabilities;
     capabilities.backend = BackendType::Vulkan;
+    capabilities.SetBackendId(kVulkanBackendId);
     capabilities.adapterType = ToRhiAdapterType(m_deviceProperties.deviceType);
     capabilities.SetAdapterName(m_deviceProperties.deviceName);
     capabilities.vendorId = m_deviceProperties.vendorID;
@@ -960,6 +961,17 @@ void VkDeviceContext::BuildCapabilities()
     capabilities.features.timelineSemaphore = m_timelineSemaphoreEnabled;
     capabilities.features.independentComputeQueue = m_hasIndependentComputeQueue;
     capabilities.features.dedicatedTransferQueue = m_hasDedicatedTransferQueue;
+    capabilities.portable.bindlessSampledTextures = m_descriptorIndexingEnabled;
+    capabilities.portable.maxBindlessSampledTextures = capabilities.limits.maxUpdateAfterBindSampledTexturesPerStage;
+    capabilities.portable.asyncCompute = m_hasIndependentComputeQueue;
+    capabilities.portable.timelineCompletion = m_timelineSemaphoreEnabled;
+    capabilities.portable.storageTextures = true;
+    capabilities.portable.shaderInt64 = m_deviceFeatures.shaderInt64 == VK_TRUE;
+    std::copy_n(limits.maxComputeWorkGroupSize, 3, capabilities.portable.maxWorkgroupSize);
+    capabilities.portable.maxWorkgroupInvocations = limits.maxComputeWorkGroupInvocations;
+    capabilities.portable.maxStorageBufferBinding = limits.maxPerStageDescriptorStorageBuffers;
+    capabilities.portable.pushConstantBytes = limits.maxPushConstantsSize;
+    capabilities.portable.mappableReadback = true;
 
     uint32_t queueFamilyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &queueFamilyCount, nullptr);

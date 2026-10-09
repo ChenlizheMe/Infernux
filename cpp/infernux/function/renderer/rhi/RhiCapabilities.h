@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -15,8 +16,60 @@ enum class BackendType : uint8_t
 {
     Unknown = 0,
     Vulkan,
+    // Source-compatibility bridge for out-of-tree adapters. New code uses
+    // DeviceCaps::backendId so plugins do not require a central enum entry.
     WebGPU,
 };
+
+/// Stable backend identity carried across the RHI seam. The core treats this
+/// as an opaque identifier and never dispatches on a plugin-specific enum.
+struct BackendId final
+{
+    static constexpr size_t Capacity = 32;
+
+    std::array<char, Capacity> value{};
+
+    constexpr BackendId() noexcept = default;
+
+    explicit BackendId(std::string_view id) noexcept
+    {
+        Set(id);
+    }
+
+    void Set(std::string_view id) noexcept
+    {
+        value.fill('\0');
+        const size_t count = id.size() < Capacity - 1 ? id.size() : Capacity - 1;
+        for (size_t index = 0; index < count; ++index)
+            value[index] = id[index];
+    }
+
+    [[nodiscard]] constexpr std::string_view View() const noexcept
+    {
+        size_t length = 0;
+        while (length < value.size() && value[length] != '\0')
+            ++length;
+        return {value.data(), length};
+    }
+
+    [[nodiscard]] constexpr bool Empty() const noexcept
+    {
+        return value[0] == '\0';
+    }
+
+    friend constexpr bool operator==(const BackendId &lhs, const BackendId &rhs) noexcept
+    {
+        return lhs.View() == rhs.View();
+    }
+
+    friend constexpr bool operator!=(const BackendId &lhs, const BackendId &rhs) noexcept
+    {
+        return !(lhs == rhs);
+    }
+};
+
+inline constexpr std::string_view kVulkanBackendId = "vulkan";
+inline constexpr std::string_view kWebGpuBackendId = "webgpu";
 
 enum class AdapterType : uint8_t
 {
@@ -135,11 +188,34 @@ struct DeviceFeatures
     bool dedicatedTransferQueue = false;
 };
 
+/// Backend-neutral limits and feature declarations. Shared compute, particle,
+/// and future NN code consumes this subset; backend adapters may retain their
+/// private feature-chain state separately.
+struct PortableCaps final
+{
+    bool bindlessSampledTextures = false;
+    uint32_t maxBindlessSampledTextures = 0;
+    bool asyncCompute = false;
+    bool timelineCompletion = false;
+    bool storageTextures = false;
+    bool shaderFloat16 = false;
+    bool shaderInt64 = false;
+    uint32_t maxWorkgroupSize[3] = {};
+    uint32_t maxWorkgroupInvocations = 0;
+    uint32_t maxStorageBufferBinding = 0;
+    uint32_t pushConstantBytes = 0;
+    bool mappableReadback = false;
+    bool externalMemory = false;
+};
+
 struct DeviceCaps
 {
     static constexpr size_t AdapterNameCapacity = 128;
 
+    // Kept for source compatibility with existing adapters. Shared code uses
+    // backendId/BackendName instead of branching on a central enum.
     BackendType backend = BackendType::Unknown;
+    BackendId backendId;
     AdapterType adapterType = AdapterType::Unknown;
     std::array<char, AdapterNameCapacity> adapterName{};
     uint32_t vendorId = 0;
@@ -150,8 +226,29 @@ struct DeviceCaps
     uint32_t apiVersionPatch = 0;
     DeviceLimits limits;
     DeviceFeatures features;
+    PortableCaps portable;
     TimestampQueryCapabilities timestampQueries;
     std::array<FormatCapabilities, kPixelFormatCount> formats{};
+
+    void SetBackendId(std::string_view value) noexcept
+    {
+        backendId.Set(value);
+    }
+
+    [[nodiscard]] std::string_view BackendName() const noexcept
+    {
+        if (!backendId.Empty())
+            return backendId.View();
+        switch (backend) {
+        case BackendType::Vulkan:
+            return kVulkanBackendId;
+        case BackendType::WebGPU:
+            return kWebGpuBackendId;
+        case BackendType::Unknown:
+            break;
+        }
+        return {};
+    }
 
     void SetAdapterName(std::string_view value) noexcept
     {

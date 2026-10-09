@@ -15,6 +15,18 @@
 namespace infernux::rhi
 {
 
+/// RHI ABI version. The major component changes whenever a plugin must be
+/// rebuilt; the minor component is for additive contracts understood by the
+/// existing device vtable.
+inline constexpr uint32_t kRhiApiVersionMajor = 1;
+inline constexpr uint32_t kRhiApiVersionMinor = 0;
+inline constexpr uint32_t kRhiApiVersion = (kRhiApiVersionMajor << 16u) | kRhiApiVersionMinor;
+
+[[nodiscard]] constexpr bool IsRhiApiVersionCompatible(uint32_t version) noexcept
+{
+    return (version >> 16u) == kRhiApiVersionMajor && (version & 0xffffu) <= kRhiApiVersionMinor;
+}
+
 class TextureGpuView;
 
 struct BindlessTextureTableBinding final
@@ -132,24 +144,40 @@ struct DeviceCapabilityState final
     }
 };
 
+/// Small deterministic hash used to identify an opaque backend in a shader
+/// contract key. This is an identity tag, not a security checksum.
+[[nodiscard]] constexpr uint32_t ShaderBackendTag(std::string_view backendId) noexcept
+{
+    uint32_t hash = 2166136261u;
+    for (const char character : backendId) {
+        hash ^= static_cast<uint8_t>(character);
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
 /// Stable shader-ABI key for enabled descriptor and arithmetic capabilities.
-/// The versioned prefix leaves the low byte clear for distinct feature bits;
-/// physical support alone does not change the compiled shader contract.
+/// Host execution features (dynamic rendering, synchronization2, submit2)
+/// deliberately do not participate: they do not change shader code. Backend
+/// identity and shader IR version do, so Vulkan and plugin caches cannot alias.
+[[nodiscard]] constexpr uint64_t ComputeDeviceShaderContractKey(const DeviceCapabilityState &state,
+                                                                std::string_view backendId,
+                                                                uint32_t shaderIrVersion = 1) noexcept
+{
+    uint64_t key = 0x494e000000000000ull; // INXSH, contract key version 3
+    key |= static_cast<uint64_t>(shaderIrVersion & 0xffu) << 40u;
+    key |= static_cast<uint64_t>(ShaderBackendTag(backendId) & 0xffffffu) << 16u;
+    const bool bindless = state.bindless.IsEnabled();
+    key |= static_cast<uint64_t>(bindless) << 0u;
+    key |= static_cast<uint64_t>(state.shaderInt16.IsEnabled()) << 1u;
+    key |= static_cast<uint64_t>(state.shaderInt64.IsEnabled()) << 2u;
+    key |= static_cast<uint64_t>(state.shaderFloat64.IsEnabled()) << 3u;
+    return key;
+}
+
 [[nodiscard]] constexpr uint64_t ComputeDeviceShaderContractKey(const DeviceCapabilityState &state) noexcept
 {
-    uint64_t key = 0x494e585348020000ull; // INXSH, contract version 2
-    const bool bindless = state.bindless.IsEnabled();
-    const bool dynamicRendering = state.dynamicRendering.IsEnabled();
-    const bool synchronization2 = state.synchronization2.IsEnabled();
-    const bool submit2 = state.submit2.IsEnabled();
-    key |= static_cast<uint64_t>(bindless) << 0u;
-    key |= static_cast<uint64_t>(dynamicRendering) << 1u;
-    key |= static_cast<uint64_t>(synchronization2) << 2u;
-    key |= static_cast<uint64_t>(submit2) << 3u;
-    key |= static_cast<uint64_t>(state.shaderInt16.IsEnabled()) << 4u;
-    key |= static_cast<uint64_t>(state.shaderInt64.IsEnabled()) << 5u;
-    key |= static_cast<uint64_t>(state.shaderFloat64.IsEnabled()) << 6u;
-    return key;
+    return ComputeDeviceShaderContractKey(state, kVulkanBackendId);
 }
 
 struct DeviceCapabilityRequest final
@@ -244,6 +272,11 @@ class Device
 {
   public:
     virtual ~Device() = default;
+
+    [[nodiscard]] virtual uint32_t GetApiVersion() const noexcept
+    {
+        return kRhiApiVersion;
+    }
 
     [[nodiscard]] virtual DeviceId GetDeviceId() const noexcept
     {

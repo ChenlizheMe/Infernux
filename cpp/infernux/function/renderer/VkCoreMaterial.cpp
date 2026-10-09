@@ -509,7 +509,8 @@ void InxVkCoreModular::InitializeMaterialSystem()
             m_backend.Device().GetVmaAllocator(), GetDevice(), GetPhysicalDevice(), colorFormat, depthFormat,
             m_msaaSampleCount, m_shaderCache.GetProgramCache(), &m_deletionQueue,
             m_backend.Device().IsDescriptorIndexingEnabled(), &m_backend.Device().GetRhiDevice().GetDescriptorManager(),
-            rhi::ComputeDeviceShaderContractKey(m_backend.Device().GetRhiDevice().GetCapabilityState()));
+            rhi::ComputeDeviceShaderContractKey(m_backend.Device().GetRhiDevice().GetCapabilityState(),
+                                                m_backend.Device().GetCapabilities().BackendName());
         m_materialPipelineManagerInitialized = true;
 
         auto &materialDescriptors = m_materialPipelineManager.GetDescriptorManager();
@@ -517,17 +518,17 @@ void InxVkCoreModular::InitializeMaterialSystem()
         materialDescriptors.SetBindlessMaterialMode(rhiDevice.GetBindlessTextureTableBinding().IsValid());
         materialDescriptors.SetBindlessTextureResolver(
             [device = &rhiDevice](const std::shared_ptr<const rhi::TextureGpuView> &view) -> rhi::ResourceIndex {
-                return device->PublishBindlessTexture(view);
+            return device->PublishBindlessTexture(view);
             });
         materialDescriptors.SetBufferResolver(
             [device = &rhiDevice](const std::shared_ptr<rhi::ComputeBuffer> &buffer) -> VkDescriptorBufferInfo {
-                VkDescriptorBufferInfo result{};
-                if (!buffer || &buffer->GetHost().device != device)
-                    return result;
-                result.buffer = device->Resolve(buffer->GetBuffer());
-                result.offset = 0;
-                result.range = buffer->GetByteSize();
+            VkDescriptorBufferInfo result{};
+            if (!buffer || &buffer->GetHost().device != device)
                 return result;
+            result.buffer = device->Resolve(buffer->GetBuffer());
+            result.offset = 0;
+            result.range = buffer->GetByteSize();
+            return result;
             });
 
         auto whiteSlot = m_textureCache.Find("white", m_ensureFrameCounter);
@@ -559,17 +560,17 @@ void InxVkCoreModular::InitializeMaterialSystem()
         m_materialPipelineManager.SetTextureResolver(
             [this](const std::string &textureRef, const std::string &bindingName,
                    const MaterialTextureSampler *sampler) -> TextureResolveResult {
-                return ResolveTextureForMaterial(textureRef, bindingName, sampler);
+            return ResolveTextureForMaterial(textureRef, bindingName, sampler);
             });
         m_materialPipelineManager.GetDescriptorManager().SetRenderTextureResolver(
             [this](const std::shared_ptr<rhi::RenderTexture> &texture) {
-                MaterialDescriptorSet::TextureBinding binding;
-                binding.gpuSlot = texture->GetSampledColorSlot();
-                binding.gpuView = binding.gpuSlot->Acquire();
-                auto &device = m_backend.Device().GetRhiDevice();
-                binding.imageView = device.Resolve(binding.gpuView->GetView());
-                binding.sampler = device.Resolve(binding.gpuView->GetSampler());
-                return binding;
+            MaterialDescriptorSet::TextureBinding binding;
+            binding.gpuSlot = texture->GetSampledColorSlot();
+            binding.gpuView = binding.gpuSlot->Acquire();
+            auto &device = m_backend.Device().GetRhiDevice();
+            binding.imageView = device.Resolve(binding.gpuView->GetView());
+            binding.sampler = device.Resolve(binding.gpuView->GetSampler());
+            return binding;
             });
     }
 
