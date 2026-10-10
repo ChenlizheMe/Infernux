@@ -416,3 +416,42 @@ def test_hub_window_fits_the_available_screen(tmp_path, monkeypatch):
     finally:
         hub.db.close()
         hub.deleteLater()
+
+
+# ── Hotfix folding ───────────────────────────────────────────────────
+
+def test_hotfix_revisions_fold_into_their_version():
+    from version_manager import (
+        EngineVersion, display_release, hotfix_label, latest_engine_versions, latest_releases,
+    )
+    assert display_release("0.4.1-v3") == "0.4.1" and display_release("0.4.1") == "0.4.1"
+    assert hotfix_label("0.4.1") == "" and hotfix_label("0.4.1-v3") == "HOTFIX 3"
+    assert latest_releases(["0.4.1", "0.4.1-v3", "0.4.1-v2", "0.4.0", "0.3.7-v2"]) == ["0.4.1-v3", "0.4.0", "0.3.7-v2"]
+
+    def ev(version, *, wheel=True, installed=False):
+        return EngineVersion(tag=f"v{version}", version=version, wheel_url="u" if wheel else "", installed=installed)
+
+    catalog = [ev("0.4.1"), ev("0.4.1-v2", installed=True), ev("0.4.1-v3"), ev("0.4.0")]
+    rows = latest_engine_versions(catalog)
+    assert [row.version for row in rows] == ["0.4.1-v3", "0.4.0"]
+    # An older installed hotfix turns the visible newest one into an update.
+    assert rows[0].installed and rows[0].update_available
+    # A hotfix without a wheel for this platform does not hide a usable one.
+    assert [row.version for row in latest_engine_versions([ev("0.4.1-v2"), ev("0.4.1-v3", wheel=False)])] == ["0.4.1-v2"]
+    # A project's exact pin stays reachable for its INSTALL fix.
+    assert [row.version for row in latest_engine_versions(catalog, keep="0.4.1")] == ["0.4.1-v3", "0.4.1", "0.4.0"]
+
+
+def test_new_project_offers_the_newest_hotfix_once(monkeypatch):
+    _app()
+    import view.new_project_view as module
+    monkeypatch.setattr(module, "is_frozen", lambda: True)
+    manager = SimpleNamespace(installed_versions=lambda: ["0.4.1-v3", "0.4.1", "0.4.0"],
+                              python_version_for_engine=lambda _v: "3.13")
+    dialog = module.NewProjectView(manager)
+    try:
+        combo = dialog.version_combo
+        assert [combo.itemText(i) for i in range(combo.count())] == ["0.4.1", "0.4.0"]
+        assert [combo.itemData(i) for i in range(combo.count())] == ["0.4.1-v3", "0.4.0"]
+    finally:
+        dialog.deleteLater()

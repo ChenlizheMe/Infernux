@@ -12,7 +12,10 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 
-from version_manager import VersionManager, EngineVersion, wheel_python_version
+from version_manager import (
+    VersionManager, EngineVersion, display_release, hotfix_label, hotfix_number, latest_engine_versions,
+    latest_releases, wheel_python_version,
+)
 from install_queue import InstallQueue
 from android_support import AndroidSupportManager
 from blender_support import BLENDER_VERSION, BlenderSupportManager
@@ -135,8 +138,9 @@ class _VersionCard(AnimatedSurfaceFrame):
         layout.setContentsMargins(16, 12, 14, 12)
         layout.setSpacing(16)
 
-        badge = QLabel(version)
+        badge = QLabel(display_release(version))
         badge.setObjectName("versionBadge")
+        badge.setToolTip(version)
         badge.setMinimumWidth(92)
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(badge)
@@ -146,9 +150,11 @@ class _VersionCard(AnimatedSurfaceFrame):
         info_col.setContentsMargins(0, 0, 0, 0)
         title_row = QHBoxLayout()
         title_row.setSpacing(8)
-        title = QLabel(f"Infernux {version}")
+        title = QLabel(f"Infernux {display_release(version)}")
         title.setObjectName("cardName")
         title_row.addWidget(title)
+        if hotfix_label(version):
+            title_row.addWidget(chip(tr("HOTFIX {number}", number=hotfix_number(version)), "paper"))
         python_version = wheel_python_version(wheel_path) if wheel_path else ""
         if python_version:
             title_row.addWidget(chip(f"PY {python_version}"))
@@ -303,10 +309,13 @@ class _VersionRow(AnimatedSurfaceFrame):
         layout.setContentsMargins(16, 8, 14, 8)
         layout.setSpacing(10)
 
-        ver_label = QLabel(ev.version)
+        ver_label = QLabel(display_release(ev.version))
         ver_label.setObjectName("cardName")
-        ver_label.setMinimumWidth(78)
+        ver_label.setMinimumWidth(64)
+        ver_label.setToolTip(ev.version)
         layout.addWidget(ver_label)
+        if hotfix_label(ev.version):
+            layout.addWidget(chip(tr("HOTFIX {number}", number=hotfix_number(ev.version)), "paper"))
         if ev.prerelease:
             layout.addWidget(chip(tr("PRE-RELEASE"), "warning"))
         if ev.python_version:
@@ -546,7 +555,8 @@ class InstallEditorDialog(QDialog):
         selected_version = self._selected.version if self._selected is not None else None
         self._clear_rows()
         self._scroll.show()
-        for ev in versions:
+        # One row per version: its newest hotfix (an exact pin a project needs stays).
+        for ev in latest_engine_versions(versions, keep=self._preselect):
             row = _VersionRow(ev)
             row.mousePressEvent = lambda _e, v=ev: self._select(v)
             row.activated.connect(self._activate)
@@ -789,7 +799,7 @@ class InstallsView(QWidget):
         for job in self._queue.jobs:
             if job.key in self._pending_keys:
                 self._card_layout.addWidget(_PendingEngineCard(self._queue, job))
-        versions = self._vm.installed_versions()
+        versions = latest_releases(self._vm.installed_versions())
         if not versions and not self._pending_keys:
             self._card_layout.addWidget(_EngineEmptyState(self._on_install_editor, self._on_locate))
         for version in versions:
@@ -830,15 +840,18 @@ class InstallsView(QWidget):
                                 tr("Wait for installations to finish before removing an engine."))
             return
         wheel = self._vm.get_wheel_path(version) or ""
+        base = display_release(version)
+        releases = [item for item in self._vm.installed_versions() if display_release(item) == base]
         if dialogs.confirm(
-            self, tr("Remove Infernux {version}?", version=version),
+            self, tr("Remove Infernux {version}?", version=base),
             tr("This deletes the cached wheel. Projects using this version will need to reinstall it."),
             confirm_label=tr("Remove engine"), destructive=True, kicker=tr("REMOVE ENGINE"),
-            subject=(f"Infernux {version}", wheel),
+            subject=(f"Infernux {base}", wheel),
         ):
-            self._vm.remove_version(version)
+            for release in releases or [version]:
+                self._vm.remove_version(release)
             self.refresh()
-            toast(self, tr("Removed Infernux {version}", version=version), "info")
+            toast(self, tr("Removed Infernux {version}", version=base), "info")
 
 
 class _ModuleView(QWidget):

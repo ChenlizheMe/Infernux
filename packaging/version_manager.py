@@ -736,6 +736,67 @@ def _version_tuple(version: str):
     return (Version(_base_version(version)), int(match.group(2) or 1))
 
 
+# ── Hotfix presentation ──────────────────────────────────────────────
+# A release identity is "<version>[-v<n>]"; n > 1 is a hotfix of <version>.
+# Projects still pin the exact identity, but lists show one entry per
+# version: its newest hotfix.
+
+def hotfix_number(release: str) -> int:
+    match = _RELEASE_RE.fullmatch(release or "")
+    return int(match.group(2) or 1) if match else 1
+
+
+def display_release(release: str) -> str:
+    """The version a person reads: hotfix revisions fold into their version."""
+    try:
+        return _base_version(release)
+    except (ValueError, InvalidVersion):
+        return release
+
+
+def hotfix_label(release: str) -> str:
+    number = hotfix_number(release)
+    return f"HOTFIX {number}" if number > 1 else ""
+
+
+def latest_releases(releases) -> list[str]:
+    """Keep the newest hotfix of each version, newest version first."""
+    newest: dict[str, str] = {}
+    for release in releases:
+        try:
+            base = _base_version(release)
+        except (ValueError, InvalidVersion):
+            continue
+        current = newest.get(base)
+        if current is None or _version_tuple(release) > _version_tuple(current):
+            newest[base] = release
+    return sorted(newest.values(), key=_version_tuple, reverse=True)
+
+
+def latest_engine_versions(versions, *, keep: str = "") -> list["EngineVersion"]:
+    """Collapse a catalog to one row per version: its newest usable hotfix.
+
+    A hotfix without a wheel for this platform does not hide an older hotfix
+    that has one. If an older hotfix is installed, the visible row offers the
+    newer one as an update. ``keep`` (an exact identity a project pins) stays
+    listed even when a newer hotfix exists.
+    """
+    groups: dict[str, list[EngineVersion]] = {}
+    for item in versions:
+        groups.setdefault(display_release(item.version), []).append(item)
+    result = []
+    for members in groups.values():
+        members.sort(key=lambda item: _version_tuple(item.version), reverse=True)
+        usable = [item for item in members if item.wheel_url and not item.compatibility_error]
+        chosen = (usable or members)[0]
+        if any(item.installed for item in members if item is not chosen) and not chosen.installed:
+            chosen.installed = True
+            chosen.update_available = True
+        result.append(chosen)
+        result.extend(item for item in members if item.version == keep and item is not chosen)
+    return sorted(result, key=lambda item: _version_tuple(item.version), reverse=True)
+
+
 def wheel_release(path_or_name: str) -> str:
     """Read the exact release identity, never infer it from a cache directory."""
     try:

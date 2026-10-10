@@ -472,6 +472,7 @@ _ZH = {
     'Updating editor integration...': '正在更新编辑器集成...',
     'Using current development environment...': '正在使用当前开发环境...',
     'Validating the current development environment...': '正在校验当前开发环境...',
+    'HOTFIX {number}': '热修 {number}',
 }
 
 _mode = "system"

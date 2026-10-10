@@ -326,6 +326,7 @@ class SidebarView(QWidget):
 def _hub_version() -> str:
     try:
         from hub_updater import current_hub_version
-        return current_hub_version()
+        # The rail shows the version; the hotfix number lives in Settings.
+        return current_hub_version().split("-", 1)[0]
     except Exception:
         return "DEV"

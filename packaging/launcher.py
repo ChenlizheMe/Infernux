@@ -399,7 +399,8 @@ class GameEngineLauncher(QMainWindow):
         if not hasattr(self, "sidebar"):
             return
         try:
-            engines = len(self.version_manager.installed_versions())
+            from version_manager import latest_releases
+            engines = len(latest_releases(self.version_manager.installed_versions()))
         except Exception:
             engines = 0
         self.sidebar.set_telemetry(

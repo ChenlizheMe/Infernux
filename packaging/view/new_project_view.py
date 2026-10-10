@@ -283,7 +283,9 @@ class NewProjectView(QDialog):
         installed: list[str] = []
         dev_mode = not is_frozen()
         if self._version_manager is not None:
-            installed = self._version_manager.installed_versions()
+            # New projects pin the newest hotfix of each installed version.
+            from version_manager import display_release, hotfix_label, hotfix_number, latest_releases
+            installed = latest_releases(self._version_manager.installed_versions())
             self._has_installed_versions = bool(installed)
             for index, version in enumerate(installed):
                 python = ""
@@ -291,8 +293,10 @@ class NewProjectView(QDialog):
                     python = self._version_manager.python_version_for_engine(version)
                 except Exception:
                     python = ""
+                meta = "  ·  ".join(part for part in (tr("HOTFIX {number}", number=hotfix_number(version)) if hotfix_label(version) else "",
+                                                      f"PY {python}" if python else "") if part)
                 self.version_combo.addItem(
-                    version, version, meta=f"PY {python}" if python else "",
+                    display_release(version), version, meta=meta,
                     tag=tr("LATEST") if index == 0 else "",
                 )
             if not installed and not dev_mode:

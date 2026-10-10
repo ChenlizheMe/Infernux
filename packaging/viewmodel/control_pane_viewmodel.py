@@ -345,7 +345,8 @@ class ControlPaneViewModel(QObject):
             pinned = self.version_manager.read_project_version(project_path) if self.version_manager else ""
         except OSError:
             pinned = ""
-        detail = "  ·  ".join(part for part in (f"INFERNUX {pinned}" if pinned else "", project_path) if part)
+        from version_manager import display_release
+        detail = "  ·  ".join(part for part in (f"INFERNUX {display_release(pinned)}" if pinned else "", project_path) if part)
         splash = EngineSplashScreen(ICON_PATH, project_name, parent=None, detail=detail)
         splash.show()
         self._splash = splash

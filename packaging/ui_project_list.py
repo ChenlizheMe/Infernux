@@ -15,7 +15,7 @@ from database import ProjectDatabase
 from hub_utils import is_frozen, is_project_open
 from i18n import tr
 from project_python_runtime import read_project_python_version
-from version_manager import VersionManager
+from version_manager import VersionManager, display_release
 from view.forge import Monogram, StatusLed, chip, fmt_age, mono_label, repolish, toast, track
 from view.hover_widgets import AnimatedSurfaceFrame
 from model.project_model import source_engine_version
@@ -134,7 +134,7 @@ class _ProjectCard(AnimatedSurfaceFrame):
         else:
             version = VersionManager.read_project_version(path) or ""
             self.engine_version = version
-            version_label = QLabel(version or tr("Unversioned"))
+            version_label = QLabel(display_release(version) if version else tr("Unversioned"))
             version_label.setObjectName("projectVersion")
             version_label.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
             unavailable_reason = ""
@@ -162,7 +162,7 @@ class _ProjectCard(AnimatedSurfaceFrame):
             engine_stack.addWidget(version_label, 0, Qt.AlignmentFlag.AlignLeft)
             if unavailable_reason:
                 self.unavailable_reason = unavailable_reason
-                version_label.setText(version or tr("Unknown"))
+                version_label.setText(display_release(version) if version else tr("Unknown"))
                 version_label.setProperty("kind", "warning")
                 version_label.setToolTip(unavailable_reason)
                 required = caption(tr("Install required version"), "warning")
@@ -176,7 +176,7 @@ class _ProjectCard(AnimatedSurfaceFrame):
                 self._led.set_kind("busy")
             else:
                 version_label.setProperty("kind", "ready")
-                version_label.setToolTip(f"Infernux {version}" if version else "")
+                version_label.setToolTip(f"Infernux {version}" if version else "")  # exact pin
                 self._led.set_kind("ok")
                 self._launchable = True
         layout.addWidget(engine_holder)
