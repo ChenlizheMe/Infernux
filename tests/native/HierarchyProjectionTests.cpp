@@ -66,16 +66,24 @@ struct RefreshTag
 template struct AuditAccess<CollapseTag, &HierarchyPanel::m_collapsedSceneWorldIds>;
 template struct AuditAccess<DirtyTag, &HierarchyPanel::m_flatListDirty>;
 template struct AuditAccess<RefreshTag, &HierarchyPanel::RefreshRootObjects>;
+struct ProjectionRow
+{
+    GameObject *obj;
+    bool sceneHeader;
+};
 template <typename Tag, auto Member> struct ProjectionAccess
 {
-    friend auto projectionAccess(Tag)
+    friend std::vector<ProjectionRow> projectionRows(Tag, const HierarchyPanel &panel)
     {
-        return Member;
+        std::vector<ProjectionRow> rows;
+        for (const auto &item : panel.*Member)
+            rows.push_back({item.obj, item.sceneHeader});
+        return rows;
     }
 };
 struct RowsTag
 {
-    friend auto projectionAccess(RowsTag);
+    friend std::vector<ProjectionRow> projectionRows(RowsTag, const HierarchyPanel &);
 };
 template struct ProjectionAccess<RowsTag, &HierarchyPanel::m_flatItems>;
 
@@ -123,7 +131,7 @@ static int ExtendedCases(nlohmann::json &report)
         };
         const auto rows = [&] {
             std::vector<uint64_t> ids;
-            for (const auto &item : panel.*projectionAccess(RowsTag{}))
+            for (const auto &item : projectionRows(RowsTag{}, panel))
                 if (item.obj)
                     ids.push_back(item.obj->GetID());
             return ids;
@@ -300,10 +308,10 @@ static int ExtendedCases(nlohmann::json &report)
         [&](auto &, auto *, auto *a, auto *, auto *b, auto &p, auto frame, auto range, auto rows) {
             p.SetSceneHeaderSnapshot("Primary", false, "");
             frame();
-            check((p.*projectionAccess(RowsTag{})).front().sceneHeader, "mode change kept prefab rows");
+            check(projectionRows(RowsTag{}, p).front().sceneHeader, "mode change kept prefab rows");
             p.SetSceneHeaderSnapshot("Primary", true, "Prefab");
             frame();
-            check(!(p.*projectionAccess(RowsTag{})).front().sceneHeader, "prefab mode kept scene header");
+            check(!projectionRows(RowsTag{}, p).front().sceneHeader, "prefab mode kept scene header");
             check(range(b->GetID()) == std::vector<uint64_t>{a->GetID(), b->GetID()}, "mode change order wrong");
         });
     run("deleted_root_before_release_and_reveal",
