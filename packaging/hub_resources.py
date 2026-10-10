@@ -14,4 +14,9 @@ def _resource_dir() -> str:
 
 RESOURCE_DIR = _resource_dir()
 ICON_PATH = os.path.join(RESOURCE_DIR, "icon.png")
-FONT_PATH = os.path.join(RESOURCE_DIR, "PingFangSC-Regular.ttf")
+FONTS_DIR = os.path.join(RESOURCE_DIR, "fonts")
+# The Hub's single typeface (shared with the website); CJK uses the system UI font.
+FONT_PATHS = tuple(
+    os.path.join(FONTS_DIR, f"SpaceGrotesk-{weight}.ttf")
+    for weight in ("Regular", "Medium", "Bold")
+)

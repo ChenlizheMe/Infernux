@@ -42,7 +42,26 @@ def test_hub_resources_follow_standalone_launch_context(monkeypatch, tmp_path, m
     assert Path(hub_utils.get_bundle_dir()) == expected
 
 
-def test_checkout_ships_the_hub_icon_and_pingfang_font():
-    for resource in (hub_resources.ICON_PATH, hub_resources.FONT_PATH):
+def test_checkout_ships_the_hub_icon_and_fonts():
+    for resource in (hub_resources.ICON_PATH, *hub_resources.FONT_PATHS):
         assert Path(resource).is_file(), resource
         assert Path(resource).stat().st_size > 0, resource
+    # Fonts are redistributed under SIL OFL; their licenses travel with them.
+    fonts = Path(hub_resources.FONTS_DIR)
+    assert (fonts / "Space-Grotesk-OFL.txt").is_file()
+    assert sum(Path(path).stat().st_size for path in hub_resources.FONT_PATHS) < 512 * 1024
+
+
+def test_bundled_hub_typeface_loads_in_qt():
+    from PySide6.QtGui import QFontDatabase
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    for resource in hub_resources.FONT_PATHS:
+        font_id = QFontDatabase.addApplicationFont(resource)
+        assert font_id >= 0, resource
+        try:
+            assert "Space Grotesk" in QFontDatabase.applicationFontFamilies(font_id)
+        finally:
+            QFontDatabase.removeApplicationFont(font_id)
+    assert app is not None

@@ -29,7 +29,7 @@ from PySide6.QtGui import QIcon, QFontDatabase
 from ui_project_list import ProjectListPane
 from database import ProjectDatabase
 from style import StyleManager
-from hub_resources import ICON_PATH, FONT_PATH
+from hub_resources import ICON_PATH, FONT_PATHS
 from hub_utils import HubLaunchContext, get_app_dir, is_frozen
 from python_runtime import PythonRuntimeManager
 from android_support import AndroidSupportManager
@@ -71,10 +71,9 @@ class GameEngineLauncher(QMainWindow):
         self.db = ProjectDatabase()
         configure_language(self.db.get_setting("language", "system"))
 
-        # Load custom engine font
-        font_id = QFontDatabase.addApplicationFont(FONT_PATH)
-        if font_id >= 0:
-            QFontDatabase.applicationFontFamilies(font_id)
+        # Register the current bundled typeface; CJK uses the system UI font.
+        for font_path in FONT_PATHS:
+            QFontDatabase.addApplicationFont(font_path)
 
         # Apply the persisted Hub theme before constructing visible pages.
         self.app.is_dark_theme = self.db.get_setting("theme", "dark") != "light"
