@@ -38,11 +38,26 @@ constitute completion or a promised release date. `roadmap-layout.js` lays out
 the actual branch sizes radially with a stable seed and reserved bilingual label
 footprints. Run `node docs/tools/test-roadmap-data.mjs` after edits to catch duplicate
 goals, missing translations, disconnected nodes and overlapping footprints.
+The maps are curated, not padded: every map keeps at least six branches with three
+leaves each and the whole roadmap at least 1,200 goals. Remove goals that duplicate
+another map or describe no engine work; promote a goal to `live` only with a code
+reference recorded in the audit document.
 
 The GitHub workflows in `.github/workflows/build-wiki.yml` and
 `.github/workflows/website-quality.yml` define the authoritative execution
 order. When adding a new generator, add its check to the quality workflow and
-document whether it mutates a committed artifact.
+document whether it mutates a committed artifact. The deploy workflow repeats the
+behavioral checks (motion, roadmap data, course filter, tutorial tabs, i18n
+fallbacks), so a push to `main` cannot publish what a pull request would reject.
+
+Two checks guard copy outside `docs/`:
+
+- `check-readme.mjs` validates `README.md` and `README-zh.md`: relative links,
+  heading anchors, images and their alt text, identical EN/ZH section structure,
+  the alpha notice, the 3N definition and the release-sync version literals.
+- `check-python-examples.mjs` requires every Python example in the READMEs,
+  learning guides, API pages, site pages and the new-script template to import
+  the engine as `import infernux as inx` and to use `inx.` names.
 
 ## Release versions
 
@@ -65,18 +80,49 @@ not upload binaries or publish a release.
 
 ## Visual system and roadmap performance
 
-The website uses one dark palette in `css/style.css`. Keep the red brand accent
-in the navigation and controls; category hues belong to implemented roadmap
-capabilities. No global scanline, blur or constantly animated decorative layers.
-The real renderer capture is reused in the hero and showcase (one asset transfer).
+The website uses one dark palette in `css/style.css` (the FORGE SIGNAL system:
+Swiss grid and type, cassette-futurist controls, NASA-punk plates). Keep the red
+brand accent in the navigation and controls; category hues belong to implemented
+roadmap capabilities. Post-processing is layered, not layout work: scanlines,
+vignette and Bayer dither are static fixed overlays; film grain is a stepped,
+compositor-only transform. Overlays are removed for `prefers-contrast: more`,
+forced colors and print; all animation stops under reduced motion.
 
-Roadmap stars live in a fixed viewport SVG, independent of camera zoom. Fine labels
+`js/motion.js` owns finite GSAP entrances. It lazily loads `js/fx-hud.js` on
+idle (tape HUD, label scramble, pixel resolve, counters, title glitch, pointer
+telemetry) and `js/fx-world.js` for the home hero background: a pixel space
+battle whose ship classes fire distinct weapons and steer with a real 16-8-4
+policy network (hand-set weights), with a live inspector tracing the focused
+ship. Visitors do not toggle its post-processing; it is part of the scene. Both
+modules express state through classes, attributes and text only, pause while
+hidden or offscreen, render a single settled frame under reduced motion, and are
+excluded from route first-view budgets.
+
+The home demo reel is a monitor wall of six real engine clips from
+`assets/reel/` (MP4 with WebP posters; provenance in `assets/VENDOR_ASSETS.md`).
+Only posters count toward the first view; video loads on demand. The README reuses
+the same footage as GIFs in `.github/media/`, budgeted by `check-image-variants.mjs`.
+
+Roadmap stars live in a fixed viewport SVG, independent of camera zoom. The
+MISSION PLOT console adds a world-space polar graticule (range rings, bearing
+scale, axes) drawn once per map below the edges, a CSS-only scope sweep (one
+composited layer, paused while panning or hidden, removed under reduced motion),
+screen-space HUD readouts updated only inside the camera frame, and a structured
+telemetry card for the selected node. Fine labels
 appear when they have at least 10 screen pixels; branch labels remain readable in
-the overview. GSAP animates one graph entrance and explicitly authored progress.
+the overview. Root and branch labels use the monospace face at 28/23 units so
+their width stays within the layout's 0.56em-per-glyph footprint estimate.
+GSAP animates one graph entrance and explicitly authored progress.
 Progress pauses while offscreen or in a hidden browser tab; reduced motion removes
 it. At most two rendered category SVGs remain in memory, with fetched JSON cached.
 Changing these behaviors requires checking search focus, category switching during
 slow requests, small screens and reduced-motion preferences in a real browser.
+
+Search covers all ten maps: other maps load lazily on the first query, results are
+grouped by map, and choosing one switches maps and flies to the node. `#node-<id>`
+links open a specific goal. Switching maps cross-fades the plane (`.is-plotting`)
+while the next map loads; the camera writes its transform only once it settles, and
+connector dash patterns scale by a coarse zoom bucket rather than every frame.
 
 Roadmap interaction uses one demand-driven animation frame and a GSAP CSS setter
 for the composited HTML graph plane. Pointer positions use that plane's untransformed

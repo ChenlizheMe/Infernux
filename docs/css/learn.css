@@ -571,3 +571,39 @@
 
 .learn-heading h1 { font-size: clamp(2rem, 4vw, 3.4rem); }
 .learn-article h1 { font-size: clamp(1.9rem, 3vw, 2.6rem); line-height: 1.3; }
+
+/* FORGE SIGNAL chapter layer: numbered sections on hard rules, terminal
+   code with scanlines, hazard-plated notes and CRT figures. */
+.learn-heading h1, .learn-article h1 { letter-spacing: -0.05em; }
+.learn-heading h1::after, .learn-article h1::after {
+    content: ""; display: block; width: 128px; height: 8px; margin-top: 16px;
+    background: var(--dither-ramp) left center / 128px 8px no-repeat; image-rendering: pixelated;
+}
+.learn-article-body { counter-reset: chapter-section; }
+.learn-article-body h2 {
+    counter-increment: chapter-section; display: flex; align-items: baseline; gap: 12px;
+    margin-top: 46px; padding-top: 14px; border-top: 1px solid var(--border-strong); letter-spacing: -0.02em;
+}
+.learn-article-body h2::before {
+    content: counter(chapter-section, decimal-leading-zero); flex: 0 0 auto; padding: 2px 7px;
+    background: var(--accent-fill); color: var(--on-accent); font: 700 0.7rem var(--font-mono); letter-spacing: 0.08em;
+}
+.learn-article-body pre {
+    position: relative; padding-top: 42px; border-radius: 0;
+    background: repeating-linear-gradient(180deg, rgba(0, 0, 0, 0.2) 0 1px, transparent 1px 3px), var(--bg-deep);
+    box-shadow: inset 0 0 50px rgba(0, 0, 0, 0.55);
+}
+.learn-article-body pre::before {
+    content: "● SOURCE"; position: absolute; top: 0; left: 0; right: 0; padding: 6px 12px;
+    border-bottom: 1px solid var(--border); background: var(--bg-panel); color: var(--accent);
+    font: 700 0.6rem var(--font-mono); letter-spacing: 0.16em;
+}
+.learn-article-body code { border-radius: 0; }
+.learn-note, .learn-warning { position: relative; border-radius: 0; }
+.learn-warning { border-left-width: 0; padding-left: 26px; }
+.learn-warning::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 8px; background: var(--hazard-stripes); }
+.learn-figure { position: relative; }
+.learn-figure img { image-rendering: auto; }
+.learn-course-card, .learn-entry a { transition: border-color 180ms ease, transform 180ms ease; }
+.learn-course-card:hover { transform: translateY(-3px); }
+.learn-entry-number { color: var(--accent); font-family: var(--font-mono); }

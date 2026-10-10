@@ -44,8 +44,8 @@ for (const contract of ["var(--print-paper)", "var(--print-ink)", "var(--print-r
 assert.match(styles, /\.site-header,[\s\S]*?\.doc-code-copy,[\s\S]*?display:\s*none\s*!important;/, "interactive chrome must be excluded from printed documentation");
 assert.match(styles, /\.api-main table\s*\{[\s\S]*?display:\s*table\s*!important;[\s\S]*?width:\s*100%\s*!important;/, "printed tables should use page-width table layout");
 assert.ok(template.includes('/css/wiki-generated.css?v=10'));
-assert.ok(template.includes('/js/wiki-generated.js?v=14'));
-assert.ok(template.includes('/css/style.css?v=24'));
+assert.ok(template.includes('/js/wiki-generated.js?v=15'));
+assert.ok(template.includes('/css/style.css?v=27'));
 
 async function htmlFiles(directory) {
     const files = [];
@@ -62,7 +62,7 @@ assert.ok(generatedPages.length > 100, "expected a complete generated documentat
 for (const page of generatedPages) {
     const html = await readFile(page, "utf8");
     assert.ok(html.includes('/css/wiki-generated.css?v=10'), `${path.relative(docsRoot, page)} is missing print stylesheet v9`);
-    assert.ok(html.includes('/js/wiki-generated.js?v=14'), `${path.relative(docsRoot, page)} is missing print action runtime v14`);
+    assert.ok(html.includes('/js/wiki-generated.js?v=15'), `${path.relative(docsRoot, page)} is missing print action runtime v15`);
 }
 
 console.log(`Documentation print checks passed: explicit action, print-only layout, readable code/tables, and ${generatedPages.length} generated pages.`);

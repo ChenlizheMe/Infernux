@@ -158,10 +158,10 @@
     {% endif %}
     <link rel="alternate" type="application/json" title="Infernux API index" href="/api-index.json">
     <link rel="manifest" href="/site.webmanifest">
-    <link rel="icon" type="image/png" href="/assets/logo.png">
+    <link rel="icon" type="image/png" sizes="64x64" href="/assets/favicon-64.png">
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/infernux-apple-touch-icon.png">
-    <link rel="stylesheet" href="/css/fonts.css?v=2">
-    <link rel="stylesheet" href="/css/style.css?v=24">
+    <link rel="stylesheet" href="/css/fonts.css?v=3">
+    <link rel="stylesheet" href="/css/style.css?v=27">
     <link rel="stylesheet" href="/css/fontawesome-subset.css?v=6.4.0">
     <link rel="stylesheet" href="/css/docs-search.css?v=3">
     <link rel="stylesheet" href="/css/wiki-generated.css?v=10">
@@ -591,6 +591,76 @@
         }
         .api-main h1 { overflow-wrap: anywhere; line-height: 1.25; }
         .api-sidebar { border-right: 1px solid var(--border); }
+
+        /* ---- FORGE SIGNAL documentation layer ----
+           Swiss hierarchy (numbered sections, hard rules), a tape-index sidebar
+           and terminal code blocks. Visual only; layout contracts are above. */
+        .api-sidebar { background: linear-gradient(180deg, var(--bg-panel), var(--bg-contrast)); border-right-color: var(--border-strong); }
+        .sidebar-hdr { position: relative; padding: 18px 18px 14px; border-bottom-color: var(--border-strong); }
+        .sidebar-hdr::before { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 5px; background: var(--hazard-stripes); }
+        .sidebar-hdr h3 { color: var(--text); font-family: var(--font-mono); letter-spacing: 0.16em; }
+        .lang-sw { border-radius: 0; }
+        .lang-sw a { font-family: var(--font-mono); }
+        .ns-tree { counter-reset: ns; }
+        .ns-hd { counter-increment: ns; gap: 0; padding: 8px 14px; border-left: 2px solid transparent; }
+        .ns-hd::before { content: counter(ns, decimal-leading-zero); width: 24px; flex-shrink: 0; color: var(--text-soft); font: 600 0.62rem var(--font-mono); }
+        .ns-hd.open { border-left-color: var(--accent-line); background: rgba(244, 234, 219, 0.025); }
+        .ns-hd.hi::before { color: var(--accent); }
+        .ns-nm { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.01em; }
+        .ns-arr { color: var(--accent); }
+        .ns-ch a { position: relative; font-family: var(--font-mono); font-size: 0.76rem; padding-left: 50px; }
+        .ns-ch a::before { content: ""; position: absolute; left: 38px; top: 50%; width: 5px; height: 1px; background: var(--border-strong); }
+        .ns-ch a.cur { border-left-color: var(--accent); background: linear-gradient(90deg, var(--accent-soft), transparent); }
+        .ns-ch a.cur::before { width: 6px; height: 6px; margin-top: -3px; background: var(--led-on); box-shadow: var(--phosphor); }
+
+        .api-main { counter-reset: doc-section; }
+        .api-main h1 {
+            position: relative; padding-top: 18px; font-size: clamp(2rem, 3.6vw, 3.3rem); letter-spacing: -0.05em; line-height: 1.02;
+        }
+        .api-main h1::before {
+            content: "INX / REFERENCE"; position: absolute; top: 0; left: 0;
+            color: var(--accent); font: 700 0.62rem var(--font-mono); letter-spacing: 0.18em;
+        }
+        .api-main h1::after {
+            content: ""; display: block; width: 128px; height: 8px; margin-top: 14px;
+            background: var(--dither-ramp) left center / 128px 8px no-repeat; image-rendering: pixelated;
+        }
+        .api-main .class-info { font-family: var(--font-mono); font-size: 0.8rem; border-bottom-color: var(--border-strong); }
+        .api-main h2 {
+            counter-increment: doc-section; display: flex; align-items: center; gap: 10px;
+            margin-top: 40px; padding: 0 0 8px; color: var(--text); font: 700 0.78rem var(--font-mono); letter-spacing: 0.16em;
+            border-bottom: 1px solid var(--border-strong);
+        }
+        .api-main h2::before {
+            content: counter(doc-section, decimal-leading-zero); padding: 2px 6px; background: var(--accent-fill);
+            color: var(--on-accent); font-size: 0.68rem; letter-spacing: 0.08em;
+        }
+        .api-main h3 { color: var(--text); font-family: var(--font-display); font-size: 1rem; }
+        .api-main blockquote { position: relative; border-left: 0; border-radius: 0; padding-left: 22px; background: var(--accent-soft); }
+        .api-main blockquote::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 6px; background: var(--hazard-stripes); }
+        .api-main table { border-top: 1px solid var(--border-strong); }
+        .api-main tbody tr { transition: background 120ms steps(2); }
+        .api-reference-page .api-main td:first-child { font-family: var(--font-mono); font-size: 0.8rem; }
+        .api-main td { padding: 9px 4px; }
+        .api-main code { font-family: var(--font-mono); font-size: 0.86em; border: 1px solid var(--border); border-radius: 0; background: var(--bg-contrast); }
+        .api-main pre {
+            position: relative; padding-top: 40px; border-color: var(--border-strong); border-radius: 0;
+            background:
+                repeating-linear-gradient(180deg, rgba(0, 0, 0, 0.2) 0 1px, transparent 1px 3px),
+                var(--bg-deep);
+            box-shadow: inset 0 0 50px rgba(0, 0, 0, 0.55);
+        }
+        .api-main pre::before {
+            content: "● SOURCE"; position: absolute; top: 0; left: 0; right: 0; padding: 6px 12px;
+            border-bottom: 1px solid var(--border); background: var(--bg-panel); color: var(--accent);
+            font: 700 0.6rem var(--font-mono); letter-spacing: 0.16em;
+        }
+        .api-main pre code { color: var(--text-mono); border: 0; background: none; text-shadow: 0 0 8px rgba(244, 234, 219, 0.1); }
+        .doc-code-shell .doc-code-pre { padding-top: 58px; }
+        .doc-code-copy { border-radius: 0; background: linear-gradient(180deg, var(--key-top), var(--key-bottom)); box-shadow: 0 3px 0 var(--key-depth); top: 32px; }
+        .doc-provenance { border-radius: 0; border-left: 0; padding-left: 26px; position: relative; }
+        .doc-provenance::before { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 8px; background: var(--hazard-stripes); }
+        .doc-status { border-radius: 0; }
     </style>
 </head>
 <body class="{% if page.url and '/api/' in '/' + page.url %}api-reference-page{% else %}guide-page{% endif %}">
@@ -638,7 +708,7 @@
     <nav class="navbar" aria-label="{% if page.url and 'zh/' in page.url %}主导航{% else %}Primary navigation{% endif %}">
         <div class="nav-container">
             <a href="/index.html" class="nav-logo">
-                <span class="logo-icon"><img src="/assets/logo.png" width="256" height="256" alt="Infernux logo"></span>
+                <span class="logo-icon"><img src="/assets/logo-mark.webp" width="38" height="38" alt="Infernux logo"></span>
                 <span class="logo-text">Infernux</span>
             </a>
             <div class="nav-links" id="primary-navigation">
@@ -812,8 +882,8 @@
     <script src="/js/vendor/gsap.min.js?v=3.13.0"></script>
     <script src="/js/vendor/ScrollTrigger.min.js?v=3.13.0"></script>
     <script src="/js/main.js?v=16"></script>
-    <script src="/js/motion.js?v=2"></script>
+    <script src="/js/motion.js?v=5"></script>
     <script src="/js/docs-search.js?v=6"></script>
-    <script src="/js/wiki-generated.js?v=14"></script>
+    <script src="/js/wiki-generated.js?v=15"></script>
 </body>
 </html>

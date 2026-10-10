@@ -22,6 +22,11 @@ on:
       - "docs/docs-manifest.json"
       - "UpdateLog.md"
       - "UpdateLog-zh.md"
+      - "README.md"
+      - "README-zh.md"
+      - ".github/media/**"
+      - "python/infernux/engine/ui/project_file_ops.py"
+      - "scripts/release/sync_release_site.py"
   workflow_dispatch:
 
 permissions:
@@ -134,6 +139,12 @@ jobs:
       - name: Enforce design-token color contrast
         run: node docs/tools/check-color-contrast.mjs
 
+      - name: Check README quality and bilingual parity
+        run: node docs/tools/check-readme.mjs
+
+      - name: Check Python example import style
+        run: node docs/tools/check-python-examples.mjs
+
       - name: Verify website contracts
         run: node docs/tools/verify-site.mjs
 
@@ -157,6 +168,21 @@ jobs:
 
       - name: Test responsive layout contracts
         run: node docs/tools/test-responsive-contracts.mjs
+
+      # Direct pushes to main skip the pull-request website gate, so the
+      # publishing build runs the same behavioural checks before committing.
+      - name: Verify inline localization fallbacks
+        run: node docs/tools/normalize-i18n-fallbacks.mjs --check
+
+      - name: Test motion layer and roadmap data
+        run: |
+          node docs/tools/test-motion-client.mjs
+          node docs/tools/test-roadmap-data.mjs
+
+      - name: Test learning filters and tutorial tabs
+        run: |
+          node docs/tools/test-learning-course-filter.mjs
+          node docs/tools/test-tutorial-tabs.mjs
 
       - name: Commit generated wiki output
         shell: bash

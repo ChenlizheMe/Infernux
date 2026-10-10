@@ -32,9 +32,9 @@ compiler remains an error.
 
 <!-- USER CONTENT START --> example
 ```python
-from infernux import jit
+import infernux as inx
 
-@jit.compile
+@inx.jit.compile
 def integrate(positions, velocities, dt):
     for i in range(len(positions)):
         positions[i] += velocities[i] * dt

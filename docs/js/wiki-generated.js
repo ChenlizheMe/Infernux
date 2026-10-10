@@ -1005,6 +1005,23 @@
         };
     }
 
+    // The 200 KiB API index feeds the previous/next trail and build evidence at
+    // the end of the page. Defer it until that region nears the viewport or a
+    // feature asks for it; the first view never waits on it.
+    function whenNearEnd(callback) {
+        const target = document.querySelector("[data-doc-trail]") || document.querySelector("[data-doc-build-provenance]");
+        if (!target || !("IntersectionObserver" in window)) {
+            callback();
+            return;
+        }
+        const observer = new IntersectionObserver((entries) => {
+            if (!entries.some((entry) => entry.isIntersecting)) return;
+            observer.disconnect();
+            callback();
+        }, { rootMargin: "800px 0px" });
+        observer.observe(target);
+    }
+
     document.addEventListener("DOMContentLoaded", function () {
         restoreTransferredLanguageSection();
         initializeLanguageSectionLink();
@@ -1012,8 +1029,10 @@
         initializeDocumentOutline();
         initializeCodeCopy();
         initializeAgentContextCopy();
-        initializeDocumentTrail();
-        initializeBuildProvenance();
+        whenNearEnd(function () {
+            initializeDocumentTrail();
+            initializeBuildProvenance();
+        });
         initializeApiSidebar();
         initializeLearningTrack();
         recordRecentDocument();

@@ -67,7 +67,7 @@ assert.equal(starValue.textContent, "1,447", "the live GitHub signal must render
 assert.equal(starDeck.dataset.githubStarsState, "ready");
 
 for (const contract of [
-    'href="css/home.css?v=3"',
+    'href="css/home.css?v=7"',
     'data-home-code-copy',
     'type="button"',
     'aria-controls="home-starter-code"',

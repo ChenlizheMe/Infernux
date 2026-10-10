@@ -27,9 +27,9 @@ Detached compilation/decision/mapped-memory snapshot, without executing fn.
 
 <!-- USER CONTENT START --> example
 ```python
-from infernux import jit
+import infernux as inx
 
-report = jit.statistics(integrate)
+report = inx.jit.statistics(integrate)
 print(report.selected_mode, report.specializations)
 ```
 <!-- USER CONTENT END -->

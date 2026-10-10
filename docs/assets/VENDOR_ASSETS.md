@@ -17,19 +17,32 @@ The `source-han-sans-sc-subset.woff2` file is a character subset of Google Noto 
 
 ## Project-authored visual assets
 
-`infernux-social-card-0.3.4.jpg` is the reviewed 1200×630 Open Graph/X card for release 0.3.4. It is a center-cropped derivative of the real `demo.png` editor capture rather than separate promotional artwork. Its SHA-256 is `c1bb18887d484776433a14f43bf2d77dde6a9fe4f8eabc077e6fbb541c273159`. The site verifier locks its format, dimensions, release-scoped filename, and reviewed content hash.
+`infernux-social-card-0.3.4.jpg` is the reviewed 1200×630 Open Graph/X card for release 0.3.4. It is a center-cropped derivative of the original 1920×1032 editor capture (`demo.png`, since retired from the repository) rather than separate promotional artwork. Its SHA-256 is `c1bb18887d484776433a14f43bf2d77dde6a9fe4f8eabc077e6fbb541c273159`. The site verifier locks its format, dimensions, release-scoped filename, and reviewed content hash.
 
-The repository keeps `demo.png` as the canonical 1920×1032 review source used by both README files. The GitHub Pages homepage does not reference or deliver that PNG: it offers the release-scoped AVIF first and uses a high-quality WebP as the `<img>` fallback and structured-data screenshot. This explicitly targets current Chrome, Edge, Firefox, and Safari while keeping the larger PNG outside the website delivery budget.
+The original `demo.png` capture and its `demo-runtime.webp` / `demo-runtime.avif` homepage derivatives of the 65,536-object voxel continent were retired with the homepage redesign. Both the homepage and the READMEs now show the demo reel below.
 
-| Local file | Encoding and review evidence | Bytes | SHA-256 |
-|---|---|---:|---|
-| `demo.png` | Original 1920×1032 repository-owned editor capture | 1,121,375 | `4be6e30abfd71f3e4a31593ce6e44817cffdb83ec170cee489a3b40b162d3d91` |
-| `demo-runtime.webp` | Pillow 12.2.0 WebP, quality 88; high-quality browser fallback | 151,802 | `10a141e9c795829ded555363d0866c1508403e19fb4fdc14401e1532f313384c` |
-| `demo-runtime.avif` | Pillow 12.2.0 AVIF, quality 80, 4:4:4; visually reviewed against the PNG | 136,520 | `4cbe016a9eedfefebb8d7a2bbd107e829ca706f045de2aa4d5c381c456efa9f5` |
+### README demo loops
 
-AVIF is preferred and high-quality WebP is the final website fallback. The image gate locks all three reviewed files by content hash; it also verifies that both README files retain the PNG while the homepage contains no PNG reference. The performance budget counts the largest browser-delivered representation and separately excludes the repository-only review source, so neither hidden fallback weight nor unused evidence files distort the site budget.
+The READMEs embed five GIF loops from the same reel, stored in `.github/media/` so the website never delivers them. Each is cropped to 852×388 like the clips, resampled with Lanczos, and quantised with a per-clip `palettegen` (`stats_mode=diff`) and `paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`: `space-battle.gif` (600 px, 12 fps, 48 colours), `npr-pipeline.gif`, `rigid-coins.gif`, `animated-cats.gif` (320 px, 10 fps, 48 colours) and `rendergraph-grid.gif` (320 px, 8 fps, 32 colours). `check-image-variants.mjs` enforces their presence, GIF signature, per-file and total size limits, and that both READMEs reference them.
+
+### Demo reel
+
+The homepage reel is cut from the author's own Bilibili video `BV1538P6jELT`, part 2 ("熔炉0.3.4演示Demo纯净版"), downloaded as the 852×480 H.264 stream. Each clip is cropped to 852×388 to drop the title and subtitle bands (and the channel watermark), resampled with Lanczos to the listed width, re-timed to 24 fps and encoded with ffmpeg 7.1 (imageio-ffmpeg): `libx264 -preset veryslow -crf 30 -profile:v high -pix_fmt yuv420p -an -movflags +faststart`. Posters are single frames saved with Pillow 12.2.0 as WebP (quality 68; the feature poster 72). Clips carry `preload="none"`, a `data-src` and a poster; `js/fx-hud.js` attaches the source and plays a clip only while it is visible, and never under reduced motion unless the visitor presses play.
+
+| Local file | Source time | Geometry | Bytes | SHA-256 |
+|---|---|---|---:|---|
+| `reel/space-battle.mp4` | 01:24.5, 4.5 s | 852×388 | 175,117 | `30dec9c1672fb13316b54240787167bd2078d35f5324a24f983abeae2c2a1af8` |
+| `reel/fft-ocean.mp4` | 00:03.0, 4 s | 640×292 | 202,626 | `17062becf53d7c699724c04f6d06ce616796c8b17c1cb1ac073036c5fc656f7a` |
+| `reel/npr-pipeline.mp4` | 00:19.0, 4 s | 640×292 | 111,851 | `ba8095dbdc583e0da7c58cd95d3608af3178d5b0b3cd3710d3c2fea0999c3453` |
+| `reel/rigid-coins.mp4` | 00:33.5, 4 s | 640×292 | 290,880 | `5471e528ceac863eb59f2f2e156b51a6a47e48e6e3f8ebe9807b4d599da51bb8` |
+| `reel/animated-cats.mp4` | 00:58.0, 4 s | 640×292 | 98,641 | `a6e4349dc2167253124ec1d1440c96fa81ad722c6786c9fd1dbaced199803856` |
+| `reel/rendergraph-grid.mp4` | 01:12.5, 4 s | 640×292 | 73,309 | `5bc45cf8b26432f486c4d86210dd54c204169821b1e25ee82015a06211b372e0` |
+
+`docs/tools/check-image-variants.mjs` locks every clip and poster by content hash, checks the MP4 `ftyp`/`moov`-before-`mdat` layout and poster dimensions, enforces per-clip and total size limits, and verifies the lazy `<video>` markup. The performance budget counts reel posters in the homepage first view while excluding the clips themselves.
 
 ### Install and touch icons
+
+`logo-mark.webp` (76×76, Pillow 12.2.0 Lanczos, WebP quality 88; 3,410 bytes, SHA-256 `6b1b775c01bced8d73551bb11190df8e1828ae96009c49eed4e6b65474aaf123`) replaces the 256×256 `logo.png` in every navigation, footer and offline-page brand mark, which displays at 38 CSS pixels. `favicon-64.png` (64×64 Lanczos PNG; 5,520 bytes, SHA-256 `c127ac7f561a58aae6059e47591cb41cb372d7525417412a83448d26130e43a7`) is the page favicon. Both derive from the repository-owned `logo.png`, which remains the structured-data organisation logo.
 
 The install icons are deterministic, project-authored derivatives of the repository-owned `logo.png`; they do not introduce an external artwork source or license. Pillow 12.2.0 in the repository `infernux` environment resized the source with Lanczos sampling, composited it over the site background `#0a0c11`, and wrote optimized 256-color opaque PNGs. The standalone maskable asset keeps the complete emblem inside the Web App Manifest safe-zone circle (radius 40% of the canvas); it is intentionally more padded than the ordinary launcher icons.
 

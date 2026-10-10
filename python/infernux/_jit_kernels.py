@@ -3,9 +3,9 @@ Internal JIT bootstrap — DO NOT import directly.
 
 Use the public API instead::
 
-    from infernux import jit
+    import infernux as inx
 
-    @jit.compile
+    @inx.jit.compile
     def update(values): ...
 """
 

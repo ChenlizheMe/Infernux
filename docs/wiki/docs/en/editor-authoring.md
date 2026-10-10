@@ -51,14 +51,10 @@ Transform, declare that ownership once. The Inspector and Scene tools then obey
 the same rule:
 
 ```python
-from infernux.components import (
-    DrivenTransformProperties,
-    InxComponent,
-    drives_transform,
-)
+import infernux as inx
 
-@drives_transform(DrivenTransformProperties.SCALE)
-class ProceduralSurface(InxComponent):
+@inx.drives_transform(inx.DrivenTransformProperties.SCALE)
+class ProceduralSurface(inx.InxComponent):
     pass
 ```
 

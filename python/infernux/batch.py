@@ -4,21 +4,20 @@ engine objects and numpy arrays.
 
 Usage::
 
-    from infernux import jit
-    from infernux.batch import batch_read, batch_write
+    import infernux as inx
 
     # Read world positions from a list of transforms → numpy (N, 3)
-    positions = batch_read(transforms, 'position')
+    positions = inx.batch_read(transforms, 'position')
 
     # Run a JIT kernel
-    @jit.compile
+    @inx.jit.compile
     def gravity(pos, dt):
         for i in range(len(pos)):
             pos[i, 1] -= 9.8 * dt
     gravity(positions, delta_time)
 
     # Write back
-    batch_write(transforms, positions, 'position')
+    inx.batch_write(transforms, positions, 'position')
 
 Supported Transform properties:
     'position', 'local_position', 'local_scale',
@@ -26,8 +25,8 @@ Supported Transform properties:
     'rotation', 'local_rotation'
 
 For InxComponent subclass fields (int, float, Vector3, etc.):
-    batch_read(components, 'velocity')
-    batch_read(components, MyComponent.velocity)   # descriptor form
+    inx.batch_read(components, 'velocity')
+    inx.batch_read(components, MyComponent.velocity)   # descriptor form
 """
 
 from __future__ import annotations

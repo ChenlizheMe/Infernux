@@ -10,10 +10,9 @@
         ["Serialized fields","序列化字段","live"],
         ["Lifecycle hooks","生命周期钩子","live"],
         ["Hot reload","热重载","live"],
-        ["Component dependency declarations","组件依赖声明","planned"],
+        ["Component dependency declarations","组件依赖声明","live"],
         ["Execution order inspection","执行顺序检查","planned"],
-        ["Component enable transactions","组件启用事务","planned"],
-        ["Gameplay state validation","玩法状态验证","planned"]
+        ["Component enable transactions","组件启用事务","planned"]
       ]
     },
     {
@@ -22,7 +21,7 @@
       "leaves": [
         ["Action maps","动作映射","live"],
         ["Device routing","设备路由","planned"],
-        ["Rebinding","按键重绑定","future"],
+        ["Rebinding","按键重绑定","planned"],
         ["Input replay","输入回放","future"],
         ["Input buffering","输入缓冲","planned"],
         ["Action contexts","动作上下文","planned"],
@@ -52,10 +51,7 @@
         ["Authority model","权威模型","future"],
         ["Prediction","预测","future"],
         ["Session flow","会话流程","future"],
-        ["Session ownership","会话所有权","planned"],
-        ["Gameplay event replication","玩法事件复制","planned"],
-        ["Cooperative scene transitions","协作场景切换","planned"],
-        ["Multiplayer debugging","多人游戏调试","planned"]
+        ["Cooperative scene transitions","协作场景切换","planned"]
       ]
     },
     {
@@ -96,7 +92,7 @@
         ["Ability execution","技能执行","planned"],
         ["Quest state graphs","任务状态图","planned"],
         ["Event channels","事件通道","planned"],
-        ["Data-driven configuration","数据驱动配置","planned"],
+        ["Data-driven configuration","数据驱动配置","live"],
         ["Gameplay tag queries","玩法标签查询","planned"]
       ]
     },
@@ -105,12 +101,11 @@
       "zh": "世界交互",
       "leaves": [
         ["Interaction targets","交互目标","planned"],
-        ["Trigger-driven events","触发器事件","planned"],
+        ["Trigger-driven events","触发器事件","live"],
         ["Object pooling","对象池","planned"],
         ["Spawn policies","生成策略","planned"],
         ["Despawn ownership","销毁归属","planned"],
         ["Persistent world objects","持久世界对象","live"],
-        ["Interaction replay","交互回放","planned"],
         ["Procedural encounter rules","程序化遭遇规则","future"]
       ]
     },
@@ -118,11 +113,10 @@
       "en": "Gameplay tools",
       "zh": "玩法工具",
       "leaves": [
-        ["Live property inspection","实时属性检查","planned"],
+        ["Live property inspection","实时属性检查","live"],
         ["Gameplay event timeline","玩法事件时间线","planned"],
         ["State-machine debugger","状态机调试器","planned"],
-        ["Automated play scenarios","自动游玩场景","planned"],
-        ["Input recording tools","输入录制工具","planned"],
+        ["Automated play scenarios","自动游玩场景","live"],
         ["Game-state diff viewer","游戏状态差异查看","planned"],
         ["Scene test fixtures","场景测试夹具","planned"],
         ["Playtest metrics","游玩测试指标","planned"]
@@ -147,20 +141,14 @@
       "zh": "组件组合细节",
       "leaves": [
         ["Required component closure","必需组件闭包","planned"],
-        ["Disallowed component pairs","互斥组件对","planned"],
-        ["Component insertion ordering","组件插入顺序","planned"],
-        ["Component activation barriers","组件激活屏障","planned"],
-        ["Disabled component event policy","禁用组件事件策略","planned"],
+        ["Disallowed component pairs","互斥组件对","live"],
         ["Script execution priority groups","脚本执行优先级组","planned"],
-        ["Component clone reference remapping","组件克隆引用重映射","planned"],
+        ["Component clone reference remapping","组件克隆引用重映射","live"],
         ["Component state reset hooks","组件状态重置接口","planned"],
-        ["Component instance provenance","组件实例来源","planned"],
-        ["Component dependency diagnostics","组件依赖诊断","planned"],
-        ["Runtime component replacement","运行时组件替换","planned"],
-        ["Component subscription ownership","组件订阅归属","planned"],
-        ["Component coroutine cancellation","组件协程取消","planned"],
-        ["Component field change events","组件字段变更事件","planned"],
-        ["Component multi-edit semantics","组件多选编辑语义","planned"],
+        ["Component dependency diagnostics","组件依赖诊断","live"],
+        ["Component coroutine cancellation","组件协程取消","live"],
+        ["Component field change events","组件字段变更事件","live"],
+        ["Component multi-edit semantics","组件多选编辑语义","live"],
         ["Component composition presets","组件组合预设","planned"]
       ]
     },
@@ -168,43 +156,30 @@
       "en": "Input action details",
       "zh": "输入动作细节",
       "leaves": [
-        ["Input context priority stack","输入上下文优先级栈","planned"],
         ["Action consumption rules","动作消费规则","planned"],
         ["Chord binding evaluation","组合键绑定求值","planned"],
-        ["Sequence binding windows","按键序列时间窗","planned"],
         ["Hold duration thresholds","长按时长阈值","planned"],
-        ["Tap count recognition","点击次数识别","planned"],
         ["Input action rebinding conflicts","输入动作重绑定冲突","planned"],
         ["Binding display names","绑定显示名称","planned"],
-        ["Device hot-swap ownership","设备热切换归属","planned"],
-        ["Gamepad radial deadzones","手柄径向死区","planned"],
         ["Analog response curves","模拟输入响应曲线","planned"],
-        ["Touch pointer capture","触摸指针捕获","planned"],
-        ["Multi-touch gesture arbitration","多触摸手势仲裁","planned"],
-        ["Virtual input source lifetimes","虚拟输入源生命周期","planned"],
-        ["Input sample tick attribution","输入采样 Tick 归属","planned"],
-        ["Input device calibration profiles","输入设备校准配置","planned"]
+        ["Virtual input source lifetimes","虚拟输入源生命周期","live"],
+        ["Input sample tick attribution","输入采样 Tick 归属","planned"]
       ]
     },
     {
       "en": "UI layout details",
       "zh": "UI 布局细节",
       "leaves": [
-        ["Intrinsic content measurement","固有内容测量","planned"],
-        ["Min-max size resolution","最小最大尺寸解析","planned"],
+        ["Intrinsic content measurement","固有内容测量","live"],
+        ["Min-max size resolution","最小最大尺寸解析","live"],
         ["Flex grow-shrink allocation","弹性伸缩分配","planned"],
         ["Grid track sizing","网格轨道尺寸","planned"],
-        ["Percentage size dependencies","百分比尺寸依赖","planned"],
-        ["Baseline text alignment","文本基线对齐","planned"],
-        ["Nested clipping rectangles","嵌套裁剪矩形","planned"],
+        ["Nested clipping rectangles","嵌套裁剪矩形","live"],
         ["Layout invalidation propagation","布局失效传播","planned"],
         ["Virtualized list windows","虚拟列表窗口","planned"],
-        ["Scroll anchoring rules","滚动锚定规则","planned"],
         ["Safe-area inset application","安全区边距应用","planned"],
         ["Pixel snapping policy","像素吸附策略","planned"],
         ["UI aspect-ratio constraints","UI 宽高比约束","planned"],
-        ["UI layout cycle detection","UI 布局环检测","planned"],
-        ["UI layout cost counters","UI 布局成本计数","planned"],
         ["UI layout inspection overlays","UI 布局检查叠层","planned"]
       ]
     },
@@ -212,44 +187,30 @@
       "en": "UI interaction details",
       "zh": "UI 交互细节",
       "leaves": [
-        ["Focus scope ownership","焦点作用域归属","planned"],
         ["Directional focus search","方向焦点搜索","planned"],
         ["Modal input barriers","模态输入屏障","planned"],
-        ["Pointer capture release rules","指针捕获释放规则","planned"],
-        ["Drag threshold policies","拖拽阈值策略","planned"],
+        ["Pointer capture release rules","指针捕获释放规则","live"],
         ["Drag-drop payload schemas","拖放载荷结构","planned"],
-        ["Tooltip timing contracts","提示框时序契约","planned"],
-        ["Accessible control roles","无障碍控件角色","planned"],
-        ["Accessible label propagation","无障碍标签传播","planned"],
-        ["Screen reader event bridge","屏幕阅读器事件桥","planned"],
-        ["Keyboard-only navigation","纯键盘导航","planned"],
+        ["Accessible control roles","无障碍控件角色","future"],
+        ["Screen reader event bridge","屏幕阅读器事件桥","future"],
         ["Text selection ranges","文本选择区间","planned"],
         ["IME caret placement","输入法光标定位","planned"],
-        ["Undoable text edits","可撤销文本编辑","planned"],
-        ["UI gesture cancellation","UI 手势取消","planned"],
-        ["World UI occlusion input rules","世界 UI 遮挡输入规则","planned"]
+        ["UI gesture cancellation","UI 手势取消","live"],
+        ["World UI occlusion input rules","世界 UI 遮挡输入规则","live"]
       ]
     },
     {
       "en": "Behavior execution",
       "zh": "行为执行细节",
       "leaves": [
-        ["Behavior tree selectors","行为树选择节点","planned"],
-        ["Behavior tree sequences","行为树顺序节点","planned"],
-        ["Behavior parallel policies","行为并行策略","planned"],
-        ["Behavior decorator conditions","行为装饰条件","planned"],
         ["Behavior node abort rules","行为节点中止规则","planned"],
         ["Blackboard key schemas","黑板键结构","planned"],
         ["Blackboard change subscriptions","黑板变更订阅","planned"],
         ["Utility response curves","效用响应曲线","planned"],
-        ["Utility score normalization","效用评分归一化","planned"],
-        ["Decision cooldown windows","决策冷却时间窗","planned"],
         ["Perception memory decay","感知记忆衰减","planned"],
-        ["Perception stimulus priorities","感知刺激优先级","planned"],
         ["Decision budget slicing","决策预算切片","planned"],
         ["Behavior state persistence","行为状态持久化","planned"],
-        ["Behavior breakpoint controls","行为断点控制","planned"],
-        ["Behavior trace replay","行为轨迹回放","planned"]
+        ["Behavior breakpoint controls","行为断点控制","planned"]
       ]
     },
     {
@@ -257,19 +218,12 @@
       "zh": "导航寻路细节",
       "leaves": [
         ["Walkable surface voxelization","可行走表面体素化","planned"],
-        ["Navigation region merging","导航区域合并","planned"],
-        ["Navigation polygon simplification","导航多边形简化","planned"],
         ["Navigation tile boundaries","导航分块边界","planned"],
         ["Agent radius clearance","智能体半径净空","planned"],
         ["Navigation area costs","导航区域代价","planned"],
-        ["A-star open-set policies","A 星开放集策略","planned"],
         ["Funnel corridor smoothing","漏斗走廊平滑","planned"],
         ["Path corridor repair","路径走廊修复","planned"],
-        ["Off-mesh traversal callbacks","网格外通行回调","planned"],
-        ["Obstacle carving budgets","障碍切割预算","planned"],
         ["Navigation tile rebuild queues","导航块重建队列","planned"],
-        ["Reciprocal collision avoidance","互惠碰撞避让","planned"],
-        ["Crowd neighbor search","人群邻居搜索","planned"],
         ["Navigation query cancellation","导航查询取消","planned"],
         ["Path failure explanations","路径失败解释","planned"]
       ]
@@ -282,16 +236,10 @@
         ["Ability resource costs","技能资源消耗","planned"],
         ["Ability cooldown clocks","技能冷却时钟","planned"],
         ["Ability target selection","技能目标选择","planned"],
-        ["Ability execution phases","技能执行阶段","planned"],
         ["Ability interruption rules","技能中断规则","planned"],
         ["Effect stacking policies","效果叠加策略","planned"],
-        ["Effect duration refresh rules","效果时长刷新规则","planned"],
         ["Attribute modifier ordering","属性修正顺序","planned"],
-        ["Attribute dependency evaluation","属性依赖求值","planned"],
-        ["Damage calculation channels","伤害计算通道","planned"],
-        ["Immunity tag matching","免疫标签匹配","planned"],
         ["Gameplay cue dispatch","玩法提示分派","planned"],
-        ["Ability prediction identifiers","技能预测标识","planned"],
         ["Effect ownership cleanup","效果归属清理","planned"],
         ["Ability event inspection","技能事件检查","planned"]
       ]
@@ -301,39 +249,26 @@
       "zh": "持久玩法数据",
       "leaves": [
         ["Save slot metadata","存档槽元数据","planned"],
-        ["Save request coalescing","存档请求合并","planned"],
         ["Save transaction boundaries","存档事务边界","planned"],
         ["Save object reference remapping","存档对象引用重映射","planned"],
-        ["Checkpoint dependency capture","检查点依赖捕获","planned"],
         ["Inventory item identities","库存物品标识","planned"],
-        ["Inventory stack merge rules","库存堆叠合并规则","planned"],
         ["Inventory transfer transactions","库存转移事务","planned"],
         ["Quest condition evaluation","任务条件求值","planned"],
-        ["Quest branch persistence","任务分支持久化","planned"],
         ["Game flag namespaces","游戏标志命名空间","planned"],
         ["Player preference storage","玩家偏好存储","planned"],
         ["Save schema upgrade steps","存档结构升级步骤","planned"],
-        ["Corrupt-save diagnostics","损坏存档诊断","planned"],
-        ["Cloud-save conflict presentation","云存档冲突呈现","planned"],
-        ["Save payload size budgets","存档载荷体积预算","planned"]
+        ["Corrupt-save diagnostics","损坏存档诊断","planned"]
       ]
     },
     {
       "en": "World spawning details",
       "zh": "世界生成细节",
       "leaves": [
-        ["Spawn point selection weights","生成点选择权重","planned"],
         ["Spawn collision clearance","生成碰撞净空","planned"],
         ["Spawn population budgets","生成种群预算","planned"],
-        ["Spawn ownership tokens","生成归属令牌","planned"],
         ["Spawn batch publication","生成批次发布","planned"],
         ["Pooled object reset phases","池对象重置阶段","planned"],
-        ["Pool capacity growth policy","对象池容量增长策略","planned"],
-        ["Pool return subscription cleanup","对象池归还订阅清理","planned"],
-        ["Despawn distance hysteresis","销毁距离滞后","planned"],
         ["Encounter trigger conditions","遭遇触发条件","planned"],
-        ["Encounter wave scheduling","遭遇波次调度","planned"],
-        ["Procedural encounter seeds","程序化遭遇种子","planned"],
         ["Interaction reach constraints","交互距离约束","planned"],
         ["Interaction priority arbitration","交互优先级仲裁","planned"],
         ["Interaction prompt bindings","交互提示绑定","planned"],
@@ -341,47 +276,19 @@
       ]
     },
     {
-      "en": "Agent policy integration",
-      "zh": "智能体策略接入",
-      "leaves": [
-        ["Agent observation field selection","智能体观测字段选择","planned"],
-        ["Action-space bounds declarations","动作空间边界声明","planned"],
-        ["Discrete action masks","离散动作遮罩","planned"],
-        ["Continuous action scaling","连续动作缩放","planned"],
-        ["Action application barriers","动作应用屏障","planned"],
-        ["Policy state ownership","策略状态归属","planned"],
-        ["Policy request cancellation","策略请求取消","planned"],
-        ["Late action rejection rules","迟到动作拒绝规则","planned"],
-        ["Policy timeout behavior","策略超时行为","planned"],
-        ["Script-policy control arbitration","脚本策略控制仲裁","planned"],
-        ["Human takeover transitions","人工接管过渡","planned"],
-        ["Agent episode reset hooks","智能体回合重置接口","planned"],
-        ["Policy version attribution","策略版本归因","planned"],
-        ["Action safety envelopes","动作有效边界","planned"],
-        ["Agent decision trace views","智能体决策轨迹视图","planned"],
-        ["Policy integration fixture scenes","策略接入夹具场景","planned"]
-      ]
-    },
-    {
       "en": "Localization runtime details",
       "zh": "本地化运行时细节",
       "leaves": [
         ["Localized string identifiers","本地化字符串标识","planned"],
-        ["Locale bundle ownership","语言包归属","planned"],
         ["Locale switch publication","语言切换发布","planned"],
         ["Plural selection rules","复数选择规则","planned"],
-        ["Gender variant selection","性别变体选择","planned"],
         ["Localized format arguments","本地化格式参数","planned"],
         ["Right-to-left layout mirroring","从右到左布局镜像","planned"],
         ["Bidirectional text runs","双向文本分段","planned"],
-        ["Script-specific glyph shaping","文字系统字形塑形","planned"],
         ["Font coverage selection","字体覆盖选择","planned"],
         ["Localized asset references","本地化资产引用","planned"],
         ["Subtitle cue timing","字幕提示时序","planned"],
-        ["Subtitle speaker labels","字幕说话者标签","planned"],
-        ["Locale-specific input hints","语言相关输入提示","planned"],
-        ["Missing translation diagnostics","缺失翻译诊断","planned"],
-        ["Localization expansion previews","本地化长度扩展预览","planned"]
+        ["Missing translation diagnostics","缺失翻译诊断","planned"]
       ]
     }
   ]

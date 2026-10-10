@@ -20,15 +20,20 @@ function roadmapLabelLines(text, limit = 14) {
     return lines;
 }
 
+/* A branch's status derives from its leaves; shared by layout and search. */
+function roadmapStatusOf(leaves) {
+    return leaves.some(row => row[2] === 'progress') ? 'progress'
+        : leaves.every(row => row[2] === 'live') ? 'live'
+        : leaves.some(row => row[2] === 'live') ? 'partial'
+        : leaves.every(row => row[2] === 'future') ? 'future' : 'planned';
+}
+
 function layoutRoadmap(galaxy) {
     let seed = 2166136261;
     for (const char of galaxy.key) seed = Math.imul(seed ^ char.charCodeAt(0), 16777619) >>> 0;
     const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
     const kinds = ['gas', 'ringed', 'rock', 'ice'];
-    const statusOf = leaves => leaves.some(row => row[2] === 'progress') ? 'progress'
-        : leaves.every(row => row[2] === 'live') ? 'live'
-        : leaves.some(row => row[2] === 'live') ? 'partial'
-        : leaves.every(row => row[2] === 'future') ? 'future' : 'planned';
+    const statusOf = roadmapStatusOf;
     const allLeaves = galaxy.branches.flatMap(branch => branch.leaves);
     const completion = leaves => leaves.filter(row => row[2] === 'live').length / leaves.length;
     const nodes = [], edges = [];

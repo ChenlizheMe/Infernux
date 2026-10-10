@@ -52,7 +52,8 @@ async function shellRuntimeRoutes(pages) {
 const precacheRoutes = [
     ...shellPages,
     "/site.webmanifest",
-    "/assets/logo.png",
+    "/assets/logo-mark.webp",
+    "/assets/favicon-64.png",
     ...await shellRuntimeRoutes(shellPages),
     ...shellFontRoutes,
 ].filter((route, index, values) => values.indexOf(route) === index).sort();

@@ -6,6 +6,11 @@ on:
       - "docs/**"
       - "UpdateLog.md"
       - "UpdateLog-zh.md"
+      - "README.md"
+      - "README-zh.md"
+      - ".github/media/**"
+      - "python/infernux/engine/ui/project_file_ops.py"
+      - "scripts/release/sync_release_site.py"
       - ".github/workflows/website-quality.yml"
       - ".github/workflows/build-wiki.yml"
       - ".github/workflows/website-health.yml"
@@ -122,6 +127,12 @@ jobs:
 
       - name: Enforce design-token color contrast
         run: node docs/tools/check-color-contrast.mjs
+
+      - name: Check README quality and bilingual parity
+        run: node docs/tools/check-readme.mjs
+
+      - name: Check Python example import style
+        run: node docs/tools/check-python-examples.mjs
 
       - name: Verify website contracts
         run: node docs/tools/verify-site.mjs

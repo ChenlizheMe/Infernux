@@ -71,9 +71,11 @@ for (const galaxy of GALAXIES) {
         }
     }
     total += checkLayout(galaxy);
-    assert(index.find(entry => entry.key === galaxy.key).nodes >= (galaxy.key === 'rendering' ? 109 : 91) * 3, 'each map must contain at least three times its original node count');
+    // Curated maps, not padded ones: every branch carries a real cluster of goals.
+    assert(galaxy.branches.length >= 6, `${galaxy.key}: a map needs at least six branches`);
+    for (const branch of galaxy.branches) assert(branch.leaves.length >= 3, `${galaxy.key}/${branch.en}: a branch needs at least three goals`);
 }
-assert(total >= 928 * 3);
+assert(total >= 1200, 'the curated roadmap shrank unexpectedly; audit large deletions explicitly');
 const renderGoals = GALAXIES.find(g => g.key === 'rendering').branches.flatMap(b => b.leaves.map(row => row[0]));
 for (const goal of ['Cloud ray marching', 'Multiple importance sampling', 'MIS balance heuristic', 'Shader binding tables']) assert(renderGoals.includes(goal), `missing requested rendering detail: ${goal}`);
 // A growing roadmap must not depend on four/eight fixed slots per branch.

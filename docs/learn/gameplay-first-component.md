@@ -81,7 +81,7 @@ These owner properties are available during normal bound lifecycle use. Accessin
 
 ## Imports and script reload {#imports-reload}
 
-`infernux` is the actual Python package. `import infernux as inx`, `import infernux.renderstack`, and `from infernux.renderstack import RenderStack` use ordinary Python imports and the same component registry. Installed Python libraries can be imported on first use without an engine import whitelist. Their ordinary factories, decorators, and field metadata are also allowed. Older scripts importing `Infernux` should use `infernux`.
+`infernux` is the engine's Python package. Import it once as `import infernux as inx` and reach everything through `inx`: `inx.InxComponent`, `inx.Vector3`, `inx.RenderStack`, `inx.renderstack`, `inx.jit`. It is an ordinary Python import backed by the same component registry. Installed Python libraries can be imported on first use without an engine import whitelist, and their ordinary factories, decorators, and field metadata are allowed. Older scripts that import `Infernux` should switch to `import infernux as inx`.
 
 Ordinary standard-library declarations are allowed too: for example, `threading.Lock()`, `asyncio.iscoroutine(value)`, and `subprocess.list2cmdline(arguments)`. Reload checks diagnose explicit import-time operations such as starting processes, opening network connections, writing files, or changing interpreter-wide state. Put those operations in the appropriate lifecycle method and release resources when the component stops. The static check is not a sandbox and does not prove arbitrary library code has no side effects.
 
@@ -205,7 +205,7 @@ class HelloComponent(inx.InxComponent):
 
 ## 导入与脚本热重载 {#imports-reload_1}
 
-`infernux` 就是引擎实际的 Python 包。`import infernux as inx`、`import infernux.renderstack` 和 `from infernux.renderstack import RenderStack` 都使用普通 Python 导入，共用同一套组件注册表。已安装的 Python 库可以在首次使用时导入，不需要引擎导入白名单；普通工厂、装饰器和字段元数据也允许使用。旧脚本使用的 `Infernux` 包名应改为 `infernux`。
+`infernux` 是引擎的 Python 包。只需 `import infernux as inx` 导入一次，之后都通过 `inx` 访问：`inx.InxComponent`、`inx.Vector3`、`inx.RenderStack`、`inx.renderstack`、`inx.jit`。这是普通的 Python 导入，背后是同一套组件注册表。已安装的 Python 库可以在首次使用时导入，不需要引擎导入白名单；普通工厂、装饰器和字段元数据也可以使用。旧脚本中的 `Infernux` 导入请改为 `import infernux as inx`。
 
 普通标准库声明也允许使用，例如 `threading.Lock()`、`asyncio.iscoroutine(value)` 和 `subprocess.list2cmdline(arguments)`。重载检查会诊断导入期间明确发生的启动进程、建立网络连接、写文件或修改解释器全局状态等操作。应把这些操作放到合适的生命周期方法里，并在组件停止时释放资源。静态检查不是沙箱，不能证明任意第三方库都没有副作用。
 

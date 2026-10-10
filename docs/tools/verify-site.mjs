@@ -113,15 +113,19 @@ const homepage = await readFile(path.join(docsRoot, "index.html"), "utf8");
 if (!homepage.includes(`"softwareVersion": "${currentVersion}"`)) {
     fail(`index.html: structured softwareVersion does not match current release ${currentVersion}`);
 }
-if (!homepage.includes(`>v${currentVersion}</div>`)) {
-    fail(`index.html: current status card does not show v${currentVersion}`);
+const heroBadge = homepage.match(/data-i18n="home\.hero\.badge">([^<]+)</);
+if (!heroBadge || !heroBadge[1].includes(currentVersion)) {
+    fail(`index.html: hero badge does not show the current release ${currentVersion}`);
 }
-if (homepage.includes("0.3.4")) {
+// The demo reel is explicitly labelled archival footage from the 0.3.4 demo;
+// every other homepage scene must present the current release.
+const homepageCurrentScene = homepage.replace(/<section class="section reel" id="demo-reel">[\s\S]*?<\/section>/, "");
+if (homepageCurrentScene.includes("0.3.4")) {
     fail("index.html: stale 0.3.4 reference remains in the homepage scene");
 }
 
 const roadmap = await readFile(path.join(docsRoot, "roadmap.html"), "utf8");
-for (const contract of ["data-roadmap-app", "data-tree-page=\"foundation\"", "data-tree-page=\"pipeline\"", "data-tree-page=\"runtime\"", "data-tree-page=\"agents\"", "data-tree-page=\"audio\"", "data-tree-page=\"gameplay\"", "data-tree-page=\"toolchain\"", "data-tree-page=\"network\"", "data-tree-page=\"data\"", "node-graph", "data-graph-camera", "release-log", "js/roadmap.js?v=13", "js/bilingual-page.js?v=1"]) {
+for (const contract of ["data-roadmap-app", "data-tree-page=\"foundation\"", "data-tree-page=\"pipeline\"", "data-tree-page=\"runtime\"", "data-tree-page=\"agents\"", "data-tree-page=\"audio\"", "data-tree-page=\"gameplay\"", "data-tree-page=\"toolchain\"", "data-tree-page=\"network\"", "data-tree-page=\"data\"", "node-graph", "data-graph-camera", "release-log", "js/roadmap.js?v=16", "js/bilingual-page.js?v=1"]) {
     if (!roadmap.includes(contract)) {
         fail(`roadmap.html: missing interactive tree contract '${contract}'`);
     }
