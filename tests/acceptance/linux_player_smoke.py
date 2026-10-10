@@ -397,16 +397,14 @@ def _terminate(process: subprocess.Popen[str] | None, timeout: float = 5.0) -> N
 
 
 def _state_log(game: str) -> Path:
-    return (
-        Path.home()
-        / ".local"
-        / "state"
-        / "infernux"
-        / "Players"
-        / game
-        / "Logs"
-        / "player.log"
+    # Match the packaged entry point's state directory, including casing on
+    # Linux and an explicitly configured XDG_STATE_HOME.
+    state_home = Path(
+        os.environ.get("LOCALAPPDATA", "").strip()
+        or os.environ.get("XDG_STATE_HOME", "").strip()
+        or Path.home() / ".local" / "state"
     )
+    return state_home / "Infernux" / "Players" / game / "Logs" / "player.log"
 
 
 def _new_log_text(path: Path, start_size: int) -> str:
@@ -692,6 +690,8 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("Linux Player ignored its normal shutdown request") from exc
 
+        if not state_log.is_file():
+            raise RuntimeError(f"Linux Player state log is missing: {state_log}")
         state_text = _new_log_text(state_log, state_start)
         (artifact_root / "player-state.log").write_text(
             state_text, encoding="utf-8", newline="\n"

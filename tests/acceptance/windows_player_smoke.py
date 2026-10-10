@@ -40,6 +40,7 @@ from linux_player_smoke import (  # noqa: E402
     _position,
     _probe_object_names,
     _require_minimum_final_y,
+    _state_log,
 )
 
 
@@ -94,15 +95,6 @@ def _load_manifest(player: Path) -> dict[str, Any]:
             "token-authenticated player control service"
         )
     return manifest
-
-
-def _state_log(game: str) -> Path:
-    state_home = Path(
-        os.environ.get("LOCALAPPDATA", "").strip()
-        or os.environ.get("XDG_STATE_HOME", "").strip()
-        or Path.home() / ".local" / "state"
-    )
-    return state_home / "infernux" / "Players" / game / "Logs" / "player.log"
 
 
 def _terminate(process: subprocess.Popen[str] | None) -> None:
@@ -304,23 +296,6 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
                     process=process,
                 )
 
-        capture_path = ""
-        if capture_file:
-            capture = control.call(
-                "capture",
-                {
-                    "file_name": capture_file,
-                    "timeout_seconds": args.capture_timeout,
-                },
-                timeout=args.capture_timeout + 5.0,
-                process=process,
-            )
-            capture_path = str(capture.get("output_path", "") or "")
-            if str(capture.get("status", "")) != "completed":
-                raise RuntimeError(f"Player render-target capture failed: {capture!r}")
-            if not capture_path or not Path(capture_path).is_file():
-                raise RuntimeError(f"Player capture artifact is missing: {capture_path!r}")
-
         if args.capture_only:
             initial = initial_capture_position
             final = _position(observation, args.object)
@@ -377,6 +352,26 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
                 "Windows Player feature readiness timed out: " + last_feature_error
             )
 
+        # Capture the verified rendered state, as on Linux. A capture issued
+        # on the first gameplay update can precede Windows' initial window
+        # reveal/resize and bind a render target that is about to be replaced.
+        capture_path = ""
+        if capture_file:
+            capture = control.call(
+                "capture",
+                {
+                    "file_name": capture_file,
+                    "timeout_seconds": args.capture_timeout,
+                },
+                timeout=args.capture_timeout + 5.0,
+                process=process,
+            )
+            capture_path = str(capture.get("output_path", "") or "")
+            if str(capture.get("status", "")) != "completed":
+                raise RuntimeError(f"Player render-target capture failed: {capture!r}")
+            if not capture_path or not Path(capture_path).is_file():
+                raise RuntimeError(f"Player capture artifact is missing: {capture_path!r}")
+
         shutdown_started = time.monotonic()
         control.call("shutdown", timeout=10.0, process=process)
         process.wait(timeout=10.0)
@@ -387,6 +382,8 @@ def _run(args: argparse.Namespace, artifact_root: Path) -> SmokeResult:
                 f"{shutdown_elapsed:.3f}s; maximum is "
                 f"{args.maximum_shutdown_seconds:.3f}s"
             )
+        if not state_log.is_file():
+            raise RuntimeError(f"Windows Player state log is missing: {state_log}")
         state_text = _new_log_text(state_log, state_start)
         (artifact_root / "player-state.log").write_text(
             state_text, encoding="utf-8", newline="\n"

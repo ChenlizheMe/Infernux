@@ -8,7 +8,8 @@ import pytest
 
 @pytest.mark.parametrize('action,response', [
     ('quit', 'success'), ('quit', 'failure'), ('quit', 'silent'),
-    ('destroy', 'silent'), ('complete', 'success'), ('complete', 'failure'),
+    ('destroy', 'silent'), ('complete', 'success'), ('complete', 'delayed-success'),
+    ('complete', 'failure'),
     ('complete', 'malformed'), ('complete', 'silent'), ('complete', 'trickle'),
 ])
 def test_community_request_has_bounded_window_lifetime(action, response, tmp_path):

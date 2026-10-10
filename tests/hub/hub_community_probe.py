@@ -38,6 +38,7 @@ def main():
         traceback.print_exception(*exc)
     sys.excepthook = error
     entered = threading.Event()
+    release_response = threading.Event()
     requests = []
     body = json.dumps({'topic_list': {'filter': 'top', 'topics': [dict(
         id=7, slug='topic', title='Local topic', posts_count=3, views=5, like_count=2)]}}).encode()
@@ -47,8 +48,12 @@ def main():
             requests.append(self.path)
             entered.set()
             try:
+                if not release_response.wait(5):
+                    return
                 if response == 'silent' or action == 'quit':
                     time.sleep(0.7)
+                elif response == 'delayed-success':
+                    time.sleep(0.35)
                 else:
                     time.sleep(0.05)
                 self.send_response(503 if response == 'failure' else 200)
@@ -69,7 +74,9 @@ def main():
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     community_feed.HOT_TOPICS_URL = f'http://127.0.0.1:{server.server_port}/top.json'
-    DiscussionView.REQUEST_TIMEOUT_MS = 250
+    # Only timeout scenarios need an accelerated deadline. A normal loopback
+    # response must tolerate scheduling delays on a loaded CI host.
+    DiscussionView.REQUEST_TIMEOUT_MS = 250 if response in ('silent', 'trickle') else 5000
     hub = GameEngineLauncher(HubLaunchContext.SOURCE)
     view = hub.discussion_view
     start = time.monotonic()
@@ -78,6 +85,7 @@ def main():
     for _ in range(5):
         view.refresh()
     assert len(requests) == 1, requests
+    release_response.set()
     if action == 'quit':
         QTimer.singleShot(0, hub.request_quit)
         app.exec()
@@ -91,17 +99,11 @@ def main():
     else:
         spin(view._refresh.isEnabled)
         labels = view.findChildren(QLabel)
-        if response == 'success':
-            # The reply completion slot enables Refresh after publishing the
-            # feed widgets.  On Windows Qt may deliver that widget polish in
-            # the next event turn, so wait for the published UI state itself
-            # instead of treating the enabled button as the publication
-            # barrier.
-            spin(lambda: any(label.text() == 'Local topic'
-                             for label in view.findChildren(QLabel)))
+        observed = [(label.text(), label.property('kind')) for label in labels]
+        if response in ('success', 'delayed-success'):
+            assert any(label.text() == 'Local topic' for label in labels), observed
         else:
-            spin(lambda: any(label.property('kind') == 'error'
-                             for label in view.findChildren(QLabel)))
+            assert any(label.property('kind') == 'error' for label in labels), observed
         if response in ('silent', 'trickle'):
             assert time.monotonic() - start < 0.6, 'request had no total deadline'
         # A completed/failed request must allow exactly one fresh request.

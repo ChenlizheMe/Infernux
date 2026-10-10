@@ -64,6 +64,27 @@ def test_gameplay_control_ready_requires_started_runtime_and_unpaused_input():
     )
 
 
+@pytest.mark.parametrize("state_location", ("LOCALAPPDATA", "XDG_STATE_HOME", "home"))
+def test_player_smoke_reads_errors_from_packaged_player_state_directory(
+    state_location, tmp_path, monkeypatch
+):
+    module = _module()
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    state_home = tmp_path / ".local" / "state"
+    if state_location != "home":
+        state_home = tmp_path / state_location
+        monkeypatch.setenv(state_location, str(state_home))
+    actual_log = state_home / "Infernux" / "Players" / "Balance" / "Logs" / "player.log"
+    actual_log.parent.mkdir(parents=True)
+    actual_log.write_text("[ERROR] scene failed\n", encoding="utf-8")
+
+    log_path = module._state_log("Balance")
+    assert str(log_path) == str(actual_log)
+    assert module._fatal_lines(module._new_log_text(log_path, 0)) == ["[ERROR] scene failed"]
+
+
 def test_linux_smoke_requires_debug_player_control(tmp_path: Path):
     module = _module()
     player = tmp_path / "Balance"
@@ -214,8 +235,12 @@ def test_linux_smoke_backend_evidence_is_emitted_at_info_level():
     assert source[info_index:marker_index].count("INXLOG_INFO") == 1
 
 
-def test_linux_smoke_captures_only_after_renderer_submission_is_ready():
-    module = _module()
+@pytest.mark.parametrize("script", (SCRIPT, WINDOWS_SCRIPT))
+def test_player_smoke_captures_only_after_renderer_submission_is_ready(script):
+    spec = importlib.util.spec_from_file_location(script.stem, script)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
     source = inspect.getsource(module._run)
 
     readiness = source.index('if not bool(feature_observation.get("submission_ready"))')
