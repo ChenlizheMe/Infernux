@@ -92,9 +92,16 @@ def main():
         spin(view._refresh.isEnabled)
         labels = view.findChildren(QLabel)
         if response == 'success':
-            assert any(label.text() == 'Local topic' for label in labels)
+            # The reply completion slot enables Refresh after publishing the
+            # feed widgets.  On Windows Qt may deliver that widget polish in
+            # the next event turn, so wait for the published UI state itself
+            # instead of treating the enabled button as the publication
+            # barrier.
+            spin(lambda: any(label.text() == 'Local topic'
+                             for label in view.findChildren(QLabel)))
         else:
-            assert any(label.property('kind') == 'error' for label in labels)
+            spin(lambda: any(label.property('kind') == 'error'
+                             for label in view.findChildren(QLabel)))
         if response in ('silent', 'trickle'):
             assert time.monotonic() - start < 0.6, 'request had no total deadline'
         # A completed/failed request must allow exactly one fresh request.
