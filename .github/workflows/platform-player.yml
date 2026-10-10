@@ -413,6 +413,7 @@ jobs:
       - name: Build Web Player fixture
         run: |
           conda activate infernux
+          python -m pytest external/plugins/infernux_web/tests/test_physics_clock.py --noconftest -q
           python -m pytest tests/python/test_web_exporter_plugin.py tests/python/test_web_jit_fixture.py \
             -q -k 'web_dependency_gate or web_jit_fixture_verifier or web_fixture_public_jit_cooks' --noconftest
           rm -rf out/ci-projects/web out/acceptance/web
