@@ -96,8 +96,8 @@ def test_existing_runtime_needs_no_dependency_install_action(engine_dialog):
 def test_install_page_connects_dependency_action_to_shared_queue(engine_dialog, monkeypatch):
     dialog, engine, installed = engine_dialog
     calls = []
-    def prepare(*, version, on_status):
-        calls.append(version)
+    def prepare(*, version, on_status, download_ca_bundle):
+        calls.append((version, download_ca_bundle))
         installed.add(version)
         return "/managed/python"
     manager = SimpleNamespace(
@@ -107,7 +107,10 @@ def test_install_page_connects_dependency_action_to_shared_queue(engine_dialog, 
     )
     monkeypatch.setattr(installs_view, "InstallEditorDialog", lambda *args, **kwargs: dialog)
     page = installs_view.InstallsView(dialog._vm, dialog._queue)
-    python_page = PythonRuntimesView(manager, dialog._queue)
+    settings = SimpleNamespace(
+        get_setting=lambda key, default="": "proxy-ca.pem"
+    )
+    python_page = PythonRuntimesView(manager, dialog._queue, settings=settings)
     page.runtime_install_requested.connect(python_page.install)
     try:
         page._on_install_editor()
@@ -119,7 +122,7 @@ def test_install_page_connects_dependency_action_to_shared_queue(engine_dialog, 
             if not dialog._queue.busy:
                 break
         assert not dialog._queue.busy
-        assert calls == ["3.13"]
+        assert calls == [("3.13", "proxy-ca.pem")]
         assert dialog._btn_install.isEnabled()
         assert [job.key for job in dialog._queue.jobs] == ["python:3.13"]
     finally:

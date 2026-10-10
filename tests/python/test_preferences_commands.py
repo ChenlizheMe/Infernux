@@ -4,9 +4,11 @@ from __future__ import annotations
 def test_preferences_commands_are_non_dirty_and_undoable(monkeypatch):
     from infernux.engine import i18n, ide_preference
     from infernux.engine.interaction import CommandSource, EditorInteractionCore
+    from infernux.engine.ui.window_manager import WindowManager
     from infernux.engine.undo import UndoManager
 
     state = {"locale": "zh", "ide": "vscode"}
+    refreshes = []
     monkeypatch.setattr(i18n, "get_locale", lambda: state["locale"])
     monkeypatch.setattr(
         i18n,
@@ -18,6 +20,17 @@ def test_preferences_commands_are_non_dirty_and_undoable(monkeypatch):
         ide_preference,
         "set_ide",
         lambda value: state.__setitem__("ide", value),
+    )
+
+    class _WindowManager:
+        def refresh_type_labels(self):
+            refreshes.append(state["locale"])
+
+    window_manager = _WindowManager()
+    monkeypatch.setattr(
+        WindowManager,
+        "instance",
+        classmethod(lambda _cls: window_manager),
     )
 
     previous_manager = UndoManager.instance()
@@ -38,6 +51,7 @@ def test_preferences_commands_are_non_dirty_and_undoable(monkeypatch):
         assert locale_result.accepted
         assert ide_result.accepted
         assert state == {"locale": "en", "ide": "pycharm"}
+        assert refreshes == ["en"]
         entries = manager.action_journal.applied_entries()
         assert [entry.action.description for entry in entries] == [
             "Set Editor Language",
@@ -47,14 +61,43 @@ def test_preferences_commands_are_non_dirty_and_undoable(monkeypatch):
 
         manager.undo()
         assert state == {"locale": "en", "ide": "vscode"}
+        assert refreshes == ["en"]
         manager.undo()
         assert state == {"locale": "zh", "ide": "vscode"}
+        assert refreshes == ["en", "zh"]
         manager.redo()
+        assert refreshes == ["en", "zh", "en"]
         manager.redo()
         assert state == {"locale": "en", "ide": "pycharm"}
     finally:
         core.shutdown()
         UndoManager._instance = previous_manager
+
+
+def test_locale_preference_applies_without_a_window_manager(monkeypatch):
+    from infernux.engine import i18n
+    from infernux.engine.interaction import EditorInteractionCore
+    from infernux.engine.ui.window_manager import WindowManager
+
+    state = {"locale": "zh"}
+    monkeypatch.setattr(i18n, "get_locale", lambda: state["locale"])
+    monkeypatch.setattr(
+        i18n,
+        "set_locale",
+        lambda value: state.__setitem__("locale", value),
+    )
+    monkeypatch.setattr(
+        WindowManager,
+        "instance",
+        classmethod(lambda _cls: None),
+    )
+
+    core = EditorInteractionCore()
+    try:
+        assert core.preferences.set_locale("en")
+        assert state["locale"] == "en"
+    finally:
+        core.shutdown()
 
 
 def test_preferences_commands_reject_unknown_values():

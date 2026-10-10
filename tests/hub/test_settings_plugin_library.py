@@ -52,6 +52,46 @@ def test_automatic_update_checks_default_on_and_preserve_the_user_choice(saved, 
     assert database.settings["automatic_update_checks"] == "disabled"
 
 
+def test_python_runtime_ca_certificate_is_persisted_and_cleared(tmp_path):
+    certificate = tmp_path / "proxy-ca.pem"
+    database = _Database()
+    view = settings_view.SettingsView(database)
+
+    view.runtime_ca_bundle_edit.setText(str(certificate))
+    view._save_runtime_ca_bundle()
+
+    assert database.settings["python_runtime_ca_bundle"] == str(certificate.resolve())
+
+    view._clear_runtime_ca_bundle()
+
+    assert database.settings["python_runtime_ca_bundle"] == ""
+
+
+def test_python_runtime_ca_certificate_resolution_error_is_reported(
+    tmp_path, monkeypatch
+):
+    database = _Database()
+    view = settings_view.SettingsView(database)
+    reported = []
+
+    def refuse_to_resolve(*_args, **_kwargs):
+        raise RuntimeError("Symlink loop")
+
+    monkeypatch.setattr(settings_view.Path, "resolve", refuse_to_resolve)
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda *_args: reported.append(_args[-1]),
+    )
+    view.runtime_ca_bundle_edit.setText(str(tmp_path / "proxy-ca.pem"))
+
+    view._save_runtime_ca_bundle()
+
+    assert reported == ["Python runtime download CA certificate: Symlink loop"]
+    assert database.settings == {}
+    assert view._runtime_ca_bundle == ""
+
+
 def test_settings_show_the_shared_plugin_library_and_cleanup_capacity(
     tmp_path, monkeypatch
 ):

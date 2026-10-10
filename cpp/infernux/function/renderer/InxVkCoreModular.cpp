@@ -1026,7 +1026,9 @@ void InxVkCoreModular::RecreateSwapchain()
 
     // Recreate depth resources
     CreateDepthResources();
-    m_framebufferResized = false;
+    // Some surfaces publish their new extent after the SDL resize event.
+    // Keep the request pending until the actual swapchain catches up.
+    m_framebufferResized = extent.width != m_windowWidth || extent.height != m_windowHeight;
     INXLOG_DIAGNOSTIC("INFERNUX_PRESENTATION_RESIZED window=", m_windowWidth, "x", m_windowHeight,
                       " swapchain=", extent.width, "x", extent.height);
 }

@@ -1,7 +1,6 @@
 """Runtime acquisition must preserve the installed tree on failed replacement."""
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import os
@@ -25,7 +24,7 @@ def runtime_archive(tmp_path):
         payload = b"new runtime fixture, not an executable"
         member.size = len(payload)
         stream.addfile(member, io.BytesIO(payload))
-    return archive, hashlib.sha256(archive.read_bytes()).hexdigest()
+    return archive
 
 
 @pytest.fixture
@@ -47,7 +46,7 @@ def assert_previous(target):
 def test_archive_publication_failure_preserves_previous_tree(
     installed_tree, runtime_archive, monkeypatch, failure,
 ):
-    archive, digest = runtime_archive
+    archive = runtime_archive
     target = installed_tree
     replace = os.replace
     reached = []
@@ -69,7 +68,7 @@ def test_archive_publication_failure_preserves_previous_tree(
     else:
         monkeypatch.setattr(runtime.os, "replace", fail_rename)
     with pytest.raises(OSError, match="injected"):
-        runtime.extract_runtime_archive(archive, target, expected_sha256=digest)
+        runtime.extract_runtime_archive(archive, target)
 
     assert reached == [True]
     assert_previous(target)
@@ -79,7 +78,7 @@ def test_archive_publication_failure_preserves_previous_tree(
 def test_archive_failure_to_restore_preserves_recoverable_backup(
     installed_tree, runtime_archive, monkeypatch,
 ):
-    archive, digest = runtime_archive
+    archive = runtime_archive
     target = installed_tree
     replace = os.replace
 
@@ -90,7 +89,7 @@ def test_archive_failure_to_restore_preserves_recoverable_backup(
 
     monkeypatch.setattr(runtime.os, "replace", deny_publication_and_restore)
     with pytest.raises(RuntimeError, match="previous runtime.*preserved"):
-        runtime.extract_runtime_archive(archive, target, expected_sha256=digest)
+        runtime.extract_runtime_archive(archive, target)
 
     assert not target.exists()
     backups = list(target.parent.glob(".python313.extract-*/previous-runtime"))
@@ -101,7 +100,7 @@ def test_archive_failure_to_restore_preserves_recoverable_backup(
 def test_archive_success_publishes_complete_marker_and_replaces_old_files(
     installed_tree, runtime_archive, monkeypatch,
 ):
-    archive, digest = runtime_archive
+    archive = runtime_archive
     target = installed_tree
     replace = os.replace
     published = []
@@ -109,12 +108,12 @@ def test_archive_success_publishes_complete_marker_and_replaces_old_files(
     def observe_publication(source, destination):
         if Path(destination) == target:
             marker = json.loads((Path(source) / runtime.PRIVATE_RUNTIME_MARKER).read_text())
-            assert marker["source_archive_sha256"] == digest
+            assert marker["source_archive"] == archive.name
             published.append(True)
         return replace(source, destination)
 
     monkeypatch.setattr(runtime.os, "replace", observe_publication)
-    runtime.extract_runtime_archive(archive, target, expected_sha256=digest)
+    runtime.extract_runtime_archive(archive, target)
     assert published == [True]
     assert (target / "python.exe").read_bytes() == b"new runtime fixture, not an executable"
     assert runtime.is_private_runtime_root(target)
@@ -125,7 +124,7 @@ def test_archive_success_publishes_complete_marker_and_replaces_old_files(
 def test_archive_rejects_candidate_before_touching_installed_tree(
     installed_tree, runtime_archive,
 ):
-    archive, digest = runtime_archive
+    archive = runtime_archive
     checked = []
 
     def reject(candidate):
@@ -137,7 +136,7 @@ def test_archive_rejects_candidate_before_touching_installed_tree(
 
     with pytest.raises(RuntimeError, match="candidate rejected"):
         runtime.extract_runtime_archive(
-            archive, installed_tree, expected_sha256=digest, validate=reject,
+            archive, installed_tree, validate=reject,
         )
     assert len(checked) == 1
     assert_previous(installed_tree)
@@ -147,7 +146,7 @@ def test_archive_rejects_candidate_before_touching_installed_tree(
 def test_failed_first_or_repeat_extract_leaves_no_incomplete_runtime(
     tmp_path, runtime_archive, monkeypatch, existing,
 ):
-    archive, digest = runtime_archive
+    archive = runtime_archive
     target = tmp_path / "python313"
     if existing:
         target.mkdir()
@@ -161,7 +160,7 @@ def test_failed_first_or_repeat_extract_leaves_no_incomplete_runtime(
 
     monkeypatch.setattr(runtime.os, "replace", reject_candidate)
     with pytest.raises(PermissionError, match="publication denied"):
-        runtime.extract_runtime_archive(archive, target, expected_sha256=digest)
+        runtime.extract_runtime_archive(archive, target)
     assert target.exists() == existing
     if existing:
         assert (target / "keep.txt").read_text() == "old"
@@ -183,7 +182,7 @@ def test_reinstall_download_failure_keeps_real_interpreter_discoverable(tmp_path
         encoding="utf-8",
     )
     archive = runtime.runtime_archive_for_machine()
-    runtime.write_private_runtime_marker(target, archive.name, archive.sha256)
+    runtime.write_private_runtime_marker(target, archive.name)
     (target / "keep.txt").write_text("old")
     assert manager.get_runtime_path() == str(executable)
     monkeypatch.setattr(manager, "bundled_runtime_dirs", lambda: [])
@@ -204,12 +203,30 @@ def test_reinstall_download_failure_keeps_real_interpreter_discoverable(tmp_path
 def test_invalid_executable_rejected_before_manager_replaces_old_tree(
     installed_tree, runtime_archive, monkeypatch,
 ):
-    archive, digest = runtime_archive
+    archive = runtime_archive
     manager = manager_module.PythonRuntimeManager(runtime_dir=str(installed_tree.parent))
     monkeypatch.setattr(manager, "_ensure_runtime_archive", lambda *a, **kw: str(archive))
-    extract = runtime.extract_runtime_archive
-    monkeypatch.setattr(manager_module, "extract_runtime_archive", lambda source, destination, **kwargs:
-        extract(source, destination, **{**kwargs, "expected_sha256": digest}))
     with pytest.raises(manager_module.PythonRuntimeError, match="valid full runtime"):
         manager._extract_runtime_to_root(str(installed_tree))
     assert_previous(installed_tree)
+
+
+@pytest.mark.parametrize("operation", ["ensure_runtime", "reinstall_runtime"])
+def test_custom_ca_reaches_download_through_transactional_install(
+    tmp_path, runtime_archive, monkeypatch, operation,
+):
+    manager = manager_module.PythonRuntimeManager(runtime_dir=str(tmp_path / "managed"))
+    monkeypatch.setattr(manager, "bundled_runtime_dirs", lambda: [])
+    monkeypatch.setattr(manager, "_prepare_candidate", lambda *args, **kwargs: None)
+    requests = []
+
+    def download(url, destination, *, user_agent, ca_bundle):
+        requests.append(ca_bundle)
+        shutil.copyfile(runtime_archive, destination)
+
+    monkeypatch.setattr(manager_module, "_download_file", download)
+    installed = getattr(manager, operation)(download_ca_bundle="company-root.pem")
+    assert installed == manager.private_runtime_python()
+    assert requests == ["company-root.pem"]
+    assert runtime.is_private_runtime_root(manager.private_runtime_root())
+    assert not list(Path(manager.installed_runtime_dir()).glob(".*.extract-*"))

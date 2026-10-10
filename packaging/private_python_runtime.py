@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -32,7 +31,6 @@ _PRIVATE_RUNTIME_MARKER_KEYS = {
     "python_version",
     "python_series",
     "source_archive",
-    "source_archive_sha256",
     "written_at",
 }
 
@@ -41,7 +39,6 @@ _PRIVATE_RUNTIME_MARKER_KEYS = {
 class RuntimeArchive:
     name: str
     url: str
-    sha256: str
 
 
 def runtime_prefix(python_exe: str) -> str:
@@ -122,34 +119,12 @@ def runtime_archive_for_machine(
             "https://github.com/astral-sh/python-build-standalone/releases/download/"
             f"{release.build_release}/{name.replace('+', '%2B')}"
         ),
-        sha256=release.archive_sha256[target],
     )
-
-
-def verify_runtime_archive(
-    archive_path: str | os.PathLike[str], expected_sha256: str
-) -> None:
-    archive = Path(archive_path)
-    digest = hashlib.sha256()
-    try:
-        with archive.open("rb") as stream:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError as exc:
-        raise RuntimeError(f"Unable to read private Python runtime archive: {archive}") from exc
-
-    actual = digest.hexdigest()
-    if actual.lower() != expected_sha256.lower():
-        raise RuntimeError(
-            "Private Python runtime archive checksum mismatch: "
-            f"expected {expected_sha256}, got {actual}."
-        )
 
 
 def write_private_runtime_marker(
     runtime_root: str | os.PathLike[str],
     archive_name: str,
-    archive_sha256: str,
     *,
     runtime: str | PythonRuntimeId = DEFAULT_PYTHON_RUNTIME,
 ) -> None:
@@ -162,7 +137,6 @@ def write_private_runtime_marker(
         "python_version": release.patch_version,
         "python_series": release.runtime_id.series,
         "source_archive": archive_name,
-        "source_archive_sha256": archive_sha256,
         "written_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     temporary = marker.with_suffix(marker.suffix + ".tmp")
@@ -209,7 +183,6 @@ def is_current_private_runtime_root(
         and payload.get("python_version") == release.patch_version
         and payload.get("python_series") == release.runtime_id.series
         and payload.get("source_archive") == archive.name
-        and payload.get("source_archive_sha256") == archive.sha256
     )
 
 
@@ -280,14 +253,12 @@ def extract_runtime_archive(
     archive_path: str | os.PathLike[str],
     destination: str | os.PathLike[str],
     *,
-    expected_sha256: str,
     runtime: str | PythonRuntimeId = DEFAULT_PYTHON_RUNTIME,
     validate: Callable[[Path], None] | None = None,
 ) -> None:
     archive = Path(archive_path).resolve()
     if not archive.is_file():
         raise RuntimeError(f"Private Python runtime archive not found: {archive}")
-    verify_runtime_archive(archive, expected_sha256)
     with runtime_publication(destination) as candidate:
         try:
             with tarfile.open(archive, mode="r:gz") as package:
@@ -298,7 +269,7 @@ def extract_runtime_archive(
             raise RuntimeError(
                 "Unexpected private Python runtime archive layout: missing the python/ root."
             )
-        write_private_runtime_marker(candidate, archive.name, expected_sha256, runtime=runtime)
+        write_private_runtime_marker(candidate, archive.name, runtime=runtime)
         if validate is not None:
             validate(candidate)
 

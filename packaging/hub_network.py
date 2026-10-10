@@ -9,6 +9,14 @@ import ssl
 import sys
 
 
+def create_download_ssl_context(extra_ca_file: str | None = None) -> ssl.SSLContext:
+    """Create a verified context and optionally add a user CA to its trust roots."""
+    context = ssl.create_default_context()
+    if extra_ca_file:
+        context.load_verify_locations(cafile=extra_ca_file)
+    return context
+
+
 def configure_system_certificates() -> None:
     if not sys.platform.startswith("linux"):
         return

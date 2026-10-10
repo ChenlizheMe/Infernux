@@ -21,7 +21,7 @@ def test_cold_project_runtime_loads_stdlib_and_package_extensions(
     source = Path(manager.private_runtime_root())
     private_python_factory(source)
     archive = private_python_runtime.runtime_archive_for_machine()
-    private_python_runtime.write_private_runtime_marker(source, archive.name, archive.sha256)
+    private_python_runtime.write_private_runtime_marker(source, archive.name)
     # This fixture supplies a real interpreter/stdlib/pip, but no engine wheels
     # or network dependencies. Runtime copying and launcher relocation are real.
     monkeypatch.setattr(manager_module, "_has_build_support", lambda *a: True)

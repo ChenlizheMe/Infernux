@@ -180,7 +180,6 @@ def _validate_runtime_bundle(bundle_path: Path) -> None:
         and marker.get("python_version") == PYTHON_VERSION
         and marker.get("python_series") == DEFAULT_PYTHON_RUNTIME.series
         and marker.get("source_archive") == archive.name
-        and marker.get("source_archive_sha256") == archive.sha256
     ):
         raise RuntimeError(
             "The private Python runtime bundle is stale or does not match the pinned "

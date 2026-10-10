@@ -1,13 +1,18 @@
 """Early Hub settings page."""
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QFrame,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -127,6 +132,34 @@ class SettingsView(QWidget):
             tr("Dark control room or light paper. Both keep the Infernux red."),
             self.theme_toggle,
         )
+
+        self._runtime_ca_bundle = (
+            self._db.get_setting("python_runtime_ca_bundle", "").strip() if self._db else ""
+        )
+        certificate_controls = QWidget()
+        certificate_row = QHBoxLayout(certificate_controls)
+        certificate_row.setContentsMargins(0, 0, 0, 0)
+        self.runtime_ca_bundle_edit = QLineEdit(self._runtime_ca_bundle)
+        self.runtime_ca_bundle_edit.setPlaceholderText(tr("No custom certificate"))
+        self.runtime_ca_bundle_edit.setClearButtonEnabled(True)
+        self.runtime_ca_bundle_edit.setAccessibleName(tr("Python runtime download CA certificate"))
+        self.runtime_ca_bundle_edit.editingFinished.connect(self._save_runtime_ca_bundle)
+        certificate_row.addWidget(self.runtime_ca_bundle_edit, 1)
+        self.runtime_ca_browse_button = QPushButton(tr("Browse"))
+        self.runtime_ca_browse_button.setObjectName("normalBtn")
+        self.runtime_ca_browse_button.setFixedHeight(34)
+        self.runtime_ca_browse_button.clicked.connect(self._choose_runtime_ca_bundle)
+        certificate_row.addWidget(self.runtime_ca_browse_button)
+        self.runtime_ca_clear_button = QPushButton(tr("Clear"))
+        self.runtime_ca_clear_button.setObjectName("normalBtn")
+        self.runtime_ca_clear_button.setFixedHeight(34)
+        self.runtime_ca_clear_button.clicked.connect(self._clear_runtime_ca_bundle)
+        certificate_row.addWidget(self.runtime_ca_clear_button)
+        general.add_row(
+            tr("Python runtime downloads"),
+            tr("Optional PEM CA certificate for Python runtime downloads."),
+            certificate_controls,
+        )
         layout.addWidget(general)
 
         updates = _SettingsGroup("B", tr("UPDATES"))
@@ -220,6 +253,44 @@ class SettingsView(QWidget):
             self._db.set_setting(
                 "automatic_update_checks", "enabled" if state else "disabled"
             )
+
+    def _choose_runtime_ca_bundle(self):
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            tr("Select a CA certificate"),
+            str(Path(self._runtime_ca_bundle).parent)
+            if self._runtime_ca_bundle
+            else "",
+            tr("Certificate files (*.pem);;All files (*)"),
+        )
+        if path:
+            self.runtime_ca_bundle_edit.setText(path)
+            self._save_runtime_ca_bundle()
+
+    def _clear_runtime_ca_bundle(self):
+        self.runtime_ca_bundle_edit.clear()
+        self._save_runtime_ca_bundle()
+
+    def _save_runtime_ca_bundle(self):
+        raw_path = self.runtime_ca_bundle_edit.text().strip()
+        if raw_path:
+            try:
+                path = str(Path(raw_path).expanduser().resolve())
+            except (OSError, RuntimeError, ValueError) as exc:
+                QMessageBox.critical(
+                    self,
+                    tr("Settings"),
+                    f"{tr('Python runtime download CA certificate')}: {exc}",
+                )
+                return
+        else:
+            path = ""
+
+        if path == self._runtime_ca_bundle:
+            return
+        self._runtime_ca_bundle = path
+        if self._db:
+            self._db.set_setting("python_runtime_ca_bundle", path)
 
     def refresh(self):
         """Refresh state owned outside the Hub process."""

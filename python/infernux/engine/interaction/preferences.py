@@ -222,10 +222,19 @@ class PreferencesCommandService:
         value = str(locale or "").strip()
         if value not in SUPPORTED_LOCALES:
             return False
+
+        def apply_locale(locale_value: str) -> None:
+            set_locale(locale_value)
+            from infernux.engine.ui.window_manager import WindowManager
+
+            windows = WindowManager.instance()
+            if windows is not None:
+                windows.refresh_type_labels()
+
         return self._set_value(
             get_locale(),
             value,
-            set_locale,
+            apply_locale,
             description="Set Editor Language",
         )
 

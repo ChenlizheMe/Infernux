@@ -143,7 +143,6 @@ def _runtime_marker() -> dict[str, str]:
         "python_version": PYTHON_VERSION,
         "python_series": DEFAULT_PYTHON_RUNTIME.series,
         "source_archive": archive.name,
-        "source_archive_sha256": archive.sha256,
     }
 
 

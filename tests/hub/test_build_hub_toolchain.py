@@ -132,7 +132,6 @@ def test_hub_build_embeds_the_private_runtime_bundle(
         "python_version": PYTHON_VERSION,
         "python_series": DEFAULT_PYTHON_RUNTIME.series,
         "source_archive": archive.name,
-        "source_archive_sha256": archive.sha256,
     }
     with zipfile.ZipFile(runtime_bundle, "w", compression=zipfile.ZIP_LZMA) as bundle:
         bundle.writestr(
@@ -204,7 +203,6 @@ def test_hub_build_rejects_a_stale_private_runtime_bundle(tmp_path: Path):
                     "python_version": "3.11.9",
                     "python_series": "3.11",
                     "source_archive": "python-3.11.9-amd64.exe",
-                    "source_archive_sha256": "revoked-installer",
                 }
             ),
         )
@@ -231,7 +229,6 @@ def test_hub_build_rejects_extra_legacy_runtime_payload(tmp_path: Path):
         "python_version": PYTHON_VERSION,
         "python_series": DEFAULT_PYTHON_RUNTIME.series,
         "source_archive": archive.name,
-        "source_archive_sha256": archive.sha256,
     }
     with zipfile.ZipFile(runtime_bundle, "w") as bundle:
         bundle.writestr(

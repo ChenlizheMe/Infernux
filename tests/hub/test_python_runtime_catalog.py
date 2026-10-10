@@ -45,7 +45,6 @@ def test_catalog_pins_immutable_runtime_archives() -> None:
 
     assert release.patch_version == "3.13.15"
     assert release.build_release == "20260825"
-    assert len(release.archive_sha256["x86_64-pc-windows-msvc"]) == 64
 
 
 def test_unknown_python_runtime_is_rejected() -> None:

@@ -191,13 +191,15 @@ class InxVkCoreModular
      */
     void PreparePipeline();
 
-    /// @brief Publish the SDL pixel extent and schedule presentation resize.
+    /// @brief Publish the window pixel size and request swapchain recreation when it changes.
     void SetWindowSize(uint32_t width, uint32_t height)
     {
-        if (m_windowWidth != width || m_windowHeight != height)
-            m_framebufferResized = true;
+        if (m_windowWidth == width && m_windowHeight == height)
+            return;
+
         m_windowWidth = width;
         m_windowHeight = height;
+        m_framebufferResized = true;
     }
 
     /// Apply a pending resize before building GUI/render graphs or acquiring an

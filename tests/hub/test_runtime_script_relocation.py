@@ -61,7 +61,7 @@ def test_installed_and_project_launchers_use_their_own_python(tmp_path, monkeypa
     source = tmp_path / "bundle/python313"
     source_python = private_python_factory(source)
     archive = runtime.runtime_archive_for_machine()
-    runtime.write_private_runtime_marker(source, archive.name, archive.sha256)
+    runtime.write_private_runtime_marker(source, archive.name)
     wheel = tmp_path / "infernux_entry_probe-1.0-py3-none-any.whl"
     with zipfile.ZipFile(wheel, "w") as stream:
         stream.writestr("infernux_entry_probe.py",

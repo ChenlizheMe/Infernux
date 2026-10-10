@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 
-import hashlib
 import io
 import os
 import sys
@@ -10,6 +9,7 @@ import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,7 +23,6 @@ from private_python_runtime import (
     is_private_runtime_root,
     prune_runtime_staging_cache,
     runtime_archive_for_machine,
-    verify_runtime_archive,
 )
 
 
@@ -33,10 +32,6 @@ def _write_runtime_archive(path: Path, executable: str = "python.exe") -> None:
     info.size = len(payload)
     with tarfile.open(path, mode="w:gz") as archive:
         archive.addfile(info, io.BytesIO(payload))
-
-
-def _archive_sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("module", [embed_runtime_manager, stage_bundled_python_runtime])
@@ -90,7 +85,6 @@ def test_windows_runtime_uses_pinned_relocatable_archive() -> None:
     )
     assert artifact.url.endswith(artifact.name.replace("+", "%2B"))
     assert not artifact.name.endswith((".exe", ".msi", ".pkg"))
-    assert artifact.sha256 == "82a792c25550a421b29f381eaeafa6dccd1ffcbd97a1b1507b202f5df877cecf"
 
 
 def test_python_312_runtime_remains_addressable() -> None:
@@ -99,7 +93,84 @@ def test_python_312_runtime_remains_addressable() -> None:
     )
 
     assert artifact.name.startswith("cpython-3.12.13+20260805-")
-    assert artifact.sha256 == "d731ce7dddcfad4a9521aac48626ca06326003fe4771a366e0fce6eb58709451"
+
+
+def test_runtime_archive_download_uses_the_configured_ca_context(
+    tmp_path, monkeypatch
+):
+    artifact = SimpleNamespace(
+        name="python-runtime.tar.gz",
+        url="https://example.test/python-runtime.tar.gz",
+    )
+    context = object()
+    ca_bundle = str(tmp_path / "proxy-ca.pem")
+    manager = embed_runtime_manager.PythonRuntimeManager(
+        runtime_dir=str(tmp_path / "Runtimes"),
+    )
+    requests = []
+
+    monkeypatch.setattr(
+        embed_runtime_manager,
+        "runtime_archive_for_machine",
+        lambda **_kwargs: artifact,
+    )
+    monkeypatch.setattr(
+        embed_runtime_manager,
+        "create_download_ssl_context",
+        lambda path: requests.append(("context", path)) or context,
+    )
+    monkeypatch.setattr(
+        embed_runtime_manager.urllib.request,
+        "urlopen",
+        lambda request, **kwargs: (
+            requests.append((request.full_url, kwargs["context"])),
+            io.BytesIO(b"runtime archive"),
+        )[1],
+    )
+
+    archive_path = manager._ensure_runtime_archive(download_ca_bundle=ca_bundle)
+
+    assert Path(archive_path).read_bytes() == b"runtime archive"
+    assert requests == [
+        ("context", ca_bundle),
+        (artifact.url, context),
+    ]
+
+
+def test_runtime_archive_download_uses_the_default_context_without_a_ca(
+    tmp_path, monkeypatch
+):
+    artifact = SimpleNamespace(
+        name="python-runtime.tar.gz",
+        url="https://example.test/python-runtime.tar.gz",
+    )
+    manager = embed_runtime_manager.PythonRuntimeManager(
+        runtime_dir=str(tmp_path / "Runtimes"),
+    )
+    contexts = []
+
+    monkeypatch.setattr(
+        embed_runtime_manager,
+        "runtime_archive_for_machine",
+        lambda **_kwargs: artifact,
+    )
+    monkeypatch.setattr(
+        embed_runtime_manager,
+        "create_download_ssl_context",
+        lambda path: pytest.fail("no CA is configured"),
+    )
+    monkeypatch.setattr(
+        embed_runtime_manager.urllib.request,
+        "urlopen",
+        lambda request, **kwargs: (
+            contexts.append(kwargs["context"]),
+            io.BytesIO(b"runtime archive"),
+        )[1],
+    )
+
+    manager._ensure_runtime_archive()
+
+    assert contexts == [None]
 
 
 @pytest.mark.parametrize(
@@ -213,20 +284,10 @@ def test_runtime_archive_is_extracted_into_an_owned_private_root(tmp_path: Path)
     destination = tmp_path / "hub-runtime" / "python313"
     _write_runtime_archive(archive)
 
-    extract_runtime_archive(
-        archive, destination, expected_sha256=_archive_sha256(archive)
-    )
+    extract_runtime_archive(archive, destination)
 
     assert (destination / "python.exe").read_bytes() == b"private python"
     assert is_private_runtime_root(destination)
-
-
-def test_runtime_archive_checksum_is_verified(tmp_path: Path) -> None:
-    archive = tmp_path / "runtime.tar.gz"
-    _write_runtime_archive(archive)
-
-    with pytest.raises(RuntimeError, match="checksum mismatch"):
-        verify_runtime_archive(archive, "0" * 64)
 
 
 def test_extracted_runtime_marker_records_the_source_archive(tmp_path: Path) -> None:
@@ -234,16 +295,13 @@ def test_extracted_runtime_marker_records_the_source_archive(tmp_path: Path) -> 
     destination = tmp_path / "python313"
     _write_runtime_archive(archive)
 
-    archive_sha256 = _archive_sha256(archive)
-    extract_runtime_archive(
-        archive, destination, expected_sha256=archive_sha256
-    )
+    extract_runtime_archive(archive, destination)
 
     assert is_private_runtime_root(destination)
     marker = (destination / ".infernux-private-python-runtime.json").read_text(
         encoding="utf-8"
     )
-    assert archive_sha256 in marker
+    assert archive.name in marker
 
 
 def test_runtime_archive_rejects_paths_outside_destination(tmp_path: Path) -> None:
@@ -255,11 +313,7 @@ def test_runtime_archive_rejects_paths_outside_destination(tmp_path: Path) -> No
         archive.addfile(info, io.BytesIO(payload))
 
     with pytest.raises(RuntimeError, match="Invalid private Python runtime archive"):
-        extract_runtime_archive(
-            archive_path,
-            tmp_path / "python313",
-            expected_sha256=_archive_sha256(archive_path),
-        )
+        extract_runtime_archive(archive_path, tmp_path / "python313")
 
     assert not (tmp_path / "outside.txt").exists()
 
@@ -369,7 +423,6 @@ def test_runtime_extraction_does_not_touch_external_python(
         lambda source, destination, **kwargs: extract_runtime_archive(
             source,
             destination,
-            expected_sha256=_archive_sha256(Path(source)),
             runtime=kwargs["runtime"],
             validate=kwargs["validate"],
         ),

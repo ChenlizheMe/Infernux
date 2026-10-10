@@ -204,7 +204,9 @@ class GameEngineLauncher(QMainWindow):
             self.install_queue,
             parent=installs_page,
         )
-        self.python_view = PythonRuntimesView(self.runtime_manager, self.install_queue)
+        self.python_view = PythonRuntimesView(
+            self.runtime_manager, self.install_queue, settings=self.db
+        )
         self.android_view = AndroidSupportView(self.android_support_manager, self.install_queue)
         self.blender_view = BlenderSupportView(self.blender_support_manager, self.install_queue)
         for view, label in (

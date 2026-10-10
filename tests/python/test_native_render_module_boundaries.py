@@ -47,7 +47,11 @@ def test_window_resize_rebuilds_presentation_before_gui_and_acquire() -> None:
     core = (RENDERER / "InxVkCoreModular.cpp").read_text(encoding="utf-8")
     recreate = _function_body(core, "void InxVkCoreModular::RecreateSwapchain()")
     assert recreate.index("m_framebufferResized = true") < recreate.index("QuerySwapchainSupport()")
-    assert recreate.index("m_framebufferResized = false") > recreate.index("CreateDepthResources()")
+    # A surface may report its previous extent immediately after an SDL event.
+    # Only acknowledge the resize after publishing the requested dimensions.
+    acknowledge = "m_framebufferResized = extent.width != m_windowWidth || extent.height != m_windowHeight"
+    assert recreate.index(acknowledge) > recreate.index("CreateDepthResources()")
+    assert "m_framebufferResized = false" not in recreate
 
 
 def _function_body(source: str, signature: str) -> str:

@@ -1,7 +1,6 @@
 """Exercise the managed runtime's public install path without network packages."""
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 import shutil
 import subprocess
@@ -84,7 +83,7 @@ def write_runtime(root: Path, label: str) -> None:
     (root / "pyvenv.cfg").write_text(
         f"home = {Path(sys.executable).parent}\ninclude-system-site-packages = false\n", encoding="utf-8")
     archive = runtime.runtime_archive_for_machine()
-    runtime.write_private_runtime_marker(root, archive.name, archive.sha256)
+    runtime.write_private_runtime_marker(root, archive.name)
     (root / "identity.txt").write_text(label)
 
 
@@ -111,8 +110,7 @@ def select_source(source_kind, manager, source, monkeypatch):
         archive = source.parent / "runtime.tar.gz"
         with tarfile.open(archive, "w:gz") as stream:
             stream.add(source, arcname="python")
-        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-        archive_info = runtime.RuntimeArchive(archive.name, "https://unused.invalid/runtime", digest)
+        archive_info = runtime.RuntimeArchive(archive.name, "https://unused.invalid/runtime")
         monkeypatch.setattr(module, "runtime_archive_for_machine", lambda **kw: archive_info)
         monkeypatch.setattr(manager, "_ensure_runtime_archive", lambda *a, **kw: str(archive))
         monkeypatch.setattr(manager, "bundled_runtime_dirs", lambda: [])

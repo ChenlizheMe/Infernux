@@ -151,6 +151,11 @@ if(WIN32)
 endif()
 
 if(MSVC)
+    # Public runtime headers need conforming C++ member lookup. Propagate the
+    # mode to Python bindings and native tests that consume those headers.
+    target_compile_options(InfernuxRuntime PUBLIC
+        "$<$<COMPILE_LANGUAGE:CXX>:/permissive->"
+    )
     # MSBuild already compiles independent projects concurrently. Bound /MP and
     # serialize writes to the shared compiler PDB.
     foreach(_infernux_target ${INFERNUX_NATIVE_TARGETS})

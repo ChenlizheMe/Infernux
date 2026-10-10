@@ -886,13 +886,14 @@ class _ModuleView(QWidget):
 
 
 class PythonRuntimesView(_ModuleView):
-    def __init__(self, manager, queue: InstallQueue, parent=None):
+    def __init__(self, manager, queue: InstallQueue, *, settings=None, parent=None):
         super().__init__(
             tr("Runtime environment"),
             tr("Required to run the editor. Hub installs and manages Python for you; no programming or environment setup is needed."),
             queue, parent,
         )
         self._manager = manager
+        self._settings = settings
         self.refresh()
 
     def refresh(self):
@@ -910,12 +911,25 @@ class PythonRuntimesView(_ModuleView):
     def install(self, version):
         manager = self._manager
         reinstall = manager.has_runtime(version)
+        download_ca_bundle = (
+            self._settings.get_setting("python_runtime_ca_bundle", "").strip()
+            if self._settings
+            else ""
+        )
         def prepare(report):
             report(tr("Preparing runtime"), 0, 0)
             status = lambda text: report(text, 0, 0)
             if reinstall:
-                return manager.reinstall_runtime(version, on_status=status)
-            return manager.ensure_runtime(version=version, on_status=status)
+                return manager.reinstall_runtime(
+                    version,
+                    on_status=status,
+                    download_ca_bundle=download_ca_bundle,
+                )
+            return manager.ensure_runtime(
+                version=version,
+                on_status=status,
+                download_ca_bundle=download_ca_bundle,
+            )
         return self._queue.submit(f"python:{version}", f"Python {version}", prepare)
 
 
