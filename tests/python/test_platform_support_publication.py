@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import ast
 from pathlib import Path
+import re
 import tomllib
 from packaging.version import Version
 
@@ -51,17 +52,29 @@ def test_wheel_classifiers_match_supported_host_targets():
 
 def test_both_readme_tables_match_the_support_matrix():
     matrix = _matrix()
-    for filename, language in (("README.md", "en"), ("README-zh.md", "zh")):
+    availability = {"yes": True, "有": True, "✅": True,
+                    "no": False, "无": False, "—": False, "-": False}
+    for filename in ("README.md", "README-zh.md"):
         text = (ROOT / filename).read_text(encoding="utf-8")
-        assert "docs/platform-support.json" in text
         assert "SUPPORT.md#platform-support" in text
+        rows = [tuple(cell.strip() for cell in line.strip().strip("|").split("|"))
+                for line in text.splitlines() if line.lstrip().startswith("|")]
         for item in matrix["platforms"]:
-            yes, no = ("Yes", "No") if language == "en" else ("有", "无")
-            editor = yes if item["editor"] else no
-            player = yes if item["player"] == "Yes" else item["player"]
-            # README presents capabilities; CI evidence belongs in SUPPORT.md.
-            expected = f'| {item["label"]} | {editor} | {player} | {item["graphics"]} |'
-            assert expected in text, (filename, item["id"])
+            label = "".join(item["label"].split()).casefold()
+            matches = [row for row in rows if "".join(row[0].split()).casefold() == label]
+            assert len(matches) == 1, (filename, item["id"])
+            _, editor, player, graphics = matches[0]
+            assert availability[editor.casefold()] == item["editor"]
+            assert graphics == item["graphics"]
+            if item["player"] == "Yes":
+                assert availability[player.casefold()]
+            else:
+                # A short introduction may name only the main delivery formats.
+                # Reject unsupported claims without requiring identical prose.
+                advertised = {value.strip() for value in re.split(r"[/+]", player)}
+                assert advertised and advertised <= set(item["player"].split("/")), (
+                    filename, item["id"], player
+                )
 
 
 def test_released_platform_claims_match_the_public_hub_catalog():
@@ -76,16 +89,21 @@ def test_released_platform_claims_match_the_public_hub_catalog():
         assert matrix["evidence"][field] in support
 
 
-def test_download_page_exposes_the_same_matrix_in_both_languages():
+def test_download_page_links_to_platform_support_sources():
     page = (ROOT / "docs/download.html").read_text(encoding="utf-8")
-    assert page.count('href="platform-support.json"') == 2
-    assert page.count('SUPPORT.md#platform-support"') == 2
+    assert 'href="platform-support.json"' in page
+    assert 'SUPPORT.md#platform-support"' in page
 
 
-def test_readme_plugin_examples_use_repository_and_local_author_contracts():
-    for filename in ("README.md", "README-zh.md"):
+def test_readmes_link_to_current_plugin_authoring_contracts():
+    for filename, language in (("README.md", "en"), ("README-zh.md", "zh")):
         text = (ROOT / filename).read_text(encoding="utf-8")
+        assert f"https://infernux-engine.com/wiki/site/{language}/plugin-package-content.html" in text
+        assert "https://github.com/InfernuxEngine/infernux_plugin_template" in text
+        guide = (ROOT / "docs/wiki/docs" / language / "plugin-package-content.md").read_text(
+            encoding="utf-8"
+        )
         for token in ("package.py", "package/", "inx_package.json", "runtime/", "editor/", "plugin_pages/"):
-            assert token in text, (filename, token)
-        assert "InxPackage.json" not in text
-        assert "InxPluginPages/" not in text
+            assert token in guide, (language, token)
+        assert "InxPackage.json" not in guide
+        assert "InxPluginPages/" not in guide

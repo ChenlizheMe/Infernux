@@ -1243,8 +1243,10 @@ def test_web_host_contract_embeds_python_and_uses_only_webgpu(monkeypatch):
     assert "INFERNUX_WEBGPU_PARTICLE_CAPACITY_LIMIT" in particle_runtime
     assert "availableStorageBuffers < kRequiredParticleStorageBuffersPerStage" in particle_runtime
     assert "m_state->emissionSupported = false" in particle_runtime
+    assert "m_device.GetLimits(&limits)" in rhi_backend
+    assert "limits.maxStorageBuffersPerShaderStage != maxStorageBuffersPerStage" in rhi_backend
     assert (
-        "m_capabilities.limits.maxStorageBuffersPerStage = maxStorageBuffersPerStage"
+        "m_capabilities.limits.maxStorageBuffersPerStage = limits.maxStorageBuffersPerShaderStage"
         in rhi_backend
     )
     assert "g_fullscreenRenderer.EnsurePipeline" in main
