@@ -97,6 +97,7 @@ def main():
         hub.db.close()
         shiboken6.delete(hub)
     else:
+        request_start = time.monotonic()
         spin(view._refresh.isEnabled)
         labels = view.findChildren(QLabel)
         observed = [(label.text(), label.property('kind')) for label in labels]
@@ -105,11 +106,14 @@ def main():
         else:
             assert any(label.property('kind') == 'error' for label in labels), observed
         if response in ('silent', 'trickle'):
-            assert time.monotonic() - start < 0.6, 'request had no total deadline'
+            assert time.monotonic() - request_start < 0.6, 'request had no total deadline'
         # A completed/failed request must allow exactly one fresh request.
+        request_start = time.monotonic()
         view.refresh()
         spin(lambda: len(requests) == 2)
         spin(view._refresh.isEnabled)
+        if response in ('silent', 'trickle'):
+            assert time.monotonic() - request_start < 0.6, 'second request had no total deadline'
         assert not errors, errors
         QTimer.singleShot(0, hub.request_quit)
         app.exec()

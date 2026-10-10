@@ -878,7 +878,8 @@ def _cached_wheel_verdict(path: str, expected: tuple[EngineWheel, ...]) -> str:
     except OSError:
         return "invalid"
     key = (
-        os.path.normcase(os.path.abspath(path)), stat.st_size, stat.st_mtime_ns,
+        os.path.normcase(os.path.abspath(path)), stat.st_size,
+        stat.st_mtime_ns, stat.st_ctime_ns,
         tuple((item.size, item.sha256) for item in expected),
     )
     verdict = _WHEEL_VERDICTS.get(key)
@@ -898,7 +899,13 @@ def _cached_wheel_verdict(path: str, expected: tuple[EngineWheel, ...]) -> str:
             verdict = "invalid"
     if len(_WHEEL_VERDICTS) > 256:
         _WHEEL_VERDICTS.clear()
-    _WHEEL_VERDICTS[key] = verdict
+    # An invalid file is commonly being replaced in place (for example after
+    # an interrupted download).  Do not retain that negative result: some
+    # filesystems expose coarse timestamp resolution, so a corrected file can
+    # otherwise reuse the stale verdict despite having the same size and
+    # timestamp.  Valid results remain metadata-keyed for the hot path.
+    if verdict != "invalid":
+        _WHEEL_VERDICTS[key] = verdict
     return verdict
 
 

@@ -51,7 +51,7 @@ from install_queue import InstallQueue
 from installer_safety import can_remove_install_dir
 from hub_uninstall import remove_application
 from i18n import configure_language, tr
-from view.hover_widgets import ensure_hover_animation_filter
+from view.hover_widgets import ensure_hover_animation_filter, release_hover_animation_filter
 from view.forge import Backdrop, PageHeader, ToastHost, ui_font
 from view import dialogs
 import time
@@ -502,6 +502,11 @@ class GameEngineLauncher(QMainWindow):
             self._exit_when_idle = True
             self.close()
         else:
+            # Stop asynchronous page callbacks before Qt begins tearing down
+            # child widgets.  This keeps late community-feed results and the
+            # application-wide hover filter off deleted Qt objects.
+            self.discussion_view.shutdown()
+            release_hover_animation_filter(self.app)
             self.app.quit()
 
     def _on_queue_idle(self):
