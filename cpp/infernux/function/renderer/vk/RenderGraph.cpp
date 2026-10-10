@@ -875,7 +875,7 @@ void RenderGraph::Initialize(VkDeviceContext *context, GpuRetirementQueue *delet
     m_cmdBeginRendering = nullptr;
     m_cmdEndRendering = nullptr;
     if (context && m_rhiDevice) {
-        if (!m_rhiDevice->GetCapabilityState().synchronization2.IsEnabled())
+        if (!m_rhiDevice->GetVulkanFeatures().synchronization2.IsEnabled())
             throw std::runtime_error("RenderGraph requires Vulkan Synchronization2");
         m_cmdPipelineBarrier2 = rhi::ResolveSynchronization2Commands(context->GetDevice()).barrier;
         if (!m_cmdPipelineBarrier2)
@@ -883,7 +883,7 @@ void RenderGraph::Initialize(VkDeviceContext *context, GpuRetirementQueue *delet
     }
     if (context && m_rhiDevice) {
         const rhi::DynamicRenderingCommands commands = rhi::ResolveDynamicRenderingCommands(context->GetDevice());
-        if (!m_rhiDevice->GetCapabilityState().dynamicRendering.IsEnabled() || !commands.IsValid())
+        if (!m_rhiDevice->GetVulkanFeatures().dynamicRendering.IsEnabled() || !commands.IsValid())
             throw std::runtime_error("RenderGraph requires Vulkan Dynamic Rendering");
         m_cmdBeginRendering = commands.begin;
         m_cmdEndRendering = commands.end;

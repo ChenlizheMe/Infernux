@@ -17,7 +17,7 @@ VulkanBindlessTextureTable::~VulkanBindlessTextureTable()
     DestroyAfterDeviceIdle();
 }
 
-uint32_t VulkanBindlessTextureTable::SelectCapacity(const rhi::DeviceLimits &limits, uint32_t requested) noexcept
+uint32_t VulkanBindlessTextureTable::SelectCapacity(const VulkanDescriptorLimits &limits, uint32_t requested) noexcept
 {
     if (requested < 2 || limits.maxUpdateAfterBindDescriptors < 2 || limits.maxUpdateAfterBindResourcesPerStage < 2 ||
         limits.maxUpdateAfterBindSamplersPerStage < 2 || limits.maxUpdateAfterBindSampledTexturesPerStage < 2 ||
@@ -29,8 +29,8 @@ uint32_t VulkanBindlessTextureTable::SelectCapacity(const rhi::DeviceLimits &lim
 }
 
 bool VulkanBindlessTextureTable::Initialize(VkDevice device, VkDescriptorManager &descriptorManager,
-                                            const rhi::DeviceCapabilityState &capabilities,
-                                            const rhi::DeviceLimits &limits, VkImageView fallbackView,
+                                            const vk::VulkanFeatureState &capabilities,
+                                            const VulkanDescriptorLimits &limits, VkImageView fallbackView,
                                             VkSampler fallbackSampler, std::shared_ptr<const void> fallbackOwner,
                                             uint32_t requestedCapacity)
 {

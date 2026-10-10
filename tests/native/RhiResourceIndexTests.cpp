@@ -124,19 +124,11 @@ int main()
     assert(!orderedSlot.TryPublish(stalePublication));
     assert(orderedSlot.Acquire() == firstPublication);
 
-    DeviceCapabilityState boundedState;
-    DeviceCapabilityState bindlessState = boundedState;
-    bindlessState.bindless.descriptorIndexing.enabled = true;
-    // One bit is not a usable bindless shader ABI: all required descriptor
-    // features must have been enabled by logical-device creation.
-    assert(ComputeDeviceShaderContractKey(boundedState) == ComputeDeviceShaderContractKey(bindlessState));
-    bindlessState.bindless.runtimeDescriptorArray.enabled = true;
-    bindlessState.bindless.shaderSampledImageArrayNonUniformIndexing.enabled = true;
-    bindlessState.bindless.descriptorBindingPartiallyBound.enabled = true;
-    bindlessState.bindless.descriptorBindingVariableDescriptorCount.enabled = true;
-    bindlessState.bindless.descriptorBindingSampledImageUpdateAfterBind.enabled = true;
-    const uint64_t boundedContract = ComputeDeviceShaderContractKey(boundedState);
-    const uint64_t bindlessContract = ComputeDeviceShaderContractKey(bindlessState);
+    PortableCaps boundedState;
+    PortableCaps bindlessState = boundedState;
+    bindlessState.bindlessSampledTextures = true;
+    const uint64_t boundedContract = ComputeDeviceShaderContractKey(boundedState, "test.renderer");
+    const uint64_t bindlessContract = ComputeDeviceShaderContractKey(bindlessState, "test.renderer");
     assert(boundedContract != bindlessContract);
     return 0;
 }

@@ -509,7 +509,7 @@ void InxVkCoreModular::InitializeMaterialSystem()
             m_backend.Device().GetVmaAllocator(), GetDevice(), GetPhysicalDevice(), colorFormat, depthFormat,
             m_msaaSampleCount, m_shaderCache.GetProgramCache(), &m_deletionQueue,
             m_backend.Device().IsDescriptorIndexingEnabled(), &m_backend.Device().GetRhiDevice().GetDescriptorManager(),
-            rhi::ComputeDeviceShaderContractKey(m_backend.Device().GetRhiDevice().GetCapabilityState(),
+            rhi::ComputeDeviceShaderContractKey(m_backend.Device().GetCapabilities().portable,
                                                 m_backend.Device().GetCapabilities().BackendName()));
         m_materialPipelineManagerInitialized = true;
 

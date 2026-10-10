@@ -371,8 +371,8 @@ bool InxVkCoreModular::PrepareSurface()
         const auto fallback = fallbackSlot->Acquire();
         if (fallback &&
             m_bindlessTextureTable.Initialize(
-                GetDevice(), rhiDevice.GetDescriptorManager(), rhiDevice.GetCapabilityState(),
-                rhiDevice.GetCapabilities().limits, rhiDevice.Resolve(fallback->GetView()),
+                GetDevice(), rhiDevice.GetDescriptorManager(), rhiDevice.GetVulkanFeatures(),
+                rhiDevice.GetVulkanFeatures().descriptorLimits, rhiDevice.Resolve(fallback->GetView()),
                 rhiDevice.Resolve(fallback->GetSampler()), std::static_pointer_cast<const void>(fallback))) {
             const auto stats = m_bindlessTextureTable.GetStats();
             INXLOG_INFO("Bindless texture table initialized: capacity=", stats.capacity);
@@ -383,7 +383,7 @@ bool InxVkCoreModular::PrepareSurface()
         INXLOG_WARN("Bindless texture table unavailable: default white texture publication is missing");
     }
 
-    const bool bindlessTextureABI = vk::VulkanBindlessTextureTable::CanUseShaderABI(rhiDevice.GetCapabilityState(),
+    const bool bindlessTextureABI = vk::VulkanBindlessTextureTable::CanUseShaderABI(rhiDevice.GetVulkanFeatures(),
                                                                                     m_bindlessTextureTable.IsReady());
     if (bindlessTextureABI &&
         !rhiDevice.ConfigureBindlessTextureTable(

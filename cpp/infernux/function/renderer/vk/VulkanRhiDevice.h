@@ -7,6 +7,7 @@
 #include <function/renderer/rhi/RhiDevice.h>
 
 #include "VkDescriptorManager.h"
+#include "VulkanFeatureState.h"
 
 #include <array>
 #include <cstdint>
@@ -126,7 +127,7 @@ struct VulkanCapabilitySnapshot final
     bool timelineSemaphoreExtension = false;
     bool dynamicRenderingExtension = false;
     bool synchronization2Extension = false;
-    rhi::DeviceCapabilityState supported;
+    vk::VulkanFeatureState supported;
 
     [[nodiscard]] static VulkanCapabilityProbeData QueryProbe(VkPhysicalDevice physicalDevice,
                                                               uint32_t apiVersionLimit = UINT32_MAX);
@@ -160,16 +161,16 @@ class VulkanDeviceFeatureChain final
     VulkanDeviceFeatureChain(const VulkanDeviceFeatureChain &) = delete;
     VulkanDeviceFeatureChain &operator=(const VulkanDeviceFeatureChain &) = delete;
 
-    [[nodiscard]] bool Enable(const rhi::DeviceCapabilityRequest &request) noexcept;
+    [[nodiscard]] bool Enable(const vk::DeviceCapabilityRequest &request) noexcept;
     [[nodiscard]] const VkPhysicalDeviceFeatures2 &GetFeatures2() const noexcept
     {
         return m_features2;
     }
-    [[nodiscard]] const rhi::DeviceCapabilityState &GetEnabledState() const noexcept
+    [[nodiscard]] const vk::VulkanFeatureState &GetEnabledState() const noexcept
     {
         return m_enabled;
     }
-    [[nodiscard]] const rhi::DeviceCapabilityCheck &GetFailure() const noexcept
+    [[nodiscard]] const vk::DeviceCapabilityCheck &GetFailure() const noexcept
     {
         return m_failure;
     }
@@ -187,8 +188,8 @@ class VulkanDeviceFeatureChain final
     [[nodiscard]] bool EnableSynchronization2() noexcept;
 
     VulkanCapabilitySnapshot m_supported;
-    rhi::DeviceCapabilityState m_enabled{};
-    rhi::DeviceCapabilityCheck m_failure{};
+    vk::VulkanFeatureState m_enabled{};
+    vk::DeviceCapabilityCheck m_failure{};
     VkPhysicalDeviceFeatures2 m_features2{};
     VkPhysicalDeviceVulkan12Features m_vulkan12{};
     VkPhysicalDeviceVulkan13Features m_vulkan13{};
@@ -212,7 +213,7 @@ class VulkanRhiDevice final : public rhi::Device
     explicit VulkanRhiDevice(VkDevice device, VmaAllocator allocator = VK_NULL_HANDLE,
                              const rhi::DeviceCaps &capabilities = {}, uint32_t graphicsQueueFamily = 0,
                              uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0,
-                             const rhi::DeviceCapabilityState &capabilityState = {});
+                             const vk::VulkanFeatureState &capabilityState = {});
 
     VulkanRhiDevice(const VulkanRhiDevice &) = delete;
     VulkanRhiDevice &operator=(const VulkanRhiDevice &) = delete;
@@ -229,7 +230,7 @@ class VulkanRhiDevice final : public rhi::Device
     {
         return m_capabilities;
     }
-    [[nodiscard]] const rhi::DeviceCapabilityState &GetCapabilityState() const noexcept override
+    [[nodiscard]] const vk::VulkanFeatureState &GetVulkanFeatures() const noexcept
     {
         return m_capabilityState;
     }
@@ -241,7 +242,7 @@ class VulkanRhiDevice final : public rhi::Device
     void Reset(VkDevice device = VK_NULL_HANDLE, VmaAllocator allocator = VK_NULL_HANDLE,
                const rhi::DeviceCaps &capabilities = {}, uint32_t graphicsQueueFamily = 0,
                uint32_t computeQueueFamily = 0, uint32_t transferQueueFamily = 0,
-               const rhi::DeviceCapabilityState &capabilityState = {}) noexcept;
+               const vk::VulkanFeatureState &capabilityState = {}) noexcept;
 
     [[nodiscard]] rhi::BufferHandle RegisterBuffer(VkBuffer buffer, uint64_t byteSize = 0,
                                                    bool concurrentQueueSharing = false);
@@ -459,7 +460,7 @@ class VulkanRhiDevice final : public rhi::Device
     std::string m_pipelineCachePath;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
     rhi::DeviceCaps m_capabilities{};
-    rhi::DeviceCapabilityState m_capabilityState{};
+    vk::VulkanFeatureState m_capabilityState{};
     uint32_t m_graphicsQueueFamily = 0;
     uint32_t m_computeQueueFamily = 0;
     uint32_t m_transferQueueFamily = 0;

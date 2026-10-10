@@ -65,15 +65,96 @@ void EnableCompleteBindless(VkPhysicalDeviceDescriptorIndexingFeaturesEXT &featu
     features.descriptorBindingUpdateUnusedWhilePending = VK_TRUE;
 }
 
-void EnableCompleteBindless(rhi::BindlessCapabilityStatus &status)
+void EnableCompleteBindless(vk::BindlessCapabilityStatus &status)
 {
-    const rhi::DeviceCapabilityStatus enabled{true, true};
+    const vk::DeviceCapabilityStatus enabled{true, true};
     status.descriptorIndexing = enabled;
     status.runtimeDescriptorArray = enabled;
     status.shaderSampledImageArrayNonUniformIndexing = enabled;
     status.descriptorBindingPartiallyBound = enabled;
     status.descriptorBindingVariableDescriptorCount = enabled;
     status.descriptorBindingSampledImageUpdateAfterBind = enabled;
+}
+
+void TestPrivateCapabilityPolicy()
+{
+    using namespace vk;
+    VulkanFeatureState state;
+    DeviceCapabilityRequest emptyRequest;
+    assert(CheckDeviceCapabilities(state, emptyRequest).IsSupported());
+
+    state.dynamicRendering.supported = true;
+    const auto notEnabled = CheckDeviceCapability(state, DeviceCapability::DynamicRendering);
+    assert(!notEnabled.IsSupported());
+    assert(notEnabled.code == DeviceCapabilityDiagnosticCode::NotEnabled);
+
+    state.dynamicRendering.enabled = true;
+    assert(CheckDeviceCapability(state, DeviceCapability::DynamicRendering).IsSupported());
+
+    DeviceCapabilityRequest bindlessRequest;
+    bindlessRequest.descriptorIndexing = true;
+    const auto incompleteBindless = CheckDeviceCapabilities(state, bindlessRequest);
+    assert(!incompleteBindless.IsSupported());
+    assert(incompleteBindless.code == DeviceCapabilityDiagnosticCode::IncompleteDescriptorIndexing);
+
+    state.bindless.descriptorIndexing.supported = true;
+    state.bindless.runtimeDescriptorArray.supported = true;
+    state.bindless.shaderSampledImageArrayNonUniformIndexing.supported = true;
+    state.bindless.descriptorBindingPartiallyBound.supported = true;
+    state.bindless.descriptorBindingVariableDescriptorCount.supported = true;
+    state.bindless.descriptorBindingSampledImageUpdateAfterBind.supported = true;
+    assert(CheckDeviceCapabilities(state, bindlessRequest).code == DeviceCapabilityDiagnosticCode::NotEnabled);
+
+    state.bindless.descriptorIndexing.enabled = true;
+    state.bindless.runtimeDescriptorArray.enabled = true;
+    state.bindless.shaderSampledImageArrayNonUniformIndexing.enabled = true;
+    state.bindless.descriptorBindingPartiallyBound.enabled = true;
+    state.bindless.descriptorBindingVariableDescriptorCount.enabled = true;
+    state.bindless.descriptorBindingSampledImageUpdateAfterBind.enabled = true;
+    assert(CheckDeviceCapabilities(state, bindlessRequest).IsSupported());
+
+    DeviceCapabilityRequest syncRequest;
+    syncRequest.synchronization2 = true;
+    state.synchronization2 = {true, false};
+    assert(CheckDeviceCapabilities(state, syncRequest).code == DeviceCapabilityDiagnosticCode::NotEnabled);
+    state.synchronization2.enabled = true;
+    assert(CheckDeviceCapabilities(state, syncRequest).IsSupported());
+
+    VulkanFeatureState computeState;
+    DeviceCapabilityRequest computeRequest;
+    computeRequest.shaderFloat64 = true;
+    auto computeCheck = CheckDeviceCapabilities(computeState, computeRequest);
+    assert(computeCheck.code == DeviceCapabilityDiagnosticCode::Unsupported);
+    assert(computeCheck.capability == DeviceCapability::ShaderFloat64);
+    computeState.shaderFloat64.supported = true;
+    assert(CheckDeviceCapabilities(computeState, computeRequest).code == DeviceCapabilityDiagnosticCode::NotEnabled);
+    computeState.shaderFloat64.enabled = true;
+    assert(CheckDeviceCapabilities(computeState, computeRequest).IsSupported());
+    computeRequest.shaderInt16 = true;
+    computeRequest.shaderInt64 = true;
+    computeState.shaderInt16 = {true, true};
+    computeState.shaderInt64 = {true, false};
+    computeCheck = CheckDeviceCapabilities(computeState, computeRequest);
+    assert(computeCheck.capability == DeviceCapability::ShaderInt64);
+    assert(computeCheck.code == DeviceCapabilityDiagnosticCode::NotEnabled);
+    computeState.shaderInt64.enabled = true;
+    assert(CheckDeviceCapabilities(computeState, computeRequest).IsSupported());
+
+    rhi::PortableCaps portable;
+    VulkanFeatureState partial;
+    partial.bindless.descriptorIndexing = {true, true};
+    partial.PublishShaderCapabilities(portable);
+    assert(!portable.bindlessSampledTextures);
+    state.PublishShaderCapabilities(portable);
+    assert(portable.bindlessSampledTextures);
+    computeState.PublishShaderCapabilities(portable);
+    assert(portable.shaderInt16 && portable.shaderInt64 && portable.shaderFloat64);
+    const auto key = rhi::ComputeDeviceShaderContractKey(portable, "vulkan");
+    computeState.dynamicRendering = {true, true};
+    computeState.synchronization2 = {true, true};
+    computeState.submit2 = {true, true};
+    computeState.PublishShaderCapabilities(portable);
+    assert(rhi::ComputeDeviceShaderContractKey(portable, "vulkan") == key);
 }
 
 void TestPhysicalDeviceSelection()
@@ -96,7 +177,7 @@ void TestPhysicalDeviceSelection()
     for (const auto &valid : {core, khr}) {
         assert(vk::MeetsVulkanDeviceRequirements(valid));
         vk::VulkanDeviceFeatureChain chain(vk::VulkanCapabilitySnapshot::FromProbe(valid));
-        rhi::DeviceCapabilityRequest request;
+        vk::DeviceCapabilityRequest request;
         request.dynamicRendering = true;
         request.synchronization2 = true;
         assert(chain.Enable(request));
@@ -136,8 +217,8 @@ void TestPhysicalDeviceSelection()
     for (const auto &unsupported : invalid) {
         assert(!vk::MeetsVulkanDeviceRequirements(unsupported));
         for (const auto &valid : {core, khr}) {
-            std::vector<vk::VulkanPhysicalDeviceCandidate> candidates{
-                {fast, 10000, unsupported}, {compatible, 100, valid}};
+            std::vector<vk::VulkanPhysicalDeviceCandidate> candidates{{fast, 10000, unsupported},
+                                                                      {compatible, 100, valid}};
             assert(vk::SelectVulkanPhysicalDevice(candidates)->device == compatible);
             std::swap(candidates[0], candidates[1]);
             assert(vk::SelectVulkanPhysicalDevice(candidates)->device == compatible);
@@ -177,6 +258,7 @@ int main(int argc, char **argv)
             return 1;
         }
     }
+    TestPrivateCapabilityPolicy();
     TestPhysicalDeviceSelection();
     vk::VulkanCapabilityProbeData numericProbe;
     numericProbe.apiVersion = VK_API_VERSION_1_2;
@@ -186,17 +268,17 @@ int main(int argc, char **argv)
     assert(numericSnapshot.supported.shaderInt64.supported);
     assert(!numericSnapshot.supported.shaderInt64.enabled);
     vk::VulkanDeviceFeatureChain numericChain(numericSnapshot);
-    rhi::DeviceCapabilityRequest numericRequest;
+    vk::DeviceCapabilityRequest numericRequest;
     numericRequest.shaderInt16 = true;
     numericRequest.shaderInt64 = true;
     assert(numericChain.Enable(numericRequest));
     assert(numericChain.GetFeatures2().features.shaderInt16 == VK_TRUE);
     assert(numericChain.GetFeatures2().features.shaderInt64 == VK_TRUE);
     assert(numericChain.GetFeatures2().features.shaderFloat64 == VK_FALSE);
-    assert(rhi::CheckDeviceCapabilities(numericChain.GetEnabledState(), numericRequest).IsSupported());
+    assert(vk::CheckDeviceCapabilities(numericChain.GetEnabledState(), numericRequest).IsSupported());
     numericRequest.shaderFloat64 = true;
     assert(!numericChain.Enable(numericRequest));
-    assert(numericChain.GetFailure().capability == rhi::DeviceCapability::ShaderFloat64);
+    assert(numericChain.GetFailure().capability == vk::DeviceCapability::ShaderFloat64);
     assert(numericChain.GetFeatures2().features.shaderInt64 == VK_FALSE);
     assert(!numericChain.GetEnabledState().shaderInt64.enabled);
     numericRequest = {};
@@ -210,21 +292,21 @@ int main(int argc, char **argv)
     numericRequest.shaderFloat64 = true;
     assert(fullNumericChain.Enable(numericRequest));
     assert(fullNumericChain.GetFeatures2().features.shaderFloat64 == VK_TRUE);
-    assert(rhi::CheckDeviceCapabilities(fullNumericChain.GetEnabledState(), numericRequest).IsSupported());
+    assert(vk::CheckDeviceCapabilities(fullNumericChain.GetEnabledState(), numericRequest).IsSupported());
 
-    rhi::DeviceCapabilityState noBindlessCapabilities{};
+    vk::VulkanFeatureState noBindlessCapabilities{};
     assert(!vk::VulkanBindlessTextureTable::CanUseShaderABI(noBindlessCapabilities, false));
     assert(!vk::VulkanBindlessTextureTable::CanUseShaderABI(noBindlessCapabilities, true));
     assert(!vk::VulkanBindlessTextureTable::IsOrphanedPublication(false, false));
     assert(!vk::VulkanBindlessTextureTable::IsOrphanedPublication(false, true));
     assert(!vk::VulkanBindlessTextureTable::IsOrphanedPublication(true, true));
     assert(vk::VulkanBindlessTextureTable::IsOrphanedPublication(true, false));
-    rhi::DeviceCapabilityState completeBindlessCapabilities{};
+    vk::VulkanFeatureState completeBindlessCapabilities{};
     EnableCompleteBindless(completeBindlessCapabilities.bindless);
     assert(!vk::VulkanBindlessTextureTable::CanUseShaderABI(completeBindlessCapabilities, false));
     assert(vk::VulkanBindlessTextureTable::CanUseShaderABI(completeBindlessCapabilities, true));
 
-    rhi::DeviceLimits bindlessLimits{};
+    vk::VulkanDescriptorLimits bindlessLimits{};
     bindlessLimits.maxUpdateAfterBindDescriptors = 32768;
     bindlessLimits.maxUpdateAfterBindResourcesPerStage = 24576;
     bindlessLimits.maxUpdateAfterBindSamplersPerStage = 16384;
@@ -406,7 +488,7 @@ int main(int argc, char **argv)
     assert(!coreSnapshot.supported.dynamicRendering.enabled);
     assert(coreSnapshot.properties.apiVersion == VK_API_VERSION_1_3);
 
-    rhi::DeviceCapabilityRequest allModern;
+    vk::DeviceCapabilityRequest allModern;
     allModern.descriptorIndexing = true;
     allModern.timelineSemaphore = true;
     allModern.dynamicRendering = true;
@@ -419,7 +501,7 @@ int main(int argc, char **argv)
     assert(coreChain.GetEnabledState().dynamicRendering.IsEnabled());
     assert(coreChain.GetEnabledState().synchronization2.IsEnabled());
     assert(coreChain.GetEnabledState().submit2.IsEnabled());
-    assert(rhi::CheckDeviceCapabilities(coreChain.GetEnabledState(), allModern).IsSupported());
+    assert(vk::CheckDeviceCapabilities(coreChain.GetEnabledState(), allModern).IsSupported());
     assert(HasFeatureNode(coreChain.GetFeatures2(), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES));
     assert(HasFeatureNode(coreChain.GetFeatures2(), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES));
 
@@ -439,14 +521,14 @@ int main(int argc, char **argv)
     assert(khrSnapshot.supported.dynamicRendering.supported);
     assert(khrSnapshot.supported.synchronization2.supported);
     vk::VulkanDeviceFeatureChain khrChain(khrSnapshot);
-    assert(rhi::CheckDeviceCapabilities(khrChain.GetEnabledState(), allModern).code ==
-           rhi::DeviceCapabilityDiagnosticCode::NotEnabled);
+    assert(vk::CheckDeviceCapabilities(khrChain.GetEnabledState(), allModern).code ==
+           vk::DeviceCapabilityDiagnosticCode::NotEnabled);
     assert(khrChain.Enable(allModern));
     assert(HasFeatureNode(khrChain.GetFeatures2(), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES_EXT));
     assert(HasFeatureNode(khrChain.GetFeatures2(), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES_KHR));
     assert(HasFeatureNode(khrChain.GetFeatures2(), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES_KHR));
     assert(HasFeatureNode(khrChain.GetFeatures2(), VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR));
-    assert(rhi::CheckDeviceCapabilities(khrChain.GetEnabledState(), allModern).IsSupported());
+    assert(vk::CheckDeviceCapabilities(khrChain.GetEnabledState(), allModern).IsSupported());
 
     vk::VulkanCapabilityProbeData incompleteExtProbe;
     incompleteExtProbe.apiVersion = VK_API_VERSION_1_1;
@@ -457,7 +539,7 @@ int main(int argc, char **argv)
     const auto incompleteExtSnapshot = vk::VulkanCapabilitySnapshot::FromProbe(incompleteExtProbe);
     assert(!incompleteExtSnapshot.supported.bindless.IsSupported());
     vk::VulkanDeviceFeatureChain incompleteExtChain(incompleteExtSnapshot);
-    rhi::DeviceCapabilityRequest incompleteExtRequest;
+    vk::DeviceCapabilityRequest incompleteExtRequest;
     incompleteExtRequest.descriptorIndexing = true;
     assert(!incompleteExtChain.Enable(incompleteExtRequest));
     assert(incompleteExtChain.GetFeatures2().pNext == nullptr);
@@ -467,10 +549,10 @@ int main(int argc, char **argv)
     incompleteProbe.vulkan12Features.descriptorIndexing = VK_TRUE;
     const auto incompleteSnapshot = vk::VulkanCapabilitySnapshot::FromProbe(incompleteProbe);
     vk::VulkanDeviceFeatureChain incompleteChain(incompleteSnapshot);
-    rhi::DeviceCapabilityRequest bindlessOnly;
+    vk::DeviceCapabilityRequest bindlessOnly;
     bindlessOnly.descriptorIndexing = true;
     assert(!incompleteChain.Enable(bindlessOnly));
-    assert(incompleteChain.GetFailure().code == rhi::DeviceCapabilityDiagnosticCode::IncompleteDescriptorIndexing);
+    assert(incompleteChain.GetFailure().code == vk::DeviceCapabilityDiagnosticCode::IncompleteDescriptorIndexing);
     assert(incompleteChain.GetFeatures2().pNext == nullptr);
     assert(!incompleteChain.GetEnabledState().bindless.IsEnabled());
     rhi_identity_test::SlotExhaustion(false);

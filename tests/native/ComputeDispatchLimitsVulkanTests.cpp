@@ -96,6 +96,20 @@ int main(int argc, char **argv)
     auto &device = context.GetRhiDevice();
     const auto &limits = device.GetCapabilities().limits;
     assert(limits.maxPushConstantBytes > 0 && limits.maxBindingLayouts > 0);
+    const auto &portable = device.GetCapabilities().portable;
+    VkPhysicalDeviceProperties physical{};
+    vkGetPhysicalDeviceProperties(context.GetPhysicalDevice(), &physical);
+    // A byte range must not accidentally publish the number of binding slots.
+    assert(portable.maxStorageBufferBinding == physical.limits.maxStorageBufferRange);
+    assert(portable.maxStorageBufferBinding >= 128ull * 1024ull * 1024ull);
+    assert(portable.maxWorkgroupInvocations == physical.limits.maxComputeWorkGroupInvocations);
+    for (size_t axis = 0; axis < 3; ++axis)
+        assert(portable.maxWorkgroupSize[axis] == physical.limits.maxComputeWorkGroupSize[axis]);
+    const auto &enabled = device.GetVulkanFeatures();
+    assert(portable.shaderInt16 == enabled.shaderInt16.IsEnabled());
+    assert(portable.shaderInt64 == enabled.shaderInt64.IsEnabled());
+    assert(portable.shaderFloat64 == enabled.shaderFloat64.IsEnabled());
+    assert(device.GetCapabilities().BackendName() == "vulkan");
     {
         const auto shader = device.CreateShaderModule(ShaderModuleDesc::FromSpirV(spirv.data(), spirv.size()));
         assert(shader.IsValid());

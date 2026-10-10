@@ -13,9 +13,8 @@ using namespace infernux::rhi;
 int main()
 {
     DeviceCaps capabilities;
-    capabilities.backend = BackendType::Vulkan;
-    capabilities.SetBackendId(kVulkanBackendId);
-    assert(capabilities.BackendName() == kVulkanBackendId);
+    capabilities.SetBackendId("vulkan");
+    assert(capabilities.BackendName() == "vulkan");
     assert(CheckDeviceContract(kRhiApiVersion, capabilities).IsValid());
     assert(CheckDeviceContract((kRhiApiVersionMajor + 1u) << 16u, capabilities).code ==
            DeviceContractDiagnosticCode::IncompatibleApiVersion);
@@ -47,100 +46,31 @@ int main()
     capabilities.SetAdapterName(longName);
     assert(capabilities.AdapterName().size() == DeviceCaps::AdapterNameCapacity - 1);
 
-    DeviceCapabilityState state;
-    DeviceCapabilityRequest emptyRequest;
-    assert(CheckDeviceCapabilities(state, emptyRequest).IsSupported());
+    // Plugins add identities without registering a central backend enum.
+    DeviceCaps plugin;
+    plugin.SetBackendId("example.compute");
+    assert(plugin.BackendName() == "example.compute");
+    assert(CheckDeviceContract(kRhiApiVersion, plugin).IsValid());
+    assert(!CheckDeviceContract(1u << 16u, plugin).IsValid());
 
-    state.dynamicRendering.supported = true;
-    const auto notEnabled = CheckDeviceCapability(state, DeviceCapability::DynamicRendering);
-    assert(!notEnabled.IsSupported());
-    assert(notEnabled.code == DeviceCapabilityDiagnosticCode::NotEnabled);
-
-    state.dynamicRendering.enabled = true;
-    assert(CheckDeviceCapability(state, DeviceCapability::DynamicRendering).IsSupported());
-
-    DeviceCapabilityRequest bindlessRequest;
-    bindlessRequest.descriptorIndexing = true;
-    const auto incompleteBindless = CheckDeviceCapabilities(state, bindlessRequest);
-    assert(!incompleteBindless.IsSupported());
-    assert(incompleteBindless.code == DeviceCapabilityDiagnosticCode::IncompleteDescriptorIndexing);
-
-    state.bindless.descriptorIndexing.supported = true;
-    state.bindless.runtimeDescriptorArray.supported = true;
-    state.bindless.shaderSampledImageArrayNonUniformIndexing.supported = true;
-    state.bindless.descriptorBindingPartiallyBound.supported = true;
-    state.bindless.descriptorBindingVariableDescriptorCount.supported = true;
-    state.bindless.descriptorBindingSampledImageUpdateAfterBind.supported = true;
-    assert(CheckDeviceCapabilities(state, bindlessRequest).code == DeviceCapabilityDiagnosticCode::NotEnabled);
-
-    state.bindless.descriptorIndexing.enabled = true;
-    state.bindless.runtimeDescriptorArray.enabled = true;
-    state.bindless.shaderSampledImageArrayNonUniformIndexing.enabled = true;
-    state.bindless.descriptorBindingPartiallyBound.enabled = true;
-    state.bindless.descriptorBindingVariableDescriptorCount.enabled = true;
-    state.bindless.descriptorBindingSampledImageUpdateAfterBind.enabled = true;
-    assert(CheckDeviceCapabilities(state, bindlessRequest).IsSupported());
-
-    DeviceCapabilityRequest syncRequest;
-    syncRequest.synchronization2 = true;
-    state.synchronization2 = {true, false};
-    assert(CheckDeviceCapabilities(state, syncRequest).code == DeviceCapabilityDiagnosticCode::NotEnabled);
-    state.synchronization2.enabled = true;
-    assert(CheckDeviceCapabilities(state, syncRequest).IsSupported());
-
-    DeviceCapabilityState computeState;
-    DeviceCapabilityRequest computeRequest;
-    computeRequest.shaderFloat64 = true;
-    auto computeCheck = CheckDeviceCapabilities(computeState, computeRequest);
-    assert(computeCheck.code == DeviceCapabilityDiagnosticCode::Unsupported);
-    assert(computeCheck.capability == DeviceCapability::ShaderFloat64);
-    computeState.shaderFloat64.supported = true;
-    assert(CheckDeviceCapabilities(computeState, computeRequest).code == DeviceCapabilityDiagnosticCode::NotEnabled);
-    computeState.shaderFloat64.enabled = true;
-    assert(CheckDeviceCapabilities(computeState, computeRequest).IsSupported());
-    computeRequest.shaderInt16 = true;
-    computeRequest.shaderInt64 = true;
-    computeState.shaderInt16 = {true, true};
-    computeState.shaderInt64 = {true, false};
-    computeCheck = CheckDeviceCapabilities(computeState, computeRequest);
-    assert(computeCheck.capability == DeviceCapability::ShaderInt64);
-    assert(computeCheck.code == DeviceCapabilityDiagnosticCode::NotEnabled);
-    computeState.shaderInt64.enabled = true;
-    assert(CheckDeviceCapabilities(computeState, computeRequest).IsSupported());
-
-    // Every shader-affecting capability has a distinct cache key. Physical
-    // support without logical-device enablement must not select another key.
-    // Host execution features do not change shader code and therefore must
-    // not invalidate the shader cache.
+    // Every enabled shader feature has a distinct cache key. Host execution
+    // limits and scheduling capabilities must not create shader variants.
     std::set<uint64_t> shaderContracts;
-    for (uint32_t bits = 0; bits < 16; ++bits) {
-        DeviceCapabilityState contract;
-        const DeviceCapabilityStatus bindless{true, (bits & 1u) != 0};
-        contract.bindless.descriptorIndexing = bindless;
-        contract.bindless.runtimeDescriptorArray = bindless;
-        contract.bindless.shaderSampledImageArrayNonUniformIndexing = bindless;
-        contract.bindless.descriptorBindingPartiallyBound = bindless;
-        contract.bindless.descriptorBindingVariableDescriptorCount = bindless;
-        contract.bindless.descriptorBindingSampledImageUpdateAfterBind = bindless;
-        contract.shaderInt16 = {true, (bits & 2u) != 0};
-        contract.shaderInt64 = {true, (bits & 4u) != 0};
-        contract.shaderFloat64 = {true, (bits & 8u) != 0};
-        const auto key = ComputeDeviceShaderContractKey(contract);
-        if (bits == 0)
-            assert(key == ComputeDeviceShaderContractKey({}));
+    for (uint32_t bits = 0; bits < 32; ++bits) {
+        PortableCaps contract;
+        contract.bindlessSampledTextures = (bits & 1u) != 0;
+        contract.shaderInt16 = (bits & 2u) != 0;
+        contract.shaderInt64 = (bits & 4u) != 0;
+        contract.shaderFloat64 = (bits & 8u) != 0;
+        contract.shaderFloat16 = (bits & 16u) != 0;
+        const auto key = ComputeDeviceShaderContractKey(contract, "example.compute");
         assert(shaderContracts.insert(key).second);
+        contract.timelineCompletion = true;
+        contract.asyncCompute = true;
+        contract.maxStorageBufferBinding = 1ull << 33u;
+        assert(key == ComputeDeviceShaderContractKey(contract, "example.compute"));
     }
-
-    DeviceCapabilityState hostOnlyA;
-    DeviceCapabilityState hostOnlyB;
-    hostOnlyA.dynamicRendering = {true, false};
-    hostOnlyB.dynamicRendering = {true, true};
-    hostOnlyA.synchronization2 = {true, false};
-    hostOnlyB.synchronization2 = {true, true};
-    hostOnlyA.submit2 = {true, false};
-    hostOnlyB.submit2 = {true, true};
-    assert(ComputeDeviceShaderContractKey(hostOnlyA) == ComputeDeviceShaderContractKey(hostOnlyB));
-    assert(ComputeDeviceShaderContractKey({}, "vulkan") != ComputeDeviceShaderContractKey({}, "webgpu"));
+    assert(ComputeDeviceShaderContractKey({}, "vulkan") != ComputeDeviceShaderContractKey({}, "example.compute"));
     assert(ComputeDeviceShaderContractKey({}, "vulkan", 1) != ComputeDeviceShaderContractKey({}, "vulkan", 2));
 
     GraphicsCommandEncoder::Dispatch graphicsDispatch;

@@ -12,15 +12,6 @@
 namespace infernux::rhi
 {
 
-enum class BackendType : uint8_t
-{
-    Unknown = 0,
-    Vulkan,
-    // Source-compatibility bridge for out-of-tree adapters. New code uses
-    // DeviceCaps::backendId so plugins do not require a central enum entry.
-    WebGPU,
-};
-
 /// Stable backend identity carried across the RHI seam. The core treats this
 /// as an opaque identifier and never dispatches on a plugin-specific enum.
 struct BackendId final
@@ -67,9 +58,6 @@ struct BackendId final
         return !(lhs == rhs);
     }
 };
-
-inline constexpr std::string_view kVulkanBackendId = "vulkan";
-inline constexpr std::string_view kWebGpuBackendId = "webgpu";
 
 enum class AdapterType : uint8_t
 {
@@ -164,12 +152,6 @@ struct DeviceLimits
     uint32_t maxPushConstantBytes = 0;
     uint32_t maxBindingLayouts = 0;
     uint32_t maxSampledTexturesPerStage = 0;
-    uint32_t maxUpdateAfterBindDescriptors = 0;
-    uint32_t maxUpdateAfterBindResourcesPerStage = 0;
-    uint32_t maxUpdateAfterBindSamplersPerStage = 0;
-    uint32_t maxUpdateAfterBindSampledTexturesPerStage = 0;
-    uint32_t maxUpdateAfterBindSamplersPerSet = 0;
-    uint32_t maxUpdateAfterBindSampledTexturesPerSet = 0;
     uint32_t maxStorageBuffersPerStage = 0;
     float maxSamplerAnisotropy = 1.0f;
     uint32_t maxComputeWorkgroupCount[3] = {};
@@ -182,8 +164,6 @@ struct DeviceFeatures
     bool samplerAnisotropy = false;
     bool fillModeNonSolid = false;
     bool wideLines = false;
-    bool descriptorIndexing = false;
-    bool timelineSemaphore = false;
     bool independentComputeQueue = false;
     bool dedicatedTransferQueue = false;
 };
@@ -199,10 +179,13 @@ struct PortableCaps final
     bool timelineCompletion = false;
     bool storageTextures = false;
     bool shaderFloat16 = false;
+    bool shaderInt16 = false;
     bool shaderInt64 = false;
+    bool shaderFloat64 = false;
     uint32_t maxWorkgroupSize[3] = {};
     uint32_t maxWorkgroupInvocations = 0;
-    uint32_t maxStorageBufferBinding = 0;
+    /// Maximum byte range of one storage-buffer binding, not a binding count.
+    uint64_t maxStorageBufferBinding = 0;
     uint32_t pushConstantBytes = 0;
     bool mappableReadback = false;
     bool externalMemory = false;
@@ -212,9 +195,6 @@ struct DeviceCaps
 {
     static constexpr size_t AdapterNameCapacity = 128;
 
-    // Kept for source compatibility with existing adapters. Shared code uses
-    // backendId/BackendName instead of branching on a central enum.
-    BackendType backend = BackendType::Unknown;
     BackendId backendId;
     AdapterType adapterType = AdapterType::Unknown;
     std::array<char, AdapterNameCapacity> adapterName{};
@@ -237,17 +217,7 @@ struct DeviceCaps
 
     [[nodiscard]] std::string_view BackendName() const noexcept
     {
-        if (!backendId.Empty())
-            return backendId.View();
-        switch (backend) {
-        case BackendType::Vulkan:
-            return kVulkanBackendId;
-        case BackendType::WebGPU:
-            return kWebGpuBackendId;
-        case BackendType::Unknown:
-            break;
-        }
-        return {};
+        return backendId.View();
     }
 
     void SetAdapterName(std::string_view value) noexcept

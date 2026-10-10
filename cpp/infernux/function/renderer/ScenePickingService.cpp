@@ -69,7 +69,7 @@ void ScenePickingService::Initialize(InxVkCoreModular *core)
 {
     if (!core)
         throw std::invalid_argument("ScenePickingService requires a Vulkan core");
-    const auto &capabilities = core->GetDeviceContext().GetRhiDevice().GetCapabilityState();
+    const auto &capabilities = core->GetDeviceContext().GetRhiDevice().GetVulkanFeatures();
     if (!capabilities.dynamicRendering.IsEnabled() || !capabilities.synchronization2.IsEnabled())
         throw std::runtime_error("ScenePickingService requires Dynamic Rendering and Synchronization2");
 

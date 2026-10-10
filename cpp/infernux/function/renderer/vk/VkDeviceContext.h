@@ -22,6 +22,7 @@
 #pragma once
 
 #include "VkTypes.h"
+#include "VulkanFeatureState.h"
 #include <array>
 #include <function/renderer/rhi/RhiDevice.h>
 #include <functional>
@@ -409,7 +410,7 @@ class VkDeviceContext
     VkPhysicalDeviceFeatures m_deviceFeatures{};
     uint32_t m_instanceApiVersion = VK_API_VERSION_1_2;
     rhi::DeviceCaps m_capabilities{};
-    rhi::DeviceCapabilityState m_rhiCapabilityState{};
+    vk::VulkanFeatureState m_vulkanFeatures{};
     std::unique_ptr<VulkanRhiDevice> m_rhiDevice;
 
     // Vulkan 1.2 capability flags resolved at device creation. Callers gate

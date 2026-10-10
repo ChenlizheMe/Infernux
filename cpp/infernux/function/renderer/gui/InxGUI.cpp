@@ -209,7 +209,7 @@ void InxGUI::Init(SDL_Window *window)
 
     VkDevice device = m_vkCore_ptr->GetDevice();
     const auto &deviceContext = m_vkCore_ptr->GetDeviceContext();
-    if (!deviceContext.GetRhiDevice().GetCapabilityState().dynamicRendering.IsEnabled() ||
+    if (!deviceContext.GetRhiDevice().GetVulkanFeatures().dynamicRendering.IsEnabled() ||
         !rhi::ResolveDynamicRenderingCommands(device).IsValid()) {
         throw std::runtime_error("ImGui requires Vulkan Dynamic Rendering");
     }

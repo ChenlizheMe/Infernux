@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VkDescriptorManager.h"
+#include "VulkanFeatureState.h"
 #include <function/renderer/rhi/RhiCapabilities.h>
 #include <function/renderer/rhi/RhiDevice.h>
 #include <function/renderer/rhi/RhiResourceIndex.h>
@@ -43,9 +44,9 @@ class VulkanBindlessTextureTable final
     VulkanBindlessTextureTable(const VulkanBindlessTextureTable &) = delete;
     VulkanBindlessTextureTable &operator=(const VulkanBindlessTextureTable &) = delete;
 
-    [[nodiscard]] static uint32_t SelectCapacity(const rhi::DeviceLimits &limits,
+    [[nodiscard]] static uint32_t SelectCapacity(const VulkanDescriptorLimits &limits,
                                                  uint32_t requested = DefaultRequestedCapacity) noexcept;
-    [[nodiscard]] static constexpr bool CanUseShaderABI(const rhi::DeviceCapabilityState &capabilities,
+    [[nodiscard]] static constexpr bool CanUseShaderABI(const vk::VulkanFeatureState &capabilities,
                                                         bool tableReady) noexcept
     {
         return tableReady && capabilities.bindless.IsEnabled();
@@ -55,7 +56,7 @@ class VulkanBindlessTextureTable final
         return viewExpired && !resourceLive;
     }
     [[nodiscard]] bool Initialize(VkDevice device, VkDescriptorManager &descriptorManager,
-                                  const rhi::DeviceCapabilityState &capabilities, const rhi::DeviceLimits &limits,
+                                  const vk::VulkanFeatureState &capabilities, const VulkanDescriptorLimits &limits,
                                   VkImageView fallbackView, VkSampler fallbackSampler,
                                   std::shared_ptr<const void> fallbackOwner,
                                   uint32_t requestedCapacity = DefaultRequestedCapacity);

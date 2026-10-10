@@ -7,6 +7,7 @@
 #include "DescriptorBindTrace.h"
 #include "RhiVulkanTypes.h"
 #include "VmaContext.h"
+#include "VulkanBindlessTextureTable.h"
 #include "VulkanRhiDevice.h"
 #include <core/error/InxError.h>
 
@@ -243,7 +244,7 @@ VkDeviceContext::VkDeviceContext(VkDeviceContext &&other) noexcept
       m_hasIndependentComputeQueue(other.m_hasIndependentComputeQueue), m_queueIndices(other.m_queueIndices),
       m_deviceProperties(other.m_deviceProperties), m_deviceFeatures(other.m_deviceFeatures),
       m_instanceApiVersion(other.m_instanceApiVersion), m_capabilities(other.m_capabilities),
-      m_rhiCapabilityState(other.m_rhiCapabilityState), m_rhiDevice(std::move(other.m_rhiDevice)),
+      m_vulkanFeatures(other.m_vulkanFeatures), m_rhiDevice(std::move(other.m_rhiDevice)),
       m_descriptorIndexingEnabled(other.m_descriptorIndexingEnabled),
       m_timelineSemaphoreEnabled(other.m_timelineSemaphoreEnabled), m_validationEnabled(other.m_validationEnabled),
       m_shuttingDown(other.m_shuttingDown), m_waitIdleCount(other.m_waitIdleCount)
@@ -262,7 +263,7 @@ VkDeviceContext::VkDeviceContext(VkDeviceContext &&other) noexcept
     other.m_hasIndependentComputeQueue = false;
     other.m_instanceApiVersion = VK_API_VERSION_1_2;
     other.m_capabilities = {};
-    other.m_rhiCapabilityState = {};
+    other.m_vulkanFeatures = {};
     other.m_descriptorIndexingEnabled = false;
     other.m_timelineSemaphoreEnabled = false;
     other.m_shuttingDown = false;
@@ -291,7 +292,7 @@ VkDeviceContext &VkDeviceContext::operator=(VkDeviceContext &&other) noexcept
         m_deviceFeatures = other.m_deviceFeatures;
         m_instanceApiVersion = other.m_instanceApiVersion;
         m_capabilities = other.m_capabilities;
-        m_rhiCapabilityState = other.m_rhiCapabilityState;
+        m_vulkanFeatures = other.m_vulkanFeatures;
         m_rhiDevice = std::move(other.m_rhiDevice);
         m_descriptorIndexingEnabled = other.m_descriptorIndexingEnabled;
         m_timelineSemaphoreEnabled = other.m_timelineSemaphoreEnabled;
@@ -313,7 +314,7 @@ VkDeviceContext &VkDeviceContext::operator=(VkDeviceContext &&other) noexcept
         other.m_hasIndependentComputeQueue = false;
         other.m_instanceApiVersion = VK_API_VERSION_1_2;
         other.m_capabilities = {};
-        other.m_rhiCapabilityState = {};
+        other.m_vulkanFeatures = {};
         other.m_descriptorIndexingEnabled = false;
         other.m_timelineSemaphoreEnabled = false;
         other.m_shuttingDown = false;
@@ -386,7 +387,7 @@ bool VkDeviceContext::Initialize(SDL_Window *window, const DeviceConfig &config)
     }
     m_rhiDevice = std::make_unique<VulkanRhiDevice>(
         m_device, m_vmaAllocator, m_capabilities, m_queueIndices.graphicsFamily.value(),
-        m_queueIndices.computeFamily.value(), m_queueIndices.transferFamily.value(), m_rhiCapabilityState);
+        m_queueIndices.computeFamily.value(), m_queueIndices.transferFamily.value(), m_vulkanFeatures);
 
     INXLOG_INFO("Vulkan device context initialized successfully");
     INXLOG_INFO("  GPU: ", m_deviceProperties.deviceName);
@@ -454,7 +455,7 @@ bool VkDeviceContext::InitializeDevice(VkSurfaceKHR surface, const DeviceConfig 
     }
     m_rhiDevice = std::make_unique<VulkanRhiDevice>(
         m_device, m_vmaAllocator, m_capabilities, m_queueIndices.graphicsFamily.value(),
-        m_queueIndices.computeFamily.value(), m_queueIndices.transferFamily.value(), m_rhiCapabilityState);
+        m_queueIndices.computeFamily.value(), m_queueIndices.transferFamily.value(), m_vulkanFeatures);
 
     INXLOG_INFO("Vulkan device initialized successfully");
     INXLOG_INFO("  GPU: ", m_deviceProperties.deviceName);
@@ -505,7 +506,7 @@ void VkDeviceContext::Destroy() noexcept
 
     m_physicalDevice = VK_NULL_HANDLE;
     m_capabilities = {};
-    m_rhiCapabilityState = {};
+    m_vulkanFeatures = {};
     m_descriptorIndexingEnabled = false;
     m_timelineSemaphoreEnabled = false;
 
@@ -795,7 +796,7 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     const auto capabilityProbe = VulkanCapabilitySnapshot::QueryProbe(m_physicalDevice, m_instanceApiVersion);
     const auto capabilitySnapshot = VulkanCapabilitySnapshot::FromProbe(capabilityProbe);
     VulkanDeviceFeatureChain featureChain(capabilitySnapshot);
-    rhi::DeviceCapabilityRequest capabilityRequest{};
+    vk::DeviceCapabilityRequest capabilityRequest{};
     if (!MeetsVulkanDeviceRequirements(capabilityProbe)) {
         INXLOG_ERROR("The selected Vulkan device does not meet the required device feature contract");
         return false;
@@ -829,8 +830,8 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
     deviceFeatures.wideLines = supportedFeatures.wideLines;               // For debug lines (when available)
     deviceFeatures.sampleRateShading = supportedFeatures.sampleRateShading;
 
-    const rhi::DeviceCapabilityState enabledCapabilityState = featureChain.GetEnabledState();
-    m_rhiCapabilityState = {};
+    const vk::VulkanFeatureState enabledCapabilityState = featureChain.GetEnabledState();
+    m_vulkanFeatures = {};
     m_descriptorIndexingEnabled = false;
     m_timelineSemaphoreEnabled = false;
 
@@ -872,9 +873,9 @@ bool VkDeviceContext::CreateLogicalDevice(const DeviceConfig &config)
 #if defined(INFERNUX_USE_VOLK)
     volkLoadDevice(m_device);
 #endif
-    m_rhiCapabilityState = enabledCapabilityState;
-    m_descriptorIndexingEnabled = m_rhiCapabilityState.bindless.IsEnabled();
-    m_timelineSemaphoreEnabled = m_rhiCapabilityState.timelineSemaphore.enabled;
+    m_vulkanFeatures = enabledCapabilityState;
+    m_descriptorIndexingEnabled = m_vulkanFeatures.bindless.IsEnabled();
+    m_timelineSemaphoreEnabled = m_vulkanFeatures.timelineSemaphore.enabled;
 
     // Get queue handles
     vkGetDeviceQueue(m_device, m_queueIndices.graphicsFamily.value(), 0, &m_graphicsQueue);
@@ -913,8 +914,7 @@ void VkDeviceContext::BuildCapabilities()
     }
 
     auto &capabilities = m_capabilities;
-    capabilities.backend = BackendType::Vulkan;
-    capabilities.SetBackendId(kVulkanBackendId);
+    capabilities.SetBackendId("vulkan");
     capabilities.adapterType = ToRhiAdapterType(m_deviceProperties.deviceType);
     capabilities.SetAdapterName(m_deviceProperties.deviceName);
     capabilities.vendorId = m_deviceProperties.vendorID;
@@ -939,14 +939,17 @@ void VkDeviceContext::BuildCapabilities()
     properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     properties2.pNext = &vulkan12Properties;
     vkGetPhysicalDeviceProperties2(m_physicalDevice, &properties2);
-    capabilities.limits.maxUpdateAfterBindDescriptors = vulkan12Properties.maxUpdateAfterBindDescriptorsInAllPools;
-    capabilities.limits.maxUpdateAfterBindResourcesPerStage = vulkan12Properties.maxPerStageUpdateAfterBindResources;
-    capabilities.limits.maxUpdateAfterBindSamplersPerStage =
+    m_vulkanFeatures.descriptorLimits.maxUpdateAfterBindDescriptors =
+        vulkan12Properties.maxUpdateAfterBindDescriptorsInAllPools;
+    m_vulkanFeatures.descriptorLimits.maxUpdateAfterBindResourcesPerStage =
+        vulkan12Properties.maxPerStageUpdateAfterBindResources;
+    m_vulkanFeatures.descriptorLimits.maxUpdateAfterBindSamplersPerStage =
         vulkan12Properties.maxPerStageDescriptorUpdateAfterBindSamplers;
-    capabilities.limits.maxUpdateAfterBindSampledTexturesPerStage =
+    m_vulkanFeatures.descriptorLimits.maxUpdateAfterBindSampledTexturesPerStage =
         vulkan12Properties.maxPerStageDescriptorUpdateAfterBindSampledImages;
-    capabilities.limits.maxUpdateAfterBindSamplersPerSet = vulkan12Properties.maxDescriptorSetUpdateAfterBindSamplers;
-    capabilities.limits.maxUpdateAfterBindSampledTexturesPerSet =
+    m_vulkanFeatures.descriptorLimits.maxUpdateAfterBindSamplersPerSet =
+        vulkan12Properties.maxDescriptorSetUpdateAfterBindSamplers;
+    m_vulkanFeatures.descriptorLimits.maxUpdateAfterBindSampledTexturesPerSet =
         vulkan12Properties.maxDescriptorSetUpdateAfterBindSampledImages;
     capabilities.limits.maxStorageBuffersPerStage = limits.maxPerStageDescriptorStorageBuffers;
     capabilities.limits.maxSamplerAnisotropy = limits.maxSamplerAnisotropy;
@@ -957,19 +960,17 @@ void VkDeviceContext::BuildCapabilities()
     capabilities.features.samplerAnisotropy = m_deviceFeatures.samplerAnisotropy == VK_TRUE;
     capabilities.features.fillModeNonSolid = m_deviceFeatures.fillModeNonSolid == VK_TRUE;
     capabilities.features.wideLines = m_deviceFeatures.wideLines == VK_TRUE;
-    capabilities.features.descriptorIndexing = m_descriptorIndexingEnabled;
-    capabilities.features.timelineSemaphore = m_timelineSemaphoreEnabled;
     capabilities.features.independentComputeQueue = m_hasIndependentComputeQueue;
     capabilities.features.dedicatedTransferQueue = m_hasDedicatedTransferQueue;
-    capabilities.portable.bindlessSampledTextures = m_descriptorIndexingEnabled;
-    capabilities.portable.maxBindlessSampledTextures = capabilities.limits.maxUpdateAfterBindSampledTexturesPerStage;
+    m_vulkanFeatures.PublishShaderCapabilities(capabilities.portable);
+    capabilities.portable.maxBindlessSampledTextures =
+        m_descriptorIndexingEnabled ? VulkanBindlessTextureTable::SelectCapacity(m_vulkanFeatures.descriptorLimits) : 0;
     capabilities.portable.asyncCompute = m_hasIndependentComputeQueue;
     capabilities.portable.timelineCompletion = m_timelineSemaphoreEnabled;
     capabilities.portable.storageTextures = true;
-    capabilities.portable.shaderInt64 = m_deviceFeatures.shaderInt64 == VK_TRUE;
     std::copy_n(limits.maxComputeWorkGroupSize, 3, capabilities.portable.maxWorkgroupSize);
     capabilities.portable.maxWorkgroupInvocations = limits.maxComputeWorkGroupInvocations;
-    capabilities.portable.maxStorageBufferBinding = limits.maxPerStageDescriptorStorageBuffers;
+    capabilities.portable.maxStorageBufferBinding = limits.maxStorageBufferRange;
     capabilities.portable.pushConstantBytes = limits.maxPushConstantsSize;
     capabilities.portable.mappableReadback = true;
 

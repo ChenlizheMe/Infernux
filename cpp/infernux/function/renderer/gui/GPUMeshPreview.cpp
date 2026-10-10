@@ -684,7 +684,7 @@ bool GPUMeshPreview::EnsureResources(int size)
     VkFormat depthFormat = mpm.GetDepthFormat();
     VkSampleCountFlagBits sampleCount = mpm.GetSampleCount();
     const auto dynamicCommands = rhi::ResolveDynamicRenderingCommands(m_vkCore->GetDevice());
-    if (!m_vkCore->GetDeviceContext().GetRhiDevice().GetCapabilityState().dynamicRendering.enabled ||
+    if (!m_vkCore->GetDeviceContext().GetRhiDevice().GetVulkanFeatures().dynamicRendering.enabled ||
         !dynamicCommands.IsValid()) {
         INXLOG_ERROR("GPUMeshPreview: dynamic rendering is required for mesh previews");
         return false;

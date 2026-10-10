@@ -258,7 +258,7 @@ void AppendProperty(void *&tail, VkPhysicalDeviceProperties2 &root, Property &pr
     tail = node;
 }
 
-void SetEnabled(rhi::DeviceCapabilityStatus &status) noexcept
+void SetEnabled(vk::DeviceCapabilityStatus &status) noexcept
 {
     status.enabled = status.supported;
 }
@@ -494,8 +494,8 @@ void VulkanDeviceFeatureChain::Link(void *feature) noexcept
 bool VulkanDeviceFeatureChain::EnableDescriptorIndexing() noexcept
 {
     if (!m_supported.supported.bindless.IsSupported()) {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::IncompleteDescriptorIndexing,
-                     rhi::DeviceCapability::DescriptorIndexing};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::IncompleteDescriptorIndexing,
+                     vk::DeviceCapability::DescriptorIndexing};
         return false;
     }
     const bool core12 = IsCoreVersionAtLeast(m_supported.apiVersion, 1, 2);
@@ -533,7 +533,7 @@ bool VulkanDeviceFeatureChain::EnableDescriptorIndexing() noexcept
         m_descriptorIndexingEXT.descriptorBindingUpdateUnusedWhilePending =
             m_supported.supported.bindless.descriptorBindingUpdateUnusedWhilePending.supported;
     } else {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::DescriptorIndexing};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::DescriptorIndexing};
         return false;
     }
     m_enabled.bindless = m_supported.supported.bindless;
@@ -552,7 +552,7 @@ bool VulkanDeviceFeatureChain::EnableDescriptorIndexing() noexcept
 bool VulkanDeviceFeatureChain::EnableTimelineSemaphore() noexcept
 {
     if (!m_supported.supported.timelineSemaphore.supported) {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::TimelineSemaphore};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::TimelineSemaphore};
         return false;
     }
     if (IsCoreVersionAtLeast(m_supported.apiVersion, 1, 2)) {
@@ -568,7 +568,7 @@ bool VulkanDeviceFeatureChain::EnableTimelineSemaphore() noexcept
         }
         m_timelineSemaphoreKHR.timelineSemaphore = VK_TRUE;
     } else {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::TimelineSemaphore};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::TimelineSemaphore};
         return false;
     }
     m_enabled.timelineSemaphore = {true, true};
@@ -578,7 +578,7 @@ bool VulkanDeviceFeatureChain::EnableTimelineSemaphore() noexcept
 bool VulkanDeviceFeatureChain::EnableDynamicRendering() noexcept
 {
     if (!m_supported.supported.dynamicRendering.supported) {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::DynamicRendering};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::DynamicRendering};
         return false;
     }
     if (IsCoreVersionAtLeast(m_supported.apiVersion, 1, 3)) {
@@ -594,7 +594,7 @@ bool VulkanDeviceFeatureChain::EnableDynamicRendering() noexcept
         }
         m_dynamicRenderingKHR.dynamicRendering = VK_TRUE;
     } else {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::DynamicRendering};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::DynamicRendering};
         return false;
     }
     m_enabled.dynamicRendering = {true, true};
@@ -604,7 +604,7 @@ bool VulkanDeviceFeatureChain::EnableDynamicRendering() noexcept
 bool VulkanDeviceFeatureChain::EnableSynchronization2() noexcept
 {
     if (!m_supported.supported.synchronization2.supported) {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::Synchronization2};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::Synchronization2};
         return false;
     }
     if (IsCoreVersionAtLeast(m_supported.apiVersion, 1, 3)) {
@@ -620,14 +620,14 @@ bool VulkanDeviceFeatureChain::EnableSynchronization2() noexcept
         }
         m_synchronization2KHR.synchronization2 = VK_TRUE;
     } else {
-        m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, rhi::DeviceCapability::Synchronization2};
+        m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, vk::DeviceCapability::Synchronization2};
         return false;
     }
     m_enabled.synchronization2 = {true, true};
     return true;
 }
 
-bool VulkanDeviceFeatureChain::Enable(const rhi::DeviceCapabilityRequest &request) noexcept
+bool VulkanDeviceFeatureChain::Enable(const vk::DeviceCapabilityRequest &request) noexcept
 {
     ResetChain();
     m_failure = {};
@@ -651,23 +651,23 @@ bool VulkanDeviceFeatureChain::Enable(const rhi::DeviceCapabilityRequest &reques
     struct NumericRequest
     {
         bool requested;
-        rhi::DeviceCapability capability;
-        rhi::DeviceCapabilityStatus *status;
+        vk::DeviceCapability capability;
+        vk::DeviceCapabilityStatus *status;
         VkBool32 *feature;
     };
     const NumericRequest numericRequests[] = {
-        {request.shaderInt16, rhi::DeviceCapability::ShaderInt16, &m_enabled.shaderInt16,
+        {request.shaderInt16, vk::DeviceCapability::ShaderInt16, &m_enabled.shaderInt16,
          &m_features2.features.shaderInt16},
-        {request.shaderInt64, rhi::DeviceCapability::ShaderInt64, &m_enabled.shaderInt64,
+        {request.shaderInt64, vk::DeviceCapability::ShaderInt64, &m_enabled.shaderInt64,
          &m_features2.features.shaderInt64},
-        {request.shaderFloat64, rhi::DeviceCapability::ShaderFloat64, &m_enabled.shaderFloat64,
+        {request.shaderFloat64, vk::DeviceCapability::ShaderFloat64, &m_enabled.shaderFloat64,
          &m_features2.features.shaderFloat64},
     };
     for (const auto &numeric : numericRequests) {
         if (!numeric.requested)
             continue;
         if (!numeric.status->supported) {
-            m_failure = {rhi::DeviceCapabilityDiagnosticCode::Unsupported, numeric.capability};
+            m_failure = {vk::DeviceCapabilityDiagnosticCode::Unsupported, numeric.capability};
             return reject();
         }
         *numeric.feature = VK_TRUE;
@@ -714,7 +714,7 @@ VulkanRhiDevice::VulkanRhiDevice() : m_deviceId(rhi::AllocateDeviceId())
 
 VulkanRhiDevice::VulkanRhiDevice(VkDevice device, VmaAllocator allocator, const rhi::DeviceCaps &capabilities,
                                  uint32_t graphicsQueueFamily, uint32_t computeQueueFamily,
-                                 uint32_t transferQueueFamily, const rhi::DeviceCapabilityState &capabilityState)
+                                 uint32_t transferQueueFamily, const vk::VulkanFeatureState &capabilityState)
     : m_deviceId(rhi::AllocateDeviceId()), m_device(device), m_allocator(allocator), m_capabilities(capabilities),
       m_graphicsQueueFamily(graphicsQueueFamily), m_computeQueueFamily(computeQueueFamily),
       m_transferQueueFamily(transferQueueFamily), m_capabilityState(capabilityState),
@@ -744,7 +744,7 @@ void VulkanRhiDevice::UseSubmissionSerials(std::function<rhi::SubmissionSerial()
 
 void VulkanRhiDevice::Reset(VkDevice device, VmaAllocator allocator, const rhi::DeviceCaps &capabilities,
                             uint32_t graphicsQueueFamily, uint32_t computeQueueFamily, uint32_t transferQueueFamily,
-                            const rhi::DeviceCapabilityState &capabilityState) noexcept
+                            const vk::VulkanFeatureState &capabilityState) noexcept
 {
     if (m_lifetime) {
         std::unique_lock lock(m_lifetime->gate);
@@ -1108,7 +1108,7 @@ rhi::TextureHandle VulkanRhiDevice::CreateTexture(const rhi::TextureDesc &desc)
     if (m_device == VK_NULL_HANDLE || m_allocator == VK_NULL_HANDLE || !IsValidTextureDesc(desc))
         return {};
 
-    if (m_capabilities.backend != rhi::BackendType::Unknown) {
+    if (!m_capabilities.backendId.Empty()) {
         const auto &limits = m_capabilities.limits;
         const bool dimensionsSupported =
             (desc.dimension == rhi::TextureDimension::Texture1D && desc.width <= limits.maxTextureDimension1D &&
