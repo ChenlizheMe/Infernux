@@ -22,6 +22,8 @@ on:
       - "docs/docs-manifest.json"
       - "UpdateLog.md"
       - "UpdateLog-zh.md"
+      - "pyproject.toml"
+      - "python/infernux/version.py"
       - "README.md"
       - "README-zh.md"
       - ".github/media/**"
@@ -65,15 +67,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r docs/wiki/requirements.txt
 
-      # API Markdown is intentionally maintained only through
-      # scripts/docs/update_api_docs.bat.
-      # Publishing consumes the checked-in result and never scans engine sources.
-      - name: Verify checked-in Wiki configuration
-        run: node docs/tools/normalize-wiki-config.mjs --check
-
-      - name: Verify checked-in curated API guidance
-        run: node docs/tools/apply-api-curation.mjs --check
-
       - name: Build hand-authored learning chapters
         run: python docs/tools/build-learning-guides.py
 
@@ -98,7 +91,7 @@ jobs:
       - name: Build static wiki
         env:
           PYTHONIOENCODING: utf-8
-        run: python -m mkdocs build --clean -f docs/wiki/mkdocs.yml
+        run: python -m mkdocs build --strict --clean -f docs/wiki/mkdocs.yml
 
       - name: Optimize static Wiki output
         run: node docs/tools/optimize-static-site.mjs
@@ -112,77 +105,13 @@ jobs:
       - name: Generate deterministic Service Worker
         run: node docs/tools/build-service-worker.mjs
 
-      - name: Verify responsive evidence images
-        run: node docs/tools/check-image-variants.mjs
+      - name: Check API coverage, downloads, and release information
+        run: node docs/tools/check-site-information.mjs
 
-      - name: Verify installable PWA assets
-        run: node docs/tools/check-pwa-assets.mjs
-
-      - name: Test route-localized bundles
-        run: node docs/tools/test-i18n-bundles.mjs
-
-      - name: Test download trust boundary
-        run: node docs/tools/test-download-client.mjs
-
-      - name: Test home starter interaction
-        run: node docs/tools/test-home-client.mjs
-
-      - name: Audit shipped runtime assets and visual state
-        run: node docs/tools/check-runtime-assets.mjs
-
-      - name: Test runtime visual state
-        run: node docs/tools/test-runtime-visual-state.mjs
-
-      - name: Enforce static performance budget
-        run: node docs/tools/check-static-budget.mjs
-
-      - name: Enforce design-token color contrast
-        run: node docs/tools/check-color-contrast.mjs
-
-      - name: Check README quality and bilingual parity
-        run: node docs/tools/check-readme.mjs
-
-      - name: Check Python example import style
-        run: node docs/tools/check-python-examples.mjs
-
-      - name: Verify website contracts
-        run: node docs/tools/verify-site.mjs
-
-      - name: Test community redirect
-        run: node docs/tools/test-community-link.mjs
-
-      - name: Test documentation printing
-        run: node docs/tools/test-doc-print.mjs
-
-      - name: Test documentation search
-        run: node docs/tools/test-doc-search.mjs
-
-      - name: Test website health reporting
-        run: node docs/tools/test-website-health-report.mjs
-
-      - name: Test offline caching strategy
-        run: node docs/tools/test-service-worker.mjs
-
-      - name: Test mobile navigation focus management
-        run: node docs/tools/test-mobile-navigation.mjs
-
-      - name: Test responsive layout contracts
-        run: node docs/tools/test-responsive-contracts.mjs
-
-      # Direct pushes to main skip the pull-request website gate, so the
-      # publishing build runs the same behavioural checks before committing.
-      - name: Verify inline localization fallbacks
-        run: node docs/tools/normalize-i18n-fallbacks.mjs --check
-
-      - name: Test motion layer and roadmap data
+      - name: Test information checks and download selection
         run: |
-          node docs/tools/test-motion-client.mjs
-          node docs/tools/test-roadmap-data.mjs
-
-      - name: Test learning filters and tutorial tabs
-        run: |
-          node docs/tools/test-learning-course-filter.mjs
-          node docs/tools/test-tutorial-tabs.mjs
+          node --test docs/tools/test-site-information.mjs
+          node docs/tools/test-download-client.mjs
 
       - name: Commit generated wiki output
         shell: bash

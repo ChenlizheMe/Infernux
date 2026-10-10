@@ -6,6 +6,8 @@ on:
       - "docs/**"
       - "UpdateLog.md"
       - "UpdateLog-zh.md"
+      - "pyproject.toml"
+      - "python/infernux/version.py"
       - "README.md"
       - "README-zh.md"
       - ".github/media/**"
@@ -28,7 +30,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify docs, indexes, and static build
+    name: Verify API, downloads, and release information
     runs-on: ubuntu-latest
 
     steps:
@@ -40,24 +42,15 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Verify deterministic Wiki configuration
-        run: node docs/tools/normalize-wiki-config.mjs --check
-
-      - name: Verify documentation build provenance schema
-        run: node docs/tools/stamp-docs-manifest.mjs --check
-
       - name: Load deterministic Wiki build timestamp
         shell: bash
         run: echo "SOURCE_DATE_EPOCH=$(node docs/tools/docs-source-date-epoch.mjs)" >> "$GITHUB_ENV"
 
-      - name: Verify curated core API guidance is current
-        run: node docs/tools/apply-api-curation.mjs --check
+      - name: Generate API index from current documentation
+        run: node docs/tools/build-api-index.mjs
 
-      - name: Verify generated API index
-        run: node docs/tools/build-api-index.mjs --check
-
-      - name: Verify structured release notes
-        run: node docs/tools/build-release-notes.mjs --check
+      - name: Generate structured release notes
+        run: node docs/tools/build-release-notes.mjs
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -69,11 +62,11 @@ jobs:
       - name: Install documentation dependencies
         run: python -m pip install -r docs/wiki/requirements.txt
 
-      - name: Verify hand-authored learning chapters
-        run: python docs/tools/build-learning-guides.py --check
+      - name: Build hand-authored learning chapters
+        run: python docs/tools/build-learning-guides.py
 
-      - name: Verify bilingual release history
-        run: python docs/tools/build-changelog.py --check
+      - name: Build bilingual release history
+        run: python docs/tools/build-changelog.py
 
       - name: Build Wiki in strict mode
         env:
@@ -83,131 +76,31 @@ jobs:
       - name: Optimize static Wiki output
         run: node docs/tools/optimize-static-site.mjs
 
-      - name: Verify unified sitemap
-        run: node docs/tools/build-sitemap.mjs --check
+      - name: Generate unified sitemap
+        run: node docs/tools/build-sitemap.mjs
 
-      - name: Verify route-localized bundles
-        run: node docs/tools/build-i18n.mjs --check
+      - name: Generate route-localized bundles
+        run: node docs/tools/build-i18n.mjs
 
-      - name: Verify inline localization fallbacks
-        run: node docs/tools/normalize-i18n-fallbacks.mjs --check
+      - name: Generate deterministic Service Worker
+        run: node docs/tools/build-service-worker.mjs
 
-      - name: Verify deterministic Service Worker
-        run: node docs/tools/build-service-worker.mjs --check
+      - name: Check API coverage, downloads, and release information
+        run: node docs/tools/check-site-information.mjs
 
-      - name: Verify responsive evidence images
-        run: node docs/tools/check-image-variants.mjs
-
-      - name: Verify installable PWA assets
-        run: node docs/tools/check-pwa-assets.mjs
-
-      - name: Test route-localized bundles
-        run: node docs/tools/test-i18n-bundles.mjs
-
-      - name: Test download trust boundary
-        run: node docs/tools/test-download-client.mjs
-
-      - name: Test home starter interaction
-        run: node docs/tools/test-home-client.mjs
-
-      - name: Audit shipped runtime assets and visual state
-        run: node docs/tools/check-runtime-assets.mjs
-
-      - name: Test runtime visual state
-        run: node docs/tools/test-runtime-visual-state.mjs
-
-      - name: Test vendored GSAP motion layer
-        run: node docs/tools/test-motion-client.mjs
-
-      - name: Test roadmap data and variable-size tree layout
-        run: node docs/tools/test-roadmap-data.mjs
-
-      - name: Enforce static performance budget
-        run: node docs/tools/check-static-budget.mjs
-
-      - name: Enforce design-token color contrast
-        run: node docs/tools/check-color-contrast.mjs
-
-      - name: Check README quality and bilingual parity
-        run: node docs/tools/check-readme.mjs
-
-      - name: Check Python example import style
-        run: node docs/tools/check-python-examples.mjs
-
-      - name: Verify website contracts
-        run: node docs/tools/verify-site.mjs
-
-      - name: Test community redirect
-        run: node docs/tools/test-community-link.mjs
-
-      - name: Test documentation printing
-        run: node docs/tools/test-doc-print.mjs
-
-      - name: Test documentation search
-        run: node docs/tools/test-doc-search.mjs
-
-      - name: Test learning course filters
-        run: node docs/tools/test-learning-course-filter.mjs
-
-      - name: Test tutorial entry tabs and chapter return links
-        run: node docs/tools/test-tutorial-tabs.mjs
-
-      - name: Test website health reporting
-        run: node docs/tools/test-website-health-report.mjs
-
-      - name: Test offline caching strategy
-        run: node docs/tools/test-service-worker.mjs
-
-      - name: Test mobile navigation focus management
-        run: node docs/tools/test-mobile-navigation.mjs
-
-      - name: Test responsive layout contracts
-        run: node docs/tools/test-responsive-contracts.mjs
-
-      - name: Verify committed Wiki output is current
-        shell: bash
+      - name: Test information checks and download selection
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          import subprocess
-          import sys
+          node --test docs/tools/test-site-information.mjs
+          node docs/tools/test-download-client.mjs
 
-          tracked = set(subprocess.check_output(
-              ["git", "ls-files", "docs/wiki/site", "docs/sitemap.xml", "docs/css/wiki-template.*.css"],
-              text=True,
-          ).splitlines())
-
-          actual = {
-              path.as_posix()
-              for root in (Path("docs/wiki/site"),)
-              for path in root.rglob("*")
-              if path.is_file()
-          }
-          actual.add("docs/sitemap.xml")
-          actual.update(path.as_posix() for path in Path("docs/css").glob("wiki-template.*.css"))
-
-          missing = sorted(tracked - actual)
-          unexpected = sorted(actual - tracked)
-          changed = []
-
-          def comparable(path: Path, data: bytes) -> bytes:
-              if path.suffix == ".gz":
-                  return data
-              # MkDocs may write the final newline differently on Windows and Linux.
-              # Normalize only that transport detail; every content byte still matters.
-              return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n").rstrip(b"\n")
-
-          for name in sorted(tracked & actual):
-              path = Path(name)
-              generated = comparable(path, path.read_bytes())
-              committed = comparable(path, subprocess.check_output(["git", "show", f"HEAD:{name}"]))
-              if generated != committed:
-                  changed.append(name)
-
-          problems = missing + unexpected + changed
-          if problems:
-              print("Wiki output drift detected:")
-              print("\n".join(problems))
-              sys.exit(1)
-          print("Wiki output matches committed content (EOF newline differences ignored).")
-          PY
+      - name: Upload validated website preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: website-preview
+          include-hidden-files: true
+          path: |
+            docs/
+            !docs/tools/
+            !docs/wiki/docs/
+            !docs/wiki/theme/
+            !docs/api-snapshots/

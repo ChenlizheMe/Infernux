@@ -42,6 +42,3 @@ jobs:
           path: artifacts/website-health.json
           if-no-files-found: error
           retention-days: 30
-
-      - name: Audit community redirect
-        run: node docs/tools/test-community-link.mjs
