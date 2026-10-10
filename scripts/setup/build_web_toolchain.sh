@@ -94,6 +94,9 @@ config_path.write_text(
 )
 PY
 export EM_CONFIG="$cpython_em_config"
+# CPython requests ports before its first emcc invocation. Initialize their
+# destination explicitly so a cold or relocated SDK cache is also valid.
+embuilder build sysroot
 
 cpython_archive="$downloads/Python-${CPYTHON_VERSION}.tar.xz"
 fetch_and_verify "$CPYTHON_URL" "$CPYTHON_SHA256" "$cpython_archive"
