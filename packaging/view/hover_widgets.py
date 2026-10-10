@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from weakref import ref
 
-from PySide6.QtCore import Property, QEasingCurve, QEvent, QObject, QPropertyAnimation, Qt, QVariantAnimation
+from PySide6.QtCore import Property, QEasingCurve, QEvent, QObject, QPropertyAnimation, QRectF, Qt, QVariantAnimation
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QApplication, QComboBox, QFrame, QLineEdit, QPushButton, QWidget
 
@@ -23,6 +23,10 @@ def _mix(start: QColor, end: QColor, amount: float) -> QColor:
 
 def _hex(color: QColor) -> str:
     return color.name(QColor.NameFormat.HexRgb)
+
+
+def _rgba(color: QColor) -> str:
+    return f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()})"
 
 
 def _is_dark() -> bool:
@@ -86,28 +90,36 @@ class AnimatedSurfaceFrame(QFrame):
 
     def paintEvent(self, event):
         palette = StyleManager.palette(_is_dark())
-        surface = QColor(palette.bg_surface)
-        hover_top = QColor(palette.bg_surface_selected)
-        hover_bottom = QColor(palette.button_surface)
-
-        top = _mix(surface, hover_top, self._hover_progress)
-        bottom = _mix(surface, hover_bottom, self._hover_progress)
-        gradient = QLinearGradient(0, 0, self.width(), self.height())
-        gradient.setColorAt(0.0, top)
-        gradient.setColorAt(1.0, bottom)
-
+        hover, selected = self._hover_progress, self._selection_progress
+        rect = self.rect()
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor(0, 0, 0, 0)))
-        painter.setBrush(gradient)
-        painter.drawRoundedRect(self.rect(), 4, 4)
-
-        if self._selection_progress > 0.001:
+        fill = _mix(QColor(palette.bg_surface), QColor(palette.bg_surface_hover), hover)
+        painter.fillRect(rect, fill)
+        if not self.isEnabled() or self.property("unavailable"):
+            # Unavailable rows are hatched like a locked-out panel.
+            hatch = QColor(palette.grid)
+            hatch.setAlpha(14)
+            painter.setPen(QPen(hatch, 1))
+            for x in range(-rect.height(), rect.width(), 9):
+                painter.drawLine(x, rect.height(), x + rect.height(), 0)
+        border = _mix(QColor(palette.border), QColor(palette.border_hover), hover)
+        painter.setPen(QPen(border, 1))
+        painter.drawRect(rect.adjusted(0, 0, -1, -1))
+        edge = max(hover * 0.75, selected)
+        if edge > 0.001:
+            accent = QColor(palette.accent_fill)
+            accent.setAlpha(round(255 * edge))
+            painter.fillRect(0, 0, 2 + round(2 * edge), rect.height(), accent)
+        if selected > 0.001:
             accent = QColor(palette.accent)
-            accent.setAlpha(round(255 * self._selection_progress))
-            painter.setBrush(QColor(0, 0, 0, 0))
-            painter.setPen(QPen(accent, 1.5))
-            painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 3, 3)
+            accent.setAlpha(round(255 * selected))
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            line = QColor(accent)
+            line.setAlpha(round(120 * selected))
+            painter.setPen(QPen(line, 1))
+            painter.drawRect(rect.adjusted(0, 0, -1, -1))
+            from view.forge import draw_brackets
+            draw_brackets(painter, QRectF(rect.adjusted(1, 1, -2, -2)), accent, 9.0 * selected + 1.0, 2.0)
         painter.end()
         super().paintEvent(event)
 
@@ -159,7 +171,10 @@ class HoverAnimationFilter(QObject):
         return super().eventFilter(watched, event)
 
     def _animate(self, widget: QWidget, target: float):
-        if not widget.isEnabled() or widget.objectName() in {"cardAvatar", "iconBtn"}:
+        # These controls carry state colours that QSS :hover already handles.
+        if not widget.isEnabled() or widget.objectName() in {
+            "cardAvatar", "dangerSolidBtn", "updatePill", "segmentBtn",
+        }:
             return
         animation = getattr(widget, "_hub_hover_animation", None)
         if animation is None:
@@ -196,13 +211,22 @@ class HoverAnimationFilter(QObject):
             text_base = QColor(palette.text_primary)
             text_hover = text_base
             if name in {"primaryBtn", "createBtn"}:
-                base, hover = QColor(palette.accent), QColor(palette.accent_hover)
+                base, hover = QColor(palette.accent_fill), QColor(palette.accent_hover)
                 text_base = text_hover = QColor(palette.accent_text)
-            elif name == "dangerBtn":
-                base = QColor(palette.button_surface)
-                hover = QColor(palette.accent_pressed)
-                text_base = QColor(palette.danger)
+            elif name in {"dangerBtn", "launchBtn"}:
+                base = QColor(palette.bg_surface)
+                base.setAlpha(0)
+                hover = QColor(palette.accent_fill if name == "launchBtn" else palette.accent_pressed)
+                text_base = QColor(palette.accent if name == "launchBtn" else palette.danger)
                 text_hover = QColor(palette.accent_text)
+            elif name in {"ghostBtn", "iconBtn", "cardOpenBtn", "segmentBtn"}:
+                if name == "segmentBtn" and widget.isChecked():
+                    return
+                base = QColor(palette.button_hover)
+                base.setAlpha(0)
+                hover = QColor(palette.button_hover)
+                text_base = QColor(palette.text_secondary)
+                text_hover = QColor(palette.text_primary)
             elif name == "navItem":
                 if bool(widget.property("active")):
                     base = QColor(palette.nav_active)
@@ -214,8 +238,9 @@ class HoverAnimationFilter(QObject):
             else:
                 base = QColor(palette.button_surface)
                 hover = QColor(palette.button_hover)
+            background = _mix(base, hover, progress)
             widget.setStyleSheet(
-                f"background-color: {_hex(_mix(base, hover, progress))};"
+                f"background-color: {_rgba(background)};"
                 f"color: {_hex(_mix(text_base, text_hover, progress))};"
             )
             return

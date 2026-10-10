@@ -102,8 +102,8 @@ def test_installed_import_keeps_version_catalog_warning(tmp_path: Path, monkeypa
         lambda *_args: str(project),
     )
     monkeypatch.setattr(
-        "viewmodel.control_pane_viewmodel.QMessageBox.information",
-        lambda _parent, title, body: messages.append((title, body)),
+        "viewmodel.control_pane_viewmodel.dialogs.information",
+        lambda _parent, title, body, *args, **kwargs: messages.append((title, body)),
     )
     viewmodel = ControlPaneViewModel(
         ProjectModel(database),

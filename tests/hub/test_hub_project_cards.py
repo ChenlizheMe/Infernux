@@ -87,7 +87,10 @@ def test_project_with_missing_local_engine_version_is_disabled(
     )
     try:
         card = pane.project_cards["missing"]
-        assert card.isEnabled() is False
+        assert card.launchable is False
+        # Grey rows only refuse to open; the actions menu remains available.
+        assert card._actions_button.isEnabled()
+        assert any(action.text() == tr("Remove from Hub") for action in card._actions_menu.actions())
         assert card.can_select is False
         assert any(
             label.text().startswith(tr("Install required version"))

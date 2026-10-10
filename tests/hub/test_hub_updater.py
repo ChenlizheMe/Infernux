@@ -370,7 +370,8 @@ def test_packaged_updater_requests_elevation(tmp_path: Path, monkeypatch):
     assert "-StageDir" in observed["arguments"]
     assert "-MetadataPath" in observed["arguments"]
     script = observed["script"].read_text(encoding="utf-8-sig")
-    assert "#191919" in script
+    from style import StyleManager
+    assert StyleManager.palette(True).bg_base in script
     assert "@BG_BASE@" not in script
 
 

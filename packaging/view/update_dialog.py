@@ -8,10 +8,11 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 from hub_updater import HubUpdateStatus, check_for_update, launch_external_updater, stage_update
 from i18n import tr
+from view import dialogs
 
 
 def _write_update_trace(payload: dict) -> None:
@@ -51,15 +52,23 @@ class _CheckWorker(QThread):
 
 
 class UpdateController(QObject):
-    """Own worker lifetime and present an update without blocking Hub startup."""
+    """Own worker lifetime and present updates without interrupting the user.
+
+    Startup and periodic checks are silent: an available update lights the
+    sidebar's update pill and posts a toast. A manual check, or a click on the
+    pill, opens the update plate directly.
+    """
 
     check_finished = Signal()
+    update_available = Signal(object)
+    SKIP_SETTING = "skipped_hub_update"
 
     def __init__(self, main_window):
         super().__init__(main_window)
         self.main_window = main_window
         self.queue = main_window.install_queue
         self._update_job = None
+        self.pending_update = None
         self.queue.idle.connect(self._apply_staged_update)
         self.thread = None
         self._silent_check = True
@@ -82,40 +91,52 @@ class UpdateController(QObject):
         self.thread = _CheckWorker(self)
         # Connect to QObject-bound slots, not lambdas.  Lambdas have no Qt
         # receiver affinity and therefore run in the worker thread, which
-        # caused QMessageBox to create children for the main window across
-        # threads and left the Hub stuck after a manual check.
+        # caused dialogs to be created for the main window across threads.
         self.thread.checked.connect(self._checked)
         self.thread.failed.connect(self._check_failed)
         self.thread.start()
 
+    def _setting(self, key: str, default: str = "") -> str:
+        database = getattr(self.main_window, "db", None)
+        return database.get_setting(key, default) if database is not None else default
+
+    def _set_setting(self, key: str, value: str) -> None:
+        database = getattr(self.main_window, "db", None)
+        if database is not None:
+            database.set_setting(key, value)
+
     def _checked(self, result):
         if result.status is HubUpdateStatus.UP_TO_DATE:
+            self.pending_update = None
             if not self._silent_check:
-                QMessageBox.information(
+                dialogs.information(
                     self.main_window, tr("Hub Update"), tr("Infernux Hub is up to date."),
+                    level="ok", kicker=tr("HUB UPDATE"),
                 )
             self._finish_check()
             return
         if result.status is HubUpdateStatus.NETWORK_UNAVAILABLE:
             if not self._silent_check:
-                QMessageBox.warning(
+                dialogs.warning(
                     self.main_window,
                     tr("Update Check Unavailable"),
-                    tr("The Hub update catalog could not be reached.\n\n{message}", message=result.detail),
+                    tr("The Hub update catalog could not be reached."),
+                    detail=result.detail, kicker=tr("HUB UPDATE"),
                 )
             self._finish_check()
             return
         if result.status is HubUpdateStatus.CATALOG_INVALID:
             if not self._silent_check:
-                QMessageBox.warning(
+                dialogs.warning(
                     self.main_window,
                     tr("Update Catalog Invalid"),
-                    tr("The Hub update catalog is invalid.\n\n{message}", message=result.detail),
+                    tr("The Hub update catalog is invalid."),
+                    detail=result.detail, kicker=tr("HUB UPDATE"),
                 )
             self._finish_check()
             return
         if result.status is HubUpdateStatus.UNSUPPORTED_CURRENT_VERSION:
-            answer = QMessageBox.question(
+            answer = dialogs.question(
                 self.main_window,
                 tr("Full Hub Install Required"),
                 tr(
@@ -123,26 +144,70 @@ class UpdateController(QObject):
                     "Open the {version} installer download now?",
                     version=result.latest_version,
                 ),
+                dialogs.Yes | dialogs.No, dialogs.Yes,
+                labels={dialogs.Yes: tr("Open download"), dialogs.No: tr("Later")},
+                kicker=tr("HUB UPDATE"),
             )
-            if answer == QMessageBox.Yes:
+            if answer == dialogs.Yes:
                 QDesktopServices.openUrl(QUrl(result.installer_url))
             self._finish_check()
             return
         update = result.update
         if result.status is not HubUpdateStatus.UPDATE_AVAILABLE or update is None:
             raise RuntimeError(f"Unhandled Hub update status: {result.status}")
-        answer = QMessageBox.question(
-            self.main_window,
-            tr("Hub Update Available"),
-            tr(
-                "Infernux Hub {version} is available. Update now?\n\n"
-                "Hub will close, install the update, and restart automatically.",
-                version=update.target_version,
-            ),
-        )
-        if answer != QMessageBox.Yes:
+        self.pending_update = result
+        if self._silent_check:
+            if self._setting(self.SKIP_SETTING) != update.target_version:
+                self.update_available.emit(result)
             self._finish_check()
             return
+        self.prompt_update()
+        self._finish_check()
+
+    def prompt_update(self) -> bool:
+        """Ask once for the pending update; queue the download on consent."""
+        result = self.pending_update
+        if result is None or result.update is None:
+            return False
+        update = result.update
+        if self._update_job is not None and self._update_job.active:
+            return True
+        size = getattr(update, "size", 0)
+        detail_lines = [
+            f"{tr('Current')}: {result.current_version}",
+            f"{tr('Target')}: {update.target_version}",
+        ]
+        if size:
+            from view.forge import fmt_bytes
+            detail_lines.append(f"{tr('Download')}: {fmt_bytes(size)}")
+        if getattr(update, "platform", ""):
+            detail_lines.append(f"{tr('Platform')}: {update.platform}")
+        release_url = getattr(update, "release_url", "")
+        answer = dialogs.question(
+            self.main_window,
+            tr("Infernux Hub {version} is ready", version=update.target_version),
+            tr(
+                "Hub downloads the update in the background, then closes, installs it and restarts. "
+                "Projects, engines and settings are kept."
+            ),
+            dialogs.Yes | dialogs.No | dialogs.StandardButton.Ignore, dialogs.Yes,
+            labels={
+                dialogs.Yes: tr("Update and restart"),
+                dialogs.No: tr("Later"),
+                dialogs.StandardButton.Ignore: tr("Skip this version"),
+            },
+            detail="\n".join(detail_lines),
+            kicker=tr("HUB UPDATE  ·  {current} TO {target}", current=result.current_version,
+                      target=update.target_version),
+            link=(tr("Release notes"), release_url) if release_url else None,
+        )
+        if answer == dialogs.StandardButton.Ignore:
+            self._set_setting(self.SKIP_SETTING, update.target_version)
+            self.pending_update = None
+            self.update_available.emit(None)
+            return False
+        if answer != dialogs.Yes:
+            return False
         self._update_job = self.queue.submit(
             f"hub-update:{update.target_version}",
             tr("Hub update {version}", version=update.target_version),
@@ -150,7 +215,7 @@ class UpdateController(QObject):
                 update, lambda done, total: report(tr("Downloading"), done, total),
             )),
         )
-        self._finish_check()
+        return True
 
     def _apply_staged_update(self):
         job = self._update_job
@@ -171,7 +236,7 @@ class UpdateController(QObject):
 
     def _check_failed(self, message: str):
         if not self._silent_check:
-            QMessageBox.warning(self.main_window, tr("Update Check Failed"), message)
+            dialogs.warning(self.main_window, tr("Update Check Failed"), message, kicker=tr("HUB UPDATE"))
         self._finish_check()
 
     def _finish_check(self) -> None:

@@ -24,6 +24,7 @@ import urllib.request
 from urllib.parse import unquote, urlsplit
 import uuid
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -97,9 +98,23 @@ class VersionManager:
 
     # ── Public API ───────────────────────────────────────────────────
 
-    def list_versions(self, *, include_prerelease: bool = False) -> List[EngineVersion]:
+    def catalog_timestamp(self) -> float | None:
+        """When the newest known release catalog was fetched, or None."""
+        if self._cached_releases is not None:
+            return self._cached_at
+        cached = self._read_catalog_cache()
+        return cached[0] if cached is not None else None
+
+    def cached_versions(self, *, include_prerelease: bool = False) -> List[EngineVersion]:
+        """Same as list_versions(), but from the last catalog without any network.
+
+        The Installs UI shows this immediately and refreshes in the background.
+        """
+        return self.list_versions(include_prerelease=include_prerelease, offline=True)
+
+    def list_versions(self, *, include_prerelease: bool = False, offline: bool = False) -> List[EngineVersion]:
         """Return available versions (remote + local), newest first."""
-        remote = self._fetch_releases()
+        remote = self._offline_releases() if offline else self._fetch_releases()
         versions: dict[str, EngineVersion] = {}
 
         for rel in remote:
@@ -195,31 +210,27 @@ class VersionManager:
         valid_wheels: list[str] = []
         catalog_wheels = self._cached_wheel_assets(version)
         for wheel in glob.glob(str(ver_dir / "infernux-*.whl")):
-            if self._is_valid_wheel(wheel):
-                if wheel_release(wheel) != version or not wheel_platform_compatible(wheel):
-                    continue
-                if not wheel_python_version(wheel):
-                    continue
-                if target_python and wheel_python_version(wheel) != target_python:
-                    continue
-                if not has_matching_wheel_identity(wheel):
-                    continue
+            expected = tuple(
+                item for item in catalog_wheels if item.filename == os.path.basename(wheel)
+            )
+            verdict = _cached_wheel_verdict(wheel, expected)
+            if verdict == "corrupt":
                 try:
-                    for expected in catalog_wheels:
-                        if expected.filename == os.path.basename(wheel):
-                            _verify_download(Path(wheel), expected)
-                except (OSError, ValueError) as exc:
-                    logging.getLogger(__name__).warning("Ignoring invalid cached wheel: %s", exc)
-                    continue
-                valid_wheels.append(wheel)
+                    os.remove(wheel)
+                    logging.getLogger(__name__).warning(
+                        "Removed corrupted cached wheel: %s", wheel
+                    )
+                except OSError:
+                    pass
                 continue
-            try:
-                os.remove(wheel)
-                logging.getLogger(__name__).warning(
-                    "Removed corrupted cached wheel: %s", wheel
-                )
-            except OSError:
-                pass
+            if wheel_release(wheel) != version or not wheel_platform_compatible(wheel):
+                continue
+            if not wheel_python_version(wheel):
+                continue
+            if target_python and wheel_python_version(wheel) != target_python:
+                continue
+            if verdict == "valid":
+                valid_wheels.append(wheel)
         if not valid_wheels:
             return None
         preferred = self._preferred_local_wheel(valid_wheels)
@@ -513,32 +524,40 @@ class VersionManager:
         pypi: dict = {}
         reached = False
         failures = []
-        for source, url, accept in (
+
+        def request(source: str, url: str, accept: str):
+            req = urllib.request.Request(url)
+            req.add_header("Accept", accept)
+            req.add_header("User-Agent", "Infernux-Hub/1.0")
+            if source == "github":
+                token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+                if token:
+                    req.add_header("Authorization", "Bearer " + token)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+
+        sources = (
             ("pypi", _PYPI_API, "application/json"),
             ("github", f"{_API_BASE}/releases?per_page=50", "application/vnd.github+json"),
-        ):
-            try:
-                req = urllib.request.Request(url)
-                req.add_header("Accept", accept)
-                req.add_header("User-Agent", "Infernux-Hub/1.0")
-                if source == "github":
-                    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-                    if token:
-                        req.add_header("Authorization", f"Bearer {token}")
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    document = json.loads(resp.read().decode("utf-8"))
-                if source == "pypi" and isinstance(document, dict):
-                    pypi = document
-                    reached = True
-                elif source == "github" and isinstance(document, list):
-                    github = document
-                    reached = True
-                else:
-                    raise ValueError(f"Unexpected {source} catalog response")
-            except (urllib.error.URLError, OSError, ValueError) as exc:
-                failures.append(f"{source}: {type(exc).__name__}: {exc}")
-                logging.getLogger(__name__).warning("Engine catalog request failed: %s", source, exc_info=True)
-                continue
+        )
+        # The catalogs are independent: fetching them together halves the
+        # wait, and one slow source no longer delays the other.
+        with ThreadPoolExecutor(max_workers=len(sources), thread_name_prefix="engine-catalog") as pool:
+            futures = [(source, pool.submit(request, source, url, accept)) for source, url, accept in sources]
+            for source, future in futures:
+                try:
+                    document = future.result()
+                    if source == "pypi" and isinstance(document, dict):
+                        pypi = document
+                        reached = True
+                    elif source == "github" and isinstance(document, list):
+                        github = document
+                        reached = True
+                    else:
+                        raise ValueError(f"Unexpected {source} catalog response")
+                except (urllib.error.URLError, OSError, ValueError) as exc:
+                    failures.append(f"{source}: {type(exc).__name__}: {exc}")
+                    logging.getLogger(__name__).warning("Engine catalog request failed: %s", source, exc_info=True)
 
         if not reached:
             # Offline — fall back to disk cache regardless of age
@@ -568,6 +587,15 @@ class VersionManager:
         self._cached_releases = releases
         self._cached_at = now
         return releases
+
+    def _offline_releases(self) -> list[dict]:
+        if self._cached_releases is not None:
+            return self._cached_releases
+        cached = self._read_catalog_cache()
+        if cached is None:
+            return []
+        self._cached_at, self._cached_releases = cached
+        return self._cached_releases
 
     def _read_catalog_cache(self) -> tuple[float, list[dict]] | None:
         try:
@@ -774,6 +802,43 @@ def _verify_download(path: Path, wheel: EngineWheel) -> None:
             actual = hashlib.file_digest(stream, "sha256").hexdigest()
         if actual != wheel.sha256:
             raise ValueError(f"Wheel SHA-256 mismatch for {wheel.filename}: expected {wheel.sha256}, got {actual}")
+
+
+# Hashing a 24-90 MB wheel took most of every Installs/Projects refresh. A
+# verdict stays valid while the file's identity (size, mtime) and the published
+# expectations are unchanged; any rewrite of the file invalidates it.
+_WHEEL_VERDICTS: dict[tuple, str] = {}
+
+
+def _cached_wheel_verdict(path: str, expected: tuple[EngineWheel, ...]) -> str:
+    """Return "valid", "invalid" (keep, but do not use) or "corrupt" (delete)."""
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return "invalid"
+    key = (
+        os.path.normcase(os.path.abspath(path)), stat.st_size, stat.st_mtime_ns,
+        tuple((item.size, item.sha256) for item in expected),
+    )
+    verdict = _WHEEL_VERDICTS.get(key)
+    if verdict is not None:
+        return verdict
+    if not VersionManager._is_valid_wheel(path):
+        verdict = "corrupt"
+    elif not has_matching_wheel_identity(path):
+        verdict = "invalid"
+    else:
+        verdict = "valid"
+        try:
+            for item in expected:
+                _verify_download(Path(path), item)
+        except (OSError, ValueError) as exc:
+            logging.getLogger(__name__).warning("Ignoring invalid cached wheel: %s", exc)
+            verdict = "invalid"
+    if len(_WHEEL_VERDICTS) > 256:
+        _WHEEL_VERDICTS.clear()
+    _WHEEL_VERDICTS[key] = verdict
+    return verdict
 
 
 def _asset_sha256(asset: dict) -> str:

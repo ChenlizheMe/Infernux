@@ -114,14 +114,16 @@ def test_missing_revision_disables_real_hub_card(tmp_path, manager, monkeypatch)
     pane = ui_project_list.ProjectListPane(SimpleNamespace(all_projects=lambda: [record]), manager)
     try:
         card = pane.project_cards["exact"]
-        assert not card.isEnabled() and not card.can_select
+        # Unavailable rows cannot launch, but their action menu stays usable.
+        assert not card.launchable and not card.can_select
+        assert card._actions_button.isEnabled()
         assert any(label.text().startswith(tr("Install required version")) for label in card.findChildren(QLabel))
         pane.select_project("exact")
         assert pane.get_selected_project_id() is None
         wheel(tmp_path / "0.4.1", 3)
         pane.refresh()
         app.processEvents()
-        assert pane.project_cards["exact"].isEnabled()
+        assert pane.project_cards["exact"].launchable
         pane.select_project("exact")
         assert pane.get_selected_project_id() == "exact"
     finally:

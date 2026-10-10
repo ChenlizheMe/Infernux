@@ -20,7 +20,7 @@ def test_qt_file_dialog_list_uses_the_same_theme_as_its_text(tmp_path, dark):
         theme = StyleManager.palette(dark)
         assert colors.color(QPalette.ColorRole.Base).name() == theme.bg_input
         assert colors.color(QPalette.ColorRole.Text).name() == theme.text_primary
-        assert colors.color(QPalette.ColorRole.Highlight).name() == theme.accent
+        assert colors.color(QPalette.ColorRole.Highlight).name() == theme.accent_fill
         assert colors.color(QPalette.ColorRole.HighlightedText).name() == theme.accent_text
     finally:
         dialog.close()

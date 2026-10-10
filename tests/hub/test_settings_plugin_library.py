@@ -103,7 +103,7 @@ def test_settings_cleanup_rechecks_references_before_deleting(tmp_path, monkeypa
         "prune_unreferenced_packages",
         lambda roots: observed.append(("prune", *tuple(roots))) or after,
     )
-    monkeypatch.setattr(QMessageBox, "question", lambda *_args: QMessageBox.Yes)
+    monkeypatch.setattr(settings_view.dialogs, "question", lambda *_args, **_kwargs: QMessageBox.Yes)
 
     view = settings_view.SettingsView(_Database(project))
     view._clean_plugin_library()
@@ -179,9 +179,9 @@ def test_migration_preview_requires_explicit_confirmation(tmp_path, monkeypatch)
 
     def reject_preview(message):
         previews.append((message.text(), message.detailedText(), message.defaultButton().text()))
-        return QMessageBox.No
+        return 0
 
-    monkeypatch.setattr(QMessageBox, "exec", reject_preview)
+    monkeypatch.setattr(settings_view.dialogs.HubDialog, "exec", reject_preview)
     monkeypatch.setattr(settings_view, "StorageMigrationDialog", lambda *args: pytest.fail("No consent"))
     view = settings_view.SettingsView(_Database())
     view.migrate_storage_button.click()
@@ -189,4 +189,5 @@ def test_migration_preview_requires_explicit_confirmation(tmp_path, monkeypatch)
     assert str(plan.source) in previews[0][0]
     assert str(plan.destination) in previews[0][0]
     assert "Runtimes/python313" in previews[0][1]
-    assert "No" in previews[0][2]
+    # Moving files needs explicit consent: the safe answer is the default.
+    assert previews[0][2] == settings_view.tr("Cancel")

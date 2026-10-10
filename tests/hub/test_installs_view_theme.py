@@ -55,8 +55,9 @@ def test_install_dialog_scroll_surface_uses_dark_hub_palette():
     assert scroll.objectName() == "installScrollArea"
     assert scroll.viewport().objectName() == "installViewport"
     assert container.objectName() == "installListContainer"
-    assert scroll.viewport().palette().color(QPalette.ColorRole.Window).name() == "#191919"
-    assert container.palette().color(QPalette.ColorRole.Window).name() == "#191919"
+    page = StyleManager.palette(True).bg_base
+    assert scroll.viewport().palette().color(QPalette.ColorRole.Window).name() == page
+    assert container.palette().color(QPalette.ColorRole.Window).name() == page
 
     scroll.close()
 

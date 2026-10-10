@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -26,6 +25,53 @@ from shared_storage_migration import inspect_legacy_storage
 from view.storage_migration_dialog import StorageMigrationDialog
 from view.sidebar_view import ToggleSwitch, apply_theme
 from view.hover_widgets import AnimatedSurfaceFrame
+from view.forge import ForgeComboBox, PageHeader, mono_label, toast
+from view import dialogs
+
+
+class _SettingsGroup(AnimatedSurfaceFrame):
+    """A titled plate of setting rows separated by hairlines."""
+
+    def __init__(self, code: str, title: str, parent=None):
+        super().__init__("settingsCard", parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(20, 14, 18, 8)
+        self._layout.setSpacing(0)
+        heading = mono_label(f"{code}  /  {title}", "pageKicker", spacing=1.6)
+        self._layout.addWidget(heading)
+        self._layout.addSpacing(6)
+        self._rows = 0
+
+    def add_row(self, title: str, description: QLabel | str, *controls: QWidget) -> QLabel:
+        if self._rows:
+            line = QFrame()
+            line.setObjectName("settingsRule")
+            line.setFixedHeight(1)
+            self._layout.addWidget(line)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 12, 0, 12)
+        row.setSpacing(14)
+        text = QVBoxLayout()
+        text.setSpacing(4)
+        label = QLabel(title)
+        label.setObjectName("settingsLabel")
+        label.setWordWrap(True)
+        text.addWidget(label)
+        if isinstance(description, str):
+            description_label = QLabel(description)
+            description_label.setObjectName("settingsDescription")
+            description_label.setWordWrap(True)
+        else:
+            description_label = description
+        description_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        text.addWidget(description_label)
+        row.addLayout(text, 1)
+        for control in controls:
+            row.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._layout.addLayout(row)
+        self._rows += 1
+        return description_label
 
 
 class SettingsView(QWidget):
@@ -38,6 +84,11 @@ class SettingsView(QWidget):
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(16)
+        root_layout.addWidget(PageHeader(
+            "04", tr("SETTINGS"), tr("Settings"),
+            tr("Hub preferences, updates and project-independent information."),
+        ))
         scroll = QScrollArea(self)
         scroll.setObjectName("settingsScrollArea")
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -46,152 +97,39 @@ class SettingsView(QWidget):
         content = QWidget()
         content.setObjectName("settingsContent")
         scroll.setWidget(content)
-        root_layout.addWidget(scroll)
+        root_layout.addWidget(scroll, 1)
 
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(18)
+        layout.setContentsMargins(0, 0, 8, 0)
+        layout.setSpacing(12)
 
-        title = QLabel(tr("Settings"))
-        title.setObjectName("pageTitle")
-        layout.addWidget(title)
-
-        subtitle = QLabel(tr("Hub preferences, updates and project-independent information."))
-        subtitle.setObjectName("pageSubtitle")
-        subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
-
-        card = AnimatedSurfaceFrame("settingsCard")
-        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(20, 18, 20, 18)
-        card_layout.setSpacing(12)
-
-        row = QHBoxLayout()
-        label_block = QVBoxLayout()
-        language_label = QLabel(tr("Language"))
-        language_label.setObjectName("settingsLabel")
-        label_block.addWidget(language_label)
-        detected = QLabel(
-            f"{tr('Current language')}: {'中文' if current_language() == 'zh' else 'English'} "
-            f"({detect_system_locale()})"
-        )
-        detected.setObjectName("settingsDescription")
-        label_block.addWidget(detected)
-        row.addLayout(label_block, 1)
-
-        self.language_combo = QComboBox()
-        self.language_combo.addItem(tr("System"), "system")
-        self.language_combo.addItem(tr("Chinese"), "zh")
-        self.language_combo.addItem(tr("English"), "en")
+        general = _SettingsGroup("A", tr("GENERAL"))
+        self.language_combo = ForgeComboBox()
+        self.language_combo.setMinimumWidth(150)
+        self.language_combo.addItem(tr("System"), "system", meta=detect_system_locale().upper())
+        self.language_combo.addItem("中文", "zh", meta="ZH-CN")
+        self.language_combo.addItem("English", "en", meta="EN")
         saved = self._db.get_setting("language", "system") if self._db else "system"
         index = self.language_combo.findData(saved)
         self.language_combo.setCurrentIndex(max(index, 0))
         self.language_combo.currentIndexChanged.connect(self._save_language)
-        row.addWidget(self.language_combo)
-        card_layout.addLayout(row)
-
-        hint = QLabel(tr("Language changes apply immediately."))
-        hint.setObjectName("settingsDescription")
-        card_layout.addWidget(hint)
-        layout.addWidget(card)
-
-        appearance_card = AnimatedSurfaceFrame("settingsCard")
-        appearance_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        appearance_layout = QHBoxLayout(appearance_card)
-        appearance_layout.setContentsMargins(20, 16, 20, 16)
-        appearance_text = QVBoxLayout()
-        appearance_label = QLabel(tr("Appearance"))
-        appearance_label.setObjectName("settingsLabel")
-        appearance_text.addWidget(appearance_label)
-        appearance_hint = QLabel(tr("Switch between the neutral dark and light Hub themes."))
-        appearance_hint.setObjectName("settingsDescription")
-        appearance_hint.setWordWrap(True)
-        appearance_text.addWidget(appearance_hint)
-        appearance_layout.addLayout(appearance_text, 1)
+        general.add_row(
+            tr("Language"),
+            f"{tr('Current language')}: {'中文' if current_language() == 'zh' else 'English'} "
+            f"({detect_system_locale()}) · {tr('Language changes apply immediately.')}",
+            self.language_combo,
+        )
         self.theme_toggle = ToggleSwitch()
         self.theme_toggle.setChecked(bool(getattr(QApplication.instance(), "is_dark_theme", True)))
         self.theme_toggle.stateChanged.connect(self._toggle_theme)
-        appearance_layout.addWidget(self.theme_toggle)
-        layout.addWidget(appearance_card)
-
-        storage_card = AnimatedSurfaceFrame("settingsCard")
-        storage_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        storage_layout = QHBoxLayout(storage_card)
-        storage_layout.setContentsMargins(20, 18, 20, 18)
-        storage_text = QVBoxLayout()
-        storage_label = QLabel(tr("Plugin Library"))
-        storage_label.setObjectName("settingsLabel")
-        storage_text.addWidget(storage_label)
-        self.storage_description = QLabel()
-        self.storage_description.setObjectName("settingsDescription")
-        self.storage_description.setWordWrap(True)
-        self.storage_description.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        general.add_row(
+            tr("Appearance"),
+            tr("Dark control room or light paper. Both keep the Infernux red."),
+            self.theme_toggle,
         )
-        self.storage_description.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        storage_text.addWidget(self.storage_description)
-        storage_layout.addLayout(storage_text, 1)
-        self.clean_plugins_button = QPushButton(tr("Clean Unused Packages"))
-        self.clean_plugins_button.setObjectName("normalBtn")
-        self.clean_plugins_button.setFixedHeight(34)
-        self.clean_plugins_button.clicked.connect(self._clean_plugin_library)
-        storage_layout.addWidget(self.clean_plugins_button)
-        layout.addWidget(storage_card)
-        self._refresh_plugin_library()
+        layout.addWidget(general)
 
-        migration_card = AnimatedSurfaceFrame("settingsCard")
-        migration_layout = QVBoxLayout(migration_card)
-        migration_layout.setContentsMargins(20, 18, 20, 18)
-        shared_path = QLabel(tr("Shared resources: {path}", path=get_hub_shared_data_dir()))
-        shared_path.setWordWrap(True)
-        shared_path.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
-        )
-        shared_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        migration_layout.addWidget(shared_path)
-        self.migrate_storage_button = QPushButton(tr("Migrate Legacy Resources"))
-        self.migrate_storage_button.setObjectName("normalBtn")
-        self.migrate_storage_button.setFixedHeight(34)
-        self.migrate_storage_button.clicked.connect(self._migrate_legacy_storage)
-        migration_layout.addWidget(self.migrate_storage_button, 0, Qt.AlignmentFlag.AlignRight)
-        layout.addWidget(migration_card)
-
-        logs = QPushButton(tr("Open Hub Logs"))
-        logs.setObjectName("normalBtn")
-        logs.setMinimumHeight(34)
-        logs.clicked.connect(self._open_logs)
-        layout.addWidget(logs, 0, Qt.AlignmentFlag.AlignLeft)
-
-        update_card = AnimatedSurfaceFrame("settingsCard")
-        update_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        update_layout = QHBoxLayout(update_card)
-        update_layout.setContentsMargins(20, 18, 20, 18)
-        update_text = QVBoxLayout()
-        update_label = QLabel(tr("Hub Update"))
-        update_label.setObjectName("settingsLabel")
-        update_text.addWidget(update_label)
-        update_description = QLabel(tr("Check the Infernux release catalog for a Hub update."))
-        update_description.setObjectName("settingsDescription")
-        update_description.setWordWrap(True)
-        update_text.addWidget(update_description)
-        automatic_label = QLabel(tr("Automatic update and release-notice checks"))
-        automatic_label.setObjectName("settingsLabel")
-        automatic_label.setWordWrap(True)
-        update_text.addWidget(automatic_label)
-        automatic_description = QLabel(
-            tr(
-                "When enabled, Hub contacts infernux-engine.com at startup for "
-                "updates and release notices. No project content is sent. "
-                "Installing updates requires confirmation."
-            )
-        )
-        automatic_description.setObjectName("settingsDescription")
-        automatic_description.setWordWrap(True)
-        update_text.addWidget(automatic_description)
-        update_layout.addLayout(update_text, 1)
+        updates = _SettingsGroup("B", tr("UPDATES"))
         self.automatic_update_toggle = ToggleSwitch()
         self.automatic_update_toggle.setChecked(
             bool(self._db)
@@ -201,31 +139,64 @@ class SettingsView(QWidget):
         self.automatic_update_toggle.stateChanged.connect(
             self._save_automatic_update_checks
         )
-        update_layout.addWidget(self.automatic_update_toggle)
+        updates.add_row(
+            tr("Automatic update and release-notice checks"),
+            tr(
+                "When enabled, Hub contacts infernux-engine.com at startup for "
+                "updates and release notices. No project content is sent. "
+                "Installing updates requires confirmation."
+            ),
+            self.automatic_update_toggle,
+        )
         update_button = QPushButton(tr("Check for Updates"))
         update_button.setObjectName("normalBtn")
         update_button.setFixedHeight(34)
-        update_button.setMinimumWidth(118)
+        update_button.setMinimumWidth(130)
         update_button.clicked.connect(self.update_check_requested)
-        update_layout.addWidget(update_button)
-        layout.addWidget(update_card)
+        updates.add_row(
+            tr("Hub Update"),
+            tr("Hub version: {version}", version=current_hub_version()) + " · "
+            + tr("Check the Infernux release catalog for a Hub update."),
+            update_button,
+        )
+        layout.addWidget(updates)
 
-        about_card = AnimatedSurfaceFrame("settingsCard")
-        about_card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        about_layout = QVBoxLayout(about_card)
-        about_layout.setContentsMargins(20, 18, 20, 18)
-        about_layout.setSpacing(6)
-        about_title = QLabel(tr(ABOUT_TITLE))
-        about_title.setObjectName("settingsLabel")
-        about_layout.addWidget(about_title)
-        about_text = QLabel(tr(ABOUT_DESCRIPTION))
-        about_text.setObjectName("settingsDescription")
-        about_text.setWordWrap(True)
-        about_layout.addWidget(about_text)
-        version = QLabel(tr("Hub version: {version}", version=current_hub_version()))
-        version.setObjectName("settingsDescription")
-        about_layout.addWidget(version)
-        layout.addWidget(about_card)
+        storage = _SettingsGroup("C", tr("STORAGE"))
+        self.storage_description = QLabel()
+        self.storage_description.setObjectName("settingsDescription")
+        self.storage_description.setWordWrap(True)
+        self.storage_description.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.clean_plugins_button = QPushButton(tr("Clean Unused Packages"))
+        self.clean_plugins_button.setObjectName("normalBtn")
+        self.clean_plugins_button.setFixedHeight(34)
+        self.clean_plugins_button.clicked.connect(self._clean_plugin_library)
+        storage.add_row(tr("Plugin Library"), self.storage_description, self.clean_plugins_button)
+        shared_path = QLabel(tr("Shared resources: {path}", path=get_hub_shared_data_dir()))
+        shared_path.setObjectName("settingsPath")
+        shared_path.setWordWrap(True)
+        shared_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.migrate_storage_button = QPushButton(tr("Migrate Legacy Resources"))
+        self.migrate_storage_button.setObjectName("normalBtn")
+        self.migrate_storage_button.setFixedHeight(34)
+        self.migrate_storage_button.clicked.connect(self._migrate_legacy_storage)
+        storage.add_row(tr("Shared resources"), shared_path, self.migrate_storage_button)
+        logs = QPushButton(tr("Open Hub Logs"))
+        logs.setObjectName("normalBtn")
+        logs.setFixedHeight(34)
+        logs.clicked.connect(self._open_logs)
+        log_path = QLabel(str(hub_log_path().parent))
+        log_path.setObjectName("settingsPath")
+        log_path.setWordWrap(True)
+        log_path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        storage.add_row(tr("Diagnostics"), log_path, logs)
+        layout.addWidget(storage)
+        self._refresh_plugin_library()
+
+        about = _SettingsGroup("D", tr("ABOUT"))
+        about.add_row(tr(ABOUT_TITLE), tr(ABOUT_DESCRIPTION))
+        layout.addWidget(about)
         layout.addStretch()
 
     def _open_logs(self):
@@ -308,13 +279,13 @@ class SettingsView(QWidget):
         try:
             before = inspect_plugin_library(self._project_roots())
         except (OSError, RuntimeError, ValueError) as exc:
-            QMessageBox.critical(self, tr("Plugin Library"), str(exc))
+            dialogs.critical(self, tr("Plugin Library"), str(exc))
             self._refresh_plugin_library()
             return
         if not before.removable:
             self._refresh_plugin_library()
             return
-        answer = QMessageBox.question(
+        answer = dialogs.question(
             self,
             tr("Clean Unused Packages"),
             tr(
@@ -322,52 +293,66 @@ class SettingsView(QWidget):
                 count=len(before.removable),
                 size=self._format_bytes(before.removable_bytes),
             ),
+            dialogs.Yes | dialogs.No, dialogs.No,
+            labels={dialogs.Yes: tr("Delete packages"), dialogs.No: tr("Cancel")},
+            destructive=True, kicker=tr("PLUGIN LIBRARY"),
+            detail="\n".join(str(item) for item in before.removable),
         )
-        if answer != QMessageBox.Yes:
+        if answer != dialogs.Yes:
             return
         try:
             prune_unreferenced_packages(self._project_roots())
         except (OSError, RuntimeError, ValueError) as exc:
-            QMessageBox.critical(self, tr("Plugin Library"), str(exc))
+            dialogs.critical(self, tr("Plugin Library"), str(exc))
+        else:
+            toast(self, tr("Released {size}", size=self._format_bytes(before.removable_bytes)))
         self._refresh_plugin_library()
 
     def _migrate_legacy_storage(self):
         try:
             plan = inspect_legacy_storage()
         except (OSError, RuntimeError, ValueError) as exc:
-            QMessageBox.critical(self, tr("Migrate Legacy Resources"), str(exc))
+            dialogs.critical(self, tr("Migrate Legacy Resources"), str(exc))
             return
-        preview = QMessageBox(self)
-        preview.setWindowTitle(tr("Migrate Legacy Resources"))
-        preview.setText(tr(
-            "Move {count} complete resources from {source} to {destination}?\n"
-            "Close all Editors, builds and downloads first. Existing targets ({conflicts}) "
-            "will be skipped and retained at the old location. Projects, settings and "
-            "unfinished downloads are not moved. See details for the exact list.",
-            count=len(plan.items), source=str(plan.source), destination=str(plan.destination),
-            conflicts=len(plan.conflicts),
-        ))
-        preview.setDetailedText(
-            tr("Move:") + "\n" + "\n".join(path.as_posix() for path in plan.items)
-            + "\n\n" + tr("Keep at old location (target exists):") + "\n"
-            + "\n".join(path.as_posix() for path in plan.conflicts)
+        preview = dialogs.HubDialog(
+            self,
+            level="question" if plan.items else "info",
+            title=tr("Migrate Legacy Resources"),
+            text=tr(
+                "Move {count} complete resources from {source} to {destination}?\n"
+                "Close all Editors, builds and downloads first. Existing targets ({conflicts}) "
+                "will be skipped and retained at the old location. Projects, settings and "
+                "unfinished downloads are not moved. See details for the exact list.",
+                count=len(plan.items), source=str(plan.source), destination=str(plan.destination),
+                conflicts=len(plan.conflicts),
+            ),
+            kicker=tr("STORAGE"),
+            detail=(
+                tr("Move:") + "\n" + "\n".join(path.as_posix() for path in plan.items)
+                + "\n\n" + tr("Keep at old location (target exists):") + "\n"
+                + "\n".join(path.as_posix() for path in plan.conflicts)
+            ),
         )
-        preview.setStandardButtons(
-            QMessageBox.Yes | QMessageBox.No if plan.items else QMessageBox.Ok
-        )
-        preview.setDefaultButton(QMessageBox.No if plan.items else QMessageBox.Ok)
-        if preview.exec() != QMessageBox.Yes or not plan.items:
+        if plan.items:
+            cancel = preview.addButton(tr("Cancel"), "reject")
+            move = preview.addButton(tr("Move resources"), "accept")
+            preview.setDefaultButton(cancel)
+        else:
+            move = None
+            preview.setDefaultButton(preview.addButton(tr("OK"), "reject"))
+        preview.exec()
+        if move is None or preview.clickedButton() is not move:
             return
         dialog = StorageMigrationDialog(plan, self._project_roots(), self)
         dialog.exec()
         if dialog.worker.error:
-            QMessageBox.critical(self, tr("Migrate Legacy Resources"), dialog.worker.error)
+            dialogs.critical(self, tr("Migrate Legacy Resources"), dialog.worker.error)
         else:
-            QMessageBox.information(self, tr("Migrate Legacy Resources"), tr(
+            dialogs.information(self, tr("Migrate Legacy Resources"), tr(
                 "Moved {count} resources. {conflicts} existing targets were skipped; "
                 "their old copies have not been deleted.",
                 count=len(dialog.worker.result), conflicts=len(plan.conflicts),
-            ))
+            ), level="ok")
         self._refresh_plugin_library()
 
 

@@ -35,7 +35,8 @@ def main():
         errors.append(str(exc[1]))
         traceback.print_exception(*exc)
     sys.excepthook = record_error
-    QMessageBox.critical = lambda *args: messages.append(args[2])
+    from view import dialogs
+    dialogs.critical = lambda *args, **kwargs: messages.append(args[2])
     gate = threading.Event()
     finished = threading.Event()
 

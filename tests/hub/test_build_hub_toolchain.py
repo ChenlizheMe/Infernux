@@ -134,7 +134,7 @@ def test_hub_build_embeds_the_private_runtime_bundle(
         "source_archive": archive.name,
         "source_archive_sha256": archive.sha256,
     }
-    with zipfile.ZipFile(runtime_bundle, "w") as bundle:
+    with zipfile.ZipFile(runtime_bundle, "w", compression=zipfile.ZIP_LZMA) as bundle:
         bundle.writestr(
             f"{DEFAULT_PYTHON_RUNTIME.directory_name}/.infernux-private-python-runtime.json",
             json.dumps(marker),
@@ -155,6 +155,11 @@ def test_hub_build_embeds_the_private_runtime_bundle(
     def _fake_run(command, **_kwargs):
         assert _kwargs["env"]["PYTHONPATH"] == str(source_root / "python")
         assert "--nofollow-import-to=infernux,numpy,scipy,pandas,matplotlib,cv2,PIL,tkinter" in command
+        assert "--include-qt-plugins=tls" in command
+        assert (
+            f"--include-data-dir={packaging_dir / 'resources' / 'fonts'}=resources/fonts"
+            in command
+        )
         captured.append(command)
         output = build_dir / "nuitka" / "launcher.dist"
         output.mkdir(parents=True)
@@ -259,6 +264,10 @@ def test_installer_build_resolves_only_its_source_modules(tmp_path, monkeypatch)
 
     def build_installer(command, **kwargs):
         assert kwargs["env"]["PYTHONPATH"] == str(source / "python")
+        assert (
+            f"--include-data-dir={source / 'packaging' / 'resources' / 'fonts'}=resources/fonts"
+            in command
+        )
         filename = "InfernuxHubInstaller.exe" if build_hub.os.name == "nt" else "InfernuxHubInstaller"
         (build / "nuitka" / filename).write_bytes(b"installer fixture")
 

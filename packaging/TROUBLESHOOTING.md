@@ -29,6 +29,15 @@ failures, HTTP failures, and filesystem permissions. Switching KDE/other desktop
 environments is not a diagnosis of these failures. Do not disable TLS verification.
 The install page also accepts a locally downloaded compatible engine wheel.
 
+A fresh installation does not need the network for its first project: release
+installers carry the engine wheel of their own release in
+`<Hub app dir>/InfernuxHubData/engines`. On start, once the managed Python runtime
+is installed, the Hub copies it into the `Engines` cache (validating it like a
+local wheel import). Each bundled wheel is seeded only once and recorded in
+`Engines/_bundled_engines_seeded.json`, so an engine removed from Installs is not
+reinstalled on the next start. Locally built installers without a release wheel
+skip this step and print a build warning.
+
 ## Windows selected a manylinux wheel / CPython ABI mismatch
 
 An engine version and the Hub application version are different. Installing

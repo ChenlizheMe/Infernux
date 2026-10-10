@@ -19,12 +19,12 @@ for _stream in (sys.stdout, sys.stderr):
 sys.dont_write_bytecode = True
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QMessageBox, QDialog,
+    QApplication, QMainWindow, QWidget, QDialog,
     QHBoxLayout, QVBoxLayout, QSizePolicy, QStackedWidget,
     QGraphicsOpacityEffect, QSystemTrayIcon, QMenu, QTabWidget, QLabel,
 )
-from PySide6.QtCore import QObject, QThread, Qt, QTimer, QPropertyAnimation, QEasingCurve, Slot
-from PySide6.QtGui import QIcon, QFontDatabase
+from PySide6.QtCore import QByteArray, QObject, QRect, QThread, Qt, QTimer, QPropertyAnimation, QEasingCurve, Slot
+from PySide6.QtGui import QIcon, QFontDatabase, QKeySequence, QShortcut
 
 from ui_project_list import ProjectListPane
 from database import ProjectDatabase
@@ -52,6 +52,9 @@ from installer_safety import can_remove_install_dir
 from hub_uninstall import remove_application
 from i18n import configure_language, tr
 from view.hover_widgets import ensure_hover_animation_filter
+from view.forge import Backdrop, PageHeader, ToastHost, ui_font
+from view import dialogs
+import time
 import logging
 
 
@@ -71,9 +74,8 @@ class GameEngineLauncher(QMainWindow):
         self.db = ProjectDatabase()
         configure_language(self.db.get_setting("language", "system"))
 
-        # Register the current bundled typeface; CJK uses the system UI font.
-        for font_path in FONT_PATHS:
-            QFontDatabase.addApplicationFont(font_path)
+        install_hub_fonts(self.app)
+        self._started = time.monotonic()
 
         # Apply the persisted Hub theme before constructing visible pages.
         self.app.is_dark_theme = self.db.get_setting("theme", "dark") != "light"
@@ -82,7 +84,8 @@ class GameEngineLauncher(QMainWindow):
 
         self.setWindowTitle("Infernux Hub")
         self.setWindowIcon(QIcon(ICON_PATH))
-        self.resize(1080, 720)
+        self._apply_initial_geometry()
+        self.setAcceptDrops(True)
 
         # Version and runtime managers
         self.runtime_manager = PythonRuntimeManager()
@@ -117,6 +120,17 @@ class GameEngineLauncher(QMainWindow):
         self._language_refresh_timer.timeout.connect(self._refresh_language_pages)
 
         self._build_pages()
+        self.update_controller.update_available.connect(self._on_update_available)
+        self._update_timer = QTimer(self)
+        self._update_timer.setInterval(6 * 60 * 60 * 1000)
+        self._update_timer.timeout.connect(self._periodic_update_check)
+        self._update_timer.start()
+        self._install_shortcuts()
+        self._telemetry_timer = QTimer(self)
+        self._telemetry_timer.setInterval(60_000)
+        self._telemetry_timer.timeout.connect(self._refresh_telemetry)
+        self._telemetry_timer.start()
+        self._catalog_prefetch = None
         self.tray = QSystemTrayIcon(QIcon(ICON_PATH), self)
         self.tray.setToolTip("Infernux Hub")
         self._build_tray_menu()
@@ -128,7 +142,7 @@ class GameEngineLauncher(QMainWindow):
 
     def _build_pages(self):
         # ── Root layout: sidebar | content ───────────────────────────
-        central = QWidget(self)
+        central = Backdrop(self)
         central.setObjectName("central")
         self.setCentralWidget(central)
         root_layout = QHBoxLayout(central)
@@ -136,8 +150,10 @@ class GameEngineLauncher(QMainWindow):
         root_layout.setSpacing(0)
 
         # Sidebar
-        self.sidebar = SidebarView(parent=central)
+        self.sidebar = SidebarView(parent=central, started=getattr(self, "_started", None))
         root_layout.addWidget(self.sidebar)
+        self.sidebar.update_requested.connect(self._show_update)
+        self.sidebar.ignited.connect(self._afterburner)
 
         # Stacked pages
         self.pages = QStackedWidget()
@@ -146,15 +162,21 @@ class GameEngineLauncher(QMainWindow):
         # ── Page 0: Projects ─────────────────────────────────────────
         projects_page = QWidget()
         projects_layout = QVBoxLayout(projects_page)
-        projects_layout.setContentsMargins(28, 24, 28, 24)
-        projects_layout.setSpacing(16)
+        projects_layout.setContentsMargins(36, 28, 36, 24)
+        projects_layout.setSpacing(18)
 
         self.project_list = ProjectListPane(
             self.db, self.version_manager, parent=projects_page,
         )
         self.viewmodel.project_list = self.project_list
         self.project_list.remove_requested.connect(self._remove_project_from_card)
+        self.project_list.launch_requested.connect(self._launch_project_from_card)
+        self.project_list.install_requested.connect(self._install_engine_for_project)
+        self.project_list.relocate_requested.connect(
+            lambda project_id: self.viewmodel.relocate_project(self.controls, project_id))
         self.controls = ControlPane(self.viewmodel, parent=projects_page)
+        self.project_list.create_requested.connect(lambda: self.viewmodel.create_project(self.controls))
+        self.project_list.open_requested.connect(lambda: self.viewmodel.open_existing_project(self.controls))
 
         self.controls.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.project_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -167,11 +189,12 @@ class GameEngineLauncher(QMainWindow):
         # ── Page 1: Installs ─────────────────────────────────────────
         installs_page = QWidget()
         installs_layout = QVBoxLayout(installs_page)
-        installs_layout.setContentsMargins(28, 24, 28, 24)
-        installs_layout.setSpacing(16)
-        installs_title = QLabel(tr("Installs"))
-        installs_title.setObjectName("pageTitle")
-        installs_layout.addWidget(installs_title)
+        installs_layout.setContentsMargins(36, 28, 36, 24)
+        installs_layout.setSpacing(18)
+        installs_layout.addWidget(PageHeader(
+            "02", tr("INSTALLS"), tr("Installs"),
+            tr("Engines, runtimes and optional toolchains. Everything here is shared by all projects."),
+        ))
         self.install_tabs = QTabWidget()
         self.install_tabs.setObjectName("installTabs")
         installs_layout.addWidget(self.install_tabs)
@@ -200,7 +223,7 @@ class GameEngineLauncher(QMainWindow):
 
         settings_page = QWidget()
         settings_layout = QVBoxLayout(settings_page)
-        settings_layout.setContentsMargins(32, 30, 32, 30)
+        settings_layout.setContentsMargins(36, 28, 36, 24)
         self.settings_view = SettingsView(self.db, parent=settings_page)
         settings_layout.addWidget(self.settings_view)
         self.pages.addWidget(settings_page)
@@ -221,7 +244,14 @@ class GameEngineLauncher(QMainWindow):
         self.install_panel = InstallQueuePanel(self.install_queue, central)
         self.install_panel.layout_changed.connect(self._position_install_panel)
         self._position_install_panel()
+        self.toast_host = ToastHost(central, left_inset=self.sidebar.width())
+        pending = getattr(getattr(self, "update_controller", None), "pending_update", None)
+        if pending is not None and pending.update is not None:
+            self.sidebar.show_update(pending.update.target_version)
         self.sidebar.page_changed.connect(self._on_page_changed)
+        self.install_queue.changed.connect(self._update_queue_badge)
+        self._update_queue_badge()
+        QTimer.singleShot(0, self._refresh_telemetry)
 
     def _build_tray_menu(self):
         old_menu = self.tray.contextMenu()
@@ -235,9 +265,158 @@ class GameEngineLauncher(QMainWindow):
             old_menu.deleteLater()
 
     @Slot(object)
-    def _on_installation_finished(self, _job):
+    def _on_installation_finished(self, job):
         # Exactly one subscription follows the current project page.
         self.project_list.refresh()
+        self._refresh_telemetry()
+        if getattr(job, "key", "").startswith("python:") and job.state == "succeeded":
+            self._seed_bundled_engines()
+
+    def _update_queue_badge(self):
+        active = sum(job.active for job in self.install_queue.jobs)
+        self.sidebar.set_badge(1, str(active) if active else "")
+        self.sidebar.set_transfer_active(bool(active))
+
+    # ── Window geometry ──────────────────────────────────────────────
+
+    GEOMETRY_SETTING = "window_geometry"
+
+    def _apply_initial_geometry(self):
+        """Size the window from the screen it opens on, then restore the user's layout.
+
+        Fixed pixel sizes looked tiny on 4K panels and overflowed 1366×768
+        laptops at 125% scaling. The default now follows the available area
+        in device-independent pixels, so every display shows the same layout.
+        """
+        screen = self.screen() or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else QRect(0, 0, 1280, 800)
+        minimum_w = min(980, available.width() - 40)
+        minimum_h = min(620, available.height() - 40)
+        self.setMinimumSize(max(720, minimum_w), max(520, minimum_h))
+        width = max(self.minimumWidth(), min(1520, round(available.width() * 0.78)))
+        height = max(self.minimumHeight(), min(960, round(available.height() * 0.82), round(width / 1.52)))
+        self.resize(width, height)
+        self.move(available.x() + (available.width() - width) // 2,
+                  available.y() + (available.height() - height) // 2)
+        saved = self.db.get_setting(self.GEOMETRY_SETTING, "")
+        if saved:
+            try:
+                restored = self.restoreGeometry(QByteArray.fromBase64(saved.encode("ascii")))
+            except (ValueError, UnicodeError):
+                restored = False
+            if restored and not any(
+                candidate.availableGeometry().intersects(self.frameGeometry())
+                for candidate in QApplication.screens()
+            ):
+                self.resize(width, height)
+                self.move(available.x() + (available.width() - width) // 2,
+                          available.y() + (available.height() - height) // 2)
+
+    def _save_geometry(self):
+        try:
+            self.db.set_setting(self.GEOMETRY_SETTING, bytes(self.saveGeometry().toBase64()).decode("ascii"))
+        except Exception:
+            logging.getLogger(__name__).debug("Could not persist the Hub window geometry", exc_info=True)
+
+    # ── Shortcuts, drag and drop, small delights ─────────────────────
+
+    def _install_shortcuts(self):
+        bindings = (
+            (QKeySequence.StandardKey.New, lambda: self.viewmodel.create_project(self.controls)),
+            (QKeySequence.StandardKey.Open, lambda: self.viewmodel.open_existing_project(self.controls)),
+            (QKeySequence("Ctrl+1"), lambda: self.sidebar.select_page(0)),
+            (QKeySequence("Ctrl+2"), lambda: self.sidebar.select_page(1)),
+            (QKeySequence("Ctrl+3"), lambda: self.sidebar.select_page(3)),
+            (QKeySequence("Ctrl+,"), lambda: self.sidebar.select_page(2)),
+        )
+        self._shortcuts = []
+        for sequence, callback in bindings:
+            shortcut = QShortcut(sequence, self)
+            shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+            shortcut.activated.connect(callback)
+            self._shortcuts.append(shortcut)
+
+    @staticmethod
+    def _dropped_folders(event) -> list[str]:
+        data = event.mimeData()
+        if not data.hasUrls():
+            return []
+        return [url.toLocalFile() for url in data.urls()
+                if url.isLocalFile() and os.path.isdir(url.toLocalFile())]
+
+    def dragEnterEvent(self, event):
+        if self._dropped_folders(event):
+            event.acceptProposedAction()
+            if hasattr(self, "toast_host"):
+                from view.forge import toast
+                if not getattr(self, "_drop_hint_shown", False):
+                    self._drop_hint_shown = True
+                    toast(self, tr("Drop to add the project folder to Hub"), "info", timeout_ms=1800)
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        folders = self._dropped_folders(event)
+        self._drop_hint_shown = False
+        if not folders:
+            return
+        event.acceptProposedAction()
+        self.sidebar.select_page(0)
+        for folder in folders:
+            self.viewmodel.add_project_folder(self.controls, folder)
+
+    def _afterburner(self):
+        from view.forge import toast
+        self.sidebar.set_transfer_active(True)
+        QTimer.singleShot(2600, self._update_queue_badge)
+        toast(self, tr("Afterburner engaged. Nothing got faster, but it looked great."), "info", timeout_ms=2600)
+
+    def _install_engine_for_project(self, version: str):
+        self.install_tabs.setCurrentWidget(self.installs_view)
+        self.sidebar.select_page(1)
+        self.installs_view.open_install_dialog(preselect=version)
+
+    # ── Updates ──────────────────────────────────────────────────────
+
+    def _on_update_available(self, result):
+        version = result.update.target_version if result is not None and result.update is not None else None
+        self.sidebar.show_update(version)
+        if version:
+            from view.forge import toast
+            toast(self, tr("Infernux Hub {version} is available.", version=version), "info",
+                  action=(tr("Review"), self._show_update), timeout_ms=8000)
+
+    def _show_update(self):
+        if self.update_controller.prompt_update():
+            self.sidebar.show_update(None)
+
+    def _periodic_update_check(self):
+        if self.db.get_setting("automatic_update_checks", "enabled") == "enabled":
+            self.update_controller.check(silent=True)
+
+    def _refresh_telemetry(self):
+        """Sidebar readouts; local state only, never a network request."""
+        if not hasattr(self, "sidebar"):
+            return
+        try:
+            engines = len(self.version_manager.installed_versions())
+        except Exception:
+            engines = 0
+        self.sidebar.set_telemetry(
+            "engines", tr("ENGINES") + f"  {engines:02d}", "ok" if engines else "warn")
+        default_version = self.runtime_manager.default_version
+        has_runtime = self.runtime_manager.has_runtime(default_version)
+        self.sidebar.set_telemetry(
+            "runtime", tr("RUNTIME") + f"  PY {default_version}", "ok" if has_runtime else "error")
+        from view.forge import fmt_age
+        stamp = self.version_manager.catalog_timestamp()
+        self.sidebar.set_telemetry(
+            "network", tr("CATALOG") + "  " + fmt_age(stamp).upper(), "ok" if stamp else "idle")
+
+    def _launch_project_from_card(self, project_id: str):
+        self.project_list.select_project(project_id)
+        if self.project_list.get_selected_project_id() == project_id:
+            self.viewmodel.launch_project(self.controls)
 
     def _on_page_changed(self, index: int):
         self.pages.setCurrentIndex(index)
@@ -281,6 +460,8 @@ class GameEngineLauncher(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "install_panel"):
             self._position_install_panel()
+        if hasattr(self, "toast_host"):
+            self.toast_host.relayout()
 
     def _restore_window(self):
         self.showNormal()
@@ -308,10 +489,12 @@ class GameEngineLauncher(QMainWindow):
 
     def request_quit(self):
         if self.install_queue.busy:
-            if QMessageBox.question(
+            if dialogs.question(
                 self, tr("Installation in progress"),
                 tr("Exit after the installation queue finishes? Installations will continue in the background."),
-            ) != QMessageBox.Yes:
+                dialogs.Yes | dialogs.No, dialogs.No,
+                labels={dialogs.Yes: tr("Exit when finished"), dialogs.No: tr("Keep Hub open")},
+            ) != dialogs.Yes:
                 return
             self._exit_when_idle = True
             self.close()
@@ -323,8 +506,7 @@ class GameEngineLauncher(QMainWindow):
             self.app.quit()
 
     def _remove_project_from_card(self, project_id: str):
-        self.project_list.select_project(project_id)
-        self.viewmodel.remove_project(self)
+        self.viewmodel.remove_project(self.controls, project_id)
 
     def _on_language_changed(self, _mode: str):
         # Leave the Settings signal stack before retiring its widgets.
@@ -386,8 +568,23 @@ class GameEngineLauncher(QMainWindow):
         self.show()
         if is_frozen():
             QTimer.singleShot(0, self._bootstrap_hub)
+        if self.db.get_setting("automatic_update_checks", "enabled") == "enabled":
+            # Warm the engine catalog so Installs opens with fresh data.
+            QTimer.singleShot(1500, self._prefetch_catalog)
         if self._own_app:
             sys.exit(self.app.exec())
+
+    def _prefetch_catalog(self):
+        from view.installs_view import _FetchWorker
+        if self._catalog_prefetch is not None and self._catalog_prefetch.isRunning():
+            return
+        worker = _FetchWorker(self.version_manager, self)
+        worker.loaded.connect(lambda _versions: self._refresh_telemetry())
+        worker.finished.connect(lambda: setattr(self, "_catalog_prefetch", None))
+        worker.finished.connect(worker.deleteLater)
+        self.app.aboutToQuit.connect(worker.wait)
+        self._catalog_prefetch = worker
+        worker.start()
 
     def _bootstrap_hub(self):
         if self.db.get_setting("automatic_update_checks", "enabled") == "enabled":
@@ -412,16 +609,56 @@ class GameEngineLauncher(QMainWindow):
             self._show_runtime_installs()
         QTimer.singleShot(0, self._finish_startup)
 
+    def _seed_bundled_engines(self):
+        """Install the engine wheel shipped with the installer, off the UI thread."""
+        import bundled_engine
+        try:
+            source = bundled_engine.bundled_engines_dir()
+            if not source.is_dir():
+                return
+            seeded = bundled_engine._read_seeded(bundled_engine._default_state_path())
+            if all(wheel.name in seeded for wheel in source.glob("infernux-*.whl")):
+                return
+        except OSError:
+            return
+        if not self.runtime_manager.has_runtime(self.runtime_manager.default_version):
+            return
+        manager = self.version_manager
+
+        def seed(report):
+            report(tr("Unpacking the bundled engine"), 0, 0)
+            return bundled_engine.seed_bundled_engines(manager)
+
+        self.install_queue.submit("engine:bundled", tr("Bundled engine"), seed)
+
     def _finish_startup(self):
+        self._seed_bundled_engines()
         self.installs_view.refresh()
         if self.db.get_setting("automatic_update_checks", "enabled") == "enabled":
             self.notification_controller.show_pending()
 
     def _on_close(self):
+        self._save_geometry()
         self._language_refresh_timer.stop()
         self._clear_language_waits()
         self.viewmodel._wait_for_creation()
         self.db.close()
+
+
+def install_hub_fonts(app) -> None:
+    """Register the Hub typeface and make it the application default."""
+    for font_path in FONT_PATHS:
+        QFontDatabase.addApplicationFont(font_path)
+    app.setFont(ui_font(13))
+
+
+def _standalone_application():
+    """QApplication for prompts shown without the Hub window (uninstall)."""
+    app = QApplication.instance() or QApplication(sys.argv)
+    install_hub_fonts(app)
+    app.is_dark_theme = True
+    app.setStyleSheet(StyleManager.get_stylesheet(True))
+    return app
 
 
 def _schedule_windows_application_removal(install_dir: str) -> None:
@@ -493,22 +730,22 @@ def _handle_uninstall() -> int:
         pass
 
     # Ask user if they want to remove install files
-    app = QApplication.instance() or QApplication(sys.argv)
-    answer = QMessageBox.question(
+    app = _standalone_application()
+    answer = dialogs.question(
         None,
         tr("Uninstall Infernux Hub"),
         tr("Remove Hub application files after this window closes?\n{path}\n\nProjects and Shared resources (plugins, SDKs, runtimes and engines) are preserved.", path=install_dir),
     )
-    if answer == QMessageBox.Yes and install_dir and os.path.isdir(install_dir):
+    if answer == dialogs.Yes and install_dir and os.path.isdir(install_dir):
         if can_remove_install_dir(install_dir):
             try:
                 _schedule_windows_application_removal(install_dir)
             except OSError as exc:
-                QMessageBox.warning(None, tr("Uninstall Failed"), str(exc))
+                dialogs.critical(None, tr("Uninstall Failed"), str(exc))
                 return 1
             return 0
         else:
-            QMessageBox.warning(
+            dialogs.warning(
                 None,
                 tr("Install Folder Preserved"),
                 tr("The installation folder was not deleted because it is not marked as a safe Infernux Hub install directory.\n\n"
@@ -516,7 +753,7 @@ def _handle_uninstall() -> int:
                 "you are sure this folder does not contain user data."),
             )
 
-    QMessageBox.information(None, tr("Uninstall Complete"), tr("Infernux Hub has been uninstalled."))
+    dialogs.information(None, tr("Uninstall Complete"), tr("Infernux Hub has been uninstalled."), level="ok")
     return 0
 
 
@@ -524,7 +761,7 @@ def _handle_uninstall_macos() -> int:
     """Remove Infernux Hub from macOS."""
     import shutil as _shutil
 
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = _standalone_application()
 
     # Typical macOS install / config locations
     config_dir = os.path.expanduser("~/.config/Infernux")
@@ -532,30 +769,30 @@ def _handle_uninstall_macos() -> int:
     dirs_to_remove = [d for d in (config_dir, app_link) if os.path.exists(d)]
 
     if dirs_to_remove:
-        answer = QMessageBox.question(
+        answer = dialogs.question(
             None,
             "Uninstall Infernux Hub",
             "Do you want to remove Infernux Hub application configuration?\n\n"
             + "\n".join(dirs_to_remove),
         )
-        if answer == QMessageBox.Yes:
+        if answer == dialogs.Yes:
             for d in dirs_to_remove:
                 _shutil.rmtree(d, ignore_errors=True)
 
-    QMessageBox.information(None, "Uninstall Complete", "Infernux Hub has been uninstalled.")
+    dialogs.information(None, "Uninstall Complete", "Infernux Hub has been uninstalled.", level="ok")
     return 0
 
 
 def _handle_uninstall_linux() -> int:
     """Remove the Linux application while preserving Hub user data."""
-    app = QApplication.instance() or QApplication(sys.argv)
+    app = _standalone_application()
 
     desktop_entry = os.path.expanduser("~/.local/share/applications/infernux-hub.desktop")
     install_dir = get_app_dir()
     targets = [p for p in (desktop_entry, install_dir) if os.path.exists(p)]
 
     if targets:
-        answer = QMessageBox.question(
+        answer = dialogs.question(
             None,
             "Uninstall Infernux Hub",
             "Do you want to remove the Infernux Hub application?\n\n"
@@ -563,7 +800,7 @@ def _handle_uninstall_linux() -> int:
             + "\n\nProjects, downloaded engines, Python runtimes, and the shared "
             "plugin library are preserved.",
         )
-        if answer == QMessageBox.Yes:
+        if answer == dialogs.Yes:
             for p in targets:
                 if os.path.isdir(p):
                     if p == install_dir and not can_remove_install_dir(p):
@@ -575,7 +812,7 @@ def _handle_uninstall_linux() -> int:
                 else:
                     os.remove(p)
 
-    QMessageBox.information(None, "Uninstall Complete", "Infernux Hub has been uninstalled.")
+    dialogs.information(None, "Uninstall Complete", "Infernux Hub has been uninstalled.", level="ok")
     return 0
 
 

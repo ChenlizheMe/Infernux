@@ -45,7 +45,12 @@ def test_android_channel_install_is_queued_and_non_modal(tmp_path, failure):
         assert page.isVisible()
         assert QApplication.activeModalWidget() is None
         assert calls and calls[0] != owner
-        assert len(page.findChildren(QPushButton)) == 1  # No local archive import.
+        # One install action and no local archive import; the inline transfer
+        # strip's Cancel/Retry controls are not install actions.
+        actions = [button for button in page.findChildren(QPushButton) if button.property("installationKey")]
+        assert len(actions) == 1
+        assert all(button.objectName() == "ghostBtn" for button in page.findChildren(QPushButton)
+                   if button not in actions)
     finally:
         release.set()
         for _ in range(500):

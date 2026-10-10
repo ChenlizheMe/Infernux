@@ -225,7 +225,9 @@ def test_real_http_catalog_download_cache_chain(manager, monkeypatch, change):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
-    assert requests == ["/pypi", "/releases?per_page=50", f"/{NAME}"]
+    # Both catalogs are fetched concurrently, exactly once each, before the wheel.
+    assert sorted(requests[:2]) == ["/pypi", "/releases?per_page=50"]
+    assert requests[2:] == [f"/{NAME}"]
     if change is None:
         offline = vm.VersionManager()
         assert offline.list_versions()[0].installed

@@ -123,7 +123,8 @@ def test_launch_failure_keeps_traceback_in_scrollable_details(monkeypatch):
         observed.append((box.text(), box.detailedText()))
         return 0
 
-    monkeypatch.setattr(QMessageBox, "exec", inspect_dialog)
+    from view import dialogs
+    monkeypatch.setattr(dialogs.HubDialog, "exec", inspect_dialog)
     monkeypatch.setattr(splash, "_fade_out_and_close", lambda: None)
     try:
         splash._show_failure("Engine Launch Failed", detail)
@@ -579,11 +580,13 @@ def test_startup_release_notices_follow_the_same_update_preference(saved, expect
         db=SimpleNamespace(get_setting=lambda _key, default: default if saved is None else saved),
         installs_view=SimpleNamespace(refresh=lambda: observed.append("installs")),
         notification_controller=SimpleNamespace(show_pending=lambda: observed.append("notices")),
+        # Seeding the installer's bundled engine is local and preference-independent.
+        _seed_bundled_engines=lambda: observed.append("seed"),
     )
 
     GameEngineLauncher._finish_startup(launcher)
 
-    assert observed == (["installs", "notices"] if expected else ["installs"])
+    assert observed == (["seed", "installs", "notices"] if expected else ["seed", "installs"])
 
 
 def test_fresh_installer_runtime_skips_the_upgrade_requirement(monkeypatch):

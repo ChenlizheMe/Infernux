@@ -8,6 +8,9 @@ import sys
 import urllib.error
 import urllib.request
 import zipfile
+# runtime_bundle.zip members are LZMA-compressed; keep the decoder an explicit
+# dependency so frozen builds can never drop it.
+import lzma  # noqa: F401
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Optional

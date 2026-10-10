@@ -37,6 +37,21 @@ def _child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return merge_child_env_utf8(extra)
 _RUNTIME_PRUNE_DIR_NAMES = {"__pycache__", ".pytest_cache", "test", "tests"}
 _RUNTIME_PRUNE_FILE_SUFFIXES = (".pyc", ".pyo")
+# Extra pruning applied to the staged bundle runtime only. Every entry must be
+# irrelevant to running projects, Nuitka player builds and numba JIT:
+# - ``.pdb``: MSVC debug symbols (~71 MB raw, ~10 MB compressed for the
+#   CPython DLLs and venv launchers). Neither the loader, CPython,
+#   llvmlite/numba nor Nuitka (it only *optionally* copies PDBs next to DLLs)
+#   need them.
+# - ``.chm``: compiled HTML help (PyWin32.chm), documentation only.
+# Deliberately NOT pruned: ``.pyi`` stubs (Nuitka reads stubs next to
+# extension modules to discover their implicit imports), C sources/headers and
+# ``libs/*.lib`` (Nuitka and pip compile against them), ``ensurepip`` (pip
+# repair fallback), ``venv`` and ``tkinter``/``tcl`` (user project code may
+# use them).
+_RUNTIME_STAGED_PRUNE_FILE_SUFFIXES = (".pdb", ".chm")
+# Bump whenever the bundle encoding or bundle pruning changes.
+_RUNTIME_BUNDLE_FORMAT = "lzma-v1"
 
 
 def _bootstrap_root() -> str:
@@ -191,6 +206,9 @@ def _runtime_profile_payload() -> dict[str, object]:
         "python_archive": archive.name,
         "python_archive_sha256": archive.sha256,
         "packages": list(_RUNTIME_PACKAGES),
+        # Changing the bundle encoding or pruning rules must restage a cached
+        # runtime, otherwise an older (larger) bundle would be reused silently.
+        "bundle_format": _RUNTIME_BUNDLE_FORMAT,
     }
 
 
@@ -238,7 +256,9 @@ def _prune_runtime_root(dest_root: str) -> None:
                 _remove_tree(os.path.join(current_root, dirname))
                 dirs.remove(dirname)
         for filename in files:
-            if filename.lower().endswith(_RUNTIME_PRUNE_FILE_SUFFIXES):
+            if filename.lower().endswith(
+                _RUNTIME_PRUNE_FILE_SUFFIXES + _RUNTIME_STAGED_PRUNE_FILE_SUFFIXES
+            ):
                 os.remove(os.path.join(current_root, filename))
 
 
@@ -304,10 +324,16 @@ def _create_runtime_bundle(dest_root: str) -> None:
     if os.path.isfile(tmp_bundle):
         os.remove(tmp_bundle)
 
-    with zipfile.ZipFile(tmp_bundle, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        for root, _dirs, files in os.walk(dest_root):
+    # LZMA is ~25-30% smaller than deflate-9 on this runtime (measured
+    # 113.7 MB vs 153.5 MB for the 0.4.1 bundle). Readers only need the stdlib
+    # ``lzma`` module, which the Hub and installer import explicitly.
+    with zipfile.ZipFile(
+        tmp_bundle, "w", compression=zipfile.ZIP_LZMA, allowZip64=True
+    ) as zf:
+        for root, dirs, files in os.walk(dest_root):
+            dirs.sort()
             rel_dir = os.path.relpath(root, os.path.dirname(dest_root))
-            for filename in files:
+            for filename in sorted(files):
                 source_path = os.path.join(root, filename)
                 archive_name = os.path.join(rel_dir, filename)
                 zf.write(source_path, archive_name)

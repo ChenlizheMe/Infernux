@@ -1,6 +1,9 @@
 """Unity-style splash screen shown while the engine is loading."""
 
 import contextlib
+import math
+import random
+import zlib
 import logging
 import os
 import subprocess
@@ -10,13 +13,15 @@ import threading
 import time
 import uuid
 
-from PySide6.QtWidgets import QWidget, QApplication, QLabel, QVBoxLayout, QProgressBar, QMessageBox
-from PySide6.QtCore import Qt, QTimer, QSize, QPropertyAnimation, QEasingCurve, QUrl
-from PySide6.QtGui import QPixmap, QFont, QPainter, QColor, QPen, QBrush, QDesktopServices
+from PySide6.QtWidgets import QWidget, QApplication, QLabel, QProgressBar
+from PySide6.QtCore import Qt, QTimer, QSize, QPropertyAnimation, QEasingCurve, QUrl, QPointF, QRectF
+from PySide6.QtGui import QPixmap, QFont, QFontMetrics, QPainter, QColor, QPen, QDesktopServices, QPolygonF
 
 from hub_utils import get_project_lock_path, merge_child_env_utf8, remove_project_lock, write_project_lock
 from i18n import tr
-from style import StyleManager
+from style import FONT_FAMILIES, StyleManager
+from view import dialogs
+from view.forge import mix, qcolor
 from python_execution import EditorPythonRuntime, python_executable_path
 
 
@@ -78,107 +83,110 @@ def _format_exit_code(returncode: int) -> str:
     return f"Raw exit code: {returncode}"
 
 
-class EngineSplashScreen(QWidget):
-    """Borderless square overlay shown while the engine process starts up.
+class _StatusLine(QLabel):
+    """Status label that also feeds the splash's telemetry log."""
 
-    Displays the engine icon, name, and an animated loading indicator.
-    Fades in on show, fades out when the detached engine process signals
-    readiness via a small ready-file, then closes.
+    def __init__(self, text: str, owner: "EngineSplashScreen"):
+        super().__init__(text, owner)
+        self._owner = owner
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt naming
+        if text and text != self.text():
+            self._owner._log_status(text)
+        super().setText(text)
+
+
+class EngineSplashScreen(QWidget):
+    """Editor launch sequence shown while the engine process starts up.
+
+    A wide instrument plate: a 3N ignition network on the left lights up as
+    loading advances; the right column names the project and walks through
+    the launch stages with a telemetry tail. It fades in on show and fades
+    out when the detached engine process signals readiness via a ready-file.
     """
 
-    _SPLASH_SIZE = 420
+    _SPLASH_W = 760
+    _SPLASH_H = 420
+    _SPLASH_SIZE = _SPLASH_W
     _FADE_IN_MS = 150
     _FADE_OUT_MS = 200
     _STARTUP_TIMEOUT_SECONDS = 90
+    _STAGES = (
+        ("PREPARE RUNTIME", 0, 10),
+        ("START PROCESS", 10, 15),
+        ("LOAD ENGINE", 15, 99),
+        ("EDITOR READY", 99, 100),
+    )
+    # Network layout of the ignition panel: nodes per layer.
+    _LAYERS = (4, 6, 6, 3)
 
-    def __init__(self, icon_path: str, project_name: str, parent=None):
+    def __init__(self, icon_path: str, project_name: str, parent=None, *, detail: str = ""):
         super().__init__(parent)
         self.setWindowFlags(
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
             | Qt.Tool
         )
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(self._SPLASH_SIZE, self._SPLASH_SIZE)
+        self.setFixedSize(self._SPLASH_W, self._SPLASH_H)
 
         self._process: subprocess.Popen | None = None
         self._ready_file: str = ""
         self._project_path: str = ""
         self._lock_token: str = ""
         self._owns_launch_reservation = False
-        self._angle = 0  # spinner angle
+        self._angle = 0  # animation phase
         self._closing = False
         self._terminal_handled = False
         self._launch_started_at = 0.0
         self._launch_args = None
+        self._project_name = project_name
+        self._detail = detail
+        self._log: list[str] = []
+        self._failed = False
         app = QApplication.instance()
         self._palette = StyleManager.palette(bool(getattr(app, "is_dark_theme", True)))
+        self._icon = QPixmap(icon_path) if icon_path else QPixmap()
+        self._shown_at = time.monotonic()
+        rng = random.Random(zlib.crc32(project_name.encode("utf-8")))
+        self._stars = [(rng.random(), rng.random(), rng.choice((1, 1, 1, 2))) for _ in range(70)]
 
-        # Center on screen
         screen = QApplication.primaryScreen()
         if screen:
             geo = screen.availableGeometry()
             self.move(
-                geo.x() + (geo.width() - self._SPLASH_SIZE) // 2,
-                geo.y() + (geo.height() - self._SPLASH_SIZE) // 2,
+                geo.x() + (geo.width() - self._SPLASH_W) // 2,
+                geo.y() + (geo.height() - self._SPLASH_H) // 2,
             )
 
-        # ── Layout ──
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 50, 40, 40)
-        layout.setSpacing(12)
-        layout.setAlignment(Qt.AlignCenter)
-
-        # Icon
-        self._icon_label = QLabel(self)
-        self._icon_label.setAlignment(Qt.AlignCenter)
-        pixmap = QPixmap(icon_path)
-        if not pixmap.isNull():
-            pixmap = pixmap.scaled(QSize(96, 96), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self._icon_label.setPixmap(pixmap)
-        layout.addWidget(self._icon_label)
-
-        # Title
-        title = QLabel("Infernux Engine", self)
-        title.setAlignment(Qt.AlignCenter)
-        title.setFont(QFont("Segoe UI", 22, QFont.Bold))
-        title.setStyleSheet(f"color: {self._palette.text_primary}; background: transparent;")
-        layout.addWidget(title)
-
-        # Project name
-        proj = QLabel(project_name, self)
-        proj.setAlignment(Qt.AlignCenter)
-        proj.setFont(QFont("Segoe UI", 11))
-        proj.setStyleSheet(f"color: {self._palette.text_muted}; background: transparent;")
-        layout.addWidget(proj)
-
-        # Spacer
-        layout.addSpacing(20)
-
-        # Status label
-        self._status = QLabel(tr("Initializing engine..."), self)
-        self._status.setAlignment(Qt.AlignCenter)
-        self._status.setFont(QFont("Segoe UI", 10))
-        self._status.setStyleSheet(f"color: {self._palette.text_secondary}; background: transparent;")
-        layout.addWidget(self._status)
-        # Progress bar
+        # Text widgets the launch logic updates; everything else is painted.
+        self._status = _StatusLine(tr("Initializing engine..."), self)
+        self._status.setObjectName("monoValue")
+        self._status.setGeometry(336, 318, 380, 18)
+        status_font = QFont()
+        status_font.setFamilies(list(FONT_FAMILIES))
+        status_font.setPixelSize(12)
+        status_font.setWeight(QFont.Weight.Bold)
+        status_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.6)
+        self._status.setFont(status_font)
+        self._status.setStyleSheet(f"color: {self._palette.text_mono}; background: transparent;")
         self._progress_bar = QProgressBar(self)
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(0)
-        self._progress_bar.setTextVisible(False)
-        self._progress_bar.setFixedHeight(4)
-        self._progress_bar.setStyleSheet(
-            f"QProgressBar {{ background: {self._palette.button_surface}; border: none; border-radius: 2px; }}"
-            f"QProgressBar::chunk {{ background: {self._palette.accent}; border-radius: 2px; }}"
-        )
-        layout.addWidget(self._progress_bar)
-        # Spinner animation timer
+        self._progress_bar.hide()
+        self._progress_bar.valueChanged.connect(lambda _value: self.update())
+
         self._spin_timer = QTimer(self)
         self._spin_timer.timeout.connect(self._tick_spinner)
-        self._spin_timer.start(30)
+        self._spin_timer.start(33)
 
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_launch_state)
+
+    def _log_status(self, text: str) -> None:
+        if not self._log or self._log[-1] != text:
+            self._log.append(text)
+            del self._log[:-4]
+        self.update()
 
     # ── Show with fade-in ──
 
@@ -194,37 +202,189 @@ class EngineSplashScreen(QWidget):
 
     # ── Painting ──
 
+    def _font(self, size: int, *, bold: bool = True, tracking: float = 0.0) -> QFont:
+        font = QFont()
+        font.setFamilies(list(FONT_FAMILIES))
+        font.setPixelSize(size)
+        font.setWeight(QFont.Weight.Bold if bold else QFont.Weight.Medium)
+        if tracking:
+            font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, tracking)
+        return font
+
+    def _node_positions(self, panel: QRectF) -> list[list[QPointF]]:
+        layers = []
+        count = len(self._LAYERS)
+        for column, nodes in enumerate(self._LAYERS):
+            x = panel.left() + 40 + column * (panel.width() - 80) / (count - 1)
+            span = panel.height() - 150
+            top = panel.top() + 74 + (span - (nodes - 1) * span / 5) / 2
+            layers.append([QPointF(x, top + row * span / 5) for row in range(nodes)])
+        return layers
+
     def paintEvent(self, event):
+        palette = self._palette
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
+        rect = self.rect()
+        p.fillRect(rect, QColor(palette.bg_base))
+        progress = self._progress_bar.value() / 100.0
+        accent = QColor(palette.danger if self._failed else palette.accent)
+        fill = QColor(palette.danger if self._failed else palette.accent_fill)
+        muted = QColor(palette.text_muted)
 
-        # Dark rounded-rect background
+        # ── Ignition panel ──
+        panel = QRectF(0, 0, 300, rect.height())
+        p.fillRect(panel, QColor(palette.bg_deep))
+        for x, y, size in self._stars:
+            twinkle = 60 + int(50 * (0.5 + 0.5 * math.sin(self._angle * 0.05 + x * 40)))
+            p.fillRect(QRectF(panel.left() + x * panel.width(), panel.top() + y * panel.height(), size, size),
+                       qcolor(palette.grid, twinkle // 3))
+        layers = self._node_positions(panel)
+        lit_layers = progress * (len(layers) + 0.6)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        for column in range(len(layers) - 1):
+            live = lit_layers > column + 1
+            for a_index, a in enumerate(layers[column]):
+                for b_index, b in enumerate(layers[column + 1]):
+                    if (a_index + b_index) % 2 and len(layers[column]) > 3:
+                        continue
+                    edge = qcolor(palette.accent_fill if live else palette.text_muted, 120 if live else 34)
+                    p.setPen(QPen(edge, 1))
+                    p.drawLine(a, b)
+                    if live:
+                        phase = ((self._angle * 0.018) + (a_index * 0.37) + (b_index * 0.21)) % 1.0
+                        point = a + (b - a) * phase
+                        p.fillRect(QRectF(point.x() - 1.5, point.y() - 1.5, 3, 3), accent)
+        p.setRenderHint(QPainter.Antialiasing, False)
+        for column, nodes in enumerate(layers):
+            lit = lit_layers > column
+            for index, node in enumerate(nodes):
+                size = 9
+                box = QRectF(node.x() - size / 2, node.y() - size / 2, size, size)
+                p.fillRect(box, QColor(palette.bg_deep))
+                if lit:
+                    pulse = 0.55 + 0.45 * math.sin(self._angle * 0.12 + index + column * 1.7)
+                    p.fillRect(box, mix(fill, accent, pulse))
+                else:
+                    p.setPen(QPen(qcolor(palette.text_muted, 120), 1))
+                    p.drawRect(box)
+        p.setFont(self._font(10, tracking=1.6))
+        p.setPen(accent)
+        p.drawText(QRectF(26, 26, 250, 16), Qt.AlignLeft | Qt.AlignVCenter, "3N  ·  IGNITION")
+        p.setPen(muted)
+        p.setFont(self._font(10, bold=False, tracking=0.8))
+        p.drawText(QRectF(26, rect.height() - 50, 250, 16), Qt.AlignLeft | Qt.AlignVCenter,
+                   "NEURAL NETWORK-NATIVE ENGINE")
+        if not self._icon.isNull():
+            p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            p.drawPixmap(QRectF(panel.right() - 50, 18, 30, 30).toRect(), self._icon)
+        p.fillRect(QRectF(panel.right() - 1, 0, 1, rect.height()), QColor(palette.border))
+
+        # ── Hazard band on the right column ──
+        band = 6
+        p.fillRect(QRectF(300, 0, rect.width() - 300, band), QColor(palette.bg_deep))
+        p.setRenderHint(QPainter.Antialiasing, True)
         p.setPen(Qt.NoPen)
-        background = QColor(self._palette.bg_base)
-        background.setAlpha(248)
-        p.setBrush(QBrush(background))
-        p.drawRoundedRect(self.rect(), 18, 18)
+        p.setBrush(fill)
+        offset = (self._angle // 2) % (band * 2) if progress < 1.0 and not self._failed else 0
+        for x in range(300 - band * 2 + offset, rect.width() + band, band * 2):
+            p.drawPolygon(QPolygonF([QPointF(x, band), QPointF(x + band, 0),
+                                     QPointF(x + band * 2, 0), QPointF(x + band, band)]))
+        p.setRenderHint(QPainter.Antialiasing, False)
 
-        # Subtle border
-        border = QColor(self._palette.border)
-        border.setAlpha(210)
-        p.setPen(QPen(border, 1))
+        left = 336
+        p.setFont(self._font(10, tracking=1.8))
+        p.setPen(accent)
+        p.drawText(QRectF(left, 30, 260, 16), Qt.AlignLeft | Qt.AlignVCenter,
+                   "FAULT  ·  LAUNCH ABORTED" if self._failed else "EDITOR LAUNCH SEQUENCE")
+        elapsed = int(time.monotonic() - self._shown_at)
+        p.setPen(muted)
+        p.drawText(QRectF(rect.width() - 160, 30, 128, 16), Qt.AlignRight | Qt.AlignVCenter,
+                   f"T+{elapsed // 60:02d}:{elapsed % 60:02d}")
+        p.setPen(QColor(palette.text_primary))
+        title_font = self._font(28)
+        p.setFont(title_font)
+        title = QFontMetrics(title_font).elidedText(self._project_name, Qt.ElideRight, rect.width() - left - 32)
+        p.drawText(QRectF(left, 52, rect.width() - left - 32, 40), Qt.AlignLeft | Qt.AlignVCenter, title)
+        if self._detail:
+            p.setFont(self._font(11, bold=False, tracking=0.4))
+            p.setPen(muted)
+            detail = QFontMetrics(p.font()).elidedText(self._detail, Qt.ElideMiddle, rect.width() - left - 32)
+            p.drawText(QRectF(left, 92, rect.width() - left - 32, 18), Qt.AlignLeft | Qt.AlignVCenter, detail)
+
+        # Stage checklist.
+        y = 132
+        value = self._progress_bar.value()
+        for number, (label, start, end) in enumerate(self._STAGES, start=1):
+            done = value >= end or (label == "EDITOR READY" and value >= 100)
+            active = start <= value < end and not done
+            lamp = QRectF(left, y + 4, 8, 8)
+            if self._failed and active:
+                p.fillRect(lamp, QColor(palette.danger))
+            elif done:
+                p.fillRect(lamp, QColor(palette.signal))
+            elif active:
+                blink = (self._angle // 16) % 2 == 0
+                p.fillRect(lamp, accent if blink else qcolor(palette.accent, 90))
+            else:
+                p.setPen(QPen(qcolor(palette.text_muted, 120), 1))
+                p.drawRect(lamp)
+            p.setFont(self._font(10, bold=False, tracking=0.6))
+            p.setPen(muted)
+            p.drawText(QRectF(left + 18, y, 26, 16), Qt.AlignLeft | Qt.AlignVCenter, f"{number:02d}")
+            p.setFont(self._font(12, bold=active or done, tracking=1.0))
+            p.setPen(QColor(palette.text_primary if (active or done) else palette.text_muted))
+            p.drawText(QRectF(left + 46, y, 220, 16), Qt.AlignLeft | Qt.AlignVCenter, tr(label))
+            p.setFont(self._font(10, tracking=1.0))
+            state = "FAULT" if self._failed and active else "DONE" if done else "ACTIVE" if active else "--"
+            p.setPen(QColor(palette.signal) if done else accent if active else muted)
+            p.drawText(QRectF(rect.width() - 152, y, 120, 16), Qt.AlignRight | Qt.AlignVCenter, tr(state))
+            y += 30
+
+        # Telemetry tail: the previous status lines fade upward.
+        p.setFont(self._font(10, bold=False, tracking=0.3))
+        history = self._log[:-1][-2:]
+        for index, line in enumerate(history):
+            alpha = 90 + 60 * index
+            p.setPen(qcolor(palette.text_muted, alpha))
+            text = QFontMetrics(p.font()).elidedText("› " + line, Qt.ElideRight, rect.width() - left - 40)
+            p.drawText(QRectF(left, 278 + index * 18, rect.width() - left - 40, 16),
+                       Qt.AlignLeft | Qt.AlignVCenter, text)
+
+        # Segmented meter.
+        meter_y, meter_h = rect.height() - 58, 8
+        right = rect.width() - 32
+        pitch, segment = 7, 5
+        count = int((right - left) // pitch)
+        lit = round(value / 100 * count)
+        head = (self._angle // 3) % (count + 8)
+        off = qcolor(palette.text_muted, 40)
+        for index in range(count):
+            if index < lit:
+                color = fill
+            elif head - 5 <= index < head and value < 100 and not self._failed:
+                color = qcolor(palette.accent, 110 + 25 * (index - head + 5))
+            else:
+                color = off
+            p.fillRect(QRectF(left + index * pitch, meter_y, segment, meter_h), color)
+        p.setFont(self._font(10, tracking=1.0))
+        p.setPen(muted)
+        p.drawText(QRectF(left, meter_y + 14, 200, 16), Qt.AlignLeft | Qt.AlignVCenter, f"{value:03d}%")
+        p.drawText(QRectF(right - 220, meter_y + 14, 220, 16), Qt.AlignRight | Qt.AlignVCenter,
+                   "INFERNUX  ·  " + ("ESC TO HIDE" if not self._failed else "SEE DETAILS"))
+        p.setPen(QPen(QColor(palette.border_hover), 1))
         p.setBrush(Qt.NoBrush)
-        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), 18, 18)
-
-        # Spinner arc at the bottom
-        spinner_size = 28
-        sx = (self.width() - spinner_size) // 2
-        sy = self.height() - 52
-        pen = QPen(QColor(self._palette.accent), 3)
-        pen.setCapStyle(Qt.RoundCap)
-        p.setPen(pen)
-        p.drawArc(sx, sy, spinner_size, spinner_size, self._angle * 16, 270 * 16)
-
+        p.drawRect(rect.adjusted(0, 0, -1, -1))
         p.end()
 
+    def keyPressEvent(self, event):
+        # Escape hides the plate; launch monitoring continues in the background.
+        if event.key() == Qt.Key_Escape and not self._terminal_handled:
+            self.hide()
+            return
+        super().keyPressEvent(event)
+
     def _tick_spinner(self):
-        self._angle = (self._angle + 8) % 360
+        self._angle = (self._angle + 1) % 100000
         self.update()
 
     def set_preparation_status(self, message: str, progress: int = 5):
@@ -237,8 +397,11 @@ class EngineSplashScreen(QWidget):
         if self._terminal_handled:
             return
         self._terminal_handled = True
+        self._failed = True
         self._status.setText(tr("Launch failed"))
-        QMessageBox.critical(self, tr("Engine Launch Failed"), detail)
+        summary, _, rest = detail.partition("\n")
+        dialogs.critical(self, tr("Engine Launch Failed"), summary,
+                         detail=detail if rest.strip() else "", kicker=tr("EDITOR LAUNCH"))
         self._fade_out_and_close()
 
     # ── Fade-out and close ──
@@ -452,13 +615,17 @@ class EngineSplashScreen(QWidget):
             return
         self._terminal_handled = True
         self._poll_timer.stop()
-        box = QMessageBox(QMessageBox.Warning, tr("Engine Launch Timed Out"),
-                          tr("The editor did not become ready within {seconds} seconds.",
-                             seconds=self._STARTUP_TIMEOUT_SECONDS))
-        retry = box.addButton(tr("Retry"), QMessageBox.AcceptRole)
-        keep_waiting = box.addButton(tr("Keep Waiting"), QMessageBox.ActionRole)
-        open_logs = box.addButton(tr("Open Logs"), QMessageBox.ActionRole)
-        stop = box.addButton(tr("Stop"), QMessageBox.RejectRole)
+        box = dialogs.HubDialog(
+            self, level="warning", title=tr("Engine Launch Timed Out"),
+            text=tr("The editor did not become ready within {seconds} seconds.",
+                    seconds=self._STARTUP_TIMEOUT_SECONDS),
+            kicker=tr("EDITOR LAUNCH"),
+        )
+        stop = box.addButton(tr("Stop"), "reject")
+        open_logs = box.addButton(tr("Open Logs"), "action")
+        keep_waiting = box.addButton(tr("Keep Waiting"), "action")
+        retry = box.addButton(tr("Retry"), "accept")
+        box.setDefaultButton(keep_waiting)
         box.exec()
         clicked = box.clickedButton()
         if clicked is retry:
@@ -477,18 +644,23 @@ class EngineSplashScreen(QWidget):
         if self._terminal_handled:
             return
         self._terminal_handled = True
+        self._failed = True
         self._poll_timer.stop()
         self._status.setText(tr("Launch failed"))
         if self._owns_launch_reservation:
             remove_project_lock(self._project_path, self._lock_token)
-        box = QMessageBox(QMessageBox.Critical, title, detail.split("\n", 1)[0])
-        box.setDetailedText(detail)
-        retry = box.addButton(tr("Retry"), QMessageBox.AcceptRole)
-        open_logs = box.addButton(tr("Open Logs"), QMessageBox.ActionRole)
-        close = box.addButton(tr("Stop"), QMessageBox.RejectRole)
+        box = dialogs.HubDialog(
+            self, level="critical", title=title, text=detail.split("\n", 1)[0], detail=detail,
+            kicker=tr("EDITOR LAUNCH"),
+        )
+        close = box.addButton(tr("Stop"), "reject")
+        open_logs = box.addButton(tr("Open Logs"), "action")
+        retry = box.addButton(tr("Retry"), "accept")
+        box.setDefaultButton(retry)
         box.exec()
         clicked = box.clickedButton()
         if clicked is retry:
+            self._failed = False
             self._retry_launch()
             return
         if clicked is open_logs:

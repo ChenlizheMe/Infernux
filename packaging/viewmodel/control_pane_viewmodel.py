@@ -2,56 +2,116 @@ import os
 import sys
 import uuid
 from PySide6.QtWidgets import (
-    QApplication, QMessageBox, QDialog, QVBoxLayout, QLabel, QProgressBar, QFileDialog
+    QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, QFileDialog
 )
 from PySide6.QtCore import QThread, Signal, Slot, QObject, QTimer, Qt
 from model.project_model import ProjectModel, source_engine_version
 from hub_utils import HubLaunchContext, is_project_open, write_project_lock, remove_project_lock
 from project_paths import ProjectPathError
 from i18n import tr
-import random
+from view import dialogs
+from view.forge import toast
+import time
 
 
 class CustomProgressDialog(QDialog):
-    """Indeterminate progress dialog shown during project initialization."""
+    """Launch-sequence checklist driven by the real creation status messages."""
+
+    # (step label, status-message prefixes that belong to that step)
+    STEPS = (
+        ("Project folders and templates", ("Creating project folders", "Finalizing project")),
+        ("Private Python runtime", ("Creating project virtual environment", "Checking managed Python",
+                                    "Copying Python runtime", "Copying bundled Python",
+                                    "Extracting bundled Python")),
+        ("Engine files", ("Validating the current development environment", "Checking the project runtime",
+                          "Installing Infernux engine files", "Validating project runtime")),
+        ("Default libraries", ("Installing default project libraries",)),
+        ("Editor settings", ("Writing project editor settings",)),
+    )
 
     def __init__(self, parent=None, title=None):
         super().__init__(parent)
+        from view.forge import HazardStripe, SegmentMeter, StatusLed, mono_label
         self.setWindowTitle(title or tr("Initializing"))
         self.setWindowModality(Qt.WindowModal)
-        self.setFixedSize(340, 110)
+        self.setFixedWidth(460)
 
-        self.label = QLabel(tr("Preparing project..."), self)
-        self.label.setAlignment(Qt.AlignCenter)
-
-        self.progress_bar = QProgressBar(self)
-        self.progress_bar.setRange(0, 0)
-        self.progress_bar.setTextVisible(False)
-
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(HazardStripe(5))
         layout = QVBoxLayout()
+        layout.setContentsMargins(24, 18, 24, 20)
+        layout.setSpacing(10)
+        outer.addLayout(layout)
+        head = QHBoxLayout()
+        head.addWidget(mono_label(tr("CREATION SEQUENCE"), "pageKicker", spacing=1.6))
+        head.addStretch()
+        self._clock = mono_label("T+00:00", "monoValue", spacing=1.0)
+        head.addWidget(self._clock)
+        layout.addLayout(head)
+        heading = QLabel(tr("Preparing project..."))
+        heading.setObjectName("dialogTitle")
+        layout.addWidget(heading)
+        self.meter = SegmentMeter(height=6)
+        self.meter.set_fraction(None)
+        layout.addWidget(self.meter)
+        layout.addSpacing(4)
+
+        self._steps = []
+        for index, (label, _prefixes) in enumerate(self.STEPS, start=1):
+            row = QHBoxLayout()
+            row.setSpacing(10)
+            led = StatusLed("idle")
+            row.addWidget(led, 0, Qt.AlignmentFlag.AlignVCenter)
+            number = mono_label(f"{index:02d}", "monoMeta", spacing=0.6)
+            row.addWidget(number)
+            text = QLabel(tr(label))
+            text.setObjectName("settingsDescription")
+            row.addWidget(text, 1)
+            state = mono_label("", "monoMeta", spacing=1.0)
+            row.addWidget(state)
+            layout.addLayout(row)
+            self._steps.append((led, text, state))
+        layout.addSpacing(4)
+        self.label = QLabel(tr("Preparing project..."))
+        self.label.setObjectName("cardPath")
+        self.label.setWordWrap(True)
         layout.addWidget(self.label)
-        layout.addWidget(self.progress_bar)
-        self.setLayout(layout)
-
-        self.messages = [
-            tr("Setting up project structure..."),
-            tr("Copying engine libraries..."),
-            tr("Setting up Python runtime..."),
-            tr("Preparing asset folders..."),
-            tr("Almost there..."),
-        ]
-
+        self.progress_bar = self.meter
+        self._current = -1
+        self._started = time.monotonic()
         self.timer = QTimer(self)
-        self.timer.timeout.connect(self._rotate_message)
-        self.timer.start(2000)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(1000)
+        self._advance_to(0)
+
+    def _tick(self):
+        elapsed = int(time.monotonic() - self._started)
+        self._clock.setText(f"T+{elapsed // 60:02d}:{elapsed % 60:02d}")
+
+    def _advance_to(self, index: int):
+        if index <= self._current:
+            return
+        self._current = index
+        for position, (led, text, state) in enumerate(self._steps):
+            if position < index:
+                led.set_kind("ok")
+                state.setText(tr("DONE"))
+            elif position == index:
+                led.set_kind("busy")
+                state.setText(tr("RUNNING"))
+            else:
+                led.set_kind("idle")
+                state.setText("")
+        self.meter.set_fraction(None)
 
     def set_status(self, message: str):
-        if self.timer.isActive():
-            self.timer.stop()
         self.label.setText(tr(message))
-
-    def _rotate_message(self):
-        self.label.setText(random.choice(self.messages))
+        for index, (_label, prefixes) in enumerate(self.STEPS):
+            if any(message.startswith(prefix) for prefix in prefixes):
+                self._advance_to(index)
+                break
 
     def reject(self):
         # Initialization cannot be cancelled halfway through runtime publication.
@@ -263,7 +323,7 @@ class ControlPaneViewModel(QObject):
     def launch_project(self, parent):
         record = self.project_list.get_selected_record()
         if record is None:
-            QMessageBox.warning(parent, tr("No Selection"), tr("Please select a project to launch."))
+            dialogs.warning(parent, tr("No Selection"), tr("Please select a project to launch."))
             return
 
         if self._launch_thread is not None and self._launch_thread.isRunning():
@@ -281,7 +341,12 @@ class ControlPaneViewModel(QObject):
         from splash_screen import EngineSplashScreen
         from hub_resources import ICON_PATH
 
-        splash = EngineSplashScreen(ICON_PATH, project_name, parent=None)
+        try:
+            pinned = self.version_manager.read_project_version(project_path) if self.version_manager else ""
+        except OSError:
+            pinned = ""
+        detail = "  ·  ".join(part for part in (f"INFERNUX {pinned}" if pinned else "", project_path) if part)
+        splash = EngineSplashScreen(ICON_PATH, project_name, parent=None, detail=detail)
         splash.show()
         self._splash = splash
         self._launch_splash = splash
@@ -351,14 +416,16 @@ class ControlPaneViewModel(QObject):
         selected_dir = QFileDialog.getExistingDirectory(
             parent, tr("Open Existing Infernux Project"), initial_dir,
         )
-        if not selected_dir:
-            return
+        if selected_dir:
+            self.add_project_folder(parent, selected_dir)
 
+    def add_project_folder(self, parent, selected_dir: str):
+        """Register an existing project folder (Open button or drag and drop)."""
         try:
             record, info = self.model.register_existing_project(selected_dir)
         except (ProjectPathError, RuntimeError) as exc:
-            QMessageBox.critical(parent, tr("Cannot Open Project"), str(exc))
-            return
+            dialogs.critical(parent, tr("Cannot Open Project"), str(exc), kicker=tr("OPEN PROJECT"))
+            return None
 
         if self.model.db:
             self.model.db.set_setting("last_open_project_dir", os.path.dirname(info.path))
@@ -371,35 +438,55 @@ class ControlPaneViewModel(QObject):
             and self.version_manager is not None
             and not self.version_manager.is_installed(info.engine_version)
         ):
-            QMessageBox.information(
+            dialogs.information(
                 parent,
                 tr("Engine Version Not Installed"),
                 f"Project '{info.name}' was added to Hub, but engine version "
                 f"{info.engine_version} is not installed yet.\n\nOpen Installs to install it before launching.",
             )
+        else:
+            toast(parent, tr("Added {name} to Hub", name=info.name))
+        return record
 
-    def remove_project(self, parent):
-        record = self.project_list.get_selected_record()
+    def _record_for(self, project_id):
+        if project_id:
+            return self.model.db.get_project(project_id) if self.model.db else None
+        return self.project_list.get_selected_record()
+
+    def remove_project(self, parent, project_id=None):
+        record = self._record_for(project_id)
         if record is None:
-            QMessageBox.warning(parent, tr("No Selection"), tr("Please select a project to remove from Hub."))
-            return
+            dialogs.warning(parent, tr("No Selection"), tr("Please select a project to remove from Hub."))
+            return False
 
-        confirm = QMessageBox.question(
+        confirmed = dialogs.confirm(
             parent,
-            tr("Remove Project from Hub"),
-            f"Remove '{record.name}' from Infernux Hub?\n\n"
-            f"{tr('Project files will not be deleted.')}\n{record.path}",
+            tr("Remove {name} from Hub?", name=record.name),
+            tr("Hub forgets this entry. Project files will not be deleted; you can add the folder again at any time."),
+            confirm_label=tr("Remove from Hub"),
+            destructive=True,
+            kicker=tr("REMOVE PROJECT"),
+            subject=(record.name, record.path),
         )
-        if confirm != QMessageBox.Yes:
-            return
+        if not confirmed:
+            return False
 
         self.model.remove_project(record.project_id)
         self.project_list.refresh()
 
-    def relocate_project(self, parent):
-        record = self.project_list.get_selected_record()
+        def undo(name=record.name, path=record.path):
+            restored = self.model.add_project(name, path)
+            self.project_list.refresh()
+            if restored is not None:
+                self.project_list.select_project(restored.project_id)
+
+        toast(parent, tr("Removed {name} from Hub", name=record.name), "info", action=(tr("Undo"), undo))
+        return True
+
+    def relocate_project(self, parent, project_id=None):
+        record = self._record_for(project_id)
         if record is None:
-            QMessageBox.warning(parent, tr("No Selection"), tr("Please select a project to relocate."))
+            dialogs.warning(parent, tr("No Selection"), tr("Please select a project to relocate."))
             return
 
         initial_dir = record.path if os.path.isdir(record.path) else os.path.dirname(record.path)
@@ -412,14 +499,14 @@ class ControlPaneViewModel(QObject):
         try:
             relocated, info = self.model.relocate_project(record.project_id, selected_dir)
         except (ProjectPathError, RuntimeError) as exc:
-            QMessageBox.critical(parent, tr("Cannot Relocate Project"), str(exc))
+            dialogs.critical(parent, tr("Cannot Relocate Project"), str(exc))
             return
 
         if self.model.db:
             self.model.db.set_setting("last_open_project_dir", os.path.dirname(info.path))
         self.project_list.refresh()
         self.project_list.select_project(relocated.project_id)
-
+        toast(parent, tr("{name} now points to the new folder", name=info.name))
 
     def create_project(self, parent):
         from view.new_project_view import NewProjectView
@@ -440,13 +527,13 @@ class ControlPaneViewModel(QObject):
 
         new_name, project_path, engine_version = dialog.get_data()
         if not new_name:
-            QMessageBox.warning(parent, tr("Missing Name"), tr("Please enter a project name."))
+            dialogs.warning(parent, tr("Missing Name"), tr("Please enter a project name."))
             return
         if not project_path:
-            QMessageBox.warning(parent, tr("Missing Location"), tr("Please choose a project location."))
+            dialogs.warning(parent, tr("Missing Location"), tr("Please choose a project location."))
             return
         if self.launch_context.uses_installed_versions and not engine_version:
-            QMessageBox.warning(parent, tr("Missing Version"), tr("Please select an installed engine version."))
+            dialogs.warning(parent, tr("Missing Version"), tr("Please select an installed engine version."))
             return
         progress_dialog = CustomProgressDialog(parent)
         self._creation_dialog = progress_dialog
@@ -485,11 +572,16 @@ class ControlPaneViewModel(QObject):
             record = None
             if worker.error_message:
                 if show_dialogs:
-                    QMessageBox.critical(progress, tr("Project Creation Failed"), worker.error_message)
+                    summary, _, rest = worker.error_message.partition("\n")
+                    dialogs.critical(
+                        progress, tr("Project Creation Failed"), summary,
+                        detail=worker.error_message if rest.strip() else "",
+                        kicker=tr("CREATION SEQUENCE ABORTED"),
+                    )
             elif worker.project_dir:
                 record = self.model.add_project(worker.name, worker.project_dir)
                 if record is None and show_dialogs:
-                    QMessageBox.warning(
+                    dialogs.warning(
                         progress, tr("Project Created"),
                         "The project was created successfully, but it is already registered in Hub.\n\n"
                         f"{worker.project_dir}",
@@ -497,6 +589,8 @@ class ControlPaneViewModel(QObject):
             self.project_list.refresh()
             if record is not None:
                 self.project_list.select_project(record.project_id)
+                if show_dialogs:
+                    toast(self.project_list, tr("{name} is ready. Press Enter to launch.", name=worker.name))
         finally:
             QApplication.instance().aboutToQuit.disconnect(self._wait_for_creation)
             progress.finish()
