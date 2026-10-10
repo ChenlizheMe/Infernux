@@ -1382,11 +1382,25 @@ def test_server_shutdown_closes_connected_streamable_http_session(tmp_path):
         server.stop_server()
 
 
-def test_server_shutdown_does_not_wait_for_queued_editor_query(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cancelled_reply_delay", [0.0, 0.3])
+def test_server_shutdown_does_not_wait_for_queued_editor_query(tmp_path, monkeypatch, cancelled_reply_delay):
     import asyncio
     from infernux.host import MainThreadCommandQueue
+    from infernux.host.commands import CommandFuture
     from infernux_mcp.client import create_loopback_client
 
+    original_result = CommandFuture.result
+
+    def delayed_cancelled_reply(future, timeout=None):
+        try:
+            return original_result(future, timeout)
+        except TimeoutError:
+            # Model a worker that has observed cancellation but has not yet
+            # returned its error response to the HTTP transport.
+            time.sleep(cancelled_reply_delay)
+            raise
+
+    monkeypatch.setattr(CommandFuture, 'result', delayed_cancelled_reply)
     (tmp_path / "Assets").mkdir()
     (tmp_path / "ProjectSettings").mkdir()
     command_queue = MainThreadCommandQueue()
@@ -1398,6 +1412,9 @@ def test_server_shutdown_does_not_wait_for_queued_editor_query(tmp_path, monkeyp
 
     async def queued_shutdown():
         async with create_loopback_client(server.endpoint_url(port=port), timeout_seconds=20) as client:
+            # Tool-result validation lazily fetches schemas. Discover them while
+            # the server is alive so shutdown cannot trigger a new tools/list.
+            await client.list_tools()
             query = asyncio.create_task(client.call_tool('operation_query_execute', {'operation': 'infernux.project.info'}))
             try:
                 for _ in range(100):
@@ -1411,6 +1428,8 @@ def test_server_shutdown_does_not_wait_for_queued_editor_query(tmp_path, monkeyp
                 assert state.error is None
                 pending = list(command_queue._queue.queue)
                 assert not any(future.can_execute() for _name, _fn, future in pending)
+                result = await query
+                assert not result.data['ok']
             finally:
                 command_queue.cancel_pending('test cleanup')
                 result, = await asyncio.gather(query, return_exceptions=True)
