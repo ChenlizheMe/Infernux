@@ -1,7 +1,7 @@
 import threading
 import time
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QThread, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -77,3 +77,37 @@ def test_queued_install_can_be_removed_without_starting_it():
     assert job.state == "cancelled"
     assert not queue.busy
     assert calls == []
+
+
+def test_worker_publication_runs_on_the_queue_owner_thread():
+    app = QApplication.instance() or QApplication([])
+    queue = InstallQueue(app)
+    publications = []
+    workers = []
+    queue.changed.connect(lambda: publications.append(QThread.currentThread()))
+    queue.job_finished.connect(lambda _job: publications.append(QThread.currentThread()))
+
+    def operation(report):
+        workers.append(QThread.currentThread())
+        report('Preparing runtime', 1, 1)
+
+    for index in range(20):
+        queue.submit(str(index), 'Runtime', operation)
+    wait_until(lambda: not queue.busy)
+    assert len(workers) == 20
+    assert all(thread != app.thread() for thread in workers)
+    assert publications
+    assert all(thread == app.thread() for thread in publications)
+
+
+def test_retired_queue_does_not_receive_deferred_next_job_callback():
+    app = QApplication.instance() or QApplication([])
+    queue = InstallQueue(app)
+    idle = []
+    queue.idle.connect(lambda: idle.append(True))
+    job = queue.submit('runtime', 'Runtime', lambda _report: None)
+    queue.cancel_queued(job)
+    queue.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    QTest.qWait(20)
+    assert idle == []

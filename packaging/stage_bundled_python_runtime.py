@@ -18,7 +18,7 @@ from private_python_runtime import (
     runtime_archive_for_machine,
 )
 from python_runtime_catalog import DEFAULT_PYTHON_RUNTIME
-from runtime_requirements import runtime_modules, runtime_packages
+from runtime_requirements import runtime_modules, runtime_packages, runtime_probe_code
 import logging
 
 from hub_utils import get_hub_shared_data_dir, merge_child_env_utf8
@@ -184,11 +184,8 @@ def _copy_tree(src: str, dest: str) -> None:
 
 
 def _has_modules(python_exe: str, *module_names: str) -> bool:
-    checks = " and ".join(
-        [f"importlib.util.find_spec('{module_name}') is not None" for module_name in module_names]
-    ) or "1"
     completed = _run(
-        [python_exe, "-c", f"import importlib.util; print(int({checks}))"],
+        [python_exe, "-I", "-c", runtime_probe_code(module_names)],
         timeout=60,
     )
     return completed.returncode == 0 and (completed.stdout or "").strip() == "1"
@@ -300,7 +297,7 @@ def _ensure_builder_packages(root: str) -> None:
 
     if not _has_modules(target_python, *_RUNTIME_MODULES):
         raise SystemExit(
-            "Python runtime was staged, but required builder packages are not importable.\n"
+            "Python runtime was staged, but compatible required builder packages are unavailable.\n"
             f"Required modules: {', '.join(_RUNTIME_MODULES)}"
         )
 

@@ -113,6 +113,11 @@ class InstallQueue(QObject):
         self.jobs: list[InstallJob] = []
         self._pending: deque[InstallJob] = deque()
         self._thread: _InstallThread | None = None
+        # The next-job callback belongs to this queue. A context-free singleShot
+        # can call a retained Python wrapper after its QObject has been deleted.
+        self._next_timer = QTimer(self)
+        self._next_timer.setSingleShot(True)
+        self._next_timer.timeout.connect(self._start_next)
         # Downloads report every 64 KiB; repaint listeners at most ~20 times a second.
         self._progress_timer = QTimer(self)
         self._progress_timer.setSingleShot(True)
@@ -133,7 +138,7 @@ class InstallQueue(QObject):
         self.jobs.append(job)
         self._pending.append(job)
         self.changed.emit()
-        QTimer.singleShot(0, self._start_next)
+        self._next_timer.start(0)
         return job
 
     def cancel(self, job: InstallJob) -> bool:
@@ -222,4 +227,4 @@ class InstallQueue(QObject):
         thread.deleteLater()
         self.changed.emit()
         self.job_finished.emit(job)
-        QTimer.singleShot(0, self._start_next)
+        self._next_timer.start(0)

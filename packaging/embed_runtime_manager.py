@@ -37,7 +37,7 @@ from python_runtime_catalog import (
     SUPPORTED_PYTHON_RUNTIMES,
     runtime_release,
 )
-from runtime_requirements import runtime_modules, runtime_packages
+from runtime_requirements import runtime_modules, runtime_packages, runtime_probe_code
 from runtime_script_relocation import RELOCATE_RUNTIME_SCRIPTS
 from python_execution import prepare_private_runtime_paths, python_executable_path
 
@@ -376,7 +376,7 @@ class PythonRuntimeManager:
                 return python_exe
             if is_frozen() and not allow_frozen_repair:
                 raise PythonRuntimeError(
-                    f"The installed managed Python {runtime_id.series} runtime is missing build support or required packages.\n"
+                    f"The installed managed Python {runtime_id.series} runtime is missing build support or compatible required packages.\n"
                     "Please reinstall Infernux Hub so the runtime can be prepared during installation."
                 )
         return self._provision_managed_runtime(
@@ -744,15 +744,12 @@ class PythonRuntimeManager:
 
         if not self._has_modules(python_exe, *_REQUIRED_RUNTIME_MODULES):
             raise PythonRuntimeError(
-                "Managed Python runtime is still missing required support packages after installation."
+                "Managed Python runtime is still missing compatible required support packages after installation."
             )
 
     def _has_modules(self, python_exe: str, *module_names: str) -> bool:
-        checks = " and ".join(
-            [f"importlib.util.find_spec('{module_name}') is not None" for module_name in module_names]
-        )
         completed = _run_command(
-            [python_exe, "-I", "-c", f"import importlib.util; print(int({checks}))"],
+            [python_exe, "-I", "-c", runtime_probe_code(module_names)],
             timeout=30,
             raise_on_error=False,
         )
