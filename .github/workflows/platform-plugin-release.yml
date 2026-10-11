@@ -75,6 +75,11 @@ jobs:
           java-version: "17"
 
       - uses: android-actions/setup-android@v3
+        with:
+          # The legacy SDK "tools" package was removed from Google's current
+          # repository.  setup-android requests it by default unless a package
+          # list is supplied, which would fail before the pinned NDK is installed.
+          packages: platform-tools
 
       - name: Install the CPython build NDK
         run: sdkmanager "ndk;27.3.13750724"
@@ -140,6 +145,10 @@ jobs:
           java-version: "17"
 
       - uses: android-actions/setup-android@v3
+        with:
+          # Keep setup-android on the maintained platform-tools package; the
+          # legacy SDK "tools" package no longer exists in Google's repository.
+          packages: platform-tools
 
       - uses: gradle/actions/setup-gradle@v4
         with:

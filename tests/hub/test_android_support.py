@@ -126,6 +126,21 @@ def test_android_python_producer_selects_java_before_sdk_setup():
     assert "git submodule update --init --depth 1 external/plugins/infernux_android" in producer
 
 
+def test_android_kit_workflow_does_not_request_removed_legacy_tools_package():
+    workflow = (PACKAGING_DIR.parent / ".github/workflows/platform-plugin-release.yml").read_text(
+        encoding="utf-8"
+    )
+    setup_blocks = re.findall(
+        r"- uses: android-actions/setup-android@v3(.*?)(?=\n\s*- (?:uses|name):|\Z)",
+        workflow,
+        re.DOTALL,
+    )
+    assert len(setup_blocks) == 2
+    assert all(re.search(r"^\s+packages: platform-tools\s*$", block, re.MULTILINE)
+               for block in setup_blocks)
+    assert "packages: tools" not in workflow
+
+
 @pytest.mark.parametrize("abi", ["arm64-v8a", "x86_64"])
 def test_numpy_cross_file_uses_the_selected_target_python(tmp_path, abi):
     setup = PACKAGING_DIR.parent / "scripts/setup"
