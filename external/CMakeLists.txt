@@ -317,7 +317,6 @@ endif()
 
 # assimp
 add_subdirectory(assimp)
-add_library(assimp::assimp ALIAS assimp)
 
 # glslang
 # Keep glslang static even though most runtime dependencies are shared.
@@ -327,7 +326,6 @@ set(_saved_shared_for_glslang "${BUILD_SHARED_LIBS}")
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 add_subdirectory(glslang)
 set(BUILD_SHARED_LIBS "${_saved_shared_for_glslang}" CACHE BOOL "" FORCE)
-add_library(glslang::glslang ALIAS glslang)
 
 # glm (header-only library)
 add_subdirectory(glm)
