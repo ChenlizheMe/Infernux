@@ -14,20 +14,6 @@ from infernux.engine.build import exporter_registry
 from infernux.plugins import InxPackage, PluginManager
 
 
-def _module():
-    script = (
-        Path(__file__).parents[2]
-        / "external"
-        / "plugins"
-        / "build_release_assets.py"
-    )
-    spec = importlib.util.spec_from_file_location("build_release_assets", script)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_android_package_does_not_install_host_compiler_dependencies(tmp_path, monkeypatch):
     root = Path(__file__).parents[2]
     package = tmp_path / "android.inxpkg"
@@ -41,33 +27,6 @@ def test_android_package_does_not_install_host_compiler_dependencies(tmp_path, m
     monkeypatch.setattr(manager, "_install_pip_lines", lambda lines: installed_lines.extend(lines))
     manager._install_requirements(preview)
     assert installed_lines == []
-
-
-def test_script_uses_the_checked_out_protocol_from_any_working_directory(
-    tmp_path,
-):
-    script = (
-        Path(__file__).parents[2]
-        / "external"
-        / "plugins"
-        / "build_release_assets.py"
-    )
-    environment = os.environ.copy()
-    environment.pop("PYTHONPATH", None)
-    completed = subprocess.run(
-        [sys.executable, str(script), "--help"],
-        cwd=tmp_path,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stdout + completed.stderr
-
-
-class _Preview:
-    def __init__(self, metadata):
-        self.metadata = metadata
 
 
 def _write_source(root: Path, name: str, reference: str, repository: str) -> dict:
@@ -94,77 +53,6 @@ def _write_source(root: Path, name: str, reference: str, repository: str) -> dic
         "targets": [reference.rsplit("/", 1)[-1]],
         "default": False,
     }
-
-
-def test_stages_only_repository_owned_packages_without_hashes(tmp_path, monkeypatch):
-    module = _module()
-    source = tmp_path / "plugins"
-    source.mkdir()
-    main_repository = "https://github.com/ChenlizheMe/Infernux"
-    entries = [
-        _write_source(source, "windows", "infernux/platform-windows", main_repository),
-        _write_source(source, "web", "infernux/platform-web", main_repository),
-        _write_source(
-            source,
-            "mcp",
-            "infernux/mcp",
-            "https://github.com/InfernuxEngine/infernux_mcp",
-        ),
-    ]
-    catalog = source / "plugins.json"
-    catalog.write_text(
-        json.dumps(
-            {"$schema": "infernux.official_plugin_sources", "plugins": entries}
-        ),
-        encoding="utf-8",
-    )
-    packages = tmp_path / "packages"
-    packages.mkdir()
-    metadata = {}
-    for reference in ("infernux/platform-windows", "infernux/platform-web"):
-        name = reference.replace("/", ".") + ".inxpkg"
-        path = packages / name
-        path.write_bytes(reference.encode("utf-8"))
-        metadata[str(path)] = {
-            "reference": reference,
-            "version": "0.1.0",
-            "engine": ">=0.4,<0.5",
-        }
-    monkeypatch.setattr(
-        module.InxPackage,
-        "inspect",
-        lambda path: _Preview(metadata[path]),
-    )
-
-    output = tmp_path / "release"
-    outputs = module.build(
-        packages,
-        output,
-        catalog,
-        repository=main_repository,
-        release_tag="v0.4.0",
-    )
-
-    assert {path.name for path in outputs} == {
-        "infernux.platform-windows.inxpkg",
-        "infernux.platform-windows.release.json",
-        "infernux.platform-web.inxpkg",
-        "infernux.platform-web.release.json",
-    }
-    document = json.loads(
-        (output / "infernux.platform-web.release.json").read_text(encoding="utf-8")
-    )
-    assert document == {
-        "$schema": "infernux.plugin_release",
-        "reference": "infernux/platform-web",
-        "version": "0.1.0",
-        "engine": ">=0.4,<0.5",
-        "artifact": {"name": "infernux.platform-web.inxpkg"},
-        "generator": "Infernux official plugin release assets",
-        "release_tag": "v0.4.0",
-    }
-    assert "sha" not in json.dumps(document).casefold()
-    assert not (output / "infernux.mcp.inxpkg").exists()
 
 
 def test_official_catalog_publishes_a_direct_object_source(tmp_path, monkeypatch):
@@ -212,58 +100,6 @@ def test_official_catalog_publishes_a_direct_object_source(tmp_path, monkeypatch
     )
 
 
-def test_rejects_package_metadata_that_disagrees_with_source(tmp_path, monkeypatch):
-    module = _module()
-    source = tmp_path / "plugins"
-    source.mkdir()
-    repository = "https://github.com/ChenlizheMe/Infernux"
-    entry = _write_source(source, "web", "infernux/platform-web", repository)
-    catalog = source / "plugins.json"
-    catalog.write_text(
-        json.dumps(
-            {"$schema": "infernux.official_plugin_sources", "plugins": [entry]}
-        ),
-        encoding="utf-8",
-    )
-    packages = tmp_path / "packages"
-    packages.mkdir()
-    package = packages / "infernux.platform-web.inxpkg"
-    package.write_bytes(b"package")
-    monkeypatch.setattr(
-        module.InxPackage,
-        "inspect",
-        lambda _path: _Preview(
-            {
-                "reference": "infernux/platform-web",
-                "version": "9.9.9",
-                "engine": ">=0.4,<0.5",
-            }
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="version mismatch"):
-        module.build(
-            packages,
-            tmp_path / "release",
-            catalog,
-            repository=repository,
-            release_tag="v0.4.0",
-        )
-
-
-@pytest.mark.parametrize("tag", ["", "release/0.4.0", "../v0.4.0", "v0.4.0 beta"])
-def test_rejects_unsafe_release_tags(tmp_path, tag):
-    module = _module()
-    with pytest.raises(ValueError, match="Invalid release tag"):
-        module.build(
-            tmp_path,
-            tmp_path / "release",
-            tmp_path / "plugins.json",
-            repository="https://github.com/ChenlizheMe/Infernux",
-            release_tag=tag,
-        )
-
-
 def test_platform_releases_are_owned_by_independent_repositories():
     workflow = (
         Path(__file__).parents[2]
@@ -272,7 +108,6 @@ def test_platform_releases_are_owned_by_independent_repositories():
         / "platform-plugin-release.yml"
     ).read_text(encoding="utf-8")
     assert "release:\n    types: [published]" in workflow
-    assert "build_release_assets.py" not in workflow
     assert "publish-platform-plugins" not in workflow
     assert "package_android_support.py" in workflow
     assert "$env:RELEASE_INPUT_TAG" in workflow
